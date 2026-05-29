@@ -404,8 +404,9 @@ CamillaDSP processing. So:
 - TTS bleed through the mic is not yet in the AEC reference; the bridge
   cancels music bleed only. This is **intentional** for the current
   AEC bridge, even though outputd now owns the final output loop. Robust
-  barge-in should move the reference consumer to outputd's eventual
-  speaker reference fanout — see
+  barge-in should move the reference consumer to outputd's speaker
+  reference fanout and then reuse the outputd `FLUSH_SYNC` /
+  `LiveTurn.on_tts_flush()` provider seam — see
   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. Acceptable today; if it becomes a problem,
@@ -413,8 +414,10 @@ CamillaDSP processing. So:
 
 ## Related
 
-- [HANDOFF-barge-in.md](HANDOFF-barge-in.md) — open architectural
-  decision for upgrading barge-in beyond VAD-only filtering.
+- [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+  — canonical outputd, speaker-reference, and future barge-in contract.
+- [HANDOFF-barge-in.md](HANDOFF-barge-in.md) — historical option
+  costing for upgrading beyond VAD-only filtering.
 - [HANDOFF-volume.md](HANDOFF-volume.md) — VolumeCoordinator and
   source-aware dispatch.
 - [HANDOFF-voice-music-control.md](HANDOFF-voice-music-control.md) —
@@ -423,4 +426,8 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-28 (source handoff guard, future-source checklist, source-capabilities plan link, outputd cutover topology, and TTS drain/flush boundary rechecked)
+Verification note: source handoff guard, future-source checklist,
+source-capabilities plan link, outputd cutover topology, TTS
+drain/flush boundary, and future barge-in seam rechecked.
+
+Last verified: 2026-05-29

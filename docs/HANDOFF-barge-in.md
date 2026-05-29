@@ -5,7 +5,12 @@
 > Preserved for primary-source archaeology and option costing;
 > specific recommendations in this file are superseded. Current
 > operational direction lives in
-> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
+> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
+> with provider-specific reconciliation in
+> [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md). Do not
+> implement from this historical doc: future barge-in should reuse
+> outputd `FLUSH_SYNC` plus `LiveTurn.on_tts_flush(ack)`, not create a
+> second provider cancel/truncate path.
 
 **Original 2026-05-23 status:** Research only. No implementation in flight.
 This document captures the option space for upgrading JTS's

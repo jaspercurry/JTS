@@ -18,12 +18,16 @@ These confirm what our codebase does well — should not regress:
 - **Manual VAD + `activity_start`/`activity_end`.** Empirically required:
   we tried server-side auto VAD with pause-resume and turn 2 silently
   fails. Comments in `_build_config` document this in detail.
-- **`interrupted` signal hooked into local TTS flush.** Wired in
-  `_dispatch` (queues sentinel, sets event) and `_play_responses`
-  (races write vs `wait_for_interrupt`, then `tts.flush()` which uses
-  `stream.abort()` to drop buffered samples). Currently dormant
-  because `NO_INTERRUPTION` prevents the server from emitting the
-  signal — wakes up automatically the moment we drop NO_INTERRUPTION.
+- **Shared TTS flush/provider-reconciliation seam.** `_play_responses`
+  races TTS writes against `turn.wait_for_interrupt()`, then calls
+  `tts.flush()` and `LiveTurn.on_tts_flush(ack)`. With outputd, the
+  flush is synchronous and returns per-segment `audio_played_ms` plus
+  provider item identity where available. This is pre-built
+  infrastructure for future robust barge-in, not proof that barge-in
+  is enabled today: production still uses local Silero endpointing, and
+  no safe mid-assistant interruption detector has landed yet. See
+  `HANDOFF-speaker-output-reference.md` before adding any barge-in
+  path.
 - **No nonlinear noise suppression in front of the LLM.** Clean signal
   path — only anti-aliased polyphase decimation in `MicCapture`.
 - **Wake-word debounce.** `WakeWordDetector.reset()` after each fire +
@@ -55,17 +59,28 @@ unlock once `jasper-aec-tune` produces a sane delay value AND
 sample shows ≥25 dB of music attenuation. Until then, treat them as
 "ready to drop, awaiting confirmation."
 
-### Drop `NO_INTERRUPTION` once AEC is verified
+### Enable robust barge-in through the outputd/provider seam
 
 `gemini_session.py` `realtime_input_config` currently has
 `activity_handling=ActivityHandling.NO_INTERRUPTION` because without
-AEC, TTS bleed reaches the mic and the server's auto VAD interprets it
-as user activity, interrupting the model mid-response. With working
-AEC, the chip cancels TTS bleed before it reaches Silero or the
-server, so `NO_INTERRUPTION` becomes unnecessary and we can return to
-the API default (`START_OF_ACTIVITY_INTERRUPTS`). The interrupt
-plumbing is already wired and dormant; this is a one-line change once
-hardware AEC is verified.
+the final speaker-output reference, TTS bleed reaches the mic and
+server-side activity detection can self-interrupt the model. Outputd
+now owns the final DAC and exposes the playout/provider ledger needed
+for future barge-in, but AEC still consumes the old content-only
+reference.
+
+The next implementation should not be "drop `NO_INTERRUPTION` and hope."
+It should:
+
+1. Move AEC to outputd's `speaker_reference_out`.
+2. Validate that the mic path can distinguish real user speech from
+   TTS/music bleed during assistant playback.
+3. Have that detector drive the existing `_play_responses`
+   `wait_for_interrupt()` → outputd `FLUSH_SYNC` →
+   `LiveTurn.on_tts_flush(ack)` contract.
+
+Provider-specific cancel/truncate behavior already belongs behind
+`LiveTurn.on_tts_flush()`. Do not duplicate it in the daemon.
 
 ### Run wake-word detection during TTS for "stop" interruption (HA Voice PE pattern)
 
@@ -212,10 +227,11 @@ evidence to deviate from**:
   this.
 
 - **`NO_INTERRUPTION` vs the report's "wire `interrupted` to playback
-  flush".** We have the plumbing wired correctly but it's dormant
-  because `NO_INTERRUPTION` prevents server-side emission. Not a bug —
-  the chosen Stage 1 trade-off in the absence of working AEC. Wakes
-  up automatically the moment we drop NO_INTERRUPTION (Tier 2).
+  flush".** We have the shared flush/provider seam wired, but robust
+  barge-in still needs a safe interruption detector and the outputd
+  speaker reference feeding AEC. Not a bug — this is the chosen
+  trade-off until we can prove the detector will not self-interrupt on
+  TTS/music bleed.
 
 ## Phase-2 transport / playback follow-ons
 

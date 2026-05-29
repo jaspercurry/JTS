@@ -22,15 +22,16 @@ HANDOFF-xvf3800.md explains the *chip*.
 The `jasper/mics/xvf3800.py` profile module is the canonical
 source for chip-specific constants consumed at runtime.
 
-**Open architectural question**: [HANDOFF-barge-in.md](HANDOFF-barge-in.md)
-surveys the option space for upgrading barge-in from today's
-VAD-only filtering to AEC-cancellation-of-TTS. **Read it before
-any change that touches the music↔TTS↔AEC topology** —
-particularly the "trap" section, which preserves the analysis of
-why several obvious-looking fixes (route TTS through CamillaDSP,
-second dsnoop tap + software-sum, ALSA `multi` plugin, UDP-tee)
-are all wrong for the same underlying single-reference /
-delay-alignment reason.
+**Barge-in architecture companion**:
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+is the current contract for outputd, `speaker_reference_out`, and
+provider-side TTS flush reconciliation. [HANDOFF-barge-in.md](HANDOFF-barge-in.md)
+is now historical option costing, but its "trap" analysis remains useful:
+obvious-looking fixes such as routing TTS through CamillaDSP, adding a
+second dsnoop tap plus software sum, using ALSA `multi`, or UDP-teeing
+references are all wrong for the same underlying single-reference /
+delay-alignment reason. **Read both before any change that touches the
+music↔TTS↔AEC topology.**
 
 The goal is to make this enough context that a future session can
 pick up the work without re-doing the investigation.

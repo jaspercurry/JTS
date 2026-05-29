@@ -15,7 +15,9 @@ class AudioOutChunk:
     stable handle needed by provider-specific truncation later (for
     OpenAI, `response.output_item.added.item.id`). Providers that do not
     expose per-response item ids leave it unset; outputd still accounts
-    for the local segment and returns played duration on flush.
+    for the local segment and returns played duration on flush. Future
+    barge-in implementations should preserve this field through outputd
+    rather than adding provider-specific playout state in the daemon.
     """
 
     pcm: bytes
@@ -231,7 +233,10 @@ class LiveTurn(Protocol):
         and flushed local output. Providers with a server-side truncate
         API can use outputd's acknowledgement to tell the model exactly
         how much assistant audio was heard; providers without that API
-        should make this a no-op or best-effort cancel.
+        should make this a no-op or best-effort cancel. This is the
+        shared provider seam for future robust barge-in; the current
+        production Silero endpointer does not enable that feature by
+        itself.
         """
         ...
 

@@ -232,7 +232,12 @@ should be:
    `tests/test_openai_session.py`. Pin: connect → tool round-trip →
    reconnect → manual-VAD payload shape → tool round advances the
    turn's idle anchor (see "Idle anchor + tool rounds" below).
-7. New row in this doc's tradeoff table.
+7. If the provider emits stable assistant audio item identity, yield
+   `AudioOutChunk(provider_item_id=...)` and implement
+   `LiveTurn.on_tts_flush(ack)` so future barge-in can reconcile
+   server state through the shared playout contract. Keep provider
+   truncate/cancel logic inside the adapter, not in `voice_daemon.py`.
+8. New row in this doc's tradeoff table.
 
 If the wire format is OpenAI-Realtime-compatible (Grok pattern), most
 of step 1 is "subclass `OpenAIRealtimeConnection` and override
@@ -307,6 +312,16 @@ only after local output has been flushed in response to an interruption;
 provider adapters then decide what, if anything, can be corrected
 server-side.
 
+Current production note: JTS uses local Silero endpointing by default
+(`JASPER_SERVER_VAD_ENABLED=0`). That path decides when the user's
+utterance is over; it does not yet implement robust mid-assistant
+barge-in. Therefore `on_tts_flush()` is infrastructure today. Future
+barge-in work should add the interruption detector that drives the
+existing `_play_responses` flush path, then let this provider seam own
+the vendor-specific reconciliation. Do not wire direct
+`response.cancel`, `conversation.item.truncate`, or provider-specific
+equivalents in the daemon.
+
 - **OpenAI Realtime (`gpt-realtime-2`)**: outputd returns
   `provider_item_id` plus `audio_played_ms`; the adapter sends
   `response.cancel` while a response is active, then
@@ -371,8 +386,14 @@ These have all been surfaced and rejected in design reviews:
 
 ## Related docs
 
+- [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+  — canonical outputd, speaker-reference, and future barge-in contract
 - [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md) — Gemini-side reconnect supervisor + idle context reset
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-05-29 (LiveTurn audio chunk identity and TTS flush reconciliation checked against OpenAI/Gemini/Grok adapters)
+Verification note: LiveTurn audio chunk identity, TTS flush
+reconciliation, and current Silero/no-robust-barge-in boundary checked
+against OpenAI/Gemini/Grok adapters.
+
+Last verified: 2026-05-29

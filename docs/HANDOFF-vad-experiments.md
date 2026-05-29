@@ -500,10 +500,11 @@ Recommendation: do (a) first, ~30 min effort, definitive test of
    or add a `primary_stream_id` column that records what was actually on
    each leg.
 
-4. The OpenAI session adapter still emits the warning *"openai
-   connection: server error: RealtimeError(message='Cancellation failed:
-   no active response found')"* whenever a turn ends without a response.
-   It's harmless but it's noise. Could be suppressed in the cancel path.
+4. **Resolved 2026-05-29 in the provider TTS flush branch.** The OpenAI
+   session adapter used to emit *"Cancellation failed: no active response
+   found"* whenever a turn ended without an active response. The cancel
+   path now suppresses that specific no-active-response error while
+   preserving real provider errors.
 
 ---
 
@@ -525,6 +526,9 @@ Recommendation: do (a) first, ~30 min effort, definitive test of
   [README.md](../README.md), [AGENTS.md](../AGENTS.md)
 - Voice provider abstraction (Gemini / OpenAI / Grok):
   [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md)
+- Outputd speaker reference, playout ledger, and future robust
+  barge-in contract:
+  [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
 - The persistent Live session lifecycle:
   [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md)
 - AEC bridge + WebRTC AEC3 tuning history:

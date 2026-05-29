@@ -1074,9 +1074,11 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
     pending` warnings. The waiter is held alive by a reference cycle
     through `turn._interrupt_event`, so dropping the local without
     explicit cleanup means GC eventually breaks the cycle and Task.__del__
-    fires. The OpenAI / Grok adapters never set `_interrupt_event` (no
-    barge-in implemented), so the waiter is always pending at turn end
-    and the leak would fire every turn without this try/finally."""
+    fires. In normal production, local Silero endpoints user input and
+    OpenAI / Grok do not set `_interrupt_event`; opt-in server VAD or a
+    future Silero/AEC barge-in detector may set it during assistant
+    playback. Either way, the waiter is often pending at turn end and
+    the leak would fire every turn without this try/finally."""
     interrupt_task: asyncio.Task | None = None
     write_task: asyncio.Task | None = None
     try:

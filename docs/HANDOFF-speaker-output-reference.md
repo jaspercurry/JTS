@@ -15,7 +15,10 @@ behavior, or any future output-owner daemon. For source-specific lane
 work, start with
 [audio-paths.md](audio-paths.md#adding-a-new-music-source). For AEC
 engine behavior and tuning, use [HANDOFF-aec.md](HANDOFF-aec.md).
-For historical barge-in costing, use [HANDOFF-barge-in.md](HANDOFF-barge-in.md).
+For historical barge-in costing, use
+[HANDOFF-barge-in.md](HANDOFF-barge-in.md). For provider-specific
+flush/truncate behavior, use
+[HANDOFF-voice-providers.md](HANDOFF-voice-providers.md).
 
 ## Current Operational Truth
 
@@ -85,6 +88,13 @@ That is good groundwork, but it is not a complete "what did the user
 hear?" ledger. Robust barge-in needs both a true AEC reference and
 precise playout accounting.
 
+Important current-state boundary: production JTS still uses local
+Silero endpointing to decide when the user's utterance has ended.
+Robust assistant-speech barge-in is not enabled yet. The outputd
+flush ledger and provider hook described below are deliberately
+pre-built infrastructure so the future barge-in detector has one
+correct playout/provider contract to call.
+
 ## Codebase Validation
 
 Rechecked against the current tree on 2026-05-28:
@@ -153,7 +163,8 @@ What exists:
   providers without item ids leave it empty. The voice provider
   adapters consume that identity only through `LiveTurn.on_tts_flush()`
   so future provider-specific truncate/cancel behavior stays behind
-  one contract.
+  one contract. Future barge-in work should feed this hook; it should
+  not add direct provider cancel/truncate calls in `voice_daemon.py`.
 - TTS interruption: outputd flushes are epoch-based. A flush advances
   the TTS epoch, clears the already-enqueued assistant buffer, and
   ignores any pre-flush audio commands that had been accepted onto the
@@ -164,15 +175,19 @@ What exists:
   flushed frames, provider item id, and local segment id. The Python
   client bounds this ack wait and closes the ordered TTS socket on
   timeout so a late stale ack cannot be mistaken for a later flush.
-  After the local flush, the provider hook reconciles server state:
-  OpenAI sends `response.cancel` while a response is active, then
-  `conversation.item.truncate` at the heard `audio_played_ms`; if
-  the server has already emitted `response.done`, OpenAI skips cancel
-  and truncates only. Grok sends cancel only because xAI documents
-  `conversation.item.truncate` as unsupported. Gemini has no client
-  truncate event; current JTS Gemini config keeps model interruption
-  disabled with `NO_INTERRUPTION` until AEC/reference validation makes
-  barge-in safe.
+  When an interruption source drives the existing `_play_responses`
+  interrupt path, the provider hook reconciles server state after the
+  local flush: OpenAI sends `response.cancel` while a response is
+  active, then `conversation.item.truncate` at the heard
+  `audio_played_ms`; if the server has already emitted
+  `response.done`, OpenAI skips cancel and truncates only. Grok sends
+  cancel only because xAI documents `conversation.item.truncate` as
+  unsupported. Gemini has no client truncate event; current JTS Gemini
+  config keeps model interruption disabled with `NO_INTERRUPTION`
+  until AEC/reference validation makes barge-in safe. With the normal
+  production Silero path, this provider reconciliation path is expected
+  to be mostly dormant today because Silero endpoints user input; it
+  does not yet provide robust mid-assistant interruption.
 - Playout ledger: outputd keeps active assistant/cue segments plus a
   bounded recent terminal history, so long uptimes do not accumulate
   one segment per TTS chunk indefinitely. Written frames are not treated
@@ -207,11 +222,13 @@ What is still intentionally not done:
 - AEC still consumes the old `pcm.jasper_ref` content reference.
 - `speaker_reference_out` is still an in-process bounded fanout, not
   a public AEC/corpus transport.
-- The latest TTS ledger and provider-reconciliation refinements
-  (provider item id over IPC, synchronous flush acknowledgement,
+- Robust barge-in is not enabled. The outputd/provider seam exists:
+  provider item id over IPC, synchronous flush acknowledgement,
   DAC-delay-based drain accounting, and OpenAI/Grok/Gemini flush
-  handling) still need Pi validation after an operator-approved
-  deploy.
+  handling. The remaining product work is a safe assistant-playback
+  interruption source, likely built on the future outputd speaker
+  reference plus Silero/AEC telemetry, that calls the existing
+  `_play_responses` interrupt path.
 
 ## Problem Boundaries
 
@@ -522,18 +539,27 @@ together.
 
 ### Barge-In Contract
 
-When user speech is detected during assistant playback:
+Robust barge-in should reuse the existing outputd/provider seam. When a
+future interruption detector has high confidence that user speech is
+present during assistant playback:
 
-- detect user speech while assistant audio is playing
+- raise the existing `LiveTurn.wait_for_interrupt()` /
+  `_play_responses` interruption path
 - voice daemon sends `flush` to `jasper-outputd`
 - outputd drops queued assistant frames, keeps or fades content
   according to current ducking policy, and returns per-segment
   `audio_played_ms`
-- send the appropriate provider truncation/cancel event
+- voice daemon calls `LiveTurn.on_tts_flush(ack)`
+- the provider adapter sends the appropriate truncation/cancel event
 - preserve the transcript state that matches what the user heard
 
 The provider abstraction should hide vendor naming, but not the core
 datum: how much assistant audio was actually heard.
+
+Do not build a second provider-specific barge-in path in
+`voice_daemon.py`. The future detector may change, but the playout
+ledger and provider reconciliation contract should remain the shared
+boundary.
 
 ### Rollout Plan
 
@@ -554,10 +580,13 @@ datum: how much assistant audio was actually heard.
 4. **Move AEC reference.** Switch `jasper-aec-bridge` from
    `pcm.jasper_ref` to `speaker_reference_out`. Treat reference drops
    as capture-health degradation, not playback failure.
-5. **Enable robust barge-in.** Provider reconciliation is wired for
-   the supported adapters as of 2026-05-29. The remaining work is
-   Pi validation of the full interruption path and any follow-up
-   telemetry needed from that lab run.
+5. **Enable robust barge-in.** Not landed. Provider/outputd
+   reconciliation is wired for the supported adapters as of
+   2026-05-29, but production Silero endpointing does not yet fire a
+   mid-assistant interruption. Remaining work: choose and validate the
+   safe interruption source, feed the existing `_play_responses` /
+   `LiveTurn.on_tts_flush()` path, and add the lab telemetry needed to
+   prove it does not self-interrupt on TTS/music bleed.
 
 ### Required Tests
 
@@ -572,9 +601,10 @@ datum: how much assistant audio was actually heard.
   Bluetooth, USB input, and TTS-over-music with no output xruns.
 - Corpus capture-health test proving reference packet loss/drops mark
   affected clips compromised.
-- Barge-in test: assistant speaks, user interrupts, outputd flushes,
-  and provider reconciliation receives an `audio_played_ms` within
-  one output period of the ledger estimate. For OpenAI, verify
+- Future barge-in test: with the Silero/AEC interruption source
+  enabled, assistant speaks, user interrupts, outputd flushes, and
+  provider reconciliation receives an `audio_played_ms` within one
+  output period of the ledger estimate. For OpenAI, verify
   `conversation.item.truncate`; for Grok, verify cancel-only behavior;
   for Gemini, verify no client truncate and revisit interruption only
   after changing the current `NO_INTERRUPTION` posture.
@@ -642,5 +672,10 @@ datum: how much assistant audio was actually heard.
   playout-ledger contract polish: provider item identity on TTS
   segments, synchronous `FLUSH_SYNC` acknowledgements with
   `audio_played_ms`, and DAC-delay-based drained-frame estimation.
+- 2026-05-29: Treat provider reconciliation as pre-built barge-in
+  infrastructure, not as a completed barge-in feature. Future
+  interruption detectors must reuse outputd `FLUSH_SYNC` plus
+  `LiveTurn.on_tts_flush()` instead of adding another provider
+  cancel/truncate path.
 
 Last verified: 2026-05-29
