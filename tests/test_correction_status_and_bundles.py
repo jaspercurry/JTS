@@ -37,6 +37,7 @@ from jasper.correction.session import (
 )
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 from ._web_test_helpers import json_post_with_csrf
+from .correction_bundle_fixtures import write_golden_correction_bundle
 
 
 # ---------- parse_current_correction ---------------------------------------
@@ -771,7 +772,7 @@ def test_session_delete_endpoint_removes_historical_bundle(
     from jasper.correction.session import SessionConfig
 
     sessions_dir = tmp_path / "sessions"
-    _write_report_bundle(sessions_dir, "old-session")
+    write_golden_correction_bundle(sessions_dir, "old-session")
     fake_sess = MeasurementSession(
         SessionConfig(
             sweep_dir=tmp_path / "sweeps",
@@ -824,7 +825,7 @@ def test_session_delete_endpoint_refuses_current_ready_bundle(
         ),
     )
     fake_sess.state = SessionState.READY
-    bundle = _write_report_bundle(sessions_dir, fake_sess.session_id)
+    bundle = write_golden_correction_bundle(sessions_dir, fake_sess.session_id)
     monkeypatch.setattr(
         correction_setup, "_get_or_create_session", lambda: fake_sess,
     )
@@ -853,100 +854,6 @@ def test_session_delete_endpoint_refuses_current_ready_bundle(
     assert bundle.exists()
 
 
-def _write_report_bundle(sessions_dir: Path, session_id: str) -> Path:
-    bundle = sessions_dir / session_id
-    bundle.mkdir(parents=True)
-    freqs = [50, 80, 160, 320, 500]
-    info = {
-        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        "session_id": session_id,
-        "state": "ready",
-        "started_at": 2000,
-        "current_position": 1,
-        "total_positions": 1,
-        "target_choice": "flat",
-        "strategy_choice": "balanced",
-        "capture_quality": [],
-        "runtime_integrity": {"level": "ok", "issue_count": 0},
-        "acoustic_quality": {
-            "level": "ok",
-            "snr_level": "high",
-            "min_estimated_snr_db": 32.0,
-        },
-    }
-    result = {
-        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        "session_id": session_id,
-        "measured": {"freqs_hz": freqs, "magnitude_db": [0, 1, 2, 1, 0]},
-        "target": {"freqs_hz": freqs, "magnitude_db": [0, 0, 0, 0, 0]},
-        "confidence_report": {
-            "level": "high",
-            "score": 88,
-            "strategy_gates": {
-                "safe": {"allowed": True, "reasons": []},
-                "balanced": {"allowed": True, "reasons": []},
-                "assertive": {"allowed": False, "reasons": ["needs repeat"]},
-            },
-        },
-    }
-    runtime = {
-        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        "artifact_schema_version": 1,
-        "summary": {"level": "ok", "issue_count": 0},
-        "issues": [],
-    }
-    acoustic = {
-        "artifact_schema_version": 1,
-        "summary": {
-            "level": "ok",
-            "snr_level": "high",
-            "min_estimated_snr_db": 32.0,
-        },
-        "issues": [],
-    }
-    bundles.write_json_artifact(
-        bundle,
-        "info.json",
-        info,
-        kind="session_metadata",
-        sensitivity="private_metadata",
-        recomputable=False,
-        generated_by="test",
-        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-    )
-    bundles.write_json_artifact(
-        bundle,
-        "result.json",
-        result,
-        kind="analysis_result",
-        sensitivity="debug_safe",
-        recomputable=True,
-        generated_by="test",
-        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-    )
-    bundles.write_json_artifact(
-        bundle,
-        "runtime_integrity.json",
-        runtime,
-        kind="runtime_integrity",
-        sensitivity="debug_safe",
-        recomputable=True,
-        generated_by="test",
-        schema_version=1,
-    )
-    bundles.write_json_artifact(
-        bundle,
-        "acoustic_quality.json",
-        acoustic,
-        kind="acoustic_quality",
-        sensitivity="debug_safe",
-        recomputable=True,
-        generated_by="test",
-        schema_version=1,
-    )
-    return bundle
-
-
 def test_session_report_endpoint_returns_evidence_packet(
     tmp_path: Path,
     monkeypatch,
@@ -955,7 +862,7 @@ def test_session_report_endpoint_returns_evidence_packet(
     from jasper.correction.session import SessionConfig
 
     sessions_dir = tmp_path / "sessions"
-    _write_report_bundle(sessions_dir, "bbb")
+    write_golden_correction_bundle(sessions_dir, "bbb")
     fake_sess = MeasurementSession(
         SessionConfig(
             sweep_dir=tmp_path / "sweeps",
@@ -1005,7 +912,7 @@ def test_session_report_payload_builder_returns_evidence_versions(
     from jasper.web import correction_report
 
     sessions_dir = tmp_path / "sessions"
-    _write_report_bundle(sessions_dir, "bbb")
+    write_golden_correction_bundle(sessions_dir, "bbb")
 
     payload = correction_report.build_session_report_payload(
         sessions_dir=sessions_dir,

@@ -353,13 +353,9 @@ def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
     return info
 
 
-def list_bundles(
-    sessions_dir: Path,
-    *,
-    limit: int = 20,
-) -> list[dict[str, Any]]:
-    """List parseable bundles newest-first, skipping partial writes."""
-    if not sessions_dir.is_dir() or limit <= 0:
+def _sorted_bundle_dirs(sessions_dir: Path) -> list[Path]:
+    """Return parseable bundle directories newest-first."""
+    if not sessions_dir.is_dir():
         return []
     candidates: list[tuple[float, str, Path]] = []
     for sub in sessions_dir.iterdir():
@@ -375,13 +371,78 @@ def list_bundles(
             started_at = 0.0
         candidates.append((started_at, sub.name, sub))
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [bundle_dir for _, _, bundle_dir in candidates]
+
+
+def list_bundles(
+    sessions_dir: Path,
+    *,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """List parseable bundles newest-first, skipping partial writes."""
+    if limit <= 0:
+        return []
     entries: list[dict[str, Any]] = []
-    for _, _, bundle_dir in candidates[:limit]:
+    for bundle_dir in _sorted_bundle_dirs(sessions_dir)[:limit]:
         try:
             entries.append(summarize_bundle(bundle_dir))
         except BundleError:
             continue
     return entries
+
+
+def summarize_bundle_collection(
+    sessions_dir: Path,
+    *,
+    old_raw_audio_seconds: float = 7 * 24 * 60 * 60,
+) -> dict[str, Any]:
+    """Summarize all parseable correction bundles for operator visibility.
+
+    This is intentionally a filesystem scan rather than a cached index:
+    doctor is an explicit diagnostic command, and keeping the bundle
+    directory as the source of truth avoids another state file that can
+    drift from the evidence it reports on.
+    """
+    summaries: list[dict[str, Any]] = []
+    for bundle_dir in _sorted_bundle_dirs(sessions_dir):
+        try:
+            summaries.append(summarize_bundle(bundle_dir))
+        except BundleError:
+            continue
+
+    now = time.time()
+    old_raw_audio_bundle_count = 0
+    old_raw_audio_count = 0
+    for summary in summaries:
+        raw_count = int(summary.get("private_raw_audio_count") or 0)
+        if raw_count <= 0:
+            continue
+        try:
+            started_at = float(summary.get("started_at") or 0)
+        except (TypeError, ValueError):
+            started_at = 0.0
+        if started_at > 0 and now - started_at >= old_raw_audio_seconds:
+            old_raw_audio_bundle_count += 1
+            old_raw_audio_count += raw_count
+
+    return {
+        "bundle_count": len(summaries),
+        "latest_bundle": summaries[0] if summaries else None,
+        "total_bundle_size_bytes": sum(
+            int(summary.get("bundle_size_bytes") or 0)
+            for summary in summaries
+        ),
+        "private_raw_audio_count": sum(
+            int(summary.get("private_raw_audio_count") or 0)
+            for summary in summaries
+        ),
+        "private_raw_audio_bytes": sum(
+            int(summary.get("private_raw_audio_bytes") or 0)
+            for summary in summaries
+        ),
+        "old_private_raw_audio_bundle_count": old_raw_audio_bundle_count,
+        "old_private_raw_audio_count": old_raw_audio_count,
+    }
 
 
 def validate_bundle(bundle_dir: Path) -> list[BundleIssue]:

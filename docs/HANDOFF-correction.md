@@ -239,6 +239,10 @@
   `event=correction_session_bundle_deleted` entry. This is
   intentionally not an archive product: no database, no pinning, no
   automatic pruning, and no browser exposure of raw audio.
+  `jasper-doctor` also summarizes correction-bundle observability:
+  latest bundle, total parseable bundle storage, private raw-audio
+  artifact count/bytes, latest evidence completeness, and an
+  informational note when old raw recordings are still present.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -684,6 +688,7 @@ tests/
 ├── test_correction_calibration.py       mic calibration parser/providers
 ├── test_correction_quality.py           capture quality gates
 ├── test_correction_bundles.py           bundle listing / validation helpers
+├── correction_bundle_fixtures.py        golden synthetic bundle helper
 └── test_correction_systemd_unit.py      unit/install invariants
 
 /usr/share/jasper-web/index.html         EDIT — add /correction/ entry card

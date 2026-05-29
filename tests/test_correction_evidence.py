@@ -5,6 +5,8 @@ from pathlib import Path
 
 from jasper.correction import acoustic_quality, bundles, evidence
 
+from .correction_bundle_fixtures import write_golden_correction_bundle
+
 
 def _write_repeat_bundle(
     root: Path,
@@ -185,3 +187,17 @@ def test_evidence_packet_keeps_low_repeatability_as_caution(tmp_path: Path):
     assert "repeatability_low" in codes
     assert "repeatability_mic_mismatch" in codes
     assert packet["side_effects"] == []
+
+
+def test_golden_bundle_fixture_builds_ready_evidence_packet(tmp_path: Path):
+    bundle = write_golden_correction_bundle(tmp_path)
+
+    packet = evidence.build_evidence_packet(bundle)
+
+    assert packet["artifact_schema_version"] == evidence.SCHEMA_VERSION
+    assert packet["bundle"]["has_artifact_manifest"] is True
+    assert packet["bundle"]["issues"] == []
+    assert packet["agent_readiness"]["level"] == "ready"
+    assert packet["capability_permissions"]["permissions"]["safe_peq"]["allowed"]
+    assert packet["repeatability"]["level"] == "high"
+    assert packet["missing_evidence"] == []

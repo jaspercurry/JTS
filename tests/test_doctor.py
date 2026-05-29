@@ -16,6 +16,8 @@ from jasper.cli import doctor
 from jasper.config import Config
 from jasper.correction import bundles
 
+from .correction_bundle_fixtures import write_golden_correction_bundle
+
 
 # ---------------------------------------------------------------- env loading
 
@@ -2129,6 +2131,25 @@ def test_check_correction_latest_bundle_warns_when_failed(
 
     assert r.status == "warn"
     assert "capture clipped" in r.detail
+
+
+def test_check_correction_latest_bundle_reports_bundle_collection(
+    monkeypatch, tmp_path,
+):
+    sessions = tmp_path / "sessions"
+    write_golden_correction_bundle(sessions, "old", started_at=1000)
+    write_golden_correction_bundle(sessions, "new", started_at=2000)
+    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
+
+    r = doctor.check_correction_latest_bundle()
+
+    assert r.status == "ok"
+    assert "session=new" in r.detail
+    assert "bundles=2" in r.detail
+    assert "storage=" in r.detail
+    assert "private_raw=8/" in r.detail
+    assert "evidence=complete(" in r.detail
+    assert "old raw recordings present (8 files)" in r.detail
 
 
 def test_correction_doctor_checks_registered():

@@ -3700,6 +3700,37 @@ def check_dsp_apply_state() -> CheckResult:
     return CheckResult("DSP apply state", status, detail)
 
 
+def _format_byte_count(value: object) -> str:
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        size = 0.0
+    units = ("B", "KiB", "MiB", "GiB")
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _correction_evidence_status(bundle: dict[str, object]) -> str:
+    missing: list[str] = []
+    if not bundle.get("has_artifact_manifest"):
+        missing.append("manifest")
+    if not bundle.get("has_runtime_integrity_json"):
+        missing.append("runtime")
+    if not bundle.get("has_acoustic_quality_json"):
+        missing.append("acoustic")
+    if missing:
+        return "missing:" + ",".join(missing)
+    artifact_count = bundle.get("artifact_count")
+    if isinstance(artifact_count, int):
+        return f"complete({artifact_count} artifacts)"
+    return "complete"
+
+
 def check_correction_latest_bundle() -> CheckResult:
     from jasper.correction import bundles
 
@@ -3709,7 +3740,8 @@ def check_correction_latest_bundle() -> CheckResult:
             str(_correction_root() / "sessions"),
         )
     )
-    latest = bundles.latest_bundle(sessions_dir)
+    collection = bundles.summarize_bundle_collection(sessions_dir)
+    latest = collection.get("latest_bundle")
     if latest is None:
         return CheckResult(
             "latest correction bundle", "ok",
@@ -3723,6 +3755,19 @@ def check_correction_latest_bundle() -> CheckResult:
         f"session={latest.get('session_id')} state={latest.get('state')} "
         f"schema={latest.get('bundle_schema_version')}"
     )
+    collection_summary = (
+        f"; bundles={collection.get('bundle_count', 0)} "
+        f"storage={_format_byte_count(collection.get('total_bundle_size_bytes'))} "
+        f"private_raw={collection.get('private_raw_audio_count', 0)}/"
+        f"{_format_byte_count(collection.get('private_raw_audio_bytes'))} "
+        f"evidence={_correction_evidence_status(latest)}"
+    )
+    if collection.get("old_private_raw_audio_count"):
+        collection_summary += (
+            "; old raw recordings present "
+            f"({collection.get('old_private_raw_audio_count')} files)"
+        )
+    summary += collection_summary
     if fail_issues:
         return CheckResult(
             "latest correction bundle", "fail",

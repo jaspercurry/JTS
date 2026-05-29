@@ -5,6 +5,8 @@ from pathlib import Path
 
 from jasper.correction import bundles
 
+from .correction_bundle_fixtures import write_golden_correction_bundle
+
 
 def _write_bundle(root: Path, name: str, *, started_at: int) -> Path:
     d = root / name
@@ -101,10 +103,53 @@ def test_summarize_bundle_reports_size_and_private_raw_audio(tmp_path: Path):
     assert summary["bundle_size_bytes"] >= summary["private_raw_audio_bytes"]
 
 
+def test_summarize_bundle_collection_reports_storage_and_private_audio(
+    tmp_path: Path,
+):
+    write_golden_correction_bundle(tmp_path, "old", started_at=1000)
+    write_golden_correction_bundle(tmp_path, "new", started_at=2000)
+
+    summary = bundles.summarize_bundle_collection(
+        tmp_path,
+        old_raw_audio_seconds=0,
+    )
+
+    assert summary["bundle_count"] == 2
+    assert summary["latest_bundle"]["session_id"] == "new"
+    assert summary["total_bundle_size_bytes"] > 0
+    assert summary["private_raw_audio_count"] == 8
+    assert summary["private_raw_audio_bytes"] > 0
+    assert summary["old_private_raw_audio_bundle_count"] == 2
+    assert summary["old_private_raw_audio_count"] == 8
+
+
+def test_golden_correction_bundle_fixture_validates_contract(tmp_path: Path):
+    bundle = write_golden_correction_bundle(tmp_path)
+
+    issues = bundles.validate_bundle(bundle)
+    summary = bundles.summarize_bundle(bundle)
+
+    assert issues == []
+    assert summary["has_artifact_manifest"] is True
+    assert summary["has_runtime_integrity_json"] is True
+    assert summary["has_acoustic_quality_json"] is True
+    assert summary["private_raw_audio_count"] == 4
+    assert (bundle / "evidence_packet.json").exists()
+
+
 def test_list_bundles_treats_missing_or_file_sessions_dir_as_empty(
     tmp_path: Path,
 ):
     assert bundles.list_bundles(tmp_path / "missing") == []
+    assert bundles.summarize_bundle_collection(tmp_path / "missing") == {
+        "bundle_count": 0,
+        "latest_bundle": None,
+        "total_bundle_size_bytes": 0,
+        "private_raw_audio_count": 0,
+        "private_raw_audio_bytes": 0,
+        "old_private_raw_audio_bundle_count": 0,
+        "old_private_raw_audio_count": 0,
+    }
     not_dir = tmp_path / "sessions"
     not_dir.write_text("not a directory")
     assert bundles.list_bundles(not_dir) == []
