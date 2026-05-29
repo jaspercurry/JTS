@@ -355,10 +355,11 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-wake-corpus-quality.md  Methodology for wake-corpus audio QA / artifact review
   HANDOFF-usb-mic-wake.md   Parked cheap-USB mic wake/AEC follow-up plan
   HANDOFF-mic-quality-v2.md     Empirical history: AEC sweeps, BEST_A, triple-stream architecture
+  HANDOFF-mic-fusion-architecture.md  Design/plan (draft): pluggable-mic boundary + N-leg wake fusion
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
   HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
-  HANDOFF-wake-telemetry.md     Dual-stream wake + per-event SQLite + funnel
+  HANDOFF-wake-telemetry.md     Triple-stream wake + per-event SQLite + funnel
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
   HANDOFF-apple-music.md   Apple Music integration research + plan (no code yet)
@@ -518,6 +519,13 @@ reference. Currently:
   HANDOFF-aec.md (engine internals) + HANDOFF-wake-telemetry.md
   (measurement infrastructure already deployed) so this doc stays
   short on what's documented elsewhere.
+- [`HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md) —
+  **Design/plan (living draft, updated as phases land).** Architecture for
+  the pluggable-mic boundary + the leg-count-agnostic wake-fusion layer:
+  the `wake_legs` registry, the `CaptureProfile` / `LegRuntime` seam, and
+  the staged PR plan (Phase 0 → 5). Companion to HANDOFF-mic-quality-v2.md
+  (empirical tuning) and HANDOFF-wake-telemetry.md (schema). Read for the
+  boundary design + phase sequencing.
 - [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md) —
   **Current primary workstream (2026-05-26).** The forward-looking
   plan for training a custom `jarvis_jts_*_v1` wake-word model
@@ -563,7 +571,7 @@ reference. Currently:
   a true `speaker_output_reference`, owns TTS/cue playout accounting,
   and enables robust barge-in during assistant speech.
 - [`HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md) —
-  Dual-stream wake-word detection (AEC ON + AEC OFF, OR-gated)
+  Triple-stream wake-word detection (AEC ON + AEC OFF + DTLN, OR-gated)
   plus SQLite-backed per-event telemetry with audio capture and
   funnel tracking through to LLM response / tool call. Replaces
   the synthetic phone-track wake-rate methodology with real
