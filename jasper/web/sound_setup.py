@@ -577,6 +577,7 @@ _PAGE_CSS = """
   }
   .off-card__icon svg { width: 22px; height: 22px; }
   .off-card__text { max-width: 360px; margin: 0 auto; color: var(--muted-foreground); }
+  .off-card .btn-row { justify-content: center; margin-top: 20px; }
 
   /* Saved tab */
   .saved-stack { display: flex; flex-direction: column; gap: 24px; }
@@ -606,6 +607,7 @@ _PAGE_CSS = """
     box-shadow: inset 0 0 0 1px var(--border);
   }
   .empty-card p { color: var(--muted-foreground); margin: 0; }
+  .empty-card .btn { margin-top: 12px; }
   .profile-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
   .profile-row__select {
     flex: 1; display: flex; align-items: center; gap: 12px; text-align: left;
@@ -641,6 +643,7 @@ _PAGE_CSS = """
     font-family: var(--font-display); font-size: 12px; font-weight: 500;
     color: var(--muted-foreground);
   }
+  .bands-meta { display: flex; gap: 12px; align-items: center; }
   .bands-card {
     border-radius: var(--radius-lg);
     background: color-mix(in oklab, var(--secondary) 40%, transparent);
@@ -959,7 +962,13 @@ _SOUND_JS = r"""
     return lead + editing.name + (draftModified() ? ' · edited' : '');
   }
 
-  // ---- preview math (matches backend; used for the always-on graph) ---
+  // ---- preview math ---------------------------------------------------
+  // Optimistic client mirror of jasper/sound/profile.py's response math,
+  // for instant graph feedback before /preview returns (and for graphing a
+  // saved profile without a round-trip). Both sides are deliberately
+  // illustrative approximations; CamillaDSP owns the real biquads, and the
+  // authoritative /preview payload overwrites this within ~90 ms. Keep the
+  // two shelf/peak formulas in sync.
   function previewFreqs() {
     var out = [];
     for (var i = 0; i <= 120; i += 1) {
@@ -1027,19 +1036,21 @@ _SOUND_JS = r"""
   var MINDB = -12, MAXDB = 12, MINF = Math.log10(20), MAXF = Math.log10(20000);
   function gx(f) { return padL + (Math.log10(f) - MINF) / (MAXF - MINF) * (W - padL - padR); }
   function gy(db) { return padT + (MAXDB - db) / (MAXDB - MINDB) * (H - padT - padB); }
-  function drawPath(points, cls) {
-    if (!points || !points.length) return '';
+  function pathD(points) {
     var c = points.map(function(p) { return [gx(p.freq_hz), gy(clamp(p.db, MINDB, MAXDB))]; });
     var d = 'M' + c[0][0].toFixed(1) + ' ' + c[0][1].toFixed(1);
     for (var i = 1; i < c.length; i += 1) d += ' L' + c[i][0].toFixed(1) + ' ' + c[i][1].toFixed(1);
-    return '<path class="' + cls + '" d="' + d + '"></path>';
+    return d;
+  }
+  function drawPath(points, cls) {
+    if (!points || !points.length) return '';
+    return '<path class="' + cls + '" d="' + pathD(points) + '"></path>';
   }
   function drawArea(points) {
     if (!points || !points.length) return '';
-    var d = drawPath(points, 'area').replace(/^<path class="area" d="/, '').replace(/"><\/path>$/, '');
-    d += ' L' + gx(20000).toFixed(1) + ' ' + gy(MINDB).toFixed(1) +
-         ' L' + gx(20).toFixed(1) + ' ' + gy(MINDB).toFixed(1) + ' Z';
-    return '<path class="area" d="' + d + '"></path>';
+    return '<path class="area" d="' + pathD(points) +
+      ' L' + gx(20000).toFixed(1) + ' ' + gy(MINDB).toFixed(1) +
+      ' L' + gx(20).toFixed(1) + ' ' + gy(MINDB).toFixed(1) + ' Z"></path>';
   }
   function drawBandMarkers() {
     if (view !== 'draft' || mode !== 'peq') return '';
@@ -1089,9 +1100,10 @@ _SOUND_JS = r"""
           (view === 'draft' && mode === 'peq' && item.index === activeBand) ? 'component selected' : 'component');
       });
     }
-    html += drawPath(enabled ? (payload.preview || []) : pointsFor([], previewFreqs(), false).map(function(p) {
-      return {freq_hz: p.freq_hz, db: 0};
-    }), 'curve');
+    var curvePts = enabled
+      ? (payload.preview || [])
+      : [{freq_hz: 20, db: 0}, {freq_hz: 20000, db: 0}];
+    html += drawPath(curvePts, 'curve');
     html += drawBandMarkers();
     svg.innerHTML = html;
     var peak = (payload.preview || []).reduce(function(m, p) { return Math.max(m, p.db); }, 0);
@@ -1131,7 +1143,7 @@ _SOUND_JS = r"""
       '<section class="off-card">' +
         '<div class="off-card__icon">' + ico('spark') + '</div>' +
         '<p class="off-card__text">Create a sound profile that changes how your speaker sounds.</p>' +
-        '<div class="btn-row" style="justify-content:center;margin-top:20px">' +
+        '<div class="btn-row">' +
           '<button type="button" class="btn btn--ghost" data-act="browse-presets">Try a stock profile</button>' +
           '<button type="button" class="btn btn--primary" data-act="new-draft">Create custom profile</button>' +
         '</div>' +
@@ -1173,7 +1185,7 @@ _SOUND_JS = r"""
         ? '<div class="list-card"><div class="list-card__rows">' +
             users.map(function(e) { return profileRow(e, e.id === selectedId, true); }).join('') + '</div></div>'
         : '<div class="empty-card"><p>No profiles yet.</p>' +
-            '<button type="button" class="btn btn--primary" style="margin-top:12px" data-act="new-draft">Create your first</button></div>') +
+            '<button type="button" class="btn btn--primary" data-act="new-draft">Create your first</button></div>') +
       '</section>';
     var presetSection = '<section><div class="section-header"><h2 class="eyebrow">Presets</h2></div>' +
       '<div class="list-card"><div class="list-card__rows">' +
@@ -1285,7 +1297,7 @@ _SOUND_JS = r"""
       : draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).length;
     var bandsSection = '<section class="bands-section"><div class="row-between">' +
       '<h2 class="eyebrow">Bands</h2>' +
-      '<div style="display:flex;gap:12px;align-items:center"><span id="active-count">' + activeCount + ' active</span>' +
+      '<div class="bands-meta"><span id="active-count">' + activeCount + ' active</span>' +
       (mode === 'peq' ? '<button type="button" class="text-button text-button--muted" data-act="toggle-collapse">' +
         (allCollapsed ? 'Expand all' : 'Collapse all') + '</button>' : '') +
       '</div></div>' + bandsContent + '</section>';
@@ -1310,7 +1322,7 @@ _SOUND_JS = r"""
       return '<div class="btn-row">' +
           '<button type="button" class="btn btn--primary" data-act="overwrite"' + (dirty ? '' : ' disabled') + '>Overwrite</button>' +
           '<button type="button" class="btn btn--ghost" data-act="begin-name">Save as new</button></div>' +
-        '<div class="btn-row" style="margin-top:4px">' +
+        '<div class="btn-row">' +
           '<button type="button" class="btn btn--ghost" data-act="begin-rename">Rename</button>' +
           '<button type="button" class="btn btn--ghost" data-act="discard"' +
             (dirty ? '' : ' disabled') + '>Discard edits</button></div>';
@@ -1447,7 +1459,8 @@ _SOUND_JS = r"""
     activeBand = 0; naming = false; view = 'draft';
     status('Editing ' + entry.name + '.'); render(); scheduleLiveDraft(true);
   }
-  function onDraftChanged(immediate) { schedulePreview(); scheduleLiveDraft(immediate); renderDraft(); renderLiveGraph(); }
+  // Body re-render + optimistic graph (via schedulePreview) + live audio.
+  function onDraftChanged(immediate) { renderDraft(); schedulePreview(); scheduleLiveDraft(immediate); }
   function refreshActiveCount() {
     var e = el('active-count');
     if (!e) return;
