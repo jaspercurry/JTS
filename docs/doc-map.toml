@@ -552,3 +552,24 @@ requires_docs_when = [
 verification = [
   "pytest tests/test_watchdog.py tests/test_system_supervisor.py tests/test_system_metrics.py tests/test_airplay_health.py tests/test_shairport_supervisor.py tests/test_web_systemd.py",
 ]
+
+[[subsystem]]
+id = "web-design-system"
+title = "Management UI design system + static asset delivery"
+safety = "safe-ci"
+code = [
+  "jasper/web/_common.py",
+  "deploy/assets/app.css",
+  "deploy/assets/*/*.css",
+  "deploy/assets/*/js/*.js",
+  "deploy/assets/fonts/*",
+]
+docs = [
+  "docs/HANDOFF-management-ui.md",
+]
+requires_docs_when = [
+  "The shared page shell (canonical_page), the design tokens or shared components in app.css, the static ES-module delivery convention, or the /assets static-asset routing changes.",
+]
+verification = [
+  "pytest tests/test_web_common.py tests/test_web_design_system.py tests/test_web_wizard_conventions.py",
+]

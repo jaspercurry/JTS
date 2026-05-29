@@ -2164,12 +2164,28 @@ def test_correction_doctor_checks_registered():
 
 
 def test_web_design_assets_ok_when_installed(monkeypatch, tmp_path: Path):
-    (tmp_path / "assets" / "fonts").mkdir(parents=True)
-    (tmp_path / "assets" / "app.css").write_text("/* css */")
+    assets = tmp_path / "assets"
+    (assets / "fonts").mkdir(parents=True)
+    (assets / "app.css").write_text("/* css */")
+    for page, css in (("system-status", "system.css"), ("sound-profile", "sound.css")):
+        (assets / page / "js").mkdir(parents=True)
+        (assets / page / css).write_text("/* page css */")
+        (assets / page / "js" / "main.js").write_text("// module")
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
     r = doctor.check_web_design_assets()
     assert r.status == "ok"
     assert "app.css" in r.detail
+
+
+def test_web_design_assets_warns_when_module_missing(monkeypatch, tmp_path: Path):
+    # CSS + fonts present, but a page's JS entry module is not — the page
+    # would load blank, so the check warns and names the missing module.
+    (tmp_path / "assets" / "fonts").mkdir(parents=True)
+    (tmp_path / "assets" / "app.css").write_text("/* css */")
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+    r = doctor.check_web_design_assets()
+    assert r.status == "warn"
+    assert "main.js" in r.detail
 
 
 def test_web_design_assets_warns_when_stylesheet_missing(

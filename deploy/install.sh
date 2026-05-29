@@ -2710,6 +2710,27 @@ install_nginx_site() {
     install -m 0644 \
         "${REPO_DIR}/deploy/assets/app.css" \
         /usr/share/jasper-web/assets/app.css
+    # Page-specific static assets for the redesigned wizards (/system/,
+    # /sound/): the page stylesheet (<page>.css — served immutable + cache-
+    # busted like app.css) and the ES module graph (js/*.js — served by the
+    # `location ~ \.js$` block with ETag revalidation, since relative imports
+    # can't be URL-busted). compgen -G guards each glob (files-exist, not just
+    # the dir), so an empty dir can't leave a literal *.css/*.js to fail
+    # `install` and abort the deploy under `set -euo pipefail`.
+    for _page in system-status sound-profile; do
+        install -d -m 0755 "/usr/share/jasper-web/assets/${_page}"
+        if compgen -G "${REPO_DIR}/deploy/assets/${_page}/"*.css > /dev/null; then
+            install -m 0644 \
+                "${REPO_DIR}/deploy/assets/${_page}/"*.css \
+                "/usr/share/jasper-web/assets/${_page}/"
+        fi
+        if compgen -G "${REPO_DIR}/deploy/assets/${_page}/js/"*.js > /dev/null; then
+            install -d -m 0755 "/usr/share/jasper-web/assets/${_page}/js"
+            install -m 0644 \
+                "${REPO_DIR}/deploy/assets/${_page}/js/"*.js \
+                "/usr/share/jasper-web/assets/${_page}/js/"
+        fi
+    done
     # Plain-HTTP preflight before the HTTPS-only room-correction UI.
     # This gives the user context before the browser's self-signed-cert
     # interstitial while keeping the entry point on the normal HTTP

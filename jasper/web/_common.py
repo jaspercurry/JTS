@@ -504,6 +504,7 @@ def canonical_page(
     *,
     csrf_token: str = "",
     page_css: str = "",
+    page_css_href: str = "",
 ) -> bytes:
     """Wrap a body fragment in a full HTML document on the canonical
     design system (the redesigned management look).
@@ -515,23 +516,30 @@ def canonical_page(
 
       * doctype + head with the cache-busted app.css <link>,
       * the CSRF meta tag (when `csrf_token` is given, for fetch POSTs),
-      * an optional per-page <style> for components that aren't shared
+      * an optional per-page stylesheet for components that aren't shared:
+        a cache-busted <link> (`page_css_href` — the preferred form: a real,
+        lintable static .css file served from /assets/) or an inline <style>
         (`page_css`),
       * the shared inline icon sprite,
       * the caller's `body` (which supplies its own <header>/<main>/
         <script>).
 
     Returns bytes; send via `send_html_response()`."""
+    version = html.escape(_asset_version())
     csrf = csrf_meta_html(csrf_token) if csrf_token else ""
+    page_link = (
+        f'<link rel="stylesheet" href="{html.escape(page_css_href)}?v={version}">'
+        if page_css_href else ""
+    )
     style = f"<style>{page_css}</style>" if page_css else ""
-    head_extra = "\n".join(part for part in (csrf, style) if part)
+    head_extra = "\n".join(part for part in (csrf, page_link, style) if part)
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{html.escape(title)}</title>
-<link rel="stylesheet" href="/assets/app.css?v={html.escape(_asset_version())}">
+<link rel="stylesheet" href="/assets/app.css?v={version}">
 {head_extra}
 </head>
 <body>

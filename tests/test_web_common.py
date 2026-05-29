@@ -405,6 +405,15 @@ def test_canonical_page_omits_style_block_when_no_page_css():
     assert "<style>" not in out
 
 
+def test_canonical_page_links_page_stylesheet_with_cache_bust():
+    # The preferred form: a real static .css file, cache-busted like app.css.
+    out = _common.canonical_page(
+        "S", "<main></main>", page_css_href="/assets/system-status/system.css",
+    ).decode()
+    assert 'rel="stylesheet" href="/assets/system-status/system.css?v=' in out
+    assert "<style>" not in out  # linked, not inlined
+
+
 # ----------------------------------------------------------------------
 # Token shape validation
 # ----------------------------------------------------------------------

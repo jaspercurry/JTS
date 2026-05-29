@@ -1,11 +1,33 @@
 # Management UI — redesign proposal + reference
 
-**Status:** Reference · created 2026-05-22 · refreshed 2026-05-28.
+**Status:** Reference · created 2026-05-22 · refreshed 2026-05-29.
 Phase 1 IA/visual reshape implemented on 2026-05-28 in
 `deploy/index.html`; the 2026-05-28 polish pass adopted the static reference
 style, local Figtree/Outfit font assets, and a quieter one-column settings
-surface. Setup wizard, conditional prompts, and fuller row-state hydration
-remain future phases.
+surface. On 2026-05-29 the first two **wizards** were ported to the canonical
+design system: `/sound/` ([`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py))
+and `/system/` ([`jasper/web/system_setup.py`](../jasper/web/system_setup.py)),
+both rendered via `canonical_page()` + `/assets/app.css`, with page behaviour
+delivered as static ES modules under `deploy/assets/<page>/js/` (no inline
+`<script>`). See the "Canonical design system" subsection of
+[AGENTS.md](../AGENTS.md) for the delivery convention. Setup wizard,
+conditional prompts, and fuller row-state hydration remain future phases.
+
+**Tracked follow-up — split `/sound/`'s JS into modules (hardware-gated).**
+`/system/`'s behaviour is split into layered ES modules
+(`dom`/`format`/`charts`/`components`/`sections`/`views`/`api`/`actions`/
+`main`). `/sound/`'s is still a single module — the EQ editor relocated
+verbatim from the old inline `_SOUND_JS`
+([`deploy/assets/sound-profile/js/main.js`](../deploy/assets/sound-profile/js/main.js)).
+Splitting it to match (a shared `store` + `eq`/`views`/`io`) is planned but
+was **deliberately deferred, not blind-refactored**: the editor's ~25
+mutable state vars are woven through its math, `innerHTML` rendering, and
+the live-draft IO, and the live-draft path coordinates rapid edits →
+CamillaDSP via debounce + sequence guards whose correctness *and* audio
+effect can only be verified on the Pi. Do it as a focused change with the
+hardware in the loop (deploy → exercise Off/Saved/Draft, band
+add/drag/delete, live-draft, save/rename → confirm audio + zero console
+errors), then merge.
 
 A research-grounded plan for restructuring the `jts.local` management surface
 (today: volume/mic/source controls, 17 navigation rows on `/`, ~10 on
