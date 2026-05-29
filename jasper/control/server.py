@@ -69,6 +69,7 @@ AUDIO_QUALITY_RENDERER_UNITS = [
     "bluealsa-aplay.service",
     "jasper-usbsink.service",
 ]
+OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -93,6 +94,78 @@ def _safe_audio_quality_state() -> dict[str, Any]:
             "options": options,
             "error": str(e),
         }
+
+
+def _same_config_path(left: Any, right: Any) -> bool:
+    if not left or not right:
+        return False
+    return os.path.realpath(str(left)) == os.path.realpath(str(right))
+
+
+def _sound_apply_target(last_apply: Any) -> str | None:
+    if not isinstance(last_apply, dict):
+        return None
+    for key in ("active_config_path", "candidate_config_path"):
+        value = last_apply.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _sound_runtime_status(
+    sound_profile: dict[str, Any],
+    active_config_path: str | None,
+) -> dict[str, Any]:
+    """Describe whether the desired sound profile is actually loaded.
+
+    ``sound_profile["enabled"]`` is the persisted preference. The
+    runtime truth is CamillaDSP's active config path, which can differ
+    after rollback, install repair, or a manual Camilla reload. Keep the
+    distinction explicit so status surfaces do not imply EQ is active
+    when the daemon is running the flat outputd base config.
+    """
+
+    last_apply_path = _sound_apply_target(sound_profile.get("last_dsp_apply"))
+    try:
+        filter_count = int(sound_profile.get("filter_count") or 0)
+    except (TypeError, ValueError):
+        filter_count = 0
+    desired_has_filters = bool(sound_profile.get("enabled")) and filter_count > 0
+    runtime = {
+        "active_config_path": active_config_path,
+        "last_apply_config_path": last_apply_path,
+        "matches_last_apply": None,
+        "state": "unknown",
+        "active": None,
+        "warning": None,
+    }
+    if not active_config_path:
+        return runtime
+
+    if last_apply_path:
+        runtime["matches_last_apply"] = _same_config_path(
+            active_config_path,
+            last_apply_path,
+        )
+
+    if _same_config_path(active_config_path, OUTPUTD_BASE_CAMILLA_CONFIG):
+        runtime["state"] = "base"
+        runtime["active"] = not desired_has_filters
+    elif runtime["matches_last_apply"] is True:
+        runtime["state"] = "applied"
+        runtime["active"] = True
+    elif last_apply_path:
+        runtime["state"] = "mismatch"
+        runtime["active"] = False
+    else:
+        runtime["state"] = "custom"
+        runtime["active"] = None
+
+    if desired_has_filters and runtime["active"] is not True:
+        runtime["warning"] = (
+            "Desired sound profile is not the active CamillaDSP config."
+        )
+    return runtime
 
 
 def _env_int(name: str, default: int) -> int:
@@ -880,19 +953,31 @@ async def _get_state(
             "playback_rms_dbfs": None,
             "playback_peak_dbfs": None,
             "clipped_samples": None,
+            "active_config_path": None,
         }
+
+        async def _no_config_path() -> None:
+            return None
+
         try:
             cam = CamillaController(host=camilla_host, port=camilla_port)
-            vol, rms, peak, clipped = await asyncio.gather(
+            config_path_probe = (
+                cam.get_config_file_path(best_effort=True)
+                if hasattr(cam, "get_config_file_path")
+                else _no_config_path()
+            )
+            vol, rms, peak, clipped, active_config_path = await asyncio.gather(
                 cam.get_volume_db(best_effort=True),
                 cam.get_playback_rms(best_effort=True),
                 cam.get_playback_peak(best_effort=True),
                 cam.get_clipped_samples(best_effort=True),
+                config_path_probe,
             )
             status["main_volume_db"] = _round_db(vol)
             status["playback_rms_dbfs"] = _round_pair(rms)
             status["playback_peak_dbfs"] = _round_pair(peak)
             status["clipped_samples"] = clipped
+            status["active_config_path"] = active_config_path
             return status
         except Exception:  # noqa: BLE001
             return status
@@ -1000,6 +1085,18 @@ async def _get_state(
     spotify_blob = librespot_state.read(
         os.environ.get("JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH),
     )
+    if sound_profile is not None:
+        runtime = _sound_runtime_status(
+            sound_profile,
+            camilla_st.get("active_config_path"),
+        )
+        sound_profile["runtime"] = runtime
+        # Keep these top-level aliases for lightweight consumers that
+        # only need the running truth and do not want to parse the nested
+        # runtime object.
+        sound_profile["runtime_state"] = runtime["state"]
+        sound_profile["runtime_active"] = runtime["active"]
+        sound_profile["active_config_path"] = runtime["active_config_path"]
     speaker_name_state = _read_speaker_name_state()
     spotify = {
         "playing": bool(spotify_blob.get("playing", False)),
@@ -1099,6 +1196,7 @@ async def _get_state(
             "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
             "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
             "clipped_samples": camilla_st["clipped_samples"],
+            "camilla_active_config_path": camilla_st["active_config_path"],
             "sound": sound_profile,
         },
         "renderers": {

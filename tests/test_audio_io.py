@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import math
+import socket
+import threading
 import time
 
 import numpy as np
@@ -463,3 +465,90 @@ async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
     assert ack == stream.flush_acks[0]
     assert ack["max_audio_played_ms"] == 125
     assert p.expected_drain_at() == 0.0
+
+
+def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
+    parent, child = socket.socketpair()
+    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    errors: list[BaseException] = []
+
+    def serve() -> None:
+        try:
+            assert child.recv(64) == b"FLUSH_SYNC\n"
+            child.sendall(
+                b'{"ok":true,"segments":1,"max_audio_played_ms":42}\n'
+            )
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+        finally:
+            child.close()
+
+    server = threading.Thread(target=serve)
+    server.start()
+    try:
+        ack = adapter.flush_sync()
+    finally:
+        adapter.close()
+        server.join(timeout=1.0)
+
+    assert not server.is_alive()
+    assert not errors
+    assert ack == {"ok": True, "segments": 1, "max_audio_played_ms": 42}
+
+
+def test_outputd_stream_adapter_flush_sync_timeout_is_bounded(monkeypatch):
+    parent, child = socket.socketpair()
+    child.settimeout(0.5)
+    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC", 0.01)
+
+    start = time.monotonic()
+    try:
+        assert adapter.flush_sync() is None
+        assert time.monotonic() - start < 0.5
+        assert child.recv(64) == b"FLUSH_SYNC\n"
+        with pytest.raises(OSError):
+            adapter.write(b"\0\0\0\0")
+    finally:
+        adapter.close()
+        child.close()
+
+
+async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
+    import scipy.signal
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    parent, child = socket.socketpair()
+    closed_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    closed_stream.close()
+    child.close()
+    p._stream = closed_stream  # type: ignore[assignment]
+
+    replacement = _CaptureOutputdStream()
+
+    async def fake_connect():
+        return replacement
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    mono = np.array([1, 2], dtype=np.int16)
+    await p.write_segment(
+        mono.tobytes(),
+        provider_item_id="msg_abc123",
+        segment_kind="assistant",
+    )
+
+    assert p._stream is replacement
+    assert replacement.gains == [-8.0]
+    assert replacement.segments_started == [("assistant", "msg_abc123")]
+    assert replacement.writes

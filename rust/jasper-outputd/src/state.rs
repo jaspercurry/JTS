@@ -19,6 +19,7 @@ use crate::config::Config;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const NEVER_MS: u64 = u64::MAX;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TtsQueueMetrics {
@@ -48,6 +49,8 @@ pub struct OutputdState {
     dac_frames_written: AtomicU64,
     content_xrun_count: AtomicU64,
     dac_xrun_count: AtomicU64,
+    last_content_xrun_ms: AtomicU64,
+    last_dac_xrun_ms: AtomicU64,
     total_clipped_samples: AtomicU64,
     last_period_clipped_samples: AtomicU64,
     reference_sequence: AtomicU64,
@@ -81,6 +84,8 @@ impl OutputdState {
             dac_frames_written: AtomicU64::new(0),
             content_xrun_count: AtomicU64::new(0),
             dac_xrun_count: AtomicU64::new(0),
+            last_content_xrun_ms: AtomicU64::new(NEVER_MS),
+            last_dac_xrun_ms: AtomicU64::new(NEVER_MS),
             total_clipped_samples: AtomicU64::new(0),
             last_period_clipped_samples: AtomicU64::new(0),
             reference_sequence: AtomicU64::new(0),
@@ -116,6 +121,7 @@ impl OutputdState {
         clipped_samples: u32,
         tts: TtsQueueMetrics,
     ) {
+        let uptime_ms = self.uptime_ms();
         self.content_frames_read
             .store(counters.content_frames_read, Ordering::Relaxed);
         self.content_empty_period_count
@@ -126,10 +132,19 @@ impl OutputdState {
             .store(counters.content_eagain_count, Ordering::Relaxed);
         self.dac_frames_written
             .store(counters.dac_frames_written, Ordering::Relaxed);
-        self.content_xrun_count
-            .store(counters.content_xrun_count, Ordering::Relaxed);
-        self.dac_xrun_count
-            .store(counters.dac_xrun_count, Ordering::Relaxed);
+        let previous_content_xruns = self
+            .content_xrun_count
+            .swap(counters.content_xrun_count, Ordering::Relaxed);
+        if counters.content_xrun_count > previous_content_xruns {
+            self.last_content_xrun_ms
+                .store(uptime_ms, Ordering::Relaxed);
+        }
+        let previous_dac_xruns = self
+            .dac_xrun_count
+            .swap(counters.dac_xrun_count, Ordering::Relaxed);
+        if counters.dac_xrun_count > previous_dac_xruns {
+            self.last_dac_xrun_ms.store(uptime_ms, Ordering::Relaxed);
+        }
         self.reference_sequence
             .store(reference_sequence, Ordering::Relaxed);
         self.tts_pending_frames
@@ -150,8 +165,7 @@ impl OutputdState {
             .store(clipped_samples as u64, Ordering::Relaxed);
         self.total_clipped_samples
             .fetch_add(clipped_samples as u64, Ordering::Relaxed);
-        self.last_progress_ms
-            .store(self.uptime_ms(), Ordering::Relaxed);
+        self.last_progress_ms.store(uptime_ms, Ordering::Relaxed);
     }
 
     pub fn mark_watchdog_ping(&self) {
@@ -159,8 +173,10 @@ impl OutputdState {
     }
 
     pub fn snapshot_json(&self) -> String {
-        let mut buf = String::with_capacity(768);
+        let mut buf = String::with_capacity(1024);
         let uptime_ms = self.uptime_ms();
+        let content_xrun_count = self.content_xrun_count.load(Ordering::Relaxed);
+        let dac_xrun_count = self.dac_xrun_count.load(Ordering::Relaxed);
         buf.push('{');
         push_kv_f64(&mut buf, "uptime_seconds", (uptime_ms as f64) / 1000.0, 2);
         buf.push(',');
@@ -206,10 +222,19 @@ impl OutputdState {
             self.content_eagain_count.load(Ordering::Relaxed),
         );
         buf.push(',');
-        push_kv_u64(
+        push_kv_u64(&mut buf, "xrun_count", content_xrun_count);
+        buf.push(',');
+        push_kv_u64_opt(
             &mut buf,
-            "xrun_count",
-            self.content_xrun_count.load(Ordering::Relaxed),
+            "last_xrun_age_ms",
+            event_age_ms(uptime_ms, self.last_content_xrun_ms.load(Ordering::Relaxed)),
+        );
+        buf.push(',');
+        push_kv_f64(
+            &mut buf,
+            "xrun_rate_per_hour",
+            rate_per_hour(content_xrun_count, uptime_ms),
+            3,
         );
         buf.push('}');
         buf.push(',');
@@ -241,10 +266,19 @@ impl OutputdState {
             self.dac_frames_written.load(Ordering::Relaxed),
         );
         buf.push(',');
-        push_kv_u64(
+        push_kv_u64(&mut buf, "xrun_count", dac_xrun_count);
+        buf.push(',');
+        push_kv_u64_opt(
             &mut buf,
-            "xrun_count",
-            self.dac_xrun_count.load(Ordering::Relaxed),
+            "last_xrun_age_ms",
+            event_age_ms(uptime_ms, self.last_dac_xrun_ms.load(Ordering::Relaxed)),
+        );
+        buf.push(',');
+        push_kv_f64(
+            &mut buf,
+            "xrun_rate_per_hour",
+            rate_per_hour(dac_xrun_count, uptime_ms),
+            3,
         );
         buf.push('}');
         buf.push(',');
@@ -431,6 +465,16 @@ fn push_kv_u64(buf: &mut String, key: &str, value: u64) {
     buf.push_str(&value.to_string());
 }
 
+fn push_kv_u64_opt(buf: &mut String, key: &str, value: Option<u64>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    match value {
+        Some(value) => buf.push_str(&value.to_string()),
+        None => buf.push_str("null"),
+    }
+}
+
 fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
     buf.push('"');
     buf.push_str(key);
@@ -443,6 +487,21 @@ fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
     buf.push_str(key);
     buf.push_str(r#"":"#);
     buf.push_str(&format!("{:.*}", decimals, value));
+}
+
+fn event_age_ms(uptime_ms: u64, event_ms: u64) -> Option<u64> {
+    if event_ms == NEVER_MS {
+        None
+    } else {
+        Some(uptime_ms.saturating_sub(event_ms))
+    }
+}
+
+fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
+    if count == 0 || uptime_ms == 0 {
+        return 0.0;
+    }
+    (count as f64) * 3_600_000.0 / (uptime_ms as f64)
 }
 
 fn escape_json(s: &str) -> String {
@@ -520,6 +579,8 @@ mod tests {
             r#""empty_periods":4"#,
             r#""partial_periods":5"#,
             r#""eagain_count":6"#,
+            r#""last_xrun_age_ms":"#,
+            r#""xrun_rate_per_hour":"#,
             r#""frames_written":1024"#,
             r#""reference_sequence":42"#,
             r#""last_period_clipped_samples":3"#,
@@ -540,5 +601,15 @@ mod tests {
         let j = state.snapshot_json();
         assert!(j.contains(r#""last_period_clipped_samples":5"#));
         assert!(j.contains(r#""clipped_samples":7"#));
+    }
+
+    #[test]
+    fn snapshot_json_reports_never_for_missing_xruns() {
+        let state = OutputdState::new(&test_config());
+        state.mark_period(IoCounters::default(), 1, 0, TtsQueueMetrics::default());
+
+        let j = state.snapshot_json();
+        assert_eq!(j.matches(r#""last_xrun_age_ms":null"#).count(), 2);
+        assert_eq!(j.matches(r#""xrun_rate_per_hour":0.000"#).count(), 2);
     }
 }

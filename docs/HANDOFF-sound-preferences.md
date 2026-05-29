@@ -257,7 +257,9 @@ rate-limited so a broken live-upload environment does not spam the
 journal while the user drags a slider.
 
 `/state` and `/sound/state` expose the saved sound profile plus the
-profile-library picker payload and latest DSP apply record:
+profile-library picker payload and latest DSP apply record. `/state`
+also includes the runtime Camilla config truth so dashboards do not
+confuse "profile desired" with "profile actually loaded":
 
 ```json
 {
@@ -275,13 +277,27 @@ profile-library picker payload and latest DSP apply record:
       "last_dsp_apply": {
         "source": "sound",
         "result": "success",
+        "active_config_path": "/var/lib/camilladsp/configs/sound_current.yml",
         "candidate_config_path": "/var/lib/camilladsp/configs/sound_current.yml"
+      },
+      "runtime": {
+        "active_config_path": "/etc/camilladsp/outputd-cutover.yml",
+        "last_apply_config_path": "/var/lib/camilladsp/configs/sound_current.yml",
+        "matches_last_apply": false,
+        "state": "base",
+        "active": false,
+        "warning": "Desired sound profile is not the active CamillaDSP config."
       },
       "dsp_write_epoch": "<latest dsp apply op_id or none>"
     }
   }
 }
 ```
+
+For `/state.audio.sound`, `enabled` remains the persisted preference.
+Use `runtime.active` / `runtime.state` to answer whether CamillaDSP is
+currently running the saved profile, the flat outputd base config, a
+custom config, or an unexpected mismatch.
 
 `/correction/status` also includes `last_dsp_apply` so a failed apply
 can be diagnosed without scraping journal logs.
@@ -332,4 +348,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-05-28
+Last verified: 2026-05-29

@@ -158,7 +158,9 @@ What exists:
   resurrecting stale assistant audio after the interrupt path returns.
   Python uses a synchronous `FLUSH_SYNC` path for interruption and gets
   a compact JSON acknowledgement with per-segment `audio_played_ms`,
-  flushed frames, provider item id, and local segment id.
+  flushed frames, provider item id, and local segment id. The Python
+  client bounds this ack wait and closes the ordered TTS socket on
+  timeout so a late stale ack cannot be mistaken for a later flush.
 - Playout ledger: outputd keeps active assistant/cue segments plus a
   bounded recent terminal history, so long uptimes do not accumulate
   one segment per TTS chunk indefinitely. Written frames are not treated
@@ -181,9 +183,12 @@ What exists:
   via `jasper-control`, `/system` Outputd row, and
   `jasper-doctor` checks. The daemon reports negotiated ALSA
   period/buffer sizes, xrun counters, content empty/partial/EAGAIN
-  periods, watchdog progress, clipping, pending TTS frames, TTS
-  over-budget duration, and compact TTS flush summaries so
-  producer/playback backpressure is visible without journal spam.
+  periods, last-xrun age, uptime-normalized xrun rate, watchdog
+  progress, clipping, pending TTS frames, TTS over-budget duration,
+  and compact TTS flush summaries so producer/playback backpressure is
+  visible without journal spam. The dashboard labels the two xrun
+  counters as content/DAC, since a content-capture recovery is a
+  different risk from a physical-output recovery.
 
 What is still intentionally not done:
 
@@ -624,4 +629,4 @@ datum: how much assistant audio was actually heard.
   segments, synchronous `FLUSH_SYNC` acknowledgements with
   `audio_played_ms`, and DAC-delay-based drained-frame estimation.
 
-Last verified: 2026-05-28
+Last verified: 2026-05-29

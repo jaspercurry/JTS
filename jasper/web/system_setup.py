@@ -379,6 +379,26 @@ _SCRIPT = r"""
     if (sec < 86400) return Math.round(sec / 3600) + 'h ago';
     return Math.round(sec / 86400) + 'd ago';
   }
+  function fmtMsAge(ms) {
+    if (ms == null) return 'never';
+    const sec = Math.max(0, Number(ms) / 1000);
+    if (sec < 1) return Math.round(Number(ms)) + 'ms ago';
+    if (sec < 60) return sec.toFixed(sec < 10 ? 1 : 0) + 's ago';
+    if (sec < 3600) return Math.round(sec / 60) + 'm ago';
+    return Math.round(sec / 3600) + 'h ago';
+  }
+  function fmtRatePerHour(value) {
+    if (value == null) return '0/h';
+    const n = Number(value);
+    if (!isFinite(n) || n <= 0) return '0/h';
+    if (n < 1) return n.toFixed(2) + '/h';
+    if (n < 10) return n.toFixed(1) + '/h';
+    return Math.round(n) + '/h';
+  }
+  function baseName(path) {
+    if (!path) return '';
+    return String(path).split('/').filter(Boolean).pop() || String(path);
+  }
   function fmtUSD(n) {
     if (n == null) return '—';
     return '$' + Number(n).toFixed(2);
@@ -622,15 +642,33 @@ _SCRIPT = r"""
     faninEl.textContent = fanin.available
       ? 'input ' + (fanin.input_buffer_frames || '—') +
         ' / output ' + (output.buffer_frames || fanin.output_buffer_frames || '—') +
-        ' frames · xruns ' + (airplay.xrun_count || 0) +
+        ' frames · AirPlay/output xruns ' + (airplay.xrun_count || 0) +
         '/' + (output.xrun_count || 0)
       : 'unavailable';
 
     const camilla = cur.camilla || null;
-    camillaEl.textContent = camilla
-      ? 'buffer ' + (camilla.buffer_level || 0) +
-        ' · rate ' + (camilla.rate_adjust == null ? '—' : Number(camilla.rate_adjust).toFixed(6))
-      : 'journal only';
+    if (camilla) {
+      const camillaParts = [
+        'buffer ' + (camilla.buffer_level || 0),
+        'rate ' + (
+          camilla.rate_adjust == null
+            ? '—'
+            : Number(camilla.rate_adjust).toFixed(6)
+        ),
+      ];
+      if (camilla.target_level || camilla.chunksize) {
+        camillaParts.push(
+          'target/chunk ' + (camilla.target_level || '—') +
+          '/' + (camilla.chunksize || '—'),
+        );
+      }
+      if (camilla.config_path) {
+        camillaParts.push('config ' + baseName(camilla.config_path));
+      }
+      camillaEl.textContent = camillaParts.join(' · ');
+    } else {
+      camillaEl.textContent = 'journal only';
+    }
 
     const events = (h.events || []).slice(-5).reverse();
     if (events.length) {
@@ -662,13 +700,33 @@ _SCRIPT = r"""
     const tts = o.tts || {};
     const parts = [
       o.backend || 'unknown',
-      'buffer ' + (content.buffer_frames || '—') + '/' +
+      'content/DAC buffer ' + (content.buffer_frames || '—') + '/' +
         (dac.buffer_frames || '—'),
-      'xruns ' + (content.xrun_count || 0) + '/' + (dac.xrun_count || 0),
-      'empty ' + (content.empty_periods || 0),
-      'eagain ' + (content.eagain_count || 0),
+      'content/DAC xruns ' + (content.xrun_count || 0) +
+        '/' + (dac.xrun_count || 0),
+      'content empty ' + (content.empty_periods || 0),
+      'content EAGAIN ' + (content.eagain_count || 0),
       'tts ' + (tts.pending_frames || 0) + 'f',
     ];
+    if ((content.xrun_count || 0) > 0) {
+      parts.push(
+        'last content xrun ' + fmtMsAge(content.last_xrun_age_ms),
+      );
+      if (content.xrun_rate_per_hour != null) {
+        parts.push(
+          'content xrun rate ' +
+          fmtRatePerHour(content.xrun_rate_per_hour),
+        );
+      }
+    }
+    if ((dac.xrun_count || 0) > 0) {
+      parts.push('last DAC xrun ' + fmtMsAge(dac.last_xrun_age_ms));
+      if (dac.xrun_rate_per_hour != null) {
+        parts.push(
+          'DAC xrun rate ' + fmtRatePerHour(dac.xrun_rate_per_hour),
+        );
+      }
+    }
     const memoryMb = serviceMemoryMb(services, 'jasper-outputd');
     if (memoryMb != null) {
       parts.push('mem ' + Math.round(memoryMb) + ' MB');

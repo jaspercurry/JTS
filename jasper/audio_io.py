@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import select
 import socket
 import subprocess
 import threading
@@ -658,6 +659,7 @@ class TtsPlayout:
 
 _OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE
 _OUTPUTD_SAMPLE_RATE = 48_000
+_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC = 3.0
 # Keep individual IPC messages well below the daemon's 2 MiB hard cap.
 # 250 ms chunks make barge-in/flush sharper and apply backpressure more
 # gradually than sending a whole cached WAV in one command.
@@ -718,9 +720,50 @@ class _OutputdStreamAdapter:
 
     def __init__(self, sock: socket.socket) -> None:
         self._sock = sock
-        self._reader = sock.makefile("rb", buffering=0)
+        self._recv_buffer = bytearray()
         self._lock = threading.Lock()
         self._active_segment: tuple[str, str] | None = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def _readline_locked(self, timeout_sec: float) -> bytes:
+        """Read one daemon response line while the caller holds _lock."""
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            newline_at = self._recv_buffer.find(b"\n")
+            if newline_at >= 0:
+                line = bytes(self._recv_buffer[: newline_at + 1])
+                del self._recv_buffer[: newline_at + 1]
+                return line
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            readable, _, _ = select.select([self._sock], [], [], remaining)
+            if not readable:
+                raise TimeoutError
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                return b""
+            self._recv_buffer.extend(chunk)
+
+    def _close_unlocked(self, *, send_close: bool) -> None:
+        if self._closed:
+            return
+        try:
+            if send_close:
+                if self._active_segment is not None:
+                    self._sock.sendall(b"SEGMENT_END\n")
+                    self._active_segment = None
+                self._sock.sendall(b"CLOSE\n")
+        except OSError:
+            pass
+        self._closed = True
+        self._recv_buffer.clear()
+        self._sock.close()
 
     def set_gain_db(self, db: float) -> None:
         with self._lock:
@@ -758,9 +801,22 @@ class _OutputdStreamAdapter:
 
     def flush_sync(self) -> dict | None:
         with self._lock:
-            self._sock.sendall(b"FLUSH_SYNC\n")
-            self._active_segment = None
-            line = self._reader.readline()
+            try:
+                self._sock.sendall(b"FLUSH_SYNC\n")
+                self._active_segment = None
+                line = self._readline_locked(_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC)
+            except TimeoutError:
+                logger.warning(
+                    "outputd TTS flush ack timed out after %.1fs; "
+                    "closing socket",
+                    _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC,
+                )
+                self._close_unlocked(send_close=False)
+                return None
+            except OSError as e:
+                logger.warning("outputd TTS flush failed: %s", e)
+                self._close_unlocked(send_close=False)
+                return None
         if not line:
             return None
         try:
@@ -780,18 +836,7 @@ class _OutputdStreamAdapter:
 
     def close(self) -> None:
         with self._lock:
-            try:
-                if self._active_segment is not None:
-                    self._sock.sendall(b"SEGMENT_END\n")
-                    self._active_segment = None
-                self._sock.sendall(b"CLOSE\n")
-            except OSError:
-                pass
-            try:
-                self._reader.close()
-            except OSError:
-                pass
-            self._sock.close()
+            self._close_unlocked(send_close=True)
 
 
 class OutputdTtsPlayout(TtsPlayout):
@@ -826,9 +871,7 @@ class OutputdTtsPlayout(TtsPlayout):
         )
         self._socket_path = socket_path
 
-    async def __aenter__(self) -> "OutputdTtsPlayout":
-        from scipy.signal import resample_poly  # noqa: F401  (pre-warm only)
-
+    async def _connect_stream_adapter(self) -> _OutputdStreamAdapter:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             await asyncio.to_thread(sock.connect, self._socket_path)
@@ -839,13 +882,26 @@ class OutputdTtsPlayout(TtsPlayout):
                 self._socket_path, type(e).__name__, e,
             )
             raise
-        self._stream = _OutputdStreamAdapter(sock)  # type: ignore[assignment]
+        stream = _OutputdStreamAdapter(sock)
+        try:
+            stream.set_gain_db(self.gain_db)
+        except OSError:
+            stream.close()
+            raise
         logger.info("outputd TTS connected: socket=%s", self._socket_path)
+        return stream
+
+    async def __aenter__(self) -> "OutputdTtsPlayout":
+        from scipy.signal import resample_poly  # noqa: F401  (pre-warm only)
+
+        self._stream = await self._connect_stream_adapter()  # type: ignore[assignment]
         return self
 
     def set_gain_db(self, db: float) -> None:
         super().set_gain_db(db)
         stream = self._stream
+        if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
+            return
         if stream is not None and hasattr(stream, "set_gain_db"):
             try:
                 stream.set_gain_db(self.gain_db)
@@ -868,6 +924,8 @@ class OutputdTtsPlayout(TtsPlayout):
         clamp. Drain accounting mirrors TtsPlayout.write so the voice
         daemon's turn-ending contract stays identical.
         """
+        if not pcm:
+            return
         if self._stream is None:
             if not self._closed_stream_warned:
                 logger.warning(
@@ -879,8 +937,12 @@ class OutputdTtsPlayout(TtsPlayout):
                 )
                 self._closed_stream_warned = True
             return
-        if not pcm:
-            return
+        if isinstance(self._stream, _OutputdStreamAdapter) and self._stream.closed:
+            logger.info(
+                "outputd TTS reconnecting after closed socket: socket=%s",
+                self._socket_path,
+            )
+            self._stream = await self._connect_stream_adapter()  # type: ignore[assignment]
 
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
         if self._upsample > 1:
@@ -919,6 +981,8 @@ class OutputdTtsPlayout(TtsPlayout):
     async def end_segment(self) -> None:
         stream = self._stream
         if stream is None:
+            return
+        if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
             return
         end = getattr(stream, "end_segment", None)
         if end is not None:
