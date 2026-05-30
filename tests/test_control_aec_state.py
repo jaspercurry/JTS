@@ -11,7 +11,6 @@ so a regression in parse/write logic surfaces fast.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest

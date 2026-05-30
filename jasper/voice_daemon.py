@@ -30,7 +30,7 @@ from .wake_events import (
 )
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
-from .wake_legs import LegSpec, by_token, wake_input_legs
+from .wake_legs import LegSpec, wake_input_legs
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .watchdog import Heartbeat
