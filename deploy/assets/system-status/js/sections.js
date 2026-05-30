@@ -82,7 +82,7 @@ export function vitalsCards(cur, hist, cores) {
   if (cores.length) {
     const totalCpu = cores.reduce((a, b) => a + b, 0);
     const maxCore = Math.max(...cores);
-    cpuValue = Math.round(capacityPercent(totalCpu, cores.length)) + "% total";
+    cpuValue = Math.round(capacityPercent(totalCpu, cores.length)) + "%";
     if (totalCpu > 380 || maxCore >= 98) cpuTone = "danger";
     else if (totalCpu > 300 || maxCore >= 90) cpuTone = "warn";
   }

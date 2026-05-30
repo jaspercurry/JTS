@@ -22,6 +22,27 @@ silently defeated `/system/`'s restart/reboot guards. The legacy
 `wrap_page()` wizards migrate to the same helper via a behaviourally-identical
 inline twin in `_common.py`.
 
+**Typographic grammar (three tiers).** Different semantic levels use different
+*combinations* of type axes (size + weight + case + colour) so hierarchy reads
+without the user parsing the words. Applied on `/system/` (2026-05-30); follow
+it on future migrated pages:
+
+| Tier | Element | Style | Examples |
+|---|---|---|---|
+| Region header | label for a region with no card chrome | EYEBROW — `.eyebrow` (font-display, 11px, 600, uppercase, muted) | "Rooms"/"Scenes" on `/`; "Per-service usage" on `/system/` |
+| Card title | the name of a contained panel | cased display — `.section__title` (font-display, 14px, 600, tracking-tight, foreground) | "Software", "Cloud activity", "AirPlay" |
+| Row label | a field label inside a card | EYEBROW — `.deflist dt` | "Version", "Branch", "Uptime" |
+| Value | data / content | plain — `.deflist dd` (normal weight, `tabular-nums`, foreground) | "13a8d65-dirty", "4h ago" |
+
+Uppercase + tracking is a wayfinding tool — scan without reading — which suits
+region headers and field labels but fails for object names (it strips the
+word-shape recognition that aids reading). Cased display names an object you
+read once to orient; values are content, so plain weight. The consistency
+across pages is the *grammar* (does this element label a region, name a card, or
+label a field?), not a shared CSS class — which is why `/`'s eyebrow region
+headers and `/system/`'s cased card titles coexist correctly. Stat-tile labels
+("MEMORY", "CPU USAGE") stay EYEBROW — they're field labels.
+
 **Tracked follow-up — split `/sound/`'s JS into modules (hardware-gated).**
 `/system/`'s behaviour is split into layered ES modules
 (`dom`/`format`/`charts`/`components`/`sections`/`views`/`api`/`actions`/
