@@ -7,7 +7,10 @@ proved that the XVF3800's on-chip AEC can produce useful cancellation
 in JTS's external-DAC topology when the chip receives a clean USB-IN
 far-end reference. The wake-corpus recorder has a dedicated chip-AEC
 comparison profile that can enter/exit the needed test state and label
-the `150°` / `210°` ASR beam outputs explicitly. **The corpus-only
+the `150°` / `210°` ASR beam outputs explicitly. That profile uses
+outputd's direct final-output fanout: a 48 kHz UDP reference for
+software AEC/corpus analysis plus a 16 kHz downsampled XVF3800 USB-IN
+reference PCM for chip AEC. **The corpus-only
 guardrail is now being lifted:** the `chip_aec_150` / `chip_aec_210`
 beams are being promoted from corpus-only capture to **opt-in,
 hardware-conditional, scored production wake legs** (see

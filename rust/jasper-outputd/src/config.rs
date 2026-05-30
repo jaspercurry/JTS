@@ -12,7 +12,9 @@ use crate::types::SAMPLE_RATE;
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
 pub const DEFAULT_CONTENT_BUFFER_FRAMES: u32 = 4096;
 pub const DEFAULT_DAC_BUFFER_FRAMES: u32 = 3072;
-pub const DEFAULT_CHIP_REF_BUFFER_FRAMES: u32 = 4096;
+pub const DEFAULT_CHIP_REF_SAMPLE_RATE: u32 = 16_000;
+pub const DEFAULT_CHIP_REF_PERIOD_FRAMES: u32 = 320;
+pub const DEFAULT_CHIP_REF_BUFFER_FRAMES: u32 = 1280;
 pub const DEFAULT_STREAM_ID: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +42,8 @@ pub struct Config {
     pub content_buffer_frames: u32,
     pub dac_buffer_frames: u32,
     pub chip_ref_pcm: Option<String>,
+    pub chip_ref_sample_rate: u32,
+    pub chip_ref_period_frames: u32,
     pub chip_ref_buffer_frames: u32,
     pub reference_udp_target: Option<String>,
     pub stream_id: u64,
@@ -85,20 +89,38 @@ impl Config {
             "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
             DEFAULT_CHIP_REF_BUFFER_FRAMES,
         )?;
+        let chip_ref_sample_rate = env_u32(
+            "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE",
+            DEFAULT_CHIP_REF_SAMPLE_RATE,
+        )?;
+        let chip_ref_period_frames = env_u32(
+            "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
+            DEFAULT_CHIP_REF_PERIOD_FRAMES,
+        )?;
+        if sample_rate % chip_ref_sample_rate != 0 {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE={} must divide JASPER_OUTPUTD_SAMPLE_RATE={} for exact chip-reference downsampling",
+                chip_ref_sample_rate,
+                sample_rate
+            );
+        }
         validate_buffer(
             "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
             content_buffer_frames,
             period_frames,
+            "JASPER_OUTPUTD_PERIOD_FRAMES",
         )?;
         validate_buffer(
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             dac_buffer_frames,
             period_frames,
+            "JASPER_OUTPUTD_PERIOD_FRAMES",
         )?;
         validate_buffer(
             "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
             chip_ref_buffer_frames,
-            period_frames,
+            chip_ref_period_frames,
+            "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
         )?;
 
         Ok(Self {
@@ -110,6 +132,8 @@ impl Config {
             content_buffer_frames,
             dac_buffer_frames,
             chip_ref_pcm: env_optional("JASPER_OUTPUTD_CHIP_REF_PCM"),
+            chip_ref_sample_rate,
+            chip_ref_period_frames,
             chip_ref_buffer_frames,
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
             stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
@@ -119,13 +143,19 @@ impl Config {
     }
 }
 
-fn validate_buffer(name: &str, buffer_frames: u32, period_frames: u32) -> Result<()> {
+fn validate_buffer(
+    name: &str,
+    buffer_frames: u32,
+    period_frames: u32,
+    period_name: &str,
+) -> Result<()> {
     let min_buffer_frames = period_frames.saturating_mul(2);
     if buffer_frames < min_buffer_frames {
         anyhow::bail!(
-            "{}={} must be >= 2 x JASPER_OUTPUTD_PERIOD_FRAMES={} (minimum ALSA jitter margin)",
+            "{}={} must be >= 2 x {}={} (minimum ALSA jitter margin)",
             name,
             buffer_frames,
+            period_name,
             period_frames
         );
     }
@@ -215,6 +245,9 @@ mod tests {
             assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
             assert_eq!(cfg.content_buffer_frames, DEFAULT_CONTENT_BUFFER_FRAMES);
             assert_eq!(cfg.dac_buffer_frames, DEFAULT_DAC_BUFFER_FRAMES);
+            assert_eq!(cfg.chip_ref_sample_rate, DEFAULT_CHIP_REF_SAMPLE_RATE);
+            assert_eq!(cfg.chip_ref_period_frames, DEFAULT_CHIP_REF_PERIOD_FRAMES);
+            assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
             assert!(cfg.chip_ref_pcm.is_none());
             assert!(cfg.reference_udp_target.is_none());
             assert!(cfg.tts_socket_path.is_none());
@@ -235,8 +268,17 @@ mod tests {
                     "JASPER_OUTPUTD_CONTROL_SOCKET",
                     Some("/run/jasper-outputd/control.sock"),
                 ),
-                ("JASPER_OUTPUTD_CHIP_REF_PCM", Some("plughw:CARD=Array,DEV=0")),
-                ("JASPER_OUTPUTD_REFERENCE_UDP_TARGET", Some("127.0.0.1:9891")),
+                (
+                    "JASPER_OUTPUTD_CHIP_REF_PCM",
+                    Some("plughw:CARD=Array,DEV=0"),
+                ),
+                ("JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE", Some("16000")),
+                ("JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES", Some("320")),
+                ("JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES", Some("1280")),
+                (
+                    "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
+                    Some("127.0.0.1:9891"),
+                ),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -249,14 +291,11 @@ mod tests {
                     cfg.control_socket_path.as_deref(),
                     Some("/run/jasper-outputd/control.sock")
                 );
-                assert_eq!(
-                    cfg.chip_ref_pcm.as_deref(),
-                    Some("plughw:CARD=Array,DEV=0")
-                );
-                assert_eq!(
-                    cfg.reference_udp_target.as_deref(),
-                    Some("127.0.0.1:9891")
-                );
+                assert_eq!(cfg.chip_ref_pcm.as_deref(), Some("plughw:CARD=Array,DEV=0"));
+                assert_eq!(cfg.chip_ref_sample_rate, 16_000);
+                assert_eq!(cfg.chip_ref_period_frames, 320);
+                assert_eq!(cfg.chip_ref_buffer_frames, 1280);
+                assert_eq!(cfg.reference_udp_target.as_deref(), Some("127.0.0.1:9891"));
             },
         );
     }
@@ -281,5 +320,16 @@ mod tests {
             let err = Config::from_env().unwrap_err();
             assert!(err.to_string().contains("JASPER_OUTPUTD_BACKEND"));
         });
+    }
+
+    #[test]
+    fn rejects_chip_ref_sample_rate_that_does_not_divide_core_rate() {
+        with_env(
+            &[("JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE", Some("22050"))],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err.to_string().contains("must divide"));
+            },
+        );
     }
 }

@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
 use alsa::pcm::{State, PCM};
+use anyhow::{Context, Result};
 use jasper_outputd::alsa_backend::{open_playback_pcm, AlsaBackend, IoCounters};
 use jasper_outputd::config::{BackendMode, Config};
 use jasper_outputd::core::{OutputCore, PeriodReport};
@@ -165,7 +165,7 @@ fn run_alsa(
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut backend = AlsaBackend::new(config)?;
-    let ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
+    let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
     state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
     let mut content_buf = vec![0i16; core.period_samples()];
     let zero_period = vec![0i16; core.period_samples()];
@@ -258,20 +258,21 @@ struct ReferenceSideOutputs {
     udp_socket: Option<UdpSocket>,
     udp_target: Option<SocketAddr>,
     chip_tx: Option<SyncSender<Vec<i16>>>,
+    chip_downsampler: Option<ChipRefDownsampler>,
 }
 
 impl ReferenceSideOutputs {
     fn new(config: &Config, shutdown: &Arc<AtomicBool>) -> Result<Self> {
-        let udp_target = match config.reference_udp_target.as_deref() {
-            Some(raw) => Some(
-                raw.parse::<SocketAddr>()
-                    .with_context(|| format!("parsing JASPER_OUTPUTD_REFERENCE_UDP_TARGET={raw:?}"))?,
-            ),
-            None => None,
-        };
+        let udp_target =
+            match config.reference_udp_target.as_deref() {
+                Some(raw) => Some(raw.parse::<SocketAddr>().with_context(|| {
+                    format!("parsing JASPER_OUTPUTD_REFERENCE_UDP_TARGET={raw:?}")
+                })?),
+                None => None,
+            };
         let udp_socket = if udp_target.is_some() {
-            let sock = UdpSocket::bind("127.0.0.1:0")
-                .context("binding outputd reference UDP sender")?;
+            let sock =
+                UdpSocket::bind("127.0.0.1:0").context("binding outputd reference UDP sender")?;
             sock.set_nonblocking(true)
                 .context("setting outputd reference UDP sender nonblocking")?;
             Some(sock)
@@ -282,8 +283,8 @@ impl ReferenceSideOutputs {
         let chip_tx = if let Some(pcm_name) = &config.chip_ref_pcm {
             Some(spawn_chip_ref_writer(
                 pcm_name.clone(),
-                config.sample_rate,
-                config.period_frames,
+                config.chip_ref_sample_rate,
+                config.chip_ref_period_frames,
                 config.chip_ref_buffer_frames,
                 Arc::clone(shutdown),
             )?)
@@ -302,10 +303,18 @@ impl ReferenceSideOutputs {
             udp_socket,
             udp_target,
             chip_tx,
+            chip_downsampler: if config.chip_ref_pcm.is_some() {
+                Some(ChipRefDownsampler::new(
+                    config.sample_rate,
+                    config.chip_ref_sample_rate,
+                )?)
+            } else {
+                None
+            },
         })
     }
 
-    fn publish(&self, stereo_samples: &[i16]) {
+    fn publish(&mut self, stereo_samples: &[i16]) {
         if let (Some(sock), Some(target)) = (&self.udp_socket, self.udp_target) {
             if let Err(e) = sock.send_to(bytemuck_i16(stereo_samples), target) {
                 if e.kind() != io::ErrorKind::WouldBlock {
@@ -314,7 +323,14 @@ impl ReferenceSideOutputs {
             }
         }
         if let Some(tx) = &self.chip_tx {
-            let dual_mono = downmix_to_dual_mono(stereo_samples);
+            let dual_mono = self
+                .chip_downsampler
+                .as_mut()
+                .expect("chip ref downsampler is present when chip_tx is present")
+                .process(stereo_samples);
+            if dual_mono.is_empty() {
+                return;
+            }
             match tx.try_send(dual_mono) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
@@ -328,6 +344,50 @@ impl ReferenceSideOutputs {
     }
 }
 
+#[derive(Debug)]
+struct ChipRefDownsampler {
+    input_frames_per_output: u32,
+    accum: i64,
+    count: u32,
+}
+
+impl ChipRefDownsampler {
+    fn new(input_sample_rate: u32, output_sample_rate: u32) -> Result<Self> {
+        if input_sample_rate % output_sample_rate != 0 {
+            anyhow::bail!(
+                "chip-reference sample rate {} must divide outputd sample rate {}",
+                output_sample_rate,
+                input_sample_rate
+            );
+        }
+        Ok(Self {
+            input_frames_per_output: input_sample_rate / output_sample_rate,
+            accum: 0,
+            count: 0,
+        })
+    }
+
+    fn process(&mut self, stereo_samples: &[i16]) -> Vec<i16> {
+        let input_frames = stereo_samples.len() / (CHANNELS as usize);
+        let output_frames =
+            (input_frames + self.count as usize) / (self.input_frames_per_output as usize);
+        let mut out = Vec::with_capacity(output_frames * (CHANNELS as usize));
+        for frame in stereo_samples.chunks_exact(CHANNELS as usize) {
+            self.accum += frame[0] as i64 + frame[1] as i64;
+            self.count += 1;
+            if self.count == self.input_frames_per_output {
+                let divisor = (self.input_frames_per_output as i64) * (CHANNELS as i64);
+                let mixed = (self.accum / divisor) as i16;
+                out.push(mixed);
+                out.push(mixed);
+                self.accum = 0;
+                self.count = 0;
+            }
+        }
+        out
+    }
+}
+
 fn bytemuck_i16(samples: &[i16]) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(
@@ -335,16 +395,6 @@ fn bytemuck_i16(samples: &[i16]) -> &[u8] {
             std::mem::size_of_val(samples),
         )
     }
-}
-
-fn downmix_to_dual_mono(stereo_samples: &[i16]) -> Vec<i16> {
-    let mut out = Vec::with_capacity(stereo_samples.len());
-    for frame in stereo_samples.chunks_exact(CHANNELS as usize) {
-        let mixed = ((frame[0] as i32 + frame[1] as i32) / 2) as i16;
-        out.push(mixed);
-        out.push(mixed);
-    }
-    out
 }
 
 fn spawn_chip_ref_writer(
@@ -737,18 +787,16 @@ fn spawn_tts_server(
         .spawn(move || {
             for stream in listener.incoming() {
                 match stream {
-                    Ok(stream) => {
-                        spawn_tts_client(
-                            stream,
-                            tx.clone(),
-                            flush_tx.clone(),
-                            Arc::clone(&epoch),
-                            Arc::clone(&state),
-                        )
-                        .unwrap_or_else(|e| {
-                            eprintln!("event=outputd.tts_socket.spawn_failed detail={e}");
-                        })
-                    }
+                    Ok(stream) => spawn_tts_client(
+                        stream,
+                        tx.clone(),
+                        flush_tx.clone(),
+                        Arc::clone(&epoch),
+                        Arc::clone(&state),
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("event=outputd.tts_socket.spawn_failed detail={e}");
+                    }),
                     Err(e) => {
                         eprintln!("event=outputd.tts_socket.accept_failed detail={e}");
                     }
@@ -1104,6 +1152,34 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn chip_ref_downsampler_downmixes_and_decimates_exact_ratio() {
+        let mut downsampler = ChipRefDownsampler::new(48_000, 16_000).unwrap();
+
+        let out = downsampler.process(&[
+            3, 9, // mono average: 6
+            6, 12, // mono average: 9
+            9, 15, // mono average: 12
+            12, 18, // carried into the next output
+        ]);
+
+        assert_eq!(out, vec![9, 9]);
+
+        let out = downsampler.process(&[
+            15, 21, // mono average: 18
+            18, 24, // mono average: 21
+        ]);
+
+        assert_eq!(out, vec![18, 18]);
+    }
+
+    #[test]
+    fn chip_ref_downsampler_rejects_fractional_ratios() {
+        let err = ChipRefDownsampler::new(48_000, 22_050).unwrap_err();
+
+        assert!(err.to_string().contains("must divide"));
+    }
+
+    #[test]
     fn notify_systemd_supports_abstract_notify_socket() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1380,6 +1456,11 @@ mod tests {
             period_frames: 1024,
             content_buffer_frames: 4096,
             dac_buffer_frames: 3072,
+            chip_ref_pcm: None,
+            chip_ref_sample_rate: 16_000,
+            chip_ref_period_frames: 320,
+            chip_ref_buffer_frames: 1280,
+            reference_udp_target: None,
             stream_id: 99,
             tts_socket_path: None,
             control_socket_path: None,

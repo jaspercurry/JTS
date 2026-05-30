@@ -1848,6 +1848,18 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
     assert values["JASPER_OUTPUTD_CHIP_REF_PCM"] == wake_corpus_setup.DEFAULT_CHIP_REF_PCM
     assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == wake_corpus_setup.OUTPUTD_REF_UDP_TARGET
+    assert (
+        values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"]
+        == wake_corpus_setup.DEFAULT_CHIP_REF_SAMPLE_RATE
+    )
+    assert (
+        values["JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES"]
+        == wake_corpus_setup.DEFAULT_CHIP_REF_PERIOD_FRAMES
+    )
+    assert (
+        values["JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES"]
+        == wake_corpus_setup.DEFAULT_CHIP_REF_BUFFER_FRAMES
+    )
     assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED" not in values
     assert restarts == [
         wake_corpus_setup.OUTPUTD_UNIT,
