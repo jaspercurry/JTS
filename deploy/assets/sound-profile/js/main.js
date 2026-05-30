@@ -18,7 +18,8 @@
 (function() {
   var LIMIT_DEFAULTS = {
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
-    min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10, simple_bands: []
+    min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10,
+    simple_bands: [], headroom_trim_max_db: 12
   };
   var FLAT = function() {
     return {enabled: true, curve_id: 'flat',
@@ -43,6 +44,7 @@
 
   var applied = FLAT();        // persisted profile
   var library = [];            // [{id,name,kind,editable,description,profile,...}]
+  var soundSettings = {headroom_trim_db: 0, match_loudness: false};  // global output settings
   var curvesById = {};
   var dspWriteEpoch = 'none';
   var applying = false;
@@ -237,11 +239,10 @@
     profile = normalizeProfile(profile);
     var freqs = previewFreqs();
     if (profile.enabled === false) {
-      return {preview: [], components: {curve: [], simple: [], advanced: []}, headroom_db: 0, off: true};
+      return {preview: [], components: {curve: [], simple: [], advanced: []}, off: true};
     }
     var all = curveSpecs(profile).concat(simpleSpecs(profile), advancedSpecs(profile));
     var preview = pointsFor(all, freqs, false);
-    var peak = preview.reduce(function(m, p) { return Math.max(m, p.db); }, 0);
     return {
       preview: preview,
       components: {
@@ -251,8 +252,7 @@
           return {index: i, enabled: b.enabled !== false,
                   preview: pointsFor(advancedSpecs({parametric_bands: [b]}), freqs, true)};
         })
-      },
-      headroom_db: Math.max(0, peak)
+      }
     };
   }
 
@@ -335,7 +335,7 @@
     var summary = el('plot-summary');
     if (summary) {
       summary.textContent = enabled
-        ? 'EQ response preview. Peak boost ' + fmtDb(peak) + ' dB, headroom ' + fmtDb(payload.headroom_db || 0) + ' dB.'
+        ? 'EQ response preview. Peak boost ' + fmtDb(peak) + ' dB.'
         : 'EQ bypassed. Flat response.';
     }
   }
@@ -343,7 +343,7 @@
   function renderLiveGraph() {
     var profile = liveProfile();
     el('live-label').textContent = liveLabel();
-    if (!profile) { renderGraph({preview: [], components: {}, headroom_db: 0}, false); return; }
+    if (!profile) { renderGraph({preview: [], components: {}}, false); return; }
     renderGraph(previewPayload(profile), profile.enabled !== false);
   }
 
@@ -415,7 +415,39 @@
     var presetSection = '<section><div class="section-header"><h2 class="eyebrow">Presets</h2></div>' +
       '<div class="list-card"><div class="list-card__rows">' +
         presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
-    el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection + '</div>';
+    el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection +
+      renderSoundSettings() + '</div>';
+  }
+  function fmtTrim(v) { v = Number(v) || 0; return v > 0 ? '−' + v.toFixed(1) + ' dB' : 'Off'; }
+  function renderSoundSettings() {
+    var ml = soundSettings.match_loudness ? ' checked' : '';
+    var trim = Number(soundSettings.headroom_trim_db) || 0;
+    var trimMax = Number(limits.headroom_trim_max_db) || 12;  // backend clamps authoritatively
+    return '<section class="sound-settings">' +
+      '<div class="setting-row">' +
+        '<div class="setting-row__text">' +
+          '<p class="setting-row__title">Match loudness</p>' +
+          '<p class="setting-row__hint">Level-match profiles so switching compares tone, not volume.</p>' +
+        '</div>' +
+        '<label class="toggle"><input type="checkbox" id="set-match-loudness"' + ml +
+          ' aria-label="Match loudness"><span class="track"></span></label>' +
+      '</div>' +
+      '<details class="advanced"' + (trim > 0 ? ' open' : '') + '>' +
+        '<summary>Advanced</summary>' +
+        '<div class="setting-row setting-row--stack">' +
+          '<div class="setting-row__text">' +
+            '<p class="setting-row__title">Extra headroom</p>' +
+            '<p class="setting-row__hint">Digital attenuation for full-volume setups into your own amp. ' +
+              'Leave at Off unless you hear clipping.</p>' +
+          '</div>' +
+          '<div class="headroom-control">' +
+            '<input type="range" class="headroom-range" id="set-headroom" min="0" max="' + trimMax +
+              '" step="0.5" value="' + trim + '" aria-label="Extra headroom in dB">' +
+            '<span class="headroom-readout" id="set-headroom-readout">' + fmtTrim(trim) + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</details>' +
+    '</section>';
   }
 
   function rangeRow(label, value, min, max, opts) {
@@ -563,10 +595,6 @@
   }
 
   // ---- backend integration -------------------------------------------
-  function compareProfiles() {
-    return [normalizeProfile(applied), normalizeProfile(draft),
-            Object.assign(normalizeProfile(draft), {enabled: false})];
-  }
   function schedulePreview() {
     renderLiveGraph();          // optimistic local graph
     window.clearTimeout(previewTimer);
@@ -599,7 +627,7 @@
     var seq = liveSeq;
     try {
       var resp = await fetch('./live-draft', {method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify({profile: draft, compare_profiles: compareProfiles(), dsp_write_epoch: dspWriteEpoch})});
+        body: JSON.stringify({profile: draft, dsp_write_epoch: dspWriteEpoch})});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'live draft failed');
       if (seq === liveSeq) {
@@ -615,14 +643,19 @@
       if (livePending && !applying) { window.clearTimeout(liveTimer); liveTimer = window.setTimeout(runLiveDraft, 0); }
     }
   }
+  // okMsg is shown only for explicit actions (save/overwrite). Tab-driven
+  // applies (Off, Saved-select) pass none and stay silent on success — the
+  // active tab + "Now playing" label already convey state. Errors always
+  // surface (no silent failure).
   async function applyProfile(profile, okMsg) {
-    applying = true; cancelLiveDrafts(); status('Applying…');
+    applying = true; cancelLiveDrafts();
+    if (okMsg) status('Applying…');
     try {
       var resp = await fetch('./apply', {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(profile)});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'apply failed');
       ingestState(payload);
-      status(okMsg || 'Applied to speaker.');
+      status(okMsg || '');
     } catch (e) {
       status('Could not apply: ' + e.message, true);
     } finally { applying = false; render(); }
@@ -641,12 +674,33 @@
     } finally { applying = false; }
   }
 
+  // Global sound settings (match-loudness, headroom). Optimistic: the controls
+  // already show the user's input, so on success we just ingest (audio is
+  // re-applied server-side); on failure we revert and re-render.
+  async function saveSettings(patch) {
+    var prev = soundSettings;
+    soundSettings = Object.assign({}, soundSettings, patch);
+    try {
+      var resp = await fetch('./settings', {method: 'POST', headers: jsonHeaders(),
+        body: JSON.stringify(soundSettings)});
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'settings failed');
+      ingestState(payload);
+      if (payload.warning) status(payload.warning, true);
+    } catch (e) {
+      soundSettings = prev;
+      status('Could not save sound settings: ' + e.message, true);
+      render();
+    }
+  }
+
   function ingestState(payload) {
     limits = Object.assign({}, LIMIT_DEFAULTS, payload.limits || {});
     simpleBands = limits.simple_bands || [];
     if (payload.curves) { curvesById = {}; payload.curves.forEach(function(c) { curvesById[c.id] = c; }); }
     if (payload.profile_library) library = payload.profile_library;
     if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
+    if (payload.sound_settings) soundSettings = payload.sound_settings;
     applied = normalizeProfile(payload.profile || {});
   }
 
@@ -658,7 +712,7 @@
     // saved profile applies it (see selectSaved). Draft is a live, non-
     // persistent preview until the footer Save commits it.
     if (v === 'off') {
-      applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}), 'EQ off.');
+      applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}));
     } else if (v === 'draft') {
       scheduleLiveDraft(true);
     }
@@ -666,10 +720,8 @@
   function selectSaved(id) {
     selectedId = id;
     var entry = entryById(id);
-    status(entry ? 'Applying ' + entry.name + '…' : '');
     render();
-    if (entry) applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name),
-                            'Now playing: ' + entry.name + '.');
+    if (entry) applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name));
   }
   function newDraft() {
     draft = FLAT(); editing = {kind: 'new'}; mode = 'simple'; activeBand = 0; naming = false;
@@ -693,6 +745,19 @@
       ? Object.keys(draft.simple_eq).filter(function(k) { return Math.abs(draft.simple_eq[k]) >= 0.05; }).length
       : draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).length;
     e.textContent = n + ' active';
+  }
+  // During a drag we patch the DOM in place (no full re-render, so the <input>
+  // keeps focus). The visible thumb/fill is a separate element positioned by
+  // inline style at render time, so move it here too — otherwise the handle
+  // stays put while only the readout changes.
+  function positionThumb(input) {
+    var min = parseFloat(input.min), max = parseFloat(input.max);
+    if (!(max > min)) return;
+    var pct = (clamp(parseFloat(input.value), min, max) - min) / (max - min) * 100;
+    var wrap = input.parentNode, hit;
+    if ((hit = wrap.querySelector('.vrange__thumb'))) hit.style.bottom = 'calc(' + pct + '% - 6px)';
+    else if ((hit = wrap.querySelector('.range__thumb'))) hit.style.left = 'calc(' + pct + '% - 6px)';
+    else if ((hit = wrap.querySelector('.range__fill'))) hit.style.width = pct + '%';
   }
 
   // ---- events ---------------------------------------------------------
@@ -741,6 +806,7 @@
       draft.simple_eq[field] = clamp(ev.target.value, -limits.simple_gain_db, limits.simple_gain_db);
       var btn = el('view-body').querySelector('[data-readout-field="' + field + '"]');
       if (btn) btn.textContent = fmtDb(draft.simple_eq[field]);
+      positionThumb(ev.target);
       refreshActiveCount();
       schedulePreview(); scheduleLiveDraft(false);
     } else if (range) {
@@ -754,11 +820,20 @@
       if (range === 'q') band.q = clamp(ev.target.value, limits.min_q, limits.max_q);
       var ro = row.querySelector('[data-readout="' + range + '"]');
       if (ro) ro.textContent = range === 'freq' ? fmtFreq(band.freq_hz) : (range === 'gain' ? fmtDb(band.gain_db) + ' dB' : fmtQ(band.q));
+      positionThumb(ev.target);
       schedulePreview(); scheduleLiveDraft(false);
     }
   });
   el('view-body').addEventListener('input', function(ev) {
-    if (ev.target.id === 'name-input') nameDraft = ev.target.value;
+    if (ev.target.id === 'name-input') { nameDraft = ev.target.value; return; }
+    if (ev.target.id === 'set-headroom') {
+      var ro = el('set-headroom-readout');           // live readout; commit on 'change'
+      if (ro) ro.textContent = fmtTrim(ev.target.value);
+    }
+  });
+  el('view-body').addEventListener('change', function(ev) {
+    if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
+    else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
   });
   el('view-body').addEventListener('keydown', function(ev) {
     if (ev.target.id !== 'name-input') return;
@@ -871,9 +946,17 @@
       if (!resp.ok) throw new Error('state failed');
       var payload = await resp.json();
       ingestState(payload);
-      // Initial view mirrors the applied profile so opening the page is a no-op.
-      if (applied.enabled === false) { view = 'off'; }
-      else { view = 'saved'; selectedId = findIdFor(applied); }
+      // Open on Off when no EQ is effectively applied — bypassed (enabled
+      // false) OR flat (no active filters). Open on Saved with the applied
+      // profile marked active otherwise. filter_count is the backend's
+      // authoritative signal (len(build_sound_filters); 0 when disabled/flat).
+      if (payload.filter_count > 0) {
+        view = 'saved';
+        selectedId = findIdFor(applied);
+      } else {
+        view = 'off';
+        selectedId = null;
+      }
       render();
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);

@@ -11,7 +11,9 @@ from jasper.sound.profile import (
     SoundProfile,
     load_profile,
     load_profile_library,
+    save_profile,
 )
+from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.web import sound_setup
 
 
@@ -160,6 +162,27 @@ def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path
     assert payload["headroom_db"] > 0
 
 
+def test_state_filter_count_signals_effective_eq_for_initial_view():
+    # filter_count drives the page's initial Off-vs-Saved tab: 0 means no
+    # effective EQ (bypassed OR flat) -> open Off; >0 -> open Saved with the
+    # applied profile marked active.
+    assert sound_setup._state_payload(SoundProfile())["filter_count"] == 0
+    assert sound_setup._state_payload(
+        SoundProfile(enabled=False, curve_id="harman")
+    )["filter_count"] == 0
+    assert sound_setup._state_payload(
+        SoundProfile(curve_id="harman")
+    )["filter_count"] > 0
+    assert sound_setup._state_payload(
+        SoundProfile(simple_eq=SimpleEq(bass_db=3.0))
+    )["filter_count"] > 0
+    # A cuts-only EQ has zero headroom but is still an effective EQ -- this is
+    # why the signal is filter_count, not headroom_db.
+    cuts_only = sound_setup._state_payload(SoundProfile(simple_eq=SimpleEq(mid_db=-3.0)))
+    assert cuts_only["headroom_db"] == 0
+    assert cuts_only["filter_count"] > 0
+
+
 async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypatch):
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
@@ -189,6 +212,116 @@ async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypa
     assert load_profile(profile_path).curve_id == "bk"
 
 
+async def test_apply_profile_no_trim_by_default_so_boosts_boost(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "correction_abc_123.yml"
+    current.write_text(emit_correction_config([]))
+    fake = FakeCamilla(str(current))
+
+    payload = await sound_setup._apply_profile(
+        SoundProfile(simple_eq=SimpleEq(bass_db=6.0)),
+        profile_path=tmp_path / "sound_profile.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    generated = Path(fake.loaded_path).read_text()
+    assert "sound_simple_bass:" in generated
+    assert "sound_preamp" not in generated  # default: boosts boost
+    assert payload["output_trim_db"] == 0
+
+
+async def test_apply_profile_emits_output_trim_when_match_loudness_on(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    settings_path = tmp_path / "sound_settings.json"
+    settings_path.write_text('{"match_loudness": true}')
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "correction_abc_123.yml"
+    current.write_text(emit_correction_config([]))
+    fake = FakeCamilla(str(current))
+
+    payload = await sound_setup._apply_profile(
+        SoundProfile(simple_eq=SimpleEq(bass_db=6.0)),
+        profile_path=tmp_path / "sound_profile.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    generated = Path(fake.loaded_path).read_text()
+    assert "sound_preamp:" in generated  # loudness comp applied as output trim
+    assert payload["output_trim_db"] > 0
+
+
+async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "correction_abc_123.yml"
+    current.write_text(emit_correction_config([]))
+    fake = FakeCamilla(str(current))
+    profile_path = tmp_path / "sound_profile.json"
+    # An applied profile with a boost, stamped at a fixed time.
+    save_profile(
+        SoundProfile(
+            simple_eq=SimpleEq(bass_db=6.0), updated_at="2020-01-01T00:00:00+00:00"
+        ),
+        profile_path,
+    )
+
+    payload = await sound_setup._apply_settings(
+        SoundSettings(match_loudness=True),
+        profile_path=profile_path,
+        library_path=tmp_path / "lib.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    generated = Path(fake.loaded_path).read_text()
+    assert "sound_preamp:" in generated  # match-loudness trim applied
+    assert payload["output_trim_db"] > 0
+    assert "warning" not in payload
+    assert load_sound_settings(settings_path).match_loudness is True
+    # The profile JSON is untouched: not re-stamped, not overwritten.
+    assert load_profile(profile_path).updated_at == "2020-01-01T00:00:00+00:00"
+
+
+async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "correction_abc_123.yml"
+    current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
+    fake = FakeCamilla(str(current), fail_set=True)  # reload fails
+
+    payload = await sound_setup._apply_settings(
+        SoundSettings(headroom_trim_db=6.0),
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "lib.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    assert "warning" in payload
+    # Settings persist despite the re-apply failure (no revert, no silent loss).
+    assert load_sound_settings(settings_path).headroom_trim_db == 6.0
+
+
 async def test_audition_profile_loads_draft_without_persisting(
     tmp_path: Path,
     monkeypatch,
@@ -203,7 +336,10 @@ async def test_audition_profile_loads_draft_without_persisting(
     current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
     fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
-    saved = SoundProfile(curve_id="flat")
+    # match-loudness on -> the audition gets a loudness-weighted output trim.
+    settings_path = tmp_path / "sound_settings.json"
+    settings_path.write_text('{"match_loudness": true}')
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
     draft = SoundProfile(
         curve_id="harman",
         parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=3.0, q=1.0),),
@@ -211,7 +347,6 @@ async def test_audition_profile_loads_draft_without_persisting(
 
     payload = await sound_setup._audition_profile(
         draft,
-        compare_profiles=[saved, draft, SoundProfile(enabled=False)],
         profile_path=profile_path,
         config_dir=config_dir,
         camilla_factory=lambda: fake,
@@ -222,8 +357,9 @@ async def test_audition_profile_loads_draft_without_persisting(
     generated = Path(fake.loaded_path).read_text()
     assert "sound_curve_harman_bass:" in generated
     assert "sound_advanced_1:" in generated
+    assert "sound_preamp:" in generated  # match-loudness trim applied
     assert payload["audition_profile"]["curve_id"] == "harman"
-    assert payload["audition_headroom_db"] > 0
+    assert payload["output_trim_db"] > 0
     assert payload["dsp_write_epoch"] == payload["last_dsp_apply"]["op_id"]
     assert not profile_path.exists()
 
@@ -245,7 +381,6 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
 
     payload = await sound_setup._live_draft_profile(
         draft,
-        compare_profiles=[SoundProfile(curve_id="flat"), draft],
         expected_dsp_write_epoch=dsp_write_epoch(),
         profile_path=profile_path,
         config_dir=config_dir,
@@ -256,11 +391,13 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     assert len(fake.active_raw_values) == 1
     assert "sound_curve_harman_bass:" in fake.active_raw_values[0]
     assert "room_peq_1:" in fake.active_raw_values[0]
+    # Default settings -> no output trim, so boosts boost (no global preamp).
+    assert "sound_preamp" not in fake.active_raw_values[0]
     assert payload["live_status"] == "live"
     assert payload["live_method"] == "active_config_raw"
     assert payload["dsp_write_epoch"] == "epoch-1"
     assert payload["preserved_room_peqs"] == 1
-    assert payload["audition_headroom_db"] > 0
+    assert payload["output_trim_db"] == 0
     assert not profile_path.exists()
 
 
@@ -283,7 +420,6 @@ async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(
 
     payload = await sound_setup._live_draft_profile(
         draft,
-        compare_profiles=[draft],
         expected_dsp_write_epoch="older-apply",
         profile_path=tmp_path / "sound_profile.json",
         config_dir=config_dir,
@@ -313,7 +449,6 @@ async def test_live_draft_profile_reports_unavailable_without_reload(
 
     payload = await sound_setup._live_draft_profile(
         draft,
-        compare_profiles=[draft],
         expected_dsp_write_epoch="epoch-1",
         profile_path=tmp_path / "sound_profile.json",
         config_dir=config_dir,
