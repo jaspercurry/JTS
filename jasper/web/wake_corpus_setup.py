@@ -67,6 +67,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
+from jasper.wake_conditions import CONDITIONS, DISTANCES
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
@@ -134,17 +135,14 @@ DEFAULT_OUTPUT_DIR = Path("data/enrollment_positives")
 DEFAULT_METADATA_SUBDIR = "metadata"
 ACTIVE_SESSION_MARKER = ".active_session.json"
 
-# Validated input domains. Match the upstream extract/score/review
-# pipeline's expectations exactly so files land where downstream tools
-# look for them.
-#
-# "ambient" added to capture the realistic-home condition (AC running,
-# fridge cycling, no music). Optional in practice — operator records
-# under whichever condition matches the moment. Maps to its own
-# quadrant directory aec_<leg>_ambient/ so downstream training can
-# slice on it.
-CONDITIONS = ("quiet", "ambient", "music")
-DISTANCES = ("near", "mid", "far")
+# CONDITIONS / DISTANCES are the operator-labelled input domains, imported
+# above from the shared single source of truth (jasper.wake_conditions) so
+# the corpus, the runtime fuser, and the wake telemetry agree on one
+# taxonomy. The wizard validates strictly against them to reject typos;
+# captured files land in aec_<leg>_<condition>/ for the upstream
+# extract/score/review pipeline, so do NOT rename a condition without an
+# alias (see wake_conditions' stability contract). "ambient" is the
+# realistic-home floor (AC, fridge; no music we control).
 # Legs the recorder knows about. "raw0" is the truly-raw mic 0 leg
 # (chip channel 2 — no chip DSP), opt-in per session via the
 # include_raw_mic_0 flag. The USB/reference legs are corpus-only

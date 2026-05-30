@@ -161,6 +161,7 @@ CREATE TABLE wake_events (
   music_active        INTEGER NOT NULL,    -- 0 | 1
   music_renderer      TEXT,                -- 'spotify' | 'airplay' | 'bt' | NULL
   music_volume_db     REAL,
+  condition_class     TEXT,                -- 'quiet'|'ambient'|'music' (Phase 1; jasper.wake_conditions)
   voice_provider      TEXT,                -- 'gemini' | 'openai' | 'grok'
   bridge_config_json  TEXT,                -- {"ns": "low", "agc1": true, "mic_gain_db": 6, ...}
 
