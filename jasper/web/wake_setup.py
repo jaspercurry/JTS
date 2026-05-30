@@ -461,16 +461,16 @@ _LAYERS_SCRIPT = r"""
       dirty[name] = false;
       applyState(body);
     } catch (err) {
-      alert('Toggle failed: ' + err.message);
+      jtsAlert('Toggle failed: ' + err.message);
       dirty[name] = false;
       el('layer-' + name).checked = !wanted;  // roll back
     }
   }
 
   LAYERS.forEach(name => {
-    el('layer-' + name).addEventListener('change', () => {
+    el('layer-' + name).addEventListener('change', async () => {
       const cb = el('layer-' + name);
-      if (name === 'aec' && !cb.checked && !confirm(
+      if (name === 'aec' && !cb.checked && !await jtsConfirm(
           'Disable AEC echo cancellation?\n\n' +
           'jasper-voice will restart — wake unavailable ~15 s. ' +
           'Turning AEC off also pauses the raw + DTLN layers ' +
@@ -478,7 +478,7 @@ _LAYERS_SCRIPT = r"""
         cb.checked = true;
         return;
       }
-      if (name === 'dtln' && cb.checked && !confirm(
+      if (name === 'dtln' && cb.checked && !await jtsConfirm(
           'Enable DTLN neural AEC?\n\n' +
           '+~75 MB RAM, +~25% one core. Recommended for 2 GB Pis.\n' +
           'jasper-voice + bridge will restart (~15 s).')) {
@@ -514,7 +514,7 @@ _LAYERS_SCRIPT = r"""
       if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
       saveBtn.classList.remove('dirty');
     } catch (err) {
-      alert('Save failed: ' + err.message);
+      jtsAlert('Save failed: ' + err.message);
     }
     saveBtn.textContent = 'Save';
     setTimeout(pollDetection, 500);

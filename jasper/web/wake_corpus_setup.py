@@ -110,9 +110,11 @@ from jasper.wake_ports import (
 # wrap_page() helper since its HTML is more bespoke than the form-
 # based wizards).
 from jasper.web._common import (
+    DIALOG_CSS,
     NAV_BACK_CSS,
     NAV_BACK_HTML,
     delete_env_file,
+    dialog_helpers_js,
     read_env_file,
     write_env_file,
 )
@@ -3131,6 +3133,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <div id="clips-list"></div>
   </div>
 
+  <script>{dialog_helpers_js}</script>
   <script>
     const $ = id => document.getElementById(id);
     let elapsedTimer = null;
@@ -3442,7 +3445,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const body = e.body || {};
         if (e.status === 409 && body.can_enable_bridge_outputs) {
           const labels = body.missing_bridge_output_labels || [];
-          const ok = confirm(
+          const ok = await jtsConfirm(
             `The bridge is not currently emitting: ${labels.join(', ')}.\n\n` +
             `Enable those bridge outputs and restart jasper-aec-bridge now? ` +
             `This can add CPU/RAM load, especially DTLN paths.`
@@ -3537,9 +3540,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     }
 
     async function deleteSession(sessionId, summary) {
-      if (!confirm(
+      if (!await jtsConfirm(
         `Permanently delete session ${sessionId}? This removes ${summary} ` +
         `and the session metadata. Cannot be undone.`,
+        {danger: true},
       )) return;
       try {
         await api('DELETE', `api/session/${sessionId}`);
@@ -3622,7 +3626,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           }
           row.querySelector('button').onclick = async (ev) => {
             const id = ev.target.dataset.id;
-            if (!confirm(`Delete clip ${c.seq}?`)) return;
+            if (!await jtsConfirm(`Delete clip ${c.seq}?`, {danger: true})) return;
             try {
               await api('DELETE', `api/clip/${id}`);
               await refreshClips();
@@ -3773,8 +3777,9 @@ def _render_index_html(csrf_token: str = "") -> str:
     return (
         _INDEX_HTML_TEMPLATE
         .replace("{csrf_token}", html.escape(csrf_token, quote=True))
-        .replace("{nav_back_css}", NAV_BACK_CSS)
+        .replace("{nav_back_css}", NAV_BACK_CSS + DIALOG_CSS)
         .replace("{nav_back_html}", NAV_BACK_HTML)
+        .replace("{dialog_helpers_js}", dialog_helpers_js())
         .replace("{aec3_sweep_js_labels}", aec3_sweep_js_labels)
         .replace("{aec3_sweep_js_order}", aec3_sweep_js_order)
         .replace("{usb_aec3_corpus_label}", html.escape(USB_AEC3_CORPUS_LABEL))

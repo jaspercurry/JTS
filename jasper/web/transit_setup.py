@@ -1036,7 +1036,7 @@ def _citibike_card_html(
 
 
 def _no_coverage_html() -> str:
-    return f"""
+    return """
 <section class="no-coverage">
   <p><strong>No transit support for your area yet.</strong></p>
   <p>
@@ -1160,7 +1160,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 {_advanced_section_html(state, csrf_token)}
 
 <p class="hint" style="margin-top:2em">
-  <form method="post" action="clear" style="display:inline" onsubmit="return confirm('Clear all saved transit settings? Subway and bus tools will stop responding until reconfigured.');">
+  <form method="post" action="clear" style="display:inline" onsubmit="return jtsConfirmSubmit(this, 'Clear all saved transit settings? Subway and bus tools will stop responding until reconfigured.', {{danger:true}});">
     {csrf_field_html(csrf_token) if csrf_token else ''}
     <button type="submit" class="danger">Clear all transit settings</button>
   </form>

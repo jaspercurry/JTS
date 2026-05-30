@@ -183,12 +183,28 @@ primitive layer:
   paths return 404 without revealing CSRF state.
 - Use `send_html_response()` / `send_see_other()` rather than
   hand-rolled response helpers.
+- Confirm/alert with `jtsConfirm(msg, {danger})` / `jtsAlert(msg)` (from
+  `dialog_helpers_js()`), never native `confirm()`/`alert()` — the browser
+  can suppress those, which silently broke the action guards. `await` the
+  confirm; pass `{danger:true}` for destructive actions.
+  `onsubmit="return confirm(...)"` becomes
+  `onsubmit="return jtsConfirmSubmit(this, '...', {danger:true})"`.
 
 Switch controls must use the shared checkbox-based toggle:
 `TOGGLE_CSS` plus `toggle_html()` where server-rendered markup is
 convenient. Avoid clickable `<div class="switch">` controls. Native
 checkboxes give keyboard interaction, focus state, and accessibility
 semantics for free.
+
+The confirm/alert dialog helper ships automatically on every page rendered
+through `wrap_page()`. A page that hand-rolls its own document shell (builds
+its own `<!doctype html>` + `<style>` instead of calling `wrap_page()` —
+`/wifi/`, `/bluetooth/`, `/correction/`, `/ha/`, `/wake-corpus/`) must embed
+it: concatenate `DIALOG_CSS` into its `<style>` and emit
+`<script>{dialog_helpers_js()}</script>` before the page's own script. A
+regression test in
+[`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
+fails the build if a wizard calls the helper without wiring it.
 
 Treat device names, SSIDs, USB descriptors, Bluetooth MAC-adjacent
 metadata, and browser-provided labels as untrusted. Escape before
@@ -279,8 +295,9 @@ button and autofocuses Cancel. `install.sh` copies `shared/` like a page dir;
 regression test in
 [`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
 keeps native `confirm()`/`alert()`/`prompt()` out of the canonical ES modules.
-(The legacy `wrap_page()` wizards, which don't load ES modules, get a
-behaviourally-identical inline twin in `_common.py` as they migrate.)
+(The legacy `wrap_page()` wizards, which don't load ES modules, have a
+behaviourally-identical inline twin in `_common.py` — `dialog_helpers_js()`
++ `DIALOG_CSS`; see the "Web wizard conventions" section.)
 
 ---
 

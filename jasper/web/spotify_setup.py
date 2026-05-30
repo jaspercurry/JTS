@@ -543,7 +543,7 @@ def _redirect_uri_page_html(
 {_add_account_form_html(csrf_token)}
 
 <form method="post" action="reset-credentials" style="margin-top:3em"
-      onsubmit="return confirm('Clear the saved Client ID? You\\'ll need to paste it again.');">
+      onsubmit="return jtsConfirmSubmit(this, 'Clear the saved Client ID? You\\'ll need to paste it again.', {{danger:true}});">
   {csrf}
   <button type="submit" class="danger">Reset Spotify credentials</button>
 </form>
@@ -625,7 +625,7 @@ def _account_playlists_section_html(account: Account, csrf_token: str = "") -> s
           <li title="{html.escape(uri)}">
             <span class="pl-name">{html.escape(name)}</span>
             <form method="post" action="playlist-remove"
-                  onsubmit="return confirm('Remove {html.escape(name)}?');">
+                  onsubmit="return jtsConfirmSubmit(this, 'Remove {html.escape(name)}?', {{danger:true}});">
               {csrf}
               <input type="hidden" name="account" value="{html.escape(account.name)}">
               <input type="hidden" name="uri" value="{html.escape(uri)}">
@@ -762,7 +762,7 @@ def _account_card_html(
         {set_default_btn}
       </form>
       <form method="post" action="remove"
-            onsubmit="return confirm('Remove {name}?');">
+            onsubmit="return jtsConfirmSubmit(this, 'Remove {name}?', {{danger:true}});">
         {csrf}
         <input type="hidden" name="name" value="{name}">
         <button class="danger" type="submit">Remove account</button>
@@ -932,7 +932,7 @@ def _management_html(
     {_manual_paste_form_html(csrf_token)}
 
     <form method="post" action="reset-credentials" style="margin-top:2em"
-          onsubmit="return confirm('Clear the saved Client ID? Existing OAuthed accounts will keep working until their tokens expire.');">
+          onsubmit="return jtsConfirmSubmit(this, 'Clear the saved Client ID? Existing OAuthed accounts will keep working until their tokens expire.', {{danger:true}});">
       {csrf}
       <button type="submit" class="danger">Reset Spotify credentials</button>
     </form>
