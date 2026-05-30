@@ -279,3 +279,14 @@ def test_tts_outputd_transport_env(monkeypatch):
     cfg = Config.from_env()
     assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == "/tmp/jasper-outputd.sock"
+
+
+def test_spend_cap_safety_multiplier_below_one_raises(monkeypatch):
+    """A safety multiplier < 1.0 would weaken the cap — reject it loudly
+    at startup so a typo (or 0, which would otherwise silently disable
+    the breaker) surfaces instead of quietly degrading spend protection.
+    Disabling the cap is solely JASPER_DAILY_SPEND_CAP_USD=0's job."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", "0")
+    with pytest.raises(RuntimeError, match="SAFETY_MULTIPLIER"):
+        Config.from_env()

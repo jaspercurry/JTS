@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,10 +8,15 @@ from pathlib import Path
 from jasper.usage import (
     GEMINI_AUDIO_IN_USD_PER_1M,
     GEMINI_AUDIO_OUT_USD_PER_1M,
+    GEMINI_PRICING,
+    GROK_VOICE_PRICING,
     OPENAI_REALTIME_MINI_PRICING,
     OPENAI_REALTIME_PRICING,
+    ConnectionUptimeMeter,
     SpendCap,
     UsageStore,
+    load_pricing_overrides,
+    pricing_for_provider,
 )
 
 
@@ -225,3 +231,233 @@ def test_incompatible_old_schema_is_self_healed(tmp_path: Path):
     assert "provider" in cols
     # The stale row was wiped; only the new, correctly-tagged row remains.
     assert rows == [("openai",)]
+
+
+# ---------------------------------------------------------------------------
+# Gemini rates are the true published values (cap padding lives elsewhere)
+# ---------------------------------------------------------------------------
+def test_gemini_rates_are_current_published_values():
+    """Guard against silently reverting to the old padded 5/18 — the
+    dashboard's displayed Gemini cost must reflect real list rates (3/12
+    as of 2026-05-30). Cap conservatism now lives in SpendCap's
+    safety multiplier, not in inflated rates."""
+    assert GEMINI_AUDIO_IN_USD_PER_1M == 3.0
+    assert GEMINI_AUDIO_OUT_USD_PER_1M == 12.0
+
+
+# ---------------------------------------------------------------------------
+# SpendCap safety multiplier
+# ---------------------------------------------------------------------------
+def test_spend_cap_safety_multiplier_pads_breaker_not_storage(tmp_path: Path):
+    """The stored/displayed spend is a true estimate; the cap pads it at
+    read time. A true spend of $0.60 fits under a $1.00 cap at x1.0 but
+    trips it at x2.0 (0.60*2 = 1.20) — without changing what the
+    dashboard would show."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))  # default Gemini pricing: 3/12 per M
+    sid = store.open_session()
+    # 50_000 output tokens × $12/M = exactly $0.60; no input.
+    store.close_session(sid, input_tokens=0, output_tokens=50_000)
+    assert abs(store.spend_last_24h_usd() - 0.60) < 1e-9
+
+    lenient = SpendCap(store, cap_usd=1.00, safety_multiplier=1.0)
+    assert lenient.allowed() is True
+    strict = SpendCap(store, cap_usd=1.00, safety_multiplier=2.0)
+    assert strict.allowed() is False
+    assert strict.remaining_usd() == 0.0
+    # The multiplier does not mutate stored cost — display stays honest.
+    assert abs(store.spend_last_24h_usd() - 0.60) < 1e-9
+
+
+def test_spend_cap_default_multiplier_is_one(tmp_path: Path):
+    """Callers that omit the multiplier (tests, incidental callers) get
+    no padding, so behaviour is unsurprising."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    sid = store.open_session()
+    store.close_session(sid, input_tokens=0, output_tokens=50_000)  # $0.60
+    cap = SpendCap(store, cap_usd=0.61)
+    assert cap.allowed() is True  # 0.60 * 1.0 < 0.61
+
+
+def test_spend_cap_multiplier_floored_at_one_never_disables(tmp_path: Path):
+    """A safety multiplier below 1.0 (incl. 0) is floored to 1.0 so it can
+    never weaken — let alone disable — the cap. A 0 multiplier would
+    otherwise zero the padded spend and silently turn the breaker off;
+    disabling is solely JASPER_DAILY_SPEND_CAP_USD=0's job."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    sid = store.open_session()
+    store.close_session(sid, input_tokens=0, output_tokens=50_000)  # $0.60
+    capped = SpendCap(store, cap_usd=0.50, safety_multiplier=0.0)
+    assert capped.allowed() is False  # floored to 1.0 → 0.60 >= 0.50
+    assert capped.remaining_usd() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Optional pricing.json override
+# ---------------------------------------------------------------------------
+def test_pricing_override_missing_file_uses_defaults():
+    overrides = load_pricing_overrides("/nonexistent/dir/pricing.json")
+    assert overrides == {}
+    assert pricing_for_provider("gemini", overrides=overrides) is GEMINI_PRICING
+
+
+def test_pricing_override_applies_per_provider(tmp_path: Path):
+    f = tmp_path / "pricing.json"
+    f.write_text(json.dumps({
+        "gemini": {
+            "audio_input_per_million_usd": 99.0,
+            "audio_output_per_million_usd": 88.0,
+        },
+        "grok": {"flat_per_hour_usd": 5.0},
+    }))
+    ov = load_pricing_overrides(str(f))
+    g = pricing_for_provider("gemini", overrides=ov)
+    assert g.audio_input_per_million_usd == 99.0
+    assert g.audio_output_per_million_usd == 88.0
+    assert g.label == "gemini-live"  # label is not overridable
+    grok = pricing_for_provider("grok", overrides=ov)
+    assert grok.flat_per_hour_usd == 5.0
+    # A provider absent from the file keeps its built-in default object.
+    assert pricing_for_provider("openai", overrides=ov) is OPENAI_REALTIME_PRICING
+
+
+def test_pricing_override_openai_mini_uses_its_own_key(tmp_path: Path):
+    f = tmp_path / "pricing.json"
+    f.write_text(json.dumps(
+        {"openai_mini": {"audio_input_per_million_usd": 1.0}}
+    ))
+    ov = load_pricing_overrides(str(f))
+    mini = pricing_for_provider("openai", model="gpt-realtime-mini", overrides=ov)
+    assert mini.audio_input_per_million_usd == 1.0
+    full = pricing_for_provider("openai", model="gpt-realtime-2", overrides=ov)
+    assert full.audio_input_per_million_usd == 32.0  # unaffected
+
+
+def test_pricing_override_malformed_falls_back(tmp_path: Path):
+    f = tmp_path / "pricing.json"
+    f.write_text("{ not valid json ")
+    ov = load_pricing_overrides(str(f))
+    assert ov == {}
+    assert pricing_for_provider("openai", overrides=ov) is OPENAI_REALTIME_PRICING
+
+
+def test_pricing_override_ignores_unknown_and_nonnumeric(tmp_path: Path):
+    f = tmp_path / "pricing.json"
+    f.write_text(json.dumps({
+        "gemini": {
+            "audio_input_per_million_usd": 7.0,
+            "label": "hacked",                       # not overridable
+            "bogus_field": 1.0,                      # unknown field
+            "audio_output_per_million_usd": "lots",  # non-numeric
+            "cached_input_per_million_usd": True,    # bool is not a rate
+        },
+    }))
+    ov = load_pricing_overrides(str(f))
+    g = pricing_for_provider("gemini", overrides=ov)
+    assert g.audio_input_per_million_usd == 7.0
+    assert g.label == "gemini-live"
+    assert g.audio_output_per_million_usd == GEMINI_AUDIO_OUT_USD_PER_1M
+    assert g.cached_input_per_million_usd == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Connection-uptime metering (time-billed providers, e.g. Grok)
+# ---------------------------------------------------------------------------
+def _insert_interval(db_path, provider, opened, closed, rate):
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO connection_intervals "
+            "(provider, opened_at, closed_at, rate_per_hour_usd) "
+            "VALUES (?, ?, ?, ?)",
+            (provider, opened, closed, rate),
+        )
+        conn.commit()
+
+
+def test_connection_interval_cost_in_24h_spend(tmp_path: Path):
+    """A 30-minute Grok connection at $3/hour contributes $1.50 to the
+    rolling spend even though its token rows price to $0."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    now = datetime.now(timezone.utc)
+    _insert_interval(
+        db, "grok",
+        (now - timedelta(minutes=30)).isoformat(), now.isoformat(), 3.0,
+    )
+    assert abs(store.spend_last_24h_usd() - 1.50) < 1e-3
+
+
+def test_open_interval_billed_up_to_now(tmp_path: Path):
+    """An interval still open (closed_at NULL) bills up to the present —
+    the live connection's ongoing cost shows immediately."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    now = datetime.now(timezone.utc)
+    _insert_interval(
+        db, "grok", (now - timedelta(hours=1)).isoformat(), None, 3.0,
+    )
+    assert abs(store.spend_last_24h_usd() - 3.0) < 0.05
+
+
+def test_uptime_meter_records_open_then_close(tmp_path: Path):
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    meter = ConnectionUptimeMeter(store, "grok", 3.0)
+    meter.mark_connected()
+    with sqlite3.connect(str(db)) as conn:
+        rows = conn.execute(
+            "SELECT provider, closed_at, rate_per_hour_usd "
+            "FROM connection_intervals"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "grok" and rows[0][1] is None and rows[0][2] == 3.0
+    meter.mark_disconnected()
+    with sqlite3.connect(str(db)) as conn:
+        closed = conn.execute(
+            "SELECT closed_at FROM connection_intervals"
+        ).fetchone()[0]
+    assert closed is not None
+
+
+def test_dangling_interval_closed_at_meter_start(tmp_path: Path):
+    """A crash leaves an interval open. The next meter construction
+    closes it conservatively (zero duration) so a stale open row can't
+    bill phantom uptime up to 'now'."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    opened = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    _insert_interval(db, "grok", opened, None, 3.0)
+    # Before cleanup the open interval would bill ~2h = ~$6.
+    assert store.spend_last_24h_usd() > 5.0
+    ConnectionUptimeMeter(store, "grok", 3.0)  # runs dangling cleanup
+    assert store.spend_last_24h_usd() < 1e-6
+
+
+def test_aggregate_by_provider_folds_in_connection_cost(tmp_path: Path):
+    """Grok's per-turn token rows cost $0; the per-provider rollup folds
+    the connection-uptime cost into its cost_usd so the dashboard shows
+    a real number."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db), pricing=GROK_VOICE_PRICING)
+    sid = store.open_session(provider="grok")
+    store.close_session(sid, input_tokens=1000, output_tokens=1000)  # $0
+    now = datetime.now(timezone.utc)
+    _insert_interval(
+        db, "grok", (now - timedelta(hours=1)).isoformat(), now.isoformat(), 3.0,
+    )
+    rows = store.aggregate_by_provider()
+    grok = next(r for r in rows if r["provider"] == "grok")
+    assert grok["sessions"] == 1
+    assert grok["input_tokens"] == 1000  # tokens still tracked
+    assert abs(grok["cost_usd"] - 3.0) < 1e-3  # connection cost folded in
+
+
+def test_token_billed_provider_has_no_intervals(tmp_path: Path):
+    """Sanity: a provider with no connection intervals (OpenAI/Gemini)
+    gets zero time-billed cost — the meter is never wired for them."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    now = datetime.now(timezone.utc)
+    assert store._time_billed_spend(now - timedelta(hours=24), now) == 0.0

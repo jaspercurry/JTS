@@ -64,6 +64,13 @@ def _validate(cfg: "Config") -> "Config":
             raise RuntimeError(f"{name} must be >= 0 (0 = disabled)")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
+    if cfg.daily_spend_cap_safety_multiplier < 1.0:
+        raise RuntimeError(
+            "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER must be >= 1.0 "
+            "(1.0 = no padding; >1.0 = more conservative). A value below "
+            "1.0 would weaken the cap; disable the cap with "
+            "JASPER_DAILY_SPEND_CAP_USD=0 instead."
+        )
     if (cfg.weather_default_lat is None) != (cfg.weather_default_lon is None):
         raise RuntimeError(
             "JASPER_WEATHER_LAT and JASPER_WEATHER_LON must be set together"
@@ -211,6 +218,10 @@ class Config:
     grok_proactive_buffer_sec: int
 
     daily_spend_cap_usd: float
+    # Multiplier applied to the rolling 24h spend before comparing to the
+    # cap. Keeps the circuit breaker conservative without inflating the
+    # dashboard's displayed (true-estimate) cost. See usage.SpendCap.
+    daily_spend_cap_safety_multiplier: float
     usage_db: str
 
     # Path to the librespot state file written by the --onevent hook
@@ -666,6 +677,9 @@ class Config:
                 "JASPER_GROK_PROACTIVE_BUFFER_SEC", 0,
             ),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
+            daily_spend_cap_safety_multiplier=_env_float(
+                "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", 1.25,
+            ),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
             librespot_state_path=_env(
                 "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",

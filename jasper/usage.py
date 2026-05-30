@@ -24,20 +24,36 @@ the user's audio. The ``Pricing.estimate_cost`` method below splits
 correctly when the breakdown is present and falls back to flat audio
 rates when it isn't (Gemini, which doesn't surface a breakdown).
 
-Caveat: ``grok`` bills a flat hourly rate, not per-token. The Grok
-``Pricing`` row has zero token rates and a non-zero ``flat_per_hour_usd``
-field — but ``close_session`` does not currently track session
-duration, so Grok-mode spend will under-count. Either (a) override
-``JASPER_DAILY_SPEND_CAP_USD`` low and treat the cap as a liveness
-nudge, or (b) trust xAI's own billing dashboard. A time-based row
-would be a worthwhile follow-up but is out of scope here.
+Time-billed providers (``grok``): Grok Voice bills a flat hourly rate,
+not per-token, so its token rows price to $0. ``ConnectionUptimeMeter``
+records connect/disconnect intervals into the ``connection_intervals``
+table; the spend queries fold that uptime cost in at the flat rate, so
+Grok's cost shows up on the dashboard and counts against the cap. See
+``ConnectionUptimeMeter`` and ``UsageStore._time_billed_spend_by_provider``.
+
+Display vs. circuit-breaker: the stored ``cost_usd`` is a best-effort
+TRUE estimate (provider list rates). The spend cap stays conservative
+without inflating the displayed number by applying a read-time
+``safety_multiplier`` in ``SpendCap`` — so the dashboard reads honest
+while the breaker keeps headroom.
+
+Override file: rates here are built-in defaults. An optional
+``/var/lib/jasper/pricing.json`` (``JASPER_PRICING_FILE``) overlays them
+per provider using the ``Pricing`` field names as keys — see
+``load_pricing_overrides``. Missing/malformed file falls back to these
+defaults (fail-soft).
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import sqlite3
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -149,15 +165,19 @@ class Pricing:
         ) / 1_000_000
 
 
-# Gemini Live (gemini-2.5-flash-native-audio / 3.1-flash-live-preview)
-# — Google's published audio rates. These were the values pinned in
-# the original UsageStore (5 / 18); they intentionally include some
-# slack on top of Google's headline 3 / 12 to keep the cap conservative
-# in the face of transient billing-side surprises. Gemini Live's
-# usage_metadata doesn't surface a modality split, so text/cached
-# stay 0 and ``estimate_cost`` falls through to the all-audio path.
-GEMINI_AUDIO_IN_USD_PER_1M = 5.0
-GEMINI_AUDIO_OUT_USD_PER_1M = 18.0
+# Gemini Live (gemini-3.1-flash-live-preview) — Google's published
+# audio rates as of 2026-05-30 (ai.google.dev/gemini-api/docs/pricing):
+# $3.00 / 1M audio in, $12.00 / 1M audio out. These are now the TRUE
+# rates — the original 5 / 18 carried deliberate slack to keep the spend
+# cap conservative, but that inflated the dashboard's displayed cost.
+# The conservatism now lives in ``SpendCap``'s read-time safety
+# multiplier instead, so the stored cost_usd is an honest estimate.
+# Gemini Live's usage_metadata doesn't surface a modality split, so
+# text/cached stay 0 and ``estimate_cost`` falls through to the
+# all-audio path (audio dominates a voice turn, so this slightly
+# over-estimates the cheaper text history rather than under-billing).
+GEMINI_AUDIO_IN_USD_PER_1M = 3.0
+GEMINI_AUDIO_OUT_USD_PER_1M = 12.0
 
 GEMINI_PRICING = Pricing(
     audio_input_per_million_usd=GEMINI_AUDIO_IN_USD_PER_1M,
@@ -201,10 +221,11 @@ OPENAI_REALTIME_MINI_PRICING = Pricing(
 )
 
 
-# xAI Grok Voice Agent: flat $3.00 / hour. Token rates are zero, so
-# spend tracking under-counts (see module docstring). Stored here so
-# downstream code can `pricing.flat_per_hour_usd` if it ever grows
-# duration tracking.
+# xAI Grok Voice Agent: flat $3.00 / hour of open connection (not
+# per-token), per docs.x.ai/developers/pricing (2026-05-30). Token
+# rates are zero; cost is metered from connection uptime by
+# ``ConnectionUptimeMeter`` (keyed off this non-zero flat_per_hour_usd)
+# rather than from the token rows.
 GROK_VOICE_PRICING = Pricing(
     audio_input_per_million_usd=0.0,
     audio_output_per_million_usd=0.0,
@@ -213,23 +234,112 @@ GROK_VOICE_PRICING = Pricing(
 )
 
 
+# ---------------------------------------------------------------------------
+# Optional runtime pricing override
+# ---------------------------------------------------------------------------
+# Provider rates drift. Rather than require a code edit + redeploy each
+# time, an operator (or, later, the /voice pricing paste-in) can drop a
+# JSON file that overlays the built-in defaults. The schema is
+# intentionally identical to the ``Pricing`` dataclass float fields so the
+# future "have a chatbot fetch the latest rates and emit this JSON" flow
+# writes straight into it with no key translation:
+#
+#   {
+#     "gemini":      {"audio_input_per_million_usd": 3.0,
+#                     "audio_output_per_million_usd": 12.0},
+#     "openai":      {"audio_input_per_million_usd": 32.0, ...},
+#     "openai_mini": {...},
+#     "grok":        {"flat_per_hour_usd": 3.0}
+#   }
+DEFAULT_PRICING_FILE = "/var/lib/jasper/pricing.json"
+
+# The float fields an override may set. ``label`` is intentionally not
+# overridable (it identifies the rate card in logs).
+_OVERRIDABLE_FIELDS = (
+    "audio_input_per_million_usd",
+    "audio_output_per_million_usd",
+    "text_input_per_million_usd",
+    "text_output_per_million_usd",
+    "cached_input_per_million_usd",
+    "flat_per_hour_usd",
+)
+
+# Override-file provider keys → the built-in default they overlay.
+_OVERRIDE_KEYS = ("gemini", "openai", "openai_mini", "grok")
+
+
+def load_pricing_overrides(path: str | None = None) -> dict[str, dict]:
+    """Load the optional pricing override file.
+
+    Returns ``{provider_key: {field: float}}`` for any provider keys in
+    ``_OVERRIDE_KEYS`` with at least one recognised float field. A
+    missing file returns ``{}`` (built-in rates apply). A malformed file
+    logs a WARNING and returns ``{}`` — a bad hand-edit must never stop
+    the daemon; the built-in rates remain authoritative. Unknown keys
+    and non-numeric values are ignored (forward-compatible)."""
+    path = path or os.environ.get("JASPER_PRICING_FILE", DEFAULT_PRICING_FILE)
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError("top-level JSON must be an object")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "pricing override %s ignored (%s: %s); using built-in rates",
+            path, type(e).__name__, e,
+        )
+        return {}
+    out: dict[str, dict] = {}
+    for key in _OVERRIDE_KEYS:
+        fields = raw.get(key)
+        if not isinstance(fields, dict):
+            continue
+        clean = {
+            k: float(v)
+            for k, v in fields.items()
+            if k in _OVERRIDABLE_FIELDS and isinstance(v, (int, float))
+            and not isinstance(v, bool)
+        }
+        if clean:
+            out[key] = clean
+    if out:
+        logger.info("pricing override loaded from %s: %s", path, sorted(out))
+    return out
+
+
+def _with_overrides(base: Pricing, overrides: dict | None, key: str) -> Pricing:
+    fields = (overrides or {}).get(key)
+    if not fields:
+        return base
+    return replace(base, **fields)
+
+
 def pricing_for_provider(
-    provider: str, *, model: str | None = None,
+    provider: str,
+    *,
+    model: str | None = None,
+    overrides: dict | None = None,
 ) -> Pricing:
     """Return the pricing snapshot for a provider/model combination.
 
     `model` is a hint — for OpenAI we differentiate `gpt-realtime-2`
-    vs `gpt-realtime-mini` based on substring match. Unknown providers
-    fall back to Gemini pricing (the historical default), with a label
-    indicating the fallback so journalctl makes it visible."""
+    vs `gpt-realtime-mini` based on substring match. `overrides` is the
+    parsed ``load_pricing_overrides()`` mapping; when present, the
+    matching provider's fields overlay the built-in defaults. Unknown
+    providers fall back to Gemini pricing (the historical default), with
+    a label indicating the fallback so journalctl makes it visible."""
     if provider == "gemini":
-        return GEMINI_PRICING
+        return _with_overrides(GEMINI_PRICING, overrides, "gemini")
     if provider == "openai":
         if model and "mini" in model.lower():
-            return OPENAI_REALTIME_MINI_PRICING
-        return OPENAI_REALTIME_PRICING
+            return _with_overrides(
+                OPENAI_REALTIME_MINI_PRICING, overrides, "openai_mini",
+            )
+        return _with_overrides(OPENAI_REALTIME_PRICING, overrides, "openai")
     if provider == "grok":
-        return GROK_VOICE_PRICING
+        return _with_overrides(GROK_VOICE_PRICING, overrides, "grok")
     return Pricing(
         audio_input_per_million_usd=GEMINI_AUDIO_IN_USD_PER_1M,
         audio_output_per_million_usd=GEMINI_AUDIO_OUT_USD_PER_1M,
@@ -277,6 +387,26 @@ class UsageStore:
         if "provider" not in cols:
             self._conn.execute("DROP TABLE sessions")
             self._conn.execute(_SESSIONS_TABLE_DDL)
+        # Connection-uptime intervals for time-billed providers (Grok).
+        # Each open connection is a row; cost = duration × rate snapshot.
+        # Separate from `sessions` (which is per-turn) because the billable
+        # unit for a flat-rate provider is connection time, not turns.
+        # NOTE: do NOT clean up dangling intervals here — UsageStore is
+        # constructed read-only by the dashboard on every poll, and
+        # closing the live connection's open interval from a reader would
+        # be wrong. Crash cleanup lives in ConnectionUptimeMeter (daemon
+        # startup only).
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS connection_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                opened_at TEXT NOT NULL,
+                closed_at TEXT,
+                rate_per_hour_usd REAL NOT NULL DEFAULT 0
+            )
+            """
+        )
         # Default to Gemini pricing so existing callers (and tests)
         # that don't pass `pricing=` keep working with their historical
         # cost estimates.
@@ -326,15 +456,91 @@ class UsageStore:
         )
         return cost
 
+    # ------------------------------------------------------------------
+    # Connection-uptime intervals (time-billed providers, e.g. Grok)
+    # ------------------------------------------------------------------
+    def record_connection_open(
+        self, provider: str, rate_per_hour_usd: float,
+    ) -> None:
+        """Open a connection-uptime interval — called when a time-billed
+        provider's WebSocket connects. The rate is snapshotted so a later
+        rate change doesn't retroactively re-price past connection time."""
+        self._conn.execute(
+            "INSERT INTO connection_intervals "
+            "(provider, opened_at, rate_per_hour_usd) VALUES (?, ?, ?)",
+            (
+                provider,
+                datetime.now(timezone.utc).isoformat(),
+                float(rate_per_hour_usd),
+            ),
+        )
+
+    def record_connection_close(self) -> None:
+        """Close any open connection interval — called on teardown /
+        reconnect / shutdown. Closes all open rows; there is only ever
+        one live connection, so this targets exactly it."""
+        self._conn.execute(
+            "UPDATE connection_intervals SET closed_at = ? "
+            "WHERE closed_at IS NULL",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+
+    def close_dangling_intervals(self) -> None:
+        """Conservatively close intervals a crash left open (no clean
+        teardown ran): set closed_at = opened_at (zero duration) so a
+        stale open row can't bill phantom uptime up to 'now' on the next
+        read. Run once at daemon start (ConnectionUptimeMeter), never
+        from the read-only dashboard path."""
+        self._conn.execute(
+            "UPDATE connection_intervals SET closed_at = opened_at "
+            "WHERE closed_at IS NULL"
+        )
+
+    def _time_billed_spend_by_provider(
+        self, since: datetime, until: datetime,
+    ) -> dict[str, float]:
+        """Connection-uptime cost per provider over ``[since, until]``.
+        Open intervals (closed_at IS NULL) are billed up to ``until``.
+        Returns ``{}`` when no intervals overlap the window."""
+        cur = self._conn.execute(
+            "SELECT provider, opened_at, closed_at, rate_per_hour_usd "
+            "FROM connection_intervals "
+            "WHERE opened_at <= ? AND (closed_at IS NULL OR closed_at >= ?)",
+            (until.isoformat(), since.isoformat()),
+        )
+        out: dict[str, float] = {}
+        for provider, opened_at, closed_at, rate in cur.fetchall():
+            if not rate:
+                continue
+            try:
+                start = max(datetime.fromisoformat(opened_at), since)
+                end = min(
+                    datetime.fromisoformat(closed_at) if closed_at else until,
+                    until,
+                )
+            except (ValueError, TypeError):
+                continue
+            secs = (end - start).total_seconds()
+            if secs > 0:
+                out[provider] = (
+                    out.get(provider, 0.0) + secs / 3600.0 * float(rate)
+                )
+        return out
+
+    def _time_billed_spend(self, since: datetime, until: datetime) -> float:
+        return sum(self._time_billed_spend_by_provider(since, until).values())
+
     def spend_last_24h_usd(self) -> float:
-        cutoff = datetime.now(timezone.utc).timestamp() - 24 * 3600
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=24)
         cur = self._conn.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
             "WHERE strftime('%s', started_at) >= ?",
-            (str(int(cutoff)),),
+            (str(int(cutoff.timestamp())),),
         )
         row = cur.fetchone()
-        return float(row[0] if row else 0.0)
+        token_cost = float(row[0] if row else 0.0)
+        return token_cost + self._time_billed_spend(cutoff, now)
 
     def spend_month_to_date_usd(self) -> float:
         """Cumulative cost since the start of the current calendar
@@ -344,14 +550,15 @@ class UsageStore:
         now = datetime.now(timezone.utc)
         month_start = now.replace(
             day=1, hour=0, minute=0, second=0, microsecond=0,
-        ).isoformat()
+        )
         cur = self._conn.execute(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
             "WHERE started_at >= ?",
-            (month_start,),
+            (month_start.isoformat(),),
         )
         row = cur.fetchone()
-        return float(row[0] if row else 0.0)
+        token_cost = float(row[0] if row else 0.0)
+        return token_cost + self._time_billed_spend(month_start, now)
 
     def aggregate_by_provider(
         self, since_utc: datetime | None = None,
@@ -364,9 +571,12 @@ class UsageStore:
           {"provider": "gemini", "sessions": 12, "input_tokens": 1234,
            "output_tokens": 567, "cost_usd": 0.42,
            "last_session_at": "2026-05-11T..."}
-        Pre-migration rows (NULL provider) bucket under "unknown"."""
+        Pre-migration rows (NULL provider) bucket under "unknown".
+        For time-billed providers (Grok) the per-turn token cost is $0;
+        their connection-uptime cost is folded into ``cost_usd`` here."""
+        now = datetime.now(timezone.utc)
         if since_utc is None:
-            since_utc = datetime.now(timezone.utc).replace(
+            since_utc = now.replace(
                 day=1, hour=0, minute=0, second=0, microsecond=0,
             )
         cur = self._conn.execute(
@@ -386,6 +596,7 @@ class UsageStore:
             (since_utc.isoformat(),),
         )
         out: list[dict] = []
+        seen: set[str] = set()
         for row in cur.fetchall():
             out.append({
                 "provider": row[0],
@@ -395,6 +606,23 @@ class UsageStore:
                 "cost_usd": float(row[4]),
                 "last_session_at": row[5],
             })
+            seen.add(row[0])
+        # Fold connection-uptime cost into each provider's total, and add
+        # a row for any provider that has connection time but no session
+        # rows in this window.
+        time_billed = self._time_billed_spend_by_provider(since_utc, now)
+        for r in out:
+            r["cost_usd"] += time_billed.get(r["provider"], 0.0)
+        for provider, cost in time_billed.items():
+            if provider not in seen and cost:
+                out.append({
+                    "provider": provider,
+                    "sessions": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_usd": cost,
+                    "last_session_at": None,
+                })
         return out
 
     def session_count_today_utc(self) -> int:
@@ -424,12 +652,79 @@ class UsageStore:
 
 
 class SpendCap:
-    def __init__(self, store: UsageStore, cap_usd: float) -> None:
+    """Daily spend circuit breaker.
+
+    The stored ``cost_usd`` is a best-effort TRUE estimate. To keep the
+    breaker conservative without inflating the dashboard's displayed
+    cost, the rolling 24h spend is multiplied by ``safety_multiplier``
+    before comparing to the ceiling — headroom for estimation error and
+    provider-side surprises lives here, not in the rate card.
+
+    Default ``1.0`` (no padding) keeps tests and incidental callers
+    unsurprising; the daemon and doctor pass
+    ``JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER`` (default 1.25).
+
+    A safety multiplier never *weakens* the cap: values below 1.0 are
+    floored to 1.0. Disabling the cap is solely the job of
+    ``JASPER_DAILY_SPEND_CAP_USD=0`` — a multiplier of 0 must not silently
+    turn the breaker off."""
+
+    def __init__(
+        self,
+        store: UsageStore,
+        cap_usd: float,
+        safety_multiplier: float = 1.0,
+    ) -> None:
         self._store = store
         self._cap_usd = cap_usd
+        self._safety_multiplier = max(1.0, float(safety_multiplier))
+
+    def _padded_spend(self) -> float:
+        return self._store.spend_last_24h_usd() * self._safety_multiplier
 
     def allowed(self) -> bool:
-        return self._store.spend_last_24h_usd() < self._cap_usd
+        return self._padded_spend() < self._cap_usd
 
     def remaining_usd(self) -> float:
-        return max(0.0, self._cap_usd - self._store.spend_last_24h_usd())
+        return max(0.0, self._cap_usd - self._padded_spend())
+
+
+class ConnectionUptimeMeter:
+    """Meters connection uptime for a time-billed provider (Grok: flat
+    $/hour of open connection, not per-token).
+
+    The voice daemon wires one meter to the active connection — only when
+    ``pricing.flat_per_hour_usd > 0`` — before ``start()``. The connection
+    calls ``mark_connected()`` after each successful open and
+    ``mark_disconnected()`` on teardown / reconnect / shutdown, so the
+    recorded intervals exclude reconnect-backoff gaps. Cost is folded into
+    the spend queries from those intervals.
+
+    All methods are fail-soft: a usage-accounting write must never break
+    the voice path (mirrors the rest of this module)."""
+
+    def __init__(
+        self, store: UsageStore, provider: str, rate_per_hour_usd: float,
+    ) -> None:
+        self._store = store
+        self._provider = provider
+        self._rate = float(rate_per_hour_usd)
+        # A prior process that crashed without a clean teardown leaves an
+        # interval open; close it conservatively now so it can't bill
+        # phantom uptime against this run.
+        try:
+            store.close_dangling_intervals()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("uptime meter: dangling cleanup failed: %s", e)
+
+    def mark_connected(self) -> None:
+        try:
+            self._store.record_connection_open(self._provider, self._rate)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("uptime meter: open failed: %s", e)
+
+    def mark_disconnected(self) -> None:
+        try:
+            self._store.record_connection_close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("uptime meter: close failed: %s", e)

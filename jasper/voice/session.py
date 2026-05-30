@@ -109,10 +109,14 @@ class LiveTurn(Protocol):
         ...
 
     def usage_tokens(self) -> dict[str, int]:
-        """Latest cumulative usage_metadata observed during this turn.
-        Note: Gemini Live's usage counters are session-cumulative, not
-        per-turn — values here reflect the connection's lifetime usage
-        as of the last server message processed in this turn."""
+        """This turn's token usage (``input_tokens`` / ``output_tokens``).
+
+        Adapters normalise to a PER-TURN count even when the provider
+        reports differently, so callers may SUM across turns without
+        multi-counting: OpenAI Realtime sends per-response deltas (summed
+        within the turn); Gemini Live sends a counter cumulative for the
+        WebSocket's lifetime, so its adapter subtracts the baseline
+        captured at turn start."""
         ...
 
     def usage_breakdown(self) -> "dict | None":

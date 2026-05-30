@@ -595,7 +595,15 @@ and is independent of cross-provider switching.
 |---|---|---|
 | `gemini` | ~$0.025 | cheapest; 15-min audio cap with 2-h resumption handle |
 | `openai` | ~$0.30 | reasoning levels, 128K context, 60-min hard cap, no resumption |
-| `grok` | ~$0.05 | flat $3/hour; spend cap under-counts (logs warning) |
+| `grok` | ~$0.05 | flat $3/hour, metered by connection uptime (`ConnectionUptimeMeter`), not tokens |
+
+Spend accounting (`jasper/usage.py`): the stored `cost_usd` is a true
+estimate at built-in list rates (overridable via
+`/var/lib/jasper/pricing.json` / `JASPER_PRICING_FILE`); the spend cap
+pads it at read time via `JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER`
+(default 1.25) rather than inflating the displayed number. Gemini's
+session-cumulative token counter is normalised to per-turn deltas so
+`SUM()` across rows doesn't multi-count.
 
 **Cue regeneration**: cue WAVs (static failure cues +
 dynamic-content cues like timer fire announcements) are baked from

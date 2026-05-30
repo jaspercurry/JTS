@@ -1995,3 +1995,42 @@ async def test_committed_stops_send_audio():
         await turn.release()
     finally:
         await conn.stop()
+
+
+# ---------------------------------------------------------------------------
+# Connection-uptime meter hooks (time-billed providers, e.g. Grok)
+# ---------------------------------------------------------------------------
+async def test_uptime_meter_hooks_fire_on_open_and_teardown():
+    """The connection must call the wired uptime meter on a successful
+    open and on teardown — the bridge that makes time-billed (Grok) cost
+    non-zero. Regression guard: if these hooks are dropped, Grok cost
+    silently reverts to $0 while every other test still passes. Grok
+    inherits this connection wholesale, so the base class covers it."""
+    conn, _factory = _make_conn()
+    events: list[str] = []
+
+    class _StubMeter:
+        def mark_connected(self) -> None:
+            events.append("connected")
+
+        def mark_disconnected(self) -> None:
+            events.append("disconnected")
+
+    conn.set_uptime_meter(_StubMeter())
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    # _open_session is awaited inside start(), so the open is recorded
+    # deterministically by the time start() returns.
+    assert events == ["connected"]
+    await conn.stop()
+    assert events == ["connected", "disconnected"]
+
+
+async def test_no_uptime_meter_by_default_is_safe():
+    """Token-billed providers (OpenAI/Gemini) never get a meter wired;
+    open/teardown must be no-ops on that path, not raise."""
+    conn, _factory = _make_conn()
+    assert conn._uptime_meter is None
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    await conn.stop()  # must not raise with no meter set
