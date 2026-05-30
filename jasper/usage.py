@@ -253,6 +253,14 @@ def load_default_pricing(
 # daemon restarts on every /voice save, so that path is automatic).
 _DEFAULT_MODEL_PRICING, _DEFAULT_PRICING_AS_OF = load_default_pricing()
 
+
+def default_pricing_as_of() -> str:
+    """The ``as_of`` date of the bundled default rates (read once at
+    import). Used by the /voice editor to show how fresh defaults are
+    without re-reading the file on every page load."""
+    return _DEFAULT_PRICING_AS_OF
+
+
 # Fallback model for a UsageStore built without explicit pricing — the
 # dashboard read path (never computes cost) and tests. Production always
 # passes the active model's pricing.

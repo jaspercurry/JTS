@@ -185,7 +185,7 @@ Then 17 navigation cards stacked equally:
 | 1 | Sources › | `/sources/` | AirPlay / BT / Spotify Connect / USB on-off |
 | 2 | Sound › | `/sound/` | Sound curve, Bass/Mid/Treble, advanced PEQ |
 | 3 | Speaker name › | `/speaker/` | Renderer display name |
-| 4 | Voice provider › | `/voice/` | Provider + API key + model + voice |
+| 4 | Voice provider › | `/voice/` | Provider + API key + model + voice + per-model pricing |
 | 5 | Wake word › | `/wake/` | Wake phrase, sensitivity, detection layers |
 | 6 | AirPlay sync mode › | `/airplay/` | Synced vs free-running toggle |
 | 7 | Integrations › | `/integrations` | Static page → Spotify, Google, Home Assistant |
@@ -228,7 +228,7 @@ still have their own service/socket wrappers.
 |---|---|---|---|
 | `/spotify/` | `spotify_setup.py` | 8765 | Per-household OAuth |
 | `/dial/` | `dial_setup.py` | 8766 | ESP32 dial onboarding |
-| `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice |
+| `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice + per-model pricing |
 | `/google/` | `google_setup.py` | 8768 | Calendar + Gmail OAuth |
 | `/bluetooth/` | `bluetooth_setup.py` | 8769 | Adapter + pairing |
 | `/correction/` | `correction_setup.py` | 8770 | Room measurement (HTTPS) |

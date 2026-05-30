@@ -56,7 +56,7 @@ from jasper.voice.model_discovery import (
 )
 from jasper.usage import (
     DEFAULT_PRICING_FILE,
-    load_default_pricing,
+    default_pricing_as_of,
     load_pricing_overrides,
     pricing_for_model,
     sanitize_pricing_models,
@@ -388,9 +388,9 @@ def _provider_extras_html(
     return "\n".join(out)
 
 
-# Which Pricing buckets each provider's cost model actually uses, in
-# display order. Gemini Live can't split text/cached (audio only); Grok is
-# flat-rate. This drives which number inputs the editor shows per model.
+# Human labels for the Pricing buckets. Covers all six fields; each
+# provider exposes the subset it actually uses via
+# ``ProviderCatalogEntry.pricing_buckets`` (the single per-provider source).
 _BUCKET_LABELS = {
     "audio_input_per_million_usd": "Audio in ($/1M tokens)",
     "audio_output_per_million_usd": "Audio out ($/1M tokens)",
@@ -398,20 +398,6 @@ _BUCKET_LABELS = {
     "text_output_per_million_usd": "Text out ($/1M tokens)",
     "cached_input_per_million_usd": "Cached in ($/1M tokens)",
     "flat_per_hour_usd": "Flat rate ($/hour)",
-}
-_PROVIDER_BUCKETS: dict[str, tuple[str, ...]] = {
-    "gemini": (
-        "audio_input_per_million_usd",
-        "audio_output_per_million_usd",
-    ),
-    "openai": (
-        "audio_input_per_million_usd",
-        "audio_output_per_million_usd",
-        "text_input_per_million_usd",
-        "text_output_per_million_usd",
-        "cached_input_per_million_usd",
-    ),
-    "grok": ("flat_per_hour_usd",),
 }
 
 
@@ -445,7 +431,7 @@ def _pricing_section_html(
     """Collapsible per-model rate editor for one provider. Standalone form
     POSTing to /pricing (writes /var/lib/jasper/pricing.json) — independent
     of the key/model save-form."""
-    buckets = _PROVIDER_BUCKETS.get(provider.id, ())
+    buckets = provider.pricing_buckets
     if not buckets:
         return ""
     blocks = []
@@ -497,16 +483,6 @@ def _pricing_section_html(
     </details>"""
 
 
-# Official pricing pages the research prompt points a chatbot at. The
-# provider APIs don't expose voice-model prices (see HANDOFF-pricing-editor),
-# so a human/chatbot reads these.
-_PRICING_PAGE_URLS = {
-    "gemini": "https://ai.google.dev/gemini-api/docs/pricing",
-    "openai": "https://platform.openai.com/docs/pricing",
-    "grok": "https://docs.x.ai/developers/pricing",
-}
-
-
 def _pricing_research_prompt(
     discovery: dict[str, DiscoverySnapshot] | None,
 ) -> str:
@@ -518,10 +494,10 @@ def _pricing_research_prompt(
     today = _today_iso()
     lines = []
     for provider in PROVIDERS:
-        buckets = _PROVIDER_BUCKETS.get(provider.id, ())
+        buckets = provider.pricing_buckets
         if not buckets:
             continue
-        url = _PRICING_PAGE_URLS.get(provider.id, "(official pricing page)")
+        url = provider.pricing_url or "(official pricing page)"
         lines.append(f"- {provider.label} ({provider.vendor}) — pricing: {url}")
         fields = ", ".join(buckets)
         for model_id in _provider_model_ids(provider, discovery.get(provider.id)):
@@ -886,7 +862,7 @@ def _apply_pricing_save(
     model whose fields are all omitted is removed entirely (a reset). Only
     the posted provider's models are touched; other providers' overrides
     are preserved."""
-    buckets = _PROVIDER_BUCKETS.get(provider.id, ())
+    buckets = provider.pricing_buckets
     result = {mid: dict(fields) for mid, fields in existing.items()}
     for model_id in model_ids:
         default = pricing_for_model(model_id)
@@ -913,15 +889,17 @@ def _apply_pricing_save(
 
 def _apply_pricing_paste(
     raw_text: str,
-) -> tuple[dict[str, dict] | None, str | None]:
-    """Parse a chatbot's pasted pricing JSON → ``(models_map, None)`` or
-    ``(None, error_message)``. Tolerant of a ```json fence and of a bare
-    ``{model_id: {...}}`` map without the ``{"models": ...}`` wrapper.
+) -> tuple[dict[str, dict] | None, str, str | None]:
+    """Parse a chatbot's pasted pricing JSON → ``(models_map, as_of, None)``
+    or ``(None, "", error_message)``. Tolerant of a ```json fence and of a
+    bare ``{model_id: {...}}`` map without the ``{"models": ...}`` wrapper.
     Validation reuses ``sanitize_pricing_models`` so pasted JSON is held to
-    the same rules as a hand-edited override file."""
+    the same rules as a hand-edited override file. ``as_of`` is the pasted
+    value (the date the chatbot researched the prices), preserved so the
+    file records data vintage rather than import time."""
     text = (raw_text or "").strip()
     if not text:
-        return None, "Paste the JSON your chatbot produced first."
+        return None, "", "Paste the JSON your chatbot produced first."
     if text.startswith("```"):
         # Strip a leading ```/```json fence line and a trailing ``` fence.
         text = text.split("\n", 1)[1] if "\n" in text else ""
@@ -931,18 +909,36 @@ def _apply_pricing_paste(
     try:
         data = json.loads(text)
     except (ValueError, TypeError) as e:
-        return None, f"That doesn't parse as JSON ({e})."
+        return None, "", f"That doesn't parse as JSON ({e})."
     if not isinstance(data, dict):
-        return None, 'Expected a JSON object with a "models" map.'
+        return None, "", 'Expected a JSON object with a "models" map.'
     # Accept either {"models": {...}} or a bare {model_id: {...}} map.
     models = sanitize_pricing_models(data.get("models", data))
     if not models:
-        return None, (
+        return None, "", (
             "No usable model rates found. Expected "
             '{"models": {"<model-id>": {"audio_input_per_million_usd": '
             "<number>, ...}}}."
         )
-    return models, None
+    raw_as_of = data.get("as_of")
+    as_of = raw_as_of if isinstance(raw_as_of, str) else ""
+    return models, as_of, None
+
+
+def _sparsify_overrides(models: dict[str, dict]) -> dict[str, dict]:
+    """Drop fields equal to the bundled default, and models left empty, so
+    ``pricing.json`` stays a minimal sparse override (the invariant the
+    per-provider editor maintains). Idempotent on already-sparse maps."""
+    out: dict[str, dict] = {}
+    for model_id, fields in models.items():
+        default = pricing_for_model(model_id)
+        sparse = {
+            k: v for k, v in fields.items()
+            if abs(float(v) - getattr(default, k, 0.0)) > 1e-9
+        }
+        if sparse:
+            out[model_id] = sparse
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -968,7 +964,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 state = _load_state(cfg["state_path"])
                 discovery = load_cache(cfg["discovery_cache_path"])
                 overrides = load_pricing_overrides(cfg["pricing_path"])
-                _, default_as_of = load_default_pricing()
+                default_as_of = default_pricing_as_of()
                 ctx = begin_request(self)
                 send_html_response(self, _index_html(
                     state,
@@ -1153,16 +1149,28 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
 
         def _handle_pricing_import(self, form: dict[str, str]) -> None:
-            models, err = _apply_pricing_paste(form.get("payload") or "")
+            models, as_of, err = _apply_pricing_paste(form.get("payload") or "")
             if err is not None:
                 send_see_other(self, "./", flash=err)
                 return
+            # MERGE into existing overrides (like the per-provider editor):
+            # pasted models overlay, models the paste omitted are preserved.
+            # Sparsify so the file stays minimal. A full-replace here would
+            # silently drop a hand-priced model the chatbot didn't return.
+            existing = load_pricing_overrides(cfg["pricing_path"])
+            merged = _sparsify_overrides({**existing, **models})
             try:
-                write_json_file(cfg["pricing_path"], {
-                    "as_of": _today_iso(),
-                    "source": "imported via /voice",
-                    "models": models,
-                })
+                if merged:
+                    write_json_file(cfg["pricing_path"], {
+                        "as_of": as_of or _today_iso(),
+                        "source": "imported via /voice",
+                        "models": merged,
+                    })
+                else:
+                    try:
+                        os.remove(cfg["pricing_path"])
+                    except FileNotFoundError:
+                        pass
             except OSError as e:
                 logger.exception("could not write imported pricing")
                 send_see_other(

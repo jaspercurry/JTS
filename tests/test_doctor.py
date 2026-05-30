@@ -2274,3 +2274,20 @@ def test_assess_wake_legs_dtln_skip_warns():
     )
     assert r.status == "warn"
     assert "dtln" in r.detail
+
+
+def test_pricing_ok_when_active_model_priced(monkeypatch):
+    """The active model (gemini default) is in the bundled rates → ok."""
+    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345")
+    assert doctor.check_pricing(cfg).status == "ok"
+
+
+def test_pricing_warns_when_active_model_unpriced(monkeypatch):
+    """An active model with no bundled/override rate → warn (cost reads $0,
+    the spend cap can't bound it)."""
+    cfg = _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIzaABCDEF12345",
+        JASPER_GEMINI_MODEL="gemini-9.9-does-not-exist",
+    )
+    assert doctor.check_pricing(cfg).status == "warn"

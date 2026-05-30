@@ -3929,6 +3929,52 @@ def check_spend_cap(cfg: Config) -> CheckResult:
         return CheckResult("daily spend cap", "warn", str(e))
 
 
+def check_pricing(cfg: Config) -> CheckResult:
+    """Spend estimates (and thus the cap) depend on the bundled rate data
+    loading and the active model having a rate. Surface both, since a
+    missing/corrupt model_pricing.json or an unpriced active model silently
+    drops cost to $0 (the cap then can't bound anything)."""
+    try:
+        from ..usage import (
+            load_default_pricing,
+            load_pricing_overrides,
+            pricing_for_model,
+        )
+        defaults, as_of = load_default_pricing()
+        if not defaults:
+            return CheckResult(
+                "voice model pricing", "warn",
+                "model_pricing.json failed to load — every model is unpriced, "
+                "so cost reads $0 and the spend cap can't bound it. Re-deploy.",
+            )
+        model = {
+            "gemini": cfg.gemini_model,
+            "openai": cfg.openai_model,
+            "grok": cfg.grok_model,
+        }.get(cfg.voice_provider, "")
+        if not model:
+            return CheckResult(
+                "voice model pricing", "ok",
+                f"{len(defaults)} models priced (as of {as_of}); "
+                "no active provider configured yet",
+            )
+        pricing = pricing_for_model(model, overrides=load_pricing_overrides())
+        if pricing.label.startswith("unpriced:"):
+            return CheckResult(
+                "voice model pricing", "warn",
+                f"active model {model!r} has no rate — cost reads $0 and the "
+                "spend cap can't bound it until you set one at /voice "
+                f"({len(defaults)} models priced as of {as_of})",
+            )
+        return CheckResult(
+            "voice model pricing", "ok",
+            f"active model {model} priced; {len(defaults)} bundled "
+            f"(as of {as_of})",
+        )
+    except Exception as e:  # noqa: BLE001
+        return CheckResult("voice model pricing", "warn", str(e))
+
+
 def render(results: list[CheckResult]) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
@@ -4040,6 +4086,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_cgroup_memory_enabled,
         check_audio_path_no_swap,
         ("daily spend cap", lambda: check_spend_cap(cfg)),
+        ("voice model pricing", lambda: check_pricing(cfg)),
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_aec_bridge_output_health,
