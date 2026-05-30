@@ -89,17 +89,58 @@ Rename / Discard; editing a preset offers Save as new / Discard. Saving
 emits `sound_current.yml` and persists only after the CamillaDSP reload
 is confirmed.
 
+### Gain staging — boosts boost
+
+A preference boost applies at unity: a +N dB band raises only that band
+and leaves the rest of the spectrum untouched, the way a consumer EQ
+behaves. The generated config inserts **no** automatic preamp. The only
+global attenuation is an opt-in **output trim**, which is 0 by default,
+so the default is "boosts boost". The `devices.volume_limit: 0.0` master
+ceiling remains the hard clip guard, so removing the old preamp cannot
+raise the output ceiling — at high volume a large boost clips at 0 dBFS
+rather than ducking the whole mix.
+
+Two opt-in, default-off global settings (distinct from per-profile EQ)
+feed that trim. They are owned by `/sound/` at
+`/var/lib/jasper/sound_settings.json` (`jasper/sound/settings.py`),
+fail-soft to the do-nothing defaults — a missing or corrupt file never
+alters the sound:
+
+- **Match loudness** — turns each profile down by its loudness-weighted
+  gain (`loudness_compensation_db`: a pink/K-weighted power average of the
+  EQ response, **not** peak, so a narrow +8 dB band compensates ~1 dB, not
+  8) so switching profiles compares tone, not volume. Anchored to
+  attenuation (≥ 0), so it can never cause clipping.
+- **Extra headroom** — a manual 0–12 dB digital attenuation
+  (`headroom_trim_db`, clamped) for listeners running JTS at full digital
+  volume into their own amplifier.
+
+The emitter applies one `output_trim_db = headroom_trim + (loudness
+compensation when match-loudness is on)` as the `sound_preamp` gain, and
+only when the active profile actually has filters (a flat profile can't
+clip from EQ). `estimate_headroom_db` remains as the peak-boost *metric*
+surfaced by doctor / `control` `/state` / the calibration advisor; it no
+longer drives an auto-preamp.
+
 The `/sound/audition` endpoint and `sound_audition.yml` remain in the
-backend (level-matched A/B via the validation/rollback substrate) but
-the redesigned UI no longer drives them — it expresses the live source
-through durable apply + the live-draft preview instead.
+backend as a validated, non-persisting apply: it writes a separate
+`sound_audition.yml` through the same validation/rollback substrate as
+`/sound/apply`, without persisting the profile. The redesigned UI no
+longer drives it — editing previews through the faster `/sound/live-draft`
+path and commits through durable apply — but it is intentionally retained
+as the validated-preview surface a future "propose, preview, then approve"
+AI helper can build on.
 
 ## Files
 
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
-  preview response, component overlays, conservative headroom estimate,
-  and common compare-headroom estimate for level-matched auditions.
+  preview response, component overlays, the peak-boost `estimate_headroom_db`
+  metric, and `loudness_compensation_db` (the loudness-weighted gain the
+  opt-in match-loudness setting applies).
+- `jasper/sound/settings.py` — import-cheap global output settings
+  (`SoundSettings`: `headroom_trim_db`, `match_loudness`) persisted to
+  `/var/lib/jasper/sound_settings.json`, fail-soft to the do-nothing defaults.
 - `jasper/sound/camilla_yaml.py` — CamillaDSP YAML emitter and
   generated-config inspector. It must stay import-cheap; do not import
   NumPy/SciPy here.
@@ -108,7 +149,7 @@ through durable apply + the live-draft preview instead.
   compact last-result persistence, and the durable DSP write epoch used
   to fence stale live updates.
 - `jasper/web/sound_setup.py` — `/sound/` page, `/state`, `/preview`,
-  `/live-draft`, `/audition`, and `/apply`.
+  `/live-draft`, `/audition`, `/apply`, and `/settings`.
 - `jasper/camilla.py` — lazy pyCamillaDSP wrapper. Besides the durable
   config-file loader, it owns the active-config upload/patch escape
   hatches used by live audition surfaces so raw Camilla command names do
@@ -203,8 +244,9 @@ convention other wizards follow.
 `/sound/live-draft`:
 
 1. Parses and clamps the posted Draft `SoundProfile`.
-2. Computes one common compare-headroom anchor across Bypass / Applied /
-   Draft.
+2. Computes the draft's output trim from the global sound settings (manual
+   headroom + loudness compensation when match-loudness is on; 0 by default,
+   so boosts apply at unity).
 3. Requires the posted `dsp_write_epoch` from the latest `/sound/state`.
 4. Enters the shared DSP writer lock.
 5. Skips the request as stale if the durable DSP write epoch changed.
@@ -223,9 +265,8 @@ convention other wizards follow.
 `/sound/audition`:
 
 1. Parses and clamps the posted draft/bypass `SoundProfile`.
-2. Computes one common compare-headroom anchor across Bypass / Applied /
-   Draft. This is deterministic clipping-safe level matching, not a
-   psychoacoustic loudness model.
+2. Computes the output trim from the global sound settings (same opt-in
+   headroom + match-loudness as the live-draft path; 0 by default).
 3. Reads the active CamillaDSP config path with `best_effort=False`.
 4. Rejects unknown/custom active configs.
 5. Emits `sound_audition.yml` atomically inside the DSP apply lock.
@@ -234,6 +275,18 @@ convention other wizards follow.
 8. Confirms the active config path when CamillaDSP is reachable.
 9. Rolls back to the prior config path if reload/confirm fails.
 10. Does **not** persist `/var/lib/jasper/sound_profile.json`.
+
+`/sound/settings`:
+
+1. Requires the shared JSON CSRF header (route-checked before CSRF).
+2. Clamps and saves the global `SoundSettings`
+   (`headroom_trim_db`, `match_loudness`) to
+   `/var/lib/jasper/sound_settings.json`.
+3. Re-applies the active profile through the `/sound/apply` path so the new
+   output trim takes effect immediately and persists in `sound_current.yml`.
+4. Saves the settings **before** the re-apply, so a failed re-apply still
+   sticks (returned as an error; the saved setting takes effect on the next
+   apply).
 
 `/sound/apply` (`Save to Speaker` in the UI):
 
@@ -280,7 +333,10 @@ rate-limited so a broken live-upload environment does not spam the
 journal while the user drags a slider.
 
 `/state` and `/sound/state` expose the saved sound profile plus the
-profile-library picker payload and latest DSP apply record. `/state`
+profile-library picker payload and latest DSP apply record. `/sound/state`
+additionally carries the global `sound_settings` and the effective
+`output_trim_db` for the current profile, so the page renders the
+match-loudness switch and headroom slider from server truth. `/state`
 also includes the runtime Camilla config truth so dashboards do not
 confuse "profile desired" with "profile actually loaded":
 
@@ -331,8 +387,10 @@ can be diagnosed without scraping journal logs.
   not import NumPy/SciPy on cold start.
 - Keep preference EQ bounded. The Simple EQ range is ±12 dB (matching
   the slider UI; shared with the calibration advisor via
-  `SIMPLE_EQ_LIMIT_DB`), advanced bands are capped, and generated configs
-  add digital preamp attenuation for positive boosts.
+  `SIMPLE_EQ_LIMIT_DB`) and advanced bands are capped. Boosts apply at
+  unity by default (no auto-preamp); only the opt-in output trim
+  (`headroom_trim_db` + match-loudness compensation) attenuates, and the
+  `devices.volume_limit: 0.0` ceiling stays the hard clip guard.
 - Do not merge room-correction target selection and preference EQ into
   one opaque layer. They can share UI affordances later, but the DSP
   contract must keep them distinct.
@@ -366,10 +424,11 @@ can be diagnosed without scraping journal logs.
 - AI helper that proposes bounded `SoundProfile` edits and asks the user
   to approve before applying.
 - Optional profile export/import once we know what users want to share.
-- More precise loudness matching if listening tests show the common
-  headroom anchor is not enough.
+- A clipping indicator (live on `/sound/`, backed by a `/state` field from
+  CamillaDSP's clipped-sample counter, with doctor carrying the cumulative
+  count) so the opt-in headroom trim is guided rather than guessed.
 - Optional desktop-only draggable graph handles. Keep mobile/touch
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-05-29
+Last verified: 2026-05-30

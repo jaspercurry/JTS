@@ -1,0 +1,117 @@
+"""Global sound-output settings (distinct from per-profile EQ).
+
+These shape the single output gain stage shared by every preference
+profile, so they live apart from :class:`~jasper.sound.profile.SoundProfile`:
+
+- ``headroom_trim_db`` — a fixed digital attenuation the listener can dial
+  in for clip safety when running JTS at full digital volume into an
+  external amp (with headroom, boosts can't reach 0 dBFS and clip).
+  ``0`` by default, so boosts apply at unity — how a consumer EQ behaves.
+- ``match_loudness`` — when on, each profile is turned down by its
+  loudness-weighted gain so switching profiles compares tone, not volume.
+  ``False`` by default.
+
+Single source of truth: ``/var/lib/jasper/sound_settings.json``,
+wizard-owned (the ``/sound/`` page). Absence or corruption fails soft to
+the defaults above — which are also the "change nothing" state — so a
+missing or bad file can never silently alter the sound.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+SETTINGS_PATH = "/var/lib/jasper/sound_settings.json"
+
+# Bound on the manual headroom trim. ±12 dB mirrors the per-band EQ range;
+# more than 12 dB of global attenuation is volume control, not headroom.
+HEADROOM_TRIM_MAX_DB = 12.0
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    if out != out or out in (float("inf"), float("-inf")):  # NaN / inf
+        return default
+    return out
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+@dataclass(frozen=True)
+class SoundSettings:
+    """Global output settings shared by every preference profile."""
+
+    headroom_trim_db: float = 0.0
+    match_loudness: bool = False
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "SoundSettings":
+        raw = raw if isinstance(raw, dict) else {}
+        trim = _coerce_float(raw.get("headroom_trim_db"), 0.0)
+        trim = min(HEADROOM_TRIM_MAX_DB, max(0.0, trim))
+        return cls(
+            headroom_trim_db=round(trim, 3),
+            match_loudness=_coerce_bool(raw.get("match_loudness"), False),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "headroom_trim_db": round(self.headroom_trim_db, 3),
+            "match_loudness": self.match_loudness,
+        }
+
+
+def _settings_path(path: str | Path | None) -> Path:
+    return Path(path or os.environ.get("JASPER_SOUND_SETTINGS_PATH", SETTINGS_PATH))
+
+
+def load_sound_settings(path: str | Path | None = None) -> SoundSettings:
+    settings_path = _settings_path(path)
+    try:
+        return SoundSettings.from_mapping(json.loads(settings_path.read_text()))
+    except FileNotFoundError:
+        return SoundSettings()
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("could not read sound settings %s: %s", settings_path, e)
+        return SoundSettings()
+
+
+def save_sound_settings(
+    settings: SoundSettings, path: str | Path | None = None
+) -> None:
+    settings_path = _settings_path(path)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(settings.to_dict(), indent=2, sort_keys=True) + "\n"
+    with tempfile.NamedTemporaryFile(
+        "w",
+        dir=settings_path.parent,
+        prefix=f".{settings_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as f:
+        f.write(data)
+        tmp_name = f.name
+    os.replace(tmp_name, settings_path)

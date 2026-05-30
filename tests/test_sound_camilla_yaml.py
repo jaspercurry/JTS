@@ -26,12 +26,12 @@ def test_sound_config_preserves_room_peqs_before_preference_eq():
     assert "volume_limit: 0.0" in yaml
     assert 'device: "outputd_content_playback"' in yaml
     assert "room_peq_1:" in yaml
-    assert "sound_preamp:" in yaml
+    assert "sound_preamp" not in yaml  # default trim 0: boosts boost
     assert "sound_curve_harman_bass:" in yaml
     assert "type: Lowshelf" in yaml
     assert "type: Highshelf" in yaml
     assert "sound_simple_mid:" in yaml
-    assert "names: [room_peq_1, sound_preamp, sound_curve_harman_bass" in yaml
+    assert "names: [room_peq_1, sound_curve_harman_bass" in yaml
     assert yaml.count("channels: [0]") == 1
     assert yaml.count("channels: [1]") == 1
 
@@ -50,22 +50,32 @@ def test_disabled_sound_config_bypasses_preference_eq_but_keeps_room_peqs():
     assert "names: [room_peq_1, flat]" in yaml
 
 
-def test_audition_headroom_can_level_match_disabled_bypass():
+def test_output_trim_emits_single_preamp_before_filters():
     profile = SoundProfile(
-        enabled=False,
-        curve_id="harman",
-        simple_eq=SimpleEq(bass_db=6.0),
+        enabled=True, curve_id="harman", simple_eq=SimpleEq(bass_db=6.0)
     )
-    yaml = emit_sound_config(
-        profile,
-        headroom_override_db=4.0,
-        emit_preamp_without_sound=True,
-    )
+    yaml = emit_sound_config(profile, output_trim_db=4.0)
 
     assert "sound_preamp:" in yaml
     assert "gain: -4.0000" in yaml
-    assert "sound_curve_harman_bass" not in yaml
-    assert "names: [sound_preamp, flat]" in yaml
+    assert "names: [sound_preamp, sound_curve_harman_bass" in yaml
+
+
+def test_default_has_no_preamp_so_boosts_boost():
+    profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=6.0))
+    yaml = emit_sound_config(profile)
+
+    assert "sound_preamp" not in yaml
+    assert "sound_simple_bass:" in yaml
+
+
+def test_output_trim_is_ignored_when_profile_has_no_filters():
+    # A flat profile can't clip from EQ, so a configured trim is a no-op.
+    yaml = emit_sound_config(
+        SoundProfile(enabled=True, curve_id="flat"), output_trim_db=6.0
+    )
+
+    assert "sound_preamp" not in yaml
 
 
 def test_extract_room_peqs_from_legacy_correction_config():

@@ -9,10 +9,10 @@ from jasper.sound.profile import (
     SoundProfile,
     build_sound_filters,
     delete_named_profile,
-    estimate_compare_headroom_db,
     estimate_headroom_db,
     load_profile,
     load_profile_library,
+    loudness_compensation_db,
     profile_library_payload,
     rename_named_profile,
     response_component_payload,
@@ -162,14 +162,31 @@ def test_headroom_samples_narrow_off_grid_advanced_boosts():
     assert estimate_headroom_db(profile) >= 8.9
 
 
-def test_compare_headroom_uses_loudest_profile_anchor():
-    saved = SoundProfile(simple_eq=SimpleEq(bass_db=2.0))
-    draft = SoundProfile(simple_eq=SimpleEq(bass_db=5.0))
-    bypass = SoundProfile(enabled=False, simple_eq=SimpleEq(bass_db=6.0))
-
-    assert estimate_compare_headroom_db([saved, draft, bypass]) == (
-        estimate_headroom_db(draft)
+def test_loudness_compensation_is_loudness_weighted_not_peak():
+    # A narrow, tall boost barely moves loudness, so its compensation is far
+    # below its peak gain -- the whole point of switching off the peak anchor.
+    narrow = SoundProfile(
+        parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=9.0, q=8.0),)
     )
+    assert loudness_compensation_db(narrow) < estimate_headroom_db(narrow) / 2
+
+    # A broad boost at the same centre/gain moves real loudness, so it
+    # compensates more than the narrow one.
+    broad = SoundProfile(
+        parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=9.0, q=0.5),)
+    )
+    assert loudness_compensation_db(broad) > loudness_compensation_db(narrow)
+
+
+def test_loudness_compensation_anchored_to_attenuation():
+    # Flat / disabled / cuts-only never produce a positive (boosting)
+    # compensation, so match-loudness can never cause clipping.
+    assert loudness_compensation_db(SoundProfile()) == 0.0
+    assert (
+        loudness_compensation_db(SoundProfile(enabled=False, curve_id="harman")) == 0.0
+    )
+    cuts_only = SoundProfile(simple_eq=SimpleEq(mid_db=-6.0, treble_db=-4.0))
+    assert loudness_compensation_db(cuts_only) == 0.0
 
 
 def test_response_component_payload_splits_advanced_bands():

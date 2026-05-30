@@ -830,18 +830,36 @@ def estimate_headroom_db(profile: SoundProfile) -> float:
     return round(max(0.0, max_boost), 3)
 
 
-def estimate_compare_headroom_db(profiles: Iterable[SoundProfile]) -> float:
-    """Common attenuation anchor for level-matched A/B auditions.
+def loudness_compensation_db(profile: SoundProfile) -> float:
+    """Attenuation that offsets how much louder this EQ makes typical music.
 
-    The compare path uses one shared preamp across Bypass / Applied /
-    Draft so the louder-seeming option is not just the one with less
-    safety attenuation. This is not a psychoacoustic loudness model; it
-    is a deterministic, clipping-safe comparison anchor.
+    Used by the optional "match loudness" setting so switching profiles
+    compares tone, not volume. Loudness-weighted, not peak: music energy is
+    roughly pink (equal energy per octave -> uniform across our log-spaced
+    preview points), and the ear de-emphasizes the extremes, so we average
+    power over the ~40 Hz-16 kHz band and convert back to dB. A narrow +8 dB
+    band barely moves loudness (~1 dB); a broad bass shelf moves it more.
+
+    Anchored to attenuation (>= 0): a net-louder profile is turned down
+    toward flat loudness; a net-quieter (subtractive) profile is left alone
+    rather than boosted, so the compensation can never cause clipping. This
+    is an approximation, consistent with response_preview; CamillaDSP owns
+    the real filters.
     """
 
-    return round(
-        max((estimate_headroom_db(profile) for profile in profiles), default=0.0), 3
-    )
+    if not build_sound_filters(profile):
+        return 0.0
+    band = [
+        point
+        for point in response_preview(profile)
+        if 40.0 <= point["freq_hz"] <= 16000.0
+    ]
+    if not band:
+        return 0.0
+    mean_power = sum(10.0 ** (point["db"] / 10.0) for point in band) / len(band)
+    if mean_power <= 0.0:
+        return 0.0
+    return round(max(0.0, 10.0 * math.log10(mean_power)), 3)
 
 
 def load_profile(path: str | Path | None = None) -> SoundProfile:
