@@ -1139,6 +1139,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self, "./", flash=f"Could not save pricing: {e}",
                 )
                 return
+            logger.info(
+                "event=pricing.edit provider=%s models=%d",
+                provider.id, len(new_models),
+            )
             restart_voice_daemon()
             send_see_other(
                 self, "./",
@@ -1177,6 +1181,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self, "./", flash=f"Could not save pricing: {e}",
                 )
                 return
+            logger.info(
+                "event=pricing.import imported=%d total=%d",
+                len(models), len(merged),
+            )
             restart_voice_daemon()
             send_see_other(
                 self, "./",

@@ -1017,3 +1017,27 @@ def test_pricing_save_route_writes_sparse_override(tmp_path: Path):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_pricing_import_route_replaces_same_model_override(tmp_path: Path):
+    """Re-importing a model REPLACES that model's prior override (per-model
+    replace); the cross-model merge that preserves *other* models is covered
+    by test_pricing_import_route_merges_preserving_other_models."""
+    import json
+    pricing_path = tmp_path / "pricing.json"
+    pricing_path.write_text(json.dumps(
+        {"models": {"gpt-realtime-2": {"text_output_per_million_usd": 99.0}}}
+    ))
+    server, base, thread = _start_server(tmp_path)
+    try:
+        status, _loc, _body = _post(base + "/pricing-import", {
+            "payload": '{"models": {"gpt-realtime-2": '
+                       '{"audio_input_per_million_usd": 30}}}',
+        })
+        assert status == 303
+        saved = json.loads(pricing_path.read_text())["models"]
+        # Prior text_output override gone (replaced); new audio_input stands.
+        assert saved["gpt-realtime-2"] == {"audio_input_per_million_usd": 30.0}
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

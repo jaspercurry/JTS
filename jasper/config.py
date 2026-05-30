@@ -890,6 +890,18 @@ class Config:
         ))
 
     @property
+    def active_voice_model(self) -> str:
+        """Model name configured for the active provider, or "" for an
+        unset/unknown provider. Single source for the daemon's startup
+        logging, the spend-cap pricing lookup, and jasper-doctor — so a
+        new provider's model resolution lives in exactly one place."""
+        return {
+            "gemini": self.gemini_model,
+            "openai": self.openai_model,
+            "grok": self.grok_model,
+        }.get(self.voice_provider, "")
+
+    @property
     def subway_enabled(self) -> bool:
         return bool(self.subway_station_id)
 

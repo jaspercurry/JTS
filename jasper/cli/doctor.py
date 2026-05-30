@@ -3947,11 +3947,7 @@ def check_pricing(cfg: Config) -> CheckResult:
                 "model_pricing.json failed to load — every model is unpriced, "
                 "so cost reads $0 and the spend cap can't bound it. Re-deploy.",
             )
-        model = {
-            "gemini": cfg.gemini_model,
-            "openai": cfg.openai_model,
-            "grok": cfg.grok_model,
-        }.get(cfg.voice_provider, "")
+        model = cfg.active_voice_model
         if not model:
             return CheckResult(
                 "voice model pricing", "ok",
