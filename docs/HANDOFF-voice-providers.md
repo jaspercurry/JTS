@@ -109,7 +109,7 @@ Each backend has a real strength and at least one real cost:
 |---|---|---|
 | **Gemini Live** (gemini-3.1-flash-live-preview / gemini-2.5-flash-native-audio) | Cheapest by ~5×; mature 24-language voice catalogue; session resumption (2 h handle); the existing Jasper deployment runs on it | Sequential tool calls only on 3.1; occasional silent-session-2 failures requiring a fall-back to `2.5-flash-native-audio-preview-12-2025`; 15-min audio cap on a single session |
 | **OpenAI Realtime** (gpt-realtime-2, GA 2026-05-07) | Reasoning levels (minimal/low/medium/high/xhigh); 128K context; multi-tool-at-once; image input; MCP; SIP; arguably tightest tool/instruction following | $32/$64/$0.40 per 1M tokens — about 5× Gemini per minute; 60-min hard session cap with NO resumption; PCM-input only at 24 kHz (we upsample 16 kHz mic) |
-| **xAI Grok** (grok-voice-think-fast-1.0) | Sub-second TTFA; flat $3/hour billing (cheapest at sustained chat); first-class web/x/file/MCP search built-ins; OpenAI-protocol-compatible so it rides the same adapter | Token-based spend cap under-counts (logs a warning at startup); voice catalogue is disjoint from OpenAI's (eve / ara / rex / sal / leo); fewer guarantees on event-shape stability — xAI documents one rename today (`response.text.delta` → `response.output_text.delta`) and we normalise it in `grok_session.py` |
+| **xAI Grok** (grok-voice-think-fast-1.0) | Sub-second TTFA; flat $3/hour billing (cheapest at sustained chat); first-class web/x/file/MCP search built-ins; OpenAI-protocol-compatible so it rides the same adapter | Cost is connection-time, not tokens, so it's metered separately via `ConnectionUptimeMeter` (token rows price to $0); voice catalogue is disjoint from OpenAI's (eve / ara / rex / sal / leo); fewer guarantees on event-shape stability — xAI documents one rename today (`response.text.delta` → `response.output_text.delta`) and we normalise it in `grok_session.py` |
 
 Anthropic is **not** on the list. As of 2026-05-09 there is no public
 real-time speech-to-speech API from Anthropic — only push-to-talk Voice
@@ -165,11 +165,27 @@ Mode in the consumer apps and dictation in Claude Code.
   is provider-agnostic by design — no "Google" or "Gemini" or
   "OpenAI" mentions ever bake into the audio.
 - **Spend-cap pricing** ([`jasper/usage.py`](../jasper/usage.py)):
-  `pricing_for_provider(provider, model=...)` returns a `Pricing`
-  snapshot; `UsageStore` accepts it on construction and applies it at
-  session-close time. Switching providers mid-day naturally
+  `pricing_for_provider(provider, model=..., overrides=...)` returns a
+  `Pricing` snapshot; `UsageStore` accepts it on construction and applies
+  it at session-close time. Switching providers mid-day naturally
   aggregates — older sessions retain whichever pricing was active
-  when they closed.
+  when they closed. Three things worth knowing:
+  - **Per-turn usage is normalised.** OpenAI reports per-response token
+    deltas (summed within a turn); Gemini reports a counter cumulative
+    for the WebSocket's lifetime, so `GeminiLiveTurn` subtracts the
+    baseline captured at turn start. Each per-turn usage row therefore
+    holds that turn's tokens and `SUM()` across rows doesn't multi-count.
+  - **Time-billed providers (Grok) are metered by uptime.** Grok bills
+    a flat $/hour, so its token rows price to $0; `ConnectionUptimeMeter`
+    records connect/disconnect intervals and the spend queries fold that
+    cost in. The dashboard and cap therefore see real Grok cost.
+  - **Stored cost is a true estimate; the cap pads at read time.**
+    `SpendCap` multiplies the rolling spend by
+    `JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER` (default 1.25) so the
+    breaker stays conservative without inflating the displayed number.
+    Built-in rates are list prices as of 2026-05-30; an optional
+    `JASPER_PRICING_FILE` (`/var/lib/jasper/pricing.json`) overlays them
+    per provider without a code change (`load_pricing_overrides`).
 
 ### Provider-specific in each adapter
 
@@ -347,4 +363,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-05-28 (LiveTurn audio chunk identity checked against OpenAI/Gemini adapters)
+Last verified: 2026-05-30 (spend/usage accounting reworked: per-turn Gemini delta, Grok uptime meter, SpendCap safety multiplier, pricing override file — all against current jasper/usage.py)

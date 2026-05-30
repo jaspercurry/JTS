@@ -3839,7 +3839,11 @@ def check_spend_cap(cfg: Config) -> CheckResult:
     try:
         from ..usage import SpendCap, UsageStore
         store = UsageStore(cfg.usage_db)
-        cap = SpendCap(store, cfg.daily_spend_cap_usd)
+        cap = SpendCap(
+            store,
+            cfg.daily_spend_cap_usd,
+            cfg.daily_spend_cap_safety_multiplier,
+        )
         remaining = cap.remaining_usd()
         if not cap.allowed():
             return CheckResult(

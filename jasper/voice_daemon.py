@@ -67,7 +67,13 @@ from .tools.time import make_time_tools
 from .tools.timer import make_timer_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
-from .usage import SpendCap, UsageStore, pricing_for_provider
+from .usage import (
+    ConnectionUptimeMeter,
+    SpendCap,
+    UsageStore,
+    load_pricing_overrides,
+    pricing_for_provider,
+)
 from .voice.session import AudioOutChunk, LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
 from .volume_observers import VolumeObserver
@@ -3426,28 +3432,21 @@ async def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     pricing = pricing_for_provider(
-        cfg.voice_provider, model=_active_model(cfg),
+        cfg.voice_provider,
+        model=_active_model(cfg),
+        overrides=load_pricing_overrides(),
     )
     logger.info(
-        "spend cap: provider=%s pricing=%s cap=$%.2f/day",
+        "spend cap: provider=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
         cfg.voice_provider, pricing.label, cfg.daily_spend_cap_usd,
+        cfg.daily_spend_cap_safety_multiplier,
     )
-    if (
-        cfg.daily_spend_cap_usd > 0
-        and pricing.flat_per_hour_usd > 0
-    ):
-        # Grok bills per hour, not per token; UsageStore tracks tokens
-        # and will under-count. Document the gap so the user knows the
-        # cap behaviour is advisory under Grok.
-        logger.warning(
-            "spend cap with Grok: token-based accounting under-counts "
-            "Grok's flat $%.2f/hour rate. Spend cap is effectively a "
-            "liveness nudge under this provider — use xAI's billing "
-            "dashboard for real numbers.",
-            pricing.flat_per_hour_usd,
-        )
     usage_store = UsageStore(cfg.usage_db, pricing=pricing)
-    spend_cap = SpendCap(usage_store, cfg.daily_spend_cap_usd)
+    spend_cap = SpendCap(
+        usage_store,
+        cfg.daily_spend_cap_usd,
+        cfg.daily_spend_cap_safety_multiplier,
+    )
 
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
     renderer = RendererClient(
@@ -3697,6 +3696,21 @@ async def run() -> None:
     # fresh open. The location is captured at startup; if you change
     # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
     connection = _make_connection(cfg)
+    # Time-billed providers (Grok: flat $/hour) price their per-turn token
+    # rows to $0; their real cost is connection uptime. Wire a meter —
+    # before start() so the initial connect's interval is captured — that
+    # records connect/disconnect intervals the spend queries fold in. No
+    # meter for token-billed providers (flat_per_hour_usd == 0).
+    if pricing.flat_per_hour_usd > 0:
+        set_meter = getattr(connection, "set_uptime_meter", None)
+        if callable(set_meter):
+            set_meter(ConnectionUptimeMeter(
+                usage_store, cfg.voice_provider, pricing.flat_per_hour_usd,
+            ))
+            logger.info(
+                "connection uptime meter: enabled for %s at $%.2f/hour",
+                cfg.voice_provider, pricing.flat_per_hour_usd,
+            )
     tts_volume_tracker: TtsVolumeTracker | None = None
     try:
         # Capture the linked-Google-accounts list at startup so the

@@ -123,10 +123,26 @@ class GeminiLiveTurn(LiveTurn):
     cleared and the next `acquire_turn()` returns a fresh turn.
     """
 
-    def __init__(self, conn: "GeminiLiveConnection", started_at: float) -> None:
+    def __init__(
+        self,
+        conn: "GeminiLiveConnection",
+        started_at: float,
+        usage_baseline: dict[str, int] | None = None,
+    ) -> None:
         self._conn = conn
         self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()
-        self._usage = {"input_tokens": 0, "output_tokens": 0}
+        # Gemini Live reports usage_metadata as a counter cumulative for
+        # the WebSocket's lifetime, not per-turn. We capture the
+        # connection's cumulative at turn start as a baseline and report
+        # this turn's DELTA from it (see usage_tokens), so per-turn usage
+        # rows hold per-turn counts and SUM() across rows doesn't
+        # multi-count. `_usage` tracks the latest observed cumulative; it
+        # starts at the baseline so a turn that observes no usage_metadata
+        # reports a zero delta rather than a negative one.
+        self._usage_baseline = dict(
+            usage_baseline or {"input_tokens": 0, "output_tokens": 0}
+        )
+        self._usage = dict(self._usage_baseline)
         self._turn_count = 0
         self._interrupted = False
         self._interrupt_event = asyncio.Event()
@@ -256,7 +272,22 @@ class GeminiLiveTurn(LiveTurn):
         return self._chunks_received
 
     def usage_tokens(self) -> dict[str, int]:
-        return dict(self._usage)
+        """This turn's token usage — the delta of Gemini's cumulative
+        counter since the baseline captured at turn start, so callers
+        may SUM across turns without multi-counting. See __init__."""
+        return {
+            "input_tokens": self._turn_delta("input_tokens"),
+            "output_tokens": self._turn_delta("output_tokens"),
+        }
+
+    def _turn_delta(self, key: str) -> int:
+        observed = int(self._usage.get(key, 0))
+        baseline = int(self._usage_baseline.get(key, 0))
+        delta = observed - baseline
+        # A negative delta means the server-side counter reset under us
+        # (a fresh session after a reconnect restarts it); the observed
+        # value is then already the post-reset, this-session total.
+        return delta if delta >= 0 else observed
 
     def usage_breakdown(self) -> dict | None:
         # Gemini Live's usage_metadata only carries
@@ -329,6 +360,11 @@ class GeminiLiveTurn(LiveTurn):
                 logger.info("model interrupted by user")
 
         # Usage metadata: guarded since field names can shift on Preview.
+        # The counter is cumulative for the WebSocket's lifetime, so we
+        # store the latest observed value here AND advance the
+        # connection's running cumulative (the baseline for the NEXT
+        # turn). usage_tokens() reports this turn's delta from its
+        # captured baseline.
         usage = getattr(response, "usage_metadata", None)
         if usage is not None:
             in_tok = getattr(usage, "prompt_token_count", None)
@@ -337,16 +373,25 @@ class GeminiLiveTurn(LiveTurn):
                 self._usage["input_tokens"] = int(in_tok)
             if out_tok is not None:
                 self._usage["output_tokens"] = int(out_tok)
+            # Advance the connection's running cumulative (the baseline
+            # for the NEXT turn). Goes through a connection method rather
+            # than poking its dict, matching the turn→connection call
+            # pattern used elsewhere (_handle_tool_call, _on_turn_released).
+            self._conn._note_cumulative_usage(
+                self._usage["input_tokens"], self._usage["output_tokens"],
+            )
 
         # Per-turn diagnostic line, parity with the OpenAI adapter's
-        # `openai response.done:` log. Gemini's usage_metadata is
-        # session-cumulative and lacks the audio/text/cached split, so
-        # we surface what we have: cumulative tokens + this turn's
-        # chunk count. Same shape lets `grep "response.done\|turn complete"`
-        # work across providers when comparing behavior.
+        # `openai response.done:` log. We surface both this turn's delta
+        # (what gets billed to the usage row) and the cumulative counter
+        # (for debugging the delta math). Same shape lets
+        # `grep "response.done\|turn complete"` work across providers.
         if turn_just_completed:
+            td = self.usage_tokens()
             logger.info(
-                "gemini turn complete: in=%d out=%d (cumulative) chunks=%d",
+                "gemini turn complete: in=%d out=%d (turn) "
+                "in=%d out=%d (cumulative) chunks=%d",
+                td["input_tokens"], td["output_tokens"],
                 int(self._usage.get("input_tokens") or 0),
                 int(self._usage.get("output_tokens") or 0),
                 self._chunks_received,
@@ -454,6 +499,15 @@ class GeminiLiveConnection(LiveConnection):
         # daemon's WakeLoop.
         self._active_turn: GeminiLiveTurn | None = None
         self._turn_lock = asyncio.Lock()
+
+        # Running cumulative of Gemini's session usage counter (which is
+        # cumulative for the WebSocket's lifetime). Each turn captures
+        # this at start as its baseline and reports its own delta, so
+        # per-turn usage rows don't multi-count. Each turn advances it as
+        # it observes usage_metadata. NOT reset on reconnect — a counter
+        # reset on a fresh session is handled by the delta's reset-guard
+        # (GeminiLiveTurn._turn_delta).
+        self._cumulative_usage = {"input_tokens": 0, "output_tokens": 0}
 
         # Timestamps of `activity_end`s sent to the server that haven't
         # yet been matched by a server-side `turn_complete`. See the
@@ -653,7 +707,12 @@ class GeminiLiveConnection(LiveConnection):
             if self._active_turn is not None:
                 raise RuntimeError("live connection: a turn is already active")
             now_loop = asyncio.get_event_loop().time()
-            turn = GeminiLiveTurn(self, started_at=now_loop)
+            # Snapshot the cumulative usage as this turn's baseline so it
+            # reports only its own token delta (see GeminiLiveTurn).
+            turn = GeminiLiveTurn(
+                self, started_at=now_loop,
+                usage_baseline=self._cumulative_usage,
+            )
             # Used by GeminiLiveTurn for elapsed-ms logging.
             turn._started_at_monotonic = _time.monotonic()
             self._active_turn = turn
@@ -753,6 +812,19 @@ class GeminiLiveConnection(LiveConnection):
         async with self._state_lock:
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
+
+    def _note_cumulative_usage(
+        self, input_tokens: int, output_tokens: int,
+    ) -> None:
+        """Advance the running cumulative usage counter.
+
+        Gemini reports usage_metadata as a counter cumulative for the
+        WebSocket's lifetime; the active turn calls this as it observes
+        new values. The next turn captures this in ``acquire_turn`` as
+        its baseline and reports its own delta, so per-turn usage rows
+        don't multi-count."""
+        self._cumulative_usage["input_tokens"] = int(input_tokens)
+        self._cumulative_usage["output_tokens"] = int(output_tokens)
 
     # ------------------------------------------------------------------
     # Internal — connection lifecycle

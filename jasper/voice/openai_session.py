@@ -726,6 +726,12 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._stopping = asyncio.Event()
         self._connected_event: asyncio.Event = asyncio.Event()
 
+        # Optional connection-uptime meter (time-billed providers, e.g.
+        # Grok). Wired by the daemon before start() when the active
+        # provider bills per hour; None for token-billed providers.
+        # See jasper.usage.ConnectionUptimeMeter.
+        self._uptime_meter = None
+
         # Proactive pre-cap reconnect — watchdog state.
         # Task that fires at (session_max_sec - proactive_buffer_sec); set
         # by `_open_session`, cancelled by `_teardown_session`.
@@ -768,6 +774,15 @@ class OpenAIRealtimeConnection(LiveConnection):
         ``WakeLoop`` are constructed (the loop owns the cue manager and
         knows how to suppress the cue mid-session)."""
         self._failure_escalation_cb = cb
+
+    def set_uptime_meter(self, meter) -> None:
+        """Wire a ``ConnectionUptimeMeter`` for time-billed providers.
+
+        Daemon calls this before ``start()`` so the initial connect's
+        interval is captured. Once set, ``_open_session`` marks the
+        connection up and ``_teardown_session`` marks it down, so the
+        recorded intervals exclude reconnect-backoff gaps."""
+        self._uptime_meter = meter
 
     def _maybe_fire_escalation_cue(self) -> None:
         if len(self._recent_failure_fingerprints) < ESCALATION_REPEAT_THRESHOLD:
@@ -1302,6 +1317,14 @@ class OpenAIRealtimeConnection(LiveConnection):
         # Kick off the proactive pre-cap watchdog. No-op when either
         # `session_max_sec` or `proactive_buffer_sec` is 0 (disabled).
         self._start_proactive_watchdog()
+        # Open the connection-uptime interval LAST (time-billed providers).
+        # As the final side effect of a fully-successful open, a raise
+        # anywhere earlier (which re-enters the retry loop) can't leave a
+        # phantom interval, and the reconnect path's teardown→reopen
+        # (mark_disconnected→mark_connected) keeps exactly one open at a
+        # time. Crash-leftover intervals are swept at next daemon start.
+        if self._uptime_meter is not None:
+            self._uptime_meter.mark_connected()
 
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
@@ -1335,6 +1358,11 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._conn_cm = None
         self._conn = None
         self._connected_event.clear()
+        # Close the connection-uptime interval (time-billed providers).
+        # Called on reconnect (teardown→reopen) and shutdown, so the
+        # reconnect-backoff gap is correctly excluded from billed uptime.
+        if self._uptime_meter is not None:
+            self._uptime_meter.mark_disconnected()
         teardown_ms = (_time.monotonic() - t0) * 1000
         logger.info("openai connection: session torn down in %.0fms", teardown_ms)
 
