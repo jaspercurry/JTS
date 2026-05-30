@@ -12,6 +12,10 @@
 //     if (await jtsConfirm("Reboot the speaker?", { danger: true })) { … }
 //     await jtsAlert("Enter the password first.");
 //
+// These are async and DO NOT block (unlike native confirm/alert): a non-awaited
+// call returns immediately while the modal is open, so await if later code must
+// run only after the user dismisses it.
+//
 // <dialog>.showModal() is assumed (every browser since 2022 has it — Chrome
 // 37, Firefox 98, Safari 15.4); no native-popup fallback, since reintroducing
 // window.confirm would bring back the suppression bug this module exists to

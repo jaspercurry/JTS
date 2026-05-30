@@ -369,9 +369,9 @@ def toggle_html(
 # silently defeated the action guards. <dialog>.showModal() can't be
 # suppressed and gives a focus trap, ESC-to-cancel, and a backdrop for free.
 #
-# CSS rides inside wrap_page()'s <style> automatically; the hand-rolled pages
-# (wifi, bluetooth, correction, home_assistant, wake_corpus) that build their
-# own style block embed DIALOG_CSS the same way they embed TOGGLE_CSS /
+# CSS rides inside wrap_page()'s <style> on pages that use the helper; the
+# hand-rolled pages (wifi, bluetooth, correction, home_assistant, wake_corpus)
+# that build their own style block embed DIALOG_CSS the same way as TOGGLE_CSS /
 # NAV_BACK_CSS. The dialog self-styles its buttons (green default, .secondary
 # grey, .danger red) so it looks identical regardless of the page's own theme.
 DIALOG_CSS = """
@@ -402,9 +402,9 @@ DIALOG_CSS = """
 def dialog_helpers_js() -> str:
     """JavaScript for the modal confirm/alert dialog (legacy wizards).
 
-    wrap_page() embeds this in every page; hand-rolled pages (wifi, bluetooth,
-    correction, home_assistant, wake_corpus) embed it themselves. Exposes
-    three globals:
+    wrap_page() embeds this on pages that use it (detected by the helper's
+    function names in the body); hand-rolled pages (wifi, bluetooth, correction,
+    home_assistant, wake_corpus) embed it themselves. Exposes three globals:
 
       * `jtsConfirm(message, opts)` → Promise<boolean>. opts: {danger, title,
         confirmLabel, cancelLabel}. `danger:true` reddens the confirm button
@@ -420,7 +420,11 @@ def dialog_helpers_js() -> str:
 
     Message text is set via textContent (never innerHTML) so interpolated
     untrusted strings — SSIDs, Bluetooth/device names — can't inject markup;
-    CSS `white-space: pre-line` renders multi-line \\n messages."""
+    CSS `white-space: pre-line` renders multi-line \\n messages.
+
+    NOTE: unlike native confirm()/alert(), these are async and DO NOT block —
+    a non-awaited call returns immediately while the modal is open, so `await`
+    if subsequent code must run only after the user dismisses it."""
     return """
 function jtsDialog(message, title, buttons) {
   var dlg = document.createElement('dialog');
@@ -496,20 +500,27 @@ def wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
         f'<p class="{msg_class}">{html.escape(status_msg)}</p>'
         if status_msg else ""
     )
+    # Ship the confirm/alert dialog helper only to pages that actually use it
+    # (detected by the helper's function names in the body), so dialogless
+    # wizards carry no dead weight. Emit it *before* the body so jtsConfirm /
+    # jtsAlert are defined before any page script that references them.
+    needs_dialog = "jtsConfirm" in body or "jtsAlert" in body
+    dialog_css = DIALOG_CSS if needs_dialog else ""
+    dialog_js = f"<script>{dialog_helpers_js()}</script>" if needs_dialog else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
-<style>{PAGE_STYLE}{DIALOG_CSS}</style>
+<style>{PAGE_STYLE}{dialog_css}</style>
 </head>
 <body>
 {NAV_BACK_HTML}
 <h1>{html.escape(title)}</h1>
 {msg_html}
+{dialog_js}
 {body}
-<script>{dialog_helpers_js()}</script>
 </body>
 </html>""".encode()
 
