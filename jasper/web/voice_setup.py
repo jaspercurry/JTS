@@ -44,6 +44,7 @@ from jasper.voice.catalog import (
     default_voice_id,
     provider_by_id,
 )
+from jasper.voice.provider_state import resolve_active_provider
 from jasper.voice.model_discovery import (
     DEFAULT_CACHE_PATH,
     DiscoverySnapshot,
@@ -137,7 +138,11 @@ def _active_provider_id(state: dict[str, str]) -> str:
     `/etc/jasper/jasper.env` and `/var/lib/jasper/voice_provider.env`
     disagreed about what was active."""
     active = _value_for(state, "JASPER_VOICE_PROVIDER", "")
-    return active if active in VALID_PROVIDER_IDS else ""
+    # Same validation rule as jasper-control (resolve_active_provider):
+    # a valid id or empty, never a default. _value_for keeps the wizard's
+    # file-then-env lookup so an operator-set value in jasper.env still
+    # displays here.
+    return resolve_active_provider({"JASPER_VOICE_PROVIDER": active})
 
 
 # ----------------------------------------------------------------------

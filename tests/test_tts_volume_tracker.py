@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 
+import numpy as np
 import pytest
 
 from jasper.audio_io import TtsPlayout
@@ -93,6 +94,13 @@ def _tracker(
         music_window_sec=window_sec,
         initial_anchor_dbfs=initial_anchor_dbfs,
     )
+
+
+def _pcm_with_peak(peak_dbfs: float, n: int = 2400) -> bytes:
+    """A mono int16 PCM chunk whose peak sample sits at `peak_dbfs`."""
+    amp = int(round(32768 * 10 ** (peak_dbfs / 20.0)))
+    amp = max(1, min(32767, amp))
+    return np.full(n, amp, dtype=np.int16).tobytes()
 
 
 # --- silence-fallback path -------------------------------------------------
@@ -555,6 +563,7 @@ async def test_gain_compute_event_fires_on_user_perceptible_change(caplog):
     for fragment in (
         "branch=music",          # which decision path
         "windowed_rms=-26.0",    # input — what playback_rms reported
+        "source_peak_dbfs=-3.0", # measured source level (seed until measured)
         "anchor_dbfs=-26.0",     # anchor (just updated from windowed)
         "main_volume_db=-15.0",  # CamillaDSP master at the moment
         "offset_db=0.0",         # the deprecated knob's value
@@ -611,3 +620,77 @@ async def test_gain_compute_event_branch_label_matches_formula(
         f"expected branch={expected_branch} for vol={vol_db} "
         f"rms={rms} anchor={anchor}; got: {events[0].message}"
     )
+
+
+# --- measured per-provider source loudness (cross-provider volume) --------
+
+@pytest.mark.asyncio
+async def test_source_peak_seeds_at_minus_3_until_measured():
+    """Before any audio is observed, the source estimate is the seed
+    (-3 dBFS, Gemini's level) so behaviour matches the historical
+    constant — the basis every other test in this file relies on."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-30.0, -30.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, headroom_db=12.0)
+    await tracker.apply_now()
+    assert tracker.source_peak_dbfs == -3.0
+    # target = -30 + 12 - (-3) = -15.
+    assert tts.gain_db == -15.0
+
+
+@pytest.mark.asyncio
+async def test_quiet_provider_is_boosted_to_match_music():
+    """The cross-provider bug: a provider quieter than the -3 seed (e.g.
+    OpenAI) must get MORE gain so its TTS lands at the same music+
+    headroom target as a louder provider."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-30.0, -30.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, headroom_db=12.0)
+    for _ in range(60):
+        tracker.note_source_chunk(_pcm_with_peak(-9.0))
+    assert tracker.source_peak_dbfs == pytest.approx(-9.0, abs=0.3)
+    await tracker.apply_now()
+    # Music branch: target = -30 + 12 - (-9) = -9, i.e. 6 dB louder than
+    # the seed's -15 — the quiet provider is normalized up to match.
+    assert tts.gain_db == -9.0
+
+
+@pytest.mark.asyncio
+async def test_providers_reach_same_output_level_once_measured():
+    """The definition of the fix: after each provider's source loudness
+    is measured, the OUTPUT level (native source peak + applied gain) is
+    identical regardless of the provider's native loudness. Levels kept
+    at/above -12 dBFS so the hearing-safety MAX cap doesn't bind (below
+    that the cap intentionally limits boost — a safety floor, not a
+    normalization bug)."""
+    outputs = []
+    for src_peak in (-3.0, -9.0, -12.0):
+        cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-30.0, -30.0))
+        tts = _tts()
+        tracker = _tracker(cam, tts, offset_db=-8.0, headroom_db=12.0)
+        for _ in range(80):
+            tracker.note_source_chunk(_pcm_with_peak(src_peak))
+        await tracker.apply_now()
+        outputs.append(round(src_peak + tts.gain_db))
+    assert len(set(outputs)) == 1, f"providers not equalized: {outputs}"
+
+
+def test_silent_chunks_do_not_move_source_estimate():
+    """Inter-word/sentence gaps (below the voiced floor) must not drag
+    the estimate down — that would over-boost the next turn."""
+    cam = _FakeCamilla()
+    tts = _tts()
+    tracker = _tracker(cam, tts)
+    for _ in range(20):
+        tracker.note_source_chunk(_pcm_with_peak(-60.0))  # below voiced floor
+    assert tracker.source_peak_dbfs == -3.0  # unchanged from seed
+
+
+def test_note_source_chunk_is_failsoft_on_garbage():
+    """Measurement must never raise into the playback path."""
+    cam = _FakeCamilla()
+    tts = _tts()
+    tracker = _tracker(cam, tts)
+    tracker.note_source_chunk(b"")      # empty
+    tracker.note_source_chunk(b"\x01")  # 1 byte — not a clean int16 frame
+    assert tracker.source_peak_dbfs == -3.0

@@ -537,6 +537,21 @@ this state. Same pattern applies to the per-provider keys
 voice selectors — all wizard-owned per
 [`jasper/web/voice_setup.py`](jasper/web/voice_setup.py).
 
+**Reading the active provider in code — one reader, never `os.environ`.**
+Surfaces that display or aggregate the active provider but are *not*
+`jasper-voice` (chiefly `jasper-control`'s `/state` and the `/system/`
+dashboard) MUST resolve it through
+[`jasper/voice/provider_state.py`](jasper/voice/provider_state.py)
+(`read_active_provider()` / `read_active_provider_and_model()`), which
+re-read the SSOT file fresh on every call. They must **not** read
+`JASPER_VOICE_PROVIDER` from `os.environ`: those long-lived daemons load
+the env file once at start and are not restarted on a switch, so
+`os.environ` goes stale — that was the "`/system/` still shows the old
+provider after switching" bug. Only `jasper-voice` is restarted on a
+switch, so `Config.from_env` there is always fresh. The reader returns
+`""` (unconfigured) for an unset/invalid value — never a guessed
+default.
+
 **To override without using the wizard** (CI, headless imaging,
 operator preference): write `JASPER_VOICE_PROVIDER=<id>` to
 `/var/lib/jasper/voice_provider.env` directly. systemd loads it on

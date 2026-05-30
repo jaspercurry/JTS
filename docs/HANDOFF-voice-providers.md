@@ -35,6 +35,15 @@ wizard writes one. Same pattern as `/spotify/` writes
 `spotify_credentials.env`. Implementation:
 [`jasper/web/voice_setup.py`](../jasper/web/voice_setup.py).
 
+Display/aggregation surfaces that are not `jasper-voice` (e.g.
+`jasper-control`'s `/state` and the `/system/` dashboard) read the
+active provider through
+[`jasper/voice/provider_state.py`](../jasper/voice/provider_state.py)
+(`read_active_provider*`), which re-reads the file fresh — never
+`os.environ`, which is frozen at daemon start and only refreshed when
+`jasper-voice` restarts on a switch. Returns `""` (unconfigured) for an
+unset/invalid value, never a guessed default.
+
 The abstraction lives in [`jasper/voice/session.py`](../jasper/voice/session.py)
 as the `LiveConnection` and `LiveTurn` Protocols. Daemon code at
 [`jasper/voice_daemon.py`](../jasper/voice_daemon.py) speaks only to

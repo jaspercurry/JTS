@@ -34,7 +34,6 @@ would be a worthwhile follow-up but is out of scope here.
 """
 from __future__ import annotations
 
-import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -238,45 +237,46 @@ def pricing_for_provider(
     )
 
 
+_SESSIONS_TABLE_DDL = """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        provider TEXT
+    )
+"""
+
+
 class UsageStore:
     def __init__(
         self, db_path: str, pricing: Pricing | None = None,
     ) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, isolation_level=None)
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                started_at TEXT NOT NULL,
-                ended_at TEXT,
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cost_usd REAL NOT NULL DEFAULT 0
-            )
-            """
-        )
-        # Migration: add `provider` column for the /system dashboard's
-        # per-provider breakdown.
+        self._conn.execute(_SESSIONS_TABLE_DDL)
+        # `provider` is recorded per session at open_session() time. We
+        # deliberately do NOT backfill historic NULL rows: the active
+        # provider's source of truth is /var/lib/jasper/voice_provider.env,
+        # not this process's frozen env, and guessing a provider for rows
+        # that predate the column is exactly the kind of legacy-accounting
+        # code this project doesn't carry. Pre-existing rows aggregate as
+        # "unknown".
+        #
+        # Schema self-heal (a wipe, NOT a value-preserving migration): a
+        # usage DB that predates the `provider` column (pre-PR-#85) would
+        # fail open_session()'s INSERT with "no such column: provider" on
+        # every turn. Rather than carry migration code, drop & recreate —
+        # this is disposable cost telemetry, so the household loses nothing
+        # that matters, and the voice loop self-recovers instead of wedging.
+        # One-time: a no-op once the schema has the column (every current
+        # and fresh DB).
         cols = {row[1] for row in self._conn.execute("PRAGMA table_info(sessions)")}
         if "provider" not in cols:
-            self._conn.execute(
-                "ALTER TABLE sessions ADD COLUMN provider TEXT"
-            )
-        # Backfill any NULL provider rows with the currently-active
-        # JASPER_VOICE_PROVIDER (read from env). Imperfect for installs
-        # that historically switched providers — but much better than
-        # showing 'unknown' for every pre-migration session on the
-        # dashboard. Idempotent: only touches rows where provider IS
-        # NULL, so once backfilled it never runs again. Skipped silently
-        # when JASPER_VOICE_PROVIDER isn't set (tests, fresh installs
-        # without env yet).
-        active_provider = os.environ.get("JASPER_VOICE_PROVIDER", "").strip()
-        if active_provider:
-            self._conn.execute(
-                "UPDATE sessions SET provider = ? WHERE provider IS NULL",
-                (active_provider,),
-            )
+            self._conn.execute("DROP TABLE sessions")
+            self._conn.execute(_SESSIONS_TABLE_DDL)
         # Default to Gemini pricing so existing callers (and tests)
         # that don't pass `pricing=` keep working with their historical
         # cost estimates.

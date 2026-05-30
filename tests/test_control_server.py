@@ -940,8 +940,18 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(dsp_apply))
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing_sound.json"))
-    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
-    monkeypatch.setenv("JASPER_OPENAI_MODEL", "gpt-realtime-2")
+    # Provider + model come from the wizard-owned SSOT file, read fresh —
+    # NOT from os.environ. Write the file AND set a *different* stale env
+    # value to prove the file is authoritative: jasper-control keeps a
+    # frozen JASPER_VOICE_PROVIDER across a switch (it isn't restarted),
+    # so the file must win. This is the regression guard for the
+    # stale-/system/ bug.
+    provider_file = tmp_path / "voice_provider.env"
+    provider_file.write_text(
+        "JASPER_VOICE_PROVIDER=openai\nJASPER_OPENAI_MODEL=gpt-realtime-2\n"
+    )
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(provider_file))
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")  # stale env, must be ignored
     # Point librespot state at a missing file → empty dict.
     monkeypatch.setenv(
         "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"),
@@ -954,6 +964,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["voice"]["model"] == "gpt-realtime-2"
     assert body["voice"]["reachable"] is False
     assert body["voice"]["session_active"] is False
+    assert "tts_source_peak_dbfs" in body["voice"]  # measured TTS level on /state
     assert body["audio"]["listening_level_percent"] == 73
     # Camilla isn't reachable from the test → main_volume_db None.
     assert body["audio"]["main_volume_db"] is None
