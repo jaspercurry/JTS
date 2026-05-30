@@ -25,14 +25,14 @@ const handlers = {
   reboot: (e) => postAction("reboot", e.target,
     ["Reboot the speaker? This takes ~60 s.",
      "Are you sure? You will lose audio for about a minute."],
-    { statusEl: refs.actionsStatus,
+    { statusEl: refs.actionsStatus, danger: true,
       sentMessage: "Rebooting — this page will be unreachable for ~60 s, then it should reconnect on its own." }),
   // Stronger double-confirm than reboot: power off stays off until someone
   // physically re-plugs the cord.
   poweroff: (e) => postAction("poweroff", e.target,
     ["Power off the speaker? It will stay off until you physically re-plug power.",
      "Are you absolutely sure? You will need physical access to turn the speaker back on."],
-    { statusEl: refs.actionsStatus,
+    { statusEl: refs.actionsStatus, danger: true,
       sentMessage: "Powering off — the speaker will stay off until you physically re-plug power." }),
   setQuality: (converter) => setQuality(refs, converter),
   runDiagnostics: (btn, out) => runDiagnostics(btn, out),

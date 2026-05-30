@@ -13,6 +13,15 @@ delivered as static ES modules under `deploy/assets/<page>/js/` (no inline
 [AGENTS.md](../AGENTS.md) for the delivery convention. Setup wizard,
 conditional prompts, and fuller row-state hydration remain future phases.
 
+The first shared cross-page module is the confirm/alert dialog,
+[`deploy/assets/shared/js/dialog.js`](../deploy/assets/shared/js/dialog.js)
+(`jtsConfirm`/`jtsAlert`, Promise-based, styled by `.jts-dialog` in
+`app.css`). It replaces `window.confirm`/`alert`, which the browser can
+suppress ("prevent this page from creating more dialogs") — that suppression
+silently defeated `/system/`'s restart/reboot guards. The legacy
+`wrap_page()` wizards migrate to the same helper via a behaviourally-identical
+inline twin in `_common.py`.
+
 **Tracked follow-up — split `/sound/`'s JS into modules (hardware-gated).**
 `/system/`'s behaviour is split into layered ES modules
 (`dom`/`format`/`charts`/`components`/`sections`/`views`/`api`/`actions`/
