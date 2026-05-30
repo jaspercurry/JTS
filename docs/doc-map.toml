@@ -523,6 +523,7 @@ title = "Resilience, watchdogs, system dashboard, and health surfaces"
 safety = "boot-risk"
 code = [
   "jasper/watchdog.py",
+  "jasper/debug_mode.py",
   "jasper/control/system_*.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/airplay_health.py",
@@ -547,12 +548,14 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-resilience.md",
+  "docs/HANDOFF-observability.md",
   "docs/HANDOFF-tier5-watchdog-liveness.md",
   "docs/HANDOFF-airplay.md",
   "docs/HANDOFF-management-ui.md",
 ]
 requires_docs_when = [
   "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",
+  "Logging verbosity, the debug-mode toggle, or log/journald volume behavior changes.",
 ]
 verification = [
   "pytest tests/test_watchdog.py tests/test_system_supervisor.py tests/test_system_metrics.py tests/test_airplay_health.py tests/test_shairport_supervisor.py tests/test_web_systemd.py",

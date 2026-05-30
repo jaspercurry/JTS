@@ -3430,6 +3430,10 @@ async def _start_control_socket(
 async def run() -> None:
     cfg = Config.from_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Runtime debug toggle (/system Debug card): raise this daemon to
+    # DEBUG iff voice debug is actively toggled on. No-op otherwise.
+    from . import debug_mode
+    debug_mode.apply_for("voice")
 
     pricing = pricing_for_provider(
         cfg.voice_provider,

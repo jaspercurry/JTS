@@ -50,7 +50,7 @@ from ..audio_quality import (
     read_active_converter as _read_active_audio_converter,
     read_state as _read_audio_quality_state,
 )
-from . import shairport_supervisor, system_supervisor, wifi_guardian_state
+from . import debug_control, shairport_supervisor, system_supervisor, wifi_guardian_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
@@ -1251,6 +1251,9 @@ async def _get_state(
             "wifi_guardian": wifi_guardian_state.snapshot(),
         },
         "home_assistant": ha_status,
+        # Runtime debug-logging toggle (the /system Debug card): which
+        # subsystems are at DEBUG + the shared auto-expiry countdown.
+        "debug": debug_control.snapshot(),
     }
 
 
@@ -1560,6 +1563,12 @@ def _make_handler(
                 # which has check_aec_bridge_dtln_engine for the
                 # silent-failure case.
                 self._send_json(_aec_full_status())
+                return
+
+            if self.path == "/debug":
+                # Runtime debug-logging state for the /system Debug card:
+                # per-subsystem on/off + the shared auto-expiry countdown.
+                self._send_json(debug_control.snapshot())
                 return
             if self.path == "/state":
                 # Cross-daemon snapshot — voice / audio / renderers /
@@ -2177,6 +2186,43 @@ def _make_handler(
                 self._send_json({"threshold": threshold})
                 return
 
+            if self.path == "/debug":
+                # /system Debug card: raise one subsystem to DEBUG
+                # logging. Additive-only + auto-expiring (jasper/
+                # debug_mode.py). voice/aec restart to apply; control
+                # applies in-process. Non-blocking — the card's
+                # "Applying…" state is just UX.
+                try:
+                    body = self._read_json()
+                except (ValueError, OSError) as e:
+                    self._send_json(
+                        {"error": f"invalid request body: {e}"}, status=400,
+                    )
+                    return
+                subsystem = str(body.get("subsystem") or "")
+                enabled = body.get("enabled")
+                if not isinstance(enabled, bool):
+                    self._send_json(
+                        {"error": "enabled must be a boolean"}, status=400,
+                    )
+                    return
+                try:
+                    debug_control.set_debug(subsystem, enabled)
+                except ValueError as e:
+                    self._send_json({"error": str(e)}, status=400)
+                    return
+                except (OSError, subprocess.SubprocessError) as e:
+                    self._send_json(
+                        {"error": f"debug toggle failed: {e}"}, status=502,
+                    )
+                    return
+                logger.info(
+                    "event=debug.toggle subsystem=%s enabled=%s client=%s",
+                    subsystem, enabled, self.address_string(),
+                )
+                self._send_json(debug_control.snapshot())
+                return
+
             if self.path == "/system/audio-quality":
                 try:
                     body = self._read_json()
@@ -2417,6 +2463,10 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Runtime debug toggle (/system Debug card): raise this daemon to
+    # DEBUG iff control debug is actively toggled on. No-op otherwise.
+    from .. import debug_mode
+    debug_mode.apply_for("control")
 
     # System metrics sampler — 5 s ring buffer for the /system dashboard.
     # Daemon thread, exits with the process.
@@ -2459,6 +2509,10 @@ def main(argv: list[str] | None = None) -> int:
     # to 1 reboot per 24 hours. docs/HANDOFF-tier5-watchdog-liveness.md.
     # Off via JASPER_SYSTEM_SUPERVISOR=disabled.
     system_supervisor.start_supervisor()
+    # Runtime debug toggle: clear an expired session left on disk, or
+    # re-arm the auto-quiet timer if a debug session is still active
+    # across this control restart. See jasper/control/debug_control.py.
+    debug_control.reconcile_on_startup()
     logger.info(
         "jasper-control listening on http://%s:%d "
         "(camilla=%s:%d, dial-log=%s:%d/udp, voice=%s)",

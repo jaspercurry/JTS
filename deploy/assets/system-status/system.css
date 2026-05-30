@@ -149,3 +149,17 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
   .live-pill__dot { animation: none; }
   .cpu-bars__fill, .collapsible__toggle svg { transition: none; }
 }
+
+/* Debug logging card */
+.debug-rows { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.debug-row {
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer; font-size: 14px; color: var(--text);
+}
+.debug-row__cb {
+  width: 18px; height: 18px; flex: 0 0 auto;
+  accent-color: var(--status-ok); cursor: pointer;
+}
+.debug-row__cb:disabled { cursor: progress; opacity: 0.6; }
+.debug-row__label { font-weight: 500; }
+.debug-row__status { margin-left: auto; font-size: 12px; color: var(--muted); }
