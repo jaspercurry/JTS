@@ -54,7 +54,10 @@ export function buildPage(root, handlers) {
     aqStatus,
   );
 
-  // Actions — built once, never touched by a poll.
+  // Actions — built once, never touched by a poll. actionsStatus is an
+  // aria-live region for post-action feedback (esp. reboot/power-off, which
+  // take the page offline, so the button label alone isn't enough).
+  const actionsStatus = h("p.info-card__note", { "attr:aria-live": "polite" });
   const actions = titledCard("Actions");
   actions.body.append(
     h("p.info-card__note", null,
@@ -65,6 +68,7 @@ export function buildPage(root, handlers) {
       actionButton("Restart audio", { variant: "default", onClick: handlers.restartAudio }),
       actionButton("Reboot speaker", { variant: "danger", onClick: handlers.reboot }),
       actionButton("Power off", { variant: "danger", onClick: handlers.poweroff })),
+    actionsStatus,
     h("p.info-card__note", null,
       "Power off before changing cables or swapping power. The speaker " +
       "stays off until you physically re-plug power — yanking the cord " +
@@ -108,6 +112,7 @@ export function buildPage(root, handlers) {
     staleness: live.label,
     vitals, software: software.body, cloud: cloud.body, ha: ha.body,
     airplay: airplay.body, network: network.body, svc: svcBody,
+    actionsStatus,
     aq: { requested: aqRequested, active: aqActive, status: aqStatus, buttons: aqButtons },
     _memo: {},
   };

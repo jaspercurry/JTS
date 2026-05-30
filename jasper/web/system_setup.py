@@ -67,7 +67,12 @@ def _render_page(csrf_token: str = "") -> bytes:
     # static + revalidated from /assets/system-status/js/ (see the
     # `location ~ \\.js$` block in deploy/nginx-jasper.conf).
     body = (
-        '<div id="app" aria-busy="true"></div>\n'
+        # A visible placeholder inside the mount point: buildPage() replaces
+        # it on first render, so if the ES module graph ever fails to load
+        # the page shows "Loading…" rather than a silent blank.
+        '<div id="app" aria-busy="true">'
+        '<p class="boot-note">Loading the dashboard…</p>'
+        '</div>\n'
         '<script type="module" src="/assets/system-status/js/main.js"></script>'
     )
     return canonical_page(

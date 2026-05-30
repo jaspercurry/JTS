@@ -7,19 +7,29 @@ import { csrfHeaders, jsonHeaders } from "./api.js";
 import { updateAudioQuality } from "./sections.js";
 
 // confirm (one or two prompts) → POST → reflect Working…/Sent/Failed → restore.
-export async function postAction(path, btn, confirmLines) {
+// opts.statusEl + opts.sentMessage: on a successful POST, write a contextual
+// note (e.g. "Rebooting — unreachable for ~60 s") into an aria-live region —
+// the page is about to go away, so the button label alone isn't enough.
+export async function postAction(path, btn, confirmLines, opts = {}) {
   for (const line of confirmLines) {
     if (!confirm(line)) return;
   }
   if (!btn) return;
+  const { statusEl, sentMessage } = opts;
   btn.disabled = true;
   const original = btn.textContent;
   btn.textContent = "Working…";
+  if (statusEl) statusEl.textContent = "";
   try {
     const r = await fetch(path, { method: "POST", headers: csrfHeaders() });
     const body = await r.json().catch(() => ({}));
-    if (!r.ok) console.error("system: action '" + path + "' failed", body);
-    btn.textContent = r.ok ? "Sent" : "Failed: " + (body.error || r.status);
+    if (r.ok) {
+      btn.textContent = "Sent";
+      if (statusEl && sentMessage) statusEl.textContent = sentMessage;
+    } else {
+      console.error("system: action '" + path + "' failed", body);
+      btn.textContent = "Failed: " + (body.error || r.status);
+    }
   } catch (e) {
     console.error("system: action '" + path + "' failed", e);
     btn.textContent = "Failed: " + e.message;
