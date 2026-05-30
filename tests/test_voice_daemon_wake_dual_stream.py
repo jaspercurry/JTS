@@ -33,7 +33,7 @@ import pytest
 if "sounddevice" not in sys.modules:
     sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
 
-from jasper.voice_daemon import WakeLoop, State, _LegRuntime  # noqa: E402
+from jasper.voice_daemon import WakeLoop, _LegRuntime  # noqa: E402
 from jasper.wake_legs import by_token  # noqa: E402
 
 
@@ -69,6 +69,11 @@ def _make_wake_loop(
             by_token("off"), MagicMock(), detector_off, None,
         )
     wl._wake_fire_lock = asyncio.Lock()
+    from jasper.wake_fusion import WakeFuser
+    wl._fuser = WakeFuser()
+    wl._current_condition = "quiet"
+    wl._condition_refreshed_at = 0.0
+    wl._capture_ring_on = None  # _ring_noise_floor_dbfs tolerates None
     wl._refractory_until = 0.0
     wl._acquiring = False
     wl._acquire_buffer = MagicMock()

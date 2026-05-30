@@ -69,6 +69,10 @@ def _make_wake_loop_triple(
             by_token("dtln"), MagicMock(), detector_dtln, None,
         )
     wl._wake_fire_lock = asyncio.Lock()
+    from jasper.wake_fusion import WakeFuser
+    wl._fuser = WakeFuser()
+    wl._current_condition = "quiet"
+    wl._condition_refreshed_at = 0.0
     wl._refractory_until = 0.0
     wl._acquiring = False
     wl._acquire_buffer = MagicMock()
@@ -373,3 +377,69 @@ def test_ring_noise_floor_tracks_quiet_background_not_utterance():
     floor = _ring_noise_floor_dbfs(ring)
     assert floor is not None
     assert floor < -40.0  # 25th pct sits in the quiet group, far below loud
+
+
+# --- Phase 1.3a: live-condition refresh (WakeLoop._read_music_dbfs +
+# _maybe_refresh_condition) ---
+
+def _wakeloop_for_condition(anchor_dbfs=-30.0):
+    """A bare WakeLoop with only the attributes the condition-refresh path
+    touches. anchor_dbfs=-30 reads as music (> -60 dBFS); the empty capture
+    ring makes the noise floor None."""
+    from collections import deque
+
+    wl = WakeLoop.__new__(WakeLoop)
+    wl._condition_refreshed_at = 0.0
+    wl._current_condition = "quiet"
+    wl._capture_ring_on = deque(maxlen=8)
+    tracker = MagicMock()
+    tracker._anchor_dbfs = anchor_dbfs
+    wl._tts_volume_tracker = tracker
+    return wl
+
+
+def test_read_music_dbfs_reads_anchor():
+    assert _wakeloop_for_condition(anchor_dbfs=-30.0)._read_music_dbfs() == -30.0
+
+
+def test_read_music_dbfs_none_below_sentinel_floor():
+    # <= -120 dBFS is the "no real music observed yet" band -> no signal.
+    assert _wakeloop_for_condition(anchor_dbfs=-130.0)._read_music_dbfs() is None
+
+
+def test_read_music_dbfs_none_without_tracker():
+    wl = _wakeloop_for_condition()
+    wl._tts_volume_tracker = None
+    assert wl._read_music_dbfs() is None
+
+
+def test_maybe_refresh_condition_recomputes_when_elapsed():
+    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)  # > -60 dBFS -> music
+    wl._maybe_refresh_condition(now_loop=5.0)
+    assert wl._current_condition == "music"
+    assert wl._condition_refreshed_at == 5.0
+
+
+def test_maybe_refresh_condition_skips_within_window():
+    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)
+    wl._condition_refreshed_at = 4.5
+    wl._current_condition = "quiet"
+    wl._maybe_refresh_condition(now_loop=5.0)  # 0.5 s < CONDITION_REFRESH_SEC
+    assert wl._current_condition == "quiet"  # unchanged
+    assert wl._condition_refreshed_at == 4.5  # unchanged
+
+
+def test_maybe_refresh_condition_fail_soft_on_classify_error(monkeypatch):
+    # The wake path must never break because ancillary condition estimation
+    # raised. On error: keep the last good condition, advance the timer (so a
+    # persistent failure retries at ~1 Hz, not every frame), do not propagate.
+    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)
+    wl._current_condition = "ambient"  # last good
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("classify blew up")
+
+    monkeypatch.setattr("jasper.voice_daemon.classify_condition", _boom)
+    wl._maybe_refresh_condition(now_loop=5.0)  # must not raise
+    assert wl._current_condition == "ambient"  # stale condition kept
+    assert wl._condition_refreshed_at == 5.0   # timer advanced -> ~1 Hz retry
