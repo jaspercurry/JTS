@@ -195,76 +195,33 @@ def test_old_sessions_excluded_from_24h_window(tmp_path: Path):
     assert store.spend_last_24h_usd() == 0.0
 
 
-def test_null_provider_rows_backfill_with_active_env(
-    tmp_path: Path, monkeypatch,
-):
-    """Pre-migration sessions (NULL provider) get backfilled with the
-    current JASPER_VOICE_PROVIDER on next UsageStore construction.
-
-    Without this, the dashboard's per-provider table shows the entire
-    pre-PR-#85 history as 'unknown', which is alarming. This pins the
-    backfill behaviour: NULL provider + env var set + construction →
-    rows updated."""
+def test_incompatible_old_schema_is_self_healed(tmp_path: Path):
+    """A usage DB predating the `provider` column is wiped & recreated (a
+    self-heal, not a migration) so open_session() works instead of
+    crashing every turn with 'no such column: provider'."""
     db = tmp_path / "usage.db"
-    # Initial construction creates the schema (with provider column).
-    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+    # Simulate a pre-`provider`-column schema (pre-PR-#85).
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "CREATE TABLE sessions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, "
+            "ended_at TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, "
+            "output_tokens INTEGER NOT NULL DEFAULT 0, "
+            "cost_usd REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO sessions (started_at) VALUES ('2026-01-01T00:00:00')"
+        )
+        conn.commit()
+
+    # Construction self-heals: the incompatible table is dropped & recreated.
     store = UsageStore(str(db))
-    sid1 = store.open_session()  # no provider passed → NULL
-    store.close_session(sid1, input_tokens=100, output_tokens=200)
-    sid2 = store.open_session()
-    store.close_session(sid2, input_tokens=50, output_tokens=100)
-    del store
-    # Both rows have NULL provider — verify directly.
+    sid = store.open_session(provider="openai")
+    store.close_session(sid, input_tokens=1, output_tokens=1)
+
     with sqlite3.connect(str(db)) as conn:
-        nulls = conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE provider IS NULL"
-        ).fetchone()[0]
-    assert nulls == 2
-
-    # New construction with the env var set — backfill should fire.
-    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
-    UsageStore(str(db))
-    with sqlite3.connect(str(db)) as conn:
-        rows = conn.execute(
-            "SELECT provider FROM sessions"
-        ).fetchall()
-    assert all(r[0] == "openai" for r in rows)
-
-
-def test_backfill_skipped_when_env_unset(tmp_path: Path, monkeypatch):
-    """No JASPER_VOICE_PROVIDER → backfill is silently skipped. Lets
-    tests + fresh installs run without spurious tagging."""
-    db = tmp_path / "usage.db"
-    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
-    store = UsageStore(str(db))
-    sid = store.open_session()
-    store.close_session(sid, input_tokens=10, output_tokens=10)
-    del store
-    # Re-construct with env still unset.
-    UsageStore(str(db))
-    with sqlite3.connect(str(db)) as conn:
-        row = conn.execute(
-            "SELECT provider FROM sessions"
-        ).fetchone()
-    assert row[0] is None
-
-
-def test_backfill_idempotent_doesnt_touch_tagged_rows(
-    tmp_path: Path, monkeypatch,
-):
-    """Rows with an existing (non-NULL) provider must not be rewritten
-    on subsequent constructions. Important when JASPER_VOICE_PROVIDER
-    changes between runs — historical tagging is preserved."""
-    db = tmp_path / "usage.db"
-    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
-    store = UsageStore(str(db))
-    sid = store.open_session(provider="gemini")
-    store.close_session(sid, input_tokens=10, output_tokens=10)
-    del store
-    # Reconstruct — backfill runs but should not touch the tagged row.
-    UsageStore(str(db))
-    with sqlite3.connect(str(db)) as conn:
-        row = conn.execute(
-            "SELECT provider FROM sessions"
-        ).fetchone()
-    assert row[0] == "gemini"
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        rows = conn.execute("SELECT provider FROM sessions").fetchall()
+    assert "provider" in cols
+    # The stale row was wiped; only the new, correctly-tagged row remains.
+    assert rows == [("openai",)]
