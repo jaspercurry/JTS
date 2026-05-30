@@ -68,17 +68,6 @@ def _restart_unit(unit: str) -> None:
     subprocess.Popen(["systemctl", "restart", "--no-block", unit])
 
 
-def _apply_control_level(enabled: bool) -> None:
-    """``control`` debug is applied in-process — no self-restart. The flight
-    recorder (Tier C) holds the logger at DEBUG, so the toggle moves the
-    journal handler (DEBUG on, INFO off); raising the logger too covers the
-    recorder-disabled case."""
-    if enabled:
-        for name in SUBSYSTEMS["control"].loggers:
-            logging.getLogger(name).setLevel(logging.DEBUG)
-    debug_mode.set_console_debug(enabled)
-
-
 # Seam for tests: swap out the timer factory so unit tests don't spawn
 # real background threads. Returns an object with .cancel().
 def _schedule(delay: float, fn) -> "threading.Timer":
@@ -107,16 +96,12 @@ def _arm_expiry_locked(state: debug_mode.DebugState, now: float) -> None:
 
 def _on_expiry() -> None:
     """Timer callback: the shared TTL elapsed. Clear the debug.env SSOT (so
-    `/state` reads off and the next daemon start is clean) and drop control
-    back to INFO in process. voice/aec quiet *themselves* via their own
-    per-process self-quiet timers (``debug_mode.apply_for``) — no restart."""
+    `/state` reads off and the next daemon start is clean). Every daemon —
+    voice, aec, AND control — quiets its own journal handler via its
+    per-process self-quiet timer (``debug_mode.apply_for``); no restart."""
     with _lock:
-        state = debug_mode.resolve_debug_state(_read_env(), time.time())
-        control_was_on = "control" in state.configured
         _atomic_write(_clear_all())
         _cancel_timer_locked()
-    if control_was_on:
-        _apply_control_level(False)
     logger.info("event=debug.expired")
 
 
@@ -141,7 +126,11 @@ def set_debug(
         state = debug_mode.read_debug_state(now=now)
         _arm_expiry_locked(state, now)
     if subsystem == "control":
-        _apply_control_level(subsystem in state.active)
+        # In-process — no self-restart. apply_for re-reads debug.env (just
+        # written), moves control's journal handler, and (re-)arms/cancels
+        # control's per-process self-quiet timer — same path as voice/aec.
+        # Pass `now` so the expiry check matches the just-written timestamp.
+        debug_mode.apply_for("control", now=now)
     else:
         _restart_unit(SUBSYSTEMS[subsystem].unit)
     logger.info(

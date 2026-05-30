@@ -142,10 +142,11 @@ DEBUG. As built:
   expiry **each daemon quiets itself in process** — `apply_for` arms a
   per-process `threading.Timer` that drops that daemon's journal
   handler back to INFO, **no restart** (so a forgotten session can't
-  blip wake while the household is mid-use). A `threading.Timer` in
-  control additionally clears the `debug.env` SSOT at expiry (so
-  `/state` reads off + the next start is clean) and reverts control
-  in-process; reconciled on control startup. The card shows a live
+  blip wake while the household is mid-use). Control's in-process
+  toggle goes through the same `apply_for` path, so it self-quiets the
+  same way. A separate `threading.Timer` in control clears the
+  `debug.env` SSOT at expiry (so `/state` reads off + the next start
+  is clean); reconciled on control startup. The card shows a live
   countdown.
 - **Additive-only**, floored at WARNING (the invariant) — the toggle
   can only raise to DEBUG.

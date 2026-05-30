@@ -42,6 +42,13 @@ def dc(tmp_path, monkeypatch):
 
     monkeypatch.setattr(debug_control, "_schedule", fake_schedule)
     monkeypatch.setattr(debug_control, "_timer", None, raising=False)
+    # control's toggle now routes through debug_mode.apply_for, which arms a
+    # per-process self-quiet timer — stub the factory so tests don't spawn one.
+    monkeypatch.setattr(
+        debug_mode, "_make_timer",
+        lambda d, fn: SimpleNamespace(start=lambda: None, cancel=lambda: None),
+    )
+    monkeypatch.setattr(debug_mode, "_self_quiet_timer", None, raising=False)
     lg = logging.getLogger("jasper")
     before = lg.level
     yield SimpleNamespace(path=path, restarts=restarts, scheduled=scheduled)

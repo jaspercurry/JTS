@@ -38,6 +38,7 @@ right after ``logging.basicConfig``), so a toggle takes effect when
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -208,10 +209,10 @@ def set_console_debug(on: bool) -> None:
 # Armed by apply_for whenever the journal is raised to DEBUG with a future
 # expiry; one timer per process. `_make_timer` is a seam for tests.
 _self_quiet_timer = None
+_self_quiet_lock = threading.Lock()
 
 
 def _make_timer(delay: float, fn):
-    import threading
     t = threading.Timer(delay, fn)
     t.daemon = True
     return t
@@ -219,17 +220,19 @@ def _make_timer(delay: float, fn):
 
 def _arm_self_quiet(remaining: float) -> None:
     global _self_quiet_timer
-    if _self_quiet_timer is not None:
-        _self_quiet_timer.cancel()
-    _self_quiet_timer = _make_timer(remaining, lambda: set_console_debug(False))
-    _self_quiet_timer.start()
+    with _self_quiet_lock:
+        if _self_quiet_timer is not None:
+            _self_quiet_timer.cancel()
+        _self_quiet_timer = _make_timer(remaining, lambda: set_console_debug(False))
+        _self_quiet_timer.start()
 
 
 def _cancel_self_quiet() -> None:
     global _self_quiet_timer
-    if _self_quiet_timer is not None:
-        _self_quiet_timer.cancel()
-        _self_quiet_timer = None
+    with _self_quiet_lock:
+        if _self_quiet_timer is not None:
+            _self_quiet_timer.cancel()
+            _self_quiet_timer = None
 
 
 def apply_for(
