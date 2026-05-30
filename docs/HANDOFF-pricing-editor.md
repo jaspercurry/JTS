@@ -1,11 +1,14 @@
 # Handoff: Per-model pricing editor (`/voice`)
 
-> **Status: design / plan — NOT yet implemented.** This describes
-> intended work, not current behaviour. The *current* spend/usage
-> accounting truth (how cost is computed, the `Pricing` rate card, the
-> spend cap, the `pricing.json` override) lives in
-> [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md) — read its
-> "Spend-cap pricing" bullet first. Snapshot date: 2026-05-30.
+> **Status: Phases 1 & 2 implemented (2026-05-30). Phase 3 deferred.**
+> Pricing is model-ID-keyed with dated defaults in
+> `jasper/data/model_pricing.json`; the `/voice` page has a per-model
+> "Pricing rates" editor writing `/var/lib/jasper/pricing.json`. The
+> broader spend/usage accounting truth (how cost is computed, the
+> `Pricing` rate card, the spend cap) lives in
+> [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md). Phase 3 (the
+> copy-paste research-prompt generator) is sketched at the bottom and not
+> built. Snapshot date: 2026-05-30.
 
 ## Goal
 
