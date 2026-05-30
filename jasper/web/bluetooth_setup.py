@@ -37,12 +37,14 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ._common import (
+    DIALOG_CSS,
     NAV_BACK_CSS,
     NAV_BACK_HTML,
     TOGGLE_CSS,
     begin_request,
     csrf_fetch_helpers_js,
     csrf_meta_html,
+    dialog_helpers_js,
     reject_csrf,
     send_html_response,
     verify_csrf,
@@ -283,7 +285,7 @@ _PAGE_STYLE = TOGGLE_CSS + """
   .icon-audio-card::before { content: "\\1F50A"; }
   .icon-input-keyboard::before { content: "\\1F39B"; }
   .icon-device::before { content: "\\1F4E1"; }
-""" + NAV_BACK_CSS
+""" + NAV_BACK_CSS + DIALOG_CSS
 
 
 def _landing_html(csrf_token: str = "") -> bytes:
@@ -335,6 +337,7 @@ Already paired devices stay paired even when Bluetooth is off; turning
 it back on lets them reconnect. Forget a device to wipe its pair record.
 </p>
 
+<script>{dialog_helpers_js}</script>
 <script>
 let state = { powered: false, discoverable: false, discovering: false };
 let devices = new Map(); // path → device
@@ -427,10 +430,11 @@ async function togglePower() {
       const which = hidNames.length === 1
         ? hidNames[0]
         : hidNames.length + ' paired remotes';
-      const ok = window.confirm(
+      const ok = await jtsConfirm(
         'Turning Bluetooth off will also disconnect ' + which +
         '. Wireless remotes will not work again until Bluetooth ' +
         'is turned back on.\\n\\nTurn Bluetooth off anyway?',
+        {danger: true},
       );
       if (!ok) {
         restoreToggle();
@@ -446,11 +450,11 @@ async function togglePower() {
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
       restoreToggle();
-      alert('Bluetooth toggle failed: ' + (data.error || data.message || r.status));
+      jtsAlert('Bluetooth toggle failed: ' + (data.error || data.message || r.status));
     }
   } catch (e) {
     restoreToggle();
-    alert('Network error talking to the Bluetooth backend.');
+    jtsAlert('Network error talking to the Bluetooth backend.');
   } finally {
     setTimeout(fetchState, 300);
   }
@@ -476,11 +480,11 @@ async function toggleDisc() {
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
       restoreToggle();
-      alert('Discoverable toggle failed: ' + (data.error || data.message || r.status));
+      jtsAlert('Discoverable toggle failed: ' + (data.error || data.message || r.status));
     }
   } catch (e) {
     restoreToggle();
-    alert('Network error talking to the Bluetooth backend.');
+    jtsAlert('Network error talking to the Bluetooth backend.');
   } finally {
     setTimeout(fetchState, 300);
   }
@@ -812,13 +816,13 @@ async function connectDevice(mac, connect) {
 }
 
 async function forget(mac, label) {
-  if (!confirm(`Forget "${label}"? You'll need to re-pair to use it.`)) return;
+  if (!await jtsConfirm(`Forget "${label}"? You'll need to re-pair to use it.`, {danger: true})) return;
   const r = await fetch('forget', {
     method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({mac}),
   });
   const data = await r.json();
-  if (data.error) alert('Forget failed: ' + data.error);
+  if (data.error) jtsAlert('Forget failed: ' + data.error);
 }
 
 document.addEventListener('click', function(e) {
@@ -872,7 +876,9 @@ schedulePoll(5000);
 """
     return _wrap_page(
         "Bluetooth",
-        body.replace("{csrf_fetch_helpers_js}", csrf_fetch_helpers_js()),
+        body.replace("{csrf_fetch_helpers_js}", csrf_fetch_helpers_js()).replace(
+            "{dialog_helpers_js}", dialog_helpers_js()
+        ),
         csrf_token,
     )
 

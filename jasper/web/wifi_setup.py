@@ -61,12 +61,14 @@ from typing import Any
 
 from .. import wifi_guardian_persistence, wifi_scan_repair
 from ._common import (
+    DIALOG_CSS,
     NAV_BACK_CSS,
     NAV_BACK_HTML,
     TOGGLE_CSS,
     begin_request,
     csrf_fetch_helpers_js,
     csrf_meta_html,
+    dialog_helpers_js,
     reject_csrf,
     send_html_response,
     verify_csrf,
@@ -1240,7 +1242,7 @@ _PAGE_STYLE = TOGGLE_CSS + """
     border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
     background: var(--card);
   }
-""" + NAV_BACK_CSS
+""" + NAV_BACK_CSS + DIALOG_CSS
 
 
 def _landing_html(csrf_token: str = "") -> bytes:
@@ -1518,7 +1520,7 @@ function renderAvail() {
 async function rescan() {
   if (scanning) return;
   if (!state.radioOn) {
-    alert('Turn Wi-Fi on first.');
+    jtsAlert('Turn Wi-Fi on first.');
     return;
   }
   scanning = true;
@@ -1571,13 +1573,14 @@ function connectRiskWarningHtml() {
         : '');
 }
 
-function confirmManualLockoutRisk(ssid) {
+async function confirmManualLockoutRisk(ssid) {
   if (!(state.lockoutRisk === 'high' && state.current)) return true;
-  return window.confirm(
+  return await jtsConfirm(
     'You are reaching this page over Wi-Fi and the Pi has no Ethernet fallback.\\n\\n' +
     'It will try to connect to "' + ssid + '". If that fails, it will roll back to "' +
     state.current.ssid + '". If rollback also fails, you may need physical access.\\n\\n' +
     'Continue?',
+    {danger: true},
   );
 }
 
@@ -1645,7 +1648,7 @@ async function submitConnect(ssid, secured) {
     const input = document.getElementById('pw-' + cssIdSafe(ssid));
     password = input ? input.value : '';
     if (!password) {
-      alert('Enter the password first.');
+      jtsAlert('Enter the password first.');
       return;
     }
   }
@@ -1715,7 +1718,7 @@ function toggleManualPw() {
 
 async function submitManualConnect() {
   if (!state.radioOn) {
-    alert('Turn Wi-Fi on first.');
+    jtsAlert('Turn Wi-Fi on first.');
     return;
   }
   const ssidEl = document.getElementById('manual-ssid');
@@ -1727,10 +1730,10 @@ async function submitManualConnect() {
   const password = pwEl ? pwEl.value : '';
   const hidden = hiddenEl ? hiddenEl.checked : false;
   if (!ssid) {
-    alert('Enter the network name first.');
+    jtsAlert('Enter the network name first.');
     return;
   }
-  if (!confirmManualLockoutRisk(ssid)) return;
+  if (!await confirmManualLockoutRisk(ssid)) return;
 
   const payload = {ssid: ssid, hidden: hidden};
   if (password) payload.password = password;
@@ -1868,7 +1871,7 @@ async function toggleRadio() {
   // a milder confirm (annoying but recoverable).
   if (!target) {
     if (!state.hasEthernet) {
-      const ok = window.confirm(
+      const ok = await jtsConfirm(
         '⚠ TURNING WI-FI OFF WILL DISCONNECT THIS PI.\\n\\n' +
         'You are reaching this page over Wi-Fi and the Pi has no ' +
         'Ethernet plugged in. As soon as Wi-Fi turns off, this page ' +
@@ -1876,16 +1879,18 @@ async function toggleRadio() {
         'will be to physically access the Pi (plug in Ethernet or ' +
         'use a keyboard and monitor).\\n\\n' +
         'Continue?',
+        {danger: true},
       );
       if (!ok) {
         restoreToggle();
         return;
       }
     } else {
-      const ok = window.confirm(
+      const ok = await jtsConfirm(
         'Turn Wi-Fi off? The Pi will stay reachable on Ethernet, ' +
         'but any Wi-Fi-only renderers (AirPlay from a phone, etc.) ' +
         'will disconnect.',
+        {danger: true},
       );
       if (!ok) {
         restoreToggle();
@@ -1902,14 +1907,14 @@ async function toggleRadio() {
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
       restoreToggle();
-      alert('Radio toggle failed: ' + (data.message || data.error || r.status));
+      jtsAlert('Radio toggle failed: ' + (data.message || data.error || r.status));
     }
   } catch (e) {
     // If we just turned off Wi-Fi and there's no ethernet, the fetch
     // never returns — that's expected. Don't alert.
     if (target || state.hasEthernet) {
       restoreToggle();
-      alert('Network error talking to the Wi-Fi backend.');
+      jtsAlert('Network error talking to the Wi-Fi backend.');
     }
   }
   setTimeout(fetchState, 600);
@@ -1957,6 +1962,7 @@ def _wrap_page(title: str, body: str, csrf_token: str = "") -> bytes:
 <body>
 {NAV_BACK_HTML}
 <h1>{title}</h1>
+<script>{dialog_helpers_js()}</script>
 {body}
 </body>
 </html>""".encode()

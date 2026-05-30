@@ -425,7 +425,7 @@ def _provider_card_html(
         clear_form = f'''
     <div class="actions">
       <form method="post" action="clear-credentials"
-            onsubmit="return confirm('Clear the saved {html.escape(provider.label)} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults.');">
+            onsubmit="return jtsConfirmSubmit(this, 'Clear the saved {html.escape(provider.label)} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults.', {{danger:true}});">
         {csrf_field_html(csrf_token)}
         <input type="hidden" name="provider" value="{provider.id}">
         <button class="danger" type="submit">Clear key</button>

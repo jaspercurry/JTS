@@ -65,11 +65,13 @@ import httpx
 
 from .. import home_assistant as _ha_mod
 from ._common import (
+    DIALOG_CSS,
     NAV_BACK_HTML,
     PAGE_STYLE,
     begin_request,
     csrf_field_html,
     delete_env_file,
+    dialog_helpers_js,
     mask_secret,
     read_env_file,
     read_form,
@@ -571,12 +573,13 @@ def _wrap(title: str, body: str, *, status_msg: str = "") -> bytes:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)} · JTS speaker</title>
-<style>{PAGE_STYLE}{extra_css}</style>
+<style>{PAGE_STYLE}{extra_css}{DIALOG_CSS}</style>
 </head>
 <body>
 {NAV_BACK_HTML}
 <h1>{html.escape(title)}</h1>
 {msg_html}
+<script>{dialog_helpers_js()}</script>
 {body}
 </body>
 </html>""".encode()
@@ -1085,7 +1088,7 @@ to this Home Assistant instance.</p>
   speaker. Smart-home commands will stop working until you reconnect.
   Doesn't change anything in Home Assistant itself.</p>
   <form method="post" action="./disconnect"
-        onsubmit="return confirm('Disconnect this speaker from Home Assistant?');">
+        onsubmit="return jtsConfirmSubmit(this, 'Disconnect this speaker from Home Assistant?', {{danger:true}});">
     {csrf_field_html(csrf_token) if csrf_token else ''}
     <button type="submit" class="danger">Disconnect</button>
   </form>
@@ -1283,7 +1286,7 @@ to this Home Assistant instance.</p>
 
   document.getElementById('copy-voice-prompt-creds-btn')
     .addEventListener('click', async () => {{
-      const ok = confirm(
+      const ok = await jtsConfirm(
         'This will put your Home Assistant URL and a long-lived ' +
         'access token onto your clipboard.\\n\\n' +
         'Anyone with this token can control your Home Assistant. ' +

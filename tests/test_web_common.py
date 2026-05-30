@@ -434,3 +434,24 @@ def test_canonical_page_links_page_stylesheet_with_cache_bust():
 ])
 def test_is_valid_token_shape(value, expected):
     assert _common._is_valid_token(value) is expected
+
+
+def test_wrap_page_injects_dialog_helper_only_when_used():
+    """The confirm/alert helper (and its CSS) ride along only on pages whose
+    body actually references it — dialogless wizards carry no dead weight."""
+    used = _common.wrap_page(
+        "T", "<button onclick=\"jtsConfirm('x')\">x</button>"
+    ).decode()
+    assert "function jtsConfirm" in used
+    assert "dialog.jts-dialog" in used  # DIALOG_CSS rode along too
+
+    unused = _common.wrap_page("T", "<p>nothing interactive here</p>").decode()
+    assert "function jtsConfirm" not in unused
+    assert "dialog.jts-dialog" not in unused
+
+
+def test_wrap_page_emits_dialog_helper_before_body():
+    """Helper-first: jtsConfirm/jtsAlert are defined ahead of the page markup
+    that references them, so a parse-time call can't hit an undefined symbol."""
+    page = _common.wrap_page("T", "<div id='dlg-marker'>jtsAlert</div>").decode()
+    assert page.index("function jtsAlert") < page.index("dlg-marker")

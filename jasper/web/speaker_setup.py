@@ -182,13 +182,14 @@ Bluetooth, and USB Audio. The address stays <code>jts.local</code>.</p>
 <script>
 const form = document.getElementById('speaker-name-form');
 const input = document.getElementById('speaker-name');
-form.addEventListener('submit', function(event) {{
+form.addEventListener('submit', async function(event) {{
+  event.preventDefault();
   const name = input.value.trim() || '{default}';
-  const ok = window.confirm(
+  const ok = await jtsConfirm(
     'Rename speaker to "' + name + '"? This restarts audio, Bluetooth, ' +
     'and voice services. You may need to reconnect from your phone or computer.'
   );
-  if (!ok) event.preventDefault();
+  if (ok) form.submit();
 }});
 </script>
 """
