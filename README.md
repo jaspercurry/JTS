@@ -476,6 +476,12 @@ reference. Currently:
   `LiveTurn` abstract Gemini Live, OpenAI Realtime, and Grok Voice
   Agent behind one switch, plus the per-provider trade-offs and the
   steps for adding a fourth backend
+- [`HANDOFF-pricing-editor.md`](docs/HANDOFF-pricing-editor.md) —
+  **Design/plan (in progress).** Per-model pricing rates surfaced +
+  editable on `/voice`: model-ID-keyed pricing with dated defaults
+  shipped as `jasper/data/model_pricing.json`, the editor section, and a
+  deferred research-prompt generator. Why provider APIs can't supply
+  voice prices
 - [`HANDOFF-prompting.md`](docs/HANDOFF-prompting.md) — The voice
   prompting playbook. Cross-provider principles (conditional over
   absolute, positive framing for tool calls, brevity vs. structure),
