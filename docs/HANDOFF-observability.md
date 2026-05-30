@@ -161,22 +161,77 @@ and its toggles trigger real daemon restarts, so after a deploy open
 `journalctl -u jasper-voice` shows DEBUG lines + the countdown and
 auto-quiet fire.
 
-**Tier C — flight recorder (future; design separately before
-building).** A bounded in-RAM verbose ring per noisy subsystem,
-dumped to disk **only** on an anomaly trigger (any WARNING+, a
-failing `jasper-doctor` check, a supervisor restart, a user "flag
-that"). This is the real answer to the central tension: the
-intermittent hardware/network bugs that matter most **already
-happened** before anyone could flip a manual toggle, so capture
+**Tier C — flight recorder (designed 2026-05-30; approved to
+build, not yet built).** A bounded in-RAM verbose ring per daemon,
+dumped **only** on an anomaly. This is the real answer to the
+central tension: the intermittent bugs that matter most **already
+happened** before anyone could flip the Tier-B toggle, so capture
 the verbose window around every anomaly automatically.
-- **Honest grounding:** this is borrowed from *general*
-  observability practice (Linux ftrace snapshot triggers, Android
-  logd, OpenTelemetry tail-sampling) plus the Pi cohort's
-  RAM-logging consensus (DietPi RAMlog, log2ram). **No Pi-appliance
-  in the comparable cohort ships a structured log flight-recorder**
-  — it is sound-by-analogy, not cohort-corroborated. JTS already
-  does exactly this for *audio* (the wake-event 6 s pre/post
-  rings); Tier C generalizes it to logs.
+
+*Mechanism — decouple the logger level from the journal level.* The
+engine is stdlib `logging.handlers.MemoryHandler` + a ~20-line
+override:
+
+| Component | Level | Effect |
+|---|---|---|
+| `jasper` logger | DEBUG always | DEBUG records get *created* |
+| journal `StreamHandler` | INFO (DEBUG when the Tier-B toggle is on) | **journal volume unchanged** — DEBUG never hits the SD card |
+| `RingFlushHandler` (new) | DEBUG | buffers the last N DEBUG+ records in a `deque(maxlen=N)`; flushes only on WARNING+/explicit |
+
+```python
+class RingFlushHandler(MemoryHandler):
+    def __init__(self, capacity, target):
+        super().__init__(capacity, flushLevel=WARNING, target=target, flushOnClose=False)
+        self.buffer = collections.deque(maxlen=capacity)   # ring: drops oldest
+    def shouldFlush(self, record):
+        return record.levelno >= self.flushLevel           # not on capacity
+```
+
+*Decisions (2026-05-30):*
+- **Dump target: journal burst.** On flush, re-emit the buffered
+  records into journald tagged `event=flightrec.dump`, right after
+  the triggering WARNING — reuses the 200 MB journald cap (retention)
+  + `fetch-pi-logs.sh`; DEBUG context lands in the same timeline as
+  the anomaly. (Target stays pluggable so dump-files can be added
+  later.)
+- **Triggers (all in v1):** automatic on any WARNING/ERROR (built
+  into `flushLevel`), plus explicit `dump(reason)` from the
+  `flag_recent_issue` voice tool, supervisor restart decisions
+  (`event=shairport.wedge_detected`, `event=system_supervisor.userspace_wedge`),
+  and failing `jasper-doctor` checks.
+- **Scope (v1):** voice + aec + control.
+
+*Tier-B integration.* When this lands, Tier B's `apply_for` switches
+from "set the `jasper` *logger* to DEBUG" to "lower the journal
+*handler* to DEBUG" (the logger is already DEBUG for the ring) — a
+~5-line adjustment, same toggle behaviour.
+
+*The payoff (closes the Tier-A loop).* With the ring in place,
+**`event=tts_gain.compute` can finally move to DEBUG** — quiet in
+the journal during music, but still captured in RAM and dumped
+around any related anomaly, preserving the after-the-fact
+reconstruction it exists for. Same for any future verbose
+instrumentation: RAM-only, persisted only when something breaks.
+(The AEC `rms over` line still stays INFO — `jasper-doctor` reads it
+*continuously*, which a dump-on-anomaly model can't serve.)
+
+*Cost.* ~N × 0.3 KB. N=2000 ≈ 600 KB/daemon; voice+aec+control ≈
+1.8 MB — trivial on a 1–2 GB Pi, tunable.
+
+*Honest grounding.* Stdlib `MemoryHandler` + the general pattern
+(Linux ftrace snapshot triggers, Android logd, OpenTelemetry
+tail-sampling, Rust `tracing-appender`) + the Pi cohort's
+RAM-logging consensus (DietPi RAMlog, log2ram). **No Pi-appliance in
+the comparable cohort ships a structured log flight-recorder** — it
+is sound-by-analogy, not cohort-corroborated. JTS already does this
+for *audio* (the wake-event 6 s pre/post rings); Tier C generalizes
+it to logs.
+
+*Build shape.* One module (`jasper/flight_recorder.py`:
+`RingFlushHandler` + `install_flight_recorder()` + `dump(reason)`)
+wired into each daemon's logging setup, the small Tier-B `apply_for`
+adjustment, the three explicit-trigger call sites, and tests. Its
+own PR (Tier A+B are a separate committed PR).
 
 **Tier D — download diagnostics (cheap capstone).** Surface the
 existing `scripts/pi-bundle.sh` as a one-tap "Download diagnostics"
