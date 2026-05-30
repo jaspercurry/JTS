@@ -90,6 +90,7 @@
   /* Extra foreground opacity steps used by page-level components
      (e.g. the sound page's slider tracks). Same hue as the verbatim
      landing-page tokens above, just more steps. */
+  --foreground-008: oklch(0.22 0.005 80 / 0.08);
   --foreground-010: oklch(0.22 0.005 80 / 0.1);
   --foreground-020: oklch(0.22 0.005 80 / 0.2);
 
@@ -107,6 +108,21 @@
   --success: var(--primary);
   --danger: oklch(0.46 0.16 28);
   --danger-soft: oklch(0.97 0.018 28);
+
+  /* Status tones — the single source of truth for every health colour
+     on a dashboard (sparklines, dots, badges). A component sets
+     `--tone: var(--status-ok|warn|danger)` on its root and the CSS reads
+     it; re-skin the whole status vocabulary by changing these three. */
+  --status-ok: oklch(0.64 0.13 145);
+  --status-warn: oklch(0.78 0.16 80);
+  --status-danger: oklch(0.58 0.22 27);
+  /* Neutral tone for "no judgment" states (e.g. AirPlay inactive). */
+  --status-idle: oklch(0.6 0.005 80);
+  /* Destructive actions (reboot / power off / delete profile). Brighter
+     than --danger above, which predates the design system and is kept
+     for the legacy wizards. */
+  --destructive: oklch(0.58 0.22 27);
+  --destructive-foreground: oklch(0.985 0.005 80);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
   --font-sans: "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI",
     system-ui, sans-serif;
@@ -248,7 +264,118 @@ svg { display: block; }
   border: 1px solid var(--border);
 }
 .btn--ghost:hover { background: color-mix(in oklab, var(--foreground) 8%, transparent); }
+/* Solid neutral button (e.g. restart actions) — completes the set. */
+.btn--default {
+  background: var(--foreground);
+  color: var(--background);
+}
+.btn--default:hover { background: color-mix(in oklab, var(--foreground) 88%, transparent); }
+/* Destructive button (reboot / power off / delete). */
+.btn--danger {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+}
+.btn--danger:hover { background: color-mix(in oklab, var(--destructive) 90%, black); }
 .btn:disabled { opacity: 0.42; cursor: not-allowed; }
+
+/* ---------------- shared sub-page chrome ---------------- */
+/* Sticky top bar: back affordance on the left, centred title. Used by
+   the redesigned sub-pages (/sound/, /system/). The landing page (/) has
+   its own hero instead. */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: color-mix(in oklab, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+.app-header__row {
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  align-items: center;
+  height: 56px;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+.app-header__title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-align: center;
+}
+@media (min-width: 768px) {
+  .app-header__row { padding-left: 2.5rem; padding-right: 2.5rem; }
+}
+/* Round icon button (back chevron, etc.). */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--secondary) 60%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.icon-button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ---------------- shared cards / lists / pills ---------------- */
+/* A titled section: small eyebrow label above a card body. The reusable
+   "settings page" vocabulary — cards, key/value lists, and status pills
+   that any management sub-page can build on. */
+.section { display: flex; flex-direction: column; gap: 12px; }
+.section__head { padding: 0 0.25rem; }
+.info-card {
+  padding: 20px;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.info-card--accent {
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 50%, transparent);
+}
+.info-card > * + * { margin-top: 12px; }
+.info-card__note { font-size: 13px; color: var(--muted); }
+.info-card__hint {
+  font-size: 12px;
+  color: var(--muted);
+  border-left: 2px solid var(--border);
+  padding-left: 12px;
+}
+/* Key/value description list. */
+.deflist {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) 1fr;
+  column-gap: 24px;
+  row-gap: 8px;
+  margin: 0;
+  font-size: 13px;
+}
+.deflist dt { color: var(--muted); }
+.deflist dd { margin: 0; word-break: break-word; }
+/* Status pill. Tone via inline `--tone` (--status-ok|warn|danger). */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text);
+  background: color-mix(in oklab, var(--tone, var(--status-ok)) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone, var(--status-ok)) 50%, transparent);
+}
+.badge-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 
 /* ---------------- a11y ---------------- */
 .sr-only {

@@ -74,54 +74,70 @@ class FakeCamillaWithoutLiveRaw:
         return True
 
 
+_SOUND_MODULE = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
+)
+
+
 def test_index_html_renders_canonical_sound_page():
     html = sound_setup._index_html().decode()
 
     # Canonical design system + page shell.
     assert "/assets/app.css" in html
+    assert "/assets/sound-profile/sound.css?v=" in html  # page CSS linked, not inlined
+    assert "<style>" not in html
     assert 'class="app-header__title">Sound profile' in html
 
-    # Off / Saved / Draft tabs are the live source.
+    # Off / Saved / Draft tabs are the live source (server-rendered chrome).
     assert 'id="tab-off"' in html
     assert 'id="tab-saved"' in html
     assert 'id="tab-draft"' in html
 
-    # 5-band Simple model — field names ship; labels arrive from /state.
-    assert "sub_bass_db" in html
-    assert "presence_db" in html
+    # The editor itself is a static ES module (served + revalidated by nginx),
+    # not inline script — same delivery model as /system/.
+    assert '<script type="module" src="/assets/sound-profile/js/main.js">' in html
+    assert "<script>" not in html  # no inline logic left in the page
 
-    # Backend endpoints + the epoch handshake are preserved.
+
+def test_index_html_embeds_csrf_meta_for_json_posts():
+    html = sound_setup._index_html("csrf-token").decode()
+    # The token rides in the meta tag; the static module reads it and sends
+    # X-CSRF-Token on every mutating POST.
+    assert 'meta name="jts-csrf" content="csrf-token"' in html
+
+
+def test_sound_module_preserves_editor_behaviour():
+    """The EQ editor moved from inline _SOUND_JS into a static module. Guard
+    the load-bearing pieces so the relocation can't silently drop them: the
+    5-band Simple field names, the backend endpoints + epoch handshake, the
+    CSRF-via-meta wiring, and no legacy prompt() flow."""
+    js = _SOUND_MODULE.read_text()
+    assert "sub_bass_db" in js
+    assert "presence_db" in js
     for path in (
         "./preview", "./live-draft", "./apply",
         "./profiles/save", "./profiles/rename", "./profiles/delete",
     ):
-        assert path in html
-    assert "dsp_write_epoch: dspWriteEpoch" in html
-    assert "function cancelLiveDrafts()" in html
-    assert "jsonHeaders()" in html
+        assert path in js, f"sound module no longer references {path}"
+    assert "dsp_write_epoch: dspWriteEpoch" in js
+    assert "function cancelLiveDrafts()" in js
+    assert "jsonHeaders()" in js
+    assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
+    assert "window.prompt" not in js
 
-    # No legacy prompt-driven flows.
-    assert "window.prompt" not in html
 
-
-def test_index_html_prefers_explicit_profile_identity_then_stock_matches():
-    html = sound_setup._index_html().decode()
-    fn_start = html.index("function findIdFor(profile)")
-    fn_end = html.index("function sourceProfile()", fn_start)
-    body = html[fn_start:fn_end]
+def test_sound_module_prefers_explicit_profile_identity_then_stock_matches():
+    js = _SOUND_MODULE.read_text()
+    fn_start = js.index("function findIdFor(profile)")
+    fn_end = js.index("function sourceProfile()", fn_start)
+    body = js[fn_start:fn_end]
 
     explicit_identity = body.index("profile.profile_id && entryById(profile.profile_id)")
     stock_match = body.index("e.kind === 'stock'")
     custom_match = body.index("e.kind === 'custom'")
 
     assert explicit_identity < stock_match < custom_match
-
-
-def test_index_html_embeds_csrf_meta_for_json_posts():
-    html = sound_setup._index_html("csrf-token").decode()
-
-    assert 'meta name="jts-csrf" content="csrf-token"' in html
-    assert "headers: jsonHeaders()" in html
 
 
 def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path):

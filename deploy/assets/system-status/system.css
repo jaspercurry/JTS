@@ -1,0 +1,148 @@
+/* System dashboard — page-specific styles.
+   Shared tokens, the sticky header, cards, key/value lists, status
+   pills, and buttons live in /assets/app.css. This is the dashboard's
+   own visualisation vocabulary: vital-stat tiles, sparklines, per-core
+   CPU bars, tables, the audio-conversion choice cards, the AirPlay
+   event list, and the collapsible. Token-based; served static and
+   cache-busted by build SHA (see jasper.web._common.canonical_page). */
+.app-main {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1rem 1.5rem 6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+@media (min-width: 768px) {
+  .app-main { padding-left: 2.5rem; padding-right: 2.5rem; }
+}
+body.stale { opacity: 0.55; }
+.muted { color: var(--muted); }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: var(--foreground-005);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+a.link { color: var(--primary); }
+a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+/* Live indicator */
+.live-pill { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+.live-pill__dot {
+  width: 6px; height: 6px; border-radius: 9999px;
+  background: var(--primary);
+  animation: jts-pulse 1.6s ease-in-out infinite;
+}
+@keyframes jts-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Vital stats grid */
+.stat-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 560px) { .stat-grid { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 820px) { .stat-grid { grid-template-columns: repeat(3, 1fr); } }
+.stat-card {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.stat-card__head { display: flex; align-items: center; gap: 8px; }
+.stat-card__dot {
+  width: 6px; height: 6px; border-radius: 9999px;
+  background: var(--tone, var(--status-ok));
+}
+.stat-card__value {
+  font-family: var(--font-display);
+  font-size: 20px; font-weight: 600; letter-spacing: -0.01em;
+}
+.stat-card__sub { font-size: 12px; color: var(--muted); }
+.stat-card__chart { margin-top: 8px; }
+
+/* Sparkline */
+.sparkline { width: 100%; height: 32px; color: var(--tone, var(--status-ok)); }
+.sparkline__area { fill: currentColor; opacity: 0.18; }
+.sparkline__line {
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Per-core CPU bars */
+.cpu-bars { display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; }
+.cpu-bars__col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.cpu-bars__track {
+  position: relative; width: 100%; height: 48px;
+  border-radius: 3px; background: var(--foreground-010);
+  overflow: hidden; display: flex; align-items: flex-end;
+}
+.cpu-bars__fill { width: 100%; background: var(--tone, var(--status-ok)); transition: height 200ms ease; }
+.cpu-bars__label { font-size: 10px; color: var(--muted); }
+
+/* Tables (cloud + per-service + diagnostics) */
+.table-wrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th {
+  padding-bottom: 8px; text-align: left;
+  font-family: var(--font-display); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted);
+}
+.table td { padding: 8px 0; vertical-align: top; border-top: 1px solid var(--border); }
+.table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.table--services { min-width: 420px; }
+.table--cloud { min-width: 520px; }
+.table--services tr.totals td { font-weight: 600; border-top: 1px solid var(--border-strong); }
+.table--services tr.totals td:first-child { font-weight: 400; color: var(--muted); }
+.service-name { font-weight: 500; line-height: 1.25; }
+.service-group { margin-top: 2px; font-size: 11px; color: var(--muted); }
+.diag-mark { width: 1.5em; text-align: center; font-weight: 700; }
+.diag-output { margin-top: 4px; }
+
+/* Audio-conversion choice cards */
+.choice-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 560px) { .choice-grid { grid-template-columns: 1fr 1fr; } }
+.choice {
+  text-align: left; padding: 16px;
+  border-radius: var(--radius-sm); background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: background-color 150ms ease, box-shadow 150ms ease;
+}
+.choice:hover { background: var(--foreground-005); }
+.choice[aria-pressed="true"] {
+  background: color-mix(in oklab, var(--accent) 30%, transparent);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.choice:disabled { opacity: 0.65; cursor: wait; }
+.choice__title { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
+.choice__body { margin-top: 4px; font-size: 12px; color: var(--muted); }
+
+/* Action button row */
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* AirPlay event list */
+.ap-events { display: grid; gap: 6px; }
+.ap-event {
+  border-left: 2px solid var(--border); padding-left: 12px;
+  font-size: 13px; color: var(--text);
+}
+.ap-event.watch { border-left-color: var(--status-warn); }
+.ap-event.issue { border-left-color: var(--status-danger); }
+.ap-event .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Collapsible (per-service usage) */
+.collapsible__toggle {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 0 0.25rem; text-align: left;
+}
+.collapsible__toggle svg {
+  width: 14px; height: 14px; flex: 0 0 auto;
+  color: var(--muted); transition: transform 150ms ease;
+}
+.collapsible[data-open="true"] .collapsible__toggle svg { transform: rotate(90deg); }
+.collapsible__body { display: none; margin-top: 12px; }
+.collapsible[data-open="true"] .collapsible__body { display: block; }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-pill__dot { animation: none; }
+  .cpu-bars__fill, .collapsible__toggle svg { transition: none; }
+}

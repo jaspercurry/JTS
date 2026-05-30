@@ -224,14 +224,44 @@ stays self-contained (no shared-CSS single point of failure beyond nginx,
 which every page already depends on for fonts); `jasper-doctor`'s
 `check_web_design_assets` warns if `app.css` is missing.
 
-[`jasper/web/sound_setup.py`](jasper/web/sound_setup.py) (`/sound/`) is
-the first wizard on this system and is the reference implementation. The
-legacy `PAGE_STYLE`/`wrap_page` path remains for un-migrated wizards;
-don't mix the two on one page. The design tokens currently live in both
-`deploy/index.html` and `app.css` until the landing page is migrated to
-link the stylesheet — a test
+[`jasper/web/sound_setup.py`](jasper/web/sound_setup.py) (`/sound/`) and
+[`jasper/web/system_setup.py`](jasper/web/system_setup.py) (`/system/`)
+are the migrated wizards on this system; mirror them when migrating the
+next. The legacy `PAGE_STYLE`/`wrap_page` path remains for un-migrated
+wizards; don't mix the two on one page. The design tokens currently live
+in both `deploy/index.html` and `app.css` until the landing page is
+migrated to link the stylesheet — a test
 ([`tests/test_web_design_system.py`](tests/test_web_design_system.py))
 guards the two token blocks against drift.
+
+The shared layer grows by promotion: a component used by more than one
+page (the sticky `.app-header`/`.icon-button`, the `.info-card`/`.deflist`/
+`.badge` settings vocabulary, the `.btn--*` variants) lives in `app.css`;
+genuinely single-page visuals (the `/system/` stat tiles, sparklines, and
+CPU bars) stay in that page's `page_css`. Status colour is one knob: a
+component sets `--tone: var(--status-ok|warn|danger|idle)` on its root and
+the CSS reads it.
+
+**Page behaviour ships as static ES modules, not inline `<script>`.** A
+migrated page's JavaScript lives in `deploy/assets/<page>/js/*.js` (today:
+`system-status/`, `sound-profile/`), imports its siblings by relative
+path, and is loaded from the body as a `type="module"` script whose `src`
+is `/assets/<page>/js/main.js`. nginx
+serves these from `/assets/` but — unlike the immutable `app.css`/fonts —
+with `Cache-Control: no-cache` (a scoped `location ~ \.js$` block in
+[`deploy/nginx-jasper.conf`](deploy/nginx-jasper.conf)), because a
+relative-import module graph can't be URL-cache-busted the way `app.css`
+is (`?v=<sha>`); ETag revalidation keeps it correct across deploys at the
+cost of one conditional GET per module on a page open. `install.sh` copies
+the per-page `js/` dirs alongside `app.css`. The module reads the CSRF
+token from the `<meta name="jts-csrf">` tag (so the cached file carries no
+secret) and uses the same `jsonHeaders()` / `X-CSRF-Token` contract as the
+inline wizards. This is why no inline JS remains on a migrated page —
+`system-status/` is split into `dom`/`format`/`charts`/`components`/
+`views`/`main`; `sound-profile/` is the EQ editor relocated as a single
+module (its interactions need CamillaDSP hardware to re-verify, so it was
+moved verbatim rather than split — splitting it finely is a good follow-up
+done on-device).
 
 ---
 

@@ -3451,18 +3451,28 @@ def check_web_design_assets() -> CheckResult:
     web_root = Path(os.environ.get("JASPER_WEB_SHARE_DIR", "/usr/share/jasper-web"))
     if not web_root.is_dir():
         return CheckResult("web design assets", "ok", "not installed (skipped)")
+    # Static assets for the redesigned pages (/system/, /sound/): the shared
+    # stylesheet, each page's own stylesheet, and each page's ES module entry.
+    # A missing stylesheet renders unstyled-but-visible; a missing JS module
+    # blanks the page — both admin-only and non-fatal, so warn (redeploy).
     app_css = web_root / "assets" / "app.css"
     fonts = web_root / "assets" / "fonts"
-    missing = []
-    if not app_css.is_file():
-        missing.append("assets/app.css")
+    required = (
+        app_css,
+        web_root / "assets" / "system-status" / "system.css",
+        web_root / "assets" / "system-status" / "js" / "main.js",
+        web_root / "assets" / "sound-profile" / "sound.css",
+        web_root / "assets" / "sound-profile" / "js" / "main.js",
+    )
+    missing = [str(p.relative_to(web_root)) for p in required if not p.is_file()]
     if not fonts.is_dir():
         missing.append("assets/fonts/")
     if missing:
         return CheckResult(
             "web design assets", "warn",
-            "missing: " + ", ".join(missing)
-            + " — pages render unstyled; redeploy to install",
+            "missing: " + ", ".join(sorted(missing))
+            + " — redeploy to install (missing CSS renders unstyled; a "
+            "missing JS module blanks the page)",
         )
     return CheckResult("web design assets", "ok", str(app_css))
 

@@ -11,6 +11,7 @@ import threading
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -210,49 +211,32 @@ def dashboard_server(upstream_control):
         t.join(timeout=2)
 
 
-def test_root_serves_html_with_polling_script(dashboard_server) -> None:
+def test_root_serves_canonical_shell(dashboard_server) -> None:
+    """The page is the canonical design-system shell: the shared app.css
+    link, a CSRF meta tag, the icon sprite, and the ES module entry. All
+    behaviour now lives in /assets/system-status/js/ (asserted against the
+    module files below), so the rendered HTML must NOT inline the old
+    script or its DOM ids."""
     base, _received, _ = dashboard_server
     status, body = _http_get(f"{base}/")
     assert status == 200
     text = body.decode("utf-8")
+    # Canonical shell from canonical_page().
     assert "<!doctype html>" in text
-    assert "id=\"spark-memory\"" in text  # sparkline target present
-    assert "data.json" in text  # polling URL referenced from JS
-    assert "id=\"airplay-card\"" in text
-    assert "id=\"ap-events\"" in text
-    assert "id=\"audio-quality-card\"" in text
-    assert "Medium saves CPU" in text
-    assert "State warning:" in text
-    assert "data-converter=\"samplerate_medium\"" in text
-    assert "Load Pressure" in text
-    assert "Low demand" in text
-    assert "metric-line" in text
-    assert "<details class=\"card\" id=\"services-card\" open>" in text
-    assert "Cgroup CPU and memory by service" in text
-    assert "<th class=\"num\">Mem</th>" in text
-    assert "svc-group" in text
-    assert "serviceMemoryMb(services, 'jasper-outputd')" in text
-    assert "'mem ' + Math.round(memoryMb) + ' MB'" in text
-    assert "content/DAC xruns" in text
-    assert "last content xrun" in text
-    assert "target/chunk" in text
-    assert "System total · shown / unshown / free" in text
-    assert "RSS unavailable" not in text
-    assert "Math.round(capacityPercent(totalCpu, cores.length))" in text
-    assert "const systemCapacity = capacityPercent(systemCpu, corePcts.length)" in text
-    assert "Math.round(systemCapacity)" in text
-    assert "id=\"disk-pill\"" in text
-    assert "tile-pill.warn" in text
-    assert "queue depth" not in text
-    assert "running + waiting tasks" not in text
-    assert "saturated core" not in text
-    assert "kernel-discrete" not in text
-    assert "fan off" not in text
-    assert "fan-footer" not in text
-    assert ".tile.warn { background" not in text
-    assert ".tile.fail { background" not in text
-    assert "temp-c" in text
-    assert "Restart voice" in text  # action button present
+    assert "/assets/app.css?v=" in text  # shared stylesheet, cache-busted
+    assert 'name="jts-csrf"' in text  # CSRF token for the module's POSTs
+    assert 'id="icon-back"' in text  # shared inline sprite
+    assert '<div id="app"' in text  # mount point
+    assert '<script type="module" src="/assets/system-status/js/main.js">' in text
+    # Page CSS is a linked static file now (lintable + cacheable), not inlined.
+    assert "/assets/system-status/system.css?v=" in text
+    assert "<style>" not in text
+    # The behaviour moved out of the HTML — no inline script, no old ids.
+    assert "function render" not in text
+    assert "data-converter" not in text
+    assert 'id="spark-memory"' not in text
+    assert 'id="airplay-card"' not in text
+    assert "serviceMemoryMb" not in text
 
 
 def test_data_json_proxies_snapshot(dashboard_server) -> None:
@@ -343,20 +327,68 @@ def test_poweroff_requires_csrf(dashboard_server) -> None:
     assert ("POST", "/system/poweroff") not in received
 
 
-def test_root_includes_poweroff_button(dashboard_server) -> None:
-    """The dashboard HTML carries a Power off button styled as a
-    danger action, sitting alongside Reboot."""
-    base, _, _ = dashboard_server
-    status, body = _http_get(f"{base}/")
-    assert status == 200
-    text = body.decode("utf-8")
-    assert 'id="btn-poweroff"' in text
-    # Double-confirm copy is load-bearing UX — the second prompt is
-    # what discourages mis-click on the most destructive action on
-    # the dashboard. Keep it in the test so a future "tidy the JS"
-    # PR doesn't silently drop it.
-    assert "physically re-plug power" in text
-    assert "absolutely sure" in text
+_MODULE_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "assets" / "system-status" / "js"
+)
+
+
+# The /system/ UI is a layered set of static ES modules. These guards scan
+# the combined module text so they survive refactors that move a string from
+# one module to another (only the layout, not the behaviour, should change).
+_EXPECTED_MODULES = (
+    "dom", "format", "charts", "components", "sections",
+    "views", "api", "actions", "main",
+)
+
+
+def _system_js() -> str:
+    return "\n".join(
+        (_MODULE_DIR / f"{name}.js").read_text() for name in _EXPECTED_MODULES
+    )
+
+
+def test_static_modules_present() -> None:
+    """The /system/ UI ships as static ES modules (served + revalidated by
+    nginx, copied by install.sh). Every layer must exist in the repo."""
+    for name in _EXPECTED_MODULES:
+        assert (_MODULE_DIR / f"{name}.js").is_file(), f"missing module {name}.js"
+
+
+def test_modules_preserve_destructive_confirms_and_csrf() -> None:
+    """The double-confirm on reboot + power off is load-bearing UX — the
+    second prompt discourages a mis-click on the most destructive actions.
+    Guard the copy + the CSRF-via-meta wiring so a future "tidy the JS" PR
+    can't silently drop either."""
+    js = _system_js()
+    assert "physically re-plug power" in js
+    assert "absolutely sure" in js
+    assert "Wake-word will be unavailable" in js  # voice-restart warning
+    # CSRF token is read from the meta tag, never baked into the cached module.
+    assert "meta[name=jts-csrf]" in js
+    assert "X-CSRF-Token" in js
+
+
+def test_modules_wire_the_proxy_endpoints() -> None:
+    """The modules must POST to the same action paths the handler proxies and
+    poll the same read endpoints."""
+    js = _system_js()
+    for path in ("restart/voice", "restart/audio", "reboot", "poweroff",
+                 "audio-quality", "data.json", "diagnostics.json"):
+        assert path in js, f"system modules no longer reference {path}"
+
+
+def test_modules_preserve_metric_logic() -> None:
+    """Spot-check that the formatting/threshold port survived: the system-total
+    breakdown, throttle wording, the MPRIS fallback, the audio-conversion
+    options, and the cgroup warning."""
+    js = _system_js()
+    assert "System total · shown / unshown / free" in js
+    assert "throttling now" in js
+    assert "MPRIS playing" in js
+    assert "samplerate_medium" in js
+    assert "samplerate_best" in js
+    assert "cgroup_enable=memory" in js
 
 
 def test_unknown_route_404(dashboard_server) -> None:
