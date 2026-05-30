@@ -915,14 +915,10 @@ def _ring_noise_floor_dbfs(ring, *, percentile: float = 25.0) -> float | None:
 def _active_model(cfg: Config) -> str:
     """Return the model name for the currently selected provider — used
     by startup-readiness logging and the silent-failure heuristic in
-    `_end_turn` so journalctl shows the actual model in flight."""
-    if cfg.voice_provider == "gemini":
-        return cfg.gemini_model
-    if cfg.voice_provider == "openai":
-        return cfg.openai_model
-    if cfg.voice_provider == "grok":
-        return cfg.grok_model
-    return f"<unknown:{cfg.voice_provider}>"
+    `_end_turn` so journalctl shows the actual model in flight. Resolution
+    lives on `Config.active_voice_model` (shared with jasper-doctor); the
+    `<unknown:…>` sentinel keeps log lines legible for an unset provider."""
+    return cfg.active_voice_model or f"<unknown:{cfg.voice_provider}>"
 
 
 def _tts_ready_detail(cfg: Config) -> str:
