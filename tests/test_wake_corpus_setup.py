@@ -1868,6 +1868,36 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     ]
 
 
+def test_set_bridge_outputs_chip_profile_parks_production_dtln(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env="JASPER_AEC_DTLN_ENABLED=1\n",
+    )
+    monkeypatch.setattr(wake_corpus_setup, "restart_unit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+
+    changed = wake_corpus_setup.set_bridge_outputs_for_session(
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        include_dtln=False,
+        include_usb_mic=True,
+        include_usb_dtln=True,
+        include_xvf_raw0_dtln=True,
+    )
+
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in bridge_path.read_text().splitlines()
+    }
+    assert changed is True
+    assert values["JASPER_AEC_DTLN_ENABLED"] == "0"
+    assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
+
+
 def test_enable_bridge_outputs_rolls_back_when_restart_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

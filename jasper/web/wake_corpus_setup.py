@@ -884,11 +884,14 @@ def set_bridge_outputs_for_session(
 
     if include_dtln and not _env_truthy(system_env.get("JASPER_AEC_DTLN_ENABLED")):
         values["JASPER_AEC_DTLN_ENABLED"] = "1"
-    elif include_aec3_sweep and not include_dtln:
-        # AEC3 sweep is intentionally a separate low-resource test mode.
-        # The overlay file can temporarily park production DTLN while
-        # the operator is collecting same-utterance AEC3 variants; exit
-        # removes this override and restores the production intent.
+    elif (
+        (include_aec3_sweep or corpus_profile == PROFILE_CHIP_AEC_COMPARISON)
+        and not include_dtln
+    ):
+        # AEC3 sweep and chip-AEC comparison are controlled corpus test
+        # modes. Temporarily park production DTLN unless the operator
+        # explicitly selected the legacy dtln leg; exit removes this
+        # override and restores the production intent.
         values["JASPER_AEC_DTLN_ENABLED"] = "0"
     if include_usb_mic or include_usb_dtln or sweep_needs_usb:
         values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
