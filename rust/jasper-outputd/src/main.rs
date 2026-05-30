@@ -112,7 +112,7 @@ fn run_fake(
     tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
     once: bool,
-    shutdown: &AtomicBool,
+    shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let period = period_duration(config.period_frames);
     let watchdog_interval = watchdog_interval();
@@ -162,7 +162,7 @@ fn run_alsa(
     tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
     once: bool,
-    shutdown: &AtomicBool,
+    shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut backend = AlsaBackend::new(config)?;
     let ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
