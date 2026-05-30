@@ -1489,11 +1489,12 @@ class WakeLoop:
         self._detector = _on.detector
         self._capture_ring_on = _on.capture_ring
         self._capture_ring_off = (
-            self._legs["off"].capture_ring if "off" in self._legs else deque()
+            self._legs["off"].capture_ring if "off" in self._legs
+            else deque(maxlen=CAPTURE_RING_FRAMES)
         )
         self._capture_ring_dtln = (
-            self._legs["dtln"].capture_ring
-            if "dtln" in self._legs else deque()
+            self._legs["dtln"].capture_ring if "dtln" in self._legs
+            else deque(maxlen=CAPTURE_RING_FRAMES)
         )
         # Shared OR-gate lock across the parallel leg loops. Held only for
         # the critical section that sets refractory_until + reads the
@@ -2988,6 +2989,12 @@ class WakeLoop:
             "tts_source_peak_dbfs": round(
                 self._tts_volume_tracker.source_peak_dbfs, 1,
             ),
+            # Actually-armed wake legs (runtime truth, by jasper.wake_legs
+            # token order). /aec reports configured *intent* from
+            # aec_mode.env; this is what the daemon actually opened, so a
+            # startup leg-skip (event=wake.leg_skipped) is visible in
+            # /state.voice, not only in the journal.
+            "wake_legs": list(self._legs),
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:

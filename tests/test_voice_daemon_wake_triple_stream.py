@@ -308,3 +308,42 @@ def test_leg_device_attr_covers_all_wake_input_legs():
     assert not missing, (
         f"wake legs missing _LEG_DEVICE_ATTR: {sorted(missing)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# session_status — runtime-armed legs surfaced in /state (observability)
+# ---------------------------------------------------------------------------
+
+
+def _prep_session_status(wl) -> None:
+    """Set the few attrs session_status() reads beyond the fire path, so
+    it can be called on a __new__-built WakeLoop."""
+    from jasper.voice_daemon import State
+    wl._state = State.WAKE
+    wl._input_ended = False
+    wl._ducker = MagicMock()
+    wl._ducker.is_ducked = False
+    # session_status also reports the volume tracker's measured source
+    # loudness (the per-provider TTS-loudness telemetry); the real daemon
+    # always has a tracker, so give the __new__-built loop a stub one.
+    wl._tts_volume_tracker = MagicMock()
+    wl._tts_volume_tracker.source_peak_dbfs = -20.0
+
+
+def test_session_status_reports_armed_legs_triple():
+    """session_status surfaces the actually-armed leg tokens (runtime
+    truth, in jasper.wake_legs order) so a startup leg-skip is visible in
+    /state.voice — /aec only shows configured intent from aec_mode.env."""
+    wl = _make_wake_loop_triple(
+        detector_off=_make_detector(), detector_dtln=_make_detector(),
+    )
+    _prep_session_status(wl)
+    assert wl.session_status()["wake_legs"] == ["on", "off", "dtln"]
+
+
+def test_session_status_reports_only_armed_legs_when_optional_absent():
+    """Dual-stream (no DTLN leg) reports exactly the armed legs — the
+    field reflects what the daemon opened, not what was configured."""
+    wl = _make_wake_loop_triple(detector_off=_make_detector())
+    _prep_session_status(wl)
+    assert wl.session_status()["wake_legs"] == ["on", "off"]
