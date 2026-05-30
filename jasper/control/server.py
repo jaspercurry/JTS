@@ -364,6 +364,16 @@ _WAKE_MODEL_FILE = "/var/lib/jasper/wake_model.env"
 _LEG_DEFAULT_RAW = True
 _LEG_DEFAULT_DTLN = False
 
+# Operator-facing wake-leg toggle name -> jasper.wake_legs token. The
+# chip-direct / AEC-OFF leg is exposed to operators (the /wake/ card,
+# /aec/leg, the JASPER_WAKE_LEG_RAW env var, the bash reconciler) as
+# "raw", but its frozen wire token is "off". Do NOT confuse "raw" with
+# the "raw0" corpus-only leg (chip channel 2, no toggle). This map is the
+# single place that collision is spelled out; leg-toggle validation goes
+# through it. Keys are the toggle vocabulary; values are wake_input
+# tokens. See docs/HANDOFF-mic-fusion-architecture.md.
+_TOGGLE_TO_TOKEN = {"raw": "off", "dtln": "dtln"}
+
 
 def _parse_env_bool(raw: str, default: bool) -> bool:
     """Same normalization the bash reconciler does — accept yes/no/etc."""
@@ -427,7 +437,7 @@ def _write_aec_leg(leg: str, enabled: bool) -> None:
     Caller is responsible for kicking the reconciler — this just
     persists the user's intent. Restart blast-radius lives in the
     reconciler since it has the actual mode + presence context."""
-    if leg not in ("raw", "dtln"):
+    if leg not in _TOGGLE_TO_TOKEN:
         raise ValueError(f"invalid leg: {leg!r}")
     key = f"JASPER_WAKE_LEG_{leg.upper()}"
     _atomic_rewrite_env(_AEC_MODE_FILE, {key: "1" if enabled else "0"})
@@ -1196,6 +1206,13 @@ async def _get_state(
             "connection_paused": (voice_st or {}).get("connection_paused"),
             "mic_muted": (voice_st or {}).get("mic_muted"),
             "tts_source_peak_dbfs": (voice_st or {}).get("tts_source_peak_dbfs"),
+            # Runtime-armed wake-leg tokens from jasper-voice's
+            # session_status. jasper-doctor's check_wake_legs cross-checks
+            # this against the configured intent in aec_mode.env to surface
+            # a startup leg-skip; the /state aggregator curates voice
+            # fields explicitly, so a new session_status field must be
+            # pulled through here too.
+            "wake_legs": (voice_st or {}).get("wake_legs"),
             "reachable": voice_st is not None,
         },
         "audio": {
@@ -2081,7 +2098,7 @@ def _make_handler(
                     return
                 leg = body.get("leg")
                 enabled_val = body.get("enabled")
-                if leg not in ("raw", "dtln"):
+                if leg not in _TOGGLE_TO_TOKEN:
                     self._send_json(
                         {"error": "leg must be 'raw' or 'dtln'"}, status=400,
                     )

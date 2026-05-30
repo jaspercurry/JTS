@@ -1661,29 +1661,97 @@ def _wake_leg_setting(key: str, default: bool) -> bool:
     return default
 
 
-def check_wake_legs_configured() -> CheckResult:
-    """Reports which additive wake-detection legs are armed via the
-    /system Wake detection card (raw chip-direct + DTLN neural). The
-    AEC3 master leg is reported separately by check_aec_bridge_running.
+def _voice_wake_legs_runtime() -> "set[str] | None":
+    """Wake-leg tokens jasper-voice actually opened, from jasper-control's
+    /state.voice.wake_legs (added with the registry-driven leg wiring).
+    None when jasper-control is unreachable or the field is absent (older
+    daemon / voice down) — callers treat None as "can't tell", not "no
+    legs", and fall back to reporting configured intent."""
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8780/state", timeout=2,
+        ) as r:
+            state = json.loads(r.read())
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return None
+    voice = state.get("voice")
+    if not isinstance(voice, dict):
+        return None
+    legs = voice.get("wake_legs")
+    if not isinstance(legs, list):
+        return None
+    return {str(t) for t in legs}
 
-    Skips cleanly if AEC is disabled — leg booleans are meaningless
-    without the bridge emitting on the UDP ports they consume."""
-    aec_mode = _aec_mode_setting()
+
+def _assess_wake_legs(
+    aec_mode: str, raw: bool, dtln: bool, armed_runtime: "set[str] | None",
+) -> CheckResult:
+    """Compare configured wake-leg intent against what jasper-voice
+    actually opened. Pure (the runtime set is passed in) so it's
+    unit-testable without the HTTP round-trip.
+
+    Maps the operator/config vocabulary to jasper.wake_legs tokens: the
+    aec3 master is "on", the "raw" toggle is the chip-direct "off" leg,
+    and dtln is "dtln". `armed_runtime` is None when the daemon is
+    unreachable — then we report configured intent (the behaviour before
+    the runtime cross-check existed)."""
+    hint = "Toggle at http://jts.local/wake/ (Wake detection card)."
     if aec_mode != "auto":
         return CheckResult(
             "Wake legs", "ok",
             f"n/a — AEC mode is {aec_mode}; additive legs require AEC on",
         )
+    configured = [name for name, on in
+                  (("aec3", True), ("raw", raw), ("dtln", dtln)) if on]
+    if armed_runtime is None:
+        return CheckResult(
+            "Wake legs", "ok",
+            f"{len(configured)} leg(s) configured: "
+            f"{', '.join(configured)}. {hint}",
+        )
+    expected = {"on"}
+    if raw:
+        expected.add("off")
+    if dtln:
+        expected.add("dtln")
+    missing = expected - armed_runtime
+    if missing:
+        return CheckResult(
+            "Wake legs", "warn",
+            f"configured {sorted(expected)} but jasper-voice armed only "
+            f"{sorted(armed_runtime)}; {sorted(missing)} not running "
+            f"(bridge down, or see `journalctl -u jasper-voice | "
+            f"grep event=wake.leg_skipped`). {hint}",
+        )
+    return CheckResult(
+        "Wake legs", "ok",
+        f"{len(armed_runtime)} leg(s) armed: "
+        f"{', '.join(sorted(armed_runtime))}. {hint}",
+    )
+
+
+def check_wake_legs_configured() -> CheckResult:
+    """Reports which additive wake-detection legs are armed (raw
+    chip-direct + DTLN neural); the AEC3 master leg is reported
+    separately by check_aec_bridge_running.
+
+    Reads configured intent from aec_mode.env and cross-checks it against
+    what jasper-voice actually opened (/state.voice.wake_legs), so a
+    startup leg-skip surfaces here rather than only in the journal.
+    Fail-soft: if jasper-control is unreachable, reports intent alone.
+    Skips cleanly if AEC is disabled — leg booleans are meaningless
+    without the bridge emitting on the UDP ports they consume."""
+    aec_mode = _aec_mode_setting()
     raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
     dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)
-    armed = [name for name, on in
-             (("aec3", True), ("raw", raw), ("dtln", dtln))
-             if on]
-    detail = (
-        f"{len(armed)} leg(s) armed: {', '.join(armed)}. "
-        f"Toggle at http://jts.local/system (Wake detection card)."
+    # Only worth a control-plane round-trip when AEC (and thus the legs)
+    # is actually on; _assess_wake_legs returns n/a otherwise.
+    armed_runtime = (
+        _voice_wake_legs_runtime() if aec_mode == "auto" else None
     )
-    return CheckResult("Wake legs", "ok", detail)
+    return _assess_wake_legs(aec_mode, raw, dtln, armed_runtime)
 
 
 def check_aec_bridge_running() -> CheckResult:

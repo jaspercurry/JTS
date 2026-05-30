@@ -1,10 +1,12 @@
 # Handoff: pluggable-mic boundary + multi-channel wake fusion architecture
 
 > **Status: living draft — design + execution plan, updated as phases
-> land (first written 2026-05-29). Phase 0.1 (leg registry) is merged
-> (#366); Phase 0.2 (the LegRuntime refactor) is in review (#369); the
-> rest is planned. Not a record of
-> shipped state — verify against code.** This
+> land (first written 2026-05-29). Phase 0.1 (leg registry, #366) and
+> Phase 0.2 (the LegRuntime refactor, #369) are merged; Phase 0.3
+> (registry-driven construction at the run() wiring site) + Phase 0.4
+> (consumer migration to the registry) are implemented and in review;
+> the rest is planned. Not a record of shipped state — verify against
+> code.** This
 > doc owns the *architecture* of the mic-swap boundary and the
 > leg-count-agnostic wake-fusion layer: the interfaces, the staging,
 > and the named decisions. It is the architectural companion to the
@@ -230,6 +232,18 @@ def legs_for(profile: CaptureProfile, cfg: Config) -> tuple[LegSpec, ...]:
         legs.append(CHIP_AEC)
     return tuple(legs)
 ```
+
+**Shipped form (Phase 0.3).** Before `CaptureProfile` exists (Phase 2),
+the precursor `_configured_wake_legs(cfg)` in `voice_daemon.py` is the
+real version of this function: it iterates `wake_input_legs()` and gates
+each optional leg on its `cfg.mic_device_*` device string being non-empty
+(the reconciler sets/clears those from the `JASPER_WAKE_LEG_*` booleans),
+with the primary `on` leg always present. The `profile.does_hardware_aec`
+branch and the `cfg.wake_leg_dtln` toggle shown above are the Phase-2
+shape — neither exists yet. Two small token→vocabulary maps stay in their
+consumers rather than on the frozen registry: `_LEG_DEVICE_ATTR`
+(token→`cfg` device field) in `voice_daemon.py`, and `_TOGGLE_TO_TOKEN`
+(operator `raw`↔`off`) in `control/server.py`.
 
 This is the literal answer to *"design for 4 as the harder expected
 path; swaps fall out easier."* Four legs is a longer dict. Replacing
@@ -543,12 +557,10 @@ CPU-gated.
   HANDOFF-wake-telemetry.md, empirical results in mic-quality-v2.md,
   this doc owns the *architecture*. Bump `Last verified:` on any doc
   re-verified while touching the subsystem.
-- **Stale-doc fix-in-passing items noticed during recon (flagged, not
-  yet fixed):** `WakeLoop` class docstring still says "Dual-stream" and
-  references a "0.7 s" refractory though the live constant is
-  `WAKE_REFRACTORY_SEC = 0.2` and it's triple-stream; README doc-atlas
-  describes HANDOFF-wake-telemetry.md as "Dual-stream." One-line touches
-  when the relevant files are next edited.
+- **Stale-doc fix-in-passing items noticed during recon (now resolved):**
+  the `WakeLoop` class docstring (was "Dual-stream") was rewritten in
+  Phase 0.3 to describe the registry-driven multi-leg design; the README
+  doc-atlas already describes HANDOFF-wake-telemetry.md as "Triple-stream."
 
 ---
 
@@ -563,16 +575,16 @@ consumer cleanup is optional follow-up.
 | PR | Scope | Daemon edit? | Status |
 |---|---|---|---|
 | 0.1 | `jasper/wake_legs.py` registry + `wake_ports` derives its `DEFAULT_*_PORT` from it + `tests/test_wake_legs.py` | no | ✅ **merged (#366)** |
-| 0.2 | Collapse `WakeLoop` onto a `LegRuntime` dict + one generic `_wake_leg_loop` (fold the two leg loops + the `if leg==…` ladders) | yes | 🟡 **PR #369 (in review)** — needs Pi smoke-test before merge |
-| 0.3 | Build legs from registry + config at the `run()` wiring site; `WakeLoop.__init__` takes a `legs` list instead of the discrete `mic_off`/`detector_off`/… params | yes | after 0.2 |
-| 0.4 | Migrate `control/server.py` (`/aec/leg`, `/state`), `web/wake_setup.py` (`/layer/*`), and `aec_bridge.py` stat keys to the registry — **not** the bash reconciler (that's the Phase 4 decision) | no | optional / deferrable |
+| 0.2 | Collapse `WakeLoop` onto a `LegRuntime` dict + one generic `_wake_leg_loop` (fold the two leg loops + the `if leg==…` ladders) | yes | ✅ **merged (#369)** |
+| 0.3 | Build legs from registry + config at the `run()` wiring site via `AsyncExitStack` + the pure `_configured_wake_legs()`; `WakeLoop.__init__` takes a `legs` list instead of the discrete `mic_off`/`detector_off`/… params | yes | ✅ **implemented (this PR)** — Pi smoke-test pending |
+| 0.4 | `aec_bridge.py` stat-dict keys derive from `wake_legs.REGISTRY`; `control/server.py` leg-toggle validation routes through a documented `_TOGGLE_TO_TOKEN` (`raw`→`off`) map. The web `/layer/*` toggle vocab, the `/aec` response shape, and the bash reconciler are **intentionally unchanged** (frozen operator/wire contracts; reconciler is the Phase 4 decision) | no | ✅ **implemented (this PR)** |
 
 **Separable quick win** (a Phase 1 dependency, *not* Phase 0): add
 `music_renderer` + `condition_class` to `_MIGRATION_COLUMNS` in
 `jasper/wake_events.py` so already-deployed Pis backfill the columns.
 Independent of the leg refactor — land anytime.
 
-**Landmines for 0.2 (verified in-code; preserve exactly):**
+**Landmines for 0.2–0.3 (verified in-code; preserved through 0.3, keep preserving):**
 - the leg loops stay standalone tasks cancelled in `run()`'s `finally`,
   never added to `_bg_tasks` (the session-frame handler treats any done
   `_bg_tasks` task as turn-over);
@@ -590,4 +602,4 @@ the wake cluster before each daemon-touching PR.
 
 ---
 
-Last verified: 2026-05-29
+Last verified: 2026-05-30

@@ -109,6 +109,7 @@ from jasper.aec_sweep import (
     load_aec3_sweep_config,
 )
 from jasper.watchdog import Heartbeat
+from jasper import wake_legs
 from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
@@ -267,6 +268,18 @@ QUEUE_MAXSIZE = 32
 _shutdown = threading.Event()
 
 
+def _zero_leg_counters() -> dict[str, int]:
+    """A fresh per-leg counter dict zeroed for every emit leg: each
+    jasper.wake_legs token plus the dynamic AEC3-sweep variant legs.
+    Keyed off the registry so the bridge's UDP emit tokens and the
+    wake-event corpus columns stay in lockstep — adding a leg to
+    jasper.wake_legs surfaces it here automatically.
+    """
+    counters = {spec.token: 0 for spec in wake_legs.REGISTRY}
+    counters.update({variant.leg: 0 for variant in AEC3_SWEEP_VARIANTS})
+    return counters
+
+
 class _BridgeStats:
     """Low-cost monotonic counters for capture provenance.
 
@@ -294,28 +307,8 @@ class _BridgeStats:
                     "usb": 0,
                     "ref": 0,
                 },
-                "udp_send_drops_by_leg": {
-                    "on": 0,
-                    "off": 0,
-                    "dtln": 0,
-                    "raw0": 0,
-                    "ref": 0,
-                    "usb_raw": 0,
-                    "usb_webrtc": 0,
-                    "usb_dtln": 0,
-                    **{variant.leg: 0 for variant in AEC3_SWEEP_VARIANTS},
-                },
-                "packets_sent_by_leg": {
-                    "on": 0,
-                    "off": 0,
-                    "dtln": 0,
-                    "raw0": 0,
-                    "ref": 0,
-                    "usb_raw": 0,
-                    "usb_webrtc": 0,
-                    "usb_dtln": 0,
-                    **{variant.leg: 0 for variant in AEC3_SWEEP_VARIANTS},
-                },
+                "udp_send_drops_by_leg": _zero_leg_counters(),
+                "packets_sent_by_leg": _zero_leg_counters(),
             }
 
     def inc(self, key: str, amount: int = 1) -> None:
