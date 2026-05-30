@@ -141,6 +141,9 @@ CREATE TABLE IF NOT EXISTS wake_events (
   music_active        INTEGER NOT NULL DEFAULT 0,
   music_renderer      TEXT,
   music_volume_db     REAL,
+  -- Phase-1 acoustic-condition label (jasper.wake_conditions:
+  -- quiet/ambient/music), derived per fire by the runtime estimator.
+  condition_class     TEXT,
   voice_provider      TEXT,
   bridge_config_json  TEXT,
 
@@ -194,6 +197,13 @@ _MIGRATION_COLUMNS: list[tuple[str, str]] = [
     ("transcript_nonempty", "INTEGER"),
     ("music_playing_at_turn", "INTEGER"),
     ("music_db_at_turn", "REAL"),
+    # music_renderer shipped in CREATE TABLE but was never listed here, so a
+    # DB created before that column (upgraded, not reset) lacked it — and the
+    # telemetry INSERT, which names music_renderer, then failed and was
+    # dropped by the fail-soft handler. Backfill it. condition_class is the
+    # new Phase-1 acoustic-condition label. Both ALTER in idempotently.
+    ("music_renderer", "TEXT"),
+    ("condition_class", "TEXT"),
 ]
 
 
@@ -323,6 +333,7 @@ class WakeEventStore:
         music_active: bool = False,
         music_renderer: str | None = None,
         music_volume_db: float | None = None,
+        condition_class: str | None = None,
         voice_provider: str | None = None,
         bridge_config: dict[str, Any] | None = None,
         mic_muted: bool | None = None,
@@ -355,13 +366,14 @@ class WakeEventStore:
                   threshold, outcome,
                   wake_model,
                   music_active, music_renderer, music_volume_db,
+                  condition_class,
                   voice_provider, bridge_config_json,
                   mic_muted, mic_rms_dbfs_on, mic_rms_dbfs_off,
                   peak_score_dtln_aec, peak_offset_ms_dtln,
                   mic_rms_dbfs_dtln, fired_legs
                 ) VALUES (
                   ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?,
-                  ?, ?, ?, ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?,
                   ?, ?, ?, ?
                 )
                 """,
@@ -373,6 +385,7 @@ class WakeEventStore:
                     wake_model,
                     1 if music_active else 0,
                     music_renderer, music_volume_db,
+                    condition_class,
                     voice_provider, bridge_config_json,
                     None if mic_muted is None else (1 if mic_muted else 0),
                     mic_rms_dbfs_on, mic_rms_dbfs_off,
