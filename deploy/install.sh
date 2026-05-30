@@ -1107,6 +1107,17 @@ EOF
         "${REPO_DIR}/pyproject.toml" \
         "${INSTALL_DIR}/"
 
+    # Stage the diagnostics-bundle script (+ its redaction helper) at a
+    # runtime path so jasper-control's /diagnostics-bundle endpoint (the
+    # /system Download-diagnostics button) can run it. The main rsync above
+    # excludes scripts/, so stage just these two. pi-bundle.sh sources the
+    # helper from its own dir, so they must be co-located.
+    install -d -m 0755 "${INSTALL_DIR}/scripts"
+    install -m 0755 \
+        "${REPO_DIR}/scripts/pi-bundle.sh" \
+        "${REPO_DIR}/scripts/_diagnostic_redaction.sh" \
+        "${INSTALL_DIR}/scripts/"
+
     # Stage firmware/ next to the package so jasper-{dial,satellite}-onboard
     # find their respective bins (default --bin paths:
     # /opt/jasper/firmware/dial/jasper-dial.bin,

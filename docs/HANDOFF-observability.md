@@ -244,12 +244,32 @@ deploy, then confirm a WARNING produces an `event=flightrec.dump`
 burst in `journalctl`, and that "flag that" + a doctor FAIL each
 trigger one.
 
-**Tier D — download diagnostics (cheap capstone).** Surface the
-existing `scripts/pi-bundle.sh` as a one-tap "Download diagnostics"
-button on `/system`, **gated to refuse while a voice session or
-playback is active** (bundle collection is heavy I/O; Sonos warns
-playback may interrupt during its equivalent). This is the single
-most consistently-shipped diagnostics affordance in the cohort.
+**Tier D — done (2026-05-30; pending on-device verification).** A
+"Download diagnostics" button on `/system` runs
+[`scripts/pi-bundle.sh`](../scripts/pi-bundle.sh) (logs + redacted
+config → tarball) and streams it as a one-tap download. As built:
+- **Endpoint:** `GET /diagnostics-bundle` on jasper-control (:8780),
+  reached via a dedicated `location /diagnostics-bundle` nginx block
+  (the `/debug` pattern; `proxy_buffering off` + a long read timeout
+  so it streams). control runs as root, so it can run the bundle;
+  `_run_diagnostics_bundle()` captures the path the script prints,
+  streams the bytes, and deletes the /tmp tarball. Single-flight
+  (`_bundle_lock`): a concurrent click gets 409.
+- **install.sh** stages `pi-bundle.sh` + `_diagnostic_redaction.sh`
+  at `/opt/jasper/scripts/` (the main rsync excludes `scripts/`).
+- **UI:** the button (in the Run-diagnostics card) fetches the blob
+  and triggers a download; a 409/502 surfaces as a message, not a
+  browser error page.
+- **Gate:** a client-side confirm warns it's heavy I/O that may
+  briefly affect audio (the Sonos "may interrupt" idiom). A *hard*
+  server-side refuse-while-playing gate was **deferred** — the bundle
+  is read-only gathering (journalctl + file reads + tar), not
+  audio-destructive, so a confirm is proportionate; it's a one-line
+  add in the handler if it proves disruptive on-device.
+
+Tests: `tests/test_control_diagnostics_bundle.py`. **Remaining:
+on-device verification** (the real bundle + browser download need
+the Pi).
 
 ---
 

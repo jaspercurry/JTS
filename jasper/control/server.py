@@ -63,6 +63,14 @@ SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
 _source_availability_cache: tuple[float, dict[str, Any]] | None = None
 _source_availability_lock = threading.Lock()
+
+# Tier D: the /system Download-diagnostics button runs this script (staged
+# at a runtime path by install.sh) and streams the tarball it prints.
+# Single-flight so a double-click can't run two heavy bundles at once.
+_PI_BUNDLE_SCRIPT = os.environ.get(
+    "JASPER_PI_BUNDLE_SCRIPT", "/opt/jasper/scripts/pi-bundle.sh",
+)
+_bundle_lock = threading.Lock()
 AUDIO_QUALITY_RENDERER_UNITS = [
     "shairport-sync.service",
     "librespot.service",
@@ -442,6 +450,34 @@ def _atomic_rewrite_env(path: str, updates: dict) -> None:
     state = read_env_file(path)
     state.update(updates)
     write_env_file(path, state, mode=0o644)
+
+
+def _run_diagnostics_bundle(
+    *, script: str | None = None, timeout: float = 180.0,
+) -> "tuple[bytes, str]":
+    """Run pi-bundle.sh and return (tarball_bytes, filename). The script
+    prints the tarball path on its last stdout line; read it, delete it
+    (don't accumulate in /tmp), and return the bytes. Raises RuntimeError
+    on any failure (non-zero exit, no file produced)."""
+    script = script or _PI_BUNDLE_SCRIPT
+    proc = subprocess.run(
+        ["bash", script], capture_output=True, text=True, timeout=timeout,
+    )
+    lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    tarball = lines[-1].strip() if lines else ""
+    if proc.returncode != 0 or not tarball or not os.path.isfile(tarball):
+        raise RuntimeError(
+            (proc.stderr or "").strip()[:500] or "bundle produced no file"
+        )
+    try:
+        with open(tarball, "rb") as fh:
+            data = fh.read()
+    finally:
+        try:
+            os.remove(tarball)
+        except OSError:
+            pass
+    return data, os.path.basename(tarball)
 
 
 def _read_wake_threshold() -> float:
@@ -1569,6 +1605,43 @@ def _make_handler(
                 # Runtime debug-logging state for the /system Debug card:
                 # per-subsystem on/off + the shared auto-expiry countdown.
                 self._send_json(debug_control.snapshot())
+                return
+
+            if self.path == "/diagnostics-bundle":
+                # Tier D: /system Download-diagnostics button. Run
+                # pi-bundle.sh (logs + redacted config -> tarball) and
+                # stream it as a download. GET, like /system/diagnostics —
+                # read-only gathering. Single-flight: a concurrent click
+                # gets 409 instead of a second heavy bundle.
+                if not _bundle_lock.acquire(blocking=False):
+                    self._send_json(
+                        {"error": "a diagnostics bundle is already being generated"},
+                        status=409,
+                    )
+                    return
+                try:
+                    data, name = _run_diagnostics_bundle()
+                except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+                    logger.warning("event=diagnostics.bundle_failed error=%s", e)
+                    self._send_json(
+                        {"error": f"diagnostics bundle failed: {e}"}, status=502,
+                    )
+                    return
+                finally:
+                    _bundle_lock.release()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header(
+                    "Content-Disposition", f'attachment; filename="{name}"',
+                )
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                logger.info(
+                    "event=diagnostics.bundle bytes=%d client=%s",
+                    len(data), self.address_string(),
+                )
                 return
             if self.path == "/state":
                 # Cross-daemon snapshot — voice / audio / renderers /

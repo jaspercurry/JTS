@@ -9,7 +9,7 @@
 
 import { buildPage, update } from "./views.js";
 import { getJSON } from "./api.js";
-import { postAction, setQuality, runDiagnostics } from "./actions.js";
+import { postAction, setQuality, runDiagnostics, downloadDiagnostics } from "./actions.js";
 
 const POLL_MS = 5000;
 const root = document.getElementById("app");
@@ -36,6 +36,7 @@ const handlers = {
       sentMessage: "Powering off — the speaker will stay off until you physically re-plug power." }),
   setQuality: (converter) => setQuality(refs, converter),
   runDiagnostics: (btn, out) => runDiagnostics(btn, out),
+  downloadBundle: (btn, statusEl) => downloadDiagnostics(btn, statusEl),
 };
 refs = buildPage(root, handlers);
 

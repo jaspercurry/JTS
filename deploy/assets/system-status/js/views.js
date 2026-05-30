@@ -81,11 +81,17 @@ export function buildPage(root, handlers) {
   const diagButton = actionButton("Run diagnostics now", {
     variant: "default", onClick: () => handlers.runDiagnostics(diagButton, diagOutput),
   });
+  const bundleStatus = h("p.info-card__note", { "attr:aria-live": "polite" });
+  const bundleButton = actionButton("Download diagnostics", {
+    variant: "default", onClick: () => handlers.downloadBundle(bundleButton, bundleStatus),
+  });
   const diag = titledCard("Run diagnostics", { accent: true });
   diag.body.append(
     h("p.info-card__note", null,
-      "Runs ", h("code", null, "jasper-doctor"), " on the speaker. Takes ~3–5 s."),
-    h("div", null, diagButton),
+      "Run ", h("code", null, "jasper-doctor"), " (~3–5 s), or download a full " +
+      "logs + config bundle (secrets redacted) to share when reporting an issue."),
+    h("div.btn-row", null, diagButton, bundleButton),
+    bundleStatus,
     diagOutput,
   );
 
