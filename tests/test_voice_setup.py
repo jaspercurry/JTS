@@ -857,3 +857,77 @@ def test_pricing_round_trip_through_overrides_loader(tmp_path: Path):
     eff = usage.pricing_for_model("gpt-realtime-2", overrides=loaded)
     assert eff.text_output_per_million_usd == 30.0
     assert eff.audio_input_per_million_usd == 32.0  # bundled default kept
+
+
+# ---------- Pricing research prompt + import (Phase 3) ----------------------
+def test_research_prompt_lists_current_models_and_schema():
+    prompt = voice_setup._pricing_research_prompt({})
+    assert "gpt-realtime-2" in prompt
+    assert "gemini-3.1-flash-live-preview" in prompt
+    assert "grok-voice-think-fast-1.0" in prompt
+    assert "flat_per_hour_usd" in prompt   # grok bucket present
+    assert '"models"' in prompt            # the output schema
+    assert "ai.google.dev" in prompt and "x.ai" in prompt  # pricing pages
+
+
+def test_research_prompt_includes_discovered_models():
+    snap = model_discovery.DiscoverySnapshot(
+        provider_id="openai",
+        fetched_at="2026-05-30T00:00:00Z",
+        models=("gpt-realtime-3",),
+    )
+    prompt = voice_setup._pricing_research_prompt({"openai": snap})
+    assert "gpt-realtime-3" in prompt
+
+
+def test_index_renders_research_prompt_and_import_form():
+    page = voice_setup._index_html({"JASPER_VOICE_PROVIDER": "openai"}, "tok").decode()
+    assert "Refresh all rates from a chatbot" in page
+    assert 'action="pricing-import"' in page
+    assert 'id="pricing-prompt"' in page
+
+
+def test_pricing_import_parses_wrapped_json():
+    models, err = voice_setup._apply_pricing_paste(
+        '{"models": {"gpt-realtime-2": {"text_output_per_million_usd": 30}}}'
+    )
+    assert err is None
+    assert models == {"gpt-realtime-2": {"text_output_per_million_usd": 30.0}}
+
+
+def test_pricing_import_strips_code_fence():
+    models, err = voice_setup._apply_pricing_paste(
+        '```json\n{"models": {"gpt-realtime-2": {"audio_input_per_million_usd": 31}}}\n```'
+    )
+    assert err is None
+    assert models == {"gpt-realtime-2": {"audio_input_per_million_usd": 31.0}}
+
+
+def test_pricing_import_accepts_bare_model_map():
+    models, err = voice_setup._apply_pricing_paste(
+        '{"gpt-realtime-mini": {"audio_output_per_million_usd": 19}}'
+    )
+    assert err is None
+    assert models == {"gpt-realtime-mini": {"audio_output_per_million_usd": 19.0}}
+
+
+def test_pricing_import_rejects_garbage_and_empty():
+    assert voice_setup._apply_pricing_paste("not json")[0] is None
+    assert voice_setup._apply_pricing_paste("")[0] is None
+    # Valid JSON but no usable rate fields → rejected with a message.
+    out, err = voice_setup._apply_pricing_paste('{"models": {"x": {"bogus": 1}}}')
+    assert out is None and err
+
+
+def test_pricing_import_round_trips_to_pricing_for_model(tmp_path: Path):
+    from jasper import usage
+    models, err = voice_setup._apply_pricing_paste(
+        '{"models": {"gpt-realtime-2": {"text_output_per_million_usd": 33}}}'
+    )
+    assert err is None
+    f = tmp_path / "pricing.json"
+    _common.write_json_file(str(f), {"as_of": "2026-09-01", "models": models})
+    loaded = usage.load_pricing_overrides(str(f))
+    eff = usage.pricing_for_model("gpt-realtime-2", overrides=loaded)
+    assert eff.text_output_per_million_usd == 33.0
+    assert eff.audio_input_per_million_usd == 32.0  # bundled default kept

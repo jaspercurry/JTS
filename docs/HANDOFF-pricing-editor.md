@@ -1,14 +1,15 @@
 # Handoff: Per-model pricing editor (`/voice`)
 
-> **Status: Phases 1 & 2 implemented (2026-05-30). Phase 3 deferred.**
-> Pricing is model-ID-keyed with dated defaults in
-> `jasper/data/model_pricing.json`; the `/voice` page has a per-model
-> "Pricing rates" editor writing `/var/lib/jasper/pricing.json`. The
+> **Status: Phases 1, 2 & 3 implemented (2026-05-30).** Pricing is
+> model-ID-keyed with dated defaults in `jasper/data/model_pricing.json`;
+> the `/voice` page has a per-model "Pricing rates" editor writing
+> `/var/lib/jasper/pricing.json`, plus a "Refresh all rates from a chatbot"
+> section that generates a research prompt (auto-filled with the speaker's
+> exact current models) and imports the JSON the chatbot returns. The
 > broader spend/usage accounting truth (how cost is computed, the
 > `Pricing` rate card, the spend cap) lives in
-> [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md). Phase 3 (the
-> copy-paste research-prompt generator) is sketched at the bottom and not
-> built. Snapshot date: 2026-05-30.
+> [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md). Snapshot
+> date: 2026-05-30.
 
 ## Goal
 
@@ -269,16 +270,27 @@ not in scope.
 
 ---
 
-## Phase 3 — research-prompt generator (DEFERRED, sketch only)
+## Phase 3 — research-prompt generator (IMPLEMENTED)
 
-When revisited: a "Generate pricing-research prompt" button emits a
-copyable block pre-filled with the **exact model IDs** (catalog ∪
-discovery) + the `pricing.json` JSON schema, instructing the user's
-chatbot to look up current official prices and emit JSON in that schema.
-A textarea takes the result → same `_apply_pricing_save`/validate/write
-path as Phase 2. It reuses everything Phase 1+2 builds; it's purely an
-input-convenience layer. Justified because the APIs don't expose voice
-prices (above). Not built now.
+A "Refresh all rates from a chatbot" section on `/voice` (rendered by
+`_pricing_refresh_html`, after the provider cards):
+
+1. **Copy a research prompt** — `_pricing_research_prompt(discovery)`
+   builds a copyable block pre-filled with the **exact current model IDs**
+   (catalog ∪ discovery, so it always reflects this speaker — including
+   newly discovered models), the per-model rate fields, the official
+   pricing-page URLs, and the exact `pricing.json` output schema. Shown in
+   a read-only `<textarea>` with a static-handler "Copy prompt" button.
+2. **Paste the JSON back** — a `<textarea>` POSTs to `/pricing-import`;
+   `_apply_pricing_paste` tolerates a ```json fence and a bare
+   `{model_id: {...}}` map, then validates via the shared
+   `usage.sanitize_pricing_models` (same rules as the override loader).
+   `_handle_pricing_import` writes a fresh `pricing.json`
+   (`{as_of, source, models}`) and restarts the daemon.
+
+Justified because the provider APIs don't expose voice-model prices (see
+above) — this is the low-maintenance path to refresh them without
+per-provider price integrations.
 
 ---
 
@@ -286,35 +298,37 @@ prices (above). Not built now.
 - `jasper/data/model_pricing.json` — **NEW** bundled, dated default rates
   (model-ID keyed). The single source of default pricing.
 - `jasper/usage.py` — `load_default_pricing`, `pricing_for_model`,
-  `load_pricing_overrides` (model-ID keys); **delete** `pricing_for_provider`,
-  the `*_PRICING` constants, `_OVERRIDE_KEYS`, the `"mini"` hack.
-- `jasper/voice_daemon.py` — call `pricing_for_model(_active_model(cfg), …)`.
-- `jasper/web/voice_setup.py` — `_provider_card_html` section,
-  `_apply_pricing_save`, `POST /pricing` route, `as_of` display.
+  `load_pricing_overrides` + `sanitize_pricing_models` (model-ID keys);
+  removed `pricing_for_provider`, the `*_PRICING` constants,
+  `_OVERRIDE_KEYS`, the `"mini"` hack.
+- `jasper/voice_daemon.py` — calls `pricing_for_model(_active_model(cfg), …)`
+  + `event=pricing.unpriced` warning.
+- `jasper/web/voice_setup.py` — editor: `_pricing_section_html`,
+  `_apply_pricing_save`, `POST /pricing`, `as_of` display. Phase 3:
+  `_pricing_research_prompt`, `_pricing_refresh_html`, `_apply_pricing_paste`,
+  `POST /pricing-import`.
 - `jasper/web/_common.py` — `write_json_file`.
 - `tests/test_usage.py`, `tests/test_voice_setup.py` — coverage.
-- On ship: update [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md)
-  "Spend-cap pricing" bullet (provider→model keying, dated JSON), and
-  re-check `docs/doc-map.toml` (`voice-runtime-and-providers` already
-  covers `jasper/web/voice_setup.py` + `jasper/usage.py`; add
-  `jasper/data/model_pricing.json` to that subsystem's code globs).
+- Shipped: [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md)
+  "Spend-cap pricing" bullet updated (model keying, dated JSON); README
+  atlas entry added. (Follow-up: `docs/doc-map.toml` could add
+  `jasper/data/model_pricing.json` to the `voice-runtime-and-providers`
+  code globs.)
 
 ## Open decisions
-- **Resolved:** model-ID keying (not provider); **`pricing_for_provider`
-  and any provider-level/fallback price removed outright — no vestigial
-  code, no fabricated single-provider rate**; default rates ship as the
-  dated `jasper/data/model_pricing.json`; build Phases 1+2 now; defer
-  Phase 3 (the refresh-prompt flow is how defaults/overrides get updated);
-  include minimal default/custom tagging + `as_of` text + sparse-override
-  reset.
+- **Resolved & shipped:** model-ID keying (not provider);
+  `pricing_for_provider` and any provider-level/fallback price removed
+  outright — no vestigial code, no fabricated single-provider rate; default
+  rates ship as the dated `jasper/data/model_pricing.json`; all three
+  phases built (editor + default/custom tagging + `as_of` text +
+  sparse-override reset + the chatbot research-prompt/import).
 - **Resolved:** unknown/unpriced active-model → **null/zero, never an
   invented estimate, + loud warning + editor flag** (no "most-expensive-
   known" ceiling). Don't give a value where there isn't one.
 - **Minor, settle during build:** `/pricing` save with an all-default form
   → **delete** `pricing.json` (lean) vs write `{}`.
 
-Last verified: 2026-05-30 (design written against current `jasper/usage.py`,
-`jasper/voice/model_discovery.py`, `jasper/voice/catalog.py`, and
-`jasper/web/voice_setup.py`; no code changed yet. Rev 2: defaults move to a
-dated `jasper/data/model_pricing.json`; `pricing_for_provider` + all
-provider-level/fallback pricing removed per maintainer direction.)
+Last verified: 2026-05-30 (all three phases implemented and merged —
+model-ID-keyed pricing in `jasper/usage.py` + dated
+`jasper/data/model_pricing.json`, the `/voice` per-model editor, and the
+chatbot research-prompt/import. Doc reflects shipped code, not a plan.)
