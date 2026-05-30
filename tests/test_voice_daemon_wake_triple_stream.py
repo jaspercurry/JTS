@@ -347,3 +347,29 @@ def test_session_status_reports_only_armed_legs_when_optional_absent():
     wl = _make_wake_loop_triple(detector_off=_make_detector())
     _prep_session_status(wl)
     assert wl.session_status()["wake_legs"] == ["on", "off"]
+
+
+# ---------------------------------------------------------------------------
+# _ring_noise_floor_dbfs — fire-time ambient floor for the condition estimator
+# ---------------------------------------------------------------------------
+
+
+def test_ring_noise_floor_empty_or_none_is_none():
+    from collections import deque
+    from jasper.voice_daemon import _ring_noise_floor_dbfs
+    assert _ring_noise_floor_dbfs(None) is None
+    assert _ring_noise_floor_dbfs(deque()) is None
+
+
+def test_ring_noise_floor_tracks_quiet_background_not_utterance():
+    """The low percentile reflects the quiet majority (room floor), not the
+    few loud frames (the wake utterance) — so it estimates ambient, not the
+    speech that just fired."""
+    from collections import deque
+    from jasper.voice_daemon import _ring_noise_floor_dbfs
+    quiet = np.full(1280, 30, dtype=np.int16)     # near-silent background
+    loud = np.full(1280, 8000, dtype=np.int16)    # the "utterance" frames
+    ring = deque([quiet] * 16 + [loud] * 4)        # utterance is the minority
+    floor = _ring_noise_floor_dbfs(ring)
+    assert floor is not None
+    assert floor < -40.0  # 25th pct sits in the quiet group, far below loud

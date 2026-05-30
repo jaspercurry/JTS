@@ -31,6 +31,7 @@ from .wake_events import (
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
 from .wake_legs import LegSpec, wake_input_legs
+from .wake_condition_context import classify_condition
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .watchdog import Heartbeat
@@ -885,6 +886,28 @@ def _frame_rms_dbfs(frame) -> float | None:
         if rms <= 0.0:
             return -120.0  # digital silence floor
         return 20.0 * _np.log10(rms / 32768.0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ring_noise_floor_dbfs(ring, *, percentile: float = 25.0) -> float | None:
+    """Ambient noise floor (dBFS) from a wake capture ring.
+
+    A low percentile of the ring's per-frame RMS: the wake utterance is a
+    minority of the ~6 s window, so the quieter frames approximate the room
+    background. Computed once at fire time (never per frame), it splits
+    "quiet" from "ambient" for the condition estimator. Returns None for an
+    empty/absent ring or any error — telemetry must never break the wake
+    fire path, and the caller treats None as "can't tell" (-> quiet).
+    """
+    if not ring:
+        return None
+    try:
+        import numpy as _np  # local — keep module import cheap
+        levels = [r for f in ring if (r := _frame_rms_dbfs(f)) is not None]
+        if not levels:
+            return None
+        return float(_np.percentile(levels, percentile))
     except Exception:  # noqa: BLE001
         return None
 
@@ -2322,6 +2345,16 @@ class WakeLoop:
                 if anchor is not None and anchor > -120.0:
                     music_volume_db = float(anchor)
                     music_active_proxy = anchor > -60.0
+            # Acoustic condition (Phase 1.1): music from the playback anchor
+            # above; quiet-vs-ambient from the pre-fire mic noise floor over
+            # the capture ring. Recorded so production fires carry the same
+            # taxonomy the corpus labels use (and the 1.2 fuser keys
+            # per-condition thresholds on it). Best-effort — both
+            # _ring_noise_floor_dbfs and classify_condition never raise.
+            condition_ctx = classify_condition(
+                music_dbfs=music_volume_db,
+                noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
+            )
             try:
                 await store.begin_event(
                     event_id=event_id,
@@ -2332,6 +2365,7 @@ class WakeLoop:
                     bridge_config=bridge_config,
                     music_active=music_active_proxy,
                     music_volume_db=music_volume_db,
+                    condition_class=condition_ctx.condition,
                     mic_muted=getattr(self, "_mic_muted", None),
                     fired_legs=fired_legs,
                     # Per-leg score/offset/RMS columns, built from
