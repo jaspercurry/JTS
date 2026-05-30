@@ -24,6 +24,7 @@ from .profile import (
 from .settings import (
     SoundSettings,
     load_sound_settings,
+    output_trim_db,
     save_sound_settings,
 )
 
@@ -49,5 +50,6 @@ __all__ = [
     "simple_bands_payload",
     "SoundSettings",
     "load_sound_settings",
+    "output_trim_db",
     "save_sound_settings",
 ]

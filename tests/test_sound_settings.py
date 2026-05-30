@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from jasper.sound.profile import SimpleEq, SoundProfile
 from jasper.sound.settings import (
     HEADROOM_TRIM_MAX_DB,
     SoundSettings,
     load_sound_settings,
+    output_trim_db,
     save_sound_settings,
 )
 
@@ -49,3 +51,21 @@ def test_headroom_trim_is_clamped_nonnegative_and_safe():
 def test_match_loudness_coercion():
     assert SoundSettings.from_mapping({"match_loudness": "on"}).match_loudness is True
     assert SoundSettings.from_mapping({"match_loudness": 0}).match_loudness is False
+
+
+def test_output_trim_db_combines_headroom_and_match_loudness():
+    # The shared trim policy used by /sound/ apply, control /state, and doctor.
+    boosted = SoundProfile(simple_eq=SimpleEq(bass_db=6.0))
+    # Default settings -> no trim at all (boosts boost).
+    assert output_trim_db(boosted, SoundSettings()) == 0.0
+    # Manual headroom only.
+    assert output_trim_db(boosted, SoundSettings(headroom_trim_db=6.0)) == 6.0
+    # Match-loudness adds the loudness-weighted compensation (> 0 for a boost).
+    assert output_trim_db(boosted, SoundSettings(match_loudness=True)) > 0.0
+    # The two stack.
+    assert (
+        output_trim_db(boosted, SoundSettings(headroom_trim_db=6.0, match_loudness=True))
+        > 6.0
+    )
+    # A flat profile has nothing to compensate, even with match-loudness on.
+    assert output_trim_db(SoundProfile(), SoundSettings(match_loudness=True)) == 0.0

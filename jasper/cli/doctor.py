@@ -3678,6 +3678,7 @@ def check_sound_profile() -> CheckResult:
         build_sound_filters,
         estimate_headroom_db,
     )
+    from jasper.sound.settings import load_sound_settings, output_trim_db
 
     path = _sound_profile_path()
     if not path.exists():
@@ -3694,6 +3695,8 @@ def check_sound_profile() -> CheckResult:
     profile = SoundProfile.from_mapping(raw)
     filter_count = len(build_sound_filters(profile))
     headroom_db = estimate_headroom_db(profile)
+    settings = load_sound_settings()
+    trim = output_trim_db(profile, settings)
 
     _, active_path = _active_camilla_config_path()
     active_name = Path(active_path).name if active_path else ""
@@ -3709,7 +3712,9 @@ def check_sound_profile() -> CheckResult:
 
     detail = (
         f"enabled={profile.enabled} curve={profile.curve_id} "
-        f"filters={filter_count} headroom={headroom_db:.1f}dB{drift}"
+        f"filters={filter_count} headroom={headroom_db:.1f}dB "
+        f"match_loudness={'on' if settings.match_loudness else 'off'} "
+        f"output_trim={trim:.1f}dB{drift}"
     )
     return CheckResult("sound profile", status, detail)
 
