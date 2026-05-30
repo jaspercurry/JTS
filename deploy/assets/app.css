@@ -377,7 +377,6 @@ svg { display: block; }
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0;
   color: var(--muted);
 }
 .deflist dd { margin: 0; word-break: break-word; font-variant-numeric: tabular-nums; }

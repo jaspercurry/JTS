@@ -57,3 +57,36 @@ def test_asset_version_is_url_safe_and_failsoft(monkeypatch):
     version = _common._asset_version()
     assert version
     assert re.fullmatch(r"[\w.-]+", version), version
+
+
+# The three-tier typographic grammar (docs/HANDOFF-management-ui.md) lives partly
+# in the system page's ES modules, which the Python render tests don't execute —
+# so guard the grammar statically here.
+SYSTEM_JS = ROOT / "deploy" / "assets" / "system-status" / "js"
+
+
+def _css_body(css: str, selector: str) -> str:
+    """The declaration block for a single-rule selector (no nested braces)."""
+    m = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    assert m, f"expected a CSS rule for {selector!r}"
+    return m.group(1)
+
+
+def test_typographic_grammar_tiers_do_not_reflatten():
+    """Card titles are CASED (.section__title); row labels are the EYEBROW tier
+    (.deflist dt, uppercase). Guards against collapsing the two into one style —
+    the collision the card-title promotion fixed."""
+    css = APP_CSS.read_text()
+    assert "uppercase" not in _css_body(css, ".section__title"), \
+        "card titles must stay cased, not become EYEBROW"
+    assert "text-transform: uppercase" in _css_body(css, ".deflist dt"), \
+        "row labels must remain the uppercase EYEBROW tier"
+    # …and titledCard actually renders the cased class (not the old eyebrow()).
+    assert "section__title" in (SYSTEM_JS / "components.js").read_text(), \
+        "titledCard must render the cased .section__title"
+
+
+def test_cpu_stat_shows_bare_percentage():
+    """CPU usage shows just the percentage; the per-core bars carry the
+    breakdown, so the '% total' qualifier stays gone."""
+    assert "% total" not in (SYSTEM_JS / "sections.js").read_text()
