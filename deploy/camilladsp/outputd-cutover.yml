@@ -1,10 +1,10 @@
 ---
-# JTS CamillaDSP config for the outputd cutover branch.
+# JTS CamillaDSP config for the outputd topology.
 #
-# On this branch Camilla writes post-DSP content to snd-aloop
-# substream 6, and jasper-outputd becomes the only reader of that lane
-# and the only writer to the physical DAC. The normal production branch
-# keeps using deploy/camilladsp/v1.yml and /var/lib/camilladsp/statefile.yml.
+# Camilla writes post-DSP content to snd-aloop substream 6, and
+# jasper-outputd is the only reader of that lane and the only writer to
+# the physical DAC. The legacy/pre-outputd topology uses
+# deploy/camilladsp/v1.yml and /var/lib/camilladsp/statefile.yml.
 
 devices:
   samplerate: 48000

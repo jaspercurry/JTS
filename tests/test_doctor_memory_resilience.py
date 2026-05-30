@@ -639,8 +639,9 @@ def _make_start_limit_action_run(actions: dict[str, str]):
 
 
 def test_start_limit_action_all_set_to_reboot():
-    """T5.1 happy path: all 4 critical units have StartLimitAction=reboot."""
+    """T5.1 happy path: all critical units have StartLimitAction=reboot."""
     actions = {
+        "jasper-outputd": "reboot",
         "jasper-camilla": "reboot",
         "jasper-aec-bridge": "reboot",
         "jasper-voice": "reboot",
@@ -650,13 +651,14 @@ def test_start_limit_action_all_set_to_reboot():
                       side_effect=_make_start_limit_action_run(actions)):
         r = doctor.check_start_limit_action()
     assert r.status == "ok"
-    assert "4 critical daemons" in r.detail
+    assert "5 critical daemons" in r.detail
 
 
 def test_start_limit_action_drift_one_unit_lost_directive():
     """A Debian/RPi-OS update edited jasper-control's unit and removed
     the directive — should warn and name the unit."""
     actions = {
+        "jasper-outputd": "reboot",
         "jasper-camilla": "reboot",
         "jasper-aec-bridge": "reboot",
         "jasper-voice": "reboot",
@@ -675,6 +677,7 @@ def test_start_limit_action_drift_wrong_action():
     """Someone set StartLimitAction=reboot-force on jasper-voice — wrong
     on a 1 GB Pi (dirty zram pages would skip sync)."""
     actions = {
+        "jasper-outputd": "reboot",
         "jasper-camilla": "reboot",
         "jasper-aec-bridge": "reboot",
         "jasper-voice": "reboot-force",   # wrong shape

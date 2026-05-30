@@ -4,7 +4,7 @@
 //! `docs/HANDOFF-speaker-output-reference.md`: content plus assistant
 //! audio are mixed once, written to the output sink, copied to bounded
 //! reference consumers, and accounted for in a playout ledger. The
-//! outputd cutover branch's systemd unit enables the ALSA transport.
+//! outputd systemd unit enables the ALSA transport.
 
 pub mod alsa_backend;
 pub mod config;

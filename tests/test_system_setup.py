@@ -134,6 +134,8 @@ def upstream_control():
                     "pending_frames": 0,
                     "over_budget": False,
                     "over_budget_ms": 0,
+                    "dropped_commands": 0,
+                    "dropped_audio_frames": 0,
                 },
             },
             "cloud": {"available": False, "reason": "no usage.db yet"},
@@ -389,6 +391,7 @@ def test_modules_preserve_metric_logic() -> None:
     assert "samplerate_medium" in js
     assert "samplerate_best" in js
     assert "cgroup_enable=memory" in js
+    assert "tts dropped" in js
 
 
 def test_unknown_route_404(dashboard_server) -> None:

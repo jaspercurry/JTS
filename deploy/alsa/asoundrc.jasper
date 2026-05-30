@@ -40,14 +40,13 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #     substream 7.
 #   - CamillaDSP and the AEC bridge both read that summed stream via
 #     `pcm.jasper_capture` / `pcm.jasper_ref`.
-#   - On the outputd cutover branch CamillaDSP writes post-DSP content
-#     to `outputd_content_playback`, and jasper-outputd is the only
-#     reader of `outputd_content_capture` and the only normal writer to
+#   - In the outputd topology, CamillaDSP writes post-DSP content to
+#     `outputd_content_playback`, and jasper-outputd is the only reader
+#     of `outputd_content_capture` and the only normal writer to
 #     `outputd_dac`. Assistant TTS reaches the same final-output owner
 #     over `/run/jasper-outputd/tts.sock`.
-#   - `pcm.jasper_out` remains defined as the main-branch rollback
-#     dmix path, but it is not the active convergence point on this
-#     branch.
+#   - `pcm.jasper_out` remains defined as the pre-outputd rollback
+#     dmix path, but it is not the active convergence point.
 #
 # Topology:
 #
@@ -104,7 +103,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #
 # Two readers, two access paths:
 #   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in the
-#     outputd cutover config. plug keeps the consumer tolerant of
+#     outputd config. plug keeps the consumer tolerant of
 #     operator mistakes, but the intended fan-in output shape is fixed
 #     at 48 kHz S16_LE.
 #   - AEC bridge opens `jasper_ref` (defined below) — a plug-wrapped
@@ -191,7 +190,7 @@ pcm.correction_substream {
 # outputd_content_playback; jasper-outputd is the only reader of
 # outputd_content_capture. Do NOT wrap this capture side in dsnoop:
 # outputd needs exclusive ownership so it can be the timing owner for
-# the final DAC loop on the outputd cutover branch.
+# the final DAC loop.
 pcm.outputd_content_playback {
     type plug
     slave {

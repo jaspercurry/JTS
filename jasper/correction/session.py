@@ -85,14 +85,14 @@ def parse_current_correction(
     config_dir: Path = Path("/var/lib/camilladsp/configs"),
 ) -> dict[str, Any] | None:
     """Describe whatever correction (if any) the given CamillaDSP
-    config path represents. Returns None for the base outputd cutover
+    config path represents. Returns None for the base outputd
     config or any path we don't recognise as a correction emission.
 
     The filename shape is fixed by `MeasurementSession.apply`:
     ``correction_<session_id>_<unixtime>.yml`` under
     ``/var/lib/camilladsp/configs/``. Anything else returns None for
     backwards compatibility. Use `describe_current_config()` when the
-    caller needs to distinguish the flat outputd cutover baseline,
+    caller needs to distinguish the flat outputd baseline,
     JTS-managed sound configs, and custom CamillaDSP configs.
     """
     descriptor = describe_current_config(path, config_dir=config_dir)
@@ -111,7 +111,7 @@ def describe_current_config(
     `parse_current_correction()` intentionally remains the backwards-
     compatible "is there a JTS room correction?" helper. This richer
     descriptor lets UI/doctor/agent surfaces distinguish the flat
-    outputd cutover baseline, JTS-generated sound/correction configs,
+    outputd baseline, JTS-generated sound/correction configs,
     and arbitrary CamillaGUI/custom configs that JTS should not
     silently preserve.
     """

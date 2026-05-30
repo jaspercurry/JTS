@@ -44,7 +44,7 @@ from .correction_bundle_fixtures import write_golden_correction_bundle
 
 
 def test_parse_current_correction_base_config_returns_none(tmp_path: Path):
-    """The base outputd cutover config is "no correction applied" —
+    """The base outputd config is "no correction applied" —
     the UI shows the flat banner without a Reset button."""
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()

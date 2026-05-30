@@ -110,7 +110,8 @@ Run for real:
    - jasper-fanin Rust daemon from rust/jasper-fanin with
      cargo build --release --locked.
    - jasper-outputd daemon from rust/jasper-outputd with
-     cargo build --release --locked; enabled on this cutover branch.
+     cargo build --release --locked; enabled as the mainline final-output
+     owner.
    - Optional ESP32 dial/satellite firmware only when
      JASPER_BUILD_OPTIONAL_FIRMWARE=1.
 
@@ -145,11 +146,11 @@ Run for real:
      jasper-outputd, DAC init, headphone monitor, nginx, Avahi,
      CamillaGUI socket, and the WiFi guardian.
    - Require jasper-outputd to be active and answering STATUS before
-     voice is reconciled onto the cutover TTS socket.
-   - Seed or validate the outputd cutover Camilla statefile while
-     preserving the normal production statefile. Rollback to main must
-     also stop/disable jasper-outputd because main does not know about
-     units introduced on this cutover branch.
+     voice is reconciled onto the outputd TTS socket.
+   - Seed or validate the outputd Camilla statefile while preserving
+     the normal production statefile. Rollback to a pre-outputd
+     release/branch must also stop/disable jasper-outputd because that
+     older code does not know about the outputd unit.
    - Run the AEC/mic reconciler so voice follows attached hardware.
    - Regenerate audio cues if jasper-cues is installed.
    - Run jasper-doctor as a final non-blocking health summary.
@@ -378,8 +379,8 @@ build_install_jasper_fanin() {
 
 build_install_jasper_outputd() {
     # Build the jasper-outputd Rust daemon and install it to
-    # /opt/jasper/bin/jasper-outputd. On this branch the systemd unit is
-    # enabled as the final output owner. Main-branch rollback must stop
+    # /opt/jasper/bin/jasper-outputd. The systemd unit is enabled as
+    # the mainline final-output owner. Pre-outputd rollback must stop
     # and disable this persistent unit before returning to the legacy
     # jasper_out path.
     local src_dir="${REPO_DIR}/rust/jasper-outputd"
@@ -388,7 +389,7 @@ build_install_jasper_outputd() {
 
     if [[ ! -d "${src_dir}" ]]; then
         echo "  ERROR: jasper-outputd source missing at ${src_dir}" >&2
-        echo "  This cutover branch requires jasper-outputd as the final output owner." >&2
+        echo "  This tree requires jasper-outputd as the final output owner." >&2
         return 1
     fi
 
@@ -471,9 +472,9 @@ install_camilladsp() {
     systemctl disable camilladsp.service 2>/dev/null || true
 
     install -d -m 0755 "${CAMILLA_DIR}" "${CAMILLA_CONF}"
-    # State + emitted-correction-config dirs. Main uses
-    # /var/lib/camilladsp/statefile.yml so corrections survive Pi
-    # restarts; this cutover branch uses outputd-statefile.yml and
+    # State + emitted-correction-config dirs. The legacy/pre-outputd
+    # Camilla unit uses /var/lib/camilladsp/statefile.yml so corrections
+    # survive Pi restarts; outputd uses outputd-statefile.yml and
     # preserves the normal statefile for rollback. The room-correction
     # wizard writes correction_<id>_<unixtime>.yml under configs/.
     install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs
@@ -526,9 +527,9 @@ EOF
     fi
 
     # CamillaDSP captures plug:jasper_capture (fan-in summed substream 7).
-    # v1.yml writes to pcm.jasper_out for main-branch rollback;
+    # v1.yml writes to pcm.jasper_out for pre-outputd rollback;
     # outputd-cutover.yml writes to outputd_content_playback so
-    # jasper-outputd owns the DAC on this branch. Neither yaml needs
+    # jasper-outputd owns the DAC on current main. Neither yaml needs
     # substitution — install_alsa() handles the dongle name in
     # /etc/asound.conf.
     install -m 0644 \
@@ -579,7 +580,7 @@ EOF
         ' "${config_path}"
     }
 
-    # The outputd cutover branch uses a separate Camilla statefile
+    # The outputd topology uses a separate Camilla statefile
     # instead of overwriting /var/lib/camilladsp/statefile.yml. Preserve
     # a valid outputd correction/sound profile across redeploys, but
     # self-heal if the statefile is missing, points at a deleted config,
@@ -2267,7 +2268,7 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
         "${SYSTEMD_DIR}/jasper-fanin.service"
-    # jasper-outputd: final-output owner on this cutover branch.
+    # jasper-outputd: mainline final-output owner.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-outputd.service" \
         "${SYSTEMD_DIR}/jasper-outputd.service"
@@ -2450,7 +2451,8 @@ install_systemd_units() {
     # already done is a no-op.
     for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-dial-web jasper-system-web; do
         if systemctl is-enabled "${unit}.service" --quiet 2>/dev/null; then
-            # First time through this branch — disable the always-on
+            # First time through this socket-activation migration —
+            # disable the always-on
             # service. Stop it explicitly so the next request comes up
             # with the new socket-activated code rather than the
             # still-running old-process binding the port.
@@ -2486,7 +2488,7 @@ Will retry on next boot."
     systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
 
     # Stop the currently-running voice daemon before outputd claims the
-    # direct DAC. On cutover deploys, the old voice process may still
+    # direct DAC. On outputd deploys, the old voice process may still
     # hold a PortAudio stream to the legacy jasper_out path; if outputd
     # starts first, DAC ownership can fail with "device busy". The AEC
     # reconciler below restarts or parks voice once the output path is
@@ -2499,7 +2501,7 @@ Will retry on next boot."
     # Restart it after fan-in/asound wiring changes so it cannot keep
     # an old capture fd across topology updates.
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
-    # outputd owns the final DAC loop on this branch. This is mandatory:
+    # outputd owns the final DAC loop on current main. This is mandatory:
     # if outputd is not active and answering STATUS, the voice daemon's
     # outputd TTS socket would point at a silent path. Fail the install
     # before the AEC reconciler restarts voice into a broken output path.
@@ -3005,7 +3007,7 @@ main() {
     tune_wifi_for_airplay
     install_jasper
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
-    build_install_jasper_outputd  # Rust final-output owner for this cutover branch
+    build_install_jasper_outputd  # Rust mainline final-output owner
     install_systemd_units
     retire_audio_topology_switch # Remove stale dmix/fanin state; fanin is canonical
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram

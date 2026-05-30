@@ -1,4 +1,4 @@
-//! jasper-outputd - final-output owner for the cutover branch.
+//! jasper-outputd - final-output owner.
 //!
 //! The default binary mode remains fake so `jasper-outputd --once` is
 //! safe in a developer shell. The systemd unit opts into the real ALSA
@@ -65,6 +65,7 @@ fn main() -> Result<()> {
             tts_tx,
             tts_flush_tx,
             Arc::clone(&tts_epoch),
+            Arc::clone(&state),
         )?;
     }
 
@@ -489,6 +490,7 @@ fn spawn_tts_server(
     tx: SyncSender<QueuedTtsCommand>,
     flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
+    state: Arc<OutputdState>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -504,10 +506,16 @@ fn spawn_tts_server(
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
-                        spawn_tts_client(stream, tx.clone(), flush_tx.clone(), Arc::clone(&epoch))
-                            .unwrap_or_else(|e| {
-                                eprintln!("event=outputd.tts_socket.spawn_failed detail={e}");
-                            })
+                        spawn_tts_client(
+                            stream,
+                            tx.clone(),
+                            flush_tx.clone(),
+                            Arc::clone(&epoch),
+                            Arc::clone(&state),
+                        )
+                        .unwrap_or_else(|e| {
+                            eprintln!("event=outputd.tts_socket.spawn_failed detail={e}");
+                        })
                     }
                     Err(e) => {
                         eprintln!("event=outputd.tts_socket.accept_failed detail={e}");
@@ -524,10 +532,11 @@ fn spawn_tts_client(
     tx: SyncSender<QueuedTtsCommand>,
     flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
+    state: Arc<OutputdState>,
 ) -> io::Result<()> {
     thread::Builder::new()
         .name("outputd-tts-client".to_string())
-        .spawn(move || handle_tts_client(stream, tx, flush_tx, epoch))
+        .spawn(move || handle_tts_client(stream, tx, flush_tx, epoch, state))
         .map(|_| ())
 }
 
@@ -536,6 +545,7 @@ fn handle_tts_client(
     tx: SyncSender<QueuedTtsCommand>,
     flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
+    state: Arc<OutputdState>,
 ) {
     let mut reader = BufReader::new(stream);
     loop {
@@ -559,6 +569,7 @@ fn handle_tts_client(
                         epoch: current_epoch,
                         command,
                     },
+                    &state,
                 ) {
                     return;
                 }
@@ -675,14 +686,26 @@ fn json_string(value: &str) -> String {
     out
 }
 
-fn try_enqueue_tts_command(tx: &SyncSender<QueuedTtsCommand>, queued: QueuedTtsCommand) -> bool {
+fn try_enqueue_tts_command(
+    tx: &SyncSender<QueuedTtsCommand>,
+    queued: QueuedTtsCommand,
+    state: &OutputdState,
+) -> bool {
     match tx.try_send(queued) {
         Ok(()) => true,
         Err(TrySendError::Full(queued)) => {
+            state.mark_tts_command_dropped(dropped_audio_frames(&queued));
             log_dropped_tts_command(&queued);
             true
         }
         Err(TrySendError::Disconnected(_)) => false,
+    }
+}
+
+fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
+    match &queued.command {
+        TtsCommand::Audio(samples) => (samples.len() / (CHANNELS as usize)) as u64,
+        _ => 0,
     }
 }
 
@@ -1088,6 +1111,7 @@ mod tests {
     #[test]
     fn tts_audio_enqueue_is_drop_not_block_when_command_queue_is_full() {
         let (tx, rx) = mpsc::sync_channel(1);
+        let state = test_state();
 
         assert!(try_enqueue_tts_command(
             &tx,
@@ -1095,6 +1119,7 @@ mod tests {
                 epoch: 0,
                 command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
             },
+            &state,
         ));
         assert!(try_enqueue_tts_command(
             &tx,
@@ -1102,12 +1127,31 @@ mod tests {
                 epoch: 0,
                 command: TtsCommand::Audio(vec![2; 2 * (CHANNELS as usize)]),
             },
+            &state,
         ));
 
         let first = rx.try_recv().unwrap();
         assert_eq!(first.epoch, 0);
         assert!(matches!(first.command, TtsCommand::Audio(_)));
         assert!(rx.try_recv().is_err());
+        let snapshot = state.snapshot_json();
+        assert!(snapshot.contains(r#""dropped_commands":1"#));
+        assert!(snapshot.contains(r#""dropped_audio_frames":2"#));
+    }
+
+    fn test_state() -> OutputdState {
+        OutputdState::new(&Config {
+            backend: BackendMode::Fake,
+            content_pcm: "outputd_content_capture".to_string(),
+            dac_pcm: "outputd_dac".to_string(),
+            sample_rate: SAMPLE_RATE,
+            period_frames: 1024,
+            content_buffer_frames: 4096,
+            dac_buffer_frames: 3072,
+            stream_id: 99,
+            tts_socket_path: None,
+            control_socket_path: None,
+        })
     }
 
     fn bind_abstract_datagram(name: &[u8]) -> io::Result<UnixDatagram> {

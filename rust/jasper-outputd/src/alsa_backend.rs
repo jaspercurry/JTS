@@ -1,4 +1,4 @@
-//! ALSA transport for the outputd cutover.
+//! ALSA transport for the outputd topology.
 //!
 //! The DAC playback stream is blocking and owns timing. Camilla's
 //! post-DSP content lane is read nonblocking from snd-aloop; absent

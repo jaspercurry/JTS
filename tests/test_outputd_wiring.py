@@ -1,4 +1,4 @@
-"""Static checks for the outputd cutover topology."""
+"""Static checks for the outputd topology."""
 from __future__ import annotations
 
 import re
@@ -43,7 +43,7 @@ def test_asoundrc_declares_outputd_direct_dac_alias():
     assert "device 0" in dac
 
 
-def test_camilla_outputd_cutover_config_is_not_production_v1():
+def test_camilla_outputd_config_is_not_legacy_v1():
     production = (REPO / "deploy" / "camilladsp" / "v1.yml").read_text()
     cutover = (REPO / "deploy" / "camilladsp" / "outputd-cutover.yml").read_text()
     assert 'device: "jasper_out"' in production
@@ -51,7 +51,7 @@ def test_camilla_outputd_cutover_config_is_not_production_v1():
     assert 'volume_limit: 0.0' in cutover
 
 
-def test_install_uses_separate_outputd_statefile_for_cutover():
+def test_install_uses_separate_outputd_statefile():
     install_sh = (REPO / "deploy" / "install.sh").read_text()
     camilla_unit = (REPO / "deploy" / "systemd" / "jasper-camilla.service").read_text()
     assert "outputd-cutover.yml" in install_sh
@@ -122,6 +122,10 @@ def test_outputd_tts_accept_loop_does_not_inline_client_handling():
     assert "tx.clone()" in spawn_tts
     assert "flush_tx.clone()" in spawn_tts
     assert "Arc::clone(&epoch)" in spawn_tts
+    assert "Arc::clone(&state)" in spawn_tts
     assert '.name("outputd-tts-client".to_string())' in spawn_client
-    assert ".spawn(move || handle_tts_client(stream, tx, flush_tx, epoch))" in spawn_client
+    assert (
+        ".spawn(move || handle_tts_client(stream, tx, flush_tx, epoch, state))"
+        in spawn_client
+    )
     assert "Ok(stream) => handle_tts_client(stream" not in spawn_tts

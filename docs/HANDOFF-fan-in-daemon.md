@@ -146,7 +146,7 @@ CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongl
 ### What this preserves
 
 - **TTS bypass of CamillaDSP.** TTS still bypasses CamillaDSP, but on
-  the outputd cutover branch it enters `jasper-outputd` instead of
+  current main it enters `jasper-outputd` instead of
   writing directly to the legacy `jasper_out` dmix. Music still goes
   through CamillaDSP first; the ducker's `main_volume` still attenuates
   only music. `TtsVolumeTracker` continues to observe `playback_rms` to
@@ -162,13 +162,13 @@ CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongl
 - **Renderer service files.** Each renderer's `--device` flag changes
   from `jasper_renderer_in` (the plug-on-dmix) to its assigned substream
   alias (`pcm.librespot_substream`, etc.). The renderer code is unchanged.
-- **Final output owner.** Changed by the outputd cutover branch:
+- **Final output owner.** Changed by the outputd mainline topology:
   music + TTS now sum in `jasper-outputd`, and `pcm.jasper_out` is only
-  the main-branch rollback dmix.
+  the pre-outputd rollback dmix.
 - **CamillaDSP config.** Capture device stays `plug:jasper_capture`.
   The dsnoop's underlying substream remains `(1,7)` in the asoundrc —
   invisible to CamillaDSP itself. Playback is `outputd_content_playback`
-  on the cutover branch.
+  in the outputd topology.
 
 ### What this deletes
 
@@ -893,4 +893,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-05-28 (outputd cutover topology rechecked).
+Last verified: 2026-05-30 (outputd topology rechecked).

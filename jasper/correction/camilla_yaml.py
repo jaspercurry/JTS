@@ -1,7 +1,7 @@
 """Emit a CamillaDSP correction config from a list of PEQ filters.
 
-The correction config is structurally identical to the outputd cutover
-Camilla config except that the per-channel `Filter` blocks in the
+The correction config is structurally identical to the outputd Camilla
+baseline except that the per-channel `Filter` blocks in the
 pipeline now chain through the PEQs before the existing `flat` filter,
 and the PEQs themselves are added to the `filters` block. The
 `master_gain` mixer is preserved unchanged — Ducker still attenuates
@@ -12,7 +12,7 @@ We emit YAML by string concatenation rather than via a yaml library:
   - Avoids adding a `pyyaml` / `ruamel.yaml` runtime dep just to
     write a deterministic small file.
   - The output is easy to review by eye; trivial to diff against the
-    cutover base config when something looks wrong.
+    outputd base config when something looks wrong.
 
 When CamillaDSP loads the file via SetConfigName + Reload, it does
 the actual biquad coefficient generation from (freq, q, gain).
@@ -43,7 +43,7 @@ def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:
     """Indented YAML for the `filters:` block.
 
     Always includes the `flat` Gain filter so the pipeline always
-    has a terminator that matches the cutover base config. The PEQs are named
+    has a terminator that matches the outputd base config. The PEQs are named
     `peq_1` through `peq_N` in the order returned by the designer
     (largest impact first).
     """
@@ -117,10 +117,10 @@ def emit_correction_config(
 
     Args:
       peqs: list of PEQ filters from jasper.correction.peq.design_peq.
-        Empty list ⇒ identity config for the outputd cutover path.
+        Empty list ⇒ identity config for the outputd path.
       capture_device, playback_device, capture_format, playback_format,
         sample_rate, chunksize, target_level, volume_limit_db: device,
-        sample-rate, and safety config. Defaults match the cutover base
+        sample-rate, and safety config. Defaults match the outputd base
         config; override only if the audio path changes.
       out_path: write the YAML here as well as returning it. Parent
         directory must exist.

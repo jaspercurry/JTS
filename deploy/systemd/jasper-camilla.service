@@ -1,5 +1,5 @@
 [Unit]
-Description=CamillaDSP (always-on, outputd cutover + master_gain ducking node)
+Description=CamillaDSP (always-on, outputd + master_gain ducking node)
 After=sound.target network.target jasper-fanin.service
 Wants=sound.target jasper-fanin.service
 # Camilla must NEVER stay stopped. The voice daemon hard-requires it
@@ -40,18 +40,18 @@ Type=simple
 # back to v1.yml regardless of what was applied, silently wiping a
 # user's room correction on reboot / power cycle / install.sh re-run.
 #
-# This outputd cutover branch deliberately uses a separate statefile so
+# The outputd topology deliberately uses a separate statefile so
 # the normal production /var/lib/camilladsp/statefile.yml stays intact.
-# Rollback is: stop/disable jasper-outputd, then deploy main; main's
-# unit returns Camilla to the production statefile and therefore
-# restores the previously active correction path.
+# Rollback is: stop/disable jasper-outputd, then deploy a pre-outputd
+# release/branch; that older unit returns Camilla to the production
+# statefile and therefore restores the previously active correction path.
 #
 # CRITICAL: there is intentionally NO positional CONFIGFILE arg.
 # CamillaDSP behavior in v4.x: when both a positional config and
 # --statefile are given, the positional wins on startup AND the
 # statefile gets OVERWRITTEN with the positional's path on every
 # start. So passing `/etc/camilladsp/v1.yml` here would make this
-# whole feature a no-op. install.sh seeds this branch's statefile to
+# whole feature a no-op. install.sh seeds the outputd statefile to
 # point at outputd-cutover.yml so first-boot still has a config to load.
 #
 # Recovery from a bad correction without editing the statefile by

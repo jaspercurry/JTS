@@ -119,10 +119,10 @@ Phone (AirPlay / Spotify Connect / BT)
         └──── airborne echo back to mic ◄── speakers
 ```
 
-On the outputd cutover branch, `jasper-outputd` is the only normal
-writer to the physical DAC. `jasper-camilla` writes post-DSP content
-to a private loopback lane, and `jasper-voice` sends assistant PCM over
-outputd's local TTS socket. Music still ducks on wake via a CamillaDSP
+`jasper-outputd` is the only normal writer to the physical DAC.
+`jasper-camilla` writes post-DSP content to a private loopback lane,
+and `jasper-voice` sends assistant PCM over outputd's local TTS
+socket. Music still ducks on wake via a CamillaDSP
 `SetMainVolume` call (the `main_volume` property, not the
 `master_gain` mixer — that mixer is identity) over its websocket on
 port 1234.
@@ -140,7 +140,7 @@ port 1234.
 > `listening_level` wizard, or an external amp downstream of the
 > dongle. To test the chain at a controlled volume, play to
 > `correction_substream`; the legacy `jasper_out` dmix remains only as
-> the main-branch rollback path. Why the split and what the tracker
+> the pre-outputd rollback path. Why the split and what the tracker
 > does:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
@@ -179,9 +179,9 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ `jasper-mux` daemon for latest-source-wins preemption plus manual
   landing-page source selection with guarded volume handoff
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
-- ✅ Outputd cutover branch: `jasper-outputd` owns direct DAC playback,
+- ✅ Outputd mainline topology: `jasper-outputd` owns direct DAC playback,
   mixes post-DSP content with assistant audio, exposes `/state.outputd`
-  health, and leaves the main-branch Camilla statefile intact for
+  health, and leaves the pre-outputd Camilla statefile intact for
   rollback
 - ✅ Wake-word detection — default is "Jarvis" (the
   [fwartner Home Assistant community model](https://github.com/fwartner/home-assistant-wakewords-collection)
@@ -338,7 +338,7 @@ firmware/
 deploy/
   install.sh                    Idempotent installer (run as root on Pi)
   alsa/                         /etc/asound.conf template
-  camilladsp/                   main v1.yml + outputd-cutover.yml baselines
+  camilladsp/                   legacy v1.yml + outputd-cutover.yml baselines
   systemd/                      jasper-{camilla,voice,control,mux,outputd,aec-bridge,aec-init}
                                 + librespot, shairport-sync, nqptp, bt-agent
   modules-load.d/               snd-aloop autoload
@@ -386,7 +386,7 @@ scripts/                        Operator helpers (run from laptop)
                                 gemini / openai / grok
   switch-gemini-model.sh        Within-Gemini fallback: 3.1 ↔ 2.5
   disable-outputd-cutover.sh    Stop persistent outputd unit before/after
-                                rolling this cutover branch back to main
+                                rolling back to a pre-outputd tree
   claim-librespot.sh            One-time: OAuth-claim librespot for a
                                 Spotify account so cold-start "play X"
                                 works without phone interaction

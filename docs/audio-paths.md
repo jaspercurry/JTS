@@ -188,9 +188,9 @@ mixer, a second output device, or a new volume model.
     historical.
 
 Both legs converge inside `jasper-outputd`, which owns the direct DAC
-writer on the outputd cutover branch. CamillaDSP is upstream of outputd
+writer on current main. CamillaDSP is upstream of outputd
 only on the music leg. The legacy `pcm.jasper_out` dmix remains in
-`/etc/asound.conf` as the main-branch rollback path, not as the active
+`/etc/asound.conf` as the pre-outputd rollback path, not as the active
 convergence point here.
 
 ## Volume knobs and which path each affects
@@ -387,7 +387,7 @@ Goes through CamillaDSP, so `main_volume` applies.
 
 **Test the TTS chain**: use `jasper-voice`/cue playback or a small
 outputd client, not `aplay -D plug:jasper_out`. Direct `jasper_out`
-playback exercises only the main-branch rollback dmix and bypasses both
+playback exercises only the pre-outputd rollback dmix and bypasses both
 CamillaDSP and outputd. `main_volume` does nothing to the TTS path.
 
 The Apple dongle Headphone is pinned at 100% by `jasper-dac-init`,
@@ -423,4 +423,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-28 (source handoff guard, future-source checklist, source-capabilities plan link, outputd cutover topology, and TTS drain/flush boundary rechecked)
+Last verified: 2026-05-30 (source handoff guard, future-source checklist, source-capabilities plan link, outputd topology, and TTS drain/flush boundary rechecked)

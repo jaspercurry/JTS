@@ -34,8 +34,8 @@ hits the exact same shape under CIFS I/O stall ([HAOS issue
 
 1. **T5.1 ✅** ([PR #286](https://github.com/jaspercurry/JTS/pull/286)):
    `StartLimitAction=reboot` (NOT `reboot-force` — clean shutdown
-   required on a 1 GB Pi so zram dirty pages sync) on the 4
-   critical jasper-* units (camilla, aec-bridge, voice, control).
+   required on a 1 GB Pi so zram dirty pages sync) on the critical
+   jasper-* units (outputd, camilla, aec-bridge, voice, control).
    Per-unit `StartLimitBurst`/`StartLimitIntervalSec` preserve
    existing transient-tolerance patterns (e.g. jasper-voice keeps
    20/300 for Apple-dongle de-enumeration). Pure systemd
@@ -394,7 +394,7 @@ risk, not worth being first.
   fix claim is unverified for current Trixie; relevant for
   whether Stage 3 of the memory plan can use oomd.
 - **A canonical multi-service `StartLimitAction` composition** —
-  "if 3 of these 4 critical services fail their watchdog within
+  "if 3 of these critical services fail their watchdog within
   W, escalate" doesn't exist natively in systemd. Could be built
   as part of T5.2 (the system supervisor reads journal for
   service-level watchdog events and counts), but adds scope.
@@ -425,4 +425,4 @@ risk, not worth being first.
 
 ---
 
-Last verified: 2026-05-24
+Last verified: 2026-05-30

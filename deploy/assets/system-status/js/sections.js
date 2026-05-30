@@ -251,6 +251,9 @@ function outputdLine(o, services) {
   const svc = (services || []).find((s) => s && (s.name === "jasper-outputd" || s.unit === "jasper-outputd.service"));
   if (svc && svc.memory_mb != null) parts.push("mem " + Math.round(svc.memory_mb) + " MB");
   if (tts.over_budget || tts.over_budget_ms) parts.push("tts over " + (tts.over_budget_ms || 0) + "ms");
+  if (tts.dropped_commands || tts.dropped_audio_frames) {
+    parts.push("tts dropped " + (tts.dropped_commands || 0) + " cmds/" + (tts.dropped_audio_frames || 0) + "f");
+  }
   if (mix.last_period_clipped_samples) parts.push("clip " + mix.last_period_clipped_samples);
   return parts.join(" · ");
 }

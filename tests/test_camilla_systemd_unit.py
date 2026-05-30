@@ -28,8 +28,8 @@ INSTALL_SH = (
 
 
 def test_unit_passes_cutover_statefile_to_camilladsp():
-    """The outputd cutover branch uses a separate Camilla statefile so
-    rollback to main can keep the user's normal correction statefile
+    """The outputd topology uses a separate Camilla statefile so
+    rollback to pre-outputd code can keep the user's normal correction statefile
     intact."""
     body = UNIT_PATH.read_text()
     assert "--statefile" in body
@@ -111,8 +111,8 @@ def test_install_sh_seeds_statefile_when_missing():
     assert "config_path: /etc/camilladsp/v1.yml" in body
 
 
-def test_install_sh_seeds_outputd_cutover_statefile():
-    """The cutover statefile is branch-owned, seeded on first deploy,
+def test_install_sh_seeds_outputd_statefile():
+    """The outputd statefile is topology-owned, seeded on first deploy,
     and preserved when it already points at an outputd-safe config."""
     body = INSTALL_SH.read_text()
     assert "/var/lib/camilladsp/outputd-statefile.yml" in body

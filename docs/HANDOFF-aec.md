@@ -51,7 +51,7 @@ lab pass proved Option D can work with direct source fanout + fixed ASR
 beams, but that path still needs production integration before it can
 replace or supplement the software bridge.
 
-As of the 2026-05-28 outputd cutover branch, `jasper-outputd` owns the
+As of the 2026-05-28 outputd mainline topology, `jasper-outputd` owns the
 physical DAC, but the AEC bridge still consumes the old content-only
 `pcm.jasper_ref` tap. TTS/cues are still absent from the AEC reference.
 The planned clean upgrade is to consume outputd's eventual speaker
@@ -1594,8 +1594,8 @@ Captured here so future sessions don't repeat the mistakes.
     `mic > 1500 RMS + ref < 50 RMS` as "ref path broken," but the
     mic-loud signal can also come from sources that **bypass the
     loopback by design**: TTS / wake cues enter `jasper-outputd`
-    directly on the cutover branch (or `pcm.jasper_out` on main), and
-    loud ambient voice gets pumped by the chip's ASR-beam AGC. In both
+    directly on current main (or `pcm.jasper_out` on pre-outputd
+    rollbacks), and loud ambient voice gets pumped by the chip's ASR-beam AGC. In both
     cases `ref = 0` is correct —
     nothing was supposed to be in the loopback. **Fix**: count
     `healthy_ref_windows` (any window where `ref ≥ 50`) and only
@@ -2526,4 +2526,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-05-29.
+Last verified: 2026-05-30.

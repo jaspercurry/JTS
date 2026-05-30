@@ -54,8 +54,8 @@ general = {
     // CamillaDSP config, fanin_output_buffer comes from jasper-fanin's
     // output buffer setting, and outputd_dac_buffer comes from
     // JASPER_OUTPUTD_DAC_BUFFER_FRAMES. The retired renderer-side and
-    // final-output dmix path is gone from this cutover branch; shairport
-    // now writes its private fan-in lane while jasper-fanin handles
+    // final-output dmix path is gone from the outputd topology; shairport
+    // writes its private fan-in lane while jasper-fanin handles
     // WiFi burst absorption and jasper-outputd owns the DAC.
     // This offset tells shairport about the fixed downstream delay
     // invisible to its ALSA handle so video/multi-room sync stays

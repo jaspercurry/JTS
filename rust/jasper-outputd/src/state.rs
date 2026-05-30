@@ -61,6 +61,8 @@ pub struct OutputdState {
     tts_over_budget_periods: AtomicU64,
     tts_over_budget_ms: AtomicU64,
     tts_over_budget_streak_ms: AtomicU64,
+    tts_dropped_commands: AtomicU64,
+    tts_dropped_audio_frames: AtomicU64,
     last_progress_ms: AtomicU64,
     watchdog_pings_sent: AtomicU64,
 }
@@ -96,6 +98,8 @@ impl OutputdState {
             tts_over_budget_periods: AtomicU64::new(0),
             tts_over_budget_ms: AtomicU64::new(0),
             tts_over_budget_streak_ms: AtomicU64::new(0),
+            tts_dropped_commands: AtomicU64::new(0),
+            tts_dropped_audio_frames: AtomicU64::new(0),
             last_progress_ms: AtomicU64::new(0),
             watchdog_pings_sent: AtomicU64::new(0),
         }
@@ -170,6 +174,15 @@ impl OutputdState {
 
     pub fn mark_watchdog_ping(&self) {
         self.watchdog_pings_sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_tts_command_dropped(&self, audio_frames: u64) {
+        self.tts_dropped_commands
+            .fetch_add(1, Ordering::Relaxed);
+        if audio_frames > 0 {
+            self.tts_dropped_audio_frames
+                .fetch_add(audio_frames, Ordering::Relaxed);
+        }
     }
 
     pub fn snapshot_json(&self) -> String {
@@ -345,6 +358,18 @@ impl OutputdState {
             &mut buf,
             "over_budget_streak_ms",
             self.tts_over_budget_streak_ms.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "dropped_commands",
+            self.tts_dropped_commands.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "dropped_audio_frames",
+            self.tts_dropped_audio_frames.load(Ordering::Relaxed),
         );
         buf.push('}');
         buf.push(',');

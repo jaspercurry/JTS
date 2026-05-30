@@ -1220,9 +1220,8 @@ async def _get_state(
         # metrics — surfaced verbatim here. See
         # docs/HANDOFF-fan-in-daemon.md.
         "fanin": fanin_st,
-        # Final-output owner on the outputd cutover branch. null when
-        # the daemon/socket is unavailable; jasper-doctor owns the
-        # actionable failure.
+        # Final-output owner on current main. null when the daemon/socket
+        # is unavailable; jasper-doctor owns the actionable failure.
         "outputd": outputd_st,
         "source_selection": mux_st,
         "satellites": {

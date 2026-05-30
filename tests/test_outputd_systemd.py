@@ -1,4 +1,4 @@
-"""Lock down the jasper-outputd cutover service shape."""
+"""Lock down the jasper-outputd service shape."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,10 +39,10 @@ def test_outputd_unit_is_notify_and_watchdog_managed():
     assert _value_for(unit, "Restart") == "on-failure"
 
 
-def test_outputd_unit_is_branch_default_not_flag_gated():
+def test_outputd_unit_is_mainline_default_not_flag_gated():
     unit = _read_unit()
     assert _value_for(unit, "ConditionPathExists") is None
-    assert _value_for(unit, "StartLimitAction") is None
+    assert _value_for(unit, "StartLimitAction") == "reboot"
 
 
 def test_outputd_unit_has_audio_realtime_shape():
@@ -81,7 +81,7 @@ def test_outputd_unit_runtime_and_exec_paths():
     assert "/run/jasper-outputd" in read_write
 
 
-def test_outputd_operator_retune_file_is_after_branch_defaults():
+def test_outputd_operator_retune_file_is_after_packaged_defaults():
     unit = _read_unit()
     assert (
         unit.index('Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"')
@@ -113,7 +113,7 @@ def test_install_builds_installs_and_enables_outputd():
     )
 
 
-def test_voice_unit_routes_tts_to_outputd_on_cutover_branch():
+def test_voice_unit_routes_tts_to_outputd_on_mainline():
     unit = VOICE_UNIT_PATH.read_text()
     assert "After=jasper-camilla.service jasper-outputd.service network-online.target" in unit
     assert "jasper-outputd.service" in _value_for(unit, "Wants")
@@ -129,3 +129,5 @@ def test_cutover_rollback_helper_disables_persistent_outputd_unit():
     assert "systemctl disable --now jasper-outputd.service" in script
     assert "systemctl reset-failed jasper-outputd.service" in script
     assert "JASPER_TTS_TRANSPORT=outputd" in script
+    assert "pre-outputd" in script
+    assert "Deploy main next" not in script

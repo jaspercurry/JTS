@@ -455,7 +455,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
                 "tts output",
                 "fail",
                 f"JASPER_TTS_TRANSPORT=outputd but {socket_path} is not reachable: {e}. "
-                "Start jasper-outputd or deploy main to return to the "
+                "Start jasper-outputd or deploy a pre-outputd rollback tree to return to the "
                 "sounddevice path.",
             )
         finally:
@@ -1300,7 +1300,7 @@ def check_sysctl_drift() -> CheckResult:
 
 
 # Expected StartLimitAction= per critical daemon. T5.1 of the
-# watchdog-liveness plan: a restart spiral on any of these four
+# watchdog-liveness plan: a restart spiral on any of these critical
 # escalates to a clean system reboot rather than waiting for the
 # Tier 5 kernel hardware watchdog (which has the "PID 1 alive but
 # userspace dead" blind spot documented in HANDOFF-resilience.md).
@@ -1308,6 +1308,7 @@ def check_sysctl_drift() -> CheckResult:
 # unit-file directives surfaces in the next install. See
 # docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)".
 _EXPECTED_START_LIMIT_ACTION = {
+    "jasper-outputd": "reboot",
     "jasper-camilla": "reboot",
     "jasper-aec-bridge": "reboot",
     "jasper-voice": "reboot",
@@ -2372,7 +2373,7 @@ def check_fanin_service() -> CheckResult:
 def check_outputd_service() -> CheckResult:
     """Validate the outputd final-output-owner daemon.
 
-    This cutover branch expects outputd to own the physical DAC. Treat
+    Current main expects outputd to own the physical DAC. Treat
     disabled/inactive outputd as a real audio-path failure and verify
     the STATUS socket, runtime backend, negotiated buffers, xrun
     counters, and progress sentinel.
@@ -2391,7 +2392,7 @@ def check_outputd_service() -> CheckResult:
             "jasper-outputd",
             "fail",
             f"systemd unit is {enabled or 'unknown'}; expected enabled "
-            "on the outputd cutover branch.",
+            "for the outputd mainline topology.",
         )
     active = _run(
         ["systemctl", "is-active", "jasper-outputd.service"]
@@ -2516,6 +2517,10 @@ def check_outputd_service() -> CheckResult:
         tts.get("over_budget_streak_ms", 0) or 0
     )
     tts_max_pending = int(tts.get("max_pending_frames", 0) or 0)
+    tts_dropped_commands = int(tts.get("dropped_commands", 0) or 0)
+    tts_dropped_audio_frames = int(
+        tts.get("dropped_audio_frames", 0) or 0
+    )
     if progress_age > 1000:
         return CheckResult(
             "jasper-outputd",
@@ -2543,6 +2548,8 @@ def check_outputd_service() -> CheckResult:
         f"tts_pending_frames={tts_pending}, "
         f"tts_max_pending_frames={tts_max_pending}, "
         f"tts_over_budget_ms={tts_over_budget_ms}, "
+        f"tts_dropped_commands={tts_dropped_commands}, "
+        f"tts_dropped_audio_frames={tts_dropped_audio_frames}, "
         f"progress_age_ms={progress_age}",
     )
 
@@ -3944,7 +3951,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_sysctl_drift,
         check_oom_score_adj,
         # T5.1 watchdog escalation — verify StartLimitAction=reboot is
-        # still configured on the 4 critical daemons. See
+        # still configured on the critical daemons. See
         # docs/HANDOFF-tier5-watchdog-liveness.md.
         check_start_limit_action,
         # Stage 2 audio-protection (shipped 2026-05-24 in response to
@@ -3970,7 +3977,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # the service check catches a dead/missing summing daemon.
         check_fanin_asound_wiring,
         check_fanin_service,
-        # Final-output owner for the outputd cutover branch.
+        # Final-output owner for the outputd mainline topology.
         check_outputd_service,
         # Reports which additive wake-detection legs the user has
         # armed via the /system Wake detection card (raw + DTLN).

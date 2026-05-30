@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-# Defaults match the outputd cutover topology. Generated correction and
+# Defaults match the outputd topology. Generated correction and
 # sound-profile configs must keep Camilla's playback target on the
 # post-DSP outputd loopback lane; otherwise applying a profile would
 # route music around jasper-outputd while TTS still uses outputd.

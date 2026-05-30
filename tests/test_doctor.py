@@ -1088,6 +1088,8 @@ def _outputd_status_payload(
             "over_budget_periods": 0,
             "over_budget_ms": 0,
             "over_budget_streak_ms": 0,
+            "dropped_commands": 0,
+            "dropped_audio_frames": 0,
         },
         "watchdog": {"last_progress_age_ms": progress_age_ms},
     }).encode()
@@ -1168,6 +1170,8 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "content_eagain_count=1" in r.detail
     assert "tts_pending_frames=0" in r.detail
     assert "tts_max_pending_frames=4096" in r.detail
+    assert "tts_dropped_commands=0" in r.detail
+    assert "tts_dropped_audio_frames=0" in r.detail
 
 
 def test_outputd_service_fails_on_fake_backend(monkeypatch):

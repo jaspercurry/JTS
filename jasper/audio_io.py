@@ -1037,9 +1037,9 @@ def make_tts_playout(
 ) -> TtsPlayout:
     """Construct the selected TTS playout transport.
 
-    ``outputd`` is the cutover-branch default. ``sounddevice`` remains
-    the rollback transport on main. This factory intentionally
-    preserves TtsPlayout's public methods.
+    ``outputd`` is the mainline default. ``sounddevice`` remains the
+    pre-outputd rollback transport. This factory intentionally preserves
+    TtsPlayout's public methods.
     """
     if transport == "sounddevice":
         return TtsPlayout(

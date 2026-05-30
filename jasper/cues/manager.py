@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Fallback wait for legacy/fake playout objects that predate
 # TtsPlayout.wait_drained(). Real TtsPlayout implementations expose a
 # sample-counted drain deadline, which is the source of truth for both
-# the old sounddevice path and the outputd cutover path.
+# the old sounddevice path and the outputd path.
 _PLAY_DRAIN_BUFFER_SEC = 0.2
 
 

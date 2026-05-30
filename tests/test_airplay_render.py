@@ -18,7 +18,7 @@ def _outputd_env(dac_buffer_frames: int = 3072) -> str:
 
     The AirPlay latency offset compensates CamillaDSP's target_level
     over chunksize, the fan-in output buffer, plus jasper-outputd's
-    DAC buffer. The old output dmix is retired from the cutover path.
+    DAC buffer. The old output dmix is retired from the outputd path.
     """
     return f"JASPER_OUTPUTD_DAC_BUFFER_FRAMES={dac_buffer_frames}\n"
 

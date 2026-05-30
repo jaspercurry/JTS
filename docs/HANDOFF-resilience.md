@@ -315,8 +315,8 @@ thinks the system is healthy.
 **Design proposal**: [`HANDOFF-tier5-watchdog-liveness.md`](HANDOFF-tier5-watchdog-liveness.md)
 (2026-05-24). Two-PR sequence:
 
-- **T5.1** ✅ **shipped**: `StartLimitAction=reboot` on the 4 critical
-  jasper-* units (camilla, aec-bridge, voice, control). When any
+- **T5.1** ✅ **shipped**: `StartLimitAction=reboot` on the critical
+  jasper-* units (outputd, camilla, aec-bridge, voice, control). When any
   one of them exceeds its `StartLimitBurst=` within `StartLimitIntervalSec=`,
   systemd itself cleanly reboots the box — filesystems unmount,
   journal flushes, dirty pages sync. Per-unit thresholds preserve
@@ -1113,4 +1113,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-05-24
+Last verified: 2026-05-30

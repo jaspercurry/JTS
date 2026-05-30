@@ -7,7 +7,7 @@
 # Path conventions on this speaker:
 #   /etc/camilladsp/outputd-cutover.yml
 #                                  repo-deployed outputd baseline DSP config
-#   /etc/camilladsp/v1.yml         main-branch rollback baseline DSP config
+#   /etc/camilladsp/v1.yml         pre-outputd rollback baseline DSP config
 #   /etc/camilladsp/coeffs/        FIR-filter coefficient files
 #   /etc/camilladsp/                additional configs the user creates
 #                                    via the GUI live alongside v1.yml

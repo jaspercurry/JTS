@@ -37,16 +37,16 @@
   choice (flat / warm / bright). 12 new tests, all passing.
 - ✅ **Phase 2.2 — survive `jasper-camilla` restarts.** Merged
   2026-05-11 (#62) + hotfix 2026-05-11; rechecked for the outputd
-  cutover branch 2026-05-28. The systemd unit passes a CamillaDSP
+  mainline topology 2026-05-28. The systemd unit passes a CamillaDSP
   `--statefile` and intentionally *omits the positional CONFIGFILE
   arg*. The initial #62 version included the positional v1.yml as a
   "fallback" — which made the whole feature a no-op because
   CamillaDSP overwrites the statefile with the positional path on
   every start when both are given. The hotfix removes the positional.
-  On this cutover branch, Camilla reads
+  In the outputd topology, Camilla reads
   `/var/lib/camilladsp/outputd-statefile.yml` seeded to
   `/etc/camilladsp/outputd-cutover.yml`; the normal
-  `/var/lib/camilladsp/statefile.yml` is preserved for main rollback.
+  `/var/lib/camilladsp/statefile.yml` is preserved for pre-outputd rollback.
   Subsequent `set_config_file_path()` calls from the wizard update the
   active statefile in place; future restarts read it back. Recovery
   from a bad correction without hand-editing the statefile: add
@@ -1051,7 +1051,7 @@ not before this doc lands.
    `parse_current_correction()`.
 7. **What does "Reset to flat" do?** **Resolved (Phase 1+2.1):**
    `set_config_file_path('/etc/camilladsp/outputd-cutover.yml')` +
-   `reload()` on this branch. Also automatically invoked at the start
+   `reload()` on current main. Also automatically invoked at the start
    of every measurement (so sweeps capture the raw room, not the
    corrected pipeline). Reset is also exposed from the page banner so a
    user can clear the speaker without running a measurement.
@@ -1501,4 +1501,4 @@ Internal:
 
 ---
 
-Last verified: 2026-05-29
+Last verified: 2026-05-30

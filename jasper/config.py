@@ -513,9 +513,9 @@ class Config:
             # where TTS and CamillaDSP's processed renderer stream sum
             # before the speaker.
             tts_device=_env("JASPER_TTS_DEVICE", "jasper_out"),
-            # Output-owner transport. The outputd cutover branch sends
-            # assistant audio to jasper-outputd's local socket; main
-            # keeps the legacy sounddevice -> jasper_out default.
+            # Output-owner transport. Current main sends assistant audio
+            # to jasper-outputd's local socket; sounddevice -> jasper_out
+            # remains the pre-outputd rollback path.
             tts_transport=_env("JASPER_TTS_TRANSPORT", "outputd"),
             tts_outputd_socket=_env(
                 "JASPER_TTS_OUTPUTD_SOCKET", "/run/jasper-outputd/tts.sock",

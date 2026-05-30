@@ -245,7 +245,7 @@ works because both were captured against the same baseline.
 
 /var/lib/camilladsp/
 ├── configs/correction_<id>_<unixtime>.yml   # never deleted; history
-└── outputd-statefile.yml                    # current cutover config_path:
+└── outputd-statefile.yml                    # current outputd config_path:
 ```
 
 Bundles are **useful but not yet complete** for offline agent or FIR
@@ -1157,4 +1157,4 @@ Codebase:
 
 ---
 
-Last verified: 2026-05-29
+Last verified: 2026-05-30

@@ -97,12 +97,12 @@ Rechecked against the current tree on 2026-05-28:
   against provider interruption and calls `flush()` on interruption.
   `_idle_watchdog` and `_end_turn` rely on `expected_drain_at()` to
   avoid ending a turn before queued audio drains.
-- `deploy/alsa/asoundrc.jasper` defines the outputd cutover surfaces:
+- `deploy/alsa/asoundrc.jasper` defines the outputd ALSA surfaces:
   `outputd_content_playback`, `outputd_content_capture`, and
   `outputd_dac`.
 - `deploy/camilladsp/outputd-cutover.yml` sends Camilla playback to
   `outputd_content_playback`; `deploy/camilladsp/v1.yml` is retained
-  as the main-branch rollback config that writes to `jasper_out`.
+  as the pre-outputd rollback config that writes to `jasper_out`.
 - `jasper/cli/aec_bridge.py` opens `jasper_ref`, downsamples the 48 kHz
   stereo content reference to 16 kHz mono, and tracks reference
   starvation/queue drops. The AEC migration should replace only the
@@ -131,15 +131,15 @@ What exists:
   substream 6 (`hw:Loopback,1,6`).
 - DAC output: `outputd_dac`, a direct hardware alias for the Apple
   dongle.
-- Camilla cutover config: `/etc/camilladsp/outputd-cutover.yml` after
+- Camilla outputd config: `/etc/camilladsp/outputd-cutover.yml` after
   install, copied from `deploy/camilladsp/outputd-cutover.yml`.
 - Camilla rollback preservation: the outputd `jasper-camilla.service`
   reads `/var/lib/camilladsp/outputd-statefile.yml`, not the normal
   `/var/lib/camilladsp/statefile.yml`. The normal statefile, including
   any active room-correction/sound-profile path, is left intact for
   rollback by disabling outputd and deploying a pre-outputd tree. The
-  outputd statefile is preserved across branch redeploys when it points at an
-  outputd-safe config, and reset to the flat cutover config only when
+  outputd statefile is preserved across redeploys when it points at an
+  outputd-safe config, and reset to the flat outputd baseline only when
   it is missing, stale, points at a legacy `jasper_out` playback path,
   or omits the non-positive Camilla `volume_limit` safety ceiling.
 - TTS transport: `JASPER_TTS_TRANSPORT=outputd` makes Python send
@@ -172,6 +172,9 @@ What exists:
   Optional lab retuning belongs in `/var/lib/jasper/outputd.env`; the
   unit loads it after the packaged defaults, and the AirPlay renderer
   reads the same file when deriving backend latency offset.
+  If outputd cannot stay up after its restart burst, systemd reboots
+  cleanly via `StartLimitAction=reboot` rather than leaving the speaker
+  without its final-output owner.
   During install, `jasper-voice` is stopped before outputd is restarted
   so an old PortAudio process cannot keep the legacy DAC path open; the
   AEC reconciler then restarts or parks voice according to current mic
@@ -185,8 +188,9 @@ What exists:
   period/buffer sizes, xrun counters, content empty/partial/EAGAIN
   periods, last-xrun age, uptime-normalized xrun rate, watchdog
   progress, clipping, pending TTS frames, TTS over-budget duration,
-  and compact TTS flush summaries so producer/playback backpressure is
-  visible without journal spam. The dashboard labels the two xrun
+  dropped TTS command/audio-frame counters, and compact TTS flush
+  summaries so producer/playback backpressure is visible without
+  journal spam. The dashboard labels the two xrun
   counters as content/DAC, since a content-capture recovery is a
   different risk from a physical-output recovery.
 
@@ -629,4 +633,4 @@ datum: how much assistant audio was actually heard.
   segments, synchronous `FLUSH_SYNC` acknowledgements with
   `audio_played_ms`, and DAC-delay-based drained-frame estimation.
 
-Last verified: 2026-05-29
+Last verified: 2026-05-30
