@@ -965,6 +965,11 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["voice"]["reachable"] is False
     assert body["voice"]["session_active"] is False
     assert "tts_source_peak_dbfs" in body["voice"]  # measured TTS level on /state
+    # /state.voice is hand-curated, NOT a session_status pass-through, so a
+    # new session_status field is silently dropped if it isn't pulled
+    # through in _get_state. wake_legs (jasper-doctor's runtime cross-check
+    # source) is exactly such a field — guard that its key is present.
+    assert "wake_legs" in body["voice"]
     assert body["audio"]["listening_level_percent"] == 73
     # Camilla isn't reachable from the test → main_volume_db None.
     assert body["audio"]["main_volume_db"] is None
@@ -980,6 +985,33 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["outputd"] is None
     assert body["active_source"] in {"idle", "airplay"}
     assert body["satellites"]["dial"]["online"] is False
+
+
+def test_state_voice_wake_legs_flows_from_session_status(
+    server_with_coordinator, monkeypatch,
+):
+    """Regression for the curated-vs-passthrough drop: /state.voice is
+    hand-built in _get_state, so a session_status field (here wake_legs —
+    the runtime-armed legs jasper-doctor cross-checks against configured
+    intent) only reaches /state if it's explicitly pulled through. Before
+    that pull-through, wake_legs lived in session_status but was absent
+    from /state.voice, silently disabling the doctor's runtime check."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
+        return {
+            "state": "WAKE", "input_ended": False, "spend_allowed": True,
+            "connection_paused": False, "mic_muted": False,
+            "duck_active": False, "tts_source_peak_dbfs": -20.0,
+            "wake_legs": ["on", "off", "dtln"],
+        }
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["voice"]["reachable"] is True
+    assert body["voice"]["wake_legs"] == ["on", "off", "dtln"]
 
 
 def test_state_audio_metrics_sanitize_non_finite_values(
