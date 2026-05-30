@@ -3430,10 +3430,12 @@ async def _start_control_socket(
 async def run() -> None:
     cfg = Config.from_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    # Runtime debug toggle (/system Debug card): raise this daemon to
-    # DEBUG iff voice debug is actively toggled on. No-op otherwise.
-    from . import debug_mode
-    debug_mode.apply_for("voice")
+    # Log flight recorder + runtime debug toggle (/system Debug card).
+    # install() holds the jasper logger at DEBUG for the in-RAM ring,
+    # keeps the journal at INFO, and applies the debug toggle. See
+    # jasper/flight_recorder.py / docs/HANDOFF-observability.md.
+    from . import flight_recorder
+    flight_recorder.install("voice")
 
     pricing = pricing_for_provider(
         cfg.voice_provider,

@@ -171,31 +171,56 @@ def compute_env_update(
     }
 
 
+def _console_handler() -> "logging.Handler | None":
+    """The live journal ``StreamHandler`` (the one ``basicConfig`` adds to
+    root). The debug toggle raises/lowers *this* handler's level — the
+    logger itself is held at DEBUG by the flight recorder (Tier C), so the
+    handler is the knob that decides whether DEBUG reaches the journal."""
+    for h in logging.getLogger().handlers:
+        if isinstance(h, logging.StreamHandler) and not isinstance(
+            h, logging.FileHandler
+        ):
+            return h
+    return None
+
+
+def set_console_debug(on: bool) -> None:
+    """Raise (DEBUG) or lower (INFO) the journal handler. No-op when there's
+    no console handler yet (e.g. before ``basicConfig``)."""
+    h = _console_handler()
+    if h is not None:
+        h.setLevel(logging.DEBUG if on else logging.INFO)
+
+
 def apply_for(
     subsystem_id: str,
     *,
     now: float | None = None,
     path: str | None = None,
 ) -> bool:
-    """Called by a daemon right after ``logging.basicConfig`` to raise
-    its loggers to DEBUG iff that subsystem is actively toggled on.
-    Returns whether debug was applied. Best-effort — never raises, so a
-    malformed ``debug.env`` can't break daemon startup (fails toward
-    normal INFO)."""
+    """Apply the persisted debug toggle for a subsystem at daemon startup
+    (called by the flight recorder, or directly when the recorder is
+    disabled). When the subsystem is toggled on, raise its loggers AND the
+    journal handler to DEBUG; when off, pin the journal handler back to
+    INFO. Returns whether the subsystem is actively toggled on.
+    Best-effort — never raises, so a malformed ``debug.env`` can't break
+    daemon startup (fails toward off)."""
     sub = SUBSYSTEMS.get(subsystem_id)
     if sub is None:
         return False
     try:
         state = read_debug_state(path=path, now=now)
-        if subsystem_id not in state.active:
-            return False
-        for name in sub.loggers:
-            logging.getLogger(name).setLevel(logging.DEBUG)
+        active = subsystem_id in state.active
+        if active:
+            for name in sub.loggers:
+                logging.getLogger(name).setLevel(logging.DEBUG)
+        set_console_debug(active)
     except Exception:  # pragma: no cover - defensive; startup must survive
         return False
-    logging.getLogger(__name__).info(
-        "debug mode ON for %s — verbose logging raised to DEBUG "
-        "(auto-expires in ~%.0f min)",
-        subsystem_id, state.remaining_sec / 60.0,
-    )
-    return True
+    if active:
+        logging.getLogger(__name__).info(
+            "debug mode ON for %s — journal raised to DEBUG "
+            "(auto-expires in ~%.0f min)",
+            subsystem_id, state.remaining_sec / 60.0,
+        )
+    return active

@@ -2463,10 +2463,12 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    # Runtime debug toggle (/system Debug card): raise this daemon to
-    # DEBUG iff control debug is actively toggled on. No-op otherwise.
-    from .. import debug_mode
-    debug_mode.apply_for("control")
+    # Log flight recorder + runtime debug toggle (/system Debug card).
+    # install() holds the jasper logger at DEBUG for the in-RAM ring,
+    # keeps the journal at INFO, applies the debug toggle, and wires
+    # SIGUSR1 -> dump. See jasper/flight_recorder.py.
+    from .. import flight_recorder
+    flight_recorder.install("control")
 
     # System metrics sampler — 5 s ring buffer for the /system dashboard.
     # Daemon thread, exits with the process.

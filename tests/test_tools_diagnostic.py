@@ -103,6 +103,28 @@ async def test_flag_tool_returns_success_with_canonical_spoken_response(
     }
 
 
+async def test_flag_tool_triggers_flight_recorder_dump_on_success(
+    store: WakeEventStore, monkeypatch,
+):
+    """On a successful flag, the voice flight recorder is dumped to the
+    journal so the DEBUG context the user just noticed is captured (Tier
+    C). Best-effort — only on the success path."""
+    from jasper import flight_recorder
+    dumps: list[str] = []
+    monkeypatch.setattr(
+        flight_recorder, "dump",
+        lambda reason="manual": dumps.append(reason) or 0,
+    )
+    await _seed_events(store, [
+        ("evt-prior", "2026-05-23T19:00:00+00:00"),
+        ("evt-flag",  "2026-05-23T19:00:05+00:00"),
+    ])
+    fn = _get_tool(make_diagnostic_tools(store))
+    result = await fn(reason="cut me off")
+    assert result["success"] is True
+    assert dumps == ["voice_flagged"]
+
+
 async def test_flag_tool_returns_failure_when_no_prior_event(
     store: WakeEventStore,
 ):

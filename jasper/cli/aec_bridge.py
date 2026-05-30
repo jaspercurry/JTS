@@ -1819,10 +1819,10 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s aec-bridge %(levelname)s %(message)s",
     )
-    # Runtime debug toggle (/system Debug card): raise to DEBUG iff AEC
-    # debug is actively toggled on. No-op otherwise.
-    from .. import debug_mode
-    debug_mode.apply_for("aec")
+    # Log flight recorder + runtime debug toggle (/system Debug card).
+    # See jasper/flight_recorder.py / docs/HANDOFF-observability.md.
+    from .. import flight_recorder
+    flight_recorder.install("aec")
     _bridge_stats.reset()
     _bridge_stats.write_snapshot()
     corpus_ref_enabled = _env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")

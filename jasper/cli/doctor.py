@@ -4765,6 +4765,29 @@ async def _watch_loop(cfg: Config, interval: float) -> int:
         return 0
 
 
+def _trigger_flight_recorder_dumps(results: list[CheckResult]) -> None:
+    """On a failing run, signal the long-running daemons to dump their
+    in-RAM flight recorders to the journal (SIGUSR1), capturing the
+    failing-state DEBUG context. Best-effort and root-only; cgroup-scoped
+    via ``systemctl kill`` (no raw-PID signaling) and ``--kill-whom=main``
+    so a worker without the handler can't catch SIGUSR1's default-terminate.
+    Tier C — see jasper/flight_recorder.py."""
+    if not any(r.status == "fail" for r in results):
+        return
+    for unit in (
+        "jasper-voice.service",
+        "jasper-aec-bridge.service",
+        "jasper-control.service",
+    ):
+        try:
+            subprocess.run(
+                ["systemctl", "kill", "--kill-whom=main", "-s", "SIGUSR1", unit],
+                capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="jasper-doctor",
@@ -4828,6 +4851,9 @@ def main() -> None:
             }))
             sys.exit(1)
         raise
+    # Tier C: on a failing run, capture the daemons' recent DEBUG context
+    # by signaling their flight recorders to dump to the journal.
+    _trigger_flight_recorder_dumps(results)
     if args.json:
         sys.exit(render_json(results))
     sys.exit(render(results))

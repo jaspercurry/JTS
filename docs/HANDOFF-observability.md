@@ -161,16 +161,17 @@ and its toggles trigger real daemon restarts, so after a deploy open
 `journalctl -u jasper-voice` shows DEBUG lines + the countdown and
 auto-quiet fire.
 
-**Tier C — flight recorder (designed 2026-05-30; approved to
-build, not yet built).** A bounded in-RAM verbose ring per daemon,
+**Tier C — flight recorder (built 2026-05-30; pending on-device
+verification).** A bounded in-RAM verbose ring per daemon,
 dumped **only** on an anomaly. This is the real answer to the
 central tension: the intermittent bugs that matter most **already
 happened** before anyone could flip the Tier-B toggle, so capture
 the verbose window around every anomaly automatically.
 
-*Mechanism — decouple the logger level from the journal level.* The
-engine is stdlib `logging.handlers.MemoryHandler` + a ~20-line
-override:
+*Mechanism — decouple the logger level from the journal level.* A
+small custom `logging.Handler` over a `deque` (stdlib `MemoryHandler`
+was evaluated but it flushes on capacity and routes through a target
+handler whose INFO level would drop the buffered DEBUG lines):
 
 | Component | Level | Effect |
 |---|---|---|
@@ -179,12 +180,13 @@ override:
 | `RingFlushHandler` (new) | DEBUG | buffers the last N DEBUG+ records in a `deque(maxlen=N)`; flushes only on WARNING+/explicit |
 
 ```python
-class RingFlushHandler(MemoryHandler):
-    def __init__(self, capacity, target):
-        super().__init__(capacity, flushLevel=WARNING, target=target, flushOnClose=False)
-        self.buffer = collections.deque(maxlen=capacity)   # ring: drops oldest
-    def shouldFlush(self, record):
-        return record.levelno >= self.flushLevel           # not on capacity
+class RingFlushHandler(logging.Handler):                   # level = DEBUG
+    def emit(self, record):
+        self.buffer.append(record)                         # deque(maxlen=N): drops oldest
+        if record.levelno >= logging.WARNING:
+            self.flush_buffer("auto:" + record.levelname.lower())
+    def flush_buffer(self, reason):                        # also called by dump()
+        ...  # write a tagged burst of the buffer to the dump stream, then clear
 ```
 
 *Decisions (2026-05-30):*
@@ -201,10 +203,10 @@ class RingFlushHandler(MemoryHandler):
   and failing `jasper-doctor` checks.
 - **Scope (v1):** voice + aec + control.
 
-*Tier-B integration.* When this lands, Tier B's `apply_for` switches
-from "set the `jasper` *logger* to DEBUG" to "lower the journal
-*handler* to DEBUG" (the logger is already DEBUG for the ring) — a
-~5-line adjustment, same toggle behaviour.
+*Tier-B integration (done).* `apply_for` now also flips the journal
+*handler* level via `set_console_debug` (the logger is held at DEBUG
+by the recorder for the ring); same toggle behaviour, and the
+committed Tier-B tests still pass.
 
 *The payoff (closes the Tier-A loop).* With the ring in place,
 **`event=tts_gain.compute` can finally move to DEBUG** — quiet in
@@ -218,7 +220,8 @@ instrumentation: RAM-only, persisted only when something breaks.
 *Cost.* ~N × 0.3 KB. N=2000 ≈ 600 KB/daemon; voice+aec+control ≈
 1.8 MB — trivial on a 1–2 GB Pi, tunable.
 
-*Honest grounding.* Stdlib `MemoryHandler` + the general pattern
+*Honest grounding.* A small custom `logging.Handler` (stdlib
+`MemoryHandler` evaluated — see Mechanism) + the general pattern
 (Linux ftrace snapshot triggers, Android logd, OpenTelemetry
 tail-sampling, Rust `tracing-appender`) + the Pi cohort's
 RAM-logging consensus (DietPi RAMlog, log2ram). **No Pi-appliance in
@@ -227,11 +230,19 @@ is sound-by-analogy, not cohort-corroborated. JTS already does this
 for *audio* (the wake-event 6 s pre/post rings); Tier C generalizes
 it to logs.
 
-*Build shape.* One module (`jasper/flight_recorder.py`:
-`RingFlushHandler` + `install_flight_recorder()` + `dump(reason)`)
-wired into each daemon's logging setup, the small Tier-B `apply_for`
-adjustment, the three explicit-trigger call sites, and tests. Its
-own PR (Tier A+B are a separate committed PR).
+*As built.* [`jasper/flight_recorder.py`](../jasper/flight_recorder.py)
+(`RingFlushHandler` + `install()` + `dump()` + a SIGUSR1 handler)
+wired into voice/aec/control startup; `debug_mode.apply_for` gained
+`set_console_debug` so the toggle moves the journal handler; explicit
+`dump()` from the `flag_recent_issue` voice tool and a `systemctl
+kill --kill-whom=main -s SIGUSR1` from a failing `jasper-doctor` run
+(supervisor restarts auto-flush — they already log ERROR). Off via
+`JASPER_FLIGHT_RECORDER=disabled`. Tests:
+`tests/test_flight_recorder.py` plus trigger tests in `test_doctor.py`
+/ `test_tools_diagnostic.py`. **Remaining: on-device verification** —
+deploy, then confirm a WARNING produces an `event=flightrec.dump`
+burst in `journalctl`, and that "flag that" + a doctor FAIL each
+trigger one.
 
 **Tier D — download diagnostics (cheap capstone).** Surface the
 existing `scripts/pi-bundle.sh` as a one-tap "Download diagnostics"

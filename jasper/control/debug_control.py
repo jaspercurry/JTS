@@ -69,10 +69,14 @@ def _restart_unit(unit: str) -> None:
 
 
 def _apply_control_level(enabled: bool) -> None:
-    """``control`` debug is applied in-process — no self-restart."""
-    level = logging.DEBUG if enabled else logging.INFO
-    for name in SUBSYSTEMS["control"].loggers:
-        logging.getLogger(name).setLevel(level)
+    """``control`` debug is applied in-process — no self-restart. The flight
+    recorder (Tier C) holds the logger at DEBUG, so the toggle moves the
+    journal handler (DEBUG on, INFO off); raising the logger too covers the
+    recorder-disabled case."""
+    if enabled:
+        for name in SUBSYSTEMS["control"].loggers:
+            logging.getLogger(name).setLevel(logging.DEBUG)
+    debug_mode.set_console_debug(enabled)
 
 
 # Seam for tests: swap out the timer factory so unit tests don't spawn

@@ -524,6 +524,7 @@ safety = "boot-risk"
 code = [
   "jasper/watchdog.py",
   "jasper/debug_mode.py",
+  "jasper/flight_recorder.py",
   "jasper/control/system_*.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/airplay_health.py",
