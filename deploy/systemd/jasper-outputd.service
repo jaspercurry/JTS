@@ -46,6 +46,10 @@ Environment="JASPER_OUTPUTD_TTS_SOCKET=/run/jasper-outputd/tts.sock"
 # outputd and jasper-apply-airplay-mode agree when DAC buffer sizing is
 # intentionally changed for lab validation.
 EnvironmentFile=-/var/lib/jasper/outputd.env
+# Wake-corpus test mode can temporarily enable the XVF USB-IN
+# reference fanout and outputd's UDP reference tap. Keep this after
+# operator retunes so entering/leaving corpus mode is reversible.
+EnvironmentFile=-/var/lib/jasper/wake_corpus_bridge.env
 ExecStart=/opt/jasper/bin/jasper-outputd
 
 [Install]

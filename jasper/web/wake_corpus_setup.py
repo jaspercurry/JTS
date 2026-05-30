@@ -91,11 +91,15 @@ from jasper.cli.wake_enroll import (
     write_wav,
 )
 from jasper.wake_ports import (
+    DEFAULT_AEC_CHIP_AEC_150_PORT,
+    DEFAULT_AEC_CHIP_AEC_210_PORT,
     DEFAULT_AEC_DTLN_PORT,
     DEFAULT_AEC_OFF_PORT,
     DEFAULT_AEC_ON_PORT,
     DEFAULT_AEC_REF_PORT,
     DEFAULT_AEC_RAW0_PORT,
+    DEFAULT_AEC_XVF_RAW0_DTLN_PORT,
+    DEFAULT_AEC_XVF_RAW0_WEBRTC_AEC3_PORT,
     DEFAULT_AEC3_SWEEP_PORTS,
     DEFAULT_AEC_USB_DTLN_PORT,
     DEFAULT_AEC_USB_RAW_PORT,
@@ -148,6 +152,9 @@ DISTANCES = ("near", "mid", "far")
 # enabled; they are never production wake-detection inputs.
 AEC3_SWEEP_LEGS = tuple(variant.leg for variant in AEC3_SWEEP_VARIANTS)
 DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE = AEC3_SWEEP_SOURCE_USB
+PROFILE_STANDARD = "standard"
+PROFILE_CHIP_AEC_COMPARISON = "chip_aec_comparison_v1"
+CORPUS_PROFILES = (PROFILE_STANDARD, PROFILE_CHIP_AEC_COMPARISON)
 # Keep old pilot legs playable when loading earlier same-day sessions.
 LEGACY_AEC3_SWEEP_LEGS = (
     "aec3_hf_slow_only",
@@ -165,12 +172,26 @@ LEGS = (
     "on", *AEC3_SWEEP_LEGS, *LEGACY_AEC3_SWEEP_LEGS,
     "off", "dtln", "raw0", "ref",
     "usb_raw", "usb_webrtc", "usb_dtln",
+    "chip_aec_150", "chip_aec_210",
+    "xvf_raw0_webrtc_aec3", "xvf_raw0_dtln",
 )
 BASE_LEGS = ("on", "off")
 DTLN_LEG = "dtln"
 RAW0_LEG = "raw0"
 USB_CORPUS_LEGS = ("ref", "usb_raw", "usb_webrtc")
 USB_DTLN_LEG = "usb_dtln"
+CHIP_AEC_LEGS = ("chip_aec_150", "chip_aec_210")
+XVF_RAW0_WEBRTC_AEC3_LEG = "xvf_raw0_webrtc_aec3"
+XVF_RAW0_DTLN_LEG = "xvf_raw0_dtln"
+CHIP_AEC_PROFILE_BASE_LEGS = (
+    "chip_aec_150",
+    "chip_aec_210",
+    "raw0",
+    "xvf_raw0_webrtc_aec3",
+    "ref",
+    "usb_raw",
+    "usb_webrtc",
+)
 LEG_LABELS = {
     "on": "XVF WebRTC AEC3",
     **{variant.leg: variant.label for variant in AEC3_SWEEP_VARIANTS},
@@ -191,6 +212,10 @@ LEG_LABELS = {
     "usb_raw": "USB raw",
     "usb_webrtc": USB_AEC3_CORPUS_LABEL,
     "usb_dtln": "USB DTLN",
+    "chip_aec_150": "Chip AEC ASR 150",
+    "chip_aec_210": "Chip AEC ASR 210",
+    "xvf_raw0_webrtc_aec3": "XVF raw0 WebRTC AEC3",
+    "xvf_raw0_dtln": "XVF raw0 DTLN",
 }
 
 # Hard cap so a forgotten "stop" doesn't fill memory with a 1-hour
@@ -226,15 +251,30 @@ BRIDGE_STATS_PATH = Path(os.environ.get(
     "/run/jasper/aec_bridge_stats.json",
 ))
 BRIDGE_UNIT = "jasper-aec-bridge.service"
+OUTPUTD_UNIT = "jasper-outputd.service"
+AEC_INIT_UNIT = "jasper-aec-init.service"
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 BRIDGE_CORPUS_OUTPUT_VARS = (
     "JASPER_AEC_DTLN_ENABLED",
     "JASPER_AEC_CORPUS_REF_ENABLED",
     "JASPER_AEC_CORPUS_USB_ENABLED",
     "JASPER_AEC_CORPUS_USB_DTLN_ENABLED",
+    "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
+    "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
+    "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED",
+    "JASPER_AEC_REF_SOURCE",
+    "JASPER_AEC_OUTPUTD_REF_UDP_HOST",
+    "JASPER_AEC_OUTPUTD_REF_UDP_PORT",
+    "JASPER_OUTPUTD_CHIP_REF_PCM",
+    "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
+    "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
 )
+OUTPUTD_REF_UDP_TARGET = "127.0.0.1:9891"
+OUTPUTD_REF_UDP_PORT = "9891"
+DEFAULT_CHIP_REF_PCM = "plughw:CARD=Array,DEV=0"
+DEFAULT_CHIP_REF_BUFFER_FRAMES = "4096"
 DEFAULT_USB_MIC_DEVICE = "USB PnP Sound Device"
 DEFAULT_USB_MIXER_CARD = "Device"
 USB_AGC_CONTROL = "Auto Gain Control"
@@ -245,6 +285,10 @@ BRIDGE_OUTPUT_LABELS = {
     "usb": "USB raw/WebRTC AEC3",
     "usb_dtln": "USB DTLN",
     "aec3_sweep": "AEC3 sweep",
+    "chip_aec": "chip AEC 150/210",
+    "xvf_raw0_webrtc_aec3": "XVF raw0 WebRTC AEC3",
+    "xvf_raw0_dtln": "XVF raw0 DTLN",
+    "outputd_ref": "outputd direct reference",
 }
 
 
@@ -259,6 +303,31 @@ def _session_aec3_sweep_source(value: str | None = None) -> str:
 def _legacy_aec3_sweep_source(value: str | None = None) -> str:
     """Older metadata/env without an explicit source meant XVF."""
     return normalize_aec3_sweep_source(value, default=AEC3_SWEEP_SOURCE_XVF)
+
+
+def chip_aec_config_metadata() -> dict[str, object]:
+    """Effective chip-AEC corpus profile recorded with each session."""
+    return {
+        "schema_version": 1,
+        "reference_topology": "outputd_direct_fanout",
+        "outputd_reference_udp_target": OUTPUTD_REF_UDP_TARGET,
+        "chip_ref_pcm": DEFAULT_CHIP_REF_PCM,
+        "SHF_BYPASS": 0,
+        "AEC_ASROUTONOFF": 1,
+        "AEC_ASROUTGAIN": 1.0,
+        "AEC_FIXEDBEAMSONOFF": 1,
+        "AEC_FIXEDBEAMSGATING": 1,
+        "AEC_FIXEDBEAMSAZIMUTH_VALUES": [2.61799, 3.66519],
+        "AEC_FIXEDBEAMSELEVATION_VALUES": [0.0, 0.0],
+        "AEC_AECEMPHASISONOFF": 2,
+        "AEC_FAR_EXTGAIN": 0.0,
+        "AUDIO_MGR_OP_L": [7, 0],
+        "AUDIO_MGR_OP_R": [7, 1],
+        "beams": [
+            {"leg": "chip_aec_150", "angle_deg": 150},
+            {"leg": "chip_aec_210", "angle_deg": 210},
+        ],
+    }
 
 
 def _env_truthy(value: str | None, *, default: bool = False) -> bool:
@@ -302,6 +371,15 @@ def bridge_output_status() -> dict[str, Any]:
         "ref": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
         "usb": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
         "usb_dtln": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
+        "chip_aec": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")),
+        "xvf_raw0_webrtc_aec3": _env_truthy(
+            corpus_env.get("JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"),
+        ),
+        "xvf_raw0_dtln": _env_truthy(
+            corpus_env.get("JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"),
+        ),
+        "outputd_ref": bool(corpus_env.get("JASPER_OUTPUTD_CHIP_REF_PCM"))
+        and corpus_env.get("JASPER_OUTPUTD_REFERENCE_UDP_TARGET") == OUTPUTD_REF_UDP_TARGET,
         "aec3_sweep": _env_truthy(corpus_env.get(AEC3_SWEEP_ENV_FLAG)),
         "aec3_sweep_source": aec3_sweep_source,
     }
@@ -310,6 +388,15 @@ def bridge_output_status() -> dict[str, Any]:
         "ref": _env_truthy(env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
         "usb": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
         "usb_dtln": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
+        "chip_aec": _env_truthy(env.get("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")),
+        "xvf_raw0_webrtc_aec3": _env_truthy(
+            env.get("JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"),
+        ),
+        "xvf_raw0_dtln": _env_truthy(
+            env.get("JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"),
+        ),
+        "outputd_ref": bool(env.get("JASPER_OUTPUTD_CHIP_REF_PCM"))
+        and env.get("JASPER_OUTPUTD_REFERENCE_UDP_TARGET") == OUTPUTD_REF_UDP_TARGET,
         "aec3_sweep": _env_truthy(env.get(AEC3_SWEEP_ENV_FLAG)),
         "aec3_sweep_source": aec3_sweep_source,
         "env_path": str(BRIDGE_CORPUS_ENV_PATH),
@@ -321,9 +408,11 @@ def bridge_output_status() -> dict[str, Any]:
 
 def missing_bridge_outputs_for_session(
     *,
+    corpus_profile: str = PROFILE_STANDARD,
     include_dtln: bool,
     include_usb_mic: bool,
     include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool = False,
     include_aec3_sweep: bool = False,
     aec3_sweep_source: str | None = None,
 ) -> list[str]:
@@ -351,6 +440,15 @@ def missing_bridge_outputs_for_session(
             missing.append("usb")
     if include_usb_dtln and not status["usb_dtln"]:
         missing.append("usb_dtln")
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        if not status["chip_aec"]:
+            missing.append("chip_aec")
+        if not status["xvf_raw0_webrtc_aec3"]:
+            missing.append("xvf_raw0_webrtc_aec3")
+        if not status["outputd_ref"]:
+            missing.append("outputd_ref")
+    if include_xvf_raw0_dtln and not status["xvf_raw0_dtln"]:
+        missing.append("xvf_raw0_dtln")
     if include_aec3_sweep and (
         not status["aec3_sweep"]
         or status.get("aec3_sweep_source") != sweep_source
@@ -470,7 +568,7 @@ def _bridge_counter_delta(
 
     queue_drops = {
         key: diff("queue_drops", key)
-        for key in ("mic", "raw0", "usb", "ref")
+        for key in ("mic", "chip", "raw0", "usb", "ref")
     }
     udp_drops = {
         leg: diff("udp_send_drops_by_leg", leg)
@@ -519,17 +617,27 @@ def _leg_bridge_drop_counts(
         and aec3_sweep_source == AEC3_SWEEP_SOURCE_XVF
     ):
         counts["mic_queue_full"] = int(queue_drops.get("mic", 0))
-    if leg in ("on", "dtln", "ref", "usb_webrtc", "usb_dtln", *AEC3_SWEEP_LEGS):
+    if leg in (
+        "on", "dtln", "ref", "usb_webrtc", "usb_dtln",
+        "xvf_raw0_webrtc_aec3", "xvf_raw0_dtln",
+        *AEC3_SWEEP_LEGS,
+    ):
         counts["ref_queue_full"] = int(queue_drops.get("ref", 0))
-    if leg == "raw0":
+    if leg in ("raw0", "xvf_raw0_webrtc_aec3", "xvf_raw0_dtln"):
         counts["raw0_queue_full"] = int(queue_drops.get("raw0", 0))
+    if leg in CHIP_AEC_LEGS:
+        counts["chip_queue_full"] = int(queue_drops.get("chip", 0))
     if leg in ("usb_raw", "usb_webrtc", "usb_dtln") or (
         leg in AEC3_SWEEP_LEGS
         and aec3_sweep_source == AEC3_SWEEP_SOURCE_USB
     ):
         counts["usb_queue_full"] = int(queue_drops.get("usb", 0))
     counts["udp_send_drops"] = int(udp_drops.get(leg, 0))
-    if leg in ("on", "dtln", "usb_webrtc", "usb_dtln", *AEC3_SWEEP_LEGS):
+    if leg in (
+        "on", "dtln", "usb_webrtc", "usb_dtln",
+        "xvf_raw0_webrtc_aec3", "xvf_raw0_dtln",
+        *AEC3_SWEEP_LEGS,
+    ):
         counts["ref_starved_frames"] = int(bridge_delta.get("ref_starved_frames", 0))
     return counts
 
@@ -641,6 +749,17 @@ def restart_aec_bridge() -> None:
     )
 
 
+def restart_unit(unit: str, timeout_sec: float = BRIDGE_RESTART_TIMEOUT_SEC) -> None:
+    subprocess.run(
+        ["systemctl", "restart", unit],
+        check=True,
+        timeout=timeout_sec,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 def enable_bridge_outputs_for_session(
     *,
     include_dtln: bool,
@@ -714,9 +833,11 @@ def enable_bridge_outputs_for_session(
 
 def set_bridge_outputs_for_session(
     *,
+    corpus_profile: str = PROFILE_STANDARD,
     include_dtln: bool,
     include_usb_mic: bool,
     include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool = False,
     include_aec3_sweep: bool = False,
     aec3_sweep_source: str | None = None,
 ) -> bool:
@@ -732,9 +853,21 @@ def set_bridge_outputs_for_session(
     env_path = str(BRIDGE_CORPUS_ENV_PATH)
     existed = BRIDGE_CORPUS_ENV_PATH.exists()
     old_values = read_env_file(env_path)
+    had_chip_profile = any(
+        old_values.get(key)
+        for key in (
+            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
+            "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
+            "JASPER_OUTPUTD_CHIP_REF_PCM",
+            "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
+        )
+    )
     values = dict(old_values)
     for key in BRIDGE_CORPUS_OUTPUT_VARS:
         values.pop(key, None)
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        include_usb_mic = True
+        include_aec3_sweep = False
     sweep_source = (
         _session_aec3_sweep_source(aec3_sweep_source)
         if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
@@ -761,6 +894,17 @@ def set_bridge_outputs_for_session(
             values["JASPER_AEC_USB_MIC_DEVICE"] = DEFAULT_USB_MIC_DEVICE
     if include_usb_dtln:
         values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] = "1"
+        values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] = "1"
+        values["JASPER_AEC_REF_SOURCE"] = "outputd_udp"
+        values["JASPER_AEC_OUTPUTD_REF_UDP_HOST"] = "127.0.0.1"
+        values["JASPER_AEC_OUTPUTD_REF_UDP_PORT"] = OUTPUTD_REF_UDP_PORT
+        values["JASPER_OUTPUTD_CHIP_REF_PCM"] = DEFAULT_CHIP_REF_PCM
+        values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] = OUTPUTD_REF_UDP_TARGET
+        values["JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES"] = DEFAULT_CHIP_REF_BUFFER_FRAMES
+    if include_xvf_raw0_dtln:
+        values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] = "1"
     if include_aec3_sweep:
         values[AEC3_SWEEP_ENV_FLAG] = "1"
         values[AEC3_SWEEP_SOURCE_ENV] = sweep_source
@@ -773,6 +917,9 @@ def set_bridge_outputs_for_session(
     else:
         delete_env_file(env_path)
     try:
+        if had_chip_profile or corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+            restart_unit(OUTPUTD_UNIT)
+            restart_unit(AEC_INIT_UNIT)
         restart_aec_bridge()
     except (
         subprocess.CalledProcessError,
@@ -784,6 +931,9 @@ def set_bridge_outputs_for_session(
         else:
             delete_env_file(env_path)
         try:
+            if had_chip_profile or corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+                restart_unit(OUTPUTD_UNIT)
+                restart_unit(AEC_INIT_UNIT)
             restart_aec_bridge()
         except (
             subprocess.CalledProcessError,
@@ -812,6 +962,15 @@ def disable_bridge_corpus_outputs() -> bool:
     env_path = str(BRIDGE_CORPUS_ENV_PATH)
     existed = BRIDGE_CORPUS_ENV_PATH.exists()
     old_values = read_env_file(env_path)
+    had_chip_profile = any(
+        old_values.get(key)
+        for key in (
+            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
+            "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
+            "JASPER_OUTPUTD_CHIP_REF_PCM",
+            "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
+        )
+    )
     values = dict(old_values)
     for key in BRIDGE_CORPUS_OUTPUT_VARS:
         values.pop(key, None)
@@ -822,6 +981,9 @@ def disable_bridge_corpus_outputs() -> bool:
     else:
         delete_env_file(env_path)
     try:
+        if had_chip_profile:
+            restart_unit(OUTPUTD_UNIT)
+            restart_unit(AEC_INIT_UNIT)
         restart_aec_bridge()
     except (
         subprocess.CalledProcessError,
@@ -833,6 +995,9 @@ def disable_bridge_corpus_outputs() -> bool:
         else:
             delete_env_file(env_path)
         try:
+            if had_chip_profile:
+                restart_unit(OUTPUTD_UNIT)
+                restart_unit(AEC_INIT_UNIT)
             restart_aec_bridge()
         except (
             subprocess.CalledProcessError,
@@ -856,13 +1021,23 @@ def _default_enabled_legs(ports: dict[str, int]) -> tuple[str, ...]:
 def _session_legs(
     ports: dict[str, int],
     *,
+    corpus_profile: str = PROFILE_STANDARD,
     include_dtln: bool = True,
     include_raw_mic_0: bool = False,
     include_usb_mic: bool = False,
     include_usb_dtln: bool = False,
+    include_xvf_raw0_dtln: bool = False,
     include_aec3_sweep: bool = False,
     aec3_sweep_source: str | None = None,
 ) -> tuple[str, ...]:
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        legs = [leg for leg in CHIP_AEC_PROFILE_BASE_LEGS if leg in ports]
+        if include_xvf_raw0_dtln and XVF_RAW0_DTLN_LEG in ports:
+            legs.append(XVF_RAW0_DTLN_LEG)
+        if include_usb_dtln and USB_DTLN_LEG in ports:
+            legs.append(USB_DTLN_LEG)
+        return tuple(dict.fromkeys(legs))
+
     sweep_source = (
         _session_aec3_sweep_source(aec3_sweep_source)
         if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
@@ -881,6 +1056,10 @@ def _session_legs(
         legs.append(DTLN_LEG)
     if include_raw_mic_0 and RAW0_LEG in ports:
         legs.append(RAW0_LEG)
+    if include_xvf_raw0_dtln and XVF_RAW0_DTLN_LEG in ports:
+        # DTLN on raw0 is interpretable only beside the unprocessed raw0
+        # clip from the same utterance.
+        legs.extend(leg for leg in (RAW0_LEG, XVF_RAW0_DTLN_LEG) if leg in ports)
     if include_usb_mic or sweep_needs_usb:
         legs.extend(leg for leg in USB_CORPUS_LEGS if leg in ports)
     if include_usb_dtln and USB_DTLN_LEG in ports:
@@ -962,10 +1141,12 @@ def _enabled_legs_from_metadata(
             return legs
     return _session_legs(
         ports,
+        corpus_profile=str(data.get("corpus_profile") or PROFILE_STANDARD),
         include_dtln=bool(data.get("include_dtln", True)),
         include_raw_mic_0=bool(data.get("include_raw_mic_0", False)),
         include_usb_mic=bool(data.get("include_usb_mic", False)),
         include_usb_dtln=bool(data.get("include_usb_dtln", False)),
+        include_xvf_raw0_dtln=bool(data.get("include_xvf_raw0_dtln", False)),
         include_aec3_sweep=bool(data.get("include_aec3_sweep", False)),
         aec3_sweep_source=aec3_sweep_source,
     )
@@ -1218,7 +1399,10 @@ class RecordingBackend:
         self._include_dtln: bool = False
         self._include_usb_mic: bool = False
         self._include_usb_dtln: bool = False
+        self._include_xvf_raw0_dtln: bool = False
         self._include_aec3_sweep: bool = False
+        self._corpus_profile: str = PROFILE_STANDARD
+        self._chip_aec_config: dict[str, object] | None = None
         self._aec3_sweep_source: str = AEC3_SWEEP_SOURCE_XVF
         self._aec3_sweep_variants: list[dict[str, object]] = []
         self._aec3_sweep_config: dict[str, object] | None = None
@@ -1354,7 +1538,10 @@ class RecordingBackend:
         self._include_dtln = False
         self._include_usb_mic = False
         self._include_usb_dtln = False
+        self._include_xvf_raw0_dtln = False
         self._include_aec3_sweep = False
+        self._corpus_profile = PROFILE_STANDARD
+        self._chip_aec_config = None
         self._aec3_sweep_source = AEC3_SWEEP_SOURCE_XVF
         self._aec3_sweep_variants = []
         self._aec3_sweep_config = None
@@ -1380,6 +1567,9 @@ class RecordingBackend:
         except (KeyError, TypeError) as e:
             raise ValueError(f"session schema mismatch: {e}") from e
         enabled_legs = _enabled_legs_from_metadata(data, self._ports)
+        corpus_profile = str(data.get("corpus_profile") or PROFILE_STANDARD)
+        if corpus_profile not in CORPUS_PROFILES:
+            corpus_profile = PROFILE_STANDARD
         saved_config = data.get("aec3_sweep_config")
         saved_source = (
             saved_config.get("input_source")
@@ -1388,7 +1578,7 @@ class RecordingBackend:
         aec3_sweep_source = _legacy_aec3_sweep_source(
             str(data.get("aec3_sweep_source") or saved_source or ""),
         )
-        include_raw_mic_0 = bool(data.get("include_raw_mic_0", RAW0_LEG in enabled_legs))
+        include_raw_mic_0 = RAW0_LEG in enabled_legs
         include_usb_mic = bool(
             data.get(
                 "include_usb_mic",
@@ -1418,15 +1608,27 @@ class RecordingBackend:
         include_usb_dtln = _metadata_flag(
             data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
         )
+        include_xvf_raw0_dtln = _metadata_flag(
+            data, "include_xvf_raw0_dtln", XVF_RAW0_DTLN_LEG, enabled_legs,
+        )
+        chip_config = data.get("chip_aec_config")
+        if not isinstance(chip_config, dict):
+            chip_config = (
+                chip_aec_config_metadata()
+                if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
+            )
         with self._lock:
             self._session_id = session_id
             self._member = member
             self._clips = clips
-            self._include_raw_mic_0 = include_raw_mic_0
+            self._include_raw_mic_0 = RAW0_LEG in enabled_legs
             self._include_dtln = include_dtln
             self._include_usb_mic = include_usb_mic
             self._include_usb_dtln = include_usb_dtln
+            self._include_xvf_raw0_dtln = include_xvf_raw0_dtln
             self._include_aec3_sweep = include_aec3_sweep
+            self._corpus_profile = corpus_profile
+            self._chip_aec_config = chip_config
             self._aec3_sweep_source = aec3_sweep_source
             self._aec3_sweep_variants = saved_variants
             self._aec3_sweep_config = saved_config
@@ -1439,7 +1641,9 @@ class RecordingBackend:
             "include_dtln": include_dtln,
             "include_usb_mic": include_usb_mic,
             "include_usb_dtln": include_usb_dtln,
+            "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
             "include_aec3_sweep": include_aec3_sweep,
+            "corpus_profile": corpus_profile,
             "aec3_sweep_source": aec3_sweep_source,
             "enabled_legs": list(enabled_legs),
         }
@@ -1510,10 +1714,12 @@ class RecordingBackend:
     def begin_session(
         self,
         member: str,
+        corpus_profile: str = PROFILE_STANDARD,
         include_raw_mic_0: bool = False,
         include_dtln: bool = True,
         include_usb_mic: bool = False,
         include_usb_dtln: bool = False,
+        include_xvf_raw0_dtln: bool = False,
         include_aec3_sweep: bool = False,
         aec3_sweep_source: str | None = None,
     ) -> str:
@@ -1553,6 +1759,8 @@ class RecordingBackend:
         safe_member = "".join(c for c in member.lower() if c.isalnum() or c == "_")
         if not safe_member:
             raise ValueError(f"member name has no usable chars: {member!r}")
+        if corpus_profile not in CORPUS_PROFILES:
+            raise ValueError(f"unknown corpus profile: {corpus_profile!r}")
         sweep_source = (
             _session_aec3_sweep_source(aec3_sweep_source)
             if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
@@ -1560,6 +1768,10 @@ class RecordingBackend:
         effective_include_usb_mic = include_usb_mic or (
             include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
         )
+        if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+            include_raw_mic_0 = True
+            effective_include_usb_mic = True
+            include_aec3_sweep = False
         with self._lock:
             if self._current is not None:
                 raise StateError(
@@ -1574,10 +1786,12 @@ class RecordingBackend:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             enabled_legs = _session_legs(
                 self._ports,
+                corpus_profile=corpus_profile,
                 include_dtln=include_dtln,
                 include_raw_mic_0=include_raw_mic_0,
                 include_usb_mic=effective_include_usb_mic,
                 include_usb_dtln=include_usb_dtln,
+                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
                 include_aec3_sweep=include_aec3_sweep,
                 aec3_sweep_source=sweep_source,
             )
@@ -1592,11 +1806,17 @@ class RecordingBackend:
             self._session_id = f"{ts}-{secrets.token_hex(2)}"
             self._member = safe_member
             self._clips = []
-            self._include_raw_mic_0 = include_raw_mic_0
+            self._include_raw_mic_0 = RAW0_LEG in enabled_legs
             self._include_dtln = DTLN_LEG in enabled_legs
             self._include_usb_mic = effective_include_usb_mic
             self._include_usb_dtln = USB_DTLN_LEG in enabled_legs
+            self._include_xvf_raw0_dtln = XVF_RAW0_DTLN_LEG in enabled_legs
             self._include_aec3_sweep = include_aec3_sweep
+            self._corpus_profile = corpus_profile
+            self._chip_aec_config = (
+                chip_aec_config_metadata()
+                if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
+            )
             self._aec3_sweep_source = sweep_source
             self._aec3_sweep_variants = sweep_variants
             self._aec3_sweep_config = sweep_config
@@ -1626,10 +1846,23 @@ class RecordingBackend:
         with self._lock:
             return self._include_usb_dtln
 
+    def include_xvf_raw0_dtln(self) -> bool:
+        """Whether the active session captures the XVF raw0 DTLN leg."""
+        with self._lock:
+            return self._include_xvf_raw0_dtln
+
     def include_aec3_sweep(self) -> bool:
         """Whether the active session captures same-utterance AEC3 variants."""
         with self._lock:
             return self._include_aec3_sweep
+
+    def corpus_profile(self) -> str:
+        with self._lock:
+            return self._corpus_profile
+
+    def chip_aec_config(self) -> dict[str, object] | None:
+        with self._lock:
+            return dict(self._chip_aec_config) if self._chip_aec_config else None
 
     def aec3_sweep_source(self) -> str:
         """Mic source that feeds the active session's AEC3 sweep variants."""
@@ -1884,7 +2117,10 @@ class RecordingBackend:
                 "include_dtln": self._include_dtln,
                 "include_usb_mic": self._include_usb_mic,
                 "include_usb_dtln": self._include_usb_dtln,
+                "include_xvf_raw0_dtln": self._include_xvf_raw0_dtln,
                 "include_aec3_sweep": self._include_aec3_sweep,
+                "corpus_profile": self._corpus_profile,
+                "chip_aec_config": self._chip_aec_config,
                 "aec3_sweep_source": self._aec3_sweep_source,
                 "aec3_sweep_variants": list(self._aec3_sweep_variants),
                 "aec3_sweep_config": self._aec3_sweep_config,
@@ -1949,10 +2185,14 @@ class RecordingBackend:
                 "include_usb_dtln": _metadata_flag(
                     data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
                 ),
+                "include_xvf_raw0_dtln": _metadata_flag(
+                    data, "include_xvf_raw0_dtln", XVF_RAW0_DTLN_LEG, enabled_legs,
+                ),
                 "include_aec3_sweep": (
                     bool(data.get("include_aec3_sweep", False))
                     or any(leg in enabled_legs for leg in AEC3_SWEEP_LEGS)
                 ),
+                "corpus_profile": data.get("corpus_profile", PROFILE_STANDARD),
                 "aec3_sweep_source": aec3_sweep_source,
                 "enabled_legs": list(enabled_legs),
                 "conditions": conds,
@@ -2096,13 +2336,17 @@ def set_voice_daemon_state(action: str) -> None:
 
 def enter_corpus_test_mode(
     *,
+    corpus_profile: str = PROFILE_STANDARD,
     include_dtln: bool,
     include_usb_mic: bool,
     include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool = False,
     include_aec3_sweep: bool = False,
     aec3_sweep_source: str | None = None,
 ) -> None:
     """Stop jasper-voice and apply the selected optional bridge legs."""
+    if corpus_profile not in CORPUS_PROFILES:
+        raise ValueError(f"unknown corpus_profile: {corpus_profile}")
     sweep_source = (
         _session_aec3_sweep_source(aec3_sweep_source)
         if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
@@ -2113,9 +2357,11 @@ def enter_corpus_test_mode(
     set_voice_daemon_state("stop")
     try:
         set_bridge_outputs_for_session(
+            corpus_profile=corpus_profile,
             include_dtln=include_dtln,
             include_usb_mic=include_usb_mic,
             include_usb_dtln=include_usb_dtln,
+            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
             include_aec3_sweep=include_aec3_sweep,
             aec3_sweep_source=sweep_source,
         )
@@ -2227,7 +2473,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "include_dtln": self.backend.include_dtln(),
                 "include_usb_mic": self.backend.include_usb_mic(),
                 "include_usb_dtln": self.backend.include_usb_dtln(),
+                "include_xvf_raw0_dtln": self.backend.include_xvf_raw0_dtln(),
                 "include_aec3_sweep": self.backend.include_aec3_sweep(),
+                "corpus_profile": self.backend.corpus_profile(),
+                "chip_aec_config": self.backend.chip_aec_config(),
                 "aec3_sweep_source": self.backend.aec3_sweep_source(),
                 "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
                 "aec3_sweep_config": self.backend.aec3_sweep_config(),
@@ -2363,10 +2612,15 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/session":
             member = (body.get("member") or "").strip()
+            corpus_profile = str(body.get("corpus_profile") or PROFILE_STANDARD)
+            if corpus_profile not in CORPUS_PROFILES:
+                self._send_error_json(400, f"unknown corpus_profile: {corpus_profile}")
+                return
             include_raw_mic_0 = bool(body.get("include_raw_mic_0", False))
             include_dtln = bool(body.get("include_dtln", True))
             include_usb_mic = bool(body.get("include_usb_mic", False))
             include_usb_dtln = bool(body.get("include_usb_dtln", False))
+            include_xvf_raw0_dtln = bool(body.get("include_xvf_raw0_dtln", False))
             include_aec3_sweep = bool(body.get("include_aec3_sweep", False))
             try:
                 aec3_sweep_source = (
@@ -2378,6 +2632,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if include_aec3_sweep and aec3_sweep_source == AEC3_SWEEP_SOURCE_USB:
                 include_usb_mic = True
+            if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+                include_raw_mic_0 = True
+                include_usb_mic = True
+                include_aec3_sweep = False
             enable_bridge_outputs = bool(
                 body.get("enable_bridge_outputs", False),
             )
@@ -2391,9 +2649,11 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
             missing_outputs = missing_bridge_outputs_for_session(
+                corpus_profile=corpus_profile,
                 include_dtln=include_dtln,
                 include_usb_mic=include_usb_mic,
                 include_usb_dtln=include_usb_dtln,
+                include_xvf_raw0_dtln=include_xvf_raw0_dtln,
                 include_aec3_sweep=include_aec3_sweep,
                 aec3_sweep_source=aec3_sweep_source,
             )
@@ -2414,10 +2674,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if missing_outputs:
                 try:
-                    enable_bridge_outputs_for_session(
+                    set_bridge_outputs_for_session(
+                        corpus_profile=corpus_profile,
                         include_dtln=include_dtln,
                         include_usb_mic=include_usb_mic,
                         include_usb_dtln=include_usb_dtln,
+                        include_xvf_raw0_dtln=include_xvf_raw0_dtln,
                         include_aec3_sweep=include_aec3_sweep,
                         aec3_sweep_source=aec3_sweep_source,
                     )
@@ -2447,10 +2709,12 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 session_id = self.backend.begin_session(
                     member,
+                    corpus_profile=corpus_profile,
                     include_raw_mic_0=include_raw_mic_0,
                     include_dtln=include_dtln,
                     include_usb_mic=include_usb_mic,
                     include_usb_dtln=include_usb_dtln,
+                    include_xvf_raw0_dtln=include_xvf_raw0_dtln,
                     include_aec3_sweep=include_aec3_sweep,
                     aec3_sweep_source=aec3_sweep_source,
                 )
@@ -2463,7 +2727,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "include_dtln": include_dtln,
                 "include_usb_mic": include_usb_mic,
                 "include_usb_dtln": include_usb_dtln,
+                "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
                 "include_aec3_sweep": include_aec3_sweep,
+                "corpus_profile": corpus_profile,
+                "chip_aec_config": self.backend.chip_aec_config(),
                 "aec3_sweep_source": aec3_sweep_source,
                 "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
                 "aec3_sweep_config": self.backend.aec3_sweep_config(),
@@ -2570,9 +2837,15 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 if action == "enter":
                     enter_corpus_test_mode(
+                        corpus_profile=str(
+                            body.get("corpus_profile") or PROFILE_STANDARD,
+                        ),
                         include_dtln=bool(body.get("include_dtln", True)),
                         include_usb_mic=bool(body.get("include_usb_mic", False)),
                         include_usb_dtln=bool(body.get("include_usb_dtln", False)),
+                        include_xvf_raw0_dtln=bool(
+                            body.get("include_xvf_raw0_dtln", False),
+                        ),
                         include_aec3_sweep=bool(
                             body.get("include_aec3_sweep", False),
                         ),
@@ -2597,6 +2870,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             except StateError as e:
                 self._send_error_json(409, str(e))
+                return
+            except ValueError as e:
+                self._send_error_json(400, str(e))
                 return
             except OSError as e:
                 self._send_error_json(
@@ -3019,11 +3295,27 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       <input type="text" id="member" value="jasper" maxlength="20">
     </div>
     <div class="row checkbox">
+      <input type="checkbox" id="include-chip-aec-profile" checked>
+      <label for="include-chip-aec-profile">
+        Use <strong>chip AEC comparison profile</strong>
+        <span class="hint">— captures chip AEC ASR 150/210, XVF raw0,
+        XVF raw0 WebRTC AEC3, USB raw/AEC3, and the final speaker reference.</span>
+      </label>
+    </div>
+    <div class="row checkbox">
       <input type="checkbox" id="include-raw-mic-0">
       <label for="include-raw-mic-0">
         Also capture <strong>raw mic 0</strong>
         <span class="hint">— chip channel 2, no DSP. Useful for
         future-proofing against cheaper mics; adds one WAV per clip.</span>
+      </label>
+    </div>
+    <div class="row checkbox">
+      <input type="checkbox" id="include-xvf-raw0-dtln">
+      <label for="include-xvf-raw0-dtln">
+        Also capture <strong>XVF raw0 DTLN</strong>
+        <span class="hint">— neural AEC on the same raw XVF mic element;
+        useful but heavier than the WebRTC AEC3 path.</span>
       </label>
     </div>
     <div class="row checkbox">
@@ -3148,6 +3440,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       usb_raw: 'USB raw',
       usb_webrtc: '{usb_aec3_corpus_label}',
       usb_dtln: 'USB DTLN',
+      chip_aec_150: 'Chip AEC ASR 150',
+      chip_aec_210: 'Chip AEC ASR 210',
+      xvf_raw0_webrtc_aec3: 'XVF raw0 WebRTC AEC3',
+      xvf_raw0_dtln: 'XVF raw0 DTLN',
     };
     const USB_AEC3_SWEEP_BASELINE_LABEL = '{usb_aec3_sweep_baseline_label}';
     function legLabel(leg, session = latestStatus) {
@@ -3168,17 +3464,33 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       }
     }
     const LEG_ORDER = [
-      'on', 'off', 'dtln', 'raw0', 'usb_raw', 'usb_webrtc',
+      'chip_aec_150', 'chip_aec_210', 'xvf_raw0_webrtc_aec3',
+      'xvf_raw0_dtln', 'raw0', 'usb_raw', 'usb_webrtc',
+      'on', 'off', 'dtln',
       {aec3_sweep_js_order}
       'usb_dtln', 'ref',
     ];
     function resetSessionForm() {
       $('member').value = 'jasper';
+      $('include-chip-aec-profile').checked = true;
       $('include-raw-mic-0').checked = false;
-      $('include-dtln').checked = true;
+      $('include-dtln').checked = false;
+      $('include-xvf-raw0-dtln').checked = false;
       $('include-aec3-sweep').checked = false;
       $('include-usb-mic').checked = false;
       $('include-usb-dtln').checked = false;
+      syncCorpusProfileControls(false);
+    }
+    function syncCorpusProfileControls(sessionLoaded = false) {
+      const chipProfile = $('include-chip-aec-profile').checked;
+      if (chipProfile) {
+        $('include-raw-mic-0').checked = true;
+        $('include-usb-mic').checked = true;
+        $('include-aec3-sweep').checked = false;
+      }
+      $('include-raw-mic-0').disabled = sessionLoaded || chipProfile;
+      $('include-usb-mic').disabled = sessionLoaded || chipProfile;
+      $('include-aec3-sweep').disabled = sessionLoaded || chipProfile;
     }
     function orderedLegs(files) {
       const present = files || {};
@@ -3239,9 +3551,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const inCorpusMode = !voiceActive || bridgeActive;
         const sessionLoaded = Boolean(s.session_id);
         const sessionInputs = [
-          $('member'), $('include-raw-mic-0'), $('include-dtln'),
+          $('member'), $('include-chip-aec-profile'),
+          $('include-raw-mic-0'), $('include-dtln'), $('include-xvf-raw0-dtln'),
           $('include-aec3-sweep'), $('include-usb-mic'), $('include-usb-dtln'),
         ];
+        const chipProfile = s.corpus_profile === 'chip_aec_comparison_v1';
         const sessionNeedsUsb = Boolean(
           s.include_usb_mic ||
           s.include_usb_dtln ||
@@ -3251,7 +3565,13 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           (!s.include_dtln || bridgeOutputs.dtln) &&
           (!s.include_aec3_sweep || bridgeOutputs.aec3_sweep) &&
           (!sessionNeedsUsb || (bridgeOutputs.ref && bridgeOutputs.usb)) &&
-          (!s.include_usb_dtln || bridgeOutputs.usb_dtln)
+          (!s.include_usb_dtln || bridgeOutputs.usb_dtln) &&
+          (!chipProfile || (
+            bridgeOutputs.chip_aec &&
+            bridgeOutputs.xvf_raw0_webrtc_aec3 &&
+            bridgeOutputs.outputd_ref
+          )) &&
+          (!s.include_xvf_raw0_dtln || bridgeOutputs.xvf_raw0_dtln)
         );
         const activeBridgeLabels = [];
         if (recorderOutputs.dtln) activeBridgeLabels.push('XVF DTLN');
@@ -3263,6 +3583,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         if (recorderOutputs.ref) activeBridgeLabels.push('ref');
         if (recorderOutputs.usb) activeBridgeLabels.push('USB');
         if (recorderOutputs.usb_dtln) activeBridgeLabels.push('USB DTLN');
+        if (recorderOutputs.chip_aec) activeBridgeLabels.push('chip AEC');
+        if (recorderOutputs.xvf_raw0_webrtc_aec3) activeBridgeLabels.push('XVF raw0 AEC3');
+        if (recorderOutputs.xvf_raw0_dtln) activeBridgeLabels.push('XVF raw0 DTLN');
+        if (recorderOutputs.outputd_ref) activeBridgeLabels.push('outputd ref');
         if (voiceActive && bridgeActive) {
           modeEl.textContent = 'mixed: voice + test outputs';
           modeEl.className = 'pill red';
@@ -3297,14 +3621,17 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           ? 'Loaded session'
           : 'Begin a new session';
         if (sessionLoaded) {
+          $('include-chip-aec-profile').checked = chipProfile;
           $('member').value = s.member || '';
           $('include-raw-mic-0').checked = Boolean(s.include_raw_mic_0);
           $('include-dtln').checked = Boolean(s.include_dtln);
+          $('include-xvf-raw0-dtln').checked = Boolean(s.include_xvf_raw0_dtln);
           $('include-aec3-sweep').checked = Boolean(s.include_aec3_sweep);
           $('include-usb-mic').checked = Boolean(s.include_usb_mic);
           $('include-usb-dtln').checked = Boolean(s.include_usb_dtln);
         }
         for (const input of sessionInputs) input.disabled = sessionLoaded;
+        syncCorpusProfileControls(sessionLoaded);
         const beginEl = $('session-begin');
         unloadEl.style.display = sessionLoaded && !inCorpusMode
           ? 'inline-block' : 'none';
@@ -3333,7 +3660,9 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const sessionLabel = s.session_id
           ? `${s.member} / ${s.session_id}`
             + (s.include_raw_mic_0 ? ' · raw mic 0 ✓' : '')
+            + (chipProfile ? ' · chip AEC profile ✓' : '')
             + (!s.include_dtln ? ' · XVF DTLN off' : '')
+            + (s.include_xvf_raw0_dtln ? ' · XVF raw0 DTLN ✓' : '')
             + (s.include_aec3_sweep ? ` · ${s.aec3_sweep_source === 'usb' ? 'USB' : 'XVF'} AEC3 sweep ✓` : '')
             + (s.include_usb_mic ? ' · USB/ref ✓' : '')
             + (s.include_usb_dtln ? ' · USB DTLN ✓' : '')
@@ -3368,9 +3697,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     async function enterCorpusTestMode(options) {
       await api('POST', 'api/corpus-test-mode', {
         action: 'enter',
+        corpus_profile: options.corpusProfile || 'standard',
         include_dtln: options.includeDtln,
         include_usb_mic: options.includeUsbMic,
         include_usb_dtln: options.includeUsbDtln,
+        include_xvf_raw0_dtln: options.includeXvfRaw0Dtln,
         include_aec3_sweep: options.includeAec3Sweep,
         aec3_sweep_source: options.aec3SweepSource || 'usb',
       });
@@ -3401,9 +3732,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       if (latestStatus?.session_id) {
         try {
           await enterCorpusTestMode({
+            corpusProfile: latestStatus.corpus_profile || 'standard',
             includeDtln: Boolean(latestStatus.include_dtln),
             includeUsbMic: Boolean(latestStatus.include_usb_mic),
             includeUsbDtln: Boolean(latestStatus.include_usb_dtln),
+            includeXvfRaw0Dtln: Boolean(latestStatus.include_xvf_raw0_dtln),
             includeAec3Sweep: Boolean(latestStatus.include_aec3_sweep),
             aec3SweepSource: latestStatus.aec3_sweep_source || 'usb',
           });
@@ -3416,24 +3749,32 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         }
       }
       const member = $('member').value.trim();
+      const corpusProfile = $('include-chip-aec-profile').checked
+        ? 'chip_aec_comparison_v1'
+        : 'standard';
       const includeRawMic0 = $('include-raw-mic-0').checked;
       const includeDtln = $('include-dtln').checked;
+      const includeXvfRaw0Dtln = $('include-xvf-raw0-dtln').checked;
       const includeAec3Sweep = $('include-aec3-sweep').checked;
-      const includeUsbMic = $('include-usb-mic').checked || includeAec3Sweep;
+      const includeUsbMic = $('include-usb-mic').checked || includeAec3Sweep
+        || corpusProfile === 'chip_aec_comparison_v1';
       const includeUsbDtln = $('include-usb-dtln').checked;
       if (!member) { showErr('member is required'); return; }
       const payload = {
         member,
+        corpus_profile: corpusProfile,
         include_raw_mic_0: includeRawMic0,
         include_dtln: includeDtln,
         include_usb_mic: includeUsbMic,
         include_usb_dtln: includeUsbDtln,
+        include_xvf_raw0_dtln: includeXvfRaw0Dtln,
         include_aec3_sweep: includeAec3Sweep,
         aec3_sweep_source: includeAec3Sweep ? 'usb' : 'xvf',
       };
       try {
         await enterCorpusTestMode({
-          includeDtln, includeUsbMic, includeUsbDtln, includeAec3Sweep,
+          corpusProfile, includeDtln, includeUsbMic, includeUsbDtln,
+          includeXvfRaw0Dtln, includeAec3Sweep,
           aec3SweepSource: includeAec3Sweep ? 'usb' : 'xvf',
         });
         await api('POST', 'api/session', payload);
@@ -3447,7 +3788,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           const labels = body.missing_bridge_output_labels || [];
           const ok = await jtsConfirm(
             `The bridge is not currently emitting: ${labels.join(', ')}.\n\n` +
-            `Enable those bridge outputs and restart jasper-aec-bridge now? ` +
+            `Enable those corpus outputs and restart the affected audio daemons now? ` +
             `This can add CPU/RAM load, especially DTLN paths.`
           );
           if (!ok) {
@@ -3499,6 +3840,12 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           const usbDtlnPill = s.include_usb_dtln
             ? '<span class="pill tiny purple">USB DTLN</span>'
             : '';
+          const chipPill = s.corpus_profile === 'chip_aec_comparison_v1'
+            ? '<span class="pill tiny purple">chip AEC</span>'
+            : '';
+          const xvfRaw0DtlnPill = s.include_xvf_raw0_dtln
+            ? '<span class="pill tiny purple">XVF raw0 DTLN</span>'
+            : '';
           const aec3SweepPill = s.include_aec3_sweep
             ? `<span class="pill tiny purple">${s.aec3_sweep_source === 'usb' ? 'USB' : 'XVF'} AEC3 sweep</span>`
             : '';
@@ -3509,7 +3856,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           row.innerHTML = `
             <div class="session-meta">
               <div>${activeMark}<strong>${s.member}</strong>
-                ${rawPill} ${dtlnPill} ${aec3SweepPill} ${usbPill} ${usbDtlnPill}
+                ${chipPill} ${rawPill} ${dtlnPill} ${aec3SweepPill} ${usbPill} ${usbDtlnPill} ${xvfRaw0DtlnPill}
                 <span class="id">${s.session_id}</span></div>
               <div class="breakdown">${s.clip_count} clip(s) · ${condText} · legs: ${legsText || 'none'} · ${date}</div>
             </div>
@@ -3675,23 +4022,33 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     $('session-begin').onclick = beginSession;
     $('session-unload').onclick = unloadSession;
     $('record-btn').onclick = toggleRecord;
+    $('include-chip-aec-profile').onchange = () => {
+      syncCorpusProfileControls(false);
+    };
     $('include-aec3-sweep').onchange = () => {
       if ($('include-aec3-sweep').checked) {
+        $('include-chip-aec-profile').checked = false;
         $('include-dtln').checked = false;
         $('include-usb-dtln').checked = false;
         $('include-usb-mic').checked = true;
       }
+      syncCorpusProfileControls(false);
     };
     $('include-dtln').onchange = () => {
       if ($('include-dtln').checked) $('include-aec3-sweep').checked = false;
+      syncCorpusProfileControls(false);
     };
     $('include-usb-dtln').onchange = () => {
       if ($('include-usb-dtln').checked) $('include-aec3-sweep').checked = false;
+      syncCorpusProfileControls(false);
     };
     $('include-usb-mic').onchange = () => {
-      if (!$('include-usb-mic').checked && $('include-aec3-sweep').checked) {
+      if (!$('include-usb-mic').checked && (
+        $('include-aec3-sweep').checked || $('include-chip-aec-profile').checked
+      )) {
         $('include-usb-mic').checked = true;
       }
+      syncCorpusProfileControls(false);
     };
 
     // Spacebar toggles recording when a session is active + we're not
@@ -3748,6 +4105,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       };
     } catch (_) { /* EventSource unsupported — skip the meter */ }
 
+    syncCorpusProfileControls(false);
     refreshStatus();
     refreshClips();
     refreshSessions();
@@ -3850,6 +4208,30 @@ def main(argv: list[str] | None = None) -> int:
         help="UDP port for cheap USB DTLN leg "
              f"(default {DEFAULT_AEC_USB_DTLN_PORT}).",
     )
+    parser.add_argument(
+        "--aec-chip-aec-150-port", type=int,
+        default=DEFAULT_AEC_CHIP_AEC_150_PORT,
+        help="UDP port for chip AEC fixed-beam 150-degree leg "
+             f"(default {DEFAULT_AEC_CHIP_AEC_150_PORT}).",
+    )
+    parser.add_argument(
+        "--aec-chip-aec-210-port", type=int,
+        default=DEFAULT_AEC_CHIP_AEC_210_PORT,
+        help="UDP port for chip AEC fixed-beam 210-degree leg "
+             f"(default {DEFAULT_AEC_CHIP_AEC_210_PORT}).",
+    )
+    parser.add_argument(
+        "--aec-xvf-raw0-webrtc-aec3-port", type=int,
+        default=DEFAULT_AEC_XVF_RAW0_WEBRTC_AEC3_PORT,
+        help="UDP port for XVF raw0 WebRTC AEC3 comparison leg "
+             f"(default {DEFAULT_AEC_XVF_RAW0_WEBRTC_AEC3_PORT}).",
+    )
+    parser.add_argument(
+        "--aec-xvf-raw0-dtln-port", type=int,
+        default=DEFAULT_AEC_XVF_RAW0_DTLN_PORT,
+        help="UDP port for XVF raw0 DTLN comparison leg "
+             f"(default {DEFAULT_AEC_XVF_RAW0_DTLN_PORT}).",
+    )
     for variant in AEC3_SWEEP_VARIANTS:
         parser.add_argument(
             f"--{variant.leg.replace('_', '-')}-port",
@@ -3899,6 +4281,10 @@ def main(argv: list[str] | None = None) -> int:
         aec_usb_raw_port=args.aec_usb_raw_port,
         aec_usb_webrtc_port=args.aec_usb_webrtc_port,
         aec_usb_dtln_port=args.aec_usb_dtln_port,
+        aec_chip_aec_150_port=args.aec_chip_aec_150_port,
+        aec_chip_aec_210_port=args.aec_chip_aec_210_port,
+        aec_xvf_raw0_webrtc_aec3_port=args.aec_xvf_raw0_webrtc_aec3_port,
+        aec_xvf_raw0_dtln_port=args.aec_xvf_raw0_dtln_port,
         aec3_sweep_ports={
             variant.leg: getattr(args, f"aec3_sweep_port_{variant.leg}")
             for variant in AEC3_SWEEP_VARIANTS

@@ -28,6 +28,10 @@ _EXPECTED_TOKEN_PORTS = {
     "usb_raw": 9881,
     "usb_webrtc": 9882,
     "usb_dtln": 9883,
+    "chip_aec_150": 9887,
+    "chip_aec_210": 9888,
+    "xvf_raw0_webrtc_aec3": 9889,
+    "xvf_raw0_dtln": 9890,
 }
 
 
@@ -51,7 +55,11 @@ def test_wake_input_legs_are_exactly_on_off_dtln_in_priority_order():
 
 
 def test_corpus_legs_are_not_wake_inputs():
-    for token in ("raw0", "ref", "usb_raw", "usb_webrtc", "usb_dtln"):
+    for token in (
+        "raw0", "ref", "usb_raw", "usb_webrtc", "usb_dtln",
+        "chip_aec_150", "chip_aec_210",
+        "xvf_raw0_webrtc_aec3", "xvf_raw0_dtln",
+    ):
         assert wake_legs.by_token(token).wake_input is False
 
 
@@ -78,6 +86,14 @@ def test_wake_ports_constants_derive_from_registry():
     assert wake_ports.DEFAULT_AEC_USB_RAW_PORT == wake_legs.by_token("usb_raw").udp_port
     assert wake_ports.DEFAULT_AEC_USB_WEBRTC_PORT == wake_legs.by_token("usb_webrtc").udp_port
     assert wake_ports.DEFAULT_AEC_USB_DTLN_PORT == wake_legs.by_token("usb_dtln").udp_port
+    assert wake_ports.DEFAULT_AEC_CHIP_AEC_150_PORT == wake_legs.by_token("chip_aec_150").udp_port
+    assert wake_ports.DEFAULT_AEC_CHIP_AEC_210_PORT == wake_legs.by_token("chip_aec_210").udp_port
+    assert wake_ports.DEFAULT_AEC_XVF_RAW0_WEBRTC_AEC3_PORT == wake_legs.by_token(
+        "xvf_raw0_webrtc_aec3",
+    ).udp_port
+    assert wake_ports.DEFAULT_AEC_XVF_RAW0_DTLN_PORT == wake_legs.by_token(
+        "xvf_raw0_dtln",
+    ).udp_port
 
 
 def test_build_ports_default_output_unchanged():

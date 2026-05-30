@@ -1,14 +1,15 @@
 [Unit]
-Description=Apply chip-side tuning to XVF3800 (SHF_BYPASS, AEC_HPFONOFF, UAC2 unity)
+Description=Apply chip-side tuning to XVF3800 (AEC profile, AEC_HPFONOFF, UAC2 unity)
 # Runs once at boot, before the bridge opens the chip's capture
-# endpoint. Writes three idempotent params: SHF_BYPASS=1 (disable
-# chip AEC, since software AEC3 handles it), AEC_HPFONOFF=2 (chip-
-# side 125 Hz HPF at mic ingress), and amixer PCM,0/PCM,1 to 0 dB
-# unity. We never call SAVE_CONFIGURATION (brick hazard on firmware
-# 2.0.6 — respeaker repo issue #8) and never call REBOOT (caused a
-# udev feedback loop on 2026-05-16; see docs/HANDOFF-aec.md
-# "Lessons learned" #9). Re-applying on every restart is cheap and
-# idempotent.
+# endpoint. Production writes SHF_BYPASS=1 (software AEC3 handles
+# echo cancellation), AEC_HPFONOFF=2 (125 Hz HPF), and amixer
+# PCM,0/PCM,1 to 0 dB unity. Wake-corpus test mode can temporarily
+# source /var/lib/jasper/wake_corpus_bridge.env to enable the volatile
+# chip-AEC comparison profile instead. We never call SAVE_CONFIGURATION
+# (brick hazard on firmware 2.0.6 — respeaker repo issue #8) and never
+# call REBOOT (caused a udev feedback loop on 2026-05-16; see
+# docs/HANDOFF-aec.md "Lessons learned" #9). Re-applying on every
+# restart is cheap and idempotent.
 After=sound.target dev-snd-controlC4.device
 Before=jasper-aec-bridge.service jasper-camilla.service
 Requires=sound.target
@@ -16,6 +17,8 @@ Requires=sound.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/wake_corpus_bridge.env
 ExecStart=/opt/jasper/.venv/bin/jasper-aec-init
 StandardOutput=journal
 StandardError=journal

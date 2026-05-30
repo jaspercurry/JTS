@@ -61,6 +61,16 @@ That remains the practical compromise for music echo reduction. It is
 not yet the true speaker-output reference, even though outputd now owns
 the physical output loop.
 
+**Corpus-only exception (2026-05-29).** The wake-corpus recorder's
+chip-AEC comparison profile can temporarily ask outputd to publish the
+exact final speaker buffer to two side outputs: the XVF3800 USB-IN
+reference PCM (`JASPER_OUTPUTD_CHIP_REF_PCM`) and a localhost UDP tap
+consumed by `jasper-aec-bridge`
+(`JASPER_OUTPUTD_REFERENCE_UDP_TARGET`). This is deliberately not the
+production AEC reference path yet; it is a recorder-owned test mode that
+is enabled by `/var/lib/jasper/wake_corpus_bridge.env` and removed when
+the operator exits corpus test mode.
+
 There is intentionally no production fan-in reference side feed. A
 short-lived 2026-05-27 spike explored a Unix-datagram content mirror
 from `jasper-fanin` to AEC/corpus consumers. That spike is not the
@@ -105,8 +115,11 @@ Rechecked against the current tree on 2026-05-28:
   as the pre-outputd rollback config that writes to `jasper_out`.
 - `jasper/cli/aec_bridge.py` opens `jasper_ref`, downsamples the 48 kHz
   stereo content reference to 16 kHz mono, and tracks reference
-  starvation/queue drops. The AEC migration should replace only the
-  reference reader first; mic capture and UDP mic output can stay.
+  starvation/queue drops. In the corpus-only chip-AEC profile it can
+  instead receive outputd's final-buffer UDP tap via
+  `JASPER_AEC_REF_SOURCE=outputd_udp`. The production AEC migration
+  should replace only the reference reader first; mic capture and UDP
+  mic output can stay.
 - `rust/jasper-fanin` is already a good model for the Rust service
   style: blocking ALSA output as timing owner, non-blocking inputs,
   preallocated buffers, systemd watchdog, xrun counters, and small
@@ -196,9 +209,11 @@ What exists:
 
 What is still intentionally not done:
 
-- AEC still consumes the old `pcm.jasper_ref` content reference.
-- `speaker_reference_out` is still an in-process bounded fanout, not
-  a public AEC/corpus transport.
+- Production AEC still consumes the old `pcm.jasper_ref` content
+  reference.
+- `speaker_reference_out` is still not a general public transport. The
+  only current external side outputs are recorder-owned chip-AEC corpus
+  taps, enabled by explicit env and removed on corpus-mode exit.
 - Provider truncation is not yet wired to outputd flush
   acknowledgements. The transport now returns the needed
   `audio_played_ms` and provider item identity; provider-specific

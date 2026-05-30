@@ -1,13 +1,15 @@
 # Chip-AEC experiment — conclusive test plan
 
-**Status: 2026-05-29 positive lab result; not productionized.**
+**Status: 2026-05-29 positive lab result; corpus-recorder pilot
+integration exists, production wake path unchanged.**
 The experiment is no longer a shelved negative. A same-day lab pass
 proved that the XVF3800's on-chip AEC can produce useful cancellation
 in JTS's external-DAC topology when the chip receives a clean USB-IN
-far-end reference. The current production path is still the WebRTC
-AEC3 bridge; chip AEC is **not** yet wired into the wake-corpus
-recorder or production `jasper-voice` flow. Treat this doc as the
-canonical record of the finding and the next-productionization plan.
+far-end reference. The wake-corpus recorder now has a dedicated
+chip-AEC comparison profile that can enter/exit the needed test state
+and label the `150°` / `210°` ASR beam outputs explicitly. The current
+production wake path is still the WebRTC AEC3 bridge; chip AEC is
+**not** a production `jasper-voice` input.
 
 The topology diagram below still records the original 2026-05-23
 dmix-era experiment shape, not the current 2026-05-26 fan-in /
@@ -69,11 +71,18 @@ Notes:
   path should fan one source buffer directly to the DAC and XVF3800
   USB-IN reference so the long feeder delay/drift path disappears.
 
-**Production implication.** Do not collect a final gold corpus against
-chip AEC until the clean direct-fanout path exists and the recorder can
-capture this chip leg intentionally. But the conclusion changed: chip
-AEC is now a serious candidate leg for the wake corpus, not a dismissed
-side quest.
+**Production implication.** The final gold corpus may include chip AEC
+through the recorder's chip-AEC comparison profile, which uses outputd's
+direct final-output fanout rather than the old delayed feeder harness.
+The profile is owned by `jasper-aec-init`: entering corpus mode
+read-back verifies every critical chip write before recording can
+continue, and exiting corpus mode explicitly restores the production
+`SHF_BYPASS=1` + OP_L/OP_R routing overlay. A failed chip write is a
+mode-transition failure, not a best-effort warning, because mislabeled
+corpus audio is worse than no corpus audio.
+Keep chip AEC corpus-only until its recall/false-accept contribution is
+measured against the fixed corpus; do not add it to production wake
+detection by default.
 
 > ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
 > reconciler toggle" says *"Architecture is fixed; swap the engine,
@@ -578,10 +587,14 @@ they survive future doc edits (per [AGENTS.md](../AGENTS.md)
 
 ---
 
-Last operational verification: 2026-05-29 (live Pi lab pass found the
+Last operational verification: 2026-05-30 (live Pi lab pass found the
 old feeder-path drift was a harness artifact; direct source fanout held
 about `~1 ppm` over 15 minutes; controlled direct A/B showed useful chip
 AEC reduction; ASR fixed gated `150°/210°` with `AEC_AECEMPHASISONOFF=2`
-was the best tested wake-shaped output, with `150°` the standout beam).
-This doc still preserves a dmix-era experiment snapshot in places; current
-production topology lives in `docs/audio-paths.md`.
+was the best tested wake-shaped output, with `150°` the standout beam;
+the wake-corpus recorder now has a corpus-only chip-AEC comparison
+profile for collecting those legs intentionally; `jasper-aec-init`
+now read-back verifies entry and explicitly restores production chip
+routing on exit). This doc still preserves a dmix-era experiment
+snapshot in places; current production topology lives in
+`docs/audio-paths.md`.

@@ -93,6 +93,16 @@ REGISTRY: tuple[LegSpec, ...] = (
     LegSpec("usb_raw", "usb_raw", 9881, LegKind.RAW, wake_input=False),
     LegSpec("usb_aec3", "usb_webrtc", 9882, LegKind.SOFTWARE_AEC, wake_input=False),
     LegSpec("usb_dtln", "usb_dtln", 9883, LegKind.NEURAL_AEC, wake_input=False),
+    LegSpec("chip_aec_150", "chip_aec_150", 9887, LegKind.HARDWARE_AEC, wake_input=False),
+    LegSpec("chip_aec_210", "chip_aec_210", 9888, LegKind.HARDWARE_AEC, wake_input=False),
+    LegSpec(
+        "xvf_raw0_aec3",
+        "xvf_raw0_webrtc_aec3",
+        9889,
+        LegKind.SOFTWARE_AEC,
+        wake_input=False,
+    ),
+    LegSpec("xvf_raw0_dtln", "xvf_raw0_dtln", 9890, LegKind.NEURAL_AEC, wake_input=False),
 )
 
 

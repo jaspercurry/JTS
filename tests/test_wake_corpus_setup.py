@@ -139,6 +139,10 @@ def backend(monkeypatch, tmp_path: Path):
             "usb_raw": 9881,
             "usb_webrtc": 9882,
             "usb_dtln": 9883,
+            "chip_aec_150": 9887,
+            "chip_aec_210": 9888,
+            "xvf_raw0_webrtc_aec3": 9889,
+            "xvf_raw0_dtln": 9890,
             **wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS,
         },
         max_duration_sec=10.0,  # long enough to not auto-stop during tests
@@ -1198,7 +1202,10 @@ def test_default_ports_dict_includes_all_four_legs(tmp_path: Path) -> None:
     b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
     assert set(b._ports.keys()) == {
         "on", "off", "dtln", "raw0", "ref", "usb_raw",
-        "usb_webrtc", "usb_dtln", *wake_corpus_setup.AEC3_SWEEP_LEGS,
+        "usb_webrtc", "usb_dtln",
+        "chip_aec_150", "chip_aec_210",
+        "xvf_raw0_webrtc_aec3", "xvf_raw0_dtln",
+        *wake_corpus_setup.AEC3_SWEEP_LEGS,
     }
 
 
@@ -1213,6 +1220,7 @@ def test_build_ports_keeps_raw0_when_dtln_disabled() -> None:
         aec_usb_raw_port=6666,
         aec_usb_webrtc_port=7777,
         aec_usb_dtln_port=8888,
+        include_chip_corpus=False,
         include_dtln=False,
     )
     assert ports == {
@@ -1246,6 +1254,13 @@ def test_combined_web_entrypoint_includes_raw0_port(
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_RAW_PORT", "6600")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_WEBRTC_PORT", "7700")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT", "8800")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_CHIP_AEC_150_PORT", "8810")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_CHIP_AEC_210_PORT", "8820")
+    monkeypatch.setenv(
+        "JASPER_WAKE_CORPUS_AEC_XVF_RAW0_WEBRTC_AEC3_PORT",
+        "8890",
+    )
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_XVF_RAW0_DTLN_PORT", "8900")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_VARIANT_1_PORT", "9901")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_VARIANT_2_PORT", "9902")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_VARIANT_3_PORT", "9903")
@@ -1259,6 +1274,10 @@ def test_combined_web_entrypoint_includes_raw0_port(
         "usb_raw": 6600,
         "usb_webrtc": 7700,
         "usb_dtln": 8800,
+        "chip_aec_150": 8810,
+        "chip_aec_210": 8820,
+        "xvf_raw0_webrtc_aec3": 8890,
+        "xvf_raw0_dtln": 8900,
         "aec3_variant_1": 9901,
         "aec3_variant_2": 9902,
         "aec3_variant_3": 9903,
@@ -1469,6 +1488,49 @@ def test_begin_session_with_usb_dtln_records_companion_legs(
         "on", "off", "dtln", "ref", "usb_raw", "usb_dtln",
     }
     assert "usb_webrtc" not in clip.files
+
+
+def test_begin_session_with_xvf_raw0_dtln_records_companion_legs(backend) -> None:
+    backend.begin_session(
+        "jasper",
+        include_raw_mic_0=False,
+        include_xvf_raw0_dtln=True,
+    )
+
+    assert backend.include_raw_mic_0() is True
+    assert backend.include_xvf_raw0_dtln() is True
+    assert set(backend.enabled_legs()) == {
+        "on", "off", "dtln", "raw0", "xvf_raw0_dtln",
+    }
+
+
+def test_begin_session_chip_profile_records_comparison_legs(backend) -> None:
+    backend.begin_session(
+        "jasper",
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        include_dtln=True,  # ignored here; this is not the raw0 DTLN path.
+        include_raw_mic_0=False,  # forced by the chip profile.
+        include_usb_mic=False,  # forced by the chip profile.
+        include_usb_dtln=True,
+        include_xvf_raw0_dtln=True,
+        include_aec3_sweep=True,  # incompatible pilot sweep is parked.
+    )
+
+    assert backend.corpus_profile() == wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON
+    assert backend.include_raw_mic_0() is True
+    assert backend.include_usb_mic() is True
+    assert backend.include_aec3_sweep() is False
+    assert backend.enabled_legs() == (
+        "chip_aec_150",
+        "chip_aec_210",
+        "raw0",
+        "xvf_raw0_webrtc_aec3",
+        "ref",
+        "usb_raw",
+        "usb_webrtc",
+        "xvf_raw0_dtln",
+        "usb_dtln",
+    )
 
 
 def test_begin_session_with_aec3_sweep_records_variant_legs(
@@ -1723,6 +1785,55 @@ def test_set_bridge_outputs_enables_aec3_sweep_and_parks_dtln(
     assert changed is True
     assert values["JASPER_AEC_DTLN_ENABLED"] == "0"
     assert values["JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"] == "1"
+
+
+def test_set_bridge_outputs_enables_chip_profile_stack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_unit",
+        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+            restarts.append(unit)
+        ),
+    )
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+    )
+
+    changed = wake_corpus_setup.set_bridge_outputs_for_session(
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        include_dtln=False,
+        include_usb_mic=False,
+        include_usb_dtln=True,
+        include_xvf_raw0_dtln=True,
+        include_aec3_sweep=True,
+    )
+
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in bridge_path.read_text().splitlines()
+    }
+    assert changed is True
+    assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
+    assert values["JASPER_OUTPUTD_CHIP_REF_PCM"] == wake_corpus_setup.DEFAULT_CHIP_REF_PCM
+    assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == wake_corpus_setup.OUTPUTD_REF_UDP_TARGET
+    assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED" not in values
+    assert restarts == [
+        wake_corpus_setup.OUTPUTD_UNIT,
+        wake_corpus_setup.AEC_INIT_UNIT,
+        wake_corpus_setup.BRIDGE_UNIT,
+    ]
 
 
 def test_enable_bridge_outputs_rolls_back_when_restart_fails(
@@ -2463,7 +2574,7 @@ def test_html_confirm_enables_missing_bridge_outputs() -> None:
     html_text = wake_corpus_setup._render_index_html("t")
     assert "can_enable_bridge_outputs" in html_text
     assert "enable_bridge_outputs: true" in html_text
-    assert "restart jasper-aec-bridge" in html_text
+    assert "restart the affected audio daemons" in html_text
 
 
 def test_html_playback_uses_leg_selector() -> None:
@@ -2843,6 +2954,10 @@ def test_api_status_includes_bridge_output_status(
                 "ref": True,
                 "usb": False,
                 "usb_dtln": False,
+                "chip_aec": False,
+                "xvf_raw0_webrtc_aec3": False,
+                "xvf_raw0_dtln": False,
+                "outputd_ref": False,
                 "aec3_sweep": False,
                 "aec3_sweep_source": "xvf",
                 "env_path": str(tmp_path / "wake_corpus_bridge.env"),
@@ -2851,6 +2966,10 @@ def test_api_status_includes_bridge_output_status(
                     "ref": True,
                     "usb": False,
                     "usb_dtln": False,
+                    "chip_aec": False,
+                    "xvf_raw0_webrtc_aec3": False,
+                    "xvf_raw0_dtln": False,
+                    "outputd_ref": False,
                     "aec3_sweep": False,
                     "aec3_sweep_source": "xvf",
                 },

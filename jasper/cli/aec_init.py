@@ -3,7 +3,8 @@
 Runs as a one-shot systemd unit before jasper-aec-bridge starts.
 Three jobs:
 
-  1. Set `SHF_BYPASS=1` to disable the chip's on-board AEC stage.
+  1. Set `SHF_BYPASS=1` to disable the chip's on-board AEC stage in
+     production mode.
      The chip's AEC was designed for the topology where the chip
      drives the speaker via its own codec; in our external-DAC
      topology, the chip's AEC reference path is sabotaged (see
@@ -12,6 +13,13 @@ Three jobs:
      but the rest of the chip pipeline — beamforming, NS, AGC,
      HPF — still runs. Software AEC3 (jasper-aec-bridge) handles
      echo cancellation host-side using the music chain as ref.
+     Wake-corpus chip-AEC comparison mode is the narrow exception:
+     the recorder sets `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1`, this
+     init unit applies and read-back verifies a volatile 150/210
+     fixed-beam chip profile, and the recorder tears that overlay down
+     when corpus test mode exits. Production init explicitly restores
+     the corpus-mutated chip mux/profile switches so exit does not
+     depend on rebooting the XVF.
   2. Set `AEC_HPFONOFF` to apply a chip-side high-pass filter on
      the mic signals before any chip-side DSP. The mic feeds
      openWakeWord (fmin = 60 Hz per Google's speech_embedding
@@ -33,21 +41,23 @@ it but we don't need persistence on the chip side, so we skip.
 
 We also do NOT call REBOOT, even though some XVF reference designs
 (e.g. Reachy Mini #389) recommend it on host boot. In our pipeline
-the chip's AEC adaptive filter is disabled (SHF_BYPASS=1 above), so
-"clear adaptive-filter state" — REBOOT's only documented benefit
-in that recipe — is moot. The three writes below are idempotent
-and overwrite whatever values the chip currently holds, so REBOOT
-adds nothing but a ~3 s chip-side outage. Calling REBOOT was also
+the chip's AEC adaptive filter is disabled for production
+(SHF_BYPASS=1 above), so "clear adaptive-filter state" — REBOOT's
+only documented benefit in that recipe — is normally moot. Corpus
+chip-AEC comparison mode still avoids REBOOT because the profile is
+volatile, idempotent, and should not create a USB re-enumeration event
+mid-session. Calling REBOOT was also
 the root cause of the 2026-05-16 USB-renumerate feedback loop:
 every REBOOT triggered a USB disconnect, which fired the
 `controlC*` udev rule, which restarted aec-init, which called
 REBOOT again. See docs/HANDOFF-aec.md "Lessons learned" #9.
 
-The historical `AUDIO_MGR_SYS_DELAY` calibration job is gone —
-that was for the chip's on-chip AEC, which we don't use (see
-SHF_BYPASS above). The 6-ch firmware exposes raw mics on
-channels 2-5; the bridge captures channel 1 (ASR beam, with
-chip BF/NS/AGC/HPF applied) and runs WebRTC AEC3 host-side.
+The historical boot-time `AUDIO_MGR_SYS_DELAY` calibration job is gone.
+Production does not use chip AEC, and corpus chip-AEC comparison mode
+sets its own volatile delay/profile from the recorder overlay. The 6-ch
+firmware exposes raw mics on channels 2-5; the bridge captures channel 1
+(ASR beam, with chip BF/NS/AGC/HPF applied) and runs WebRTC AEC3
+host-side for production.
 """
 from __future__ import annotations
 
@@ -56,6 +66,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 
 logger = logging.getLogger("jasper.aec_init")
 
@@ -75,6 +86,106 @@ _CHIP_HPF_MAP = {
     "180": 4,
 }
 _DEFAULT_CHIP_HPF_HZ = "125"
+_CHIP_CORPUS_AZIMUTHS_RAD = (2.61799, 3.66519)  # 150 deg, 210 deg
+_CHIP_CORPUS_PROFILE: tuple[tuple[str, list[int | float]], ...] = (
+    ("SHF_BYPASS", [0]),
+    ("AUDIO_MGR_SYS_DELAY", [12]),
+    ("AEC_ASROUTONOFF", [1]),
+    ("AEC_ASROUTGAIN", [1.0]),
+    ("AEC_FIXEDBEAMSONOFF", [1]),
+    ("AEC_FIXEDBEAMSGATING", [1]),
+    ("AEC_FIXEDBEAMSAZIMUTH_VALUES", list(_CHIP_CORPUS_AZIMUTHS_RAD)),
+    ("AEC_FIXEDBEAMSELEVATION_VALUES", [0.0, 0.0]),
+    ("AEC_AECEMPHASISONOFF", [2]),
+    ("AEC_FAR_EXTGAIN", [0.0]),
+    ("AUDIO_MGR_OP_L", [7, 0]),
+    ("AUDIO_MGR_OP_R", [7, 1]),
+)
+_CHIP_PRODUCTION_PROFILE: tuple[tuple[str, list[int | float]], ...] = (
+    ("SHF_BYPASS", [1]),
+    ("AEC_ASROUTONOFF", [0]),
+    ("AEC_FIXEDBEAMSONOFF", [0]),
+    ("AEC_FIXEDBEAMSGATING", [0]),
+    ("AEC_AECEMPHASISONOFF", [0]),
+    ("AEC_FAR_EXTGAIN", [0.0]),
+    ("AUDIO_MGR_OP_L", [8, 0]),
+    ("AUDIO_MGR_OP_R", [0, 0]),
+)
+_VERIFY_FLOAT_TOLERANCE = 1e-4
+
+
+class ChipProfileError(RuntimeError):
+    """Raised when a required volatile XVF profile write did not stick."""
+
+
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _values_match(expected: Sequence[int | float], actual: object) -> bool:
+    if actual is None:
+        return False
+    if not isinstance(actual, Sequence) or isinstance(actual, str | bytes):
+        actual_values: Sequence[object] = (actual,)
+    else:
+        actual_values = actual
+    if len(actual_values) != len(expected):
+        return False
+    for want, got in zip(expected, actual_values, strict=True):
+        if isinstance(want, float):
+            if abs(float(got) - want) > _VERIFY_FLOAT_TOLERANCE:
+                return False
+        elif int(got) != want:
+            return False
+    return True
+
+
+def _write_required(dev, param: str, values: list[int | float]) -> None:
+    try:
+        dev.write(param, values)
+        actual = dev.read(param)
+    except Exception as e:  # noqa: BLE001
+        raise ChipProfileError(f"{param}={values} failed: {e}") from e
+    if not _values_match(values, actual):
+        raise ChipProfileError(
+            f"{param} readback mismatch: wrote {values}, read {actual}"
+        )
+    logger.info(
+        "event=chip_profile_write param=%s values=%s verified=1",
+        param,
+        values,
+    )
+
+
+def _write_best_effort(dev, param: str, values: list[int | float]) -> None:
+    try:
+        dev.write(param, values)
+        logger.info(
+            "event=chip_profile_write param=%s values=%s verified=0",
+            param,
+            values,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("event=chip_profile_write_failed param=%s error=%s", param, e)
+
+
+def _apply_required_profile(
+    dev,
+    profile: Sequence[tuple[str, list[int | float]]],
+) -> None:
+    for param, values in profile:
+        _write_required(dev, param, values)
+
+
+def _corpus_profile_with_delay(
+    sys_delay: int,
+) -> tuple[tuple[str, list[int | float]], ...]:
+    return tuple(
+        (param, [sys_delay] if param == "AUDIO_MGR_SYS_DELAY" else values)
+        for param, values in _CHIP_CORPUS_PROFILE
+    )
 
 
 def main() -> int:
@@ -115,24 +226,39 @@ def main() -> int:
         # renumeration feedback loop with the controlC* udev rule.
         # See docs/HANDOFF-aec.md "Lessons learned" #9.
 
-        # Disable the chip's on-board AEC. SHF_BYPASS=1 removes the
-        # AEC adaptive filter from the signal path on channels 0/1
-        # (beamforming, NS, AGC, HPF all stay). We do this because
-        # the chip's AEC was designed for the topology where the
-        # chip drives the speaker via its own codec; in our
-        # external-USB-DAC topology, the chip's AEC reference path
-        # is sabotaged (the chip mirrors the host's UAC volume into
-        # AEC_FAR_EXTGAIN, which attenuates the reference by an
-        # unpredictable amount). Software AEC3 in jasper-aec-bridge
-        # handles echo cancellation host-side instead. See
-        # docs/HANDOFF-aec.md for the full investigation.
-        try:
-            dev.write("SHF_BYPASS", [1])
-            logger.info("XVF SHF_BYPASS=1 (chip AEC stage disabled)")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "SHF_BYPASS write failed: %s; chip AEC may still be "
-                "in the signal path (bridge will compensate with sw AEC)", e,
+        if _env_truthy("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"):
+            sys_delay = int(os.environ.get("JASPER_AEC_CORPUS_CHIP_SYS_DELAY", "12"))
+            logger.info(
+                "applying chip-AEC corpus profile "
+                "(fixed gated 150/210 ASR beams, sys_delay=%d)",
+                sys_delay,
+            )
+            try:
+                _apply_required_profile(dev, _corpus_profile_with_delay(sys_delay))
+            except ChipProfileError as e:
+                logger.error("event=chip_profile_failed mode=corpus error=%s", e)
+                return 1
+            logger.info(
+                "event=chip_profile_applied mode=corpus "
+                "shf_bypass=0 op_l=7,0 op_r=7,1"
+            )
+        else:
+            # Disable the chip's on-board AEC. SHF_BYPASS=1 removes the
+            # AEC adaptive filter from the signal path on channels 0/1
+            # (beamforming, NS, AGC, HPF all stay). Software AEC3 in
+            # jasper-aec-bridge handles production echo cancellation.
+            # Also restore the output mux and corpus-only beam/AEC
+            # switches that wake-corpus mode writes. These commands are
+            # volatile, but "exit corpus mode" must be deterministic
+            # without requiring a reboot.
+            try:
+                _apply_required_profile(dev, _CHIP_PRODUCTION_PROFILE)
+            except ChipProfileError as e:
+                logger.error("event=chip_profile_failed mode=production error=%s", e)
+                return 1
+            logger.info(
+                "event=chip_profile_applied mode=production "
+                "shf_bypass=1 op_l=8,0 op_r=0,0"
             )
 
         # Apply chip-side HPF on the mic signal. Lives at mic ingress

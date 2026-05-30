@@ -28,12 +28,13 @@ matches that.
 **The plan in one paragraph.** Capture a known-conditions gold corpus
 (~85-105 positive Jarvis utterances across two sessions: 3 distances
 × 3 conditions, plus ~30-40 hard negatives in Session B). The
-browser recorder captures the three production legs (`:9876` AEC ON,
-`:9877` chip-direct, `:9878` DTLN) plus opt-in `raw0` (`:9879`) for
-future cheap-mic portability. It can also opt into corpus-only cheap
-USB mic + reference legs (`:9880`/`:9881`/`:9882`) for testing whether
-the software-AEC path can lower the hardware entry point; those legs
-are not production wake inputs. Build an offline test harness and
+browser recorder captures the three production software/chip-direct
+legs (`:9876` AEC ON, `:9877` chip-direct, `:9878` DTLN) plus opt-in
+`raw0` (`:9879`) for future cheap-mic portability. It can also opt into
+corpus-only cheap USB mic + reference legs (`:9880`/`:9881`/`:9882`)
+and a chip-AEC comparison profile (`:9887`/`:9888`) for testing
+hardware AEC against software AEC on the same utterance; those extra
+legs are not production wake inputs. Build an offline test harness and
 scoring runner around that corpus. Train per-leg specialized Jarvis
 models (one for raw, one for AEC ON, one for DTLN) using
 `livekit-wakeword` + PR #69 (vendored), with Piper
@@ -254,6 +255,16 @@ chain? They are not production wake-detection inputs. USB DTLN is
 optional and high-resource-risk on the 1 GB Pi; use it when the extra
 comparison point is worth the neural-engine cost.
 
+**Optional chip-AEC comparison legs** are available during Phase 0b
+through the recorder's `chip_aec_comparison_v1` profile. This profile
+puts the XVF3800 into the lab-proven ASR fixed-beam hardware-AEC mode,
+feeds the chip from outputd's direct final-output fanout, and captures
+both `chip_aec_150` / `chip_aec_210` alongside `raw0`,
+`xvf_raw0_webrtc_aec3`, `ref`, `usb_raw`, and `usb_webrtc`. The profile
+is corpus-only: it exists to compare hardware AEC, software AEC3, raw,
+USB, and optional DTLN on the same utterance before deciding what
+belongs in production fusion.
+
 **Fusion: existing OR-gate.** The triple-stream architecture shipped
 in PR #253 is unchanged. Each leg scores against its own specialized
 model; any leg firing above threshold triggers the session. Shared
@@ -363,7 +374,8 @@ at http://jts.local/wake-corpus/, exposed via socket-activated
 - PR #315 (live mic-level meter + ambient condition + trash icon)
 - PR #323 (raw mic 0 4th leg + sessions management UX)
 
-**What the recorder captures.** Up to **eleven legs** per utterance,
+**What the recorder captures.** Up to **fifteen legs** per utterance
+across the standard, AEC3-sweep, and chip-AEC comparison profiles,
 written into per-leg quadrant directories at
 `/var/lib/jasper/enrollment_positives/aec_<leg>_<condition>/`:
 
@@ -380,6 +392,10 @@ written into per-leg quadrant directories at
 | `aec3_variant_1` | UDP `:9884` | parallel SW AEC3 slot 1. The input source is explicit metadata: legacy/manual source is `xvf`; new recorder AEC3-sweep sessions default to `usb`. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=80`. |
 | `aec3_variant_2` | UDP `:9885` | parallel SW AEC3 slot 2. Same source rule as slot 1. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=120`. |
 | `aec3_variant_3` | UDP `:9886` | parallel SW AEC3 slot 3. Same source rule as slot 1. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=160`. |
+| `chip_aec_150` | UDP `:9887` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `150°` (corpus-only chip profile) |
+| `chip_aec_210` | UDP `:9888` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `210°` (secondary beam for robustness if mic orientation shifts) |
+| `xvf_raw0_webrtc_aec3` | UDP `:9889` | chip ch2 raw0 → SW WebRTC AEC3 using the same outputd final-output reference as chip AEC |
+| `xvf_raw0_dtln` | UDP `:9890` | chip ch2 raw0 → SW DTLN-aec (optional, high resource risk) |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
 captures a no-chip baseline from the XVF. The USB/reference opt-in
@@ -389,12 +405,27 @@ WebRTC. These are for testing and offline analysis, not for iteration
 1 production wake detection. **Always opt into raw0 in iteration 1.**
 Opt into USB/reference when the cheap mic is connected. If the bridge
 is not already emitting the requested optional legs, the recorder will
-offer to enable the matching bridge flags, restart
-`jasper-aec-bridge`, and only then begin the session.
+offer to enable the matching corpus outputs, restart the affected
+daemons (`jasper-outputd`, `jasper-aec-init`, and/or
+`jasper-aec-bridge`), and only then begin the session.
 The recorder labels WebRTC legs as **WebRTC AEC3** so they are not
 confused with raw or DTLN outputs. The `usb_raw` leg is JTS-unprocessed
 except for resampling to 16 kHz, which matches the wake/AEC model
 contract and keeps the corpus legs directly comparable.
+
+**Chip-AEC comparison profile.** The recorder's default new-session
+profile is `chip_aec_comparison_v1` while this workstream is deciding
+whether chip AEC belongs in the corpus. It captures:
+`chip_aec_150`, `chip_aec_210`, `raw0`, `xvf_raw0_webrtc_aec3`, `ref`,
+`usb_raw`, and `usb_webrtc`, with optional `xvf_raw0_dtln` and
+`usb_dtln`. Internally the profile writes
+`JASPER_OUTPUTD_REFERENCE_UDP_TARGET` and `JASPER_OUTPUTD_CHIP_REF_PCM`
+so outputd fans the exact final speaker buffer both to the XVF3800
+USB-IN reference and to the bridge's software-AEC reference tap.
+`jasper-aec-init` applies the volatile chip profile
+(`SHF_BYPASS=0`, ASR fixed gated `150°/210°`, `AEC_AECEMPHASISONOFF=2`)
+only while the recorder-owned env file requests it; exiting corpus test
+mode removes those overrides and returns the chip to production bypass.
 
 **AEC3 sweep policy.** The recorder has a corpus-only **USB AEC3
 sweep** checkbox for pilot tuning before the gold corpus is recorded.
@@ -449,11 +480,16 @@ variants do not always cover.
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
 turns on XVF DTLN inference in the bridge, and the recorder has a
 per-session XVF DTLN checkbox for choosing whether to subscribe to
-that leg. Cheap-USB DTLN is a separate experiment: the bridge only
-runs the second neural engine when `JASPER_AEC_CORPUS_USB_ENABLED=1`
-and `JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1`; the recorder's USB DTLN
+that leg. In chip-AEC comparison mode, `xvf_raw0_dtln` is the cleaner
+"DTLN on the same raw XVF element" experiment and is controlled by
+`JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED`. Cheap-USB DTLN is a separate
+experiment: the bridge only runs the USB neural engine when
+`JASPER_AEC_CORPUS_USB_ENABLED=1` and
+`JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1`; the recorder's USB DTLN
 checkbox subscribes to `usb_dtln` and records its `ref` + `usb_raw`
-companion legs. Treat USB DTLN as high resource risk on a 1 GB Pi.
+companion legs. Treat XVF raw0 DTLN and USB DTLN as high resource risk
+on a 1 GB Pi; use them only when their comparison value is worth the
+neural-engine cost.
 
 **2026-05-28 DTLN finding.** Offline DTLN-256 on the latest
 far+music marginal session (`20260528T141727Z-28bf`, 46 clips, captured
@@ -592,21 +628,22 @@ useful cancellation. The best lab output is category-7 ASR fixed gated
 beams at `150°/210°`, with `AEC_AECEMPHASISONOFF=2`; the `150°` beam
 was the standout listening/metric winner.
 
-**1. Chip-AEC Option D — positive lab result, not recorder-ready.**
-Before spending gold-corpus time, decide whether to productionize enough
-of the chip-AEC path for intentional corpus capture. The path to capture
-is not the old feeder harness; it is direct source fanout:
-one source buffer to the physical DAC and the XVF3800 USB-IN reference,
-then capture category-7 ASR fixed-beam output. The recorder must be able
-to enter/exit this state cleanly and label the resulting leg explicitly.
+**1. Chip-AEC Option D — positive lab result, recorder pilot-ready.**
+The recorder now has enough integration for intentional chip-AEC corpus
+capture. The path is not the old feeder harness; it is direct source
+fanout from outputd to both the physical DAC and the XVF3800 USB-IN
+reference, then category-7 ASR fixed-beam capture on `150°` and `210°`.
+Use the recorder's `chip_aec_comparison_v1` profile, not ad-hoc lab
+WAVs, for any training/evaluation clips.
 
 Decision:
-- If we do **not** productionize a clean chip-AEC recorder leg first,
-  record Session A with the known-good software AEC3 / raw / DTLN /
-  USB-reference plan and keep chip AEC out of the gold corpus.
-- If we do productionize it, include the chip-AEC ASR `150°` leg as a
-  pilot candidate leg, with optional `210°` if we want a secondary beam
-  for fusion/coverage.
+- Include `chip_aec_150` and `chip_aec_210` in the next pilot corpus
+  so mic orientation changes cannot silently erase the better beam.
+- Include `xvf_raw0_webrtc_aec3`, `usb_raw`, and `usb_webrtc` in the
+  same clips so software AEC3 vs chip AEC is comparable on one utterance.
+- Treat `xvf_raw0_dtln` and `usb_dtln` as optional high-resource
+  comparison legs; enable them for a short soak before relying on them
+  during a long session.
 - Do not record training clips from ad-hoc lab harness WAVs. They are
   useful for tuning, but not a clean corpus surface.
 
@@ -620,10 +657,15 @@ loaded/active session marker unless intentionally resuming. Then open
 `http://jts.local/wake-corpus/`, begin a fresh session, and select only
 the legs intended for the corpus:
 - Raw mic 0: **on**.
-- XVF DTLN: **on** if the Pi is stable.
-- USB mic + reference: **on** when the cheap USB mic is connected.
+- Chip-AEC comparison profile: **on** for the next pilot/gold-corpus
+  candidate run. This forces raw0, outputd reference fanout, chip AEC
+  `150°/210°`, XVF raw0 WebRTC AEC3, and USB raw/WebRTC AEC3.
+- XVF DTLN (`dtln`): **off by default** in chip-profile runs unless we
+  explicitly want the legacy ch1 neural comparison.
+- XVF raw0 DTLN: **optional**; include for a short soak if the Pi remains
+  stable.
 - USB DTLN: **optional**; include it only if the Pi remains stable after
-  the chip-AEC gate and a short corpus-mode soak.
+  a short corpus-mode soak.
 - USB AEC3 sweep: **off** for the real corpus. Sweep sessions are pilot
   data, not Session A/B training or held-out data.
 
@@ -634,9 +676,10 @@ shows the expected recorded legs and that the mic-level meter moves
 green during a short spoken test.
 
 **3. Fresh Session A recording (~45-60 min).** Start from a new session;
-delete or ignore prior pilot sessions for training. Capture the XVF
-production/reference set (`on`, `off`, `dtln`, `raw0`) and the USB
-comparison set (`ref`, `usb_raw`, `usb_webrtc`, optionally `usb_dtln`).
+delete or ignore prior pilot sessions for training. With the chip profile
+enabled, capture the comparison set (`chip_aec_150`, `chip_aec_210`,
+`raw0`, `xvf_raw0_webrtc_aec3`, `ref`, `usb_raw`, `usb_webrtc`, and
+optionally `xvf_raw0_dtln` / `usb_dtln`).
 Record across the full 3 × 3 grid: quiet / ambient / music by near /
 mid / far. The marginal far+music/air-conditioner cases matter, but the
 model also needs easy cells so it learns the deployment distribution
@@ -663,6 +706,10 @@ single transition stops `jasper-voice`, writes the selected
 recorder-owned bridge-output overrides to
 `/var/lib/jasper/wake_corpus_bridge.env`, which
 `jasper-aec-bridge.service` sources after `/etc/jasper/jasper.env`.
+For chip-AEC comparison sessions the same env file is also sourced by
+`jasper-outputd.service` and `jasper-aec-init.service`, because outputd
+must fan out the direct chip reference and aec-init must put the XVF3800
+into the volatile chip profile before recording.
 If the bridge cannot restart with the requested optional outputs
 (for example, the USB mic is missing), the recorder rolls that env
 file back and restarts the bridge with the prior config. The selected
@@ -671,8 +718,8 @@ an earlier session are removed unless they are selected again.
 
 When testing is done, use the wake-corpus page's **Exit corpus test
 mode** button. It removes recorder-owned corpus output overrides from
-`/var/lib/jasper/wake_corpus_bridge.env`, restarts
-`jasper-aec-bridge`, and starts `jasper-voice`. This is intentionally a
+`/var/lib/jasper/wake_corpus_bridge.env`, restarts the affected audio
+daemons, and starts `jasper-voice`. This is intentionally a
 recorder-page lifecycle, not a `jasper-doctor` warning: corpus outputs
 are on while the operator is testing, off when they are not. DTLN
 cleanup falls back to the reconciler's production wake-leg intent
@@ -705,8 +752,24 @@ JASPER_AEC_CORPUS_REF_ENABLED=1
 JASPER_AEC_CORPUS_USB_ENABLED=1
 ```
 
+Chip-AEC comparison adds:
+
+```sh
+JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1
+JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED=1
+JASPER_AEC_REF_SOURCE=outputd_udp
+JASPER_AEC_OUTPUTD_REF_UDP_HOST=127.0.0.1
+JASPER_AEC_OUTPUTD_REF_UDP_PORT=9891
+JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0
+JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891
+JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES=4096
+# Optional DTLN on XVF raw0:
+JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED=1
+```
+
 Ports default to `:9880` (`ref`), `:9881` (`usb_raw`), and `:9882`
-(`usb_webrtc`), plus `:9884`-`:9886` for AEC3 sweep variants. The
+(`usb_webrtc`), plus `:9884`-`:9886` for AEC3 sweep variants and
+`:9887`-`:9890` for chip-AEC comparison legs. The
 recorder can hide those ports with
 `JASPER_WAKE_CORPUS_USB=0` if the bridge is running without them.
 The bridge opens the USB mic at its PortAudio default sample rate
@@ -1395,6 +1458,11 @@ Recorder UX status:
   `aec3_variant_3`), with effective labels/source/config/hash stored
   in the session sidecar. Legacy/manual XVF-fed sweep sessions still
   load via `aec3_sweep_source=xvf`.
+- ✅ Per-session chip-AEC comparison profile:
+  `chip_aec_150`, `chip_aec_210`, `raw0`, `xvf_raw0_webrtc_aec3`,
+  `ref`, `usb_raw`, `usb_webrtc`, and optional `xvf_raw0_dtln` /
+  `usb_dtln`. Entering the profile restarts outputd/aec-init/bridge
+  into the reversible corpus state; exiting removes those overrides.
 - ✅ Sessions card: list all sessions, Load (resume), Delete (with
   confirm); collapsible and below new-session setup
 - ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
@@ -1418,6 +1486,10 @@ Recording-day audit tooling:
 - ✅ `--expect-leg ref --expect-leg usb_raw --expect-leg usb_webrtc`
   and `--expect-leg usb_dtln`
   validates USB/reference opt-in sessions after rsync.
+- ✅ Chip-profile sessions can be audited by expecting the explicit
+  recorded legs (`chip_aec_150`, `chip_aec_210`,
+  `xvf_raw0_webrtc_aec3`, `ref`, `usb_raw`, `usb_webrtc`, plus any
+  selected DTLN legs).
 - ✅ `scripts/_waveform_fusion_experiment.py` generates offline
   AEC3+DTLN waveform mixes across delay/weight grids and checks whether
   any mix beats same-pair score fusion. Treat it as research evidence,
@@ -1450,13 +1522,17 @@ capture-health deltas from the bridge where available.
 
 - **2026-05-29 (v28):** Chip-AEC lab result folded in:
   - Updated the pre-corpus runbook from "partial ch0 positive" to
-    "positive lab result, not recorder-ready."
+    "positive lab result, recorder pilot-ready."
   - Captured the direct-source-fanout finding: the old feeder path was
     the timing/drift problem; direct DAC + XVF3800 USB-IN fanout held
     about `~1 ppm` over 15 minutes.
   - Recorded the current chip-AEC candidate leg for future corpus
     design: category-7 ASR output, fixed gated `150°/210°` beams,
     `AEC_AECEMPHASISONOFF=2`, with `150°` as the standout beam.
+  - Added the recorder chip-AEC comparison profile: outputd direct
+    reference fanout, volatile chip profile via `jasper-aec-init`,
+    bridge UDP legs for chip `150°/210°`, XVF raw0 WebRTC AEC3, and
+    optional XVF raw0 DTLN.
 - **2026-05-28 (v26):** Waveform-fusion and next-recording plan:
   - Documented the offline `scripts/_waveform_fusion_experiment.py`
     harness and first `20260528T184424Z-d205` result: best XVF
@@ -1686,6 +1762,6 @@ capture-health deltas from the bridge where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-29 (v28 — chip-AEC direct-fanout lab test
-produced a positive result; corpus capture still waits on a clean
-recorder/production integration path)
+Last verified: 2026-05-29 (v29 — chip-AEC direct-fanout lab test
+produced a positive result, and the wake-corpus recorder now has a
+reversible chip-AEC comparison profile for pilot/gold-corpus capture)

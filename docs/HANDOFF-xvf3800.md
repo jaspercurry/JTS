@@ -586,10 +586,14 @@ below.
 
 **Defaults**: L=`(8, 0)`, R=`(0, 0)` per Seeed wiki Output Selection
 section (the "L is auto-select beam, R is Silence" baseline).
-**JTS appears to leave these at firmware defaults** — we don't
-write OP_L/R from any of our scripts; the only place we touch
-AUDIO_MGR_* is `jasper-aec-init` which writes MIC/REF gains and
-SYS_DELAY, not OP_*.
+**Production JTS leaves these at firmware defaults.** The wake-corpus
+chip-AEC comparison profile is the narrow exception: while corpus test
+mode owns `/var/lib/jasper/wake_corpus_bridge.env`, `jasper-aec-init`
+temporarily writes and read-back verifies OP_L=`(7, 0)` and
+OP_R=`(7, 1)` to expose the fixed-gated 150°/210° ASR outputs as
+corpus-only capture legs. Exiting corpus test mode removes that overlay
+and re-runs the production init, which explicitly restores OP_L=`(8, 0)`
+and OP_R=`(0, 0)`.
 
 **These commands address slots 0/1 only.** There is no
 `AUDIO_MGR_OP_2` / `_OP_3` / `_OP_4` / `_OP_5` — the routing for
@@ -1428,4 +1432,4 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-05-23
+Last verified: 2026-05-30 (production OP defaults plus corpus-only chip-AEC routing restore/readback rechecked)

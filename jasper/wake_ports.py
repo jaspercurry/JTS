@@ -22,6 +22,12 @@ DEFAULT_AEC_REF_PORT = wake_legs.by_token("ref").udp_port
 DEFAULT_AEC_USB_RAW_PORT = wake_legs.by_token("usb_raw").udp_port
 DEFAULT_AEC_USB_WEBRTC_PORT = wake_legs.by_token("usb_webrtc").udp_port
 DEFAULT_AEC_USB_DTLN_PORT = wake_legs.by_token("usb_dtln").udp_port
+DEFAULT_AEC_CHIP_AEC_150_PORT = wake_legs.by_token("chip_aec_150").udp_port
+DEFAULT_AEC_CHIP_AEC_210_PORT = wake_legs.by_token("chip_aec_210").udp_port
+DEFAULT_AEC_XVF_RAW0_WEBRTC_AEC3_PORT = wake_legs.by_token(
+    "xvf_raw0_webrtc_aec3",
+).udp_port
+DEFAULT_AEC_XVF_RAW0_DTLN_PORT = wake_legs.by_token("xvf_raw0_dtln").udp_port
 
 # Corpus-only parallel AEC3 tuning variants. Baseline stays on 9876;
 # these are extra same-utterance comparison legs.
@@ -40,9 +46,14 @@ def build_ports(
     aec_usb_raw_port: int = DEFAULT_AEC_USB_RAW_PORT,
     aec_usb_webrtc_port: int = DEFAULT_AEC_USB_WEBRTC_PORT,
     aec_usb_dtln_port: int = DEFAULT_AEC_USB_DTLN_PORT,
+    aec_chip_aec_150_port: int = DEFAULT_AEC_CHIP_AEC_150_PORT,
+    aec_chip_aec_210_port: int = DEFAULT_AEC_CHIP_AEC_210_PORT,
+    aec_xvf_raw0_webrtc_aec3_port: int = DEFAULT_AEC_XVF_RAW0_WEBRTC_AEC3_PORT,
+    aec_xvf_raw0_dtln_port: int = DEFAULT_AEC_XVF_RAW0_DTLN_PORT,
     aec3_sweep_ports: dict[str, int] | None = None,
     include_dtln: bool = True,
     include_usb: bool = True,
+    include_chip_corpus: bool = True,
     include_aec3_sweep: bool = True,
 ) -> dict[str, int]:
     """Return the UDP port map used by wake-capture tooling.
@@ -63,6 +74,11 @@ def build_ports(
         ports["usb_raw"] = aec_usb_raw_port
         ports["usb_webrtc"] = aec_usb_webrtc_port
         ports["usb_dtln"] = aec_usb_dtln_port
+    if include_chip_corpus:
+        ports["chip_aec_150"] = aec_chip_aec_150_port
+        ports["chip_aec_210"] = aec_chip_aec_210_port
+        ports["xvf_raw0_webrtc_aec3"] = aec_xvf_raw0_webrtc_aec3_port
+        ports["xvf_raw0_dtln"] = aec_xvf_raw0_dtln_port
     if include_aec3_sweep:
         ports.update(aec3_sweep_ports or DEFAULT_AEC3_SWEEP_PORTS)
     return ports
