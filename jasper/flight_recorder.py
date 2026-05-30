@@ -37,7 +37,7 @@ from . import debug_mode
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CAPACITY = 2000  # ~0.3 KB/record -> ~600 KB/daemon
+DEFAULT_CAPACITY = 1000  # stores formatted lines (~0.3 KB) -> ~0.3 MB/daemon
 FLUSH_LEVEL = logging.WARNING
 _FLIGHTREC_FORMAT = "%(asctime)s flightrec %(levelname)s %(name)s: %(message)s"
 
@@ -45,13 +45,16 @@ _ring: "RingFlushHandler | None" = None
 
 
 class RingFlushHandler(logging.Handler):
-    """A bounded ring of recent records, written to ``dump_stream`` (as a
-    tagged burst) only when a WARNING+ record passes through or
-    :meth:`flush_buffer` is called explicitly.
+    """A bounded ring of recent *formatted log lines*, written to
+    ``dump_stream`` (as a tagged burst) only when a WARNING+ record passes
+    through or :meth:`flush_buffer` is called explicitly.
 
-    Unlike stdlib ``MemoryHandler`` this never flushes on capacity (the
-    ``deque`` drops oldest instead) and its dump target is a plain stream,
-    not an INFO-filtered handler that would drop the buffered DEBUG lines.
+    Records are formatted to strings **eagerly** in :meth:`emit` and only
+    the string is kept, so the ring's memory is bounded by line length and
+    can never pin a large object passed as a log arg (the storing-LogRecord
+    tail risk). Unlike stdlib ``MemoryHandler`` it never flushes on capacity
+    (the ``deque`` drops oldest instead) and its dump target is a plain
+    stream, not an INFO-filtered handler that would drop the DEBUG lines.
     """
 
     def __init__(self, capacity: int, dump_stream) -> None:
@@ -64,31 +67,32 @@ class RingFlushHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if self._dumping:
             return  # don't re-buffer anything emitted during a dump
-        self.buffer.append(record)
+        try:
+            line = self.format(record)  # store the formatted string, not the record
+        except Exception:  # pragma: no cover - defensive; never crash the caller
+            return
+        self.buffer.append(line)
         if record.levelno >= FLUSH_LEVEL:
             self.flush_buffer("auto:" + record.levelname.lower())
 
     def flush_buffer(self, reason: str) -> int:
-        """Write the buffered records to the dump stream and clear the ring.
-        Returns the number of records dumped. Best-effort — a dump must
-        never crash the daemon it's recording."""
+        """Write the buffered lines to the dump stream and clear the ring.
+        Returns the number of lines dumped. Best-effort — a dump must never
+        crash the daemon it's recording."""
         if self._dumping:
             return 0
-        records = list(self.buffer)
+        lines = list(self.buffer)
         self.buffer.clear()
-        if not records:
+        if not lines:
             return 0
         self._dumping = True
-        n = len(records)
+        n = len(lines)
         try:
             self.dump_stream.write(
                 f"flightrec event=flightrec.dump reason={reason} records={n}\n"
             )
-            for rec in records:
-                try:
-                    self.dump_stream.write(self.format(rec) + "\n")
-                except Exception:  # pragma: no cover - defensive
-                    pass
+            for line in lines:
+                self.dump_stream.write(line + "\n")
             self.dump_stream.write(
                 f"flightrec event=flightrec.dump.end reason={reason} records={n}\n"
             )

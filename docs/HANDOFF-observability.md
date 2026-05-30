@@ -182,11 +182,11 @@ handler whose INFO level would drop the buffered DEBUG lines):
 ```python
 class RingFlushHandler(logging.Handler):                   # level = DEBUG
     def emit(self, record):
-        self.buffer.append(record)                         # deque(maxlen=N): drops oldest
-        if record.levelno >= logging.WARNING:
+        self.buffer.append(self.format(record))            # deque(maxlen=N) of STRINGS
+        if record.levelno >= logging.WARNING:              #   -> bounded RAM, no arg pinning
             self.flush_buffer("auto:" + record.levelname.lower())
     def flush_buffer(self, reason):                        # also called by dump()
-        ...  # write a tagged burst of the buffer to the dump stream, then clear
+        ...  # write a tagged burst of the buffered lines, then clear
 ```
 
 *Decisions (2026-05-30):*
@@ -217,8 +217,14 @@ instrumentation: RAM-only, persisted only when something breaks.
 (The AEC `rms over` line still stays INFO — `jasper-doctor` reads it
 *continuously*, which a dump-on-anomaly model can't serve.)
 
-*Cost.* ~N × 0.3 KB. N=2000 ≈ 600 KB/daemon; voice+aec+control ≈
-1.8 MB — trivial on a 1–2 GB Pi, tunable.
+*Cost (measured).* The ring stores **formatted strings**, not
+`LogRecord` objects, so RAM is bounded by line length and never pins a
+large object passed as a log arg. At the default N=1000: ~0.3 MB/daemon,
+~0.9 MB across voice+aec+control — under ~0.1% of a 1 GB Pi. Tunable
+(capacity) and off-switchable (`JASPER_FLIGHT_RECORDER=disabled`). (An
+earlier draft stored `LogRecord` objects — ~1.3 MB/daemon and an
+unbounded tail if a hot DEBUG line logged a big object; the string store
+removed both.)
 
 *Honest grounding.* A small custom `logging.Handler` (stdlib
 `MemoryHandler` evaluated — see Mechanism) + the general pattern

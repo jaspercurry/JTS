@@ -88,6 +88,19 @@ def test_flush_empty_is_noop():
     assert fr.RingFlushHandler(3, io.StringIO()).flush_buffer("x") == 0
 
 
+def test_ring_stores_formatted_strings_not_records():
+    """Eager formatting: the ring holds str lines, not LogRecord objects, so
+    a large object passed as a log arg is rendered to text and not pinned in
+    the ring (the bounded-RAM property)."""
+    ring = fr.RingFlushHandler(10, io.StringIO())
+    payload = ["chunk"] * 500  # a big object passed as a log arg
+    ring.emit(logging.LogRecord(
+        "jasper.x", logging.DEBUG, "f.py", 1, "payload=%s", (payload,), None))
+    assert len(ring.buffer) == 1
+    assert isinstance(ring.buffer[0], str)  # a string, not the LogRecord/list
+    assert "chunk" in ring.buffer[0]
+
+
 # -------------------------------------------------------------------- install
 
 
