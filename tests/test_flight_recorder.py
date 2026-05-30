@@ -137,6 +137,29 @@ def test_install_disabled_falls_back_to_plain_toggle(
     assert fr._ring is None
 
 
+def test_install_disabled_still_installs_sigusr1_handler(
+    logging_sandbox, monkeypatch, tmp_path
+):
+    """SIGUSR1 defaults to *terminate*, and jasper-doctor signals the daemons
+    on a failing run — so the handler must be installed even when the recorder
+    is off (dump() is then a safe no-op). Without it, a doctor run would kill
+    voice / aec / control."""
+    import signal
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("signal handlers require the main thread")
+    monkeypatch.setattr(debug_mode, "DEBUG_FILE", str(tmp_path / "debug.env"))
+    monkeypatch.setenv("JASPER_FLIGHT_RECORDER", "disabled")
+    prev = signal.getsignal(signal.SIGUSR1)
+    try:
+        assert fr.install("voice", dump_stream=io.StringIO()) is False
+        assert fr._ring is None
+        assert signal.getsignal(signal.SIGUSR1) not in (signal.SIG_DFL, signal.SIG_IGN)
+        assert fr.dump("signal") == 0  # firing it with no ring is a safe no-op
+    finally:
+        signal.signal(signal.SIGUSR1, prev)
+
+
 def test_dump_flushes_installed_ring_with_captured_context(
     logging_sandbox, monkeypatch, tmp_path
 ):

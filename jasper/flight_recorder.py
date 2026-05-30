@@ -127,6 +127,12 @@ def install(
     debug toggle, and wires SIGUSR1. Returns whether the recorder was
     installed (False if disabled by env)."""
     global _ring
+    # Install the SIGUSR1 -> dump handler UNCONDITIONALLY, even when the
+    # recorder is disabled: dump() is a safe no-op while _ring is None, but an
+    # *unhandled* SIGUSR1 terminates the process by default — and jasper-doctor
+    # signals the daemons on a failing run, so a missing handler would kill
+    # voice / aec / control mid-incident.
+    _install_sigusr1()
     if _disabled():
         debug_mode.apply_for(subsystem)  # plain Tier-B toggle, no ring
         logger.info("flight recorder: disabled via JASPER_FLIGHT_RECORDER")
@@ -141,7 +147,6 @@ def install(
         debug_mode.apply_for(subsystem)
     except Exception:  # pragma: no cover - defensive; startup must survive
         pass
-    _install_sigusr1()
     logger.info(
         "flight recorder: installed for %s (ring=%d records; "
         "dump -> journal on WARNING+/flag/signal)",
