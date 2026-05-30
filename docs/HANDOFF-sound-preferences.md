@@ -319,7 +319,8 @@ convention other wizards follow.
 - `current correction` — recognizes correction configs plus
   `sound_current.yml` / `sound_audition.yml` when room PEQs are present.
 - `sound profile` — reports saved profile, filter count, estimated
-  headroom, and warns when a saved active profile is not reflected in a
+  headroom, the global match-loudness / headroom settings, the effective
+  output trim, and warns when a saved active profile is not reflected in a
   generated active config.
 - `DSP apply state` — reports the most recent DSP config apply result
   from `/var/lib/jasper/dsp_apply_state.json`; rollback failure is a
@@ -336,9 +337,12 @@ journal while the user drags a slider.
 profile-library picker payload and latest DSP apply record. `/sound/state`
 additionally carries the global `sound_settings` and the effective
 `output_trim_db` for the current profile, so the page renders the
-match-loudness switch and headroom slider from server truth. `/state`
-also includes the runtime Camilla config truth so dashboards do not
-confuse "profile desired" with "profile actually loaded":
+match-loudness switch and headroom slider from server truth. The central
+`jasper-control` `/state.audio.sound` carries the same `match_loudness`,
+`headroom_trim_db`, and `output_trim_db` (and `jasper-doctor` prints them),
+so an operator can see why a profile sounds quieter or level-matched without
+opening the page. `/state` also includes the runtime Camilla config truth so
+dashboards do not confuse "profile desired" with "profile actually loaded":
 
 ```json
 {

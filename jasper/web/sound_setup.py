@@ -51,7 +51,6 @@ from jasper.sound.profile import (
     estimate_headroom_db,
     load_profile_library,
     load_profile,
-    loudness_compensation_db,
     profile_library_payload,
     rename_named_profile,
     response_component_payload,
@@ -64,6 +63,7 @@ from jasper.sound.settings import (
     HEADROOM_TRIM_MAX_DB,
     SoundSettings,
     load_sound_settings,
+    output_trim_db as _output_trim,  # aliased so local `output_trim_db` vars don't shadow it
     save_sound_settings,
 )
 
@@ -92,18 +92,6 @@ def _camilla():
     return CamillaController(host, port)
 
 
-def _output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:
-    """Total post-EQ attenuation for this profile under the current global
-    settings: the manual headroom trim, plus the profile's loudness
-    compensation when match-loudness is on. Both default to 0, so the
-    default is no trim at all -- boosts boost. (The emitter additionally
-    ignores any trim on a flat profile, which can't clip from EQ.)"""
-    trim = settings.headroom_trim_db
-    if settings.match_loudness:
-        trim += loudness_compensation_db(profile)
-    return round(trim, 3)
-
-
 def _state_payload(
     profile: SoundProfile,
     *,
@@ -128,7 +116,7 @@ def _state_payload(
         # Global output settings + the trim they imply for THIS profile, so
         # the page can render the controls and show the effective trim.
         "sound_settings": settings.to_dict(),
-        "output_trim_db": _output_trim_db(profile, settings),
+        "output_trim_db": _output_trim(profile, settings),
         "limits": {
             "simple_gain_db": SIMPLE_EQ_LIMIT_DB,
             "advanced_gain_db": ADVANCED_GAIN_LIMIT_DB,
@@ -190,7 +178,7 @@ async def _apply_profile(
         camilla_factory=camilla_factory,
         source="sound",
         persist_profile=True,
-        output_trim_db=_output_trim_db(profile, settings),
+        output_trim_db=_output_trim(profile, settings),
     )
     logger.info(
         "event=sound.apply enabled=%s curve=%s "
@@ -256,7 +244,7 @@ async def _apply_settings(
             camilla_factory=camilla_factory,
             source="sound_settings",
             persist_profile=False,
-            output_trim_db=_output_trim_db(profile, settings),
+            output_trim_db=_output_trim(profile, settings),
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("sound settings re-apply failed")
@@ -279,7 +267,7 @@ async def _audition_profile(
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
     settings = load_sound_settings()
-    output_trim_db = _output_trim_db(profile, settings)
+    output_trim_db = _output_trim(profile, settings)
     apply_state, out_path, loaded = await _load_profile_config(
         profile,
         profile_path=profile_path,
@@ -350,7 +338,7 @@ async def _live_draft_profile(
     cam = camilla_factory()
     config_path = Path(config_dir)
     settings = load_sound_settings()
-    output_trim_db = _output_trim_db(profile, settings)
+    output_trim_db = _output_trim(profile, settings)
     sound_filter_count = len(build_sound_filters(profile))
     try:
         loader = getattr(cam, "set_active_config_raw")

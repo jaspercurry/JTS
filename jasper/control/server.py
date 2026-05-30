@@ -915,8 +915,10 @@ async def _get_state(
             estimate_headroom_db,
             load_profile,
         )
+        from ..sound.settings import load_sound_settings, output_trim_db
 
         profile = load_profile()
+        sound_settings = load_sound_settings()
         sound_profile = {
             "enabled": profile.enabled,
             "curve_id": profile.curve_id,
@@ -924,6 +926,11 @@ async def _get_state(
             "parametric_band_count": len(profile.parametric_bands),
             "filter_count": len(build_sound_filters(profile)),
             "headroom_db": estimate_headroom_db(profile),
+            # Global output settings + the effective trim they apply, so the
+            # dashboard can explain why a profile sounds quieter/level-matched.
+            "match_loudness": sound_settings.match_loudness,
+            "headroom_trim_db": sound_settings.headroom_trim_db,
+            "output_trim_db": output_trim_db(profile, sound_settings),
             "updated_at": profile.updated_at or None,
             "last_dsp_apply": last_dsp_apply_state(),
         }
