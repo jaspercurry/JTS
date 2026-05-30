@@ -71,6 +71,14 @@ class ProviderCatalogEntry:
     models: tuple[ModelOption, ...]
     voices: tuple[VoiceOption, ...]
     extras: tuple[ProviderExtra, ...] = ()
+    # Pricing-editor metadata (consumed by jasper/web/voice_setup.py): the
+    # public pricing page a human/chatbot reads — no provider API exposes
+    # voice-model prices — and which ``jasper.usage.Pricing`` buckets this
+    # provider's cost model actually uses (Gemini Live can't split
+    # text/cached; Grok is flat-rate). Single source per provider so adding
+    # a backend touches the catalog entry + model_pricing.json, nothing else.
+    pricing_url: str = ""
+    pricing_buckets: tuple[str, ...] = ()
 
 
 PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
@@ -110,6 +118,11 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
             VoiceOption(id="Leda", label="Leda - feminine, youthful"),
             VoiceOption(id="Orus", label="Orus - masculine, firm"),
             VoiceOption(id="Zephyr", label="Zephyr - feminine, bright"),
+        ),
+        pricing_url="https://ai.google.dev/gemini-api/docs/pricing",
+        pricing_buckets=(
+            "audio_input_per_million_usd",
+            "audio_output_per_million_usd",
         ),
     ),
     ProviderCatalogEntry(
@@ -187,6 +200,14 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
                 ),
             ),
         ),
+        pricing_url="https://platform.openai.com/docs/pricing",
+        pricing_buckets=(
+            "audio_input_per_million_usd",
+            "audio_output_per_million_usd",
+            "text_input_per_million_usd",
+            "text_output_per_million_usd",
+            "cached_input_per_million_usd",
+        ),
     ),
     ProviderCatalogEntry(
         id="grok",
@@ -216,6 +237,8 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
             VoiceOption(id="sal", label="sal - masculine, casual"),
             VoiceOption(id="leo", label="leo - masculine, smooth"),
         ),
+        pricing_url="https://docs.x.ai/developers/pricing",
+        pricing_buckets=("flat_per_hour_usd",),
     ),
 )
 

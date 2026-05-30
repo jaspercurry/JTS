@@ -253,10 +253,10 @@ should be:
 1. New module `jasper/voice/<provider>_session.py` with a class
    implementing `LiveConnection` (and a corresponding `LiveTurn`).
 2. New model entries (per model ID, with `as_of` bumped) in
-   `jasper/data/model_pricing.json`, and — if the provider's cost model
-   uses a different bucket set — a `_PROVIDER_BUCKETS` entry in
-   `jasper/web/voice_setup.py` so the `/voice` editor shows the right
-   fields. (No code in `jasper/usage.py` — pricing is data now.)
+   `jasper/data/model_pricing.json`, plus `pricing_url` + `pricing_buckets`
+   on the provider's `ProviderCatalogEntry` (so the `/voice` editor and
+   research prompt show the right fields/page). (No code in
+   `jasper/usage.py` — pricing is data now.)
 3. New env-var block in `Config` (api key, model, voice, anything
    provider-specific) with a sane default and an explicit
    "required only when active provider" validation.

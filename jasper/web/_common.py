@@ -748,7 +748,6 @@ def write_json_file(path: str, obj, *, mode: int = 0o644) -> None:
     Mirrors ``write_env_file``'s all-or-nothing swap so a reader (the
     voice daemon) never sees a half-written file. Default mode 0644 —
     JSON config like pricing rates carries no secrets, unlike env files."""
-    import json as _json
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)

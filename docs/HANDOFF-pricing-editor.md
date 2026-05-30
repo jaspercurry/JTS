@@ -297,18 +297,25 @@ per-provider price integrations.
 ## File touchpoints (summary)
 - `jasper/data/model_pricing.json` — **NEW** bundled, dated default rates
   (model-ID keyed). The single source of default pricing.
-- `jasper/usage.py` — `load_default_pricing`, `pricing_for_model`,
-  `load_pricing_overrides` + `sanitize_pricing_models` (model-ID keys);
-  removed `pricing_for_provider`, the `*_PRICING` constants,
-  `_OVERRIDE_KEYS`, the `"mini"` hack.
+- `jasper/voice/catalog.py` — `ProviderCatalogEntry.pricing_url` +
+  `pricing_buckets` (single per-provider source; the editor reads these
+  instead of maps in voice_setup).
+- `jasper/usage.py` — `load_default_pricing`, `default_pricing_as_of`,
+  `pricing_for_model`, `load_pricing_overrides` + `sanitize_pricing_models`
+  (model-ID keys); removed `pricing_for_provider`, the `*_PRICING`
+  constants, `_OVERRIDE_KEYS`, the `"mini"` hack.
 - `jasper/voice_daemon.py` — calls `pricing_for_model(_active_model(cfg), …)`
   + `event=pricing.unpriced` warning.
+- `jasper/cli/doctor.py` — `check_pricing` (warns if rate data fails to
+  load or the active model is unpriced).
 - `jasper/web/voice_setup.py` — editor: `_pricing_section_html`,
   `_apply_pricing_save`, `POST /pricing`, `as_of` display. Phase 3:
   `_pricing_research_prompt`, `_pricing_refresh_html`, `_apply_pricing_paste`,
-  `POST /pricing-import`.
-- `jasper/web/_common.py` — `write_json_file`.
-- `tests/test_usage.py`, `tests/test_voice_setup.py` — coverage.
+  `_sparsify_overrides`, `POST /pricing-import` (MERGES into existing —
+  preserves models the paste omits — and keeps the sparse invariant).
+- `jasper/web/_common.py` — `write_json_file` (atomic, mode 0644).
+- `tests/test_usage.py`, `tests/test_voice_setup.py`, `tests/test_doctor.py`
+  — coverage incl. the import-merge route test.
 - Shipped: [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md)
   "Spend-cap pricing" bullet updated (model keying, dated JSON); README
   atlas entry added. (Follow-up: `docs/doc-map.toml` could add
@@ -331,4 +338,7 @@ per-provider price integrations.
 Last verified: 2026-05-30 (all three phases implemented and merged —
 model-ID-keyed pricing in `jasper/usage.py` + dated
 `jasper/data/model_pricing.json`, the `/voice` per-model editor, and the
-chatbot research-prompt/import. Doc reflects shipped code, not a plan.)
+chatbot research-prompt/import. Doc reflects shipped code, not a plan.
+Review-fix pass: import MERGES (was full-replace) + preserves pasted
+`as_of`; per-provider pricing metadata moved onto the catalog;
+`check_pricing` doctor probe added.)
