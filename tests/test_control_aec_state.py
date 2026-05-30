@@ -164,6 +164,23 @@ def test_write_aec_leg_writes_zero_for_off(aec_mode_file):
     assert "JASPER_WAKE_LEG_DTLN=0" in body
 
 
+def test_toggle_to_token_maps_to_real_wake_input_legs():
+    """Every operator toggle name maps to a real wake_input leg token in
+    the registry — and "raw" specifically resolves to the chip-direct
+    "off" leg on UDP 9877, NOT the "raw0" corpus leg (the easy-to-confuse
+    footgun). Guards _TOGGLE_TO_TOKEN against drifting onto the wrong leg
+    if the registry is ever reorganized."""
+    from jasper.wake_legs import by_token, wake_input_legs
+    wake_tokens = {leg.token for leg in wake_input_legs()}
+    for toggle, token in server._TOGGLE_TO_TOKEN.items():
+        assert token in wake_tokens, (
+            f"toggle {toggle!r} -> {token!r} is not a wake_input leg"
+        )
+    # The collision the map exists to document: operator "raw" == "off".
+    assert server._TOGGLE_TO_TOKEN["raw"] == "off"
+    assert by_token("off").udp_port == 9877
+
+
 # ---------- _write_wake_threshold ------------------------------------------
 
 
