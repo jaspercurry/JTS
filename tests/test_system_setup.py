@@ -229,6 +229,7 @@ def test_root_serves_canonical_shell(dashboard_server) -> None:
     assert 'name="jts-csrf"' in text  # CSRF token for the module's POSTs
     assert 'id="icon-back"' in text  # shared inline sprite
     assert '<div id="app"' in text  # mount point
+    assert "Loading the dashboard" in text  # boot placeholder (visible if modules fail to load)
     assert '<script type="module" src="/assets/system-status/js/main.js">' in text
     # Page CSS is a linked static file now (lintable + cacheable), not inlined.
     assert "/assets/system-status/system.css?v=" in text
@@ -369,6 +370,9 @@ def test_modules_preserve_destructive_confirms_and_csrf() -> None:
     # CSRF token is read from the meta tag, never baked into the cached module.
     assert "meta[name=jts-csrf]" in js
     assert "X-CSRF-Token" in js
+    # Post-action feedback: reboot/power-off surface a "page will be
+    # unreachable" note rather than relying on the button label alone.
+    assert "unreachable for" in js
 
 
 def test_modules_wire_the_proxy_endpoints() -> None:

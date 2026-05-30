@@ -18,6 +18,9 @@
 }
 body.stale { opacity: 0.55; }
 .muted { color: var(--muted); }
+/* Boot placeholder shown until the ES module graph renders — left visible
+   (rather than a blank page) if the modules ever fail to load. */
+.boot-note { padding: 3rem 1.5rem; text-align: center; color: var(--muted); }
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
