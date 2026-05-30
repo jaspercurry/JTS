@@ -391,15 +391,18 @@ CPU-gated.
 
 ### Phase 1 — Per-leg + per-condition thresholds  *(the real "Stage 1" delta)*
 - **Gate:** Phase 0.
-- **Landed** (branch `claude/wake-fuser`, all behavior-preserving): **1.0**
-  the condition-taxonomy SSOT (`jasper/wake_conditions.py`); **1.1a** the
-  `condition_class` column + the `music_renderer` `_MIGRATION_COLUMNS`
-  backfill (the to-do below — done); **1.1b** the runtime estimator
-  (`jasper/wake_condition_context.py` `classify_condition`) recording
-  `condition_class` per fire. Production fires are now condition-labelled,
-  feeding the tuning. **Remaining:** the thin
-  `effective_threshold(leg, condition)` decision point (1.2) and the
-  corpus-tuned values (1.3).
+- **Landed, all behavior-preserving:** **1.0** the condition-taxonomy SSOT
+  (`jasper/wake_conditions.py`); **1.1a** the `condition_class` column + the
+  `music_renderer` `_MIGRATION_COLUMNS` backfill (the to-do below — done);
+  **1.1b** the runtime estimator (`jasper/wake_condition_context.py`
+  `classify_condition`) recording `condition_class` per fire — all merged in
+  #385; **1.2** the thin `effective_threshold(leg, condition)` decision point
+  (`jasper/wake_fusion.py` `WakeFuser`, wired into both threshold compares in
+  `_handle_wake_frame`; empty offsets ⇒ today's OR-gate). Production fires are
+  condition-labelled and the fuser seam is in place. **Remaining:** **1.3** —
+  fill `WakeFuser`'s per-(leg, condition) offsets from the corpus, and refresh
+  `_current_condition` on the hot path (today it only updates on a fire, which
+  is fine while offsets are empty).
 - **Build:** `default_threshold_offset` per `LegSpec`; a lightweight
   `ConditionContext` estimator (music flag from the **playback-ref RMS
   the bridge already computes**; noise floor / SNR proxy) — *done in 1.1b,
@@ -407,7 +410,8 @@ CPU-gated.
   VAD-negative EMA, so there's no hot-loop cost*; a `ConditionAwareFuser`
   that picks per-leg thresholds by condition (quiet → trust raw at base θ;
   media playing → lower the aec3 θ; noisy → lean dtln but still OR raw) —
-  *the 1.2/1.3 work*. Wire `music_renderer` + a derived `condition_class`
+  *the seam (`jasper/wake_fusion.py` `WakeFuser`) shipped in 1.2; 1.3 fills
+  its offsets*. Wire `music_renderer` + a derived `condition_class`
   into telemetry — *done*.
 - **Verify:** a fresh `reset-wake-events.sh` window; `analyze-three-leg.sh`
   shows per-condition FRR improvement with no FA/h regression; if any

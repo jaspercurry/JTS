@@ -32,6 +32,8 @@ from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
 from .wake_legs import LegSpec, wake_input_legs
 from .wake_condition_context import classify_condition
+from .wake_conditions import DEFAULT_CONDITION
+from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .watchdog import Heartbeat
@@ -1520,6 +1522,16 @@ class WakeLoop:
         # other legs' recent scores. Without this, two legs could race to
         # fire the same wake event simultaneously.
         self._wake_fire_lock: asyncio.Lock = asyncio.Lock()
+        # The fire-decision seam (Phase 1.2): the single place a leg's fire
+        # threshold is decided, so per-condition thresholds (1.3) and any
+        # future corroboration/veto land here, not in the parallel leg loops.
+        # Empty offsets today => behavior-preserving OR-gate.
+        # `_current_condition` is the acoustic condition the fuser keys on,
+        # refreshed at fire time by the estimator; the empty-offset fuser
+        # ignores it today, so its staleness between fires is moot until 1.3
+        # fills offsets (which must also refresh it on the hot path).
+        self._fuser: WakeFuser = WakeFuser()
+        self._current_condition: str = DEFAULT_CONDITION
         self._connection = connection
         self._ducker = ducker
         # Direct camilla handle for `CueDuck` (snapshot-based duck
@@ -2162,7 +2174,9 @@ class WakeLoop:
         rt.recent_score = score
         rt.recent_score_at = now_loop
 
-        if score < detector.threshold:
+        if score < self._fuser.effective_threshold(
+            leg, self._current_condition, detector.threshold,
+        ):
             return
 
         # Threshold crossed on this leg. Try to win the OR-gate race
@@ -2192,7 +2206,9 @@ class WakeLoop:
                     continue
                 if (now_loop - _other.recent_score_at) > WAKE_STALE_SCORE_SEC:
                     continue
-                if _other.recent_score >= _other.detector.threshold:
+                if _other.recent_score >= self._fuser.effective_threshold(
+                    _name, self._current_condition, _other.detector.threshold,
+                ):
                     fired_set.add(_name)
             fired_legs = ",".join(sorted(fired_set))
 
@@ -2351,6 +2367,10 @@ class WakeLoop:
                 music_dbfs=music_volume_db,
                 noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
             )
+            # Refresh the condition the fuser keys on (Phase 1.2). Updates on
+            # each fire; the empty-offset fuser ignores it today, so this is
+            # behavior-neutral. Phase 1.3 makes it refresh on the hot path.
+            self._current_condition = condition_ctx.condition
             try:
                 await store.begin_event(
                     event_id=event_id,

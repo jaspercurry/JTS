@@ -69,6 +69,9 @@ def _make_wake_loop_triple(
             by_token("dtln"), MagicMock(), detector_dtln, None,
         )
     wl._wake_fire_lock = asyncio.Lock()
+    from jasper.wake_fusion import WakeFuser
+    wl._fuser = WakeFuser()
+    wl._current_condition = "quiet"
     wl._refractory_until = 0.0
     wl._acquiring = False
     wl._acquire_buffer = MagicMock()
