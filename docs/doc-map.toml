@@ -133,6 +133,7 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-voice-providers.md",
+  "docs/HANDOFF-pricing-editor.md",
   "docs/HANDOFF-prompting.md",
   "docs/HANDOFF-audible-feedback.md",
   "docs/HANDOFF-speaker-output-reference.md",
