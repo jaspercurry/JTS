@@ -391,13 +391,24 @@ CPU-gated.
 
 ### Phase 1 — Per-leg + per-condition thresholds  *(the real "Stage 1" delta)*
 - **Gate:** Phase 0.
+- **Landed** (branch `claude/wake-fuser`, all behavior-preserving): **1.0**
+  the condition-taxonomy SSOT (`jasper/wake_conditions.py`); **1.1a** the
+  `condition_class` column + the `music_renderer` `_MIGRATION_COLUMNS`
+  backfill (the to-do below — done); **1.1b** the runtime estimator
+  (`jasper/wake_condition_context.py` `classify_condition`) recording
+  `condition_class` per fire. Production fires are now condition-labelled,
+  feeding the tuning. **Remaining:** the thin
+  `effective_threshold(leg, condition)` decision point (1.2) and the
+  corpus-tuned values (1.3).
 - **Build:** `default_threshold_offset` per `LegSpec`; a lightweight
   `ConditionContext` estimator (music flag from the **playback-ref RMS
-  the bridge already computes**; noise floor / SNR proxy from
-  VAD-negative frames); a `ConditionAwareFuser` that picks per-leg
-  thresholds by condition (quiet → trust raw at base θ; media playing →
-  lower the aec3 θ; noisy → lean dtln but still OR raw). Wire
-  `music_renderer` + a derived `condition_class` into telemetry.
+  the bridge already computes**; noise floor / SNR proxy) — *done in 1.1b,
+  via a fire-time capture-ring low-percentile RMS rather than a per-frame
+  VAD-negative EMA, so there's no hot-loop cost*; a `ConditionAwareFuser`
+  that picks per-leg thresholds by condition (quiet → trust raw at base θ;
+  media playing → lower the aec3 θ; noisy → lean dtln but still OR raw) —
+  *the 1.2/1.3 work*. Wire `music_renderer` + a derived `condition_class`
+  into telemetry — *done*.
 - **Verify:** a fresh `reset-wake-events.sh` window; `analyze-three-leg.sh`
   shows per-condition FRR improvement with no FA/h regression; if any
   single leg ever beats the fused result in a condition, simplify that
@@ -406,10 +417,11 @@ CPU-gated.
   recorder shares no code with the fuser, never reads `wake_events`, and
   runs while `jasper-voice` is stopped — per-leg thresholds and the
   condition-aware fuser cannot reach it. One real to-do surfaced while
-  checking this: `music_renderer` is in the `CREATE TABLE` body but
-  **missing from `_MIGRATION_COLUMNS`**, so already-deployed Pis never
-  got the column. Add **both** `music_renderer` and `condition_class`
-  to `_MIGRATION_COLUMNS` so the idempotent ALTER backfills existing DBs.
+  checking this — **fixed in 1.1a**: `music_renderer` was in the
+  `CREATE TABLE` body but missing from `_MIGRATION_COLUMNS`, so
+  already-deployed Pis never got the column (and dropped telemetry, since
+  the INSERT names it). Both `music_renderer` and `condition_class` are now
+  in `_MIGRATION_COLUMNS`, so the idempotent ALTER backfills existing DBs.
 
 ### Phase 2 — Capture-profile capabilities + de-hardcode the bridge  *(prep the swap)*
 - **Gate:** Phase 0 (independent of Phase 1).
