@@ -742,6 +742,29 @@ def delete_env_file(path: str) -> None:
         logger.warning("could not delete %s: %s", path, e)
 
 
+def write_json_file(path: str, obj, *, mode: int = 0o644) -> None:
+    """Atomically write ``obj`` as pretty JSON (temp-file + rename).
+
+    Mirrors ``write_env_file``'s all-or-nothing swap so a reader (the
+    voice daemon) never sees a half-written file. Default mode 0644 —
+    JSON config like pricing rates carries no secrets, unlike env files."""
+    import json as _json
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w") as f:
+            _json.dump(obj, f, indent=2, sort_keys=True)
+            f.write("\n")
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, path)
+
+
 def restart_systemd_units(*units: str) -> None:
     """Best-effort non-blocking restart for wizard-owned config changes.
 

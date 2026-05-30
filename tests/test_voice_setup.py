@@ -767,3 +767,93 @@ def test_e2e_clear_credentials_removes_provider_keys(
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---------- Pricing editor (/pricing) --------------------------------------
+def test_index_renders_pricing_section_with_provider_buckets():
+    page = voice_setup._index_html(
+        {"JASPER_VOICE_PROVIDER": "openai"}, "tok", default_as_of="2026-05-30",
+    ).decode()
+    assert "Pricing rates" in page
+    assert "Bundled rates as of 2026-05-30" in page
+    # OpenAI shows the cached bucket; Gemini shows only audio (no text);
+    # Grok shows the flat-rate bucket.
+    assert "price__gpt-realtime-2__cached_input_per_million_usd" in page
+    assert "price__gemini-3.1-flash-live-preview__audio_input_per_million_usd" in page
+    assert "price__gemini-3.1-flash-live-preview__text_input_per_million_usd" not in page
+    assert "price__grok-voice-think-fast-1.0__flat_per_hour_usd" in page
+
+
+def test_index_prefills_custom_override_and_tags_it():
+    page = voice_setup._index_html(
+        {"JASPER_VOICE_PROVIDER": "openai"}, "tok",
+        overrides={"gpt-realtime-2": {"text_output_per_million_usd": 28.0}},
+    ).decode()
+    assert 'value="28"' in page
+    assert "custom" in page  # the custom chip
+
+
+def test_apply_pricing_save_is_sparse_and_omits_defaults():
+    openai = catalog.provider_by_id("openai")
+    form = {
+        "provider": "openai",
+        "price__gpt-realtime-2__text_output_per_million_usd": "30",   # changed
+        "price__gpt-realtime-2__audio_output_per_million_usd": "64",  # == default
+        "price__gpt-realtime-2__audio_input_per_million_usd": "",     # blank
+    }
+    out = voice_setup._apply_pricing_save(form, openai, ["gpt-realtime-2"], {})
+    assert out == {"gpt-realtime-2": {"text_output_per_million_usd": 30.0}}
+
+
+def test_apply_pricing_save_preserves_other_providers():
+    openai = catalog.provider_by_id("openai")
+    existing = {"grok-voice-think-fast-1.0": {"flat_per_hour_usd": 5.0}}
+    form = {
+        "provider": "openai",
+        "price__gpt-realtime-2__text_output_per_million_usd": "30",
+    }
+    out = voice_setup._apply_pricing_save(
+        form, openai, ["gpt-realtime-2"], existing,
+    )
+    assert out["grok-voice-think-fast-1.0"] == {"flat_per_hour_usd": 5.0}
+    assert out["gpt-realtime-2"] == {"text_output_per_million_usd": 30.0}
+
+
+def test_apply_pricing_save_blank_resets_model():
+    grok = catalog.provider_by_id("grok")
+    out = voice_setup._apply_pricing_save(
+        {"provider": "grok",
+         "price__grok-voice-think-fast-1.0__flat_per_hour_usd": ""},
+        grok, ["grok-voice-think-fast-1.0"],
+        {"grok-voice-think-fast-1.0": {"flat_per_hour_usd": 5.0}},
+    )
+    assert out == {}
+
+
+def test_apply_pricing_save_rejects_nonnumeric_and_negative():
+    openai = catalog.provider_by_id("openai")
+    form = {
+        "provider": "openai",
+        "price__gpt-realtime-2__text_output_per_million_usd": "abc",
+        "price__gpt-realtime-2__audio_input_per_million_usd": "-5",
+    }
+    out = voice_setup._apply_pricing_save(form, openai, ["gpt-realtime-2"], {})
+    assert out == {}
+
+
+def test_pricing_round_trip_through_overrides_loader(tmp_path: Path):
+    """A saved override file is read back by load_pricing_overrides and
+    applied by pricing_for_model (the full daemon-facing contract)."""
+    from jasper import usage
+    openai = catalog.provider_by_id("openai")
+    out = voice_setup._apply_pricing_save(
+        {"provider": "openai",
+         "price__gpt-realtime-2__text_output_per_million_usd": "30"},
+        openai, ["gpt-realtime-2"], {},
+    )
+    f = tmp_path / "pricing.json"
+    _common.write_json_file(str(f), {"as_of": "2026-08-01", "models": out})
+    loaded = usage.load_pricing_overrides(str(f))
+    eff = usage.pricing_for_model("gpt-realtime-2", overrides=loaded)
+    assert eff.text_output_per_million_usd == 30.0
+    assert eff.audio_input_per_million_usd == 32.0  # bundled default kept

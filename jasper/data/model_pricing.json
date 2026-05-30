@@ -1,0 +1,39 @@
+{
+  "as_of": "2026-05-30",
+  "source": "provider public pricing pages (OpenAI, Google AI Studio, xAI)",
+  "_comment": "Bundled DEFAULT voice-model rates, USD per 1M tokens (flat_per_hour_usd is USD/hour for time-billed providers). Keyed by exact model ID. Edit + bump as_of when rates change, or refresh via the /voice pricing prompt flow. Omitted buckets default to 0 (Gemini Live can't split text/cached; Grok is flat-rate only). User overrides live in /var/lib/jasper/pricing.json and overlay these per model.",
+  "models": {
+    "gpt-realtime-2": {
+      "audio_input_per_million_usd": 32.0,
+      "audio_output_per_million_usd": 64.0,
+      "text_input_per_million_usd": 4.0,
+      "text_output_per_million_usd": 24.0,
+      "cached_input_per_million_usd": 0.40
+    },
+    "gpt-realtime-1.5": {
+      "audio_input_per_million_usd": 32.0,
+      "audio_output_per_million_usd": 64.0,
+      "text_input_per_million_usd": 4.0,
+      "text_output_per_million_usd": 16.0,
+      "cached_input_per_million_usd": 0.40
+    },
+    "gpt-realtime-mini": {
+      "audio_input_per_million_usd": 10.0,
+      "audio_output_per_million_usd": 20.0,
+      "text_input_per_million_usd": 0.60,
+      "text_output_per_million_usd": 2.40,
+      "cached_input_per_million_usd": 0.30
+    },
+    "gemini-3.1-flash-live-preview": {
+      "audio_input_per_million_usd": 3.0,
+      "audio_output_per_million_usd": 12.0
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025": {
+      "audio_input_per_million_usd": 3.0,
+      "audio_output_per_million_usd": 12.0
+    },
+    "grok-voice-think-fast-1.0": {
+      "flat_per_hour_usd": 3.0
+    }
+  }
+}

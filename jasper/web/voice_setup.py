@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import urllib.parse
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -52,6 +53,12 @@ from jasper.voice.model_discovery import (
     load_cache,
     refresh_provider_cache,
 )
+from jasper.usage import (
+    DEFAULT_PRICING_FILE,
+    load_default_pricing,
+    load_pricing_overrides,
+    pricing_for_model,
+)
 
 from ._common import (
     PAGE_STYLE,
@@ -68,6 +75,7 @@ from ._common import (
     verify_csrf,
     wrap_page,
     write_env_file,
+    write_json_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -378,11 +386,122 @@ def _provider_extras_html(
     return "\n".join(out)
 
 
+# Which Pricing buckets each provider's cost model actually uses, in
+# display order. Gemini Live can't split text/cached (audio only); Grok is
+# flat-rate. This drives which number inputs the editor shows per model.
+_BUCKET_LABELS = {
+    "audio_input_per_million_usd": "Audio in ($/1M tokens)",
+    "audio_output_per_million_usd": "Audio out ($/1M tokens)",
+    "text_input_per_million_usd": "Text in ($/1M tokens)",
+    "text_output_per_million_usd": "Text out ($/1M tokens)",
+    "cached_input_per_million_usd": "Cached in ($/1M tokens)",
+    "flat_per_hour_usd": "Flat rate ($/hour)",
+}
+_PROVIDER_BUCKETS: dict[str, tuple[str, ...]] = {
+    "gemini": (
+        "audio_input_per_million_usd",
+        "audio_output_per_million_usd",
+    ),
+    "openai": (
+        "audio_input_per_million_usd",
+        "audio_output_per_million_usd",
+        "text_input_per_million_usd",
+        "text_output_per_million_usd",
+        "cached_input_per_million_usd",
+    ),
+    "grok": ("flat_per_hour_usd",),
+}
+
+
+def _today_iso() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _provider_model_ids(
+    provider: ProviderCatalogEntry,
+    discovered: DiscoverySnapshot | None,
+) -> list[str]:
+    """Models to offer pricing rows for: catalog ∪ discovered, in that
+    order. Mirrors the model dropdown's enumeration."""
+    ids = [m.id for m in provider.models]
+    seen = set(ids)
+    if discovered is not None:
+        for model_id in discovered.models:
+            if model_id not in seen:
+                ids.append(model_id)
+                seen.add(model_id)
+    return ids
+
+
+def _pricing_section_html(
+    provider: ProviderCatalogEntry,
+    discovered: DiscoverySnapshot | None,
+    overrides: dict[str, dict],
+    default_as_of: str,
+    csrf_token: str,
+) -> str:
+    """Collapsible per-model rate editor for one provider. Standalone form
+    POSTing to /pricing (writes /var/lib/jasper/pricing.json) — independent
+    of the key/model save-form."""
+    buckets = _PROVIDER_BUCKETS.get(provider.id, ())
+    if not buckets:
+        return ""
+    blocks = []
+    for model_id in _provider_model_ids(provider, discovered):
+        default = pricing_for_model(model_id)
+        effective = pricing_for_model(model_id, overrides=overrides)
+        unpriced = default.label.startswith("unpriced:")
+        rows = []
+        for field in buckets:
+            d = getattr(default, field)
+            e = getattr(effective, field)
+            is_custom = abs(e - d) > 1e-9
+            value_attr = f"{e:g}" if is_custom else ""
+            placeholder = "set a rate" if unpriced else f"default {d:g}"
+            chip = ' <span class="badge">custom</span>' if is_custom else ""
+            name = f"price__{html.escape(model_id)}__{field}"
+            rows.append(f"""
+            <label>{html.escape(_BUCKET_LABELS[field])}{chip}</label>
+            <input type="number" min="0" step="0.01" inputmode="decimal"
+                   name="{name}" value="{value_attr}"
+                   placeholder="{html.escape(placeholder)}">""")
+        needs = (
+            ' <span class="badge muted">needs pricing</span>' if unpriced else ""
+        )
+        blocks.append(f"""
+          <div class="price-model" style="margin:0.75em 0; padding-top:0.5em; border-top:1px solid rgba(0,0,0,0.08)">
+            <p class="meta" style="margin:0 0 0.3em"><code>{html.escape(model_id)}</code>{needs}</p>
+            {''.join(rows)}
+          </div>""")
+    as_of_txt = (
+        f"Bundled rates as of {html.escape(default_as_of)}. " if default_as_of else ""
+    )
+    return f"""
+    <details class="disclosure">
+      <summary>Pricing rates</summary>
+      <div class="disclosure-body">
+        <p class="hint">{as_of_txt}Used to estimate spend on the /system
+        dashboard. Blank = use the bundled default; clear a box to reset.
+        Edits apply to future sessions after the daemon restarts.</p>
+        <form method="post" action="pricing">
+          {csrf_field_html(csrf_token)}
+          <input type="hidden" name="provider" value="{provider.id}">
+          {''.join(blocks)}
+          <div class="actions" style="margin-top:0.75em">
+            <button class="secondary" type="submit">Save {html.escape(provider.label)} rates</button>
+          </div>
+        </form>
+      </div>
+    </details>"""
+
+
 def _provider_card_html(
     provider: ProviderCatalogEntry,
     state: dict[str, str],
     csrf_token: str,
     discovered: DiscoverySnapshot | None,
+    overrides: dict[str, dict],
+    default_as_of: str,
     *,
     is_active: bool,
 ) -> str:
@@ -478,6 +597,8 @@ def _provider_card_html(
 
     {extras}
 
+    {_pricing_section_html(provider, discovered, overrides, default_as_of, csrf_token)}
+
     {clear_form}
   </div>
 </details>"""
@@ -489,15 +610,20 @@ def _index_html(
     *,
     status_msg: str = "",
     discovery: dict[str, DiscoverySnapshot] | None = None,
+    overrides: dict[str, dict] | None = None,
+    default_as_of: str = "",
 ) -> bytes:
     active_id = _active_provider_id(state)
     discovery = discovery or {}
+    overrides = overrides or {}
     cards = "".join(
         _provider_card_html(
             p,
             state,
             csrf_token,
             discovery.get(p.id),
+            overrides,
+            default_as_of,
             is_active=(p.id == active_id),
         )
         for p in PROVIDERS
@@ -648,6 +774,45 @@ def _provider_key_for_discovery(
     return _value_for(state, provider.key_env).strip()
 
 
+def _apply_pricing_save(
+    form: dict[str, str],
+    provider: ProviderCatalogEntry,
+    model_ids: list[str],
+    existing: dict[str, dict],
+) -> dict[str, dict]:
+    """Merge one provider's posted per-model rates into the existing
+    override map and return the new full ``{model_id: {field: float}}``.
+
+    Sparse: a blank field, a non-numeric/negative value, or a value equal
+    to the bundled default is omitted (→ falls back to the default). A
+    model whose fields are all omitted is removed entirely (a reset). Only
+    the posted provider's models are touched; other providers' overrides
+    are preserved."""
+    buckets = _PROVIDER_BUCKETS.get(provider.id, ())
+    result = {mid: dict(fields) for mid, fields in existing.items()}
+    for model_id in model_ids:
+        default = pricing_for_model(model_id)
+        sparse: dict[str, float] = {}
+        for field in buckets:
+            raw = (form.get(f"price__{model_id}__{field}") or "").strip()
+            if not raw:
+                continue
+            try:
+                val = float(raw)
+            except ValueError:
+                continue
+            if val < 0:
+                continue
+            if abs(val - getattr(default, field)) < 1e-9:
+                continue  # at the bundled default → keep file sparse
+            sparse[field] = val
+        if sparse:
+            result[model_id] = sparse
+        else:
+            result.pop(model_id, None)  # reset: no overrides for this model
+    return result
+
+
 # ----------------------------------------------------------------------
 # HTTP handler.
 # ----------------------------------------------------------------------
@@ -670,12 +835,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path == "/":
                 state = _load_state(cfg["state_path"])
                 discovery = load_cache(cfg["discovery_cache_path"])
+                overrides = load_pricing_overrides(cfg["pricing_path"])
+                _, default_as_of = load_default_pricing()
                 ctx = begin_request(self)
                 send_html_response(self, _index_html(
                     state,
                     ctx["csrf_token"],
                     status_msg=ctx["flash"],
                     discovery=discovery,
+                    overrides=overrides,
+                    default_as_of=default_as_of,
                 ))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -683,7 +852,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path not in ("/save", "/clear-credentials", "/refresh-models"):
+            if path not in (
+                "/save", "/clear-credentials", "/refresh-models", "/pricing",
+            ):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = read_form(self)
@@ -698,6 +869,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/refresh-models":
                 self._handle_refresh_models(form)
+                return
+            if path == "/pricing":
+                self._handle_pricing(form)
                 return
 
         # --- route bodies ---
@@ -803,6 +977,45 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ),
             )
 
+        def _handle_pricing(self, form: dict[str, str]) -> None:
+            pid = (form.get("provider") or "").strip()
+            provider = provider_by_id(pid)
+            if provider is None:
+                send_see_other(self, "./", flash=f"Unknown provider {pid!r}.")
+                return
+            discovery = load_cache(cfg["discovery_cache_path"])
+            model_ids = _provider_model_ids(provider, discovery.get(provider.id))
+            existing = load_pricing_overrides(cfg["pricing_path"])
+            new_models = _apply_pricing_save(form, provider, model_ids, existing)
+            try:
+                if new_models:
+                    write_json_file(cfg["pricing_path"], {
+                        "as_of": _today_iso(),
+                        "source": "edited via /voice",
+                        "models": new_models,
+                    })
+                else:
+                    # No overrides anywhere now → remove the file so the
+                    # daemon falls back entirely to the bundled defaults.
+                    try:
+                        os.remove(cfg["pricing_path"])
+                    except FileNotFoundError:
+                        pass
+            except OSError as e:
+                logger.exception("could not write pricing override")
+                send_see_other(
+                    self, "./", flash=f"Could not save pricing: {e}",
+                )
+                return
+            restart_voice_daemon()
+            send_see_other(
+                self, "./",
+                flash=(
+                    f"Saved {provider.label} pricing. "
+                    "Voice daemon restarting."
+                ),
+            )
+
     return Handler
 
 
@@ -817,18 +1030,23 @@ def make_server(
     state_path: str = PROVIDER_FILE,
     discovery_cache_path: str = DISCOVERY_CACHE_FILE,
     discovery_http_client: Any | None = None,
+    pricing_path: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is one of:
       - `socket.socket` — pre-bound listener handed off by systemd
       - `(host, port)` tuple — explicit bind
       - `int` — port, binds 127.0.0.1
     Mirrors the other wizard `make_server` signatures so jasper.web.__main__
-    can drive all four uniformly."""
+    can drive all four uniformly. `pricing_path` defaults to the same
+    JASPER_PRICING_FILE the daemon reads, so edits land where it looks."""
     from . import _systemd
     cfg = {
         "state_path": state_path,
         "discovery_cache_path": discovery_cache_path,
         "discovery_http_client": discovery_http_client,
+        "pricing_path": pricing_path or os.environ.get(
+            "JASPER_PRICING_FILE", DEFAULT_PRICING_FILE,
+        ),
     }
     return _systemd.make_http_server(target, _make_handler(cfg))
 

@@ -6,17 +6,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from jasper.usage import (
-    GEMINI_AUDIO_IN_USD_PER_1M,
-    GEMINI_AUDIO_OUT_USD_PER_1M,
-    GEMINI_PRICING,
-    GROK_VOICE_PRICING,
-    OPENAI_REALTIME_MINI_PRICING,
-    OPENAI_REALTIME_PRICING,
     ConnectionUptimeMeter,
+    Pricing,
     SpendCap,
     UsageStore,
+    load_default_pricing,
     load_pricing_overrides,
-    pricing_for_provider,
+    pricing_for_model,
 )
 
 
@@ -26,9 +22,11 @@ def test_open_and_close_session_records_cost(tmp_path: Path):
     sid = store.open_session()
     cost = store.close_session(sid, input_tokens=10_000, output_tokens=20_000)
 
+    # A bare UsageStore falls back to the cheapest current model (gemini 3/12).
+    gemini = pricing_for_model("gemini-3.1-flash-live-preview")
     expected = (
-        10_000 * GEMINI_AUDIO_IN_USD_PER_1M / 1_000_000
-        + 20_000 * GEMINI_AUDIO_OUT_USD_PER_1M / 1_000_000
+        10_000 * gemini.audio_input_per_million_usd / 1_000_000
+        + 20_000 * gemini.audio_output_per_million_usd / 1_000_000
     )
     assert abs(cost - expected) < 1e-9
     assert store.spend_last_24h_usd() == cost
@@ -69,7 +67,7 @@ def test_openai_breakdown_priced_correctly(tmp_path: Path):
             "text_tokens": 120,
         },
     }
-    cost = OPENAI_REALTIME_PRICING.estimate_cost(usage)
+    cost = pricing_for_model("gpt-realtime-2").estimate_cost(usage)
     # Manual:
     #   uncached_audio_in = 50 - 0    = 50      × $32/M = $0.0016
     #   uncached_text_in  = 11950 - 1200 = 10750 × $4/M  = $0.0430
@@ -99,7 +97,7 @@ def test_openai_breakdown_priced_correctly(tmp_path: Path):
 def test_openai_cached_tokens_priced_at_cached_rate():
     """When 1000 of the 1000 input tokens are cached, cost should
     drop to the cached rate ($0.40/M) instead of audio ($32/M)."""
-    fully_cached = OPENAI_REALTIME_PRICING.estimate_cost({
+    fully_cached = pricing_for_model("gpt-realtime-2").estimate_cost({
         "input_tokens": 1000,
         "input_token_details": {
             "text_tokens": 1000,
@@ -117,7 +115,7 @@ def test_close_session_with_usage_dict_uses_breakdown(tmp_path: Path):
     should pass it through to ``Pricing.estimate_cost``. Without the
     dict it falls back to the scalar all-audio path (Gemini-style)."""
     db = tmp_path / "usage.db"
-    store = UsageStore(str(db), pricing=OPENAI_REALTIME_PRICING)
+    store = UsageStore(str(db), pricing=pricing_for_model("gpt-realtime-2"))
 
     # WITH breakdown: small expected cost.
     sid = store.open_session()
@@ -172,12 +170,12 @@ def test_realistic_per_turn_cost_stays_within_bounds():
             "text_tokens": 150,
         },
     }
-    cost_2 = OPENAI_REALTIME_PRICING.estimate_cost(realistic_turn)
+    cost_2 = pricing_for_model("gpt-realtime-2").estimate_cost(realistic_turn)
     assert cost_2 < 0.20, (
         f"gpt-realtime-2 turn estimated at ${cost_2:.4f} — schema drift "
         f"or pricing regression suspected"
     )
-    cost_mini = OPENAI_REALTIME_MINI_PRICING.estimate_cost(realistic_turn)
+    cost_mini = pricing_for_model("gpt-realtime-mini").estimate_cost(realistic_turn)
     assert cost_mini < 0.10, (
         f"gpt-realtime-mini turn estimated at ${cost_mini:.4f} — schema "
         f"drift or pricing regression suspected"
@@ -234,15 +232,48 @@ def test_incompatible_old_schema_is_self_healed(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Gemini rates are the true published values (cap padding lives elsewhere)
+# Bundled defaults: real rates AND model-specific (the reason for model keys)
 # ---------------------------------------------------------------------------
-def test_gemini_rates_are_current_published_values():
-    """Guard against silently reverting to the old padded 5/18 — the
-    dashboard's displayed Gemini cost must reflect real list rates (3/12
-    as of 2026-05-30). Cap conservatism now lives in SpendCap's
-    safety multiplier, not in inflated rates."""
-    assert GEMINI_AUDIO_IN_USD_PER_1M == 3.0
-    assert GEMINI_AUDIO_OUT_USD_PER_1M == 12.0
+def test_bundled_defaults_are_current_and_model_specific():
+    """Bundled defaults reflect real list rates (gemini 3/12) AND keep
+    models distinct: gpt-realtime-1.5 text-out (16) differs from -2 (24) —
+    the gap that motivated model-ID keying over provider keying."""
+    gemini = pricing_for_model("gemini-3.1-flash-live-preview")
+    assert gemini.audio_input_per_million_usd == 3.0
+    assert gemini.audio_output_per_million_usd == 12.0
+    assert pricing_for_model("gpt-realtime-2").text_output_per_million_usd == 24.0
+    assert pricing_for_model("gpt-realtime-1.5").text_output_per_million_usd == 16.0
+
+
+def test_unknown_model_is_unpriced_not_invented():
+    """A model with no bundled/override rate resolves to all-zero pricing
+    labelled 'unpriced:<id>' — we never fabricate a value."""
+    p = pricing_for_model("gpt-realtime-3")
+    assert p.label == "unpriced:gpt-realtime-3"
+    assert p.audio_input_per_million_usd == 0.0
+    assert p.audio_output_per_million_usd == 0.0
+    assert p.flat_per_hour_usd == 0.0
+    # Any usage against an unpriced card costs $0 (surfaced loudly elsewhere).
+    assert p.estimate_cost(
+        {"input_tokens": 10_000, "output_tokens": 10_000}
+    ) == 0.0
+
+
+def test_load_default_pricing_has_as_of_and_models():
+    table, as_of = load_default_pricing()
+    assert as_of  # non-empty date string
+    assert "gpt-realtime-2" in table
+    assert "grok-voice-think-fast-1.0" in table
+
+
+def test_pricing_for_model_accepts_injected_defaults():
+    """`defaults` is a test seam that overrides the bundled table."""
+    custom = {"foo-1": Pricing(
+        audio_input_per_million_usd=1.0, audio_output_per_million_usd=2.0,
+        label="foo-1",
+    )}
+    p = pricing_for_model("foo-1", defaults=custom)
+    assert p.audio_output_per_million_usd == 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -295,71 +326,80 @@ def test_spend_cap_multiplier_floored_at_one_never_disables(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Optional pricing.json override
+# Optional pricing.json override (model-ID keyed)
 # ---------------------------------------------------------------------------
 def test_pricing_override_missing_file_uses_defaults():
     overrides = load_pricing_overrides("/nonexistent/dir/pricing.json")
     assert overrides == {}
-    assert pricing_for_provider("gemini", overrides=overrides) is GEMINI_PRICING
+    p = pricing_for_model("gpt-realtime-2", overrides=overrides)
+    assert p.text_output_per_million_usd == 24.0  # bundled default
 
 
-def test_pricing_override_applies_per_provider(tmp_path: Path):
+def test_pricing_override_applies_per_model(tmp_path: Path):
     f = tmp_path / "pricing.json"
-    f.write_text(json.dumps({
-        "gemini": {
+    f.write_text(json.dumps({"models": {
+        "gemini-3.1-flash-live-preview": {
             "audio_input_per_million_usd": 99.0,
             "audio_output_per_million_usd": 88.0,
         },
-        "grok": {"flat_per_hour_usd": 5.0},
-    }))
+        "grok-voice-think-fast-1.0": {"flat_per_hour_usd": 5.0},
+    }}))
     ov = load_pricing_overrides(str(f))
-    g = pricing_for_provider("gemini", overrides=ov)
+    g = pricing_for_model("gemini-3.1-flash-live-preview", overrides=ov)
     assert g.audio_input_per_million_usd == 99.0
     assert g.audio_output_per_million_usd == 88.0
-    assert g.label == "gemini-live"  # label is not overridable
-    grok = pricing_for_provider("grok", overrides=ov)
+    assert g.label == "gemini-3.1-flash-live-preview"  # label not overridable
+    grok = pricing_for_model("grok-voice-think-fast-1.0", overrides=ov)
     assert grok.flat_per_hour_usd == 5.0
-    # A provider absent from the file keeps its built-in default object.
-    assert pricing_for_provider("openai", overrides=ov) is OPENAI_REALTIME_PRICING
+    # A model absent from the override keeps its bundled default.
+    p = pricing_for_model("gpt-realtime-2", overrides=ov)
+    assert p.text_output_per_million_usd == 24.0
 
 
-def test_pricing_override_openai_mini_uses_its_own_key(tmp_path: Path):
+def test_pricing_override_is_sparse_overlay(tmp_path: Path):
+    """Only the named field changes; the rest of the model's bundled rate
+    card is preserved."""
     f = tmp_path / "pricing.json"
     f.write_text(json.dumps(
-        {"openai_mini": {"audio_input_per_million_usd": 1.0}}
+        {"models": {"gpt-realtime-2": {"text_output_per_million_usd": 28.0}}}
     ))
     ov = load_pricing_overrides(str(f))
-    mini = pricing_for_provider("openai", model="gpt-realtime-mini", overrides=ov)
-    assert mini.audio_input_per_million_usd == 1.0
-    full = pricing_for_provider("openai", model="gpt-realtime-2", overrides=ov)
-    assert full.audio_input_per_million_usd == 32.0  # unaffected
+    p = pricing_for_model("gpt-realtime-2", overrides=ov)
+    assert p.text_output_per_million_usd == 28.0   # overridden
+    assert p.audio_input_per_million_usd == 32.0    # bundled default kept
+
+
+def test_pricing_override_stale_provider_keyed_file_is_ignored(tmp_path: Path):
+    """A pre-existing provider-keyed file (no 'models' map) degrades to
+    bundled defaults — no migration code, no crash."""
+    f = tmp_path / "pricing.json"
+    f.write_text(json.dumps({"gemini": {"audio_input_per_million_usd": 1.0}}))
+    assert load_pricing_overrides(str(f)) == {}
 
 
 def test_pricing_override_malformed_falls_back(tmp_path: Path):
     f = tmp_path / "pricing.json"
     f.write_text("{ not valid json ")
-    ov = load_pricing_overrides(str(f))
-    assert ov == {}
-    assert pricing_for_provider("openai", overrides=ov) is OPENAI_REALTIME_PRICING
+    assert load_pricing_overrides(str(f)) == {}
 
 
 def test_pricing_override_ignores_unknown_and_nonnumeric(tmp_path: Path):
     f = tmp_path / "pricing.json"
-    f.write_text(json.dumps({
-        "gemini": {
-            "audio_input_per_million_usd": 7.0,
+    f.write_text(json.dumps({"models": {
+        "gpt-realtime-2": {
+            "text_output_per_million_usd": 7.0,
             "label": "hacked",                       # not overridable
             "bogus_field": 1.0,                      # unknown field
             "audio_output_per_million_usd": "lots",  # non-numeric
             "cached_input_per_million_usd": True,    # bool is not a rate
         },
-    }))
+    }}))
     ov = load_pricing_overrides(str(f))
-    g = pricing_for_provider("gemini", overrides=ov)
-    assert g.audio_input_per_million_usd == 7.0
-    assert g.label == "gemini-live"
-    assert g.audio_output_per_million_usd == GEMINI_AUDIO_OUT_USD_PER_1M
-    assert g.cached_input_per_million_usd == 0.0
+    p = pricing_for_model("gpt-realtime-2", overrides=ov)
+    assert p.text_output_per_million_usd == 7.0
+    assert p.label == "gpt-realtime-2"
+    assert p.audio_output_per_million_usd == 64.0  # bundled default kept
+    assert p.cached_input_per_million_usd == 0.40  # bundled default kept
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +480,7 @@ def test_aggregate_by_provider_folds_in_connection_cost(tmp_path: Path):
     the connection-uptime cost into its cost_usd so the dashboard shows
     a real number."""
     db = tmp_path / "usage.db"
-    store = UsageStore(str(db), pricing=GROK_VOICE_PRICING)
+    store = UsageStore(str(db), pricing=pricing_for_model("grok-voice-think-fast-1.0"))
     sid = store.open_session(provider="grok")
     store.close_session(sid, input_tokens=1000, output_tokens=1000)  # $0
     now = datetime.now(timezone.utc)
