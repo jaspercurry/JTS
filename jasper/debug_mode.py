@@ -173,15 +173,26 @@ def compute_env_update(
 
 def _console_handler() -> "logging.Handler | None":
     """The live journal ``StreamHandler`` (the one ``basicConfig`` adds to
-    root). The debug toggle raises/lowers *this* handler's level — the
-    logger itself is held at DEBUG by the flight recorder (Tier C), so the
-    handler is the knob that decides whether DEBUG reaches the journal."""
+    root, writing to stderr). The debug toggle raises/lowers *this* handler's
+    level — the logger is held at DEBUG by the flight recorder (Tier C), so
+    the handler is the knob that decides whether DEBUG reaches the journal.
+
+    Prefer the handler whose stream is stderr/stdout so an unrelated
+    StreamHandler can't be mistaken for the console (which could leave the
+    real journal handler emitting DEBUG). Fall back to the first non-file
+    StreamHandler for setups without a stderr/stdout handler (e.g. tests)."""
+    import sys
+    consoles = (sys.stderr, sys.stdout)
+    fallback = None
     for h in logging.getLogger().handlers:
         if isinstance(h, logging.StreamHandler) and not isinstance(
             h, logging.FileHandler
         ):
-            return h
-    return None
+            if getattr(h, "stream", None) in consoles:
+                return h
+            if fallback is None:
+                fallback = h
+    return fallback
 
 
 def set_console_debug(on: bool) -> None:
@@ -190,6 +201,35 @@ def set_console_debug(on: bool) -> None:
     h = _console_handler()
     if h is not None:
         h.setLevel(logging.DEBUG if on else logging.INFO)
+
+
+# Per-process self-quiet: when a debug session's shared TTL elapses, the
+# daemon drops its OWN journal handler back to INFO *in process* — no restart.
+# Armed by apply_for whenever the journal is raised to DEBUG with a future
+# expiry; one timer per process. `_make_timer` is a seam for tests.
+_self_quiet_timer = None
+
+
+def _make_timer(delay: float, fn):
+    import threading
+    t = threading.Timer(delay, fn)
+    t.daemon = True
+    return t
+
+
+def _arm_self_quiet(remaining: float) -> None:
+    global _self_quiet_timer
+    if _self_quiet_timer is not None:
+        _self_quiet_timer.cancel()
+    _self_quiet_timer = _make_timer(remaining, lambda: set_console_debug(False))
+    _self_quiet_timer.start()
+
+
+def _cancel_self_quiet() -> None:
+    global _self_quiet_timer
+    if _self_quiet_timer is not None:
+        _self_quiet_timer.cancel()
+        _self_quiet_timer = None
 
 
 def apply_for(
@@ -215,6 +255,14 @@ def apply_for(
             for name in sub.loggers:
                 logging.getLogger(name).setLevel(logging.DEBUG)
         set_console_debug(active)
+        # Arm an in-process self-quiet: drop the journal handler back to INFO
+        # when the session's TTL elapses — no restart. (voice/aec quiet
+        # themselves this way; jasper-control is only needed to clear the
+        # debug.env SSOT at expiry.)
+        if active and state.remaining_sec > 0:
+            _arm_self_quiet(state.remaining_sec)
+        else:
+            _cancel_self_quiet()
     except Exception:  # pragma: no cover - defensive; startup must survive
         return False
     if active:

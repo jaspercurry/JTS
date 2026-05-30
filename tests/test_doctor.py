@@ -2216,32 +2216,3 @@ def test_web_design_assets_check_registered():
     import inspect
     src = inspect.getsource(doctor.run_async)
     assert "check_web_design_assets" in src
-
-
-# --------------------------------------- flight-recorder dump trigger (Tier C)
-
-
-def test_trigger_flight_recorder_dumps_signals_daemons_on_fail(monkeypatch):
-    """A failing doctor run signals the daemons (cgroup-scoped
-    `systemctl kill --kill-whom=main -s SIGUSR1`) to dump their flight
-    recorders to the journal."""
-    calls = []
-    monkeypatch.setattr(doctor.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
-    doctor._trigger_flight_recorder_dumps([
-        doctor.CheckResult("a", "ok"),
-        doctor.CheckResult("b", "fail", "boom"),
-    ])
-    units = [c[-1] for c in calls]
-    assert "jasper-voice.service" in units
-    assert "jasper-control.service" in units
-    assert all("SIGUSR1" in c and "--kill-whom=main" in c for c in calls)
-
-
-def test_trigger_flight_recorder_dumps_noop_without_fail(monkeypatch):
-    calls = []
-    monkeypatch.setattr(doctor.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
-    doctor._trigger_flight_recorder_dumps([
-        doctor.CheckResult("a", "ok"),
-        doctor.CheckResult("b", "warn"),
-    ])
-    assert calls == []

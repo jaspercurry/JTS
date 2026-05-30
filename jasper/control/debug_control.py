@@ -106,29 +106,18 @@ def _arm_expiry_locked(state: debug_mode.DebugState, now: float) -> None:
 
 
 def _on_expiry() -> None:
-    """Timer callback: the shared TTL elapsed. Clear every flag and drop
-    the affected daemons back to INFO so the speaker quiets itself."""
-    now = time.time()
+    """Timer callback: the shared TTL elapsed. Clear the debug.env SSOT (so
+    `/state` reads off and the next daemon start is clean) and drop control
+    back to INFO in process. voice/aec quiet *themselves* via their own
+    per-process self-quiet timers (``debug_mode.apply_for``) — no restart."""
     with _lock:
-        state = debug_mode.resolve_debug_state(_read_env(), now)
-        external = [
-            SUBSYSTEMS[sid].unit
-            for sid in state.configured
-            if sid != "control"
-        ]
+        state = debug_mode.resolve_debug_state(_read_env(), time.time())
         control_was_on = "control" in state.configured
         _atomic_write(_clear_all())
         _cancel_timer_locked()
-    for unit in external:
-        try:
-            _restart_unit(unit)
-        except (OSError, subprocess.SubprocessError):
-            logger.exception("event=debug.expire_restart_failed unit=%s", unit)
     if control_was_on:
         _apply_control_level(False)
-    logger.info(
-        "event=debug.expired restarted=%s", ",".join(external) or "none",
-    )
+    logger.info("event=debug.expired")
 
 
 # ------------------------------------------------------------- public API

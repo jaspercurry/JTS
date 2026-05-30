@@ -138,10 +138,14 @@ DEBUG. As built:
   reachable from the card via a dedicated `location /debug` nginx
   block (mirroring `/mic`, `/volume`); the card fetches the absolute
   path. Also surfaced in `/state.debug`.
-- **Auto-expiry:** one shared TTL (2 h, re-armed per change) via a
-  `threading.Timer` in control; on fire it clears the flags +
-  restarts the affected daemons back to INFO; reconciled on control
-  startup (clear stale / re-arm pending). The card shows a live
+- **Auto-expiry:** one shared TTL (2 h, re-armed per change). At
+  expiry **each daemon quiets itself in process** — `apply_for` arms a
+  per-process `threading.Timer` that drops that daemon's journal
+  handler back to INFO, **no restart** (so a forgotten session can't
+  blip wake while the household is mid-use). A `threading.Timer` in
+  control additionally clears the `debug.env` SSOT at expiry (so
+  `/state` reads off + the next start is clean) and reverts control
+  in-process; reconciled on control startup. The card shows a live
   countdown.
 - **Additive-only**, floored at WARNING (the invariant) — the toggle
   can only raise to DEBUG.
@@ -196,11 +200,18 @@ class RingFlushHandler(logging.Handler):                   # level = DEBUG
   + `fetch-pi-logs.sh`; DEBUG context lands in the same timeline as
   the anomaly. (Target stays pluggable so dump-files can be added
   later.)
-- **Triggers (all in v1):** automatic on any WARNING/ERROR (built
-  into `flushLevel`), plus explicit `dump(reason)` from the
-  `flag_recent_issue` voice tool, supervisor restart decisions
+- **Triggers:** automatic on any WARNING/ERROR (built into
+  `flushLevel`) — which already covers supervisor restart decisions
   (`event=shairport.wedge_detected`, `event=system_supervisor.userspace_wedge`),
-  and failing `jasper-doctor` checks.
+  since those log ERROR — plus explicit `dump(reason)` from the
+  `flag_recent_issue` voice tool, and a manual `systemctl kill -s
+  USR1 <unit>` for an operator. (A doctor-fail auto-trigger was
+  considered and **dropped** in review: it sent SIGUSR1 to all three
+  daemons on every failing doctor run — high blast radius, low
+  marginal value over the WARNING auto-flush, and a daemon-kill
+  hazard if the handler were ever missing. The SIGUSR1 handler is
+  installed *unconditionally* so an unhandled signal can't terminate
+  a daemon.)
 - **Scope (v1):** voice + aec + control.
 
 *Tier-B integration (done).* `apply_for` now also flips the journal
@@ -226,6 +237,15 @@ earlier draft stored `LogRecord` objects — ~1.3 MB/daemon and an
 unbounded tail if a hot DEBUG line logged a big object; the string store
 removed both.)
 
+*CPU caveat (hot paths).* Pinning the `jasper` logger at DEBUG means
+`logger.isEnabledFor(DEBUG)` is **always True** for `jasper.*` — so the
+usual cheap-guard idiom no longer short-circuits a per-frame
+`logger.debug(...)` on a hot audio path (it builds a record + a string
+every frame). There is none today (checked: `aec_bridge.py` /
+`voice_daemon.py` only log DEBUG on error/status-change paths), and a
+comment at the `install()` site flags it — keep hot-loop logging
+coarser than DEBUG or rate-limit it.
+
 *Honest grounding.* A small custom `logging.Handler` (stdlib
 `MemoryHandler` evaluated — see Mechanism) + the general pattern
 (Linux ftrace snapshot triggers, Android logd, OpenTelemetry
@@ -240,42 +260,32 @@ it to logs.
 (`RingFlushHandler` + `install()` + `dump()` + a SIGUSR1 handler)
 wired into voice/aec/control startup; `debug_mode.apply_for` gained
 `set_console_debug` so the toggle moves the journal handler; explicit
-`dump()` from the `flag_recent_issue` voice tool and a `systemctl
-kill --kill-whom=main -s SIGUSR1` from a failing `jasper-doctor` run
-(supervisor restarts auto-flush — they already log ERROR). Off via
-`JASPER_FLIGHT_RECORDER=disabled`. Tests:
-`tests/test_flight_recorder.py` plus trigger tests in `test_doctor.py`
-/ `test_tools_diagnostic.py`. **Remaining: on-device verification** —
+`dump()` from the `flag_recent_issue` voice tool, plus a manual
+`systemctl kill -s USR1 <unit>` for an operator (supervisor restarts
+auto-flush — they already log ERROR). The handler is installed
+unconditionally so an unhandled SIGUSR1 can't terminate a daemon. Off
+via `JASPER_FLIGHT_RECORDER=disabled`. Tests:
+`tests/test_flight_recorder.py` plus the flag-dump test in
+`test_tools_diagnostic.py`. **Remaining: on-device verification** —
 deploy, then confirm a WARNING produces an `event=flightrec.dump`
 burst in `journalctl`, and that "flag that" + a doctor FAIL each
 trigger one.
 
-**Tier D — done (2026-05-30; pending on-device verification).** A
-"Download diagnostics" button on `/system` runs
-[`scripts/pi-bundle.sh`](../scripts/pi-bundle.sh) (logs + redacted
-config → tarball) and streams it as a one-tap download. As built:
-- **Endpoint:** `GET /diagnostics-bundle` on jasper-control (:8780),
-  reached via a dedicated `location /diagnostics-bundle` nginx block
-  (the `/debug` pattern; `proxy_buffering off` + a long read timeout
-  so it streams). control runs as root, so it can run the bundle;
-  `_run_diagnostics_bundle()` captures the path the script prints,
-  streams the bytes, and deletes the /tmp tarball. Single-flight
-  (`_bundle_lock`): a concurrent click gets 409.
-- **install.sh** stages `pi-bundle.sh` + `_diagnostic_redaction.sh`
-  at `/opt/jasper/scripts/` (the main rsync excludes `scripts/`).
-- **UI:** the button (in the Run-diagnostics card) fetches the blob
-  and triggers a download; a 409/502 surfaces as a message, not a
-  browser error page.
-- **Gate:** a client-side confirm warns it's heavy I/O that may
-  briefly affect audio (the Sonos "may interrupt" idiom). A *hard*
-  server-side refuse-while-playing gate was **deferred** — the bundle
-  is read-only gathering (journalctl + file reads + tar), not
-  audio-destructive, so a confirm is proportionate; it's a one-line
-  add in the handler if it proves disruptive on-device.
-
-Tests: `tests/test_control_diagnostics_bundle.py`. **Remaining:
-on-device verification** (the real bundle + browser download need
-the Pi).
+**Tier D — considered and removed (2026-05-30).** A one-tap
+"Download diagnostics" button (GET `/diagnostics-bundle` →
+`pi-bundle.sh` tarball) was built, then removed in review. For a
+maintainer-operated household speaker it added little over the
+existing SSH flow (`scp pi@jts.local:/tmp/jasper-bundle-*.tar.gz`)
+while widening the surface: any LAN device behind the management
+guard could pull all logs + config in one shot, the redaction is
+*name-based* (misses inline secret **values** and non-secret-but-
+private fields — home coords, SSID, HA URL), and the flight recorder
+now puts more DEBUG into the journal that such a bundle would ship.
+`scripts/pi-bundle.sh` stays the SSH-only diagnostics path it always
+was; the `/system` "Run diagnostics" button (read-only
+`jasper-doctor`, no config/logs) stays. Revisit (with value-level
+redaction) only if JTS ships to households the maintainer can't SSH
+into.
 
 ---
 

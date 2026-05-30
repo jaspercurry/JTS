@@ -128,10 +128,10 @@ def install(
     installed (False if disabled by env)."""
     global _ring
     # Install the SIGUSR1 -> dump handler UNCONDITIONALLY, even when the
-    # recorder is disabled: dump() is a safe no-op while _ring is None, but an
-    # *unhandled* SIGUSR1 terminates the process by default — and jasper-doctor
-    # signals the daemons on a failing run, so a missing handler would kill
-    # voice / aec / control mid-incident.
+    # recorder is disabled: an *unhandled* SIGUSR1 terminates the process by
+    # default, and an operator can `systemctl kill -s USR1 jasper-voice` to
+    # force a dump — so a missing handler would kill the daemon. dump() is a
+    # safe no-op while _ring is None.
     _install_sigusr1()
     if _disabled():
         debug_mode.apply_for(subsystem)  # plain Tier-B toggle, no ring
@@ -139,6 +139,10 @@ def install(
         return False
     debug_mode.set_console_debug(False)  # pin journal at INFO — keep DEBUG off the SD card
     logging.getLogger("jasper").setLevel(logging.DEBUG)  # records exist for the ring
+    # NOTE: with the logger pinned at DEBUG, `logger.isEnabledFor(DEBUG)` is
+    # always True for jasper.* — so a per-frame `logger.debug(...)` on a hot
+    # audio path is no longer free (it builds a record + a formatted string
+    # every frame). Keep hot-loop logging coarser than DEBUG, or rate-limit it.
     _ring = RingFlushHandler(capacity, dump_stream or sys.stderr)
     logging.getLogger("jasper").addHandler(_ring)
     # Apply the persisted Tier-B debug toggle for this subsystem (raises the

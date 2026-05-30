@@ -6,6 +6,7 @@ apply path that must never break daemon startup.
 """
 from __future__ import annotations
 
+import io
 import logging
 
 import pytest
@@ -154,3 +155,62 @@ def test_apply_for_unknown_subsystem_returns_false(tmp_path, restore_jasper_leve
 def test_apply_for_missing_file_does_not_raise(restore_jasper_level):
     # Best-effort: a daemon must start even if debug.env is absent.
     assert dm.apply_for("voice", now=NOW, path="/nonexistent/debug.env") is False
+
+
+# ----------------------------------------------------- self-quiet timer
+
+
+class _FakeTimer:
+    def __init__(self, delay, fn):
+        self.delay, self.fn, self.cancelled = delay, fn, False
+
+    def start(self):
+        pass
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def test_apply_for_arms_self_quiet_timer_with_future_expiry(tmp_path, monkeypatch):
+    """Toggled on with a future expiry, apply_for arms an in-process timer
+    that drops the journal handler back to INFO at expiry — no restart."""
+    root = logging.getLogger()
+    jasper = logging.getLogger("jasper")
+    saved = (root.handlers[:], root.level, jasper.level)
+    root.handlers[:] = []
+    console = logging.StreamHandler(io.StringIO())
+    console.setLevel(logging.INFO)
+    root.addHandler(console)
+    jasper.setLevel(logging.INFO)
+    armed: list = []
+    monkeypatch.setattr(
+        dm, "_make_timer",
+        lambda d, fn: armed.append(_FakeTimer(d, fn)) or armed[-1],
+    )
+    monkeypatch.setattr(dm, "_self_quiet_timer", None, raising=False)
+    f = tmp_path / "debug.env"
+    f.write_text(f"JASPER_DEBUG_VOICE=1\n{dm.EXPIRES_KEY}={int(NOW + 600)}\n")
+    try:
+        dm.apply_for("voice", now=NOW, path=str(f))
+        assert console.level == logging.DEBUG          # toggled on
+        assert len(armed) == 1
+        assert armed[0].delay == pytest.approx(600, abs=1)
+        armed[0].fn()                                  # fire the expiry
+        assert console.level == logging.INFO           # self-quieted in process
+    finally:
+        root.handlers[:], root.level = saved[0], saved[1]
+        jasper.setLevel(saved[2])
+        dm._self_quiet_timer = None
+
+
+def test_apply_for_no_future_expiry_arms_no_timer(
+    tmp_path, monkeypatch, restore_jasper_level
+):
+    armed: list = []
+    monkeypatch.setattr(dm, "_make_timer", lambda d, fn: armed.append((d, fn)))
+    monkeypatch.setattr(dm, "_self_quiet_timer", None, raising=False)
+    f = tmp_path / "debug.env"
+    f.write_text("JASPER_DEBUG_VOICE=1\n")  # active, but no expiry
+    dm.apply_for("voice", now=NOW, path=str(f))
+    assert armed == []
+    dm._self_quiet_timer = None

@@ -137,11 +137,13 @@ def test_reconcile_empty_file_is_noop(dc):
 # ------------------------------------------------------------- expiry fire
 
 
-def test_on_expiry_clears_flags_and_restarts_active(dc):
+def test_on_expiry_clears_flags_without_restart(dc):
+    # voice/aec self-quiet in-process (debug_mode self-quiet timer); the
+    # control-side expiry only clears the debug.env SSOT — no restart.
     debug_control.set_debug("voice", True, now=NOW)
     dc.restarts.clear()
     debug_control._on_expiry()
     env = _env(dc.path)
     assert env["JASPER_DEBUG_VOICE"] == "0"
     assert env[debug_mode.EXPIRES_KEY] == ""
-    assert dc.restarts == ["jasper-voice.service"]  # dropped back to INFO
+    assert dc.restarts == []  # the daemon quiets itself; no restart on expiry
