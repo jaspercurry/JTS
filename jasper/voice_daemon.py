@@ -288,6 +288,13 @@ WAKE_REFRACTORY_SEC = 0.2
 # score. 4x MicCapture's 80 ms frame period.
 WAKE_STALE_SCORE_SEC = 0.32
 
+# How often the WAKE loop recomputes the acoustic condition the fuser keys
+# on (Phase 1.3a). The fire gate reads a cached `_current_condition`; this
+# bounds its staleness while keeping the ring-noise-floor cost off the per-
+# frame path (recompute ~1x/s, not ~12x/s/leg). Conditions — music starting,
+# the room going quiet — change on a human timescale, so ~1 s is ample.
+CONDITION_REFRESH_SEC = 1.0
+
 # Per-leg wake-telemetry capture-ring depth, in frames. Sized to the
 # (pre + post) capture window plus a safety margin: a 4 + 2 = 6 s window
 # with ~2 s slack for the post-fire collection window, so a snapshot
@@ -1532,6 +1539,9 @@ class WakeLoop:
         # fills offsets (which must also refresh it on the hot path).
         self._fuser: WakeFuser = WakeFuser()
         self._current_condition: str = DEFAULT_CONDITION
+        # Loop-clock timestamp of the last condition recompute (Phase 1.3a);
+        # 0.0 forces a refresh on the first WAKE frame.
+        self._condition_refreshed_at: float = 0.0
         self._connection = connection
         self._ducker = ducker
         # Direct camilla handle for `CueDuck` (snapshot-based duck
@@ -2141,6 +2151,45 @@ class WakeLoop:
             self._measurement_safety_task = None
         return "ok"
 
+    def _read_music_dbfs(self) -> float | None:
+        """Most-recent music-chain loudness (the TtsVolumeTracker anchor) in
+        dBFS, or None when unavailable. Cheap — a cached number, no async
+        I/O — so it is safe to call on the per-frame wake path."""
+        tracker = getattr(self, "_tts_volume_tracker", None)
+        if tracker is None:
+            return None
+        anchor = getattr(tracker, "_anchor_dbfs", None)
+        if anchor is None or anchor <= -120.0:
+            return None
+        return float(anchor)
+
+    def _maybe_refresh_condition(self, now_loop: float) -> None:
+        """Refresh `_current_condition` (the acoustic condition the fuser
+        keys on) at most once per CONDITION_REFRESH_SEC. Lets the per-frame
+        fire gate work off a live (~1 s fresh) condition once the fuser has
+        offsets, without paying the ring-noise-floor cost every frame.
+        Behavior-neutral while offsets are empty — the fuser ignores the
+        condition — and allocation-free on the common timer-not-elapsed
+        path."""
+        if (now_loop - self._condition_refreshed_at) < CONDITION_REFRESH_SEC:
+            return
+        # Stamp the timer BEFORE the recompute so a persistent failure retries
+        # at ~1 Hz (not every frame). Keep the recompute fail-soft: the wake
+        # path must never break because of ancillary condition estimation.
+        self._condition_refreshed_at = now_loop
+        try:
+            self._current_condition = classify_condition(
+                music_dbfs=self._read_music_dbfs(),
+                noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
+            ).condition
+        except Exception:  # noqa: BLE001
+            # Keep the last good condition. The sub-helpers are already
+            # fail-soft; this is belt-and-suspenders against a future
+            # classify_condition change raising on the per-frame loop — an
+            # unguarded raise here would propagate out of the frame loop and
+            # stop wake detection.
+            pass
+
     async def _handle_wake_frame(self, frame, *, leg: str = "on") -> None:
         """Score one frame on the named leg. Legs:
           - 'on'   → post-AEC3 BEST_A (primary, the session audio source)
@@ -2161,6 +2210,11 @@ class WakeLoop:
         now_loop = asyncio.get_event_loop().time()
         if now_loop < self._refractory_until:
             return
+
+        # Keep the condition the fuser keys on fresh (Phase 1.3a): recompute
+        # ~1x/s so the per-frame gate below works off a live condition once
+        # offsets exist. Behavior-neutral while offsets are empty.
+        self._maybe_refresh_condition(now_loop)
 
         # Look up this leg's runtime. Always track the raw score
         # (regardless of threshold) so the OTHER legs, when they fire,
@@ -2343,20 +2397,13 @@ class WakeLoop:
             # the wake hot path is free. Not a renderer probe (would
             # add ~50 ms of async work); the anchor is a recent-ish
             # cached number, accurate to within ~1 s.
-            music_volume_db = None
-            music_active_proxy = False
-            tracker = getattr(self, "_tts_volume_tracker", None)
-            if tracker is not None:
-                # `_anchor_dbfs` is the most recent observed
-                # music-chain RMS in dBFS (defaults to
-                # DEFAULT_ANCHOR_DBFS until the first tick observes
-                # real music). Proxy: louder than -60 dBFS = "music
-                # probably playing." Imperfect (TTS uses the same
-                # chain) but useful for FP correlation.
-                anchor = getattr(tracker, "_anchor_dbfs", None)
-                if anchor is not None and anchor > -120.0:
-                    music_volume_db = float(anchor)
-                    music_active_proxy = anchor > -60.0
+            # Proxy: louder than -60 dBFS = "music probably playing."
+            # Imperfect (TTS uses the same playback chain) but useful for FP
+            # correlation. Same cached anchor the live-condition refresh reads.
+            music_volume_db = self._read_music_dbfs()
+            music_active_proxy = (
+                music_volume_db is not None and music_volume_db > -60.0
+            )
             # Acoustic condition (Phase 1.1): music from the playback anchor
             # above; quiet-vs-ambient from the pre-fire mic noise floor over
             # the capture ring. Recorded so production fires carry the same

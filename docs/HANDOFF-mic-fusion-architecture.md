@@ -398,11 +398,15 @@ CPU-gated.
   `classify_condition`) recording `condition_class` per fire — all merged in
   #385; **1.2** the thin `effective_threshold(leg, condition)` decision point
   (`jasper/wake_fusion.py` `WakeFuser`, wired into both threshold compares in
-  `_handle_wake_frame`; empty offsets ⇒ today's OR-gate). Production fires are
-  condition-labelled and the fuser seam is in place. **Remaining:** **1.3** —
-  fill `WakeFuser`'s per-(leg, condition) offsets from the corpus, and refresh
-  `_current_condition` on the hot path (today it only updates on a fire, which
-  is fine while offsets are empty).
+  `_handle_wake_frame`; empty offsets ⇒ today's OR-gate); **1.3a** the
+  live-condition refresh (`WakeLoop._maybe_refresh_condition`, ~1 Hz off the
+  per-frame path via `CONDITION_REFRESH_SEC`) so the gate keys on a current
+  condition the moment offsets exist. Production fires are condition-labelled
+  and the fuser seam is live. **Remaining:** **1.3b** — fill `WakeFuser`'s
+  per-(leg, condition) offsets from the corpus. This is the **only data-gated
+  step**: a `WakeFuser(offsets={...})` change, no hot-path or signature edits,
+  derived from per-(leg, condition) false-fire / miss rates in the labelled
+  corpus.
 - **Build:** `default_threshold_offset` per `LegSpec`; a lightweight
   `ConditionContext` estimator (music flag from the **playback-ref RMS
   the bridge already computes**; noise floor / SNR proxy) — *done in 1.1b,
