@@ -61,7 +61,7 @@ from .usage import (
     SpendCap,
     UsageStore,
     load_pricing_overrides,
-    pricing_for_provider,
+    pricing_for_model,
 )
 from .voice.session import AudioOutChunk, LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
@@ -3445,16 +3445,25 @@ async def run() -> None:
     cfg = Config.from_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    pricing = pricing_for_provider(
-        cfg.voice_provider,
-        model=_active_model(cfg),
-        overrides=load_pricing_overrides(),
+    active_model = _active_model(cfg)
+    pricing = pricing_for_model(
+        active_model, overrides=load_pricing_overrides(),
     )
     logger.info(
-        "spend cap: provider=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
-        cfg.voice_provider, pricing.label, cfg.daily_spend_cap_usd,
-        cfg.daily_spend_cap_safety_multiplier,
+        "spend cap: provider=%s model=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
+        cfg.voice_provider, active_model, pricing.label,
+        cfg.daily_spend_cap_usd, cfg.daily_spend_cap_safety_multiplier,
     )
+    if pricing.label.startswith("unpriced:"):
+        # No rate for the active model (not in the bundled dated defaults
+        # nor the override). We do NOT invent one — cost will read $0 and
+        # the spend cap can't bound it until a rate is entered at /voice.
+        logger.warning(
+            "event=pricing.unpriced model=%s — no rate available; cost "
+            "estimates will be $0 and the spend cap cannot bound this "
+            "model until you set a rate at http://%s/voice",
+            active_model, cfg.hostname,
+        )
     usage_store = UsageStore(cfg.usage_db, pricing=pricing)
     spend_cap = SpendCap(
         usage_store,

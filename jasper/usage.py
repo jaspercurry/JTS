@@ -5,11 +5,13 @@ truth: Google, OpenAI, and xAI each compute final invoices on their
 side. We log token counts and a USD estimate so the daemon can refuse
 new wakes once a daily ceiling is hit.
 
-Pricing is provider-aware AND modality-aware. ``UsageStore`` is
-constructed with a ``Pricing`` snapshot of whichever voice provider
-is active; estimated cost goes into the row at session-close time, so
-the 24-hour spend sum naturally aggregates across providers if the
-user switches mid-window.
+Pricing is per-model AND modality-aware. ``UsageStore`` is constructed
+with a ``Pricing`` snapshot for whichever model is active; estimated
+cost goes into the row at session-close time, so the 24-hour spend sum
+naturally aggregates across models/providers if the user switches
+mid-window. Default rates ship dated in
+``jasper/data/model_pricing.json`` (see ``load_default_pricing`` /
+``pricing_for_model``); there is no provider-level price.
 
 Modality split (OpenAI Realtime 2 specifically): the ``response.usage``
 object on each ``response.done`` carries an ``input_token_details``
@@ -37,11 +39,11 @@ without inflating the displayed number by applying a read-time
 ``safety_multiplier`` in ``SpendCap`` — so the dashboard reads honest
 while the breaker keeps headroom.
 
-Override file: rates here are built-in defaults. An optional
+Override file: the bundled rates are defaults. An optional
 ``/var/lib/jasper/pricing.json`` (``JASPER_PRICING_FILE``) overlays them
-per provider using the ``Pricing`` field names as keys — see
-``load_pricing_overrides``. Missing/malformed file falls back to these
-defaults (fail-soft).
+per MODEL ID using the ``Pricing`` field names as keys — see
+``load_pricing_overrides``. Missing/malformed file falls back to the
+bundled defaults (fail-soft).
 """
 from __future__ import annotations
 
@@ -165,96 +167,21 @@ class Pricing:
         ) / 1_000_000
 
 
-# Gemini Live (gemini-3.1-flash-live-preview) — Google's published
-# audio rates as of 2026-05-30 (ai.google.dev/gemini-api/docs/pricing):
-# $3.00 / 1M audio in, $12.00 / 1M audio out. These are now the TRUE
-# rates — the original 5 / 18 carried deliberate slack to keep the spend
-# cap conservative, but that inflated the dashboard's displayed cost.
-# The conservatism now lives in ``SpendCap``'s read-time safety
-# multiplier instead, so the stored cost_usd is an honest estimate.
-# Gemini Live's usage_metadata doesn't surface a modality split, so
-# text/cached stay 0 and ``estimate_cost`` falls through to the
-# all-audio path (audio dominates a voice turn, so this slightly
-# over-estimates the cheaper text history rather than under-billing).
-GEMINI_AUDIO_IN_USD_PER_1M = 3.0
-GEMINI_AUDIO_OUT_USD_PER_1M = 12.0
-
-GEMINI_PRICING = Pricing(
-    audio_input_per_million_usd=GEMINI_AUDIO_IN_USD_PER_1M,
-    audio_output_per_million_usd=GEMINI_AUDIO_OUT_USD_PER_1M,
-    label="gemini-live",
-)
-
-
-# OpenAI Realtime (gpt-realtime-2 GA, 2026-05-07).
-# Per the pricing page (developers.openai.com/api/docs/pricing):
-#   audio in:    $32.00 / 1M
-#   audio out:   $64.00 / 1M
-#   text in:     $4.00  / 1M    (system instructions, tool defs, history)
-#   text out:    $24.00 / 1M    (transcripts produced alongside audio)
-#   cached in:   $0.40  / 1M    (80× cheaper — applies to stable prefix)
-# A typical tool-using turn after the prompt cache warms up has most of
-# its input come from `cached` (system prompt + tool defs) at $0.40,
-# with only ~50–100 tokens of fresh user audio at $32. Output is mostly
-# audio with a small transcript companion. Per-turn cost lands in the
-# ~$0.005–$0.02 range, NOT $0.40 — pricing every token at the audio
-# rate (which is what the previous implementation did) overstated by
-# 50–100×.
-OPENAI_REALTIME_PRICING = Pricing(
-    audio_input_per_million_usd=32.0,
-    audio_output_per_million_usd=64.0,
-    text_input_per_million_usd=4.0,
-    text_output_per_million_usd=24.0,
-    cached_input_per_million_usd=0.40,
-    label="openai-realtime-2",
-)
-
-# OpenAI Realtime mini (gpt-realtime-mini):
-#   audio in $10, audio out $20, text in $0.60, text out $2.40, cached $0.30.
-OPENAI_REALTIME_MINI_PRICING = Pricing(
-    audio_input_per_million_usd=10.0,
-    audio_output_per_million_usd=20.0,
-    text_input_per_million_usd=0.60,
-    text_output_per_million_usd=2.40,
-    cached_input_per_million_usd=0.30,
-    label="openai-realtime-mini",
-)
-
-
-# xAI Grok Voice Agent: flat $3.00 / hour of open connection (not
-# per-token), per docs.x.ai/developers/pricing (2026-05-30). Token
-# rates are zero; cost is metered from connection uptime by
-# ``ConnectionUptimeMeter`` (keyed off this non-zero flat_per_hour_usd)
-# rather than from the token rows.
-GROK_VOICE_PRICING = Pricing(
-    audio_input_per_million_usd=0.0,
-    audio_output_per_million_usd=0.0,
-    flat_per_hour_usd=3.0,
-    label="grok-voice",
-)
-
-
 # ---------------------------------------------------------------------------
-# Optional runtime pricing override
+# Bundled default pricing — dated, model-ID-keyed, shipped in the repo
 # ---------------------------------------------------------------------------
-# Provider rates drift. Rather than require a code edit + redeploy each
-# time, an operator (or, later, the /voice pricing paste-in) can drop a
-# JSON file that overlays the built-in defaults. The schema is
-# intentionally identical to the ``Pricing`` dataclass float fields so the
-# future "have a chatbot fetch the latest rates and emit this JSON" flow
-# writes straight into it with no key translation:
-#
-#   {
-#     "gemini":      {"audio_input_per_million_usd": 3.0,
-#                     "audio_output_per_million_usd": 12.0},
-#     "openai":      {"audio_input_per_million_usd": 32.0, ...},
-#     "openai_mini": {...},
-#     "grok":        {"flat_per_hour_usd": 3.0}
-#   }
-DEFAULT_PRICING_FILE = "/var/lib/jasper/pricing.json"
+# Default rates live in version-controlled data, not Python constants, so
+# they carry an ``as_of`` date and can be refreshed by editing JSON (or via
+# the /voice pricing prompt flow) rather than a code change. Keyed by exact
+# model ID — there is no provider-level price (a single rate for a whole
+# provider isn't a real thing). User overrides in /var/lib/jasper/pricing.json
+# overlay these per model. See docs/HANDOFF-pricing-editor.md.
+BUNDLED_PRICING_FILE = str(
+    Path(__file__).resolve().parent / "data" / "model_pricing.json"
+)
 
-# The float fields an override may set. ``label`` is intentionally not
-# overridable (it identifies the rate card in logs).
+# The float fields a pricing entry (bundled or override) may set. ``label``
+# is not data — it identifies the rate card in logs.
 _OVERRIDABLE_FIELDS = (
     "audio_input_per_million_usd",
     "audio_output_per_million_usd",
@@ -264,19 +191,96 @@ _OVERRIDABLE_FIELDS = (
     "flat_per_hour_usd",
 )
 
-# Override-file provider keys → the built-in default they overlay.
-_OVERRIDE_KEYS = ("gemini", "openai", "openai_mini", "grok")
+
+def _clean_pricing_fields(fields: object) -> dict[str, float]:
+    """Keep only recognised, numeric (non-bool) rate fields from a raw JSON
+    object. Forward-compatible: unknown keys / bad values are dropped."""
+    if not isinstance(fields, dict):
+        return {}
+    return {
+        k: float(v)
+        for k, v in fields.items()
+        if k in _OVERRIDABLE_FIELDS
+        and isinstance(v, (int, float))
+        and not isinstance(v, bool)
+    }
+
+
+def _pricing_from_fields(label: str, fields: dict[str, float]) -> Pricing:
+    return Pricing(
+        audio_input_per_million_usd=fields.get("audio_input_per_million_usd", 0.0),
+        audio_output_per_million_usd=fields.get("audio_output_per_million_usd", 0.0),
+        text_input_per_million_usd=fields.get("text_input_per_million_usd", 0.0),
+        text_output_per_million_usd=fields.get("text_output_per_million_usd", 0.0),
+        cached_input_per_million_usd=fields.get("cached_input_per_million_usd", 0.0),
+        flat_per_hour_usd=fields.get("flat_per_hour_usd", 0.0),
+        label=label,
+    )
+
+
+def load_default_pricing(
+    path: str | None = None,
+) -> tuple[dict[str, Pricing], str]:
+    """Load the bundled, dated default rates → ``({model_id: Pricing}, as_of)``.
+
+    The file is package data (``jasper/data/model_pricing.json``); it's
+    missing only on a packaging bug. Treat unreadable/corrupt as a logged
+    ERROR + an empty map (every model then resolves "unpriced" and is
+    surfaced) rather than crashing the daemon."""
+    path = path or BUNDLED_PRICING_FILE
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+        models = raw["models"]
+        if not isinstance(models, dict):
+            raise ValueError("'models' must be an object")
+        as_of = str(raw.get("as_of", ""))
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "default pricing %s unreadable (%s: %s); all models will be "
+            "unpriced until a rate is provided",
+            path, type(e).__name__, e,
+        )
+        return {}, ""
+    out = {
+        str(mid): _pricing_from_fields(str(mid), _clean_pricing_fields(fields))
+        for mid, fields in models.items()
+    }
+    return out, as_of
+
+
+# Loaded once at import. Refreshing the file needs a process restart (the
+# daemon restarts on every /voice save, so that path is automatic).
+_DEFAULT_MODEL_PRICING, _DEFAULT_PRICING_AS_OF = load_default_pricing()
+
+# Fallback model for a UsageStore built without explicit pricing — the
+# dashboard read path (never computes cost) and tests. Production always
+# passes the active model's pricing.
+_DEFAULT_DISPLAY_MODEL = "gemini-3.1-flash-live-preview"
+
+
+# ---------------------------------------------------------------------------
+# Optional user override — /var/lib/jasper/pricing.json
+# ---------------------------------------------------------------------------
+# Same shape as the bundled file (a ``models`` map keyed by model ID), but
+# sparse: only the rates the user changed. Overlays the bundled defaults per
+# model. Written by the /voice pricing editor; refreshable via the prompt
+# flow. Example:
+#
+#   {"as_of": "2026-08-01",
+#    "models": {"gpt-realtime-2": {"text_output_per_million_usd": 28.0}}}
+DEFAULT_PRICING_FILE = "/var/lib/jasper/pricing.json"
 
 
 def load_pricing_overrides(path: str | None = None) -> dict[str, dict]:
-    """Load the optional pricing override file.
+    """Load the optional override file → ``{model_id: {field: float}}``.
 
-    Returns ``{provider_key: {field: float}}`` for any provider keys in
-    ``_OVERRIDE_KEYS`` with at least one recognised float field. A
-    missing file returns ``{}`` (built-in rates apply). A malformed file
-    logs a WARNING and returns ``{}`` — a bad hand-edit must never stop
-    the daemon; the built-in rates remain authoritative. Unknown keys
-    and non-numeric values are ignored (forward-compatible)."""
+    Expects ``{"models": {"<model_id>": {field: value}}}`` (plus optional
+    ``as_of`` / ``source``). A missing file → ``{}`` (bundled rates apply).
+    A malformed file logs a WARNING and returns ``{}`` — a bad hand-edit
+    must never stop the daemon. Non-numeric / unknown fields are dropped. A
+    stale provider-keyed file (no ``models`` map) harmlessly returns ``{}``,
+    so the old format degrades to bundled defaults with no migration code."""
     path = path or os.environ.get("JASPER_PRICING_FILE", DEFAULT_PRICING_FILE)
     if not path or not os.path.exists(path):
         return {}
@@ -287,64 +291,54 @@ def load_pricing_overrides(path: str | None = None) -> dict[str, dict]:
             raise ValueError("top-level JSON must be an object")
     except Exception as e:  # noqa: BLE001
         logger.warning(
-            "pricing override %s ignored (%s: %s); using built-in rates",
+            "pricing override %s ignored (%s: %s); using bundled rates",
             path, type(e).__name__, e,
         )
         return {}
+    models = raw.get("models")
+    if not isinstance(models, dict):
+        return {}
     out: dict[str, dict] = {}
-    for key in _OVERRIDE_KEYS:
-        fields = raw.get(key)
-        if not isinstance(fields, dict):
-            continue
-        clean = {
-            k: float(v)
-            for k, v in fields.items()
-            if k in _OVERRIDABLE_FIELDS and isinstance(v, (int, float))
-            and not isinstance(v, bool)
-        }
+    for model_id, fields in models.items():
+        clean = _clean_pricing_fields(fields)
         if clean:
-            out[key] = clean
+            out[str(model_id)] = clean
     if out:
-        logger.info("pricing override loaded from %s: %s", path, sorted(out))
+        logger.info(
+            "pricing override loaded from %s: %d model(s)", path, len(out),
+        )
     return out
 
 
-def _with_overrides(base: Pricing, overrides: dict | None, key: str) -> Pricing:
-    fields = (overrides or {}).get(key)
-    if not fields:
-        return base
-    return replace(base, **fields)
-
-
-def pricing_for_provider(
-    provider: str,
+def pricing_for_model(
+    model_id: str,
     *,
-    model: str | None = None,
     overrides: dict | None = None,
+    defaults: dict[str, Pricing] | None = None,
 ) -> Pricing:
-    """Return the pricing snapshot for a provider/model combination.
+    """Resolve the rate card for an exact model ID.
 
-    `model` is a hint — for OpenAI we differentiate `gpt-realtime-2`
-    vs `gpt-realtime-mini` based on substring match. `overrides` is the
-    parsed ``load_pricing_overrides()`` mapping; when present, the
-    matching provider's fields overlay the built-in defaults. Unknown
-    providers fall back to Gemini pricing (the historical default), with
-    a label indicating the fallback so journalctl makes it visible."""
-    if provider == "gemini":
-        return _with_overrides(GEMINI_PRICING, overrides, "gemini")
-    if provider == "openai":
-        if model and "mini" in model.lower():
-            return _with_overrides(
-                OPENAI_REALTIME_MINI_PRICING, overrides, "openai_mini",
-            )
-        return _with_overrides(OPENAI_REALTIME_PRICING, overrides, "openai")
-    if provider == "grok":
-        return _with_overrides(GROK_VOICE_PRICING, overrides, "grok")
-    return Pricing(
-        audio_input_per_million_usd=GEMINI_AUDIO_IN_USD_PER_1M,
-        audio_output_per_million_usd=GEMINI_AUDIO_OUT_USD_PER_1M,
-        label=f"unknown-provider:{provider}",
-    )
+    The bundled default for the model, with any ``overrides[model_id]``
+    fields overlaid. An unknown model (in neither the bundled file nor the
+    override) has genuinely no price → an all-zero ``Pricing`` labelled
+    ``unpriced:<id>``; callers should surface that loudly rather than treat
+    $0 as "free". There is deliberately no provider-level fallback — we
+    never invent a rate.
+
+    ``defaults`` overrides the bundled table (tests); otherwise the table
+    loaded at import is used."""
+    table = _DEFAULT_MODEL_PRICING if defaults is None else defaults
+    base = table.get(model_id)
+    if base is None:
+        base = Pricing(
+            audio_input_per_million_usd=0.0,
+            audio_output_per_million_usd=0.0,
+            label=f"unpriced:{model_id}",
+        )
+    fields = (overrides or {}).get(model_id)
+    if fields:
+        base = replace(base, **fields)
+    return base
 
 
 _SESSIONS_TABLE_DDL = """
@@ -407,10 +401,12 @@ class UsageStore:
             )
             """
         )
-        # Default to Gemini pricing so existing callers (and tests)
-        # that don't pass `pricing=` keep working with their historical
-        # cost estimates.
-        self._pricing: Pricing = pricing or GEMINI_PRICING
+        # Callers that don't pass `pricing=` (the dashboard read path, which
+        # never computes cost, and tests) fall back to the cheapest current
+        # model's rates. Production always passes the active model's pricing.
+        self._pricing: Pricing = pricing or pricing_for_model(
+            _DEFAULT_DISPLAY_MODEL
+        )
 
     def open_session(self, provider: str | None = None) -> int:
         cur = self._conn.execute(
