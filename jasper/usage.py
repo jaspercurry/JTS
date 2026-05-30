@@ -272,6 +272,22 @@ _DEFAULT_DISPLAY_MODEL = "gemini-3.1-flash-live-preview"
 DEFAULT_PRICING_FILE = "/var/lib/jasper/pricing.json"
 
 
+def sanitize_pricing_models(raw_models: object) -> dict[str, dict]:
+    """Validate a raw ``{model_id: {field: value}}`` map → a clean
+    ``{model_id: {field: float}}`` keeping only recognised numeric rate
+    fields and dropping models with none left. Shared by the override-file
+    loader and the ``/voice`` paste-import path so both apply identical
+    rules to operator- and chatbot-supplied JSON."""
+    if not isinstance(raw_models, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for model_id, fields in raw_models.items():
+        clean = _clean_pricing_fields(fields)
+        if clean:
+            out[str(model_id)] = clean
+    return out
+
+
 def load_pricing_overrides(path: str | None = None) -> dict[str, dict]:
     """Load the optional override file → ``{model_id: {field: float}}``.
 
@@ -295,14 +311,7 @@ def load_pricing_overrides(path: str | None = None) -> dict[str, dict]:
             path, type(e).__name__, e,
         )
         return {}
-    models = raw.get("models")
-    if not isinstance(models, dict):
-        return {}
-    out: dict[str, dict] = {}
-    for model_id, fields in models.items():
-        clean = _clean_pricing_fields(fields)
-        if clean:
-            out[str(model_id)] = clean
+    out = sanitize_pricing_models(raw.get("models"))
     if out:
         logger.info(
             "pricing override loaded from %s: %d model(s)", path, len(out),

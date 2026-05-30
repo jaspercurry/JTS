@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import os
 import re
@@ -58,6 +59,7 @@ from jasper.usage import (
     load_default_pricing,
     load_pricing_overrides,
     pricing_for_model,
+    sanitize_pricing_models,
 )
 
 from ._common import (
@@ -495,6 +497,101 @@ def _pricing_section_html(
     </details>"""
 
 
+# Official pricing pages the research prompt points a chatbot at. The
+# provider APIs don't expose voice-model prices (see HANDOFF-pricing-editor),
+# so a human/chatbot reads these.
+_PRICING_PAGE_URLS = {
+    "gemini": "https://ai.google.dev/gemini-api/docs/pricing",
+    "openai": "https://platform.openai.com/docs/pricing",
+    "grok": "https://docs.x.ai/developers/pricing",
+}
+
+
+def _pricing_research_prompt(
+    discovery: dict[str, DiscoverySnapshot] | None,
+) -> str:
+    """Build a copy-paste prompt enumerating the EXACT current models
+    (catalog ∪ discovered) and the JSON schema we want back. Generated
+    dynamically so it always reflects the models this speaker actually
+    offers, including any newly discovered ones."""
+    discovery = discovery or {}
+    today = _today_iso()
+    lines = []
+    for provider in PROVIDERS:
+        buckets = _PROVIDER_BUCKETS.get(provider.id, ())
+        if not buckets:
+            continue
+        url = _PRICING_PAGE_URLS.get(provider.id, "(official pricing page)")
+        lines.append(f"- {provider.label} ({provider.vendor}) — pricing: {url}")
+        fields = ", ".join(buckets)
+        for model_id in _provider_model_ids(provider, discovery.get(provider.id)):
+            lines.append(f"    - {model_id}: {fields}")
+    model_block = "\n".join(lines)
+    return (
+        "You are helping keep a smart speaker's voice-model cost estimates "
+        f"accurate. Today is {today}. For each model below, look up its "
+        "CURRENT official price from the linked pricing page.\n\n"
+        "Models and the rate fields I need (token rates are USD per "
+        "1,000,000 tokens; flat_per_hour_usd is USD per hour of open "
+        "connection):\n\n"
+        f"{model_block}\n\n"
+        "Reply with ONLY a JSON object in EXACTLY this shape — same model "
+        "IDs and field names, numbers only (no \"$\" or units), and omit "
+        "any field or model you can't find a confident official price for:\n\n"
+        "{\n"
+        f'  "as_of": "{today}",\n'
+        '  "source": "<where you found the prices>",\n'
+        '  "models": {\n'
+        '    "<model-id>": { "audio_input_per_million_usd": 0.0 }\n'
+        "  }\n"
+        "}\n\n"
+        "Double-check against the official pricing page; do not guess."
+    )
+
+
+def _pricing_refresh_html(
+    discovery: dict[str, DiscoverySnapshot] | None,
+    csrf_token: str,
+) -> str:
+    """Phase-3 section: a copyable research prompt (auto-filled with the
+    speaker's exact current models) + a paste-back box that imports the
+    chatbot's JSON. Standalone form POSTing to /pricing-import."""
+    prompt = html.escape(_pricing_research_prompt(discovery))
+    return f"""
+<h2 style="margin-top:2em">Refresh all rates from a chatbot</h2>
+<p class="hint">No provider API returns voice-model prices, so this speaker
+can't fetch them automatically. Copy the prompt below into any AI chatbot
+— it lists the exact models this speaker uses and asks for current official
+prices — then paste back the JSON it replies with.</p>
+<details class="disclosure">
+  <summary>1. Copy this research prompt</summary>
+  <div class="disclosure-body">
+    <textarea id="pricing-prompt" readonly rows="14"
+      style="width:100%; font-family:monospace; font-size:0.8em">{prompt}</textarea>
+    <div class="actions" style="margin-top:0.5em">
+      <button type="button" class="secondary"
+        onclick="const t=document.getElementById('pricing-prompt');t.focus();t.select();navigator.clipboard&amp;&amp;navigator.clipboard.writeText(t.value)">Copy prompt</button>
+    </div>
+  </div>
+</details>
+<details class="disclosure">
+  <summary>2. Paste the JSON it gives you back</summary>
+  <div class="disclosure-body">
+    <form method="post" action="pricing-import">
+      {csrf_field_html(csrf_token)}
+      <textarea name="payload" rows="12"
+        style="width:100%; font-family:monospace; font-size:0.8em"
+        placeholder="{{&quot;models&quot;: {{&quot;gpt-realtime-2&quot;: {{&quot;audio_input_per_million_usd&quot;: 32}}}}}}"></textarea>
+      <div class="actions" style="margin-top:0.5em">
+        <button class="secondary" type="submit">Validate &amp; import rates</button>
+      </div>
+    </form>
+    <p class="hint">Replaces the per-model overrides with the validated
+    values, then restarts the voice daemon.</p>
+  </div>
+</details>"""
+
+
 def _provider_card_html(
     provider: ProviderCatalogEntry,
     state: dict[str, str],
@@ -659,6 +756,7 @@ never sent anywhere except the relevant provider's API.</p>
 <p style="margin-top:2em">
   <button type="submit" form="save-form">Save and restart voice</button>
 </p>
+{_pricing_refresh_html(discovery, csrf_token)}
 
 <p class="hint" style="margin-top:2em">
   See <a href="https://github.com/jaspercurry/JTS/blob/main/docs/HANDOFF-voice-providers.md" target="_blank" rel="noopener">HANDOFF-voice-providers.md</a> for architecture, per-provider trade-offs, and the steps for adding a fourth backend.
@@ -813,6 +911,40 @@ def _apply_pricing_save(
     return result
 
 
+def _apply_pricing_paste(
+    raw_text: str,
+) -> tuple[dict[str, dict] | None, str | None]:
+    """Parse a chatbot's pasted pricing JSON → ``(models_map, None)`` or
+    ``(None, error_message)``. Tolerant of a ```json fence and of a bare
+    ``{model_id: {...}}`` map without the ``{"models": ...}`` wrapper.
+    Validation reuses ``sanitize_pricing_models`` so pasted JSON is held to
+    the same rules as a hand-edited override file."""
+    text = (raw_text or "").strip()
+    if not text:
+        return None, "Paste the JSON your chatbot produced first."
+    if text.startswith("```"):
+        # Strip a leading ```/```json fence line and a trailing ``` fence.
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError) as e:
+        return None, f"That doesn't parse as JSON ({e})."
+    if not isinstance(data, dict):
+        return None, 'Expected a JSON object with a "models" map.'
+    # Accept either {"models": {...}} or a bare {model_id: {...}} map.
+    models = sanitize_pricing_models(data.get("models", data))
+    if not models:
+        return None, (
+            "No usable model rates found. Expected "
+            '{"models": {"<model-id>": {"audio_input_per_million_usd": '
+            "<number>, ...}}}."
+        )
+    return models, None
+
+
 # ----------------------------------------------------------------------
 # HTTP handler.
 # ----------------------------------------------------------------------
@@ -854,6 +986,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             path = url.path.rstrip("/") or "/"
             if path not in (
                 "/save", "/clear-credentials", "/refresh-models", "/pricing",
+                "/pricing-import",
             ):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -872,6 +1005,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/pricing":
                 self._handle_pricing(form)
+                return
+            if path == "/pricing-import":
+                self._handle_pricing_import(form)
                 return
 
         # --- route bodies ---
@@ -1012,6 +1148,32 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self, "./",
                 flash=(
                     f"Saved {provider.label} pricing. "
+                    "Voice daemon restarting."
+                ),
+            )
+
+        def _handle_pricing_import(self, form: dict[str, str]) -> None:
+            models, err = _apply_pricing_paste(form.get("payload") or "")
+            if err is not None:
+                send_see_other(self, "./", flash=err)
+                return
+            try:
+                write_json_file(cfg["pricing_path"], {
+                    "as_of": _today_iso(),
+                    "source": "imported via /voice",
+                    "models": models,
+                })
+            except OSError as e:
+                logger.exception("could not write imported pricing")
+                send_see_other(
+                    self, "./", flash=f"Could not save pricing: {e}",
+                )
+                return
+            restart_voice_daemon()
+            send_see_other(
+                self, "./",
+                flash=(
+                    f"Imported rates for {len(models)} model(s). "
                     "Voice daemon restarting."
                 ),
             )
