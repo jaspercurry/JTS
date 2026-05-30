@@ -332,6 +332,17 @@ svg { display: block; }
    that any management sub-page can build on. */
 .section { display: flex; flex-direction: column; gap: 12px; }
 .section__head { padding: 0 0.25rem; }
+/* Card title — names the panel. The middle tier of the typographic grammar:
+   region headers stay EYEBROW (.eyebrow), card titles are cased, row labels
+   (.deflist dt) are EYEBROW again, values (.deflist dd) are plain data. See the
+   "Typographic grammar" section of docs/HANDOFF-management-ui.md. */
+.section__title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
 .info-card {
   padding: 20px;
   border-radius: var(--radius-md);
@@ -355,11 +366,20 @@ svg { display: block; }
   grid-template-columns: minmax(120px, max-content) 1fr;
   column-gap: 24px;
   row-gap: 8px;
+  align-items: baseline;
   margin: 0;
   font-size: 13px;
 }
-.deflist dt { color: var(--muted); }
-.deflist dd { margin: 0; word-break: break-word; }
+/* Row label = EYEBROW tier (field label, like a form/table label); value =
+   plain data. tabular-nums keeps numeric values column-aligned. */
+.deflist dt {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.deflist dd { margin: 0; word-break: break-word; font-variant-numeric: tabular-nums; }
 /* Status pill. Tone via inline `--tone` (--status-ok|warn|danger). */
 .badge {
   display: inline-flex;
