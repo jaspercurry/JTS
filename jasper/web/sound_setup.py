@@ -1082,11 +1082,10 @@ _SOUND_JS = r"""
     profile = normalizeProfile(profile);
     var freqs = previewFreqs();
     if (profile.enabled === false) {
-      return {preview: [], components: {curve: [], simple: [], advanced: []}, headroom_db: 0, off: true};
+      return {preview: [], components: {curve: [], simple: [], advanced: []}, off: true};
     }
     var all = curveSpecs(profile).concat(simpleSpecs(profile), advancedSpecs(profile));
     var preview = pointsFor(all, freqs, false);
-    var peak = preview.reduce(function(m, p) { return Math.max(m, p.db); }, 0);
     return {
       preview: preview,
       components: {
@@ -1096,8 +1095,7 @@ _SOUND_JS = r"""
           return {index: i, enabled: b.enabled !== false,
                   preview: pointsFor(advancedSpecs({parametric_bands: [b]}), freqs, true)};
         })
-      },
-      headroom_db: Math.max(0, peak)
+      }
     };
   }
 
@@ -1188,7 +1186,7 @@ _SOUND_JS = r"""
   function renderLiveGraph() {
     var profile = liveProfile();
     el('live-label').textContent = liveLabel();
-    if (!profile) { renderGraph({preview: [], components: {}, headroom_db: 0}, false); return; }
+    if (!profile) { renderGraph({preview: [], components: {}}, false); return; }
     renderGraph(previewPayload(profile), profile.enabled !== false);
   }
 
@@ -1531,6 +1529,7 @@ _SOUND_JS = r"""
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'settings failed');
       ingestState(payload);
+      if (payload.warning) status(payload.warning, true);
     } catch (e) {
       soundSettings = prev;
       status('Could not save sound settings: ' + e.message, true);
@@ -1929,15 +1928,22 @@ def _make_handler(
                 raw = self._read_json()
                 if path == "/settings":
                     settings = SoundSettings.from_mapping(raw)
-                    save_sound_settings(settings)
+                    try:
+                        save_sound_settings(settings)
+                    except OSError as e:
+                        logger.exception("sound settings save failed")
+                        self._send_json({"error": str(e)}, status=502)
+                        return
                     logger.info(
                         "event=sound.settings headroom_trim=%.1f match_loudness=%s",
                         settings.headroom_trim_db,
                         settings.match_loudness,
                     )
                     # Re-apply the active profile so the new output trim takes
-                    # effect now and persists in sound_current.yml. Settings are
-                    # already saved above, so a failed re-apply still sticks.
+                    # effect now. The settings are already persisted, so on a
+                    # failed re-apply we return the saved state with a warning
+                    # rather than telling the UI the change did not take (which
+                    # would revert a toggle the backend actually saved).
                     try:
                         payload = asyncio.run(
                             _apply_profile(
@@ -1950,8 +1956,14 @@ def _make_handler(
                         )
                     except Exception as e:  # noqa: BLE001
                         logger.exception("sound settings re-apply failed")
-                        self._send_json({"error": str(e)}, status=502)
-                        return
+                        payload = _state_payload(
+                            load_profile(profile_path),
+                            library_path=library_path,
+                            include_library=True,
+                        )
+                        payload["warning"] = (
+                            "Saved, but applying to the speaker failed: " + str(e)
+                        )
                     self._send_json(payload)
                     return
                 if path.startswith("/profiles/"):
