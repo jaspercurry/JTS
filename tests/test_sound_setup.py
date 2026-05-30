@@ -11,7 +11,9 @@ from jasper.sound.profile import (
     SoundProfile,
     load_profile,
     load_profile_library,
+    save_profile,
 )
+from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.web import sound_setup
 
 
@@ -240,6 +242,68 @@ async def test_apply_profile_emits_output_trim_when_match_loudness_on(
     generated = Path(fake.loaded_path).read_text()
     assert "sound_preamp:" in generated  # loudness comp applied as output trim
     assert payload["output_trim_db"] > 0
+
+
+async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "correction_abc_123.yml"
+    current.write_text(emit_correction_config([]))
+    fake = FakeCamilla(str(current))
+    profile_path = tmp_path / "sound_profile.json"
+    # An applied profile with a boost, stamped at a fixed time.
+    save_profile(
+        SoundProfile(
+            simple_eq=SimpleEq(bass_db=6.0), updated_at="2020-01-01T00:00:00+00:00"
+        ),
+        profile_path,
+    )
+
+    payload = await sound_setup._apply_settings(
+        SoundSettings(match_loudness=True),
+        profile_path=profile_path,
+        library_path=tmp_path / "lib.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    generated = Path(fake.loaded_path).read_text()
+    assert "sound_preamp:" in generated  # match-loudness trim applied
+    assert payload["output_trim_db"] > 0
+    assert "warning" not in payload
+    assert load_sound_settings(settings_path).match_loudness is True
+    # The profile JSON is untouched: not re-stamped, not overwritten.
+    assert load_profile(profile_path).updated_at == "2020-01-01T00:00:00+00:00"
+
+
+async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "correction_abc_123.yml"
+    current.write_text(emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)]))
+    fake = FakeCamilla(str(current), fail_set=True)  # reload fails
+
+    payload = await sound_setup._apply_settings(
+        SoundSettings(headroom_trim_db=6.0),
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "lib.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    assert "warning" in payload
+    # Settings persist despite the re-apply failure (no revert, no silent loss).
+    assert load_sound_settings(settings_path).headroom_trim_db == 6.0
 
 
 async def test_audition_profile_loads_draft_without_persisting(

@@ -123,9 +123,13 @@ surfaced by doctor / `control` `/state` / the calibration advisor; it no
 longer drives an auto-preamp.
 
 The `/sound/audition` endpoint and `sound_audition.yml` remain in the
-backend (level-matched A/B via the validation/rollback substrate) but
-the redesigned UI no longer drives them — it expresses the live source
-through durable apply + the live-draft preview instead.
+backend as a validated, non-persisting apply: it writes a separate
+`sound_audition.yml` through the same validation/rollback substrate as
+`/sound/apply`, without persisting the profile. The redesigned UI no
+longer drives it — editing previews through the faster `/sound/live-draft`
+path and commits through durable apply — but it is intentionally retained
+as the validated-preview surface a future "propose, preview, then approve"
+AI helper can build on.
 
 ## Files
 

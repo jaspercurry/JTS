@@ -61,6 +61,7 @@ from jasper.sound.profile import (
     simple_bands_payload,
 )
 from jasper.sound.settings import (
+    HEADROOM_TRIM_MAX_DB,
     SoundSettings,
     load_sound_settings,
     save_sound_settings,
@@ -138,6 +139,7 @@ def _state_payload(
             "min_q": MIN_Q,
             "max_q": MAX_Q,
             "simple_bands": simple_bands_payload(),
+            "headroom_trim_max_db": HEADROOM_TRIM_MAX_DB,
         },
         "last_dsp_apply": last_dsp_apply,
         "dsp_write_epoch": dsp_write_epoch_from_state(last_dsp_apply),
@@ -211,6 +213,56 @@ async def _apply_profile(
         library_path=library_path,
         include_library=library_path is not None,
     )
+    payload["active_config_path"] = str(out_path)
+    payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
+    payload["last_dsp_apply"] = apply_state.to_dict()
+    payload["dsp_write_epoch"] = apply_state.op_id
+    return payload
+
+
+async def _apply_settings(
+    settings: SoundSettings,
+    *,
+    profile_path: str | Path,
+    library_path: str | Path | None = None,
+    config_dir: str | Path,
+    camilla_factory: Callable[[], Any] = _camilla,
+) -> dict[str, Any]:
+    """Persist global sound settings, then re-emit the active profile's config
+    with the new output trim so the change is audible immediately.
+
+    The profile content is unchanged, so this re-applies it **without**
+    re-stamping or re-persisting the profile JSON (unlike `_apply_profile`).
+    Settings are saved first; a write error propagates as `OSError`. A failed
+    re-apply returns the saved state with a ``warning`` rather than reverting
+    a setting the backend already kept — no silent failure either way.
+    """
+    save_sound_settings(settings)
+    logger.info(
+        "event=sound.settings headroom_trim=%.1f match_loudness=%s",
+        settings.headroom_trim_db,
+        settings.match_loudness,
+    )
+    profile = load_profile(profile_path)
+    payload = _state_payload(
+        profile,
+        library_path=library_path,
+        include_library=library_path is not None,
+    )
+    try:
+        apply_state, out_path, _ = await _load_profile_config(
+            profile,
+            profile_path=profile_path,
+            config_dir=config_dir,
+            camilla_factory=camilla_factory,
+            source="sound_settings",
+            persist_profile=False,
+            output_trim_db=_output_trim_db(profile, settings),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("sound settings re-apply failed")
+        payload["warning"] = f"Saved, but applying to the speaker failed: {e}"
+        return payload
     payload["active_config_path"] = str(out_path)
     payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
     payload["last_dsp_apply"] = apply_state.to_dict()
@@ -871,7 +923,8 @@ _SOUND_JS = r"""
 (function() {
   var LIMIT_DEFAULTS = {
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
-    min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10, simple_bands: []
+    min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10,
+    simple_bands: [], headroom_trim_max_db: 12
   };
   var FLAT = function() {
     return {enabled: true, curve_id: 'flat',
@@ -1265,7 +1318,7 @@ _SOUND_JS = r"""
   function renderSoundSettings() {
     var ml = soundSettings.match_loudness ? ' checked' : '';
     var trim = Number(soundSettings.headroom_trim_db) || 0;
-    // max 12 mirrors HEADROOM_TRIM_MAX_DB; the backend clamps authoritatively.
+    var trimMax = Number(limits.headroom_trim_max_db) || 12;  // backend clamps authoritatively
     return '<section class="sound-settings">' +
       '<div class="setting-row">' +
         '<div class="setting-row__text">' +
@@ -1284,8 +1337,8 @@ _SOUND_JS = r"""
               'Leave at Off unless you hear clipping.</p>' +
           '</div>' +
           '<div class="headroom-control">' +
-            '<input type="range" class="headroom-range" id="set-headroom" min="0" max="12" step="0.5" value="' +
-              trim + '" aria-label="Extra headroom in dB">' +
+            '<input type="range" class="headroom-range" id="set-headroom" min="0" max="' + trimMax +
+              '" step="0.5" value="' + trim + '" aria-label="Extra headroom in dB">' +
             '<span class="headroom-readout" id="set-headroom-readout">' + fmtTrim(trim) + '</span>' +
           '</div>' +
         '</div>' +
@@ -1929,41 +1982,19 @@ def _make_handler(
                 if path == "/settings":
                     settings = SoundSettings.from_mapping(raw)
                     try:
-                        save_sound_settings(settings)
-                    except OSError as e:
-                        logger.exception("sound settings save failed")
-                        self._send_json({"error": str(e)}, status=502)
-                        return
-                    logger.info(
-                        "event=sound.settings headroom_trim=%.1f match_loudness=%s",
-                        settings.headroom_trim_db,
-                        settings.match_loudness,
-                    )
-                    # Re-apply the active profile so the new output trim takes
-                    # effect now. The settings are already persisted, so on a
-                    # failed re-apply we return the saved state with a warning
-                    # rather than telling the UI the change did not take (which
-                    # would revert a toggle the backend actually saved).
-                    try:
                         payload = asyncio.run(
-                            _apply_profile(
-                                load_profile(profile_path),
+                            _apply_settings(
+                                settings,
                                 profile_path=profile_path,
                                 library_path=library_path,
                                 config_dir=config_dir,
                                 camilla_factory=camilla_factory,
                             )
                         )
-                    except Exception as e:  # noqa: BLE001
-                        logger.exception("sound settings re-apply failed")
-                        payload = _state_payload(
-                            load_profile(profile_path),
-                            library_path=library_path,
-                            include_library=True,
-                        )
-                        payload["warning"] = (
-                            "Saved, but applying to the speaker failed: " + str(e)
-                        )
+                    except OSError as e:
+                        logger.exception("sound settings save failed")
+                        self._send_json({"error": str(e)}, status=502)
+                        return
                     self._send_json(payload)
                     return
                 if path.startswith("/profiles/"):
