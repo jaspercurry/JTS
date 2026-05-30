@@ -1380,7 +1380,7 @@ daemon OR-gates for wake detection: AEC3 (the bridge's primary
 output on `:9876`), raw chip-direct (`:9877`), and DTLN neural
 AEC (`:9878`). Two **additive** sub-toggles live in the same
 `/var/lib/jasper/aec_mode.env` file as the AEC master mode, owned
-by the **/system Wake detection card**:
+by the **/wake/ Wake detection card**:
 
 > **Corpus-only 4th UDP leg (`:9879`) since PR #323.** The bridge
 > also always emits chip channel 2 (truly raw — no chip OR software
@@ -1417,11 +1417,12 @@ the reconciler clears the underlying vars when AEC is disabled so
 a stale leg config doesn't leave voice listening on a port nobody
 talks to.
 
-**Wake-word sensitivity slider** — moved 2026-05-23 from /wake/
-into the same /system Wake detection card. The slider writes
-`JASPER_WAKE_THRESHOLD` into `/var/lib/jasper/wake_model.env` (same
-file as the wake-word model picker on /wake/, which preserves the
-threshold on model save). Edit point is `_write_wake_threshold` in
+**Wake-word sensitivity slider** — lives on the same /wake/ Wake
+detection card as the model picker and the leg toggles (they share a
+restart cycle). The slider writes `JASPER_WAKE_THRESHOLD` into
+`/var/lib/jasper/wake_model.env` (same file as the wake-word model
+picker, which preserves the threshold on model save). Edit point is
+`_write_wake_threshold` in
 [`jasper/control/server.py`](jasper/control/server.py).
 
 **HTTP API** ([`jasper/control/server.py`](jasper/control/server.py)):
