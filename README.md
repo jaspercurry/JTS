@@ -6,7 +6,7 @@ Raspberry Pi OS Lite Trixie, with
 voice loop is provider-agnostic: any of three real-time
 speech-to-speech APIs can drive it via a single env-var switch —
 [Gemini 3.1 Flash Live](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)
-(default), [OpenAI gpt-realtime-2](https://developers.openai.com/api/docs/guides/realtime),
+(cheapest), [OpenAI gpt-realtime-2](https://developers.openai.com/api/docs/guides/realtime),
 or [xAI Grok Voice Agent](https://docs.x.ai/docs/guides/voice/agent).
 This is a personal hobby project; not a product.
 

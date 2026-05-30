@@ -879,15 +879,16 @@ async def _get_state(
     from .. import librespot_state
     from ..camilla import CamillaController
     from ..speaker_name import read_state as _read_speaker_name_state
+    from ..voice.provider_state import read_active_provider_and_model
 
-    # Cheap synchronous reads first.
-    voice_provider = os.environ.get("JASPER_VOICE_PROVIDER", "gemini")
-    if voice_provider == "openai":
-        voice_model = os.environ.get("JASPER_OPENAI_MODEL")
-    elif voice_provider == "grok":
-        voice_model = os.environ.get("JASPER_GROK_MODEL")
-    else:
-        voice_model = os.environ.get("JASPER_GEMINI_MODEL")
+    # Provider + model: re-read the wizard-owned SSOT file fresh on every
+    # call. jasper-control is NOT restarted on a provider switch (only
+    # jasper-voice is), so reading os.environ here pins the value to
+    # whatever it was at this daemon's start and shows a stale provider
+    # after every switch — the /system/ bug this fixes. Same fresh-read
+    # rationale as the home_assistant block in /system/snapshot below.
+    # ("", None) when unconfigured; never a guessed default.
+    voice_provider, voice_model = read_active_provider_and_model()
 
     listening_level: int | None = None
     persisted_main_volume_db: float | None = None
@@ -1187,6 +1188,7 @@ async def _get_state(
             "spend_allowed": (voice_st or {}).get("spend_allowed"),
             "connection_paused": (voice_st or {}).get("connection_paused"),
             "mic_muted": (voice_st or {}).get("mic_muted"),
+            "tts_source_peak_dbfs": (voice_st or {}).get("tts_source_peak_dbfs"),
             "reachable": voice_st is not None,
         },
         "audio": {
@@ -1595,6 +1597,7 @@ def _make_handler(
                 from .system_metrics import read_build_info
                 from .. import home_assistant as _ha_mod
                 from ..speaker_name import read_state as _read_speaker_name_state
+                from ..voice.provider_state import read_active_provider
 
                 # HA probe is async + slow-ish (~50-200 ms typical against
                 # a healthy local HA, fails fast on unreachable). Run it
@@ -1641,9 +1644,7 @@ def _make_handler(
                     "outputd": outputd_status,
                     "audio_quality": _safe_audio_quality_state(),
                     "cloud": _read_cloud_activity(),
-                    "voice_provider": os.environ.get(
-                        "JASPER_VOICE_PROVIDER", "gemini",
-                    ),
+                    "voice_provider": read_active_provider(),
                     "speaker_name": _read_speaker_name_state().__dict__,
                     "home_assistant": ha_status,
                 }
