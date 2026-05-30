@@ -37,11 +37,14 @@ pub struct OutputdState {
     backend: String,
     content_pcm: String,
     dac_pcm: String,
+    chip_ref_pcm: Option<String>,
+    reference_udp_target: Option<String>,
     sample_rate: AtomicU64,
     content_period_frames: AtomicU64,
     dac_period_frames: AtomicU64,
     content_buffer_frames: AtomicU64,
     dac_buffer_frames: AtomicU64,
+    chip_ref_buffer_frames: AtomicU64,
     content_frames_read: AtomicU64,
     content_empty_period_count: AtomicU64,
     content_partial_period_count: AtomicU64,
@@ -74,11 +77,14 @@ impl OutputdState {
             backend: config.backend.as_str().to_string(),
             content_pcm: config.content_pcm.clone(),
             dac_pcm: config.dac_pcm.clone(),
+            chip_ref_pcm: config.chip_ref_pcm.clone(),
+            reference_udp_target: config.reference_udp_target.clone(),
             sample_rate: AtomicU64::new(config.sample_rate as u64),
             content_period_frames: AtomicU64::new(config.period_frames as u64),
             dac_period_frames: AtomicU64::new(config.period_frames as u64),
             content_buffer_frames: AtomicU64::new(config.content_buffer_frames as u64),
             dac_buffer_frames: AtomicU64::new(config.dac_buffer_frames as u64),
+            chip_ref_buffer_frames: AtomicU64::new(config.chip_ref_buffer_frames as u64),
             content_frames_read: AtomicU64::new(0),
             content_empty_period_count: AtomicU64::new(0),
             content_partial_period_count: AtomicU64::new(0),
@@ -317,6 +323,23 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
+        buf.push_str(r#""reference_outputs":{"#);
+        push_kv_str_opt(&mut buf, "chip_ref_pcm", self.chip_ref_pcm.as_deref());
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "chip_ref_buffer_frames",
+            self.chip_ref_buffer_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_str_opt(
+            &mut buf,
+            "udp_target",
+            self.reference_udp_target.as_deref(),
+        );
+        buf.push('}');
+        buf.push(',');
+
         buf.push_str(r#""tts":{"#);
         push_kv_u64(
             &mut buf,
@@ -483,6 +506,20 @@ fn push_kv_str(buf: &mut String, key: &str, value: &str) {
     buf.push('"');
 }
 
+fn push_kv_str_opt(buf: &mut String, key: &str, value: Option<&str>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    match value {
+        Some(value) => {
+            buf.push('"');
+            buf.push_str(&escape_json(value));
+            buf.push('"');
+        }
+        None => buf.push_str("null"),
+    }
+}
+
 fn push_kv_u64(buf: &mut String, key: &str, value: u64) {
     buf.push('"');
     buf.push_str(key);
@@ -561,6 +598,9 @@ mod tests {
             period_frames: 1024,
             content_buffer_frames: 4096,
             dac_buffer_frames: 3072,
+            chip_ref_pcm: None,
+            chip_ref_buffer_frames: 4096,
+            reference_udp_target: None,
             stream_id: 1,
             tts_socket_path: None,
             control_socket_path: None,
@@ -610,6 +650,7 @@ mod tests {
             r#""reference_sequence":42"#,
             r#""last_period_clipped_samples":3"#,
             r#""clipped_samples":3"#,
+            r#""reference_outputs":{"chip_ref_pcm":null,"chip_ref_buffer_frames":4096,"udp_target":null}"#,
             r#""tts":{"pending_frames":512,"budget_frames":96000,"max_pending_frames":120000,"over_budget":true,"over_budget_periods":7,"over_budget_ms":149,"over_budget_streak_ms":64}"#,
             r#""watchdog""#,
         ] {

@@ -69,6 +69,10 @@ def _make_wake_loop_triple(
             by_token("dtln"), MagicMock(), detector_dtln, None,
         )
     wl._wake_fire_lock = asyncio.Lock()
+    from jasper.wake_fusion import WakeFuser
+    wl._fuser = WakeFuser()
+    wl._current_condition = "quiet"
+    wl._condition_refreshed_at = 0.0
     wl._refractory_until = 0.0
     wl._acquiring = False
     wl._acquire_buffer = MagicMock()
@@ -226,3 +230,216 @@ def test_leg_db_covers_all_wake_input_legs():
 
     missing = {leg.token for leg in wake_input_legs()} - set(_LEG_DB)
     assert not missing, f"wake legs missing _LEG_DB mapping: {sorted(missing)}"
+
+
+# ---------------------------------------------------------------------------
+# _configured_wake_legs — the pure leg-selection decision (0.3)
+#
+# run()'s AsyncExitStack wiring is not hardware-free-testable (it opens
+# real mics), so the *decision* of which legs to build is factored into
+# this pure function and covered here. The mic-open + lifecycle layer on
+# top is exercised by the Pi smoke-test.
+# ---------------------------------------------------------------------------
+
+
+def _cfg(mic_device="udp:9876", mic_device_raw="", mic_device_dtln=""):
+    """Minimal Config stand-in for _configured_wake_legs (which reads
+    three attrs by name). SimpleNamespace, not MagicMock — a MagicMock's
+    auto-created attrs are truthy and would defeat the empty-string
+    gating the function under test relies on."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        mic_device=mic_device,
+        mic_device_raw=mic_device_raw,
+        mic_device_dtln=mic_device_dtln,
+    )
+
+
+def test_configured_wake_legs_single_stream():
+    """Only the primary device set → only the "on" leg, with its device."""
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(mic_device="Array"))
+    assert [(s.token, dev) for s, dev in legs] == [("on", "Array")]
+
+
+def test_configured_wake_legs_dual_stream():
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(
+        _cfg(mic_device="udp:9876", mic_device_raw="udp:9877"),
+    )
+    assert [(s.token, dev) for s, dev in legs] == [
+        ("on", "udp:9876"), ("off", "udp:9877"),
+    ]
+
+
+def test_configured_wake_legs_triple_stream():
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="udp:9876", mic_device_raw="udp:9877",
+        mic_device_dtln="udp:9878",
+    ))
+    assert [(s.token, dev) for s, dev in legs] == [
+        ("on", "udp:9876"), ("off", "udp:9877"), ("dtln", "udp:9878"),
+    ]
+
+
+def test_configured_wake_legs_independent_gating():
+    """Optional legs gate independently: DTLN configured without the
+    chip-direct ("off") leg yields on + dtln, no off — so voice never
+    opens a UDP listener for an unconfigured leg."""
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="udp:9876", mic_device_raw="", mic_device_dtln="udp:9878",
+    ))
+    assert [s.token for s, _ in legs] == ["on", "dtln"]
+
+
+def test_configured_wake_legs_primary_always_present():
+    """The "on" leg is always built — even with an empty device (the AEC
+    reconciler owns ensuring the device is real, or parking voice). Keeps
+    WakeLoop's `self._legs["on"]` alias invariant from KeyError-ing."""
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(mic_device=""))
+    assert [s.token for s, _ in legs] == ["on"]
+
+
+def test_leg_device_attr_covers_all_wake_input_legs():
+    """Every wake-input leg must have a _LEG_DEVICE_ATTR entry, or
+    _configured_wake_legs would KeyError at daemon startup."""
+    from jasper.voice_daemon import _LEG_DEVICE_ATTR
+    from jasper.wake_legs import wake_input_legs
+    missing = {leg.token for leg in wake_input_legs()} - set(_LEG_DEVICE_ATTR)
+    assert not missing, (
+        f"wake legs missing _LEG_DEVICE_ATTR: {sorted(missing)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# session_status — runtime-armed legs surfaced in /state (observability)
+# ---------------------------------------------------------------------------
+
+
+def _prep_session_status(wl) -> None:
+    """Set the few attrs session_status() reads beyond the fire path, so
+    it can be called on a __new__-built WakeLoop."""
+    from jasper.voice_daemon import State
+    wl._state = State.WAKE
+    wl._input_ended = False
+    wl._ducker = MagicMock()
+    wl._ducker.is_ducked = False
+    # session_status also reports the volume tracker's measured source
+    # loudness (the per-provider TTS-loudness telemetry); the real daemon
+    # always has a tracker, so give the __new__-built loop a stub one.
+    wl._tts_volume_tracker = MagicMock()
+    wl._tts_volume_tracker.source_peak_dbfs = -20.0
+
+
+def test_session_status_reports_armed_legs_triple():
+    """session_status surfaces the actually-armed leg tokens (runtime
+    truth, in jasper.wake_legs order) so a startup leg-skip is visible in
+    /state.voice — /aec only shows configured intent from aec_mode.env."""
+    wl = _make_wake_loop_triple(
+        detector_off=_make_detector(), detector_dtln=_make_detector(),
+    )
+    _prep_session_status(wl)
+    assert wl.session_status()["wake_legs"] == ["on", "off", "dtln"]
+
+
+def test_session_status_reports_only_armed_legs_when_optional_absent():
+    """Dual-stream (no DTLN leg) reports exactly the armed legs — the
+    field reflects what the daemon opened, not what was configured."""
+    wl = _make_wake_loop_triple(detector_off=_make_detector())
+    _prep_session_status(wl)
+    assert wl.session_status()["wake_legs"] == ["on", "off"]
+
+
+# ---------------------------------------------------------------------------
+# _ring_noise_floor_dbfs — fire-time ambient floor for the condition estimator
+# ---------------------------------------------------------------------------
+
+
+def test_ring_noise_floor_empty_or_none_is_none():
+    from collections import deque
+    from jasper.voice_daemon import _ring_noise_floor_dbfs
+    assert _ring_noise_floor_dbfs(None) is None
+    assert _ring_noise_floor_dbfs(deque()) is None
+
+
+def test_ring_noise_floor_tracks_quiet_background_not_utterance():
+    """The low percentile reflects the quiet majority (room floor), not the
+    few loud frames (the wake utterance) — so it estimates ambient, not the
+    speech that just fired."""
+    from collections import deque
+    from jasper.voice_daemon import _ring_noise_floor_dbfs
+    quiet = np.full(1280, 30, dtype=np.int16)     # near-silent background
+    loud = np.full(1280, 8000, dtype=np.int16)    # the "utterance" frames
+    ring = deque([quiet] * 16 + [loud] * 4)        # utterance is the minority
+    floor = _ring_noise_floor_dbfs(ring)
+    assert floor is not None
+    assert floor < -40.0  # 25th pct sits in the quiet group, far below loud
+
+
+# --- Phase 1.3a: live-condition refresh (WakeLoop._read_music_dbfs +
+# _maybe_refresh_condition) ---
+
+def _wakeloop_for_condition(anchor_dbfs=-30.0):
+    """A bare WakeLoop with only the attributes the condition-refresh path
+    touches. anchor_dbfs=-30 reads as music (> -60 dBFS); the empty capture
+    ring makes the noise floor None."""
+    from collections import deque
+
+    wl = WakeLoop.__new__(WakeLoop)
+    wl._condition_refreshed_at = 0.0
+    wl._current_condition = "quiet"
+    wl._capture_ring_on = deque(maxlen=8)
+    tracker = MagicMock()
+    tracker._anchor_dbfs = anchor_dbfs
+    wl._tts_volume_tracker = tracker
+    return wl
+
+
+def test_read_music_dbfs_reads_anchor():
+    assert _wakeloop_for_condition(anchor_dbfs=-30.0)._read_music_dbfs() == -30.0
+
+
+def test_read_music_dbfs_none_below_sentinel_floor():
+    # <= -120 dBFS is the "no real music observed yet" band -> no signal.
+    assert _wakeloop_for_condition(anchor_dbfs=-130.0)._read_music_dbfs() is None
+
+
+def test_read_music_dbfs_none_without_tracker():
+    wl = _wakeloop_for_condition()
+    wl._tts_volume_tracker = None
+    assert wl._read_music_dbfs() is None
+
+
+def test_maybe_refresh_condition_recomputes_when_elapsed():
+    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)  # > -60 dBFS -> music
+    wl._maybe_refresh_condition(now_loop=5.0)
+    assert wl._current_condition == "music"
+    assert wl._condition_refreshed_at == 5.0
+
+
+def test_maybe_refresh_condition_skips_within_window():
+    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)
+    wl._condition_refreshed_at = 4.5
+    wl._current_condition = "quiet"
+    wl._maybe_refresh_condition(now_loop=5.0)  # 0.5 s < CONDITION_REFRESH_SEC
+    assert wl._current_condition == "quiet"  # unchanged
+    assert wl._condition_refreshed_at == 4.5  # unchanged
+
+
+def test_maybe_refresh_condition_fail_soft_on_classify_error(monkeypatch):
+    # The wake path must never break because ancillary condition estimation
+    # raised. On error: keep the last good condition, advance the timer (so a
+    # persistent failure retries at ~1 Hz, not every frame), do not propagate.
+    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)
+    wl._current_condition = "ambient"  # last good
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("classify blew up")
+
+    monkeypatch.setattr("jasper.voice_daemon.classify_condition", _boom)
+    wl._maybe_refresh_condition(now_loop=5.0)  # must not raise
+    assert wl._current_condition == "ambient"  # stale condition kept
+    assert wl._condition_refreshed_at == 5.0   # timer advanced -> ~1 Hz retry

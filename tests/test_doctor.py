@@ -2175,6 +2175,8 @@ def test_web_design_assets_ok_when_installed(monkeypatch, tmp_path: Path):
         (assets / page / "js").mkdir(parents=True)
         (assets / page / css).write_text("/* page css */")
         (assets / page / "js" / "main.js").write_text("// module")
+    (assets / "shared" / "js").mkdir(parents=True)
+    (assets / "shared" / "js" / "dialog.js").write_text("// dialog helper")
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
     r = doctor.check_web_design_assets()
     assert r.status == "ok"
@@ -2216,3 +2218,76 @@ def test_web_design_assets_check_registered():
     import inspect
     src = inspect.getsource(doctor.run_async)
     assert "check_web_design_assets" in src
+
+
+# ---------------------------------------------------------------------------
+# _assess_wake_legs — configured intent vs runtime-armed legs
+# (the runtime cross-check added with /state.voice.wake_legs)
+# ---------------------------------------------------------------------------
+
+
+def test_assess_wake_legs_skips_when_aec_disabled():
+    r = doctor._assess_wake_legs(
+        "disabled", raw=True, dtln=False, armed_runtime=None,
+    )
+    assert r.status == "ok"
+    assert "n/a" in r.detail
+
+
+def test_assess_wake_legs_reports_intent_when_daemon_unreachable():
+    """armed_runtime=None (jasper-control down) → fall back to configured
+    intent, never a false 'leg skipped' warning."""
+    r = doctor._assess_wake_legs(
+        "auto", raw=True, dtln=False, armed_runtime=None,
+    )
+    assert r.status == "ok"
+    assert "configured" in r.detail
+    assert "aec3" in r.detail and "raw" in r.detail
+    assert "/wake/" in r.detail  # not the stale /system
+
+
+def test_assess_wake_legs_ok_when_runtime_matches_config():
+    r = doctor._assess_wake_legs(
+        "auto", raw=True, dtln=True, armed_runtime={"on", "off", "dtln"},
+    )
+    assert r.status == "ok"
+    assert "3 leg(s) armed" in r.detail
+
+
+def test_assess_wake_legs_warns_when_configured_leg_not_armed():
+    """The whole point: raw is configured on, but the daemon only opened
+    the primary leg (a startup skip). Surface it instead of claiming
+    'armed' off stale config. raw maps to the chip-direct "off" token."""
+    r = doctor._assess_wake_legs(
+        "auto", raw=True, dtln=False, armed_runtime={"on"},
+    )
+    assert r.status == "warn"
+    assert "off" in r.detail               # the missing leg (raw -> off)
+    assert "wake.leg_skipped" in r.detail  # actionable hint
+
+
+def test_assess_wake_legs_dtln_skip_warns():
+    """DTLN configured but not armed (model OOM / bridge not emitting on
+    :9878) → warn naming dtln."""
+    r = doctor._assess_wake_legs(
+        "auto", raw=True, dtln=True, armed_runtime={"on", "off"},
+    )
+    assert r.status == "warn"
+    assert "dtln" in r.detail
+
+
+def test_pricing_ok_when_active_model_priced(monkeypatch):
+    """The active model (gemini default) is in the bundled rates → ok."""
+    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345")
+    assert doctor.check_pricing(cfg).status == "ok"
+
+
+def test_pricing_warns_when_active_model_unpriced(monkeypatch):
+    """An active model with no bundled/override rate → warn (cost reads $0,
+    the spend cap can't bound it)."""
+    cfg = _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIzaABCDEF12345",
+        JASPER_GEMINI_MODEL="gemini-9.9-does-not-exist",
+    )
+    assert doctor.check_pricing(cfg).status == "warn"

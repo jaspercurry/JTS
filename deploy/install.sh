@@ -2719,7 +2719,9 @@ install_nginx_site() {
     # can't be URL-busted). compgen -G guards each glob (files-exist, not just
     # the dir), so an empty dir can't leave a literal *.css/*.js to fail
     # `install` and abort the deploy under `set -euo pipefail`.
-    for _page in system-status sound-profile; do
+    # `shared` carries cross-page ES modules (the <dialog> confirm/alert
+    # helper at shared/js/dialog.js) — same copy shape as a page, no .css.
+    for _page in system-status sound-profile shared; do
         install -d -m 0755 "/usr/share/jasper-web/assets/${_page}"
         if compgen -G "${REPO_DIR}/deploy/assets/${_page}/"*.css > /dev/null; then
             install -m 0644 \

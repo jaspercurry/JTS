@@ -165,11 +165,18 @@ Mode in the consumer apps and dictation in Claude Code.
   is provider-agnostic by design — no "Google" or "Gemini" or
   "OpenAI" mentions ever bake into the audio.
 - **Spend-cap pricing** ([`jasper/usage.py`](../jasper/usage.py)):
-  `pricing_for_provider(provider, model=..., overrides=...)` returns a
-  `Pricing` snapshot; `UsageStore` accepts it on construction and applies
-  it at session-close time. Switching providers mid-day naturally
-  aggregates — older sessions retain whichever pricing was active
-  when they closed. Three things worth knowing:
+  `pricing_for_model(model_id, overrides=...)` returns a `Pricing`
+  snapshot **keyed by exact model ID** (there is no provider-level price);
+  `UsageStore` accepts it on construction and applies it at session-close
+  time. Default rates ship dated in `jasper/data/model_pricing.json`; the
+  `/voice` page edits per-model overrides (see
+  [HANDOFF-pricing-editor.md](HANDOFF-pricing-editor.md)). Switching
+  models/providers mid-day naturally aggregates — older sessions retain
+  whichever pricing was active when they closed. Four things worth knowing:
+  - **Unknown models are unpriced, not guessed.** A model in neither the
+    bundled defaults nor the override resolves to an all-zero `Pricing`
+    labelled `unpriced:<id>`; `jasper-voice` logs `event=pricing.unpriced`
+    and cost reads $0 until a rate is set. We never invent a number.
   - **Per-turn usage is normalised.** OpenAI reports per-response token
     deltas (summed within a turn); Gemini reports a counter cumulative
     for the WebSocket's lifetime, so `GeminiLiveTurn` subtracts the
@@ -183,9 +190,10 @@ Mode in the consumer apps and dictation in Claude Code.
     `SpendCap` multiplies the rolling spend by
     `JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER` (default 1.25) so the
     breaker stays conservative without inflating the displayed number.
-    Built-in rates are list prices as of 2026-05-30; an optional
-    `JASPER_PRICING_FILE` (`/var/lib/jasper/pricing.json`) overlays them
-    per provider without a code change (`load_pricing_overrides`).
+    Bundled rates (`jasper/data/model_pricing.json`, dated) are defaults;
+    an optional `JASPER_PRICING_FILE` (`/var/lib/jasper/pricing.json`)
+    overlays them per model ID without a code change
+    (`load_pricing_overrides`).
 
 ### Provider-specific in each adapter
 
@@ -244,8 +252,11 @@ should be:
 
 1. New module `jasper/voice/<provider>_session.py` with a class
    implementing `LiveConnection` (and a corresponding `LiveTurn`).
-2. New `Pricing` row in `jasper/usage.py` and an entry in
-   `pricing_for_provider`.
+2. New model entries (per model ID, with `as_of` bumped) in
+   `jasper/data/model_pricing.json`, plus `pricing_url` + `pricing_buckets`
+   on the provider's `ProviderCatalogEntry` (so the `/voice` editor and
+   research prompt show the right fields/page). (No code in
+   `jasper/usage.py` — pricing is data now.)
 3. New env-var block in `Config` (api key, model, voice, anything
    provider-specific) with a sane default and an explicit
    "required only when active provider" validation.

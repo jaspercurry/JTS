@@ -183,12 +183,28 @@ primitive layer:
   paths return 404 without revealing CSRF state.
 - Use `send_html_response()` / `send_see_other()` rather than
   hand-rolled response helpers.
+- Confirm/alert with `jtsConfirm(msg, {danger})` / `jtsAlert(msg)` (from
+  `dialog_helpers_js()`), never native `confirm()`/`alert()` — the browser
+  can suppress those, which silently broke the action guards. `await` the
+  confirm; pass `{danger:true}` for destructive actions.
+  `onsubmit="return confirm(...)"` becomes
+  `onsubmit="return jtsConfirmSubmit(this, '...', {danger:true})"`.
 
 Switch controls must use the shared checkbox-based toggle:
 `TOGGLE_CSS` plus `toggle_html()` where server-rendered markup is
 convenient. Avoid clickable `<div class="switch">` controls. Native
 checkboxes give keyboard interaction, focus state, and accessibility
 semantics for free.
+
+The confirm/alert dialog helper ships automatically on every page rendered
+through `wrap_page()`. A page that hand-rolls its own document shell (builds
+its own `<!doctype html>` + `<style>` instead of calling `wrap_page()` —
+`/wifi/`, `/bluetooth/`, `/correction/`, `/ha/`, `/wake-corpus/`) must embed
+it: concatenate `DIALOG_CSS` into its `<style>` and emit
+`<script>{dialog_helpers_js()}</script>` before the page's own script. A
+regression test in
+[`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
+fails the build if a wizard calls the helper without wiring it.
 
 Treat device names, SSIDs, USB descriptors, Bluetooth MAC-adjacent
 metadata, and browser-provided labels as untrusted. Escape before
@@ -262,6 +278,26 @@ inline wizards. This is why no inline JS remains on a migrated page —
 module (its interactions need CamillaDSP hardware to re-verify, so it was
 moved verbatim rather than split — splitting it finely is a good follow-up
 done on-device).
+
+**Confirm/alert use a shared `<dialog>`, never `window.confirm`/`alert`.**
+The first cross-page shared module,
+[`deploy/assets/shared/js/dialog.js`](deploy/assets/shared/js/dialog.js),
+exports Promise-based `jtsConfirm(message, {danger})` and
+`jtsAlert(message)`, styled by the `.jts-dialog` block in `app.css`. A
+migrated page imports it by absolute path (`/assets/shared/js/dialog.js`) and
+`await`s the answer. Why it exists: the browser can suppress the native popups
+("prevent this page from creating more dialogs"), which silently defeated
+`/system/`'s restart/reboot guards — the click did nothing, with no feedback.
+`<dialog>.showModal()` can't be suppressed and brings a focus trap,
+ESC-to-cancel, and a backdrop for free; `danger:true` reddens the confirm
+button and autofocuses Cancel. `install.sh` copies `shared/` like a page dir;
+`jasper-doctor`'s `check_web_design_assets` lists `shared/js/dialog.js`; a
+regression test in
+[`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
+keeps native `confirm()`/`alert()`/`prompt()` out of the canonical ES modules.
+(The legacy `wrap_page()` wizards, which don't load ES modules, have a
+behaviourally-identical inline twin in `_common.py` — `dialog_helpers_js()`
++ `DIALOG_CSS`; see the "Web wizard conventions" section.)
 
 ---
 
@@ -1344,7 +1380,7 @@ daemon OR-gates for wake detection: AEC3 (the bridge's primary
 output on `:9876`), raw chip-direct (`:9877`), and DTLN neural
 AEC (`:9878`). Two **additive** sub-toggles live in the same
 `/var/lib/jasper/aec_mode.env` file as the AEC master mode, owned
-by the **/system Wake detection card**:
+by the **/wake/ Wake detection card**:
 
 > **Corpus-only 4th UDP leg (`:9879`) since PR #323.** The bridge
 > also always emits chip channel 2 (truly raw — no chip OR software
@@ -1381,11 +1417,12 @@ the reconciler clears the underlying vars when AEC is disabled so
 a stale leg config doesn't leave voice listening on a port nobody
 talks to.
 
-**Wake-word sensitivity slider** — moved 2026-05-23 from /wake/
-into the same /system Wake detection card. The slider writes
-`JASPER_WAKE_THRESHOLD` into `/var/lib/jasper/wake_model.env` (same
-file as the wake-word model picker on /wake/, which preserves the
-threshold on model save). Edit point is `_write_wake_threshold` in
+**Wake-word sensitivity slider** — lives on the same /wake/ Wake
+detection card as the model picker and the leg toggles (they share a
+restart cycle). The slider writes `JASPER_WAKE_THRESHOLD` into
+`/var/lib/jasper/wake_model.env` (same file as the wake-word model
+picker, which preserves the threshold on model save). Edit point is
+`_write_wake_threshold` in
 [`jasper/control/server.py`](jasper/control/server.py).
 
 **HTTP API** ([`jasper/control/server.py`](jasper/control/server.py)):

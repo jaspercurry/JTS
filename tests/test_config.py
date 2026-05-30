@@ -290,3 +290,20 @@ def test_spend_cap_safety_multiplier_below_one_raises(monkeypatch):
     monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", "0")
     with pytest.raises(RuntimeError, match="SAFETY_MULTIPLIER"):
         Config.from_env()
+
+
+def test_active_voice_model_resolves_for_active_provider(monkeypatch):
+    """Single source for the active provider's model — shared by the daemon
+    (_active_model) and jasper-doctor (check_pricing)."""
+    # Provider defaults to gemini via the module autouse fixture.
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+    assert (
+        Config.from_env().active_voice_model
+        == "gemini-3.1-flash-live-preview"
+    )
+    # Switch the active provider — resolution follows it.
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JASPER_OPENAI_MODEL", "gpt-realtime-2")
+    assert Config.from_env().active_voice_model == "gpt-realtime-2"

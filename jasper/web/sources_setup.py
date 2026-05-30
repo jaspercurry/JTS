@@ -355,17 +355,18 @@ computer plugged into the Pi's USB-C port.</p>
 
     SOURCES.forEach(function(name) {
       var input = el('t-' + name);
-      input.addEventListener('change', function() {
+      input.addEventListener('change', async function() {
         // Warn before turning Bluetooth off while a wireless remote
         // (volume knob, etc.) is paired — otherwise the remote
         // silently stops working until BT is turned back on.
         if (name === 'bluetooth' && !input.checked &&
             latestState.bluetooth && latestState.bluetooth.hasPairedHid) {
-          var ok = window.confirm(
+          var ok = await jtsConfirm(
             'Turning Bluetooth off will also disconnect paired ' +
             'wireless remotes (volume knob, etc.). They will not ' +
             'work again until Bluetooth is turned back on.\\n\\n' +
             'Turn Bluetooth off anyway?',
+            {danger: true},
           );
           if (!ok) {
             // Revert the optimistic flip and skip the POST entirely.

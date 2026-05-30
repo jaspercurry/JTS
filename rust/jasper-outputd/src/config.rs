@@ -12,6 +12,7 @@ use crate::types::SAMPLE_RATE;
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
 pub const DEFAULT_CONTENT_BUFFER_FRAMES: u32 = 4096;
 pub const DEFAULT_DAC_BUFFER_FRAMES: u32 = 3072;
+pub const DEFAULT_CHIP_REF_BUFFER_FRAMES: u32 = 4096;
 pub const DEFAULT_STREAM_ID: u64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +39,9 @@ pub struct Config {
     pub period_frames: u32,
     pub content_buffer_frames: u32,
     pub dac_buffer_frames: u32,
+    pub chip_ref_pcm: Option<String>,
+    pub chip_ref_buffer_frames: u32,
+    pub reference_udp_target: Option<String>,
     pub stream_id: u64,
     pub tts_socket_path: Option<String>,
     pub control_socket_path: Option<String>,
@@ -77,6 +81,10 @@ impl Config {
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             DEFAULT_DAC_BUFFER_FRAMES,
         )?;
+        let chip_ref_buffer_frames = env_u32(
+            "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
+            DEFAULT_CHIP_REF_BUFFER_FRAMES,
+        )?;
         validate_buffer(
             "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
             content_buffer_frames,
@@ -85,6 +93,11 @@ impl Config {
         validate_buffer(
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             dac_buffer_frames,
+            period_frames,
+        )?;
+        validate_buffer(
+            "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
+            chip_ref_buffer_frames,
             period_frames,
         )?;
 
@@ -96,6 +109,9 @@ impl Config {
             period_frames,
             content_buffer_frames,
             dac_buffer_frames,
+            chip_ref_pcm: env_optional("JASPER_OUTPUTD_CHIP_REF_PCM"),
+            chip_ref_buffer_frames,
+            reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
             stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
             tts_socket_path: env_optional("JASPER_OUTPUTD_TTS_SOCKET"),
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
@@ -199,6 +215,8 @@ mod tests {
             assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
             assert_eq!(cfg.content_buffer_frames, DEFAULT_CONTENT_BUFFER_FRAMES);
             assert_eq!(cfg.dac_buffer_frames, DEFAULT_DAC_BUFFER_FRAMES);
+            assert!(cfg.chip_ref_pcm.is_none());
+            assert!(cfg.reference_udp_target.is_none());
             assert!(cfg.tts_socket_path.is_none());
             assert!(cfg.control_socket_path.is_none());
         });
@@ -217,6 +235,8 @@ mod tests {
                     "JASPER_OUTPUTD_CONTROL_SOCKET",
                     Some("/run/jasper-outputd/control.sock"),
                 ),
+                ("JASPER_OUTPUTD_CHIP_REF_PCM", Some("plughw:CARD=Array,DEV=0")),
+                ("JASPER_OUTPUTD_REFERENCE_UDP_TARGET", Some("127.0.0.1:9891")),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -228,6 +248,14 @@ mod tests {
                 assert_eq!(
                     cfg.control_socket_path.as_deref(),
                     Some("/run/jasper-outputd/control.sock")
+                );
+                assert_eq!(
+                    cfg.chip_ref_pcm.as_deref(),
+                    Some("plughw:CARD=Array,DEV=0")
+                );
+                assert_eq!(
+                    cfg.reference_udp_target.as_deref(),
+                    Some("127.0.0.1:9891")
                 );
             },
         );

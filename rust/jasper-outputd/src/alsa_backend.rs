@@ -225,6 +225,27 @@ impl AlsaBackend {
     }
 }
 
+pub fn open_playback_pcm(
+    role: &str,
+    pcm_name: &str,
+    sample_rate: u32,
+    period_frames: u32,
+    buffer_frames: u32,
+) -> Result<(PCM, NegotiatedPcm)> {
+    let pcm = PCM::new(pcm_name, Direction::Playback, false)
+        .with_context(|| format!("opening outputd {role} playback PCM {pcm_name}"))?;
+    let negotiated = configure_pcm(
+        role,
+        pcm_name,
+        &pcm,
+        sample_rate,
+        period_frames,
+        buffer_frames,
+    )
+    .with_context(|| format!("configuring outputd {role} playback PCM {pcm_name}"))?;
+    Ok((pcm, negotiated))
+}
+
 fn configure_pcm(
     role: &str,
     pcm_name: &str,

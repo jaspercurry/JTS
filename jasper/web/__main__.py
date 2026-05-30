@@ -126,6 +126,22 @@ def _wake_corpus_ports_from_env() -> dict[str, int]:
             "JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT",
             str(wake_ports.DEFAULT_AEC_USB_DTLN_PORT),
         )),
+        aec_chip_aec_150_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_CHIP_AEC_150_PORT",
+            str(wake_ports.DEFAULT_AEC_CHIP_AEC_150_PORT),
+        )),
+        aec_chip_aec_210_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_CHIP_AEC_210_PORT",
+            str(wake_ports.DEFAULT_AEC_CHIP_AEC_210_PORT),
+        )),
+        aec_xvf_raw0_webrtc_aec3_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_XVF_RAW0_WEBRTC_AEC3_PORT",
+            str(wake_ports.DEFAULT_AEC_XVF_RAW0_WEBRTC_AEC3_PORT),
+        )),
+        aec_xvf_raw0_dtln_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_XVF_RAW0_DTLN_PORT",
+            str(wake_ports.DEFAULT_AEC_XVF_RAW0_DTLN_PORT),
+        )),
         aec3_sweep_ports={
             leg: int(os.environ.get(
                 f"JASPER_WAKE_CORPUS_AEC3_SWEEP_{leg.upper()}_PORT",

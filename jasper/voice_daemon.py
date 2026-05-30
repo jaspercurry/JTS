@@ -11,16 +11,6 @@ from collections import deque
 from collections.abc import Callable
 from enum import Enum
 
-
-@contextlib.asynccontextmanager
-async def _nullcontext_async(value):
-    """Async equivalent of `contextlib.nullcontext`. Yields `value`
-    without entering or exiting anything. Used at the WakeLoop
-    construction site to make the optional second mic `async with`
-    a single statement regardless of whether the second mic is
-    configured (yields None) or is a real UdpMicCapture context."""
-    yield value
-
 from .accounts import Registry, maybe_migrate_legacy
 from .audio_buffer import (
     ACQUIRE_BUFFER_MAX_FRAMES,
@@ -29,7 +19,6 @@ from .audio_buffer import (
 from .audio_io import (
     MicCapture,
     TtsPlayout,
-    UdpMicCapture,
     make_mic_capture,
     make_tts_playout,
 )
@@ -41,7 +30,10 @@ from .wake_events import (
 )
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
-from .wake_legs import by_token
+from .wake_legs import LegSpec, wake_input_legs
+from .wake_condition_context import classify_condition
+from .wake_conditions import DEFAULT_CONDITION
+from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .watchdog import Heartbeat
@@ -72,7 +64,7 @@ from .usage import (
     SpendCap,
     UsageStore,
     load_pricing_overrides,
-    pricing_for_provider,
+    pricing_for_model,
 )
 from .voice.session import AudioOutChunk, LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
@@ -295,6 +287,23 @@ WAKE_REFRACTORY_SEC = 0.2
 # the bridge died) surfaces as "none" rather than lying with a stale
 # score. 4x MicCapture's 80 ms frame period.
 WAKE_STALE_SCORE_SEC = 0.32
+
+# How often the WAKE loop recomputes the acoustic condition the fuser keys
+# on (Phase 1.3a). The fire gate reads a cached `_current_condition`; this
+# bounds its staleness while keeping the ring-noise-floor cost off the per-
+# frame path (recompute ~1x/s, not ~12x/s/leg). Conditions — music starting,
+# the room going quiet — change on a human timescale, so ~1 s is ample.
+CONDITION_REFRESH_SEC = 1.0
+
+# Per-leg wake-telemetry capture-ring depth, in frames. Sized to the
+# (pre + post) capture window plus a safety margin: a 4 + 2 = 6 s window
+# with ~2 s slack for the post-fire collection window, so a snapshot
+# never runs off the end of the ring. One ring per leg is allocated at
+# the run() wiring site and handed to its _LegRuntime.
+CAPTURE_RING_FRAMES = int(
+    ((CAPTURE_PRE_SEC + CAPTURE_POST_SEC) * MicCapture.OUTPUT_RATE
+     / MicCapture.OUTPUT_FRAME_SAMPLES) + 25
+)
 
 
 # End-of-utterance: fire activity_end once the user has been silent
@@ -890,17 +899,35 @@ def _frame_rms_dbfs(frame) -> float | None:
         return None
 
 
+def _ring_noise_floor_dbfs(ring, *, percentile: float = 25.0) -> float | None:
+    """Ambient noise floor (dBFS) from a wake capture ring.
+
+    A low percentile of the ring's per-frame RMS: the wake utterance is a
+    minority of the ~6 s window, so the quieter frames approximate the room
+    background. Computed once at fire time (never per frame), it splits
+    "quiet" from "ambient" for the condition estimator. Returns None for an
+    empty/absent ring or any error — telemetry must never break the wake
+    fire path, and the caller treats None as "can't tell" (-> quiet).
+    """
+    if not ring:
+        return None
+    try:
+        import numpy as _np  # local — keep module import cheap
+        levels = [r for f in ring if (r := _frame_rms_dbfs(f)) is not None]
+        if not levels:
+            return None
+        return float(_np.percentile(levels, percentile))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _active_model(cfg: Config) -> str:
     """Return the model name for the currently selected provider — used
     by startup-readiness logging and the silent-failure heuristic in
-    `_end_turn` so journalctl shows the actual model in flight."""
-    if cfg.voice_provider == "gemini":
-        return cfg.gemini_model
-    if cfg.voice_provider == "openai":
-        return cfg.openai_model
-    if cfg.voice_provider == "grok":
-        return cfg.grok_model
-    return f"<unknown:{cfg.voice_provider}>"
+    `_end_turn` so journalctl shows the actual model in flight. Resolution
+    lives on `Config.active_voice_model` (shared with jasper-doctor); the
+    `<unknown:…>` sentinel keeps log lines legible for an unset provider."""
+    return cfg.active_voice_model or f"<unknown:{cfg.voice_provider}>"
 
 
 def _tts_ready_detail(cfg: Config) -> str:
@@ -1383,6 +1410,39 @@ _LEG_DB: dict[str, dict[str, str]] = {
     },
 }
 
+# Which Config field carries each wake leg's mic device string. Kept here
+# (a voice-daemon construction concern) rather than on the frozen
+# jasper.wake_legs registry, which stays a pure cross-process identity
+# table. Note the deliberate token/field-name skew: the chip-direct leg's
+# token is "off" but its device var is cfg.mic_device_raw — the
+# operator-facing "raw" vocabulary (JASPER_MIC_DEVICE_RAW). The reconciler
+# sets/clears these vars from the JASPER_WAKE_LEG_* booleans; an empty
+# string means the leg is not configured. A 4th leg adds an entry here.
+_LEG_DEVICE_ATTR: dict[str, str] = {
+    "on": "mic_device",
+    "off": "mic_device_raw",
+    "dtln": "mic_device_dtln",
+}
+
+
+def _configured_wake_legs(cfg: Config) -> list[tuple[LegSpec, str]]:
+    """Decide which wake legs to build and each one's device string.
+
+    Pure (no I/O) so it is unit-testable on its own — the run() wiring
+    layers mic-open + AsyncExitStack lifecycle on top. The "on"
+    (AEC3/primary) leg is always built: it carries session audio and the
+    Tier-1 heartbeat, and the AEC reconciler is responsible for ensuring
+    its device is present (or parking voice). Optional "off"/"dtln" legs
+    are built only when their device var is non-empty, so voice never
+    opens a UDP listener nobody feeds.
+    """
+    legs: list[tuple[LegSpec, str]] = []
+    for spec in wake_input_legs():
+        device = getattr(cfg, _LEG_DEVICE_ATTR[spec.token])
+        if spec.token == "on" or device:
+            legs.append((spec, device))
+    return legs
+
 
 class WakeLoop:
     """Mic consumer. Dispatches each primary-mic frame to either the
@@ -1391,25 +1451,24 @@ class WakeLoop:
     eliminates implicit frame-ownership coupling between wake-listen
     and active-turn paths.
 
-    Dual-stream wake detection (when `mic_off` + `detector_off` are
-    set): a parallel secondary consumer reads a second mic source
-    (typically the bridge's chip-direct UDP stream — see
-    docs/HANDOFF-wake-telemetry.md PR 1) and runs an independent
-    `WakeWordDetector` instance on every frame. Either leg crossing
-    threshold fires the wake event (OR-gate). A shared refractory +
-    asyncio lock guarantees one user attempt = one wake event
-    regardless of which leg(s) crossed first. The secondary leg is
-    wake-detection-only: its frames don't populate pre-roll or
-    flow into sessions — the primary AEC ON stream remains the
-    canonical session audio source.
+    Multi-leg wake detection: `self._legs` holds one `_LegRuntime` per
+    configured wake leg (keyed by jasper.wake_legs token), assembled by
+    run() and passed in via `legs`. The primary "on" (AEC3) leg drives
+    this main loop and carries session audio + the Tier-1 heartbeat;
+    optional "off" (chip-direct) and "dtln" legs run as parallel
+    `_wake_leg_loop` tasks, each with its own `WakeWordDetector`. Any
+    leg crossing threshold fires the wake event (OR-gate); a shared
+    refractory + asyncio lock guarantees one user attempt = one wake
+    event regardless of which leg(s) crossed first. Secondary legs are
+    wake-detection-only: their frames don't populate pre-roll or flow
+    into sessions — the primary "on" stream stays the canonical session
+    audio source.
     """
 
     def __init__(
         self,
         cfg: Config,
-        mic: MicCapture,
         tts: TtsPlayout,
-        detector: WakeWordDetector,
         connection: LiveConnection,
         ducker: Ducker,
         tts_volume_tracker: TtsVolumeTracker,
@@ -1417,32 +1476,72 @@ class WakeLoop:
         spend_cap: SpendCap,
         stop_event: asyncio.Event,
         volume_coordinator: "VolumeCoordinator",
+        *,
+        legs: "list[_LegRuntime]",
         cues: AudioCueManager | None = None,
         camilla: CamillaController | None = None,
         heartbeat: "Heartbeat | None" = None,
-        mic_off: "UdpMicCapture | None" = None,
-        detector_off: WakeWordDetector | None = None,
-        mic_dtln: "UdpMicCapture | None" = None,
-        detector_dtln: WakeWordDetector | None = None,
         wake_event_store: WakeEventStore | None = None,
     ) -> None:
         self._cfg = cfg
-        self._mic = mic
         self._tts = tts
-        self._detector = detector
-        # Secondary (AEC OFF) and tertiary (DTLN-aec) wake legs are built
-        # into self._legs near the end of __init__ from the mic_off /
-        # detector_off / mic_dtln / detector_dtln ctor params (a leg is
-        # added only when both of its pair are present). No more discrete
-        # per-leg attributes — see _LegRuntime + jasper.wake_legs.
-        # Per-leg recent wake scores + timestamps now live on each
-        # `_LegRuntime` in `self._legs` (built near the end of __init__,
-        # after the capture rings exist).
-        # Shared OR-gate lock across the two leg loops. Held only for
+        # Wake-detection legs, keyed by jasper.wake_legs token. Assembled
+        # by run() (the "leg factory": opens each leg's mic under the
+        # AsyncExitStack, then builds its detector, capture ring, and —
+        # for "off" — a session shadow VAD). "on" is the primary/session
+        # leg, always present; "off"/"dtln" are present when configured.
+        # Each _LegRuntime also holds that leg's recent wake score +
+        # timestamp, read at fire time.
+        self._legs: dict[str, _LegRuntime] = {
+            leg.spec.token: leg for leg in legs
+        }
+        # Fail loud at construction if a configured leg lacks a _LEG_DB
+        # telemetry mapping — otherwise it would raise an uncaught
+        # KeyError in the wake hot path (telemetry must be fail-soft,
+        # never block wake). Caught here at daemon startup, not at fire
+        # time; the registry-wide invariant is also covered by
+        # test_leg_db_covers_all_wake_input_legs.
+        _unmapped = [tok for tok in self._legs if tok not in _LEG_DB]
+        if _unmapped:
+            raise RuntimeError(
+                f"wake legs missing a _LEG_DB telemetry mapping: "
+                f"{sorted(_unmapped)} (add them to _LEG_DB in "
+                "voice_daemon.py)"
+            )
+        # Convenience aliases onto the primary "on" leg (plus the optional
+        # legs' capture rings), so the established read sites — run()'s
+        # main loop, _finalize_event_audio, _shadow_vad_score_raw,
+        # _begin_turn, begin_event — keep reading flat attributes.
+        _on = self._legs["on"]
+        self._mic = _on.mic
+        self._detector = _on.detector
+        self._capture_ring_on = _on.capture_ring
+        self._capture_ring_off = (
+            self._legs["off"].capture_ring if "off" in self._legs
+            else deque(maxlen=CAPTURE_RING_FRAMES)
+        )
+        self._capture_ring_dtln = (
+            self._legs["dtln"].capture_ring if "dtln" in self._legs
+            else deque(maxlen=CAPTURE_RING_FRAMES)
+        )
+        # Shared OR-gate lock across the parallel leg loops. Held only for
         # the critical section that sets refractory_until + reads the
-        # other leg's recent score. Without this, both legs could race
-        # to fire the same wake event simultaneously.
+        # other legs' recent scores. Without this, two legs could race to
+        # fire the same wake event simultaneously.
         self._wake_fire_lock: asyncio.Lock = asyncio.Lock()
+        # The fire-decision seam (Phase 1.2): the single place a leg's fire
+        # threshold is decided, so per-condition thresholds (1.3) and any
+        # future corroboration/veto land here, not in the parallel leg loops.
+        # Empty offsets today => behavior-preserving OR-gate.
+        # `_current_condition` is the acoustic condition the fuser keys on,
+        # refreshed at fire time by the estimator; the empty-offset fuser
+        # ignores it today, so its staleness between fires is moot until 1.3
+        # fills offsets (which must also refresh it on the hot path).
+        self._fuser: WakeFuser = WakeFuser()
+        self._current_condition: str = DEFAULT_CONDITION
+        # Loop-clock timestamp of the last condition recompute (Phase 1.3a);
+        # 0.0 forces a refresh on the first WAKE frame.
+        self._condition_refreshed_at: float = 0.0
         self._connection = connection
         self._ducker = ducker
         # Direct camilla handle for `CueDuck` (snapshot-based duck
@@ -1469,7 +1568,12 @@ class WakeLoop:
         # ONLY if the local VAD detects user speech — TTS bleed-through
         # is filtered out, real interrupts pass through.
         self._vad = SpeechVAD()
-        self._vad_off: SpeechVAD | None = SpeechVAD() if mic_off is not None else None
+        # Session-state shadow VAD for the chip-direct ("off") leg, when
+        # configured. Created in run() and carried on that leg's
+        # _LegRuntime; aliased here for _shadow_vad_score_raw / _begin_turn.
+        self._vad_off: SpeechVAD | None = (
+            self._legs["off"].shadow_vad if "off" in self._legs else None
+        )
 
         self._state = State.WAKE
         self._turn: LiveTurn | None = None
@@ -1556,71 +1660,16 @@ class WakeLoop:
         # command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
 
-        # Wake-event telemetry (HANDOFF-wake-telemetry.md PR 3).
-        # Separate from `_pre_roll` because the capture-ring sizing is
-        # tuned for offline review (~6 s windows around each wake
-        # event) and the pre-roll is tuned for first-phoneme
-        # preservation in turn-open (~560 ms). Conflating them would
-        # force one to compromise on the other's dimension.
-        #
-        # The store handles the SQLite writes + audio capture +
-        # retention; this set of attributes is just the WakeLoop's
-        # contribution: the ring + the in-flight event id.
-        #
-        # CAPTURE_RING_FRAMES sized to (pre + post) seconds with safety
-        # margin: 4 + 2 = 6 s window, +2 s slack for the 2 s post-fire
-        # collection window so we don't run off the end of the ring.
+        # Wake-event telemetry (HANDOFF-wake-telemetry.md PR 3). The store
+        # handles the SQLite writes + per-leg audio capture + retention;
+        # the WakeLoop's contribution is the per-leg capture rings
+        # (allocated in run(), sized CAPTURE_RING_FRAMES, aliased above)
+        # and the in-flight event id. The rings are kept separate from
+        # `_pre_roll` because they're tuned for offline review (~6 s
+        # windows around each wake event) while the pre-roll is tuned for
+        # first-phoneme preservation in turn-open (~560 ms); conflating
+        # them would force one to compromise on the other's dimension.
         self._wake_event_store: WakeEventStore | None = wake_event_store
-        _capture_ring_frames = int(
-            ((CAPTURE_PRE_SEC + CAPTURE_POST_SEC) * MicCapture.OUTPUT_RATE
-             / MicCapture.OUTPUT_FRAME_SAMPLES) + 25
-        )
-        self._capture_ring_on: deque = deque(maxlen=_capture_ring_frames)
-        # PR 2 (dual-stream) wakes will populate this; PR 3 only
-        # references it via getattr-tolerant code so this PR is
-        # independent of the merge order.
-        self._capture_ring_off: deque = deque(maxlen=_capture_ring_frames)
-        # Triple-stream extension (2026-05-23): DTLN-aec leg's audio
-        # ring. Same shape as on/off; populated by the generic leg loop
-        # when the DTLN leg is configured. Empty on single-/dual-stream
-        # installs.
-        self._capture_ring_dtln: deque = deque(maxlen=_capture_ring_frames)
-
-        # Wake-detection legs, keyed by the jasper.wake_legs token. "on"
-        # is the primary/session leg (driven by run()'s main loop) and is
-        # always present; "off"/"dtln" are added when both their mic and
-        # detector were provided at construction. Each _LegRuntime holds
-        # that leg's detector, capture ring, and recent-score state — the
-        # generic loop + fire path iterate this dict instead of the old
-        # per-leg attribute ladders. (The ctor still takes discrete
-        # mic_off/detector_off/... params; 0.3 will make construction
-        # fully registry-driven.)
-        self._legs: dict[str, _LegRuntime] = {
-            "on": _LegRuntime(
-                by_token("on"), self._mic, self._detector, self._capture_ring_on,
-            ),
-        }
-        if mic_off is not None and detector_off is not None:
-            self._legs["off"] = _LegRuntime(
-                by_token("off"), mic_off, detector_off,
-                self._capture_ring_off, shadow_vad=self._vad_off,
-            )
-        if mic_dtln is not None and detector_dtln is not None:
-            self._legs["dtln"] = _LegRuntime(
-                by_token("dtln"), mic_dtln, detector_dtln, self._capture_ring_dtln,
-            )
-        # Fail loud at construction if a configured leg lacks a _LEG_DB
-        # telemetry mapping — otherwise it would raise an uncaught KeyError
-        # in the wake hot path (telemetry must be fail-soft, never block
-        # wake). Caught here at daemon startup, not at fire time; the
-        # registry-wide invariant is covered by
-        # test_leg_db_covers_all_wake_input_legs.
-        _unmapped = [tok for tok in self._legs if tok not in _LEG_DB]
-        if _unmapped:
-            raise RuntimeError(
-                f"wake legs missing a _LEG_DB telemetry mapping: {sorted(_unmapped)} "
-                "(add them to _LEG_DB in voice_daemon.py)"
-            )
         # The wake event currently in flight, or None when in WAKE
         # state with no pending event. Set in `_handle_wake_frame` on
         # fire; cleared in `_end_turn` after the final outcome write.
@@ -2102,6 +2151,45 @@ class WakeLoop:
             self._measurement_safety_task = None
         return "ok"
 
+    def _read_music_dbfs(self) -> float | None:
+        """Most-recent music-chain loudness (the TtsVolumeTracker anchor) in
+        dBFS, or None when unavailable. Cheap — a cached number, no async
+        I/O — so it is safe to call on the per-frame wake path."""
+        tracker = getattr(self, "_tts_volume_tracker", None)
+        if tracker is None:
+            return None
+        anchor = getattr(tracker, "_anchor_dbfs", None)
+        if anchor is None or anchor <= -120.0:
+            return None
+        return float(anchor)
+
+    def _maybe_refresh_condition(self, now_loop: float) -> None:
+        """Refresh `_current_condition` (the acoustic condition the fuser
+        keys on) at most once per CONDITION_REFRESH_SEC. Lets the per-frame
+        fire gate work off a live (~1 s fresh) condition once the fuser has
+        offsets, without paying the ring-noise-floor cost every frame.
+        Behavior-neutral while offsets are empty — the fuser ignores the
+        condition — and allocation-free on the common timer-not-elapsed
+        path."""
+        if (now_loop - self._condition_refreshed_at) < CONDITION_REFRESH_SEC:
+            return
+        # Stamp the timer BEFORE the recompute so a persistent failure retries
+        # at ~1 Hz (not every frame). Keep the recompute fail-soft: the wake
+        # path must never break because of ancillary condition estimation.
+        self._condition_refreshed_at = now_loop
+        try:
+            self._current_condition = classify_condition(
+                music_dbfs=self._read_music_dbfs(),
+                noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
+            ).condition
+        except Exception:  # noqa: BLE001
+            # Keep the last good condition. The sub-helpers are already
+            # fail-soft; this is belt-and-suspenders against a future
+            # classify_condition change raising on the per-frame loop — an
+            # unguarded raise here would propagate out of the frame loop and
+            # stop wake detection.
+            pass
+
     async def _handle_wake_frame(self, frame, *, leg: str = "on") -> None:
         """Score one frame on the named leg. Legs:
           - 'on'   → post-AEC3 BEST_A (primary, the session audio source)
@@ -2123,6 +2211,11 @@ class WakeLoop:
         if now_loop < self._refractory_until:
             return
 
+        # Keep the condition the fuser keys on fresh (Phase 1.3a): recompute
+        # ~1x/s so the per-frame gate below works off a live condition once
+        # offsets exist. Behavior-neutral while offsets are empty.
+        self._maybe_refresh_condition(now_loop)
+
         # Look up this leg's runtime. Always track the raw score
         # (regardless of threshold) so the OTHER legs, when they fire,
         # can pull this leg's most-recent peak into the wake-event
@@ -2135,7 +2228,9 @@ class WakeLoop:
         rt.recent_score = score
         rt.recent_score_at = now_loop
 
-        if score < detector.threshold:
+        if score < self._fuser.effective_threshold(
+            leg, self._current_condition, detector.threshold,
+        ):
             return
 
         # Threshold crossed on this leg. Try to win the OR-gate race
@@ -2165,7 +2260,9 @@ class WakeLoop:
                     continue
                 if (now_loop - _other.recent_score_at) > WAKE_STALE_SCORE_SEC:
                     continue
-                if _other.recent_score >= _other.detector.threshold:
+                if _other.recent_score >= self._fuser.effective_threshold(
+                    _name, self._current_condition, _other.detector.threshold,
+                ):
                     fired_set.add(_name)
             fired_legs = ",".join(sorted(fired_set))
 
@@ -2300,20 +2397,27 @@ class WakeLoop:
             # the wake hot path is free. Not a renderer probe (would
             # add ~50 ms of async work); the anchor is a recent-ish
             # cached number, accurate to within ~1 s.
-            music_volume_db = None
-            music_active_proxy = False
-            tracker = getattr(self, "_tts_volume_tracker", None)
-            if tracker is not None:
-                # `_anchor_dbfs` is the most recent observed
-                # music-chain RMS in dBFS (defaults to
-                # DEFAULT_ANCHOR_DBFS until the first tick observes
-                # real music). Proxy: louder than -60 dBFS = "music
-                # probably playing." Imperfect (TTS uses the same
-                # chain) but useful for FP correlation.
-                anchor = getattr(tracker, "_anchor_dbfs", None)
-                if anchor is not None and anchor > -120.0:
-                    music_volume_db = float(anchor)
-                    music_active_proxy = anchor > -60.0
+            # Proxy: louder than -60 dBFS = "music probably playing."
+            # Imperfect (TTS uses the same playback chain) but useful for FP
+            # correlation. Same cached anchor the live-condition refresh reads.
+            music_volume_db = self._read_music_dbfs()
+            music_active_proxy = (
+                music_volume_db is not None and music_volume_db > -60.0
+            )
+            # Acoustic condition (Phase 1.1): music from the playback anchor
+            # above; quiet-vs-ambient from the pre-fire mic noise floor over
+            # the capture ring. Recorded so production fires carry the same
+            # taxonomy the corpus labels use (and the 1.2 fuser keys
+            # per-condition thresholds on it). Best-effort — both
+            # _ring_noise_floor_dbfs and classify_condition never raise.
+            condition_ctx = classify_condition(
+                music_dbfs=music_volume_db,
+                noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
+            )
+            # Refresh the condition the fuser keys on (Phase 1.2). Updates on
+            # each fire; the empty-offset fuser ignores it today, so this is
+            # behavior-neutral. Phase 1.3 makes it refresh on the hot path.
+            self._current_condition = condition_ctx.condition
             try:
                 await store.begin_event(
                     event_id=event_id,
@@ -2324,6 +2428,7 @@ class WakeLoop:
                     bridge_config=bridge_config,
                     music_active=music_active_proxy,
                     music_volume_db=music_volume_db,
+                    condition_class=condition_ctx.condition,
                     mic_muted=getattr(self, "_mic_muted", None),
                     fired_legs=fired_legs,
                     # Per-leg score/offset/RMS columns, built from
@@ -2981,6 +3086,12 @@ class WakeLoop:
             "tts_source_peak_dbfs": round(
                 self._tts_volume_tracker.source_peak_dbfs, 1,
             ),
+            # Actually-armed wake legs (runtime truth, by jasper.wake_legs
+            # token order). /aec reports configured *intent* from
+            # aec_mode.env; this is what the daemon actually opened, so a
+            # startup leg-skip (event=wake.leg_skipped) is visible in
+            # /state.voice, not only in the journal.
+            "wake_legs": list(self._legs),
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:
@@ -3437,16 +3548,25 @@ async def run() -> None:
     from . import flight_recorder
     flight_recorder.install("voice")
 
-    pricing = pricing_for_provider(
-        cfg.voice_provider,
-        model=_active_model(cfg),
-        overrides=load_pricing_overrides(),
+    active_model = _active_model(cfg)
+    pricing = pricing_for_model(
+        active_model, overrides=load_pricing_overrides(),
     )
     logger.info(
-        "spend cap: provider=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
-        cfg.voice_provider, pricing.label, cfg.daily_spend_cap_usd,
-        cfg.daily_spend_cap_safety_multiplier,
+        "spend cap: provider=%s model=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
+        cfg.voice_provider, active_model, pricing.label,
+        cfg.daily_spend_cap_usd, cfg.daily_spend_cap_safety_multiplier,
     )
+    if pricing.label.startswith("unpriced:"):
+        # No rate for the active model (not in the bundled dated defaults
+        # nor the override). We do NOT invent one — cost will read $0 and
+        # the spend cap can't bound it until a rate is entered at /voice.
+        logger.warning(
+            "event=pricing.unpriced model=%s — no rate available; cost "
+            "estimates will be $0 and the spend cap cannot bound this "
+            "model until you set a rate at http://%s/voice",
+            active_model, cfg.hostname,
+        )
     usage_store = UsageStore(cfg.usage_db, pricing=pricing)
     spend_cap = SpendCap(
         usage_store,
@@ -3675,7 +3795,6 @@ async def run() -> None:
     async def _prerender_timer(t: Timer) -> None:
         await cues_manager.prerender_text(announcement_text(t))
     timer_scheduler.set_pre_render(_prerender_timer)
-    detector = WakeWordDetector(cfg.wake_model, cfg.wake_threshold)
 
     stop_event = asyncio.Event()
 
@@ -3758,56 +3877,69 @@ async def run() -> None:
                 hostname=cfg.hostname,
             ),
         )
-        # `make_mic_capture` routes to UdpMicCapture for
-        # `JASPER_MIC_DEVICE=udp:PORT` (the AEC bridge's UDP transport
-        # under the resilience-ladder PR 2 architecture) or back to
-        # the PortAudio MicCapture for anything else (`Array` for
-        # chip-direct, a `hw:` substring for any other USB mic).
+        # Open everything with an async lifecycle under one
+        # AsyncExitStack — each configured wake leg's mic, plus the TTS
+        # playout. `make_mic_capture` routes a `udp:PORT` device (the AEC
+        # bridge's UDP transport) to UdpMicCapture and anything else
+        # (`Array` chip-direct, a `hw:` USB mic) to the PortAudio
+        # MicCapture. Which legs to build is data-driven from
+        # jasper.wake_legs + cfg.mic_device* via _configured_wake_legs().
         #
-        # Optional secondary mic for dual-stream wake detection (the
-        # OR-gate path documented in docs/HANDOFF-wake-telemetry.md).
-        # When `cfg.mic_device_raw` is set (e.g. `udp:9877` paired
-        # with the bridge's chip-direct stream), the WakeLoop reads
-        # both streams in parallel and fires wake on either crossing
-        # threshold. Empty `mic_device_raw` keeps the existing
-        # single-stream behaviour.
-        mic_off_cm = (
-            make_mic_capture(
-                cfg.mic_device_raw,
-                capture_rate=cfg.mic_capture_rate,
-                capture_channels=cfg.mic_capture_channels,
-            )
-            if cfg.mic_device_raw else _nullcontext_async(None)
-        )
-        # Triple-stream extension (Phase 1.3): optional 3rd mic source.
-        # Set JASPER_MIC_DEVICE_DTLN=udp:9878 alongside the bridge's
-        # JASPER_AEC_DTLN_ENABLED=1 to enable. Empty → dual-stream only.
-        mic_dtln_cm = (
-            make_mic_capture(
-                cfg.mic_device_dtln,
-                capture_rate=cfg.mic_capture_rate,
-                capture_channels=cfg.mic_capture_channels,
-            )
-            if cfg.mic_device_dtln else _nullcontext_async(None)
-        )
-        async with make_mic_capture(
-            cfg.mic_device,
-            capture_rate=cfg.mic_capture_rate,
-            capture_channels=cfg.mic_capture_channels,
-        ) as mic, mic_off_cm as mic_off, mic_dtln_cm as mic_dtln, make_tts_playout(
-            transport=cfg.tts_transport,
-            device=cfg.tts_device,
-            output_rate=cfg.tts_output_rate,
-            # Constructor gain doesn't matter at runtime — TtsPlayout
-            # initializes at its silent floor and the volume tracker's
-            # first-tick read sets the real value before the first
-            # turn can play. We pass cfg.tts_gain_db so a startup
-            # before the tracker first applies (e.g. Camilla down at
-            # boot) still has a sane fallback.
-            gain_db=cfg.tts_gain_db,
-            drain_tail_sec=cfg.tts_drain_tail_sec,
-            outputd_socket=cfg.tts_outputd_socket,
-        ) as tts:
+        # Resilience asymmetry: the primary "on" (AEC3) leg is must-have
+        # — it carries session audio + the Tier-1 heartbeat, so a
+        # mic-open failure there is fatal (re-raised → systemd
+        # Restart=on-watchdog + the AEC reconciler's mic-presence gate
+        # recover us). Optional "off"/"dtln" legs are best-effort: a
+        # mic-open failure is logged and that leg is skipped so the
+        # speaker keeps waking on the healthy legs.
+        async with contextlib.AsyncExitStack() as stack:
+            legs: list[_LegRuntime] = []
+            for spec, device in _configured_wake_legs(cfg):
+                try:
+                    leg_mic = await stack.enter_async_context(
+                        make_mic_capture(
+                            device,
+                            capture_rate=cfg.mic_capture_rate,
+                            capture_channels=cfg.mic_capture_channels,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    if spec.token == "on":
+                        raise
+                    logger.warning(
+                        "event=wake.leg_skipped leg=%s device=%s "
+                        "reason=mic_open_failed err=%s",
+                        spec.token, device, exc,
+                    )
+                    continue
+                # openWakeWord's Model carries per-instance prediction
+                # state, so each leg gets its own detector — same model
+                # file + threshold, only the input stream differs. The
+                # "off" leg also gets a session shadow VAD (telemetry
+                # only; see _shadow_vad_score_raw).
+                legs.append(_LegRuntime(
+                    spec,
+                    leg_mic,
+                    WakeWordDetector(
+                        cfg.wake_model, threshold=cfg.wake_threshold,
+                    ),
+                    deque(maxlen=CAPTURE_RING_FRAMES),
+                    shadow_vad=SpeechVAD() if spec.token == "off" else None,
+                ))
+            tts = await stack.enter_async_context(make_tts_playout(
+                transport=cfg.tts_transport,
+                device=cfg.tts_device,
+                output_rate=cfg.tts_output_rate,
+                # Constructor gain doesn't matter at runtime — TtsPlayout
+                # initializes at its silent floor and the volume tracker's
+                # first-tick read sets the real value before the first
+                # turn can play. We pass cfg.tts_gain_db so a startup
+                # before the tracker first applies (e.g. Camilla down at
+                # boot) still has a sane fallback.
+                gain_db=cfg.tts_gain_db,
+                drain_tail_sec=cfg.tts_drain_tail_sec,
+                outputd_socket=cfg.tts_outputd_socket,
+            ))
             tts_volume_tracker = TtsVolumeTracker(
                 camilla, tts,
                 offset_db=cfg.tts_gain_db,
@@ -3839,36 +3971,17 @@ async def run() -> None:
             # jasper/watchdog.py header.
             heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
             heartbeat.start()
-            # Second WakeWordDetector instance for the AEC OFF leg.
-            # openWakeWord's `Model` carries internal prediction-buffer
-            # state per instance — two independent detectors so the
-            # legs don't cross-contaminate. Same model file and same
-            # threshold; only the input stream differs. Constructed
-            # only when mic_off is present.
-            detector_off = (
-                WakeWordDetector(cfg.wake_model, threshold=cfg.wake_threshold)
-                if mic_off is not None else None
-            )
-            # Tertiary leg detector (DTLN-aec). Same model + threshold
-            # as the other legs; only the input stream differs.
-            detector_dtln = (
-                WakeWordDetector(cfg.wake_model, threshold=cfg.wake_threshold)
-                if mic_dtln is not None else None
-            )
             # `wake_event_store` was opened at the top of run() —
             # see the comment block above `_build_registry` for the
             # timing rationale. We just hand it to WakeLoop here.
             wake_loop = WakeLoop(
-                cfg, mic, tts, detector, connection, ducker,
+                cfg, tts, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
                 volume_coordinator=volume_coordinator,
+                legs=legs,
                 cues=cues_manager,
                 camilla=camilla,
                 heartbeat=heartbeat,
-                mic_off=mic_off,
-                detector_off=detector_off,
-                mic_dtln=mic_dtln,
-                detector_dtln=detector_dtln,
                 wake_event_store=wake_event_store,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to

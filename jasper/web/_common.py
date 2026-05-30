@@ -362,6 +362,124 @@ def toggle_html(
     )
 
 
+# Modal confirm/alert dialog. The inline twin of the canonical
+# /assets/shared/js/dialog.js (deploy/assets/shared/js/dialog.js), themed for
+# the legacy wizard look. Replaces window.confirm/alert, which the browser can
+# suppress ("prevent this page from creating more dialogs") — that suppression
+# silently defeated the action guards. <dialog>.showModal() can't be
+# suppressed and gives a focus trap, ESC-to-cancel, and a backdrop for free.
+#
+# CSS rides inside wrap_page()'s <style> on pages that use the helper; the
+# hand-rolled pages (wifi, bluetooth, correction, home_assistant, wake_corpus)
+# that build their own style block embed DIALOG_CSS the same way as TOGGLE_CSS /
+# NAV_BACK_CSS. The dialog self-styles its buttons (green default, .secondary
+# grey, .danger red) so it looks identical regardless of the page's own theme.
+DIALOG_CSS = """
+  dialog.jts-dialog {
+    margin: auto; width: min(26em, calc(100vw - 2em)); padding: 0;
+    border: 1px solid #ccc; border-radius: 8px; color: #222; background: #fff;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  }
+  dialog.jts-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+  .jts-dialog form { margin: 0; padding: 1.2em 1.3em; }
+  .jts-dialog h2 { margin: 0 0 0.6em; font-size: 1.15em; }
+  .jts-dialog__body { margin: 0 0 1.1em; line-height: 1.45; white-space: pre-line; }
+  .jts-dialog__actions { display: flex; justify-content: flex-end; gap: 0.5em; }
+  /* Self-styled so the dialog looks identical on every wizard, regardless of
+     that page's own button theme (some pages ship a bespoke _PAGE_STYLE). The
+     `.jts-dialog__actions button.x` specificity (0,2,1) beats a page-level
+     `button.x` (0,1,1). Palette matches the shared green/grey/red buttons. */
+  .jts-dialog__actions button {
+    margin: 0; padding: 0.55em 1.2em; border: 0; border-radius: 4px;
+    font-size: 1em; cursor: pointer; color: #fff; background: #1db954;
+  }
+  .jts-dialog__actions button.secondary { background: #4a4a4a; }
+  .jts-dialog__actions button.danger { background: #d44; }
+  .jts-dialog__actions button:hover { filter: brightness(1.08); }
+"""
+
+
+def dialog_helpers_js() -> str:
+    """JavaScript for the modal confirm/alert dialog (legacy wizards).
+
+    wrap_page() embeds this on pages that use it (detected by the helper's
+    function names in the body); hand-rolled pages (wifi, bluetooth, correction,
+    home_assistant, wake_corpus) embed it themselves. Exposes three globals:
+
+      * `jtsConfirm(message, opts)` → Promise<boolean>. opts: {danger, title,
+        confirmLabel, cancelLabel}. `danger:true` reddens the confirm button
+        and autofocuses Cancel so a stray Enter can't fire a destructive
+        action; ESC always cancels. Use as `if (await jtsConfirm(…)) {…}`.
+      * `jtsAlert(message, opts)` → Promise<void>. opts: {title, okLabel}.
+      * `jtsConfirmSubmit(form, message, opts)` → false, for
+        `onsubmit="return jtsConfirmSubmit(this, '…')"`. confirm() was
+        synchronous (its false return cancelled the submit); the dialog is
+        async, so this always cancels the native submit and re-submits the
+        form programmatically only once the user confirms. form.submit() does
+        not re-fire onsubmit, so there's no recursion.
+
+    Message text is set via textContent (never innerHTML) so interpolated
+    untrusted strings — SSIDs, Bluetooth/device names — can't inject markup;
+    CSS `white-space: pre-line` renders multi-line \\n messages.
+
+    NOTE: unlike native confirm()/alert(), these are async and DO NOT block —
+    a non-awaited call returns immediately while the modal is open, so `await`
+    if subsequent code must run only after the user dismisses it."""
+    return """
+function jtsDialog(message, title, buttons) {
+  var dlg = document.createElement('dialog');
+  dlg.className = 'jts-dialog';
+  var form = document.createElement('form');
+  form.method = 'dialog';
+  if (title) { var h = document.createElement('h2'); h.textContent = title; form.appendChild(h); }
+  var body = document.createElement('p');
+  body.className = 'jts-dialog__body';
+  body.textContent = message;
+  form.appendChild(body);
+  var actions = document.createElement('div');
+  actions.className = 'jts-dialog__actions';
+  buttons.forEach(function (b) {
+    var btn = document.createElement('button');
+    btn.type = 'submit';
+    btn.value = b.value;
+    btn.textContent = b.label;
+    if (b.cls) btn.className = b.cls;
+    if (b.autofocus) btn.autofocus = true;
+    actions.appendChild(btn);
+  });
+  form.appendChild(actions);
+  dlg.appendChild(form);
+  document.body.appendChild(dlg);
+  return new Promise(function (resolve) {
+    dlg.addEventListener('close', function () {
+      var value = dlg.returnValue;
+      dlg.remove();
+      resolve(value);
+    }, { once: true });
+    dlg.showModal();
+  });
+}
+function jtsConfirm(message, opts) {
+  opts = opts || {};
+  var danger = !!opts.danger;
+  return jtsDialog(message, opts.title || '', [
+    { label: opts.cancelLabel || 'Cancel', value: 'cancel', cls: 'secondary', autofocus: danger },
+    { label: opts.confirmLabel || 'Confirm', value: 'confirm', cls: danger ? 'danger' : '', autofocus: !danger }
+  ]).then(function (value) { return value === 'confirm'; });
+}
+function jtsAlert(message, opts) {
+  opts = opts || {};
+  return jtsDialog(message, opts.title || '', [
+    { label: opts.okLabel || 'OK', value: 'ok', cls: '', autofocus: true }
+  ]).then(function () {});
+}
+function jtsConfirmSubmit(form, message, opts) {
+  jtsConfirm(message, opts).then(function (ok) { if (ok) form.submit(); });
+  return false;
+}
+""".strip()
+
+
 def wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
     """Wrap a body fragment into a complete HTML5 document with the
     shared style and an optional status banner.
@@ -382,18 +500,26 @@ def wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
         f'<p class="{msg_class}">{html.escape(status_msg)}</p>'
         if status_msg else ""
     )
+    # Ship the confirm/alert dialog helper only to pages that actually use it
+    # (detected by the helper's function names in the body), so dialogless
+    # wizards carry no dead weight. Emit it *before* the body so jtsConfirm /
+    # jtsAlert are defined before any page script that references them.
+    needs_dialog = "jtsConfirm" in body or "jtsAlert" in body
+    dialog_css = DIALOG_CSS if needs_dialog else ""
+    dialog_js = f"<script>{dialog_helpers_js()}</script>" if needs_dialog else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
-<style>{PAGE_STYLE}</style>
+<style>{PAGE_STYLE}{dialog_css}</style>
 </head>
 <body>
 {NAV_BACK_HTML}
 <h1>{html.escape(title)}</h1>
 {msg_html}
+{dialog_js}
 {body}
 </body>
 </html>""".encode()
@@ -614,6 +740,28 @@ def delete_env_file(path: str) -> None:
         pass
     except OSError as e:
         logger.warning("could not delete %s: %s", path, e)
+
+
+def write_json_file(path: str, obj, *, mode: int = 0o644) -> None:
+    """Atomically write ``obj`` as pretty JSON (temp-file + rename).
+
+    Mirrors ``write_env_file``'s all-or-nothing swap so a reader (the
+    voice daemon) never sees a half-written file. Default mode 0644 —
+    JSON config like pricing rates carries no secrets, unlike env files."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w") as f:
+            _json.dump(obj, f, indent=2, sort_keys=True)
+            f.write("\n")
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, path)
 
 
 def restart_systemd_units(*units: str) -> None:

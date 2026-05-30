@@ -4,17 +4,13 @@
 
 import { h, svg } from "./dom.js";
 
-export function eyebrow(text) {
-  return h("p.eyebrow", null, text);
-}
-
-// A titled section: an eyebrow label above a card body. Returns the section
+// A titled section: a cased card title above a card body. Returns the section
 // plus the (empty) body container, so the poll loop can re-render just the
 // body without rebuilding the title. `.section` / `.info-card` live in app.css.
 export function titledCard(title, opts = {}) {
   const body = h(`div.info-card${opts.accent ? ".info-card--accent" : ""}`);
   const section = h("section.section", null,
-    h("div.section__head", null, eyebrow(title)),
+    h("div.section__head", null, h("h2.section__title", null, title)),
     body,
   );
   return { section, body };

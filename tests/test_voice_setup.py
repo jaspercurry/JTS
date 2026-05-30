@@ -528,6 +528,7 @@ def _start_server(
         state_path=state_path,
         discovery_cache_path=str(tmp_path / "voice_model_discovery.json"),
         discovery_http_client=discovery_http_client,
+        pricing_path=str(tmp_path / "pricing.json"),
     )
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -767,3 +768,276 @@ def test_e2e_clear_credentials_removes_provider_keys(
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---------- Pricing editor (/pricing) --------------------------------------
+def test_index_renders_pricing_section_with_provider_buckets():
+    page = voice_setup._index_html(
+        {"JASPER_VOICE_PROVIDER": "openai"}, "tok", default_as_of="2026-05-30",
+    ).decode()
+    assert "Pricing rates" in page
+    assert "Bundled rates as of 2026-05-30" in page
+    # OpenAI shows the cached bucket; Gemini shows only audio (no text);
+    # Grok shows the flat-rate bucket.
+    assert "price__gpt-realtime-2__cached_input_per_million_usd" in page
+    assert "price__gemini-3.1-flash-live-preview__audio_input_per_million_usd" in page
+    assert "price__gemini-3.1-flash-live-preview__text_input_per_million_usd" not in page
+    assert "price__grok-voice-think-fast-1.0__flat_per_hour_usd" in page
+
+
+def test_index_prefills_custom_override_and_tags_it():
+    page = voice_setup._index_html(
+        {"JASPER_VOICE_PROVIDER": "openai"}, "tok",
+        overrides={"gpt-realtime-2": {"text_output_per_million_usd": 28.0}},
+    ).decode()
+    assert 'value="28"' in page
+    assert "custom" in page  # the custom chip
+
+
+def test_apply_pricing_save_is_sparse_and_omits_defaults():
+    openai = catalog.provider_by_id("openai")
+    form = {
+        "provider": "openai",
+        "price__gpt-realtime-2__text_output_per_million_usd": "30",   # changed
+        "price__gpt-realtime-2__audio_output_per_million_usd": "64",  # == default
+        "price__gpt-realtime-2__audio_input_per_million_usd": "",     # blank
+    }
+    out = voice_setup._apply_pricing_save(form, openai, ["gpt-realtime-2"], {})
+    assert out == {"gpt-realtime-2": {"text_output_per_million_usd": 30.0}}
+
+
+def test_apply_pricing_save_preserves_other_providers():
+    openai = catalog.provider_by_id("openai")
+    existing = {"grok-voice-think-fast-1.0": {"flat_per_hour_usd": 5.0}}
+    form = {
+        "provider": "openai",
+        "price__gpt-realtime-2__text_output_per_million_usd": "30",
+    }
+    out = voice_setup._apply_pricing_save(
+        form, openai, ["gpt-realtime-2"], existing,
+    )
+    assert out["grok-voice-think-fast-1.0"] == {"flat_per_hour_usd": 5.0}
+    assert out["gpt-realtime-2"] == {"text_output_per_million_usd": 30.0}
+
+
+def test_apply_pricing_save_blank_resets_model():
+    grok = catalog.provider_by_id("grok")
+    out = voice_setup._apply_pricing_save(
+        {"provider": "grok",
+         "price__grok-voice-think-fast-1.0__flat_per_hour_usd": ""},
+        grok, ["grok-voice-think-fast-1.0"],
+        {"grok-voice-think-fast-1.0": {"flat_per_hour_usd": 5.0}},
+    )
+    assert out == {}
+
+
+def test_apply_pricing_save_rejects_nonnumeric_and_negative():
+    openai = catalog.provider_by_id("openai")
+    form = {
+        "provider": "openai",
+        "price__gpt-realtime-2__text_output_per_million_usd": "abc",
+        "price__gpt-realtime-2__audio_input_per_million_usd": "-5",
+    }
+    out = voice_setup._apply_pricing_save(form, openai, ["gpt-realtime-2"], {})
+    assert out == {}
+
+
+def test_pricing_round_trip_through_overrides_loader(tmp_path: Path):
+    """A saved override file is read back by load_pricing_overrides and
+    applied by pricing_for_model (the full daemon-facing contract)."""
+    from jasper import usage
+    openai = catalog.provider_by_id("openai")
+    out = voice_setup._apply_pricing_save(
+        {"provider": "openai",
+         "price__gpt-realtime-2__text_output_per_million_usd": "30"},
+        openai, ["gpt-realtime-2"], {},
+    )
+    f = tmp_path / "pricing.json"
+    _common.write_json_file(str(f), {"as_of": "2026-08-01", "models": out})
+    loaded = usage.load_pricing_overrides(str(f))
+    eff = usage.pricing_for_model("gpt-realtime-2", overrides=loaded)
+    assert eff.text_output_per_million_usd == 30.0
+    assert eff.audio_input_per_million_usd == 32.0  # bundled default kept
+
+
+# ---------- Pricing research prompt + import (Phase 3) ----------------------
+def test_research_prompt_lists_current_models_and_schema():
+    prompt = voice_setup._pricing_research_prompt({})
+    assert "gpt-realtime-2" in prompt
+    assert "gemini-3.1-flash-live-preview" in prompt
+    assert "grok-voice-think-fast-1.0" in prompt
+    assert "flat_per_hour_usd" in prompt   # grok bucket present
+    assert '"models"' in prompt            # the output schema
+    assert "ai.google.dev" in prompt and "x.ai" in prompt  # pricing pages
+
+
+def test_research_prompt_includes_discovered_models():
+    snap = model_discovery.DiscoverySnapshot(
+        provider_id="openai",
+        fetched_at="2026-05-30T00:00:00Z",
+        models=("gpt-realtime-3",),
+    )
+    prompt = voice_setup._pricing_research_prompt({"openai": snap})
+    assert "gpt-realtime-3" in prompt
+
+
+def test_index_renders_research_prompt_and_import_form():
+    page = voice_setup._index_html({"JASPER_VOICE_PROVIDER": "openai"}, "tok").decode()
+    assert "Refresh all rates from a chatbot" in page
+    assert 'action="pricing-import"' in page
+    assert 'id="pricing-prompt"' in page
+
+
+def test_pricing_import_parses_wrapped_json():
+    models, _as_of, err = voice_setup._apply_pricing_paste(
+        '{"models": {"gpt-realtime-2": {"text_output_per_million_usd": 30}}}'
+    )
+    assert err is None
+    assert models == {"gpt-realtime-2": {"text_output_per_million_usd": 30.0}}
+
+
+def test_pricing_import_strips_code_fence():
+    models, _as_of, err = voice_setup._apply_pricing_paste(
+        '```json\n{"models": {"gpt-realtime-2": {"audio_input_per_million_usd": 31}}}\n```'
+    )
+    assert err is None
+    assert models == {"gpt-realtime-2": {"audio_input_per_million_usd": 31.0}}
+
+
+def test_pricing_import_accepts_bare_model_map():
+    models, _as_of, err = voice_setup._apply_pricing_paste(
+        '{"gpt-realtime-mini": {"audio_output_per_million_usd": 19}}'
+    )
+    assert err is None
+    assert models == {"gpt-realtime-mini": {"audio_output_per_million_usd": 19.0}}
+
+
+def test_pricing_import_rejects_garbage_and_empty():
+    assert voice_setup._apply_pricing_paste("not json")[0] is None
+    assert voice_setup._apply_pricing_paste("")[0] is None
+    # Valid JSON but no usable rate fields → rejected with a message.
+    out, _as_of, err = voice_setup._apply_pricing_paste('{"models": {"x": {"bogus": 1}}}')
+    assert out is None and err
+
+
+def test_pricing_import_round_trips_to_pricing_for_model(tmp_path: Path):
+    from jasper import usage
+    models, _as_of, err = voice_setup._apply_pricing_paste(
+        '{"models": {"gpt-realtime-2": {"text_output_per_million_usd": 33}}}'
+    )
+    assert err is None
+    f = tmp_path / "pricing.json"
+    _common.write_json_file(str(f), {"as_of": "2026-09-01", "models": models})
+    loaded = usage.load_pricing_overrides(str(f))
+    eff = usage.pricing_for_model("gpt-realtime-2", overrides=loaded)
+    assert eff.text_output_per_million_usd == 33.0
+    assert eff.audio_input_per_million_usd == 32.0  # bundled default kept
+
+
+# ---------- Review fixes: catalog metadata, as_of, merge, write_json_file ----
+def test_catalog_entries_carry_pricing_metadata():
+    """Per-provider pricing knowledge lives on the catalog entry (single
+    source), not in voice_setup maps. Buckets must be real Pricing fields."""
+    from jasper.usage import _OVERRIDABLE_FIELDS
+    for p in catalog.PROVIDERS:
+        assert p.pricing_url, f"{p.id} missing pricing_url"
+        assert p.pricing_buckets, f"{p.id} missing pricing_buckets"
+        for bucket in p.pricing_buckets:
+            assert bucket in _OVERRIDABLE_FIELDS, f"{p.id}: bad bucket {bucket}"
+
+
+def test_apply_pricing_paste_preserves_as_of():
+    models, as_of, err = voice_setup._apply_pricing_paste(
+        '{"as_of": "2026-09-09", "models": '
+        '{"gpt-realtime-2": {"text_output_per_million_usd": 30}}}'
+    )
+    assert err is None
+    assert as_of == "2026-09-09"  # data vintage, not import date
+
+
+def test_sparsify_overrides_drops_at_default_fields():
+    sp = voice_setup._sparsify_overrides({
+        "gpt-realtime-2": {
+            "text_output_per_million_usd": 24.0,   # == bundled default → drop
+            "audio_input_per_million_usd": 99.0,   # custom → keep
+        },
+    })
+    assert sp == {"gpt-realtime-2": {"audio_input_per_million_usd": 99.0}}
+
+
+def test_write_json_file_atomic_mode_0644(tmp_path: Path):
+    import json
+    p = tmp_path / "x.json"
+    _common.write_json_file(str(p), {"models": {"m": {"a": 1.0}}})
+    assert json.loads(p.read_text()) == {"models": {"m": {"a": 1.0}}}
+    assert (os.stat(p).st_mode & 0o777) == 0o644  # no secrets → 0644 fine
+    assert not (tmp_path / "x.json.tmp").exists()  # temp cleaned up
+
+
+def test_pricing_import_route_merges_preserving_other_models(tmp_path: Path):
+    """End-to-end: POST /pricing-import MERGES — a model the paste omits
+    keeps its existing override (regression for the full-replace data-loss
+    finding). Also exercises CSRF (the _post helper mints the token)."""
+    import json
+    pricing_path = tmp_path / "pricing.json"
+    pricing_path.write_text(json.dumps(
+        {"models": {"grok-voice-think-fast-1.0": {"flat_per_hour_usd": 5.0}}}
+    ))
+    server, base, thread = _start_server(tmp_path)
+    try:
+        status, _loc, _body = _post(base + "/pricing-import", {
+            "payload": '{"models": {"gpt-realtime-2": '
+                       '{"text_output_per_million_usd": 30}}}',
+        })
+        assert status == 303
+        saved = json.loads(pricing_path.read_text())["models"]
+        assert saved["gpt-realtime-2"] == {"text_output_per_million_usd": 30.0}
+        # The pre-existing grok override the paste didn't mention survives.
+        assert saved["grok-voice-think-fast-1.0"] == {"flat_per_hour_usd": 5.0}
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_pricing_save_route_writes_sparse_override(tmp_path: Path):
+    """End-to-end: POST /pricing (editor) writes a sparse model-ID override;
+    a blanked field stays at the bundled default."""
+    import json
+    pricing_path = tmp_path / "pricing.json"
+    server, base, thread = _start_server(tmp_path)
+    try:
+        status, _loc, _body = _post(base + "/pricing", {
+            "provider": "openai",
+            "price__gpt-realtime-2__text_output_per_million_usd": "29",
+            "price__gpt-realtime-2__audio_input_per_million_usd": "",  # default
+        })
+        assert status == 303
+        saved = json.loads(pricing_path.read_text())["models"]
+        assert saved["gpt-realtime-2"] == {"text_output_per_million_usd": 29.0}
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_pricing_import_route_replaces_same_model_override(tmp_path: Path):
+    """Re-importing a model REPLACES that model's prior override (per-model
+    replace); the cross-model merge that preserves *other* models is covered
+    by test_pricing_import_route_merges_preserving_other_models."""
+    import json
+    pricing_path = tmp_path / "pricing.json"
+    pricing_path.write_text(json.dumps(
+        {"models": {"gpt-realtime-2": {"text_output_per_million_usd": 99.0}}}
+    ))
+    server, base, thread = _start_server(tmp_path)
+    try:
+        status, _loc, _body = _post(base + "/pricing-import", {
+            "payload": '{"models": {"gpt-realtime-2": '
+                       '{"audio_input_per_million_usd": 30}}}',
+        })
+        assert status == 303
+        saved = json.loads(pricing_path.read_text())["models"]
+        # Prior text_output override gone (replaced); new audio_input stands.
+        assert saved["gpt-realtime-2"] == {"audio_input_per_million_usd": 30.0}
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

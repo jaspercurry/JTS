@@ -14,6 +14,7 @@
 import { h } from "./dom.js";
 import { collapsible } from "./components.js";
 import { getJSON, jsonHeaders } from "./api.js";
+import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
 export function buildDebugCard() {
   const rows = h("div.debug-rows");
@@ -52,7 +53,7 @@ export function buildDebugCard() {
           ? "Applies immediately."
           : "This restarts " + s.label + " briefly to apply.")
       : "Turn off DEBUG logging for " + s.label + "?";
-    if (!confirm(msg)) { cb.checked = !on; return; }
+    if (!await jtsConfirm(msg)) { cb.checked = !on; return; }
     cb.disabled = true;
     status.textContent = "Applying…";
     try {

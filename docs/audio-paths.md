@@ -410,6 +410,12 @@ CamillaDSP processing. So:
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. Acceptable today; if it becomes a problem,
   move the dsnoop tap downstream of CamillaDSP.
+- Corpus-only exception: the wake-corpus chip-AEC comparison profile can
+  temporarily ask outputd to publish its final speaker buffer as both an
+  XVF USB-IN reference and an `outputd_udp` reference tap for
+  `jasper-aec-bridge`. That path is recorder-owned and removed when
+  corpus test mode exits; production AEC still uses the `pcm.jasper_capture`
+  reference above.
 
 ## Related
 
@@ -423,4 +429,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-30 (source handoff guard, future-source checklist, source-capabilities plan link, outputd topology, and TTS drain/flush boundary rechecked)
+Last verified: 2026-05-30 (source handoff guard, future-source checklist, source-capabilities plan link, outputd topology, TTS drain/flush boundary, and wake-corpus chip-AEC reference exception rechecked)

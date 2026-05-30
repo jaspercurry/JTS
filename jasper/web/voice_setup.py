@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import os
 import re
 import urllib.parse
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -52,6 +54,13 @@ from jasper.voice.model_discovery import (
     load_cache,
     refresh_provider_cache,
 )
+from jasper.usage import (
+    DEFAULT_PRICING_FILE,
+    default_pricing_as_of,
+    load_pricing_overrides,
+    pricing_for_model,
+    sanitize_pricing_models,
+)
 
 from ._common import (
     PAGE_STYLE,
@@ -68,6 +77,7 @@ from ._common import (
     verify_csrf,
     wrap_page,
     write_env_file,
+    write_json_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -378,11 +388,193 @@ def _provider_extras_html(
     return "\n".join(out)
 
 
+# Human labels for the Pricing buckets. Covers all six fields; each
+# provider exposes the subset it actually uses via
+# ``ProviderCatalogEntry.pricing_buckets`` (the single per-provider source).
+_BUCKET_LABELS = {
+    "audio_input_per_million_usd": "Audio in ($/1M tokens)",
+    "audio_output_per_million_usd": "Audio out ($/1M tokens)",
+    "text_input_per_million_usd": "Text in ($/1M tokens)",
+    "text_output_per_million_usd": "Text out ($/1M tokens)",
+    "cached_input_per_million_usd": "Cached in ($/1M tokens)",
+    "flat_per_hour_usd": "Flat rate ($/hour)",
+}
+
+
+def _today_iso() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _provider_model_ids(
+    provider: ProviderCatalogEntry,
+    discovered: DiscoverySnapshot | None,
+) -> list[str]:
+    """Models to offer pricing rows for: catalog ∪ discovered, in that
+    order. Mirrors the model dropdown's enumeration."""
+    ids = [m.id for m in provider.models]
+    seen = set(ids)
+    if discovered is not None:
+        for model_id in discovered.models:
+            if model_id not in seen:
+                ids.append(model_id)
+                seen.add(model_id)
+    return ids
+
+
+def _pricing_section_html(
+    provider: ProviderCatalogEntry,
+    discovered: DiscoverySnapshot | None,
+    overrides: dict[str, dict],
+    default_as_of: str,
+    csrf_token: str,
+) -> str:
+    """Collapsible per-model rate editor for one provider. Standalone form
+    POSTing to /pricing (writes /var/lib/jasper/pricing.json) — independent
+    of the key/model save-form."""
+    buckets = provider.pricing_buckets
+    if not buckets:
+        return ""
+    blocks = []
+    for model_id in _provider_model_ids(provider, discovered):
+        default = pricing_for_model(model_id)
+        effective = pricing_for_model(model_id, overrides=overrides)
+        unpriced = default.label.startswith("unpriced:")
+        rows = []
+        for field in buckets:
+            d = getattr(default, field)
+            e = getattr(effective, field)
+            is_custom = abs(e - d) > 1e-9
+            value_attr = f"{e:g}" if is_custom else ""
+            placeholder = "set a rate" if unpriced else f"default {d:g}"
+            chip = ' <span class="badge">custom</span>' if is_custom else ""
+            name = f"price__{html.escape(model_id)}__{field}"
+            rows.append(f"""
+            <label>{html.escape(_BUCKET_LABELS[field])}{chip}</label>
+            <input type="number" min="0" step="0.01" inputmode="decimal"
+                   name="{name}" value="{value_attr}"
+                   placeholder="{html.escape(placeholder)}">""")
+        needs = (
+            ' <span class="badge muted">needs pricing</span>' if unpriced else ""
+        )
+        blocks.append(f"""
+          <div class="price-model" style="margin:0.75em 0; padding-top:0.5em; border-top:1px solid rgba(0,0,0,0.08)">
+            <p class="meta" style="margin:0 0 0.3em"><code>{html.escape(model_id)}</code>{needs}</p>
+            {''.join(rows)}
+          </div>""")
+    as_of_txt = (
+        f"Bundled rates as of {html.escape(default_as_of)}. " if default_as_of else ""
+    )
+    return f"""
+    <details class="disclosure">
+      <summary>Pricing rates</summary>
+      <div class="disclosure-body">
+        <p class="hint">{as_of_txt}Used to estimate spend on the /system
+        dashboard. Blank = use the bundled default; clear a box to reset.
+        Edits apply to future sessions after the daemon restarts.</p>
+        <form method="post" action="pricing">
+          {csrf_field_html(csrf_token)}
+          <input type="hidden" name="provider" value="{provider.id}">
+          {''.join(blocks)}
+          <div class="actions" style="margin-top:0.75em">
+            <button class="secondary" type="submit">Save {html.escape(provider.label)} rates</button>
+          </div>
+        </form>
+      </div>
+    </details>"""
+
+
+def _pricing_research_prompt(
+    discovery: dict[str, DiscoverySnapshot] | None,
+) -> str:
+    """Build a copy-paste prompt enumerating the EXACT current models
+    (catalog ∪ discovered) and the JSON schema we want back. Generated
+    dynamically so it always reflects the models this speaker actually
+    offers, including any newly discovered ones."""
+    discovery = discovery or {}
+    today = _today_iso()
+    lines = []
+    for provider in PROVIDERS:
+        buckets = provider.pricing_buckets
+        if not buckets:
+            continue
+        url = provider.pricing_url or "(official pricing page)"
+        lines.append(f"- {provider.label} ({provider.vendor}) — pricing: {url}")
+        fields = ", ".join(buckets)
+        for model_id in _provider_model_ids(provider, discovery.get(provider.id)):
+            lines.append(f"    - {model_id}: {fields}")
+    model_block = "\n".join(lines)
+    return (
+        "You are helping keep a smart speaker's voice-model cost estimates "
+        f"accurate. Today is {today}. For each model below, look up its "
+        "CURRENT official price from the linked pricing page.\n\n"
+        "Models and the rate fields I need (token rates are USD per "
+        "1,000,000 tokens; flat_per_hour_usd is USD per hour of open "
+        "connection):\n\n"
+        f"{model_block}\n\n"
+        "Reply with ONLY a JSON object in EXACTLY this shape — same model "
+        "IDs and field names, numbers only (no \"$\" or units), and omit "
+        "any field or model you can't find a confident official price for:\n\n"
+        "{\n"
+        f'  "as_of": "{today}",\n'
+        '  "source": "<where you found the prices>",\n'
+        '  "models": {\n'
+        '    "<model-id>": { "audio_input_per_million_usd": 0.0 }\n'
+        "  }\n"
+        "}\n\n"
+        "Double-check against the official pricing page; do not guess."
+    )
+
+
+def _pricing_refresh_html(
+    discovery: dict[str, DiscoverySnapshot] | None,
+    csrf_token: str,
+) -> str:
+    """Phase-3 section: a copyable research prompt (auto-filled with the
+    speaker's exact current models) + a paste-back box that imports the
+    chatbot's JSON. Standalone form POSTing to /pricing-import."""
+    prompt = html.escape(_pricing_research_prompt(discovery))
+    return f"""
+<h2 style="margin-top:2em">Refresh all rates from a chatbot</h2>
+<p class="hint">No provider API returns voice-model prices, so this speaker
+can't fetch them automatically. Copy the prompt below into any AI chatbot
+— it lists the exact models this speaker uses and asks for current official
+prices — then paste back the JSON it replies with.</p>
+<details class="disclosure">
+  <summary>1. Copy this research prompt</summary>
+  <div class="disclosure-body">
+    <textarea id="pricing-prompt" readonly rows="14"
+      style="width:100%; font-family:monospace; font-size:0.8em">{prompt}</textarea>
+    <div class="actions" style="margin-top:0.5em">
+      <button type="button" class="secondary"
+        onclick="const t=document.getElementById('pricing-prompt');t.focus();t.select();navigator.clipboard&amp;&amp;navigator.clipboard.writeText(t.value)">Copy prompt</button>
+    </div>
+  </div>
+</details>
+<details class="disclosure">
+  <summary>2. Paste the JSON it gives you back</summary>
+  <div class="disclosure-body">
+    <form method="post" action="pricing-import">
+      {csrf_field_html(csrf_token)}
+      <textarea name="payload" rows="12"
+        style="width:100%; font-family:monospace; font-size:0.8em"
+        placeholder="{{&quot;models&quot;: {{&quot;gpt-realtime-2&quot;: {{&quot;audio_input_per_million_usd&quot;: 32}}}}}}"></textarea>
+      <div class="actions" style="margin-top:0.5em">
+        <button class="secondary" type="submit">Validate &amp; import rates</button>
+      </div>
+    </form>
+    <p class="hint">Replaces the per-model overrides with the validated
+    values, then restarts the voice daemon.</p>
+  </div>
+</details>"""
+
+
 def _provider_card_html(
     provider: ProviderCatalogEntry,
     state: dict[str, str],
     csrf_token: str,
     discovered: DiscoverySnapshot | None,
+    overrides: dict[str, dict],
+    default_as_of: str,
     *,
     is_active: bool,
 ) -> str:
@@ -425,7 +617,7 @@ def _provider_card_html(
         clear_form = f'''
     <div class="actions">
       <form method="post" action="clear-credentials"
-            onsubmit="return confirm('Clear the saved {html.escape(provider.label)} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults.');">
+            onsubmit="return jtsConfirmSubmit(this, 'Clear the saved {html.escape(provider.label)} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults.', {{danger:true}});">
         {csrf_field_html(csrf_token)}
         <input type="hidden" name="provider" value="{provider.id}">
         <button class="danger" type="submit">Clear key</button>
@@ -478,6 +670,8 @@ def _provider_card_html(
 
     {extras}
 
+    {_pricing_section_html(provider, discovered, overrides, default_as_of, csrf_token)}
+
     {clear_form}
   </div>
 </details>"""
@@ -489,15 +683,20 @@ def _index_html(
     *,
     status_msg: str = "",
     discovery: dict[str, DiscoverySnapshot] | None = None,
+    overrides: dict[str, dict] | None = None,
+    default_as_of: str = "",
 ) -> bytes:
     active_id = _active_provider_id(state)
     discovery = discovery or {}
+    overrides = overrides or {}
     cards = "".join(
         _provider_card_html(
             p,
             state,
             csrf_token,
             discovery.get(p.id),
+            overrides,
+            default_as_of,
             is_active=(p.id == active_id),
         )
         for p in PROVIDERS
@@ -533,6 +732,7 @@ never sent anywhere except the relevant provider's API.</p>
 <p style="margin-top:2em">
   <button type="submit" form="save-form">Save and restart voice</button>
 </p>
+{_pricing_refresh_html(discovery, csrf_token)}
 
 <p class="hint" style="margin-top:2em">
   See <a href="https://github.com/jaspercurry/JTS/blob/main/docs/HANDOFF-voice-providers.md" target="_blank" rel="noopener">HANDOFF-voice-providers.md</a> for architecture, per-provider trade-offs, and the steps for adding a fourth backend.
@@ -648,6 +848,99 @@ def _provider_key_for_discovery(
     return _value_for(state, provider.key_env).strip()
 
 
+def _apply_pricing_save(
+    form: dict[str, str],
+    provider: ProviderCatalogEntry,
+    model_ids: list[str],
+    existing: dict[str, dict],
+) -> dict[str, dict]:
+    """Merge one provider's posted per-model rates into the existing
+    override map and return the new full ``{model_id: {field: float}}``.
+
+    Sparse: a blank field, a non-numeric/negative value, or a value equal
+    to the bundled default is omitted (→ falls back to the default). A
+    model whose fields are all omitted is removed entirely (a reset). Only
+    the posted provider's models are touched; other providers' overrides
+    are preserved."""
+    buckets = provider.pricing_buckets
+    result = {mid: dict(fields) for mid, fields in existing.items()}
+    for model_id in model_ids:
+        default = pricing_for_model(model_id)
+        sparse: dict[str, float] = {}
+        for field in buckets:
+            raw = (form.get(f"price__{model_id}__{field}") or "").strip()
+            if not raw:
+                continue
+            try:
+                val = float(raw)
+            except ValueError:
+                continue
+            if val < 0:
+                continue
+            if abs(val - getattr(default, field)) < 1e-9:
+                continue  # at the bundled default → keep file sparse
+            sparse[field] = val
+        if sparse:
+            result[model_id] = sparse
+        else:
+            result.pop(model_id, None)  # reset: no overrides for this model
+    return result
+
+
+def _apply_pricing_paste(
+    raw_text: str,
+) -> tuple[dict[str, dict] | None, str, str | None]:
+    """Parse a chatbot's pasted pricing JSON → ``(models_map, as_of, None)``
+    or ``(None, "", error_message)``. Tolerant of a ```json fence and of a
+    bare ``{model_id: {...}}`` map without the ``{"models": ...}`` wrapper.
+    Validation reuses ``sanitize_pricing_models`` so pasted JSON is held to
+    the same rules as a hand-edited override file. ``as_of`` is the pasted
+    value (the date the chatbot researched the prices), preserved so the
+    file records data vintage rather than import time."""
+    text = (raw_text or "").strip()
+    if not text:
+        return None, "", "Paste the JSON your chatbot produced first."
+    if text.startswith("```"):
+        # Strip a leading ```/```json fence line and a trailing ``` fence.
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError) as e:
+        return None, "", f"That doesn't parse as JSON ({e})."
+    if not isinstance(data, dict):
+        return None, "", 'Expected a JSON object with a "models" map.'
+    # Accept either {"models": {...}} or a bare {model_id: {...}} map.
+    models = sanitize_pricing_models(data.get("models", data))
+    if not models:
+        return None, "", (
+            "No usable model rates found. Expected "
+            '{"models": {"<model-id>": {"audio_input_per_million_usd": '
+            "<number>, ...}}}."
+        )
+    raw_as_of = data.get("as_of")
+    as_of = raw_as_of if isinstance(raw_as_of, str) else ""
+    return models, as_of, None
+
+
+def _sparsify_overrides(models: dict[str, dict]) -> dict[str, dict]:
+    """Drop fields equal to the bundled default, and models left empty, so
+    ``pricing.json`` stays a minimal sparse override (the invariant the
+    per-provider editor maintains). Idempotent on already-sparse maps."""
+    out: dict[str, dict] = {}
+    for model_id, fields in models.items():
+        default = pricing_for_model(model_id)
+        sparse = {
+            k: v for k, v in fields.items()
+            if abs(float(v) - getattr(default, k, 0.0)) > 1e-9
+        }
+        if sparse:
+            out[model_id] = sparse
+    return out
+
+
 # ----------------------------------------------------------------------
 # HTTP handler.
 # ----------------------------------------------------------------------
@@ -670,12 +963,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path == "/":
                 state = _load_state(cfg["state_path"])
                 discovery = load_cache(cfg["discovery_cache_path"])
+                overrides = load_pricing_overrides(cfg["pricing_path"])
+                default_as_of = default_pricing_as_of()
                 ctx = begin_request(self)
                 send_html_response(self, _index_html(
                     state,
                     ctx["csrf_token"],
                     status_msg=ctx["flash"],
                     discovery=discovery,
+                    overrides=overrides,
+                    default_as_of=default_as_of,
                 ))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -683,7 +980,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path not in ("/save", "/clear-credentials", "/refresh-models"):
+            if path not in (
+                "/save", "/clear-credentials", "/refresh-models", "/pricing",
+                "/pricing-import",
+            ):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = read_form(self)
@@ -698,6 +998,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/refresh-models":
                 self._handle_refresh_models(form)
+                return
+            if path == "/pricing":
+                self._handle_pricing(form)
+                return
+            if path == "/pricing-import":
+                self._handle_pricing_import(form)
                 return
 
         # --- route bodies ---
@@ -803,6 +1109,91 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ),
             )
 
+        def _handle_pricing(self, form: dict[str, str]) -> None:
+            pid = (form.get("provider") or "").strip()
+            provider = provider_by_id(pid)
+            if provider is None:
+                send_see_other(self, "./", flash=f"Unknown provider {pid!r}.")
+                return
+            discovery = load_cache(cfg["discovery_cache_path"])
+            model_ids = _provider_model_ids(provider, discovery.get(provider.id))
+            existing = load_pricing_overrides(cfg["pricing_path"])
+            new_models = _apply_pricing_save(form, provider, model_ids, existing)
+            try:
+                if new_models:
+                    write_json_file(cfg["pricing_path"], {
+                        "as_of": _today_iso(),
+                        "source": "edited via /voice",
+                        "models": new_models,
+                    })
+                else:
+                    # No overrides anywhere now → remove the file so the
+                    # daemon falls back entirely to the bundled defaults.
+                    try:
+                        os.remove(cfg["pricing_path"])
+                    except FileNotFoundError:
+                        pass
+            except OSError as e:
+                logger.exception("could not write pricing override")
+                send_see_other(
+                    self, "./", flash=f"Could not save pricing: {e}",
+                )
+                return
+            logger.info(
+                "event=pricing.edit provider=%s models=%d",
+                provider.id, len(new_models),
+            )
+            restart_voice_daemon()
+            send_see_other(
+                self, "./",
+                flash=(
+                    f"Saved {provider.label} pricing. "
+                    "Voice daemon restarting."
+                ),
+            )
+
+        def _handle_pricing_import(self, form: dict[str, str]) -> None:
+            models, as_of, err = _apply_pricing_paste(form.get("payload") or "")
+            if err is not None:
+                send_see_other(self, "./", flash=err)
+                return
+            # MERGE into existing overrides (like the per-provider editor):
+            # pasted models overlay, models the paste omitted are preserved.
+            # Sparsify so the file stays minimal. A full-replace here would
+            # silently drop a hand-priced model the chatbot didn't return.
+            existing = load_pricing_overrides(cfg["pricing_path"])
+            merged = _sparsify_overrides({**existing, **models})
+            try:
+                if merged:
+                    write_json_file(cfg["pricing_path"], {
+                        "as_of": as_of or _today_iso(),
+                        "source": "imported via /voice",
+                        "models": merged,
+                    })
+                else:
+                    try:
+                        os.remove(cfg["pricing_path"])
+                    except FileNotFoundError:
+                        pass
+            except OSError as e:
+                logger.exception("could not write imported pricing")
+                send_see_other(
+                    self, "./", flash=f"Could not save pricing: {e}",
+                )
+                return
+            logger.info(
+                "event=pricing.import imported=%d total=%d",
+                len(models), len(merged),
+            )
+            restart_voice_daemon()
+            send_see_other(
+                self, "./",
+                flash=(
+                    f"Imported rates for {len(models)} model(s). "
+                    "Voice daemon restarting."
+                ),
+            )
+
     return Handler
 
 
@@ -817,18 +1208,23 @@ def make_server(
     state_path: str = PROVIDER_FILE,
     discovery_cache_path: str = DISCOVERY_CACHE_FILE,
     discovery_http_client: Any | None = None,
+    pricing_path: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is one of:
       - `socket.socket` — pre-bound listener handed off by systemd
       - `(host, port)` tuple — explicit bind
       - `int` — port, binds 127.0.0.1
     Mirrors the other wizard `make_server` signatures so jasper.web.__main__
-    can drive all four uniformly."""
+    can drive all four uniformly. `pricing_path` defaults to the same
+    JASPER_PRICING_FILE the daemon reads, so edits land where it looks."""
     from . import _systemd
     cfg = {
         "state_path": state_path,
         "discovery_cache_path": discovery_cache_path,
         "discovery_http_client": discovery_http_client,
+        "pricing_path": pricing_path or os.environ.get(
+            "JASPER_PRICING_FILE", DEFAULT_PRICING_FILE,
+        ),
     }
     return _systemd.make_http_server(target, _make_handler(cfg))
 

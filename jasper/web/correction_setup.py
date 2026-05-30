@@ -55,11 +55,13 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ._common import (
+    DIALOG_CSS,
     NAV_BACK_CSS,
     PAGE_STYLE,
     begin_request,
     csrf_fetch_helpers_js,
     csrf_meta_html,
+    dialog_helpers_js,
     reject_csrf,
     send_html_response,
     verify_csrf,
@@ -634,6 +636,7 @@ __NAV_BACK__
   </div>
 </details>
 
+<script>__DIALOG_HELPERS__</script>
 <script>
 (function () {
   'use strict';
@@ -994,7 +997,7 @@ __NAV_BACK__
       var Ctor = window.AudioContext || window.webkitAudioContext;
       ctx = new Ctor({sampleRate: REQUIRED_SR});
     } catch (e) {
-      alert('Could not create AudioContext: ' + e.message);
+      jtsAlert('Could not create AudioContext: ' + e.message);
       startBtn.disabled = false;
       startBtn.textContent = 'Start mic capture';
       return;
@@ -1019,7 +1022,7 @@ __NAV_BACK__
       micStream = stream;
     } catch (e) {
       stopMicStream();
-      alert('Microphone permission denied or unavailable: ' + e.message);
+      jtsAlert('Microphone permission denied or unavailable: ' + e.message);
       startBtn.disabled = false;
       startBtn.textContent = 'Start mic capture';
       return;
@@ -1086,7 +1089,7 @@ __NAV_BACK__
     try {
       await ctx.audioWorklet.addModule(blobUrl);
     } catch (e) {
-      alert('AudioWorklet load failed: ' + e.message);
+      jtsAlert('AudioWorklet load failed: ' + e.message);
       return;
     }
     var src = ctx.createMediaStreamSource(stream);
@@ -1515,8 +1518,9 @@ __NAV_BACK__
 
   async function deleteSessionBundle(sessionId) {
     if (!sessionId) return;
-    var ok = window.confirm(
-      'Delete this measurement bundle from the speaker? Raw recordings and derived evidence for this session will be removed.'
+    var ok = await jtsConfirm(
+      'Delete this measurement bundle from the speaker? Raw recordings and derived evidence for this session will be removed.',
+      {danger: true}
     );
     if (!ok) return;
     try {
@@ -2680,12 +2684,13 @@ def _render_page(hostname: str, csrf_token: str = "") -> bytes:
     )
     return (
         _PAGE_HTML
-        .replace("__STYLE__", _CORRECTION_PAGE_STYLE + NAV_BACK_CSS)
+        .replace("__STYLE__", _CORRECTION_PAGE_STYLE + NAV_BACK_CSS + DIALOG_CSS)
         .replace(
             "__CSRF_META__",
             csrf_meta_html(csrf_token) if csrf_token else "",
         )
         .replace("__CSRF_FETCH_HELPERS__", csrf_fetch_helpers_js())
+        .replace("__DIALOG_HELPERS__", dialog_helpers_js())
         .replace("__NAV_BACK__", home_html)
         .replace("__HOSTNAME__", hostname)
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))

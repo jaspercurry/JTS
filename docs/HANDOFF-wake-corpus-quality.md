@@ -99,6 +99,10 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `raw` / chip-direct | XVF chip-direct stream used by the current raw wake leg | Yes | This is the useful XVF raw-ish production leg. |
 | `dtln` | XVF path through the DTLN neural AEC leg | Yes when enabled in production | High resource cost; useful as corpus data when enabled. |
 | `raw0` | Truly raw XVF mic 0 / chip channel 2, no chip DSP and no software AEC | No | Corpus-only future-proofing for cheap-mic portability work. |
+| `chip_aec_150` | XVF on-chip AEC ASR output with fixed gated 150° beam | No | Corpus-only chip-AEC comparison profile. Treat as hardware-AEC evidence, not a production wake leg yet. |
+| `chip_aec_210` | XVF on-chip AEC ASR output with fixed gated 210° beam | No | Corpus-only chip-AEC comparison profile. Keep paired with 150° because mic orientation changes can swap the winner. |
+| `xvf_raw0_webrtc_aec3` | Truly raw XVF mic 0 through software WebRTC AEC3 | No | Same raw channel as `raw0`, processed with the current software AEC3 baseline for chip-vs-software comparison. |
+| `xvf_raw0_dtln` | Truly raw XVF mic 0 through DTLN | No | Optional and resource-sensitive; useful when comparing neural AEC against chip AEC and WebRTC AEC3. |
 | `usb_raw` | Cheap USB mic capture with no JTS software processing | No | Watch hardware AGC/limiter state carefully. |
 | `usb_webrtc` | Cheap USB mic through software WebRTC AEC | No | Corpus-only experiment for lower-cost mic paths. |
 | `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
@@ -118,6 +122,12 @@ the comparison reference. The current built-in USB pilot labels
 `usb_webrtc` as the 40 ms edge-combo delay-hint baseline and the three
 variant slots as 80/120/160 ms delay hints; older sessions without the
 source field were XVF-fed.
+
+As of 2026-05-29, the chip-AEC comparison profile uses explicit leg
+names instead of generic sweep slots for the fixed XVF hardware-AEC
+outputs and raw0-derived software legs. Analyze `chip_aec_150` and
+`chip_aec_210` separately; do not average them away, because orientation
+and room geometry are exactly what this profile is meant to reveal.
 
 ---
 
@@ -498,6 +508,9 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-29 (v10):** Added chip-AEC comparison profile legs
+  (`chip_aec_150`, `chip_aec_210`, `xvf_raw0_webrtc_aec3`,
+  `xvf_raw0_dtln`) to the leg-aware quality-analysis contract.
 - **2026-05-28 (v9):** Added waveform-fusion experiment guidance and
   first-session result. The script is offline-only and must be judged
   against score/decision fusion plus hard negatives.
@@ -526,4 +539,4 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-28 (v9 - waveform-fusion experiment guidance added)
+Last verified: 2026-05-29 (v10 - chip-AEC comparison profile legs added)

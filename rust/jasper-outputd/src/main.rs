@@ -9,6 +9,7 @@ use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{self, BufReader, Write};
 use std::mem;
+use std::net::{SocketAddr, UdpSocket};
 use std::os::fd::RawFd;
 use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -20,7 +21,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use jasper_outputd::alsa_backend::{AlsaBackend, IoCounters};
+use alsa::pcm::{State, PCM};
+use jasper_outputd::alsa_backend::{open_playback_pcm, AlsaBackend, IoCounters};
 use jasper_outputd::config::{BackendMode, Config};
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::ledger::{PlayoutEvent, SegmentId, SegmentStatus};
@@ -33,6 +35,7 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
+const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
 const MAX_PENDING_ASSISTANT_FRAMES: u64 = SAMPLE_RATE as u64 * 2;
 const TTS_QUEUE_LOG_STREAK_MS: u64 = 500;
 const TTS_QUEUE_LOG_MARGIN_FRAMES: u64 = SAMPLE_RATE as u64 / 2;
@@ -45,7 +48,12 @@ fn main() -> Result<()> {
     flag::register(SIGINT, Arc::clone(&shutdown)).context("registering SIGINT handler")?;
 
     let mut core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
-    let _aec = core.add_reference_consumer("aec", 128);
+    let reference_consumer =
+        if config.chip_ref_pcm.is_some() || config.reference_udp_target.is_some() {
+            Some(core.add_reference_consumer("external-aec", 128))
+        } else {
+            None
+        };
     let state = Arc::new(OutputdState::new(&config));
 
     if let Some(socket_path) = &config.control_socket_path {
@@ -84,6 +92,7 @@ fn main() -> Result<()> {
         BackendMode::Alsa => run_alsa(
             &config,
             &mut core,
+            reference_consumer,
             &tts_rx,
             &tts_flush_rx,
             &state,
@@ -103,7 +112,7 @@ fn run_fake(
     tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
     once: bool,
-    shutdown: &AtomicBool,
+    shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let period = period_duration(config.period_frames);
     let watchdog_interval = watchdog_interval();
@@ -148,13 +157,15 @@ fn run_fake(
 fn run_alsa(
     config: &Config,
     core: &mut OutputCore,
+    reference_consumer: Option<jasper_outputd::reference::ConsumerId>,
     tts_rx: &Receiver<QueuedTtsCommand>,
     tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
     once: bool,
-    shutdown: &AtomicBool,
+    shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut backend = AlsaBackend::new(config)?;
+    let ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
     state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
     let mut content_buf = vec![0i16; core.period_samples()];
     let zero_period = vec![0i16; core.period_samples()];
@@ -195,6 +206,11 @@ fn run_alsa(
             }
         };
         let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
+        if let Some(consumer) = reference_consumer {
+            for packet in core.drain_reference_consumer(consumer) {
+                ref_outputs.publish(&packet.samples);
+            }
+        }
         let tts_metrics = tts_queue.mark_period(core.pending_assistant_frames());
         state.mark_period(
             backend.counters(),
@@ -236,6 +252,222 @@ fn fake_counters(frames_written: u64) -> IoCounters {
         content_xrun_count: 0,
         dac_xrun_count: 0,
     }
+}
+
+struct ReferenceSideOutputs {
+    udp_socket: Option<UdpSocket>,
+    udp_target: Option<SocketAddr>,
+    chip_tx: Option<SyncSender<Vec<i16>>>,
+}
+
+impl ReferenceSideOutputs {
+    fn new(config: &Config, shutdown: &Arc<AtomicBool>) -> Result<Self> {
+        let udp_target = match config.reference_udp_target.as_deref() {
+            Some(raw) => Some(
+                raw.parse::<SocketAddr>()
+                    .with_context(|| format!("parsing JASPER_OUTPUTD_REFERENCE_UDP_TARGET={raw:?}"))?,
+            ),
+            None => None,
+        };
+        let udp_socket = if udp_target.is_some() {
+            let sock = UdpSocket::bind("127.0.0.1:0")
+                .context("binding outputd reference UDP sender")?;
+            sock.set_nonblocking(true)
+                .context("setting outputd reference UDP sender nonblocking")?;
+            Some(sock)
+        } else {
+            None
+        };
+
+        let chip_tx = if let Some(pcm_name) = &config.chip_ref_pcm {
+            Some(spawn_chip_ref_writer(
+                pcm_name.clone(),
+                config.sample_rate,
+                config.period_frames,
+                config.chip_ref_buffer_frames,
+                Arc::clone(shutdown),
+            )?)
+        } else {
+            None
+        };
+
+        if let Some(target) = udp_target {
+            eprintln!("event=outputd.reference_udp.enabled target={target}");
+        }
+        if let Some(pcm) = &config.chip_ref_pcm {
+            eprintln!("event=outputd.chip_ref.enabled pcm={pcm}");
+        }
+
+        Ok(Self {
+            udp_socket,
+            udp_target,
+            chip_tx,
+        })
+    }
+
+    fn publish(&self, stereo_samples: &[i16]) {
+        if let (Some(sock), Some(target)) = (&self.udp_socket, self.udp_target) {
+            if let Err(e) = sock.send_to(bytemuck_i16(stereo_samples), target) {
+                if e.kind() != io::ErrorKind::WouldBlock {
+                    eprintln!("event=outputd.reference_udp.send_failed detail={e}");
+                }
+            }
+        }
+        if let Some(tx) = &self.chip_tx {
+            let dual_mono = downmix_to_dual_mono(stereo_samples);
+            match tx.try_send(dual_mono) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    eprintln!("event=outputd.chip_ref.queue_full action=drop_period");
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    eprintln!("event=outputd.chip_ref.disconnected action=drop_period");
+                }
+            }
+        }
+    }
+}
+
+fn bytemuck_i16(samples: &[i16]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(
+            samples.as_ptr() as *const u8,
+            std::mem::size_of_val(samples),
+        )
+    }
+}
+
+fn downmix_to_dual_mono(stereo_samples: &[i16]) -> Vec<i16> {
+    let mut out = Vec::with_capacity(stereo_samples.len());
+    for frame in stereo_samples.chunks_exact(CHANNELS as usize) {
+        let mixed = ((frame[0] as i32 + frame[1] as i32) / 2) as i16;
+        out.push(mixed);
+        out.push(mixed);
+    }
+    out
+}
+
+fn spawn_chip_ref_writer(
+    pcm_name: String,
+    sample_rate: u32,
+    period_frames: u32,
+    buffer_frames: u32,
+    shutdown: Arc<AtomicBool>,
+) -> Result<SyncSender<Vec<i16>>> {
+    let (tx, rx) = mpsc::sync_channel(REF_OUTPUT_QUEUE_CAPACITY);
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("outputd-chip-ref".to_string())
+        .spawn(move || {
+            let result = run_chip_ref_writer(
+                &pcm_name,
+                sample_rate,
+                period_frames,
+                buffer_frames,
+                &rx,
+                &shutdown,
+                ready_tx,
+            );
+            if let Err(e) = result {
+                eprintln!("event=outputd.chip_ref.failed detail={e:#}");
+            }
+        })
+        .context("spawning outputd chip-ref writer")?;
+    match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Ok(())) => Ok(tx),
+        Ok(Err(detail)) => anyhow::bail!("outputd chip-ref writer failed to start: {detail}"),
+        Err(_) => anyhow::bail!("outputd chip-ref writer did not report readiness"),
+    }
+}
+
+fn run_chip_ref_writer(
+    pcm_name: &str,
+    sample_rate: u32,
+    period_frames: u32,
+    buffer_frames: u32,
+    rx: &Receiver<Vec<i16>>,
+    shutdown: &AtomicBool,
+    ready_tx: SyncSender<Result<(), String>>,
+) -> Result<()> {
+    let startup = (|| -> Result<PCM> {
+        let (pcm, negotiated) = open_playback_pcm(
+            "chip_ref",
+            pcm_name,
+            sample_rate,
+            period_frames,
+            buffer_frames,
+        )?;
+        eprintln!(
+            "event=outputd.chip_ref.opened pcm={} sample_rate={} period_frames={} buffer_frames={}",
+            pcm_name, negotiated.sample_rate, negotiated.period_frames, negotiated.buffer_frames
+        );
+        let zero = vec![0i16; (period_frames as usize) * (CHANNELS as usize)];
+        write_playback_period(&pcm, pcm_name, &zero)?;
+        if pcm.state() != State::Running {
+            pcm.start().context("starting outputd chip-ref PCM")?;
+        }
+        Ok(pcm)
+    })();
+    let pcm = match startup {
+        Ok(pcm) => {
+            let _ = ready_tx.send(Ok(()));
+            pcm
+        }
+        Err(e) => {
+            let detail = format!("{e:#}");
+            let _ = ready_tx.send(Err(detail));
+            return Err(e);
+        }
+    };
+    while !shutdown.load(Ordering::Relaxed) {
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(samples) => {
+                if let Err(e) = write_playback_period(&pcm, pcm_name, &samples) {
+                    eprintln!("event=outputd.chip_ref.write_failed detail={e:#}");
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
+fn write_playback_period(pcm: &PCM, pcm_name: &str, samples: &[i16]) -> Result<()> {
+    let frames_total = samples.len() / (CHANNELS as usize);
+    let io = pcm
+        .io_i16()
+        .context("getting i16 IO handle for outputd chip-ref")?;
+    let mut frames_done = 0usize;
+    let mut recoveries = 0u32;
+    while frames_done < frames_total {
+        let offset = frames_done * (CHANNELS as usize);
+        match io.writei(&samples[offset..]) {
+            Ok(n) => {
+                frames_done += n;
+                if n == 0 {
+                    recoveries += 1;
+                    if recoveries > 3 {
+                        anyhow::bail!("outputd chip-ref writei returned 0 frames repeatedly");
+                    }
+                }
+            }
+            Err(e) => {
+                let errno = e.errno();
+                if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                    pcm.try_recover(e, true)
+                        .context("recovering outputd chip-ref xrun")?;
+                    recoveries += 1;
+                    if recoveries > 3 {
+                        anyhow::bail!("outputd chip-ref xrun recovery exceeded retries");
+                    }
+                } else {
+                    return Err(e).context(format!("writing outputd chip-ref PCM {pcm_name}"));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn log_once(report: PeriodReport) {

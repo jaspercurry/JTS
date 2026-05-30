@@ -189,6 +189,51 @@ async def test_begin_event_inserts_row_in_progress(store: WakeEventStore):
     }
 
 
+async def test_begin_event_records_condition_class(store: WakeEventStore):
+    """Phase 1.1a: the runtime acoustic-condition label round-trips through
+    begin_event into wake_events — the source the per-condition threshold
+    tuning and the estimator-vs-corpus validation read."""
+    await store.begin_event(
+        event_id="evt-cond",
+        trigger_kind="fire_aec_on",
+        peak_score_aec_on=0.9,
+        peak_score_aec_off=None,
+        threshold=0.5,
+        wake_model="jarvis_v2.onnx",
+        condition_class="music",
+    )
+    row = await store.get_event("evt-cond")
+    assert row is not None
+    assert row["condition_class"] == "music"
+
+
+async def test_begin_event_condition_class_defaults_null(store: WakeEventStore):
+    """Optional + behavior-preserving: callers that don't pass it (every
+    caller until the estimator lands in 1.1b) write NULL, not an error."""
+    await store.begin_event(
+        event_id="evt-nocond",
+        trigger_kind="fire_aec_on",
+        peak_score_aec_on=0.9,
+        peak_score_aec_off=None,
+        threshold=0.5,
+        wake_model="jarvis_v2.onnx",
+    )
+    row = await store.get_event("evt-nocond")
+    assert row is not None
+    assert row["condition_class"] is None
+
+
+def test_migration_columns_backfill_music_renderer_and_condition_class():
+    """Guard the backfill: music_renderer shipped in CREATE TABLE but was
+    missing from _MIGRATION_COLUMNS, so upgraded (not reset) DBs lacked it
+    and dropped every telemetry INSERT; condition_class is new. Both must be
+    in the ALTER list so open() backfills existing DBs idempotently."""
+    from jasper.wake_events import _MIGRATION_COLUMNS
+    cols = {name for name, _typ in _MIGRATION_COLUMNS}
+    assert "music_renderer" in cols
+    assert "condition_class" in cols
+
+
 async def test_begin_event_allows_null_off_score(store: WakeEventStore):
     """Single-stream callers (no AEC OFF leg) pass None for the
     secondary scores; the row stores NULL cleanly."""

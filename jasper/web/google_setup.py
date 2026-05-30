@@ -407,7 +407,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
         script = ""
     else:
         progress_button = """<button type="button" class="wizard-progress-reset secondary"
-        onclick="if (confirm('Forget which steps you marked done? The form at the bottom still works either way.')) { try { localStorage.removeItem('jts.google.wizard.done'); } catch(e) {} location.reload(); }">
+        onclick="jtsConfirm('Forget which steps you marked done? The form at the bottom still works either way.').then(function(ok){ if (ok) { try { localStorage.removeItem('jts.google.wizard.done'); } catch(e) {} location.reload(); } })">
   Reset progress
 </button>"""
         intro = '<p class="sub">Connect this speaker to Google Calendar + Gmail. Takes about 5 minutes the first time. Each step has a link to the right Google page — open them in new tabs and click <strong>I\'ve done this →</strong> when each is finished.</p>'
@@ -733,7 +733,7 @@ def _redirect_uri_page_html(
     <p>If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
-          onsubmit="return confirm('Clear the saved Client ID and Secret? You\\'ll need to paste them again.');">
+          onsubmit="return jtsConfirmSubmit(this, 'Clear the saved Client ID and Secret? You\\'ll need to paste them again.', {{danger:true}});">
       {csrf}
       <button type="submit" class="danger">Reset Google credentials</button>
     </form>
@@ -767,7 +767,7 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: st
       {set_default}
     </form>
     <form method="post" action="remove"
-          onsubmit="return confirm('Remove {name}? The refresh token will be deleted from this speaker.');">
+          onsubmit="return jtsConfirmSubmit(this, 'Remove {name}? The refresh token will be deleted from this speaker.', {{danger:true}});">
       {csrf}
       <input type="hidden" name="name" value="{name}">
       <button class="danger" type="submit">Remove</button>
@@ -823,7 +823,7 @@ def _management_html(
   <div class="disclosure-body">
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
-          onsubmit="return confirm('Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked.');">
+          onsubmit="return jtsConfirmSubmit(this, 'Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked.', {{danger:true}});">
       {csrf}
       <button type="submit" class="danger">Reset Google credentials</button>
     </form>

@@ -1101,12 +1101,15 @@ worst-case FP cost.
 
 ### D — Chip-AEC with USB-in reference topology
 
-> **Status: positive lab result; not productionized.** On 2026-05-29
+> **Status: positive lab result; corpus-recorder pilot integration
+> exists, production wake path unchanged.** On 2026-05-29
 > we proved the XVF3800's on-chip AEC can do useful cancellation in
 > JTS's external-DAC topology when JTS feeds the chip a clean USB-IN
 > reference. The current production default remains software AEC3
-> (BEST_A) until the chip path has a direct source-fanout implementation,
-> recorder integration, state restore safety, and wake/corpus validation.
+> (BEST_A). The wake-corpus recorder can now enter a reversible chip-AEC
+> comparison profile that uses outputd direct source fanout, applies the
+> volatile chip profile, and captures explicit `chip_aec_150` /
+> `chip_aec_210` legs for validation.
 > Full test record and current lab recipe live in
 > [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md). The checked-in
 > `scripts/chip-aec-*` helpers are still lab infrastructure; teardown
@@ -1286,17 +1289,18 @@ Realistic bring-up sequence:
 | Phase | Duration |
 |---|---|
 | Weekend prototype: route music to USB-in, measure, tune `SYS_DELAY`, verify convergence | 2–3 days |
-| Productionize: ALSA + CamillaDSP edits, reconciler logic (chip-AEC mode vs current bridge mode), boot-time `AUDIO_MGR_SYS_DELAY` apply, jasper-doctor `AEC_AECCONVERGED` check | 1–2 weeks |
+| Corpus pilot integration: outputd direct reference fanout, recorder-owned env lifecycle, volatile aec-init chip profile, explicit chip-AEC corpus legs | Landed 2026-05-29 |
+| Productionize: production policy/reconciler logic for chip-AEC mode vs current bridge mode, boot-time persistence choices, jasper-doctor `AEC_AECCONVERGED` checks if chip AEC becomes a production leg | 1–2 weeks |
 | Risk: PLL loop bandwidth on the chip's USB Adaptive Mode could introduce timing jitter that pushes the AEC peak past tap 40 intermittently. If so, the fallback is making the host-side ALSA period smaller (already in the bring-up plan above). No CamillaDSP-side SRC bypass possible since USB-IN is 16 kHz only — see correction note above. | — |
 
-**Verdict for future scoping:** feasibility is confirmed in lab. The
-next work is production-shaped integration: direct source fanout to DAC
-+ XVF3800 USB-IN, state/restore safety, and a recorder/corpus leg that
-captures category-7 ASR fixed beams. Current best chip settings:
+**Verdict for future scoping:** feasibility is confirmed in lab, and
+corpus-pilot integration exists. The next decision is empirical: record
+and score the same utterances across chip AEC, WebRTC AEC3, raw, USB,
+and optional DTLN legs. Current best chip settings:
 `AEC_ASROUTONOFF=1`, fixed gated `150°/210°`, `AEC_AECEMPHASISONOFF=2`,
 `AEC_FAR_EXTGAIN=0 dB`. Keep WebRTC AEC3 as the production default until
-that integration exists and the wake/corpus validation says the chip leg
-actually improves model recall / fusion.
+the wake/corpus validation says the chip leg actually improves model
+recall / fusion.
 
 **Sources** (verified URLs as of 2026-05-21):
 - [XMOS XVF3800 User Guide v3.2.1 — Tuning the Application](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/user_guide/04_tuning_the_application.html) — `AUDIO_MGR_SYS_DELAY` definition, 40-sample target, causality / coefficient-inspection workflow

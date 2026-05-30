@@ -9,7 +9,10 @@ below are answered.
 ## Current State
 
 - The wake-corpus recorder can capture `usb_raw`, `usb_webrtc`, and
-  `ref` alongside the XVF legs.
+  `ref` alongside the XVF legs. The 2026-05-29 chip-AEC comparison
+  profile enables `usb_raw` and `usb_webrtc` by default so the cheap mic
+  stays in the same-utterance comparison set while XVF chip AEC is under
+  evaluation.
 - New recorder-created AEC3 sweep sessions set
   `JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb`, so the stable
   `aec3_variant_1`-`aec3_variant_3` slots are fed from `usb_raw`
@@ -77,13 +80,13 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
    The first quick probe suggested timing matters, but offline AEC3
    without live pre-roll/state did not clearly beat the saved live
    output, so treat it as directional evidence only.
-2. **USB AEC3 + DTLN corpus mode.** Current next test: turn off the
-   full AEC3 sweep, capture `usb_raw`, `usb_webrtc` at edge-combo
-   80 ms, `usb_dtln`, `ref`, and XVF control legs in the same
-   utterance. This compares the chosen lightweight AEC3 profile
-   against DTLN without paying for four parallel AEC3 engines. First
-   pass completed 2026-05-28; keep collecting USB legs in the gold
-   corpus, but do not let USB tuning block XVF model training.
+2. **USB AEC3 + DTLN corpus mode.** The first pass completed
+   2026-05-28: `usb_raw`, `usb_webrtc` at edge-combo 80 ms,
+   `usb_dtln`, `ref`, and XVF control legs in the same utterance.
+   The 2026-05-29 chip-AEC comparison profile keeps `usb_raw` and
+   `usb_webrtc` in the main comparison set; `usb_dtln` remains an
+   optional resource-sensitive checkbox. Keep collecting USB legs in
+   the gold corpus, but do not let USB tuning block XVF model training.
 3. **Hardware processing check.** Confirm the USB mic's hardware AGC
    and capture gain state before each test session. Record the state in
    session notes or metadata if this becomes a serious tuning branch.
@@ -104,4 +107,4 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
 - Do not promote waveform-mixed USB outputs without hard-negative
   validation; the first mix result is interesting but not decisive.
 
-Last verified: 2026-05-28.
+Last verified: 2026-05-29.
