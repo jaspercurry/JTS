@@ -28,6 +28,8 @@
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
+| Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
+| Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Preview what install.sh would mutate | [Install dry-run plan](#install-dry-run-plan) |
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
 | Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |

@@ -132,6 +132,14 @@ def make_diagnostic_tools(wake_event_store: "WakeEventStore | None"):
             result["flag_action_event_id"],
             reason,
         )
+        # Tier C: the user flagged an issue the daemon may not have logged
+        # as a WARNING, so dump the recent DEBUG context (voice's flight
+        # recorder) to the journal. Best-effort. See jasper/flight_recorder.py.
+        try:
+            from .. import flight_recorder
+            flight_recorder.dump("voice_flagged")
+        except Exception:  # noqa: BLE001
+            pass
         return {
             "spoken_response": "Got it, I flagged it.",
             "success": True,

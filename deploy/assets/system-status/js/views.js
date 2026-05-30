@@ -17,6 +17,7 @@ import {
   AUDIO_OPTIONS, vitalsCards, softwareList, cloudBody, haBody, airplayBody,
   networkList, servicesTable, updateAudioQuality, waitingNote,
 } from "./sections.js";
+import { buildDebugCard } from "./debug-card.js";
 
 export function buildPage(root, handlers) {
   const live = livePill();
@@ -99,12 +100,16 @@ export function buildPage(root, handlers) {
       svcBody),
   });
 
+  // Debug logging — self-contained collapsible (built once; fetches its
+  // own /debug state from control and self-manages). Not poll-driven.
+  const debugCard = buildDebugCard();
+
   root.replaceChildren(
     header({ title: "System", backHref: "/" }),
     h("main.app-main", null,
       live.el, vitals, software.section, cloud.section, ha.section,
       airplay.section, audio.section, network.section, actions.section,
-      diag.section, services),
+      diag.section, debugCard, services),
   );
   root.setAttribute("aria-busy", "false");
 

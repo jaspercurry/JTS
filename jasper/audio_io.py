@@ -468,13 +468,19 @@ class TtsPlayout:
         # per change, not per write.
         self._gain_linear = float(10 ** (clamped / 20.0))
         self._gain_db = clamped
+        # DEBUG (not INFO): during music this echoes the richer
+        # `event=tts_gain.compute` line (which carries final_db=) on
+        # every perceptible gain change — the redundant half of the
+        # music-time gain chatter. Demoted to cut volume without
+        # losing reconstruction (the event= line stays at INFO).
+        # See docs/HANDOFF-observability.md (Tier A log demotions).
         if clamped != db:
-            logger.info(
+            logger.debug(
                 "tts gain set: requested %.1f dB → clamped to %.1f dB",
                 db, clamped,
             )
         else:
-            logger.info("tts gain set: %.1f dB", clamped)
+            logger.debug("tts gain set: %.1f dB", clamped)
 
     @property
     def gain_db(self) -> float:

@@ -123,6 +123,9 @@ diagnostics = {
     // enough downstream detail to name the failing component on the
     // next recurrence. See docs/HANDOFF-airplay.md "Pattern E —
     // SETUP-progresses variant" for context and what's on the table.
+    // EARMARK: drop back to log_verbosity = 1 once Pattern E is
+    // closed — this level-2 detail is ~55% of shairport's log volume
+    // (~40 PTP-anchor lines/min). See docs/HANDOFF-observability.md.
     log_verbosity = 2;
     log_show_file_and_line_numbers = "no";
 };

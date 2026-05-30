@@ -2278,6 +2278,12 @@ ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh
 # prints the path to a tarball under /tmp/, scp it back to ./logs/
 ```
 
+To turn up logging for one subsystem on the live Pi, or to get the
+verbose DEBUG context automatically captured around a failure, see
+the runtime debug toggle (`/system` Debug card) and the in-RAM log
+flight recorder (dumped to the journal as `event=flightrec.dump`) in
+[docs/HANDOFF-observability.md](docs/HANDOFF-observability.md).
+
 ### On the Pi itself
 
 `jasper-doctor` codifies BRINGUP.md's smoke tests:
