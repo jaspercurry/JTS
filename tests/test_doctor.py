@@ -2175,6 +2175,8 @@ def test_web_design_assets_ok_when_installed(monkeypatch, tmp_path: Path):
         (assets / page / "js").mkdir(parents=True)
         (assets / page / css).write_text("/* page css */")
         (assets / page / "js" / "main.js").write_text("// module")
+    (assets / "shared" / "js").mkdir(parents=True)
+    (assets / "shared" / "js" / "dialog.js").write_text("// dialog helper")
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
     r = doctor.check_web_design_assets()
     assert r.status == "ok"

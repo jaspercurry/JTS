@@ -3459,9 +3459,10 @@ def check_web_design_assets() -> CheckResult:
     if not web_root.is_dir():
         return CheckResult("web design assets", "ok", "not installed (skipped)")
     # Static assets for the redesigned pages (/system/, /sound/): the shared
-    # stylesheet, each page's own stylesheet, and each page's ES module entry.
-    # A missing stylesheet renders unstyled-but-visible; a missing JS module
-    # blanks the page — both admin-only and non-fatal, so warn (redeploy).
+    # stylesheet, each page's own stylesheet, each page's ES module entry, and
+    # the shared cross-page <dialog> helper module. A missing stylesheet renders
+    # unstyled-but-visible; a missing JS module blanks the page — both admin-only
+    # and non-fatal, so warn (redeploy).
     app_css = web_root / "assets" / "app.css"
     fonts = web_root / "assets" / "fonts"
     required = (
@@ -3470,6 +3471,7 @@ def check_web_design_assets() -> CheckResult:
         web_root / "assets" / "system-status" / "js" / "main.js",
         web_root / "assets" / "sound-profile" / "sound.css",
         web_root / "assets" / "sound-profile" / "js" / "main.js",
+        web_root / "assets" / "shared" / "js" / "dialog.js",
     )
     missing = [str(p.relative_to(web_root)) for p in required if not p.is_file()]
     if not fonts.is_dir():

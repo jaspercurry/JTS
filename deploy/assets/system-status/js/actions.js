@@ -5,14 +5,16 @@
 import { h } from "./dom.js";
 import { csrfHeaders, jsonHeaders } from "./api.js";
 import { updateAudioQuality } from "./sections.js";
+import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
 // confirm (one or two prompts) → POST → reflect Working…/Sent/Failed → restore.
 // opts.statusEl + opts.sentMessage: on a successful POST, write a contextual
 // note (e.g. "Rebooting — unreachable for ~60 s") into an aria-live region —
 // the page is about to go away, so the button label alone isn't enough.
+// opts.danger styles the confirm red + autofocuses Cancel (reboot / power off).
 export async function postAction(path, btn, confirmLines, opts = {}) {
   for (const line of confirmLines) {
-    if (!confirm(line)) return;
+    if (!await jtsConfirm(line, { danger: opts.danger })) return;
   }
   if (!btn) return;
   const { statusEl, sentMessage } = opts;
@@ -38,7 +40,7 @@ export async function postAction(path, btn, confirmLines, opts = {}) {
 }
 
 export async function setQuality(refs, converter) {
-  if (!confirm("Change audio conversion quality? Music renderers will restart briefly.")) return;
+  if (!await jtsConfirm("Change audio conversion quality? Music renderers will restart briefly.")) return;
   const aq = refs.aq;
   aq.buttons.forEach((b) => { b.el.disabled = true; b.el.dataset.applying = "1"; });
   aq.status.textContent = "Applying…";

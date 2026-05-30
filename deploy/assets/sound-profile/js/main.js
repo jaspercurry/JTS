@@ -15,6 +15,7 @@
 // shared store + eq/views/io modules is planned but MUST be exercised on
 // the Pi (band-drag + live-draft → CamillaDSP) before merge. Do not
 // blind-refactor it. See docs/HANDOFF-management-ui.md.
+import { jtsConfirm } from "/assets/shared/js/dialog.js";
 (function() {
   var LIMIT_DEFAULTS = {
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
@@ -856,7 +857,7 @@
   async function deleteEntry(id) {
     var entry = entryById(id);
     if (!entry || entry.kind !== 'custom') return;
-    if (!window.confirm('Delete profile "' + entry.name + '"?')) return;
+    if (!await jtsConfirm('Delete profile "' + entry.name + '"?', { danger: true })) return;
     var payload = await profileMutate('./profiles/delete', {id: id});
     if (payload) {
       if (selectedId === id) selectedId = null;

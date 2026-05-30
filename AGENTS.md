@@ -263,6 +263,25 @@ module (its interactions need CamillaDSP hardware to re-verify, so it was
 moved verbatim rather than split — splitting it finely is a good follow-up
 done on-device).
 
+**Confirm/alert use a shared `<dialog>`, never `window.confirm`/`alert`.**
+The first cross-page shared module,
+[`deploy/assets/shared/js/dialog.js`](deploy/assets/shared/js/dialog.js),
+exports Promise-based `jtsConfirm(message, {danger})` and
+`jtsAlert(message)`, styled by the `.jts-dialog` block in `app.css`. A
+migrated page imports it by absolute path (`/assets/shared/js/dialog.js`) and
+`await`s the answer. Why it exists: the browser can suppress the native popups
+("prevent this page from creating more dialogs"), which silently defeated
+`/system/`'s restart/reboot guards — the click did nothing, with no feedback.
+`<dialog>.showModal()` can't be suppressed and brings a focus trap,
+ESC-to-cancel, and a backdrop for free; `danger:true` reddens the confirm
+button and autofocuses Cancel. `install.sh` copies `shared/` like a page dir;
+`jasper-doctor`'s `check_web_design_assets` lists `shared/js/dialog.js`; a
+regression test in
+[`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
+keeps native `confirm()`/`alert()`/`prompt()` out of the canonical ES modules.
+(The legacy `wrap_page()` wizards, which don't load ES modules, get a
+behaviourally-identical inline twin in `_common.py` as they migrate.)
+
 ---
 
 ## Deploying code changes to the Pi

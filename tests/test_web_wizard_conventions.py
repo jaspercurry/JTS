@@ -73,3 +73,39 @@ def test_static_modules_do_not_reintroduce_json_posts_without_csrf_helper():
     )
     offenders = [str(p) for p in WEB_MODULE_FILES if rx.search(p.read_text())]
     assert offenders == []
+
+
+# Native browser dialogs — confirm()/alert()/prompt() — are being retired
+# across the UI in favour of the shared <dialog> helper exported from
+# /assets/shared/js/dialog.js (jtsConfirm / jtsAlert). The browser can suppress
+# the native popups ("prevent this page from creating more dialogs"), which
+# silently defeated the speaker's restart/reboot guards. The canonical ES
+# modules must not reintroduce them.
+_NATIVE_DIALOG_RE = re.compile(r"(?<![\w.$])(?:window\.)?(?:confirm|alert|prompt)\s*\(")
+
+
+def _is_comment_line(line: str) -> bool:
+    """True for whole-line JS comments (// …, /* …, or a * continuation).
+
+    The native-dialog scan skips these so the dialog helper's own docstrings
+    (which necessarily *name* confirm()/alert()) don't read as offenders. Real
+    calls live on code lines; the migrated modules call jtsConfirm/jtsAlert
+    (capitalised), which the lowercase-only regex never matches."""
+    stripped = line.lstrip()
+    return stripped.startswith(("//", "*", "/*"))
+
+
+def test_static_modules_do_not_use_native_browser_dialogs():
+    assert WEB_MODULE_FILES, "expected web ES modules to scan"
+    offenders = []
+    for path in WEB_MODULE_FILES:
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _is_comment_line(line):
+                continue
+            if _NATIVE_DIALOG_RE.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
+    assert offenders == [], (
+        "native confirm()/alert()/prompt() in canonical ES modules — use "
+        "jtsConfirm/jtsAlert from /assets/shared/js/dialog.js instead:\n"
+        + "\n".join(offenders)
+    )

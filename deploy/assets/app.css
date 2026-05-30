@@ -377,6 +377,56 @@ svg { display: block; }
 }
 .badge-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 
+/* ---------------- modal dialog (jtsConfirm / jtsAlert) ---------------- */
+/* Styled, accessible stand-in for the browser's native confirm()/alert().
+   Backed by <dialog>.showModal(): focus trap, ESC-to-cancel, inert backdrop,
+   aria-modal — and, unlike the native popups, the browser can't suppress it
+   ("prevent this page from creating more dialogs"), which silently defeated
+   the action guards. Markup is built by /assets/shared/js/dialog.js; the
+   legacy wrap_page() wizards carry a behaviourally-identical inline twin. */
+.jts-dialog {
+  margin: auto;                 /* centred by the UA when shown via showModal() */
+  width: min(28rem, calc(100vw - 2rem));
+  max-height: min(34rem, calc(100dvh - 3rem));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 12px 40px oklch(0.22 0.005 80 / 0.28);
+}
+.jts-dialog::backdrop {
+  background: oklch(0.22 0.005 80 / 0.32);
+  backdrop-filter: blur(2px);
+}
+.jts-dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: inherit;
+  padding: 24px;
+}
+.jts-dialog__title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+/* `pre-line` renders the \n in multi-line messages as real breaks; min-height:0
+   lets a long message scroll inside the dialog instead of overflowing it. */
+.jts-dialog__body {
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+.jts-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* ---------------- a11y ---------------- */
 .sr-only {
   position: absolute;
