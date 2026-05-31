@@ -1891,6 +1891,64 @@ def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
     assert "socket active" in r.detail
 
 
+def test_check_correction_https_assets_registered_in_sync_checks():
+    import inspect
+    src = inspect.getsource(doctor.run_async)
+    assert "check_correction_https_assets" in src
+
+
+def _web_root_with_app_css(tmp_path: Path) -> Path:
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "app.css").write_text("/* x */", encoding="utf-8")
+    return tmp_path
+
+
+def test_check_correction_https_assets_ok_on_200(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
+    monkeypatch.setattr(doctor, "_probe_https_status", lambda *a, **k: (200, ""))
+    r = doctor.check_correction_https_assets()
+    assert r.status == "ok"
+    assert "200" in r.detail
+
+
+def test_check_correction_https_assets_warns_on_http_downgrade(monkeypatch, tmp_path):
+    # The bug signature: a 308 down to http:// → browsers mixed-content-block it.
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
+    monkeypatch.setattr(
+        doctor, "_probe_https_status",
+        lambda *a, **k: (308, "http://jts.local/assets/app.css"),
+    )
+    r = doctor.check_correction_https_assets()
+    assert r.status == "warn"
+    assert "mixed-content" in r.detail.lower()
+    assert "443" in r.detail
+
+
+def test_check_correction_https_assets_skips_without_web_root(monkeypatch, tmp_path):
+    # Dev checkout: no /usr/share/jasper-web/assets/app.css → skip, never probes.
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+
+    def _boom(*a, **k):
+        raise AssertionError("must not probe when the web root is absent")
+
+    monkeypatch.setattr(doctor, "_probe_https_status", _boom)
+    r = doctor.check_correction_https_assets()
+    assert r.status == "ok"
+    assert "skip" in r.detail.lower()
+
+
+def test_check_correction_https_assets_skips_when_443_unreachable(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
+
+    def _refused(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(doctor, "_probe_https_status", _refused)
+    r = doctor.check_correction_https_assets()
+    assert r.status == "ok"
+    assert "not reachable" in r.detail.lower()
+
+
 def test_check_correction_state_dirs_warns_on_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(tmp_path / "missing"))
     r = doctor.check_correction_state_dirs()

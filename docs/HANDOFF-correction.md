@@ -404,8 +404,15 @@ loses the YouTube hook.
 - Port 80 serves `http://jts.local/correction/` as a static preflight
   page and `http://jts.local/jts-root-ca.crt` with
   `application/x-x509-ca-cert`.
-- Port 443 proxies only `/correction/` to `127.0.0.1:8770`; other
-  HTTPS paths redirect back to their HTTP equivalents.
+- Port 443 proxies only `/correction/` to `127.0.0.1:8770` and serves
+  `/assets/` statically. The measurement UI's canonical look links
+  `/assets/app.css` + its ES module by absolute path; without an `/assets/`
+  location on 443 those subresources fall through to the catch-all, `308`
+  down to HTTP, and browsers block them as mixed content (unstyled page,
+  dead JS). Rationale + caching live in
+  [HANDOFF-management-ui.md](HANDOFF-management-ui.md) ("`/assets` is served
+  on both the HTTP and HTTPS server blocks"). All other HTTPS paths redirect
+  back to their HTTP equivalents.
 - README, BRINGUP, and this handoff document the trust/preflight flow.
   No HSTS header is configured.
 
@@ -494,8 +501,9 @@ measurement flow switches to `https://jts.local/correction/` because
 browser microphone capture requires a secure context. The nginx
 port-80 landing page at `/usr/share/jasper-web/index.html` links to
 the preflight instead of directly to HTTPS. The 443 catch-all redirects
-non-correction paths back to HTTP; it does not proxy any extra wizard
-upstreams over HTTPS.
+non-correction paths back to HTTP — the one exception is `/assets/`, served
+statically so the measurement UI's CSS/JS aren't mixed-content-blocked; it
+does not proxy any extra wizard upstreams over HTTPS.
 
 **Why not `/room/` or `/measure/`?** User specified `/correction/`
 in feedback (2026-05-09).
@@ -1501,4 +1509,7 @@ Internal:
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-05-31 (Decision 1 / Decision 3: the 443 block now also
+serves `/assets/` statically so the migrated measurement UI's canonical
+CSS/JS aren't mixed-content-blocked — full rationale in
+HANDOFF-management-ui.md. Prior pass 2026-05-30.)

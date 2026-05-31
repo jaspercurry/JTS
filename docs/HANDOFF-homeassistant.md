@@ -179,8 +179,7 @@ jasper/cli/doctor.py                check_home_assistant() (skip-if-not-configur
 deploy/systemd/jasper-voice.service EnvironmentFile=-/var/lib/jasper/home_assistant.env
 deploy/jasper-web.socket            ListenStream=127.0.0.1:8778
 deploy/nginx-jasper.conf            location /ha/ → 127.0.0.1:8778
-deploy/integrations.html            Home Assistant landing card
-deploy/index.html                   Integrations card mentions HA
+deploy/index.html                   Integrations section has the HA row
 
 tests/test_home_assistant.py        HAClient unit tests (37)
 tests/test_home_assistant_probe.py  probe_status + check_home_assistant (10)

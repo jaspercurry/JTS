@@ -9,6 +9,18 @@
 > this writing. Current operational truth for the design system itself
 > lives in [HANDOFF-management-ui.md](HANDOFF-management-ui.md).
 
+> **Follow-up (2026-05-31, separate session).** Two gaps this checklist left
+> open are now closed: (1) the plain-HTTP `/correction/` **preflight** — a
+> static, nginx-served page the §3 "correction" row never covered — is now on
+> the canonical look; (2) the HTTPS measurement UI's `/assets/` were
+> 308-redirected to HTTP and **mixed-content-blocked** (CSS unstyled, JS
+> dead), which would have failed §6 step 6's on-Pi `/correction/` check — the
+> nginx 443 block now serves `/assets/` directly. The dead, unlinked
+> `/integrations` page was also removed. Details:
+> [HANDOFF-correction.md](HANDOFF-correction.md) (Decision 1 / 3) and
+> [HANDOFF-management-ui.md](HANDOFF-management-ui.md) ("`/assets` is served on
+> both the HTTP and HTTPS server blocks").
+
 ---
 
 ## 1. What this was

@@ -108,6 +108,36 @@ mode where a new page's CSS/JS never reached the Pi. `jasper-doctor`'s
 `check_web_design_assets` keys off a fixed required-file list, so new shared
 modules (like `http.js`) don't trip a false warning.
 
+### `/assets` is served on both the HTTP and HTTPS server blocks
+
+nginx serves `/assets/` (app.css immutable + SHA-busted, page ES modules
+`no-cache`/revalidated, fonts immutable) from `/usr/share/jasper-web` in
+**both** server blocks of
+[`deploy/nginx-jasper.conf`](../deploy/nginx-jasper.conf). The port-80 block
+is the obvious one; the **443 block needs its own copy** because
+`/correction/` — the one wizard served over HTTPS (getUserMedia needs a
+secure context) — links `/assets/app.css` and its ES module by absolute
+path. Without a 443 `/assets/` location those subresource requests fall
+through to the HTTP-downgrade catch-all, `308` to `http://`, and browsers
+block them as mixed content — leaving the measurement UI unstyled and its JS
+(mic capture, sweep) dead. Keep the two blocks' caching identical; the
+regression test
+`test_nginx_serves_assets_over_https_no_mixed_content` in
+[`tests/test_landing_page_html.py`](../tests/test_landing_page_html.py) pins
+the 443 block.
+
+### The plain-HTTP correction preflight is canonical too
+
+`/correction/` is two surfaces on one path: a static plain-HTTP preflight
+([`deploy/correction-preflight.html`](../deploy/correction-preflight.html))
+that explains the HTTPS switch, then the HTTPS measurement UI. The preflight
+is a **static** page (nginx `try_files`, no Python), so it can't call
+`canonical_page()`; instead it links `/assets/app.css?v=__APP_CSS_VERSION__`
+directly and `install.sh` stamps the build SHA into it exactly as it does for
+`deploy/index.html`. That's the static-page analog of the shell — same
+canonical `.app-header` / `.btn` / `.info-card` vocabulary, inlining only the
+one `#icon-back` sprite symbol it needs.
+
 ### Archetype recipes
 
 Concrete layouts for the wizards still to migrate. Each names the exact
@@ -313,39 +343,31 @@ explicit so future-you can re-derive decisions instead of memorising them.
 ## 3. Current-state snapshot (as of 2026-05-28)
 
 > ⚠ Re-verify this before building — new cards may have landed.
-> Source: `deploy/index.html`, `deploy/integrations.html`,
+> Source: `deploy/index.html`,
 > `deploy/nginx-jasper.conf`, `jasper/web/__main__.py`, live
 > `http://jts.local/` on 2026-05-28.
 
-### 3.1 Landing page `/` — 17 navigation cards
+### 3.1 Landing page `/` — grouped settings sections (re-verified 2026-05-31)
 
 Top control card: **Volume slider** (0-100%, drag/keyboard), **Mic toggle**
 (checked = listening), and a lightweight **Source selector** (Auto, AirPlay,
 Bluetooth, Spotify, USB). The selector posts to `jasper-control`'s
 `/source/*` routes and is distinct from the `/sources/` on/off wizard.
 
-Then 17 navigation cards stacked equally:
+Below it the rows are grouped into labelled sections (each heading an
+`.eyebrow` `group-title`). `deploy/index.html` is the source of truth for the
+exact rows; this is the structural snapshot (grouped, so it survives row
+reordering better than the prior flat enumeration):
 
-| # | Title (verbatim) | Destination | One-line role |
-|---|---|---|---|
-| 1 | Sources › | `/sources/` | AirPlay / BT / Spotify Connect / USB on-off |
-| 2 | Sound › | `/sound/` | Sound curve, Bass/Mid/Treble, advanced PEQ |
-| 3 | Speaker name › | `/speaker/` | Renderer display name |
-| 4 | Voice provider › | `/voice/` | Provider + API key + model + voice + per-model pricing |
-| 5 | Wake word › | `/wake/` | Wake phrase, sensitivity, detection layers |
-| 6 | AirPlay sync mode › | `/airplay/` | Synced vs free-running toggle |
-| 7 | Integrations › | `/integrations` | Static page → Spotify, Google, Home Assistant |
-| 8 | Accessories › | `/dial/` | ESP32 dial onboarding (satellite later) |
-| 9 | Bluetooth › | `/bluetooth/` | Pair phones / knobs / headphones |
-| 10 | Wi-Fi › | `/wifi/` | Scan / connect / forget |
-| 11 | Transit › | `/transit/` | Subway, bus, Citi Bike defaults |
-| 12 | Weather › | `/weather/` | Default weather location and units |
-| 13 | Speaker peering › | `/peers/` | Multi-JTS arbitration (off by default) |
-| 14 | Room correction › | `https://jts.local/correction/` | iPhone room measurement (HTTPS) |
-| 15 | CamillaDSP › | `:5005/` | External CamillaDSP GUI (new tab) |
-| 16 | System › | `/system/` | Live metrics, cloud, actions, diagnostics |
-| 17 | Wake-word corpus recorder › | `/wake-corpus/` | Operator/debug recording tool |
-| — | (info panel) | — | CA cert install note for Room correction |
+| Section | Rows — title → destination |
+|---|---|
+| **Sources** | Playback sources → `/sources/` · Spotify accounts → `/spotify/` · Bluetooth devices → `/bluetooth/` · AirPlay sync → `/airplay/` |
+| **Sound** | Sound profile → `/sound/` · Room correction → `https://…/correction/` (HTTPS, preflight first) · Advanced DSP → CamillaGUI `:5005/` (external, new tab) |
+| **Assistant** | Voice → `/voice/` · Wake detection → `/wake/` |
+| **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
+| **Network** | Wi-Fi → `/wifi/` · Peering → `/peers/` |
+| **Accessories** | Dial → `/dial/` |
+| **System** | Status → `/system/` · Speaker name → `/speaker/` · Software → `/system/` · Developer tools (operator) → `/wake-corpus/` |
 
 ### 3.2 `/system/` dashboard — ~12 sub-cards
 
@@ -393,7 +415,7 @@ still have their own service/socket wrappers.
 
 Static and external companion surfaces:
 
-- `/` and `/integrations` are static HTML under `deploy/`.
+- `/` is static HTML under `deploy/`.
 - CamillaGUI remains a separate external surface at `http://jts.local:5005/`.
 - `GET /volume`, `/mic`, and `/source` are same-origin proxies into
   `jasper-control`.
@@ -406,8 +428,8 @@ Static and external companion surfaces:
 - **Weather landed** as `/weather/`, with its own default location/units.
   It shares enough location semantics with Transit that a future Location
   row should summarize both.
-- **Home Assistant landed** under `/ha/` and currently sits behind the
-  static `/integrations` umbrella.
+- **Home Assistant landed** under `/ha/`, reached directly from the
+  landing page's Integrations section.
 - **Sound preferences landed** under `/sound/`; this strengthens the case
   for Sound as a top-level section.
 - **Speaker name landed** under `/speaker/`; the homepage title should use
@@ -495,11 +517,12 @@ System
   preference EQ are *configuration*, not *diagnostics*. CamillaGUI is advanced
   DSP, but it still belongs under Sound.
 
-- **Kill the `/integrations` umbrella as a homepage row.** It conflates
+- **Kill the `/integrations` umbrella as a homepage row.** It conflated
   Spotify Connect (a source) with Google account linking and Home Assistant
   control (external services). Split: Spotify accounts under Sources; Google,
-  Home Assistant, Transit, and Weather under Integrations. Keep `/integrations`
-  only as a temporary compatibility surface or redirect.
+  Home Assistant, Transit, and Weather under Integrations. *Done — the inline
+  section shipped and the static `/integrations` page was removed entirely on
+  2026-05-31.*
 
 - **No top-level "Now Playing".** Every consumer-audio product (Sonos,
   HomePod) leads with playback; every *admin* product (Plex, UniFi,
@@ -823,7 +846,8 @@ Add a `/location/` wrapper only if it truly reduces duplication between
 
 ### Phase 5 — Consolidation (later)
 - Move AirPlay sync into `/sources/` or make `/airplay/` feel like a subpage.
-- Replace `/integrations` with redirects or a compatibility index.
+- `/integrations` removed entirely (2026-05-31) — the landing page's inline
+  Integrations section replaced it.
 - Consider `/location/` if weather/transit state keeps drifting.
 - Decide whether Wake corpus should require an explicit developer-mode link.
 
@@ -843,10 +867,11 @@ implementation-detail scale.
    eye on the page reading too monochrome as other wizard pages adopt the
    system.
 
-3. **Kill `/integrations` entirely, or keep as redirect?** Keep the static
-   `/integrations` compatibility index for now, but do not link it from `/`.
-   Spotify lives under Sources; Google/Home Assistant/Weather/Transit live
-   under Integrations.
+3. **Kill `/integrations` entirely, or keep as redirect?** *Resolved
+   (2026-05-31): removed entirely.* Nothing linked to it after the inline
+   Integrations section shipped, so it was deleted rather than kept as a
+   redirect. Spotify lives under Sources; Google/Home Assistant/Weather/Transit
+   live under the landing page's Integrations section.
 
 4. **Spotify Connect "service on/off" vs. "household accounts" — one row
    or two?** Both under Sources/Spotify. Lean one row with two sub-states
@@ -1321,8 +1346,12 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-05-30 (restyle-in-place foundation +
-`/speaker/` reference migration: `canonical_header` / `canonical_banner`
+Last verified: 2026-05-31 (correction plain-HTTP preflight migrated to the
+canonical look; `/assets` static-asset routing mirrored into the HTTPS (443)
+server block to fix the correction UI's mixed-content asset blocking; the
+dead, unlinked `/integrations` page removed entirely — guards in
+`tests/test_landing_page_html.py`. Prior pass 2026-05-30: restyle-in-place
+foundation + `/speaker/` reference migration: `canonical_header` / `canonical_banner`
 helpers, `app.css` form/banner/toggle vocabulary, shared `http.js`, dynamic
 `install.sh` asset copy, archetype recipes — `tests/test_web_common.py`,
 `tests/test_web_speaker_setup.py`, and the design-system / wizard-convention /

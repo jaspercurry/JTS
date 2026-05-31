@@ -2752,13 +2752,16 @@ install_nginx_site() {
     install -m 0644 \
         "${REPO_DIR}/deploy/correction-preflight.html" \
         /usr/share/jasper-web/correction-preflight.html
-    # /integrations sub-page (lists external services like Google).
-    # Same static-HTML pattern as the landing page; nginx serves both
-    # via exact-match `location =` blocks. Updates require an
-    # `nginx -s reload` (handled below).
-    install -m 0644 \
-        "${REPO_DIR}/deploy/integrations.html" \
-        /usr/share/jasper-web/integrations.html
+    # Stamp the same app.css cache-bust version as the landing page — the
+    # preflight is static HTML and links /assets/app.css directly, so it
+    # needs the build-SHA query string to bust the immutable /assets cache.
+    sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" \
+        /usr/share/jasper-web/correction-preflight.html
+    # Prune the retired /integrations page from prior installs. Its nginx route
+    # and install copy are gone (the landing page's inline Integrations section
+    # replaced it); remove the orphaned file so a previously-deployed Pi does
+    # not keep an unreachable page on disk. `-f` no-ops on fresh installs.
+    rm -f /usr/share/jasper-web/integrations.html
 
     # Disable Debian's default site so it doesn't clash with our
     # default_server directives. nginx-light installs an enabled
