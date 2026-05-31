@@ -9,10 +9,11 @@ Three jobs:
      drives the speaker via its own codec; in our external-DAC
      topology, the chip's AEC reference path is sabotaged (see
      docs/HANDOFF-aec.md). With SHF_BYPASS=1, the chip's AEC
-     adaptive filter is removed from channels 0/1's signal path,
-     but the rest of the chip pipeline — beamforming, NS, AGC,
-     HPF — still runs. Software AEC3 (jasper-aec-bridge) handles
-     echo cancellation host-side using the music chain as ref.
+     adaptive filter is removed from channels 0/1's signal path.
+     Empirically, this bypasses the SHF post-processing path too, so
+     channels 0/1 become raw-ish mic feeds rather than beamformed /
+     NS / AGC outputs. Software AEC3 (jasper-aec-bridge) handles echo
+     cancellation host-side using the music chain as ref.
      Wake-corpus chip-AEC comparison mode is the narrow exception:
      the recorder sets `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1`, this
      init unit applies and read-back verifies a volatile 150/210
@@ -109,7 +110,10 @@ _CHIP_PRODUCTION_PROFILE: tuple[tuple[str, list[int | float]], ...] = (
     ("AEC_AECEMPHASISONOFF", [0]),
     ("AEC_FAR_EXTGAIN", [0.0]),
     ("AUDIO_MGR_OP_L", [8, 0]),
-    ("AUDIO_MGR_OP_R", [0, 0]),
+    # The bridge consumes XVF capture channel 1 in production. The
+    # firmware default for the right USB channel is silence, so restore
+    # it to the same non-silent user-chosen beam route as channel 0.
+    ("AUDIO_MGR_OP_R", [8, 0]),
 )
 _VERIFY_FLOAT_TOLERANCE = 1e-4
 
@@ -258,7 +262,7 @@ def main() -> int:
                 return 1
             logger.info(
                 "event=chip_profile_applied mode=production "
-                "shf_bypass=1 op_l=8,0 op_r=0,0"
+                "shf_bypass=1 op_l=8,0 op_r=8,0"
             )
 
         # Apply chip-side HPF on the mic signal. Lives at mic ingress

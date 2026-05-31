@@ -5,6 +5,7 @@ import sys
 import types
 
 from jasper.cli import aec_init
+from jasper.mics import xvf3800
 
 
 class _Closeable:
@@ -75,7 +76,12 @@ def test_production_profile_restores_corpus_mutated_chip_state(monkeypatch) -> N
     assert writes["AEC_AECEMPHASISONOFF"] == [0]
     assert writes["AEC_FAR_EXTGAIN"] == [0.0]
     assert writes["AUDIO_MGR_OP_L"] == [8, 0]
-    assert writes["AUDIO_MGR_OP_R"] == [0, 0]
+    assert writes["AUDIO_MGR_OP_R"] == [8, 0]
+    production_bridge_route = {
+        0: writes["AUDIO_MGR_OP_L"],
+        1: writes["AUDIO_MGR_OP_R"],
+    }[xvf3800.MIC_CHANNEL_INDEX]
+    assert production_bridge_route[0] != 0
     assert dev.dev.closed is True
 
 
