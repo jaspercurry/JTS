@@ -234,6 +234,21 @@ def test_migration_columns_backfill_music_renderer_and_condition_class():
     assert "condition_class" in cols
 
 
+def test_migration_columns_include_chip_aec_score_columns():
+    """Chip-AEC promotion: the six per-beam score columns must be in
+    _MIGRATION_COLUMNS so an already-deployed Pi backfills them on upgrade
+    (the same backfill gap music_renderer hit). CREATE TABLE carries the
+    same six for fresh DBs."""
+    from jasper.wake_events import _MIGRATION_COLUMNS
+    cols = {name for name, _typ in _MIGRATION_COLUMNS}
+    for c in (
+        "peak_score_chip_aec_150", "peak_score_chip_aec_210",
+        "peak_offset_ms_chip_aec_150", "peak_offset_ms_chip_aec_210",
+        "mic_rms_dbfs_chip_aec_150", "mic_rms_dbfs_chip_aec_210",
+    ):
+        assert c in cols, c
+
+
 async def test_begin_event_allows_null_off_score(store: WakeEventStore):
     """Single-stream callers (no AEC OFF leg) pass None for the
     secondary scores; the row stores NULL cleanly."""
@@ -519,6 +534,52 @@ async def test_begin_event_null_debug_columns_when_omitted(store: WakeEventStore
     assert row["mic_rms_dbfs_off"] is None
 
 
+async def test_begin_event_persists_chip_aec_score_columns(store: WakeEventStore):
+    """Chip-AEC promotion: the per-beam score/offset/RMS values round-trip
+    through begin_event into their own columns — the path voice_daemon's
+    _LEG_DB drives when a chip beam fires or corroborates."""
+    await store.begin_event(
+        event_id="evt-chip", trigger_kind="fire_chip_aec_150",
+        peak_score_aec_on=0.2, peak_score_aec_off=None,
+        threshold=0.5, wake_model="jarvis_v2.onnx",
+        fired_legs="chip_aec_150",
+        peak_score_chip_aec_150=0.79,
+        peak_offset_ms_chip_aec_150=-12,
+        mic_rms_dbfs_chip_aec_150=-19.5,
+        peak_score_chip_aec_210=0.41,
+        peak_offset_ms_chip_aec_210=-30,
+        mic_rms_dbfs_chip_aec_210=-21.0,
+    )
+    row = await store.get_event("evt-chip")
+    assert row is not None
+    assert row["trigger_kind"] == "fire_chip_aec_150"
+    assert row["fired_legs"] == "chip_aec_150"
+    assert row["peak_score_chip_aec_150"] == pytest.approx(0.79)
+    assert row["peak_offset_ms_chip_aec_150"] == -12
+    assert row["mic_rms_dbfs_chip_aec_150"] == pytest.approx(-19.5)
+    assert row["peak_score_chip_aec_210"] == pytest.approx(0.41)
+    assert row["peak_offset_ms_chip_aec_210"] == -30
+    assert row["mic_rms_dbfs_chip_aec_210"] == pytest.approx(-21.0)
+
+
+async def test_begin_event_chip_aec_columns_default_null(store: WakeEventStore):
+    """Every non-chip install (the default) omits the chip kwargs; the six
+    columns store NULL cleanly — byte-identical telemetry to pre-promotion."""
+    await store.begin_event(
+        event_id="evt-nochip", trigger_kind="fire_aec_on",
+        peak_score_aec_on=0.9, peak_score_aec_off=None,
+        threshold=0.5, wake_model="jarvis_v2.onnx",
+    )
+    row = await store.get_event("evt-nochip")
+    assert row is not None
+    for col in (
+        "peak_score_chip_aec_150", "peak_score_chip_aec_210",
+        "peak_offset_ms_chip_aec_150", "peak_offset_ms_chip_aec_210",
+        "mic_rms_dbfs_chip_aec_150", "mic_rms_dbfs_chip_aec_210",
+    ):
+        assert row[col] is None, col
+
+
 def test_schema_migration_adds_columns_to_existing_db(tmp_path: Path):
     """An older DB (created without the post-v1 columns) gets
     them added via ALTER TABLE on open(). Existing rows survive
@@ -598,6 +659,64 @@ def test_schema_migration_adds_columns_to_existing_db(tmp_path: Path):
     s2 = WakeEventStore(tmp_path)
     s2.open()
     s2.close()
+
+
+def test_schema_migration_adds_chip_aec_columns_to_existing_db(tmp_path: Path):
+    """A DB created before the chip-AEC promotion (no chip score columns)
+    gets all six added via ALTER TABLE on open(), so an already-deployed Pi
+    backfills them on upgrade and can record chip-leg telemetry the moment
+    the household opts the chip leg in. A pre-existing row survives with
+    NULL chip columns."""
+    db_path = tmp_path / "wake-events.sqlite3"
+    # Minimal pre-promotion core; the migration loop adds every
+    # _MIGRATION_COLUMNS entry not already present (incl. the chip six).
+    legacy_conn = sqlite3.connect(str(db_path))
+    # Includes label/label_notes because _SCHEMA_SQL creates an index on
+    # `label` at open() — a legacy table missing it would fail the index
+    # build before the column migration even runs.
+    legacy_conn.execute("""
+        CREATE TABLE wake_events (
+          event_id     TEXT PRIMARY KEY,
+          ts_utc       TEXT NOT NULL,
+          trigger_kind TEXT NOT NULL,
+          threshold    REAL NOT NULL,
+          outcome      TEXT NOT NULL,
+          wake_model   TEXT NOT NULL,
+          label        TEXT,
+          label_notes  TEXT
+        )
+    """)
+    legacy_conn.execute(
+        "INSERT INTO wake_events (event_id, ts_utc, trigger_kind, "
+        "threshold, outcome, wake_model) VALUES (?, ?, ?, ?, ?, ?)",
+        ("legacy-pre-chip", "2026-05-30T20:00:00Z", "fire_aec_on",
+         0.5, "completed", "jarvis_v2.onnx"),
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    chip_cols = [
+        "peak_score_chip_aec_150", "peak_score_chip_aec_210",
+        "peak_offset_ms_chip_aec_150", "peak_offset_ms_chip_aec_210",
+        "mic_rms_dbfs_chip_aec_150", "mic_rms_dbfs_chip_aec_210",
+    ]
+    s = WakeEventStore(tmp_path)
+    s.open()
+    try:
+        cur = s._conn.execute(  # type: ignore[union-attr]
+            "PRAGMA table_info(wake_events)"
+        )
+        cols = {r[1] for r in cur.fetchall()}
+        for c in chip_cols:
+            assert c in cols, f"migration did not add {c}"
+        # Pre-existing row survives, all chip columns NULL.
+        cur = s._conn.execute(  # type: ignore[union-attr]
+            f"SELECT {', '.join(chip_cols)} FROM wake_events "
+            "WHERE event_id='legacy-pre-chip'"
+        )
+        assert cur.fetchone() == (None,) * len(chip_cols)
+    finally:
+        s.close()
 
 
 async def test_retention_only_writes_sentinel_for_legs_that_had_audio(

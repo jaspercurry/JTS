@@ -48,16 +48,32 @@ def test_tokens_names_and_ports_are_unique():
     assert len(ports) == len(set(ports)), "duplicate udp port"
 
 
-def test_wake_input_legs_are_exactly_on_off_dtln_in_priority_order():
-    # WakeLoop OR-gates these; order is the daemon's leg priority.
-    assert [leg.token for leg in wake_legs.wake_input_legs()] == ["on", "off", "dtln"]
+def test_wake_input_legs_in_priority_order():
+    # WakeLoop OR-gates these; order is the daemon's leg priority. The
+    # hardware-conditional chip-AEC beam legs follow the always-built
+    # software legs (on/off/dtln) — the chip-AEC promotion moved them from
+    # corpus-only into the wake-input set.
+    assert [leg.token for leg in wake_legs.wake_input_legs()] == [
+        "on", "off", "dtln", "chip_aec_150", "chip_aec_210",
+    ]
     assert all(leg.wake_input for leg in wake_legs.wake_input_legs())
+
+
+def test_chip_aec_beam_legs_are_wake_inputs():
+    # The chip-AEC promotion: the XVF3800 fixed 150°/210° ASR beams are now
+    # opt-in, hardware-conditional wake inputs (default-OFF at the config
+    # layer, but wake_input=True at the registry layer). Their tokens +
+    # ports stay frozen so the historical corpus + analysis tooling hold.
+    for token, port in (("chip_aec_150", 9887), ("chip_aec_210", 9888)):
+        leg = wake_legs.by_token(token)
+        assert leg.wake_input is True
+        assert leg.udp_port == port
+        assert leg.kind is wake_legs.LegKind.HARDWARE_AEC
 
 
 def test_corpus_legs_are_not_wake_inputs():
     for token in (
         "raw0", "ref", "usb_raw", "usb_webrtc", "usb_dtln",
-        "chip_aec_150", "chip_aec_210",
         "xvf_raw0_webrtc_aec3", "xvf_raw0_dtln",
     ):
         assert wake_legs.by_token(token).wake_input is False
