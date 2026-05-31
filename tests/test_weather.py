@@ -5,6 +5,7 @@ import pytest
 
 from jasper.weather import (
     RAIN_PROBABILITY_THRESHOLD,
+    USER_FACING_WEATHER_UNAVAILABLE,
     WMO_DESCRIPTIONS,
     WeatherClient,
     _build_summary,
@@ -697,6 +698,72 @@ async def test_get_weather_unknown_location_returns_error():
         await http.aclose()
 
 
+@pytest.mark.asyncio
+async def test_get_weather_retries_transient_forecast_timeout_once():
+    forecast_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal forecast_calls
+        assert "api.open-meteo.com" in str(request.url)
+        forecast_calls += 1
+        if forecast_calls == 1:
+            raise httpx.ReadTimeout("")
+        return httpx.Response(200, json=_open_meteo_response(
+            cur_temp=72, cur_code=0,
+            today_high=80, today_low=68, today_code=0, today_prob=0,
+        ))
+
+    http = httpx.AsyncClient(transport=_mock_transport(handler))
+    weather = WeatherClient(
+        default_lat=40.653,
+        default_lon=-74.007,
+        default_name="Sunset Park, Brooklyn",
+        http=http,
+    )
+    try:
+        result = await weather.get_weather()
+        assert "error" not in result
+        assert result["location"] == "Sunset Park, Brooklyn"
+        assert forecast_calls == 2
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_weather_timeout_error_includes_class_and_spoken_error():
+    forecast_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal forecast_calls
+        forecast_calls += 1
+        raise httpx.ReadTimeout("")
+
+    http = httpx.AsyncClient(transport=_mock_transport(handler))
+    weather = WeatherClient(default_lat=40.653, default_lon=-74.007, http=http)
+    try:
+        result = await weather.get_weather()
+        assert result["error"] == "weather lookup failed: ReadTimeout"
+        assert result["spoken_error"] == USER_FACING_WEATHER_UNAVAILABLE
+        assert forecast_calls == 2
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_weather_bad_json_returns_spoken_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json")
+
+    http = httpx.AsyncClient(transport=_mock_transport(handler))
+    weather = WeatherClient(default_lat=40.653, default_lon=-74.007, http=http)
+    try:
+        result = await weather.get_weather()
+        assert result["error"].startswith("weather lookup failed: JSONDecodeError")
+        assert result["spoken_error"] == USER_FACING_WEATHER_UNAVAILABLE
+    finally:
+        await http.aclose()
+
+
 def test_wmo_descriptions_complete():
     """Sanity check: the codes that appear in RAINY_CODES are all in
     WMO_DESCRIPTIONS (otherwise will_rain would say yes but the model
@@ -736,3 +803,5 @@ def test_get_weather_tool_routes_rain_timing_to_next_rain_window():
     assert "ends_after_forecast" in flat
     assert "Tampa, Florida" in flat
     assert "Do not strip the qualifier" in flat
+    assert "spoken_error" in flat
+    assert "do not add technical details" in flat
