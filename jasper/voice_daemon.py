@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import signal
 import sys
@@ -422,25 +423,31 @@ class State(Enum):
     SESSION = "session"
 
 
-def _pcm_peak_dbfs(pcm: bytes) -> float | None:
-    """Peak level (dBFS) of a mono int16 PCM chunk, or None if the chunk
-    is empty/unreadable. Peak (not RMS) so it matches the semantic of the
-    seed constant it feeds, preserving the existing music-vs-TTS
-    calibration. Fail-soft by contract — a measurement error must never
-    break playback."""
+# Full-scale square for int16 (32768²) — converts linear power to dBFS.
+_FULL_SCALE_SQ = 32768.0 ** 2
+
+
+def _pcm_mean_square(pcm: bytes) -> float | None:
+    """Mean square (linear power, int16² units) of a mono int16 PCM chunk,
+    or None if empty/unreadable — the building block for RMS loudness.
+    Fail-soft by contract: a measurement error must never break playback."""
     try:
         import numpy as _np  # local — keep module import cheap
         arr = _np.frombuffer(pcm, dtype=_np.int16)
         if arr.size == 0:
             return None
-        # Peak magnitude without an int32 copy of the whole chunk:
-        # int() promotes to Python int, so -(-32768) can't overflow.
-        peak = max(int(arr.max()), -int(arr.min()))
-        if peak <= 0:
-            return -120.0  # digital silence floor
-        return 20.0 * _np.log10(peak / 32768.0)
+        x = arr.astype(_np.float64)
+        return float(_np.mean(x * x))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _power_to_dbfs(mean_square: float) -> float:
+    """Linear mean-square (int16² units) → dBFS RMS, with a -120 dBFS floor
+    for digital silence."""
+    if mean_square <= 0.0:
+        return -120.0
+    return 10.0 * math.log10(mean_square / _FULL_SCALE_SQ)
 
 
 class TtsVolumeTracker:
@@ -462,17 +469,20 @@ class TtsVolumeTracker:
     What we do. Poll CamillaDSP's `levels.playback_rms()` — the signal
     AFTER every attenuation stage, immediately before the DAC. Maintain
     a windowed peak (max RMS over MUSIC_WINDOW_SEC) so quick quiet
-    passages don't let TTS climb between phrases. Set TTS gain so that
-    the TTS source peak ends up `music_headroom_db` above the windowed
-    music RMS:
+    passages don't let TTS climb between phrases. Set TTS gain so the
+    TTS output RMS ends up `music_headroom_db` above the windowed music
+    RMS:
 
-        tts_gain_db = (windowed_rms + headroom) - source_peak_dbfs
+        tts_gain_db = (windowed_rms + headroom) - source_rms_dbfs
 
-    where `source_peak_dbfs` is the active provider's TTS output level,
-    MEASURED per provider via note_source_chunk() (a seeded EWMA) rather
-    than assumed. Measuring it is what makes a quieter provider's voice
-    (e.g. OpenAI) land at the same level as a louder one (Gemini); the
-    old static constant made the quiet provider come out below target.
+    where `source_rms_dbfs` is the active provider's TTS *loudness*
+    (windowed RMS), MEASURED per provider via note_source_chunk() rather
+    than assumed. RMS — not peak — because loudness is what the ear (and
+    the user) registers: two voices normalized to the same PEAK still
+    sound unequal when one is more compressed (denser) than the other.
+    Gemini's TTS is hot/compressed (peaks near full-scale) while OpenAI's
+    is more dynamic; matching their RMS makes them equally loud, which a
+    peak match did not.
 
     Ceiling policy is branch-specific. The pre-tracker formula treated
     `master_volume + offset` as an absolute ceiling in all branches —
@@ -505,28 +515,22 @@ class TtsVolumeTracker:
     """
 
     POLL_INTERVAL_SEC = 0.25
-    # Cold-start seed for the per-provider source-loudness estimate
-    # (dBFS peak), used until note_source_chunk() has observed real audio.
-    # Gemini's TTS output peaks ~-3 dBFS, so this is a sane start; the
-    # measured window below corrects it within the first turn. The bug
-    # this whole mechanism replaces: a *static* -3 assumed every provider
-    # was equally loud, so a quieter provider's TTS came out below the
-    # music+headroom target. We MEASURE the source instead — the same
-    # "measure, don't guess" rule this class already applies to music.
-    SOURCE_PEAK_SEED_DBFS = -3.0
-    # Source loudness is the WINDOWED MAX of recent per-chunk peaks, not
-    # an average. Real speech alternates loud vowels and near-silent gaps;
-    # the gain formula needs the true utterance peak (what the old -3
-    # constant represented). Averaging per-chunk peaks lands ~6 dB BELOW
-    # that and over-gains TTS — the "voice got louder, not consistent"
-    # regression this replaces. Count-based (not wall-clock) so the
-    # estimate survives the silent gaps between turns; ~256 voiced chunks
-    # is several seconds of speech — enough to span an utterance while a
-    # stale loud transient still ages out.
-    _SOURCE_PEAK_WINDOW = 256
-    # Only learn from voiced chunks. Inter-word/sentence gaps are near
-    # silence and aren't part of the peak; anything below this is a gap.
-    _SOURCE_PEAK_VOICED_FLOOR_DBFS = -45.0
+    # Cold-start seed for the per-provider source-loudness estimate (dBFS
+    # RMS), used until note_source_chunk() has observed real audio. A
+    # typical speech RMS sits ~-20 dBFS; the first turn's audio replaces
+    # this within ~a second, so it only governs the very first reply after
+    # a (re)start.
+    SOURCE_RMS_SEED_DBFS = -20.0
+    # Source loudness is the windowed MEAN POWER (true RMS) of recent
+    # voiced chunks — averaged in the POWER domain, the perceptual
+    # loudness, not a peak and not a dB-average. Count-based (not
+    # wall-clock) so it survives the silent gaps between turns; ~256
+    # voiced chunks is several seconds of speech.
+    _SOURCE_RMS_WINDOW = 256
+    # Only fold in voiced chunks. Inter-word/sentence gaps are near
+    # silence and aren't part of the speech loudness; anything quieter
+    # than this RMS is treated as a gap.
+    _SOURCE_VOICED_FLOOR_DBFS = -50.0
 
     def __init__(
         self,
@@ -564,11 +568,12 @@ class TtsVolumeTracker:
         # first-boot. Updated continuously while music plays. Never
         # expires — the Pi doesn't move, the room context is stable.
         self._anchor_dbfs: float = float(initial_anchor_dbfs)
-        # Live per-provider source-loudness estimate: the windowed max of
-        # recent voiced-chunk peaks (dBFS), seeded until note_source_chunk()
-        # has observed real audio. Persists across turns for the process
+        # Live per-provider source-loudness estimate: a window of recent
+        # voiced-chunk POWERS (linear int16² mean-squares); source_rms_dbfs
+        # is their power-mean → dBFS. Seeded until note_source_chunk() has
+        # observed real audio. Persists across turns for the process
         # lifetime; a provider switch restarts jasper-voice, re-seeding it.
-        self._source_peaks: deque[float] = deque(maxlen=self._SOURCE_PEAK_WINDOW)
+        self._source_powers: deque[float] = deque(maxlen=self._SOURCE_RMS_WINDOW)
 
     def pause(self) -> None:
         self._paused = True
@@ -583,27 +588,29 @@ class TtsVolumeTracker:
         return self._anchor_dbfs > self._silence_threshold_dbfs
 
     @property
-    def source_peak_dbfs(self) -> float:
+    def source_rms_dbfs(self) -> float:
         """Current estimate of the active provider's TTS source loudness:
-        the windowed MAX of measured per-chunk peaks (the true utterance
-        peak), or the seed until audio has been observed. The gain formula
-        uses this so every provider's TTS lands at the same level relative
-        to music regardless of its native output level."""
-        if not self._source_peaks:
-            return self.SOURCE_PEAK_SEED_DBFS
-        return max(self._source_peaks)
+        the windowed RMS (power-mean of recent voiced chunks → dBFS), or
+        the seed until audio has been observed. The gain formula uses this
+        so every provider's TTS lands at the same LOUDNESS relative to
+        music regardless of its native level or compression."""
+        if not self._source_powers:
+            return self.SOURCE_RMS_SEED_DBFS
+        return _power_to_dbfs(sum(self._source_powers) / len(self._source_powers))
 
     def note_source_chunk(self, pcm: bytes) -> None:
-        """Record one provider TTS chunk's peak into the source-loudness
+        """Fold one provider TTS chunk's loudness into the source-RMS
         window. Called for every assistant chunk as it is dequeued for
         playback (see _play_responses), independent of pause state —
         measurement never stops, only gain *recompute* pauses during a
         turn, so a turn's audio refines the estimate the next turn uses.
         Fail-soft: a measurement error must never disrupt playback."""
-        peak = _pcm_peak_dbfs(pcm)
-        if peak is None or peak < self._SOURCE_PEAK_VOICED_FLOOR_DBFS:
+        mean_square = _pcm_mean_square(pcm)
+        if mean_square is None or mean_square <= 0.0:
             return
-        self._source_peaks.append(peak)
+        if _power_to_dbfs(mean_square) < self._SOURCE_VOICED_FLOOR_DBFS:
+            return
+        self._source_powers.append(mean_square)
 
     def _record_rms(self, rms_dbfs: float) -> float:
         """Append latest RMS reading and return windowed peak."""
@@ -615,10 +622,10 @@ class TtsVolumeTracker:
         return max(p for _, p in self._peak_buffer)
 
     def _compute_gain(
-        self, vol_db: float, windowed_rms: float, source_peak_dbfs: float,
+        self, vol_db: float, windowed_rms: float, source_rms_dbfs: float,
     ) -> float:
         """Pure: given current main_volume, the windowed music RMS peak,
-        and the measured TTS source peak, return target gain.
+        and the measured TTS source RMS, return target gain.
 
         Three branches with branch-specific ceiling policy (see class
         docstring for the why):
@@ -638,7 +645,7 @@ class TtsVolumeTracker:
         ceiling = vol_db + self._offset_db
         if windowed_rms > self._silence_threshold_dbfs:
             target = (
-                windowed_rms + self._headroom_db - source_peak_dbfs
+                windowed_rms + self._headroom_db - source_rms_dbfs
             )
             # No ceiling clamp on the music-playing branch — the
             # measured signal IS the answer. MAX_TTS_GAIN_DB in
@@ -646,7 +653,7 @@ class TtsVolumeTracker:
         elif self._anchor_dbfs > -120.0:
             target = min(
                 self._anchor_dbfs + self._headroom_db
-                - source_peak_dbfs,
+                - source_rms_dbfs,
                 ceiling,
             )
         else:
@@ -678,8 +685,8 @@ class TtsVolumeTracker:
         all clamping stages — enough to reconstruct any gain choice
         from logs alone, without correlating across the three separate
         log lines that used to be required."""
-        source_peak = self.source_peak_dbfs
-        target = self._compute_gain(vol_db, windowed_rms, source_peak)
+        source_rms = self.source_rms_dbfs
+        target = self._compute_gain(vol_db, windowed_rms, source_rms)
         old_gain = self._tts.gain_db
         self._tts.set_gain_db(target)
         if self._tts.gain_db == old_gain:
@@ -697,10 +704,10 @@ class TtsVolumeTracker:
             branch = "no_anchor"
         logger.info(
             "event=tts_gain.compute branch=%s windowed_rms=%.1f "
-            "source_peak_dbfs=%.1f anchor_dbfs=%.1f main_volume_db=%.1f "
+            "source_rms_dbfs=%.1f anchor_dbfs=%.1f main_volume_db=%.1f "
             "offset_db=%.1f ceiling_db=%.1f target_db=%.1f final_db=%.1f "
             "max_cap_db=%.1f",
-            branch, windowed_rms, source_peak, self._anchor_dbfs, vol_db,
+            branch, windowed_rms, source_rms, self._anchor_dbfs, vol_db,
             self._offset_db, ceiling, target,
             self._tts.gain_db, TtsPlayout.MAX_TTS_GAIN_DB,
         )
@@ -3132,10 +3139,10 @@ class WakeLoop:
             "connection_paused": self._connection.is_paused(),
             "mic_muted": self._mic_muted,
             "duck_active": self._ducker.is_ducked,
-            # Measured per-provider TTS source loudness (dBFS peak) so the
+            # Measured per-provider TTS source loudness (dBFS RMS) so the
             # learned level is observable on /state without log-grepping.
-            "tts_source_peak_dbfs": round(
-                self._tts_volume_tracker.source_peak_dbfs, 1,
+            "tts_source_rms_dbfs": round(
+                self._tts_volume_tracker.source_rms_dbfs, 1,
             ),
             # Actually-armed wake legs (runtime truth, by jasper.wake_legs
             # token order). /aec reports configured *intent* from
