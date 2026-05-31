@@ -19,6 +19,23 @@ from jasper.mux import Mux, Source
 REPO = Path(__file__).resolve().parents[1]
 
 
+def _airplay_session(
+    connected: bool,
+    *,
+    client_name: str = "",
+    player_state: str = "",
+    remote_control_available: bool | None = None,
+    probed: bool = True,
+):
+    return SimpleNamespace(
+        connected=connected,
+        client_name=client_name,
+        player_state=player_state,
+        remote_control_available=remote_control_available,
+        probed=probed,
+    )
+
+
 class _FakeHandoff:
     def __init__(self, prev, current, *, level=50, result="ok"):
         self.prev_source = prev
@@ -87,13 +104,16 @@ def patched_probes(monkeypatch):
     airplay = AsyncMock(return_value=False)
     bluetooth = AsyncMock(return_value=False)
     usbsink = AsyncMock(return_value=False)
+    airplay_session = AsyncMock(return_value=_airplay_session(False))
     monkeypatch.setattr("jasper.mux.spotify_playing", spotify)
     monkeypatch.setattr("jasper.mux.airplay_playing", airplay)
     monkeypatch.setattr("jasper.mux.bluetooth_playing", bluetooth)
     monkeypatch.setattr("jasper.mux.usbsink_playing", usbsink)
+    monkeypatch.setattr("jasper.mux.airplay_session_state", airplay_session)
     return SimpleNamespace(
         spotify=spotify, airplay=airplay,
         bluetooth=bluetooth, usbsink=usbsink,
+        airplay_session=airplay_session,
     )
 
 
@@ -144,6 +164,33 @@ async def test_new_source_preempts_current(mux, patched_probes):
     await mux._tick()
     mux._pause.assert_awaited_once_with(Source.SPOTIFY)
     assert mux._winner is Source.AIRPLAY
+
+
+@pytest.mark.asyncio
+async def test_spotify_start_closes_lingering_airplay_session(
+    mux, patched_probes,
+):
+    """Regression: switching a Mac from AirPlay to Spotify Connect can
+    make AirPlay stop being audible while the AP2 receiver session stays
+    connected. Mux must still close AirPlay after Spotify wins."""
+    _stub_pauses(mux)
+
+    _stub_probes(patched_probes, airplay=True)
+    await mux._tick()
+    assert mux._winner is Source.AIRPLAY
+
+    patched_probes.airplay_session.return_value = _airplay_session(
+        True,
+        client_name="Jasper Mac Studio",
+        player_state="Playing",
+        remote_control_available=False,
+    )
+    _stub_probes(patched_probes, spotify=True, airplay=False)
+
+    await mux._tick()
+
+    mux._pause.assert_awaited_once_with(Source.AIRPLAY)
+    assert mux._winner is Source.SPOTIFY
 
 
 @pytest.mark.asyncio
@@ -550,6 +597,35 @@ async def test_select_source_gates_fanin_without_pausing_other_sources(
 
 
 @pytest.mark.asyncio
+async def test_select_non_airplay_source_closes_airplay_session(
+    mux, patched_probes,
+):
+    _stub_probes(
+        patched_probes,
+        spotify=True,
+        airplay=False,
+        bluetooth=False,
+        usbsink=False,
+    )
+    patched_probes.airplay_session.return_value = _airplay_session(
+        True,
+        client_name="Jasper Mac Studio",
+        player_state="Playing",
+        remote_control_available=False,
+    )
+    _stub_pauses(mux)
+    mux._fanin_select = AsyncMock(return_value={})
+
+    status = await mux.select_source(Source.SPOTIFY)
+
+    mux._fanin_select.assert_awaited_once_with(Source.SPOTIFY)
+    mux._pause.assert_awaited_once_with(Source.AIRPLAY)
+    assert mux._manual_source is Source.SPOTIFY
+    assert status["mode"] == "manual"
+    assert status["selected_source"] == "spotify"
+
+
+@pytest.mark.asyncio
 async def test_select_source_prepares_volume_before_fanin_gate(
     mux, patched_probes,
 ):
@@ -691,6 +767,14 @@ async def test_airplay_preempt_uses_stop_not_pause(mux, monkeypatch):
         return ""
 
     monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+    monkeypatch.setenv("JASPER_MUX_AIRPLAY_PREEMPT_VERIFY_SEC", "0")
+    monkeypatch.setattr(
+        "jasper.mux.airplay_playing", AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "jasper.mux.airplay_session_state",
+        AsyncMock(return_value=_airplay_session(False)),
+    )
 
     await mux._pause(Source.AIRPLAY)
 
@@ -714,10 +798,96 @@ async def test_airplay_preempt_falls_back_to_pause_when_stop_fails(
         return None if args[-1] == "Stop" else ""
 
     monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+    monkeypatch.setenv("JASPER_MUX_AIRPLAY_PREEMPT_VERIFY_SEC", "0")
+    monkeypatch.setattr(
+        "jasper.mux.airplay_playing", AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "jasper.mux.airplay_session_state",
+        AsyncMock(return_value=_airplay_session(False)),
+    )
 
     await mux._pause(Source.AIRPLAY)
 
     assert [call[-1] for call in calls] == ["Stop", "Pause"]
+
+
+@pytest.mark.asyncio
+async def test_airplay_preempt_restarts_when_stop_leaves_session_connected(
+    mux, monkeypatch,
+):
+    async def fake_busctl(*_args):
+        return ""
+
+    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+    monkeypatch.setenv("JASPER_MUX_AIRPLAY_PREEMPT_VERIFY_SEC", "0")
+    monkeypatch.setattr(
+        "jasper.mux.airplay_playing", AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "jasper.mux.airplay_session_state",
+        AsyncMock(return_value=_airplay_session(
+            True,
+            client_name="Jasper Mac Studio",
+            player_state="Playing",
+            remote_control_available=False,
+        )),
+    )
+    mux._airplay_force_restart_shairport = AsyncMock(return_value=True)
+
+    await mux._pause(Source.AIRPLAY)
+
+    mux._airplay_force_restart_shairport.assert_awaited_once_with(
+        reason="preempt_verify",
+    )
+
+
+@pytest.mark.asyncio
+async def test_airplay_preempt_restarts_when_commands_fail_and_verify_unknown(
+    mux, monkeypatch,
+):
+    async def fake_busctl(*_args):
+        return None
+
+    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+    monkeypatch.setenv("JASPER_MUX_AIRPLAY_PREEMPT_VERIFY_SEC", "0")
+    monkeypatch.setattr(
+        "jasper.mux.airplay_playing", AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "jasper.mux.airplay_session_state",
+        AsyncMock(return_value=_airplay_session(False, probed=False)),
+    )
+    mux._airplay_force_restart_shairport = AsyncMock(return_value=True)
+
+    await mux._pause(Source.AIRPLAY)
+
+    mux._airplay_force_restart_shairport.assert_awaited_once_with(
+        reason="preempt_verify",
+    )
+
+
+@pytest.mark.asyncio
+async def test_airplay_preempt_does_not_restart_when_stop_closes_session(
+    mux, monkeypatch,
+):
+    async def fake_busctl(*_args):
+        return ""
+
+    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+    monkeypatch.setenv("JASPER_MUX_AIRPLAY_PREEMPT_VERIFY_SEC", "0")
+    monkeypatch.setattr(
+        "jasper.mux.airplay_playing", AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "jasper.mux.airplay_session_state",
+        AsyncMock(return_value=_airplay_session(False)),
+    )
+    mux._airplay_force_restart_shairport = AsyncMock(return_value=True)
+
+    await mux._pause(Source.AIRPLAY)
+
+    mux._airplay_force_restart_shairport.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -26,11 +26,14 @@ Renderer support:
             the new winner. Off-switch:
             JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled.
   AirPlay (shairport-sync):
-    detect: MPRIS PlaybackStatus == "Playing"
+    detect: MPRIS PlaybackStatus == "Playing" corroborated by
+            metadata title (see source_state.airplay_playing).
     preempt: MPRIS Stop method, falling back to Pause if Stop is not
-            available. Stop asks shairport-sync to tear down playback
-            instead of leaving a hidden paused AirPlay session behind
-            while another renderer owns the fan-in gate.
+            available, then verify the receiver-side session closed.
+            If shairport-sync still reports a connected AirPlay sender,
+            restart shairport-sync.service only. This handles AP2
+            senders that accept the DBus method but do not expose
+            working DACP remote control.
   Bluetooth (bluez-alsa):
     detect: presence of an a2dpsnk source PCM (best-effort —
             doesn't distinguish "phone connected, not playing"
@@ -69,6 +72,7 @@ import httpx
 from . import librespot_state
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
+    airplay_session_state,
     airplay_playing,
     bluetooth_playing,
     spotify_playing,
@@ -114,6 +118,36 @@ def _spotify_preempt_restart_disabled() -> bool:
     return os.environ.get(
         "JASPER_MUX_SPOTIFY_PREEMPT_RESTART", "",
     ).strip().lower() == "disabled"
+
+
+def _airplay_preempt_restart_disabled() -> bool:
+    """Env-var escape hatch for the AirPlay hard-teardown fallback.
+
+    Set JASPER_MUX_AIRPLAY_PREEMPT_RESTART=disabled to keep preempt at
+    DBus Stop/Pause only. Default: enabled, because modern AP2 senders
+    can leave the receiver connected after Stop returns successfully.
+    """
+    return os.environ.get(
+        "JASPER_MUX_AIRPLAY_PREEMPT_RESTART", "",
+    ).strip().lower() == "disabled"
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _airplay_preempt_verify_sec() -> float:
+    return max(0.0, _env_float("JASPER_MUX_AIRPLAY_PREEMPT_VERIFY_SEC", 1.25))
+
+
+def _airplay_preempt_restart_min_sec() -> float:
+    return max(
+        0.0,
+        _env_float("JASPER_MUX_AIRPLAY_PREEMPT_RESTART_MIN_SEC", 20.0),
+    )
 
 
 def _usbsink_preempt_disabled() -> bool:
@@ -183,6 +217,7 @@ class Mux:
         self._handoff_seq = 0
         self._transition_lock = asyncio.Lock()
         self._pending_auto_target: Source | None = None
+        self._airplay_last_force_restart = 0.0
 
     async def run(self) -> None:
         logger.info(
@@ -304,11 +339,32 @@ class Mux:
                 self._state.playing = current
                 return
 
-            # Pause every OTHER source that's currently active after
-            # the fan-in gate has moved. Slow cloud/Web API pause
-            # paths should not delay a safe source switch.
-            for source, is_playing in current.items():
-                if source != target and is_playing:
+            # Pause/close every OTHER source that's active after the
+            # fan-in gate has moved. Slow cloud/Web API pause paths
+            # should not delay a safe source switch. AirPlay also has
+            # a connected-but-not-audible state, so include it when a
+            # non-AirPlay winner takes over and shairport still has a
+            # sender session.
+            pause_targets = {
+                source
+                for source, is_playing in current.items()
+                if source != target and is_playing
+            }
+            if await self._airplay_cleanup_needed(
+                current, target=target, reason=transition_reason,
+            ):
+                pause_targets.add(Source.AIRPLAY)
+            for source in MUSIC_SOURCES:
+                if source in pause_targets:
+                    if (
+                        source == Source.AIRPLAY
+                        and self._manual_source == Source.AIRPLAY
+                    ):
+                        logger.info(
+                            "event=airplay.preempt_skipped "
+                            "reason=manual_airplay_selected",
+                        )
+                        continue
                     await self._pause(source)
         elif target is None:
             if self._winner is not None and current.get(self._winner, False):
@@ -338,10 +394,11 @@ class Mux:
     async def select_source(self, source: Source) -> dict[str, Any]:
         """Manual source selection from the web UI.
 
-        Fan-in enforces the audible lane. This deliberately does not
-        pause, disconnect, or disable any renderer: the source selector
-        chooses what the speaker passes through, while the `/sources/`
-        wizard remains the on/off surface.
+        Fan-in enforces the audible lane. The selector does not turn
+        renderers on/off; the `/sources/` wizard remains that surface.
+        One deliberate exception: selecting a non-AirPlay source closes
+        any lingering AirPlay session, because an AirPlay connection is
+        only correct while AirPlay is selected/audible.
         """
         async with self._transition_lock:
             previous = self._winner or self._manual_source or Source.IDLE
@@ -370,6 +427,9 @@ class Mux:
             )
             return self._status_payload(current)
         current = await self._probe_sources()
+        if source != Source.AIRPLAY:
+            await self._airplay_cleanup_after_manual_select(current, source)
+            current = await self._probe_sources()
         self._state.playing = current
         logger.info("event=source.manual_select source=%s", source.value)
         return self._status_payload(current)
@@ -407,8 +467,24 @@ class Mux:
                     new_winner.value,
                 )
                 return self._status_payload(current)
-            for source in active_sources:
-                if source != new_winner:
+            pause_targets = {
+                source for source in active_sources if source != new_winner
+            }
+            if await self._airplay_cleanup_needed(
+                current, target=new_winner, reason="auto_select",
+            ):
+                pause_targets.add(Source.AIRPLAY)
+            for source in MUSIC_SOURCES:
+                if source in pause_targets:
+                    if (
+                        source == Source.AIRPLAY
+                        and self._manual_source == Source.AIRPLAY
+                    ):
+                        logger.info(
+                            "event=airplay.preempt_skipped "
+                            "reason=manual_airplay_selected",
+                        )
+                        continue
                     await self._pause_best_effort(
                         source, reason="auto_select",
                     )
@@ -639,6 +715,45 @@ class Mux:
                 source.value, reason, e,
             )
 
+    async def _airplay_cleanup_after_manual_select(
+        self, current: dict[Source, bool], source: Source,
+    ) -> None:
+        if self._manual_source != source:
+            return
+        if await self._airplay_cleanup_needed(
+            current, target=source, reason="manual_select",
+        ):
+            if self._manual_source != source:
+                return
+            await self._pause_best_effort(
+                Source.AIRPLAY, reason="manual_select",
+            )
+
+    async def _airplay_cleanup_needed(
+        self,
+        current: dict[Source, bool],
+        *,
+        target: Source,
+        reason: str,
+    ) -> bool:
+        if target == Source.AIRPLAY:
+            return False
+        if current.get(Source.AIRPLAY, False):
+            return True
+        state = await airplay_session_state()
+        if not state.connected:
+            return False
+        logger.info(
+            "event=airplay.connected_session_cleanup_needed target=%s "
+            "reason=%s client=%r player_state=%r remote_control_available=%s",
+            target.value,
+            reason,
+            state.client_name,
+            state.player_state,
+            state.remote_control_available,
+        )
+        return True
+
     async def _fanin_select(self, source: Source) -> dict[str, Any]:
         label = SOURCE_TO_FANIN_LABEL[source]
         return await _fanin_command(f"SELECT {label}")
@@ -791,10 +906,15 @@ class Mux:
         RendererClient.pause_airplay(). Mux preemption is different:
         once Spotify/Bluetooth/USB has the audible lane, keeping a
         paused AP2 session alive makes status ambiguous and lets sender
-        resumes race with the next source switch. shairport-sync exposes
-        MPRIS Stop, which is the narrowest renderer-owned way to end the
-        current playback session without restarting the whole service.
+        resumes race with the next source switch.
+
+        First try the narrow renderer-owned path: shairport-sync MPRIS
+        Stop, falling back to Pause. Then re-check shairport's GNOME
+        RemoteControl session state. Some AP2 senders return success for
+        Stop but expose no working DACP remote control, so the receiver
+        session stays connected; for those, restart shairport-sync only.
         """
+        method = "Stop"
         ok = await _busctl(
             "call",
             SHAIRPORT_MPRIS_BUS,
@@ -804,8 +924,12 @@ class Mux:
         )
         if ok is not None:
             logger.info("event=airplay.preempt_stop method=Stop result=ok")
+            await self._airplay_verify_or_restart(
+                method=method, command_ok=True,
+            )
             return
 
+        method = "Pause"
         logger.warning(
             "event=airplay.preempt_stop_failed method=Stop action=pause_fallback",
         )
@@ -820,6 +944,95 @@ class Mux:
             logger.warning(
                 "event=airplay.preempt_pause_failed method=Pause",
             )
+        else:
+            logger.info("event=airplay.preempt_pause method=Pause result=ok")
+        await self._airplay_verify_or_restart(
+            method=method, command_ok=pause_ok is not None,
+        )
+
+    async def _airplay_verify_or_restart(
+        self, *, method: str, command_ok: bool,
+    ) -> None:
+        delay = _airplay_preempt_verify_sec()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        playing = await airplay_playing()
+        state = await airplay_session_state()
+        if not playing and not state.connected and (state.probed or command_ok):
+            logger.info(
+                "event=airplay.preempt_verify method=%s result=closed",
+                method,
+            )
+            return
+        logger.warning(
+            "event=airplay.preempt_verify method=%s result=%s "
+            "command_ok=%s playing=%s session_probe_ok=%s client=%r "
+            "player_state=%r remote_control_available=%s "
+            "action=restart_shairport",
+            method,
+            "still_connected" if state.connected or playing else "unknown",
+            command_ok,
+            playing,
+            state.probed,
+            state.client_name,
+            state.player_state,
+            state.remote_control_available,
+        )
+        await self._airplay_force_restart_shairport(reason="preempt_verify")
+
+    async def _airplay_force_restart_shairport(self, *, reason: str) -> bool:
+        if _airplay_preempt_restart_disabled():
+            logger.warning(
+                "event=airplay.force_restart skipped=disabled reason=%s",
+                reason,
+            )
+            return False
+
+        now = time.monotonic()
+        elapsed = now - self._airplay_last_force_restart
+        min_interval = _airplay_preempt_restart_min_sec()
+        if self._airplay_last_force_restart > 0 and elapsed < min_interval:
+            logger.warning(
+                "event=airplay.force_restart skipped=rate_limited "
+                "reason=%s elapsed_ms=%d min_ms=%d",
+                reason,
+                round(elapsed * 1000),
+                round(min_interval * 1000),
+            )
+            return False
+
+        self._airplay_last_force_restart = now
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "systemctl", "restart", "shairport-sync.service",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=5.0,
+            )
+        except (FileNotFoundError, asyncio.TimeoutError) as e:
+            logger.warning(
+                "event=airplay.force_restart result=invoke_failed "
+                "reason=%s detail=%s",
+                reason, e,
+            )
+            return False
+        if proc.returncode != 0:
+            logger.warning(
+                "event=airplay.force_restart result=failed reason=%s "
+                "exit=%d stderr=%r",
+                reason,
+                proc.returncode,
+                stderr[:200],
+            )
+            return False
+        logger.info(
+            "event=airplay.force_restart result=ok reason=%s service=%s",
+            reason,
+            "shairport-sync.service",
+        )
+        return True
 
     # ------------------------------------------------------------------
     # USB sink preempt protocol — POSTs to the daemon's local HTTP

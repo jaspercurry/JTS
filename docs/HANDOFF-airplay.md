@@ -31,11 +31,15 @@ With the current outputd values, the rendered offset is
 `-0.149333` (CamillaDSP buffer + fan-in output buffer + outputd DAC
 buffer only; no renderer-side dmix because fanin replaces it).
 
-Mux preemption now uses shairport-sync's MPRIS `Stop` when AirPlay
-loses the audible lane to Spotify, Bluetooth, or USB sink. Voice
-transport "pause AirPlay" still uses MPRIS `Pause`; source arbitration
-uses `Stop` so the sender session does not linger as hidden active
-AirPlay while another renderer owns the fan-in gate.
+Mux preemption uses shairport-sync's MPRIS `Stop` when AirPlay loses
+the audible lane to Spotify, Bluetooth, or USB sink. Voice transport
+"pause AirPlay" still uses MPRIS `Pause`; source arbitration uses
+`Stop` first, then verifies shairport's GNOME RemoteControl session
+state. If the AP2 sender is still connected, mux restarts
+`shairport-sync.service` only (not `nqptp`) to tear down the receiver
+session. Manual source selection follows the same product rule:
+choosing AirPlay keeps AirPlay connected; choosing a non-AirPlay source
+closes any lingering AirPlay session after the guarded fan-in handoff.
 
 If you're hearing artifacts, something has changed (active
 correction profile, DAC swap, software update, network change,
@@ -1483,4 +1487,4 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-05-31

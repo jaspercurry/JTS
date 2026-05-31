@@ -1,5 +1,5 @@
-"""Tests for jasper.source_state — the three async probes that report
-which renderer is currently producing audio.
+"""Tests for jasper.source_state — async probes that report renderer
+audio and session state.
 
 The probes wrap I/O (a librespot state file, busctl, bluealsa-cli);
 mock at that boundary. Both jasper.renderer.RendererClient.active_renderers
@@ -219,6 +219,78 @@ async def test_airplay_playing_metadata_call_failure_treated_as_phantom():
 
     with patch("asyncio.create_subprocess_exec", side_effect=router):
         assert await source_state.airplay_playing() is False
+
+
+# ----------------------------------------------------------------------
+# airplay_session_state — receiver-side connected session, not audibility
+#
+# Mux uses this only to clean up lingering AP2 sessions after another
+# source wins. It must stay separate from airplay_playing(), which is
+# intentionally stricter to avoid phantom AirPlay source flapping.
+# ----------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_airplay_session_state_connected_from_client_name():
+    with patch(
+        "asyncio.create_subprocess_exec",
+        new=_mock_busctl_router({
+            b"ClientName":  (b'v s "Jasper Mac Studio"\n', 0),
+            b"PlayerState": (b'v s "Playing"\n', 0),
+            b"Available":   (b"v b false\n", 0),
+        }),
+    ):
+        state = await source_state.airplay_session_state()
+
+    assert state.connected is True
+    assert state.client_name == "Jasper Mac Studio"
+    assert state.player_state == "Playing"
+    assert state.remote_control_available is False
+    assert state.probed is True
+
+
+@pytest.mark.asyncio
+async def test_airplay_session_state_connected_from_remote_available():
+    with patch(
+        "asyncio.create_subprocess_exec",
+        new=_mock_busctl_router({
+            b"ClientName":  (b'v s ""\n', 0),
+            b"PlayerState": (b'v s "Stopped"\n', 0),
+            b"Available":   (b"v b true\n", 0),
+        }),
+    ):
+        state = await source_state.airplay_session_state()
+
+    assert state.connected is True
+    assert state.remote_control_available is True
+    assert state.probed is True
+
+
+@pytest.mark.asyncio
+async def test_airplay_session_state_disconnected_when_idle():
+    with patch(
+        "asyncio.create_subprocess_exec",
+        new=_mock_busctl_router({
+            b"ClientName":  (b'v s ""\n', 0),
+            b"PlayerState": (b'v s "Stopped"\n', 0),
+            b"Available":   (b"v b false\n", 0),
+        }),
+    ):
+        state = await source_state.airplay_session_state()
+
+    assert state.connected is False
+    assert state.probed is True
+
+
+@pytest.mark.asyncio
+async def test_airplay_session_state_fail_soft_when_dbus_unreadable():
+    with patch(
+        "asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError("busctl"),
+    ):
+        state = await source_state.airplay_session_state()
+
+    assert state.connected is False
+    assert state.probed is False
 
 
 # ----------------------------------------------------------------------

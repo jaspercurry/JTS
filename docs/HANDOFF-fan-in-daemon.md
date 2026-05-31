@@ -690,9 +690,10 @@ maintainability. Rust wins on all three.
 - **Not aware of source state.** It knows only a selected input label
   or auto/null. Mux owns "current primary", renderer probing,
   source-specific preemption APIs, and user source selection. Current
-  examples: AirPlay loses via shairport-sync MPRIS `Stop`, Spotify via
-  Web API pause or librespot restart fallback, and USB sink via its
-  local silence endpoint.
+  examples: AirPlay loses via shairport-sync MPRIS `Stop` plus a
+  shairport-sync restart fallback if the AP2 session remains connected,
+  Spotify via Web API pause or librespot restart fallback, and USB sink
+  via its local silence endpoint.
 - **Not PipeWire.** Per the AGENTS.md "architecture is fixed; swap the
   engine, not the topology" rule (scoped to AEC but spirit applies to
   the bus): this is the smallest viable shape, not a bus rewrite.
@@ -893,4 +894,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-05-30 (outputd topology rechecked).
+Last verified: 2026-05-31 (outputd topology and mux preemption wording rechecked).

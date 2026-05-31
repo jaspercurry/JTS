@@ -70,6 +70,9 @@ Ownership is deliberately split:
 
 - `jasper-mux` owns policy and the source-handoff transaction. Auto
   mode is latest-source-wins; manual mode is the user-selected source.
+  AirPlay is the exception to "selection only": when a non-AirPlay
+  source wins or is manually selected, mux closes any lingering
+  AirPlay session after the guarded fan-in handoff.
   Source metadata lives in `jasper/music_sources.py`, including the
   fan-in lane label and whether `listening_level` is carried by
   CamillaDSP or by a push-to-source volume API.
@@ -151,11 +154,12 @@ mixer, a second output device, or a new volume model.
    `listening_level`.
 6. **Define preemption.** Add the source-specific stop/pause/silence
    path to `jasper/mux.py`. Prefer a real renderer-owned API: AirPlay
-   uses shairport-sync MPRIS `Stop` when it loses the lane, Spotify uses
-   Web API pause with a restart fallback, and USB sink uses its local
-   silence endpoint. If the source cannot be controlled from the Pi,
-   document the intentional fallback ("may briefly mix") and expose an
-   operator escape hatch only when the failure mode justifies one.
+   uses shairport-sync MPRIS `Stop` and restarts `shairport-sync.service`
+   if the AP2 session remains connected, Spotify uses Web API pause
+   with a restart fallback, and USB sink uses its local silence endpoint.
+   If the source cannot be controlled from the Pi, document the
+   intentional fallback ("may briefly mix") and expose an operator escape
+   hatch only when the failure mode justifies one.
 7. **Wire manual source selection.** The mux/control allow-lists derive
    from `jasper/music_sources.py`; add the landing-page button in
    `deploy/index.html` and keep `/sources/` as the on/off surface.

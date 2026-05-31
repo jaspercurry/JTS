@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 
 from . import librespot_state
 
@@ -32,6 +33,16 @@ logger = logging.getLogger(__name__)
 # Empty metadata renders as `v a{sv} 0\n` with no title key at all,
 # so a search-fail is the phantom signal.
 _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
+_DBUS_STRING_RE = re.compile(rb'"((?:[^"\\]|\\.)*)"')
+_DBUS_BOOL_RE = re.compile(rb"\b(true|false)\b")
+
+SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
+SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
+MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+SHAIRPORT_GNOME_BUS = "org.gnome.ShairportSync"
+SHAIRPORT_GNOME_PATH = "/org/gnome/ShairportSync"
+SHAIRPORT_REMOTE_IFACE = "org.gnome.ShairportSync.RemoteControl"
+DBUS_PROPS_IFACE = "org.freedesktop.DBus.Properties"
 
 # Default path the jasper-usbsink daemon publishes its state to.
 # Kept in sync with jasper.usbsink.state_publisher.DEFAULT_STATE_PATH.
@@ -39,6 +50,24 @@ _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 # import graph (jasper-mux doesn't need to import the usbsink daemon
 # just to know where its state file is).
 USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
+
+
+@dataclass(frozen=True)
+class AirPlaySessionState:
+    """Receiver-side AirPlay session state, separate from audibility.
+
+    `connected` answers "does shairport-sync still have a sender
+    session?". It is intentionally broader than `airplay_playing()`,
+    which answers "is AirPlay producing audible music right now?".
+    Mux uses this for cleanup only; source arbitration still depends on
+    `airplay_playing()` to avoid phantom SETUP flapping.
+    """
+
+    connected: bool
+    client_name: str = ""
+    player_state: str = ""
+    remote_control_available: bool | None = None
+    probed: bool = True
 
 
 async def spotify_playing(
@@ -65,6 +94,83 @@ def _airplay_metadata_gate_disabled() -> bool:
     ).strip().lower() == "disabled"
 
 
+def _parse_dbus_string(stdout: bytes) -> str:
+    m = _DBUS_STRING_RE.search(stdout)
+    if not m:
+        return ""
+    # busctl/dbus-send escape embedded quotes and backslashes. We only
+    # need a readable operator-facing value, not a complete DBus parser.
+    text = m.group(1).decode("utf-8", "replace")
+    return text.replace(r"\"", '"').replace(r"\\", "\\")
+
+
+def _parse_dbus_bool(stdout: bytes) -> bool | None:
+    m = _DBUS_BOOL_RE.search(stdout)
+    if not m:
+        return None
+    return m.group(1) == b"true"
+
+
+async def _airplay_remote_property(name: str) -> bytes | None:
+    """Read a shairport-sync GNOME RemoteControl property via DBus."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "busctl", "--system", "call",
+            SHAIRPORT_GNOME_BUS,
+            SHAIRPORT_GNOME_PATH,
+            DBUS_PROPS_IFACE, "Get", "ss",
+            SHAIRPORT_REMOTE_IFACE, name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+        logger.debug("busctl RemoteControl.%s probe failed: %s", name, e)
+        return None
+    if proc.returncode != 0:
+        return None
+    return stdout
+
+
+async def airplay_session_state() -> AirPlaySessionState:
+    """Return whether shairport-sync still has an AirPlay sender session.
+
+    This is deliberately not an audio-active probe. A macOS/iOS sender
+    can leave the AP2 session connected after the user switches the
+    speaker to another protocol. We use shairport-sync's GNOME DBus
+    RemoteControl surface because it exposes sender/session details
+    (`ClientName`, `PlayerState`, `Available`) that MPRIS playback
+    status alone cannot distinguish.
+
+    Fail-soft: if DBus cannot be read, return disconnected. The mux
+    still preempts AirPlay when `airplay_playing()` is true; this probe
+    only adds cleanup for the connected-but-not-audible case.
+    """
+    client_raw, player_raw, available_raw = await asyncio.gather(
+        _airplay_remote_property("ClientName"),
+        _airplay_remote_property("PlayerState"),
+        _airplay_remote_property("Available"),
+    )
+    probed = any(
+        raw is not None for raw in (client_raw, player_raw, available_raw)
+    )
+    client_name = _parse_dbus_string(client_raw or b"")
+    player_state = _parse_dbus_string(player_raw or b"")
+    available = _parse_dbus_bool(available_raw or b"")
+    connected = (
+        bool(client_name.strip())
+        or available is True
+        or player_state.strip().lower() in {"playing", "paused"}
+    )
+    return AirPlaySessionState(
+        connected=connected,
+        client_name=client_name,
+        player_state=player_state,
+        remote_control_available=available,
+        probed=probed,
+    )
+
+
 async def _airplay_has_metadata_title() -> bool:
     """True iff shairport-sync's MPRIS Metadata carries a non-empty
     xesam:title at the moment we ask.
@@ -84,10 +190,10 @@ async def _airplay_has_metadata_title() -> bool:
     try:
         proc = await asyncio.create_subprocess_exec(
             "busctl", "--system", "call",
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.freedesktop.DBus.Properties", "Get", "ss",
-            "org.mpris.MediaPlayer2.Player", "Metadata",
+            SHAIRPORT_MPRIS_BUS,
+            SHAIRPORT_MPRIS_PATH,
+            DBUS_PROPS_IFACE, "Get", "ss",
+            MPRIS_PLAYER_IFACE, "Metadata",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -126,10 +232,10 @@ async def airplay_playing() -> bool:
     try:
         proc = await asyncio.create_subprocess_exec(
             "busctl", "--system", "call",
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.freedesktop.DBus.Properties", "Get", "ss",
-            "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
+            SHAIRPORT_MPRIS_BUS,
+            SHAIRPORT_MPRIS_PATH,
+            DBUS_PROPS_IFACE, "Get", "ss",
+            MPRIS_PLAYER_IFACE, "PlaybackStatus",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )

@@ -516,13 +516,15 @@ daemon's own surface:
 latest-source-wins preemption: when a new source transitions to playing
 while another is already active, it pauses the older one. The landing
 page's Source selector can switch mux into manual mode; mux then asks
-`jasper-fanin` to pass one renderer lane without turning any source on
-or off. Before moving the fan-in gate, mux asks `VolumeCoordinator` to
-prepare the target source's volume carrier; after the gate moves, it
-finalizes the steady-state carrier. This is the source-switch transient
-guard. While no source has a guarded winner, mux keeps fan-in in `NONE`
-so a renderer cannot leak through between polls. The `/sources/`
-wizard remains the on/off surface.
+`jasper-fanin` to pass one renderer lane. The `/sources/` wizard
+remains the on/off surface; the deliberate exception is AirPlay session
+cleanup — when a non-AirPlay source wins or is manually selected, mux
+closes any lingering AirPlay connection after the guarded handoff.
+Before moving the fan-in gate, mux asks `VolumeCoordinator` to prepare
+the target source's volume carrier; after the gate moves, it finalizes
+the steady-state carrier. This is the source-switch transient guard.
+While no source has a guarded winner, mux keeps fan-in in `NONE` so a
+renderer cannot leak through between polls.
 
 All music/content sources enter the fan-in topology through a private
 snd-aloop lane. Before adding another playback source, read

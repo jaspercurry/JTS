@@ -147,11 +147,13 @@ port 1234.
 `jasper-mux` arbitrates between the renderers. In auto mode, when a new
 source transitions to playing while another is already active, it
 preempts the older one so the user gets "latest source wins" UX. For
-AirPlay, preempt means MPRIS `Stop` so shairport-sync drops the current
-playback session instead of leaving an invisible paused sender behind.
-The landing page
-also exposes a lightweight Source selector: manual mode gates one
-renderer lane through `jasper-fanin` without turning any source on/off.
+AirPlay, preempt means MPRIS `Stop`, followed by a shairport-sync
+restart if the AP2 sender session is still connected. That prevents an
+invisible AirPlay session from lingering behind Spotify Connect,
+Bluetooth, or USB audio. The landing page also exposes a lightweight
+Source selector: manual mode gates one renderer lane through
+`jasper-fanin`; selecting a non-AirPlay source also closes any lingering
+AirPlay session.
 Before mux moves the fan-in gate, it asks `VolumeCoordinator` to make the
 target source's volume carrier safe, so switching between push-volume
 sources (Spotify/Bluetooth) and Camilla-master sources (AirPlay/USB)
