@@ -619,10 +619,11 @@ didn't survive scrutiny.
 
 ### Hardware AEC, revisited
 
-> **Policy status: rejected by name.** [AGENTS.md](../AGENTS.md)
-> names "dual-USB-sink hardware-AEC retry" and "custom XVF firmware"
-> as paths not to propose. The notes below remain as historical
-> record of why the trade was costed and declined.
+> **Policy status for barge-in: still rejected by name.**
+> [AGENTS.md](../AGENTS.md) names "dual-USB-sink hardware-AEC retry"
+> and "custom XVF firmware" as paths not to propose. The wake-detection
+> chip-AEC carve-out in [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)
+> does not reopen hardware AEC as the barge-in architecture.
 
 The XVF3800's on-chip AEC was disabled deliberately
 ([HANDOFF-aec.md](HANDOFF-aec.md): the chip's AEC assumed the
@@ -633,21 +634,16 @@ chip AEC and solve barge-in cleanly. But the dongle was chosen
 for DAC quality; the chip's AIC3104 is meaningfully worse. Hard
 to imagine this trade landing as positive.
 
-The convergence question (does chip AEC actually adapt in the
-*current* dongle topology when fed a USB-IN reference signal?)
-has its own user-authorized carve-out, with a 2026-05-29 partial
-positive on ch0 but no corpus-ready decision: see
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) and the five
-`scripts/chip-aec-*.sh` scripts. They live on `main` as dormant
-infrastructure — production state is untouched until `bash
-scripts/chip-aec-setup.sh` runs; `chip-aec-teardown.sh` reverts.
-Not on the roadmap *for barge-in*; preserved so we don't have to
-re-derive the question if AEC3 ever plateaus. (Separately, the
-chip's fixed `150°`/`210°` ASR **beams** *are* now being promoted to
-opt-in wake-detection legs — a different use that rides the existing
-capture topology; see
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) +
-[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
+The convergence question (does chip AEC adapt in the current dongle
+topology when fed a USB-IN reference signal?) has its own
+user-authorized wake-detection carve-out. The 2026-05-29 result was
+positive for fixed `150°`/`210°` ASR beams, and that path is now an
+opt-in wake leg with outputd's direct final-output reference fanout
+and a bridge `:9876` repoint. This is deliberately narrower than
+barge-in: it scores "Jarvis" on chip beams; it does not solve
+assistant-speech cancellation, playout accounting, or conversational
+interruption. See [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)
+and [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md).
 §2.4. That promotion does **not** re-open the barge-in trade here.)
 **The barge-in carve-out is scoped to the convergence test only**: it
 does not re-open the codec-swap dismissal above, nor PipeWire
@@ -828,4 +824,4 @@ Internal cross-references (for the next reader):
 
 ---
 
-Last verified: 2026-05-29
+Last verified: 2026-05-31

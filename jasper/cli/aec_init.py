@@ -14,13 +14,14 @@ Three jobs:
      channels 0/1 become raw-ish mic feeds rather than beamformed /
      NS / AGC outputs. Software AEC3 (jasper-aec-bridge) handles echo
      cancellation host-side using the music chain as ref.
-     Wake-corpus chip-AEC comparison mode is the narrow exception:
-     the recorder sets `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1`, this
-     init unit applies and read-back verifies a volatile 150/210
-     fixed-beam chip profile, and the recorder tears that overlay down
-     when corpus test mode exits. Production init explicitly restores
-     the corpus-mutated chip mux/profile switches so exit does not
-     depend on rebooting the XVF.
+     Chip-AEC mode is the narrow exception: the wake toggle sets
+     `JASPER_AEC_CHIP_AEC_ENABLED=1` for production, while the recorder
+     sets `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1` for labeled corpus
+     comparison. In either mode this init unit applies and read-back
+     verifies a volatile 150/210 fixed-beam chip profile. Production
+     init explicitly restores the normal bypassed mux/profile switches
+     whenever those flags are absent so exit does not depend on
+     rebooting the XVF.
   2. Set `AEC_HPFONOFF` to apply a chip-side high-pass filter on
      the mic signals before any chip-side DSP. The mic feeds
      openWakeWord (fmin = 60 Hz per Google's speech_embedding
@@ -54,11 +55,12 @@ every REBOOT triggered a USB disconnect, which fired the
 REBOOT again. See docs/HANDOFF-aec.md "Lessons learned" #9.
 
 The historical boot-time `AUDIO_MGR_SYS_DELAY` calibration job is gone.
-Production does not use chip AEC, and corpus chip-AEC comparison mode
-sets its own volatile delay/profile from the recorder overlay. The 6-ch
-firmware exposes raw mics on channels 2-5; the bridge captures channel 1
-(ASR beam, with chip BF/NS/AGC/HPF applied) and runs WebRTC AEC3
-host-side for production.
+The default production path does not use chip AEC, and chip-AEC
+production/corpus modes set their own volatile delay/profile from env.
+The 6-ch firmware exposes raw mics on channels 2-5; in default
+production the bridge captures channel 1 as a raw-ish chip feed and runs
+WebRTC AEC3 host-side. In chip-AEC mode, the bridge captures channels
+0/1 as chip ASR beams and forwards them directly.
 """
 from __future__ import annotations
 
@@ -230,27 +232,36 @@ def main() -> int:
         # renumeration feedback loop with the controlC* udev rule.
         # See docs/HANDOFF-aec.md "Lessons learned" #9.
 
-        if _env_truthy("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"):
-            sys_delay = int(os.environ.get("JASPER_AEC_CORPUS_CHIP_SYS_DELAY", "12"))
+        corpus_chip_aec = _env_truthy("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")
+        production_chip_aec = _env_truthy("JASPER_AEC_CHIP_AEC_ENABLED")
+        if corpus_chip_aec or production_chip_aec:
+            mode = "corpus" if corpus_chip_aec else "chip_aec"
+            delay_env = (
+                "JASPER_AEC_CORPUS_CHIP_SYS_DELAY"
+                if corpus_chip_aec else "JASPER_AEC_CHIP_SYS_DELAY"
+            )
+            sys_delay = int(os.environ.get(delay_env, "12"))
             logger.info(
-                "applying chip-AEC corpus profile "
+                "applying chip-AEC %s profile "
                 "(fixed gated 150/210 ASR beams, sys_delay=%d)",
-                sys_delay,
+                mode, sys_delay,
             )
             try:
                 _apply_required_profile(dev, _corpus_profile_with_delay(sys_delay))
             except ChipProfileError as e:
-                logger.error("event=chip_profile_failed mode=corpus error=%s", e)
+                logger.error("event=chip_profile_failed mode=%s error=%s", mode, e)
                 return 1
             logger.info(
-                "event=chip_profile_applied mode=corpus "
-                "shf_bypass=0 op_l=7,0 op_r=7,1"
+                "event=chip_profile_applied mode=%s "
+                "shf_bypass=0 sys_delay=%d op_l=7,0 op_r=7,1",
+                mode, sys_delay,
             )
         else:
             # Disable the chip's on-board AEC. SHF_BYPASS=1 removes the
-            # AEC adaptive filter from the signal path on channels 0/1
-            # (beamforming, NS, AGC, HPF all stay). Software AEC3 in
-            # jasper-aec-bridge handles production echo cancellation.
+            # AEC adaptive filter from the signal path on channels 0/1.
+            # Empirically this bypasses the SHF post-processing path too,
+            # so channels 0/1 are raw-ish chip feeds; software AEC3 in
+            # jasper-aec-bridge handles default production cancellation.
             # Also restore the output mux and corpus-only beam/AEC
             # switches that wake-corpus mode writes. These commands are
             # volatile, but "exit corpus mode" must be deterministic

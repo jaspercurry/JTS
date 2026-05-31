@@ -14,6 +14,7 @@ ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 REASON="manual"
 CHECK_ONLY=0
+OUTPUTD_RESTART_NEEDED=0
 
 usage() {
     cat <<'EOF'
@@ -127,6 +128,15 @@ set_env_var() {
     mv "$tmp" "$file"
 }
 
+mark_outputd_restart_if_changed() {
+    local key="$1"
+    local desired="$2"
+    local current="${!key-}"
+    if [[ "$current" != "$desired" ]]; then
+        OUTPUTD_RESTART_NEEDED=1
+    fi
+}
+
 normalize_mode() {
     local mode="${1:-auto}"
     mode="$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
@@ -189,26 +199,33 @@ write_leg_env() {
     local leg_dtln="$3"
     local leg_chip_aec="$4"
     local raw_udp dtln_udp dtln_flag chip_150_udp chip_210_udp chip_flag
+    local ref_source outputd_chip_ref_pcm outputd_ref_target
+    local outputd_chip_ref_rate outputd_chip_ref_period outputd_chip_ref_buffer
+    local bridge_ref_host bridge_ref_port producer_was_active
+    producer_was_active=0
+    if [[ -n "${JASPER_OUTPUTD_CHIP_REF_PCM-}" || -n "${JASPER_OUTPUTD_REFERENCE_UDP_TARGET-}" ]]; then
+        producer_was_active=1
+    fi
     if [[ "$bridge_running" == "1" && "$leg_chip_aec" == "1" ]]; then
         # Chip-AEC production mode (Option-A): score the fixed 150°/210°
         # beams on :9887/:9888; the chip-AEC beam is forwarded into :9876
         # as the session/heartbeat carrier. raw/DTLN are NOT emitted by
         # the bridge in this mode, so clear them (single-chip exclusion).
         #
-        # NOTE (chip-AEC P2 — on-device follow-up, NOT wired yet):
-        # jasper-aec-init driving the chip into SHF_BYPASS=0 + the
-        # fixed-beam profile, and the bridge honoring
-        # JASPER_AEC_CHIP_AEC_ENABLED to do the :9876 repoint + the
-        # :9887/:9888 emit, are deferred until they can be validated on
-        # hardware. Until then, flipping JASPER_WAKE_LEG_CHIP_AEC=1
-        # leaves the chip legs unfed (inert) AND removes raw/DTLN — so it
-        # must not be enabled in production before the bridge half ships.
         chip_150_udp="udp:${AEC_UDP_PORT_CHIP_AEC_150}"
         chip_210_udp="udp:${AEC_UDP_PORT_CHIP_AEC_210}"
         chip_flag="1"
         raw_udp=""
         dtln_udp=""
         dtln_flag="0"
+        ref_source="outputd_udp"
+        bridge_ref_host="127.0.0.1"
+        bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
+        outputd_chip_ref_pcm="${OUTPUTD_CHIP_REF_PCM}"
+        outputd_ref_target="${bridge_ref_host}:${bridge_ref_port}"
+        outputd_chip_ref_rate="${OUTPUTD_CHIP_REF_SAMPLE_RATE}"
+        outputd_chip_ref_period="${OUTPUTD_CHIP_REF_PERIOD_FRAMES}"
+        outputd_chip_ref_buffer="${OUTPUTD_CHIP_REF_BUFFER_FRAMES}"
     elif [[ "$bridge_running" == "1" ]]; then
         # Software-leg mode (today's default): raw/DTLN as configured,
         # chip beams cleared.
@@ -227,6 +244,14 @@ write_leg_env() {
         chip_150_udp=""
         chip_210_udp=""
         chip_flag="0"
+        ref_source="alsa"
+        bridge_ref_host="127.0.0.1"
+        bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
+        outputd_chip_ref_pcm=""
+        outputd_ref_target=""
+        outputd_chip_ref_rate="${OUTPUTD_CHIP_REF_SAMPLE_RATE}"
+        outputd_chip_ref_period="${OUTPUTD_CHIP_REF_PERIOD_FRAMES}"
+        outputd_chip_ref_buffer="${OUTPUTD_CHIP_REF_BUFFER_FRAMES}"
     else
         raw_udp=""
         dtln_udp=""
@@ -234,6 +259,14 @@ write_leg_env() {
         chip_150_udp=""
         chip_210_udp=""
         chip_flag="0"
+        ref_source="alsa"
+        bridge_ref_host="127.0.0.1"
+        bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
+        outputd_chip_ref_pcm=""
+        outputd_ref_target=""
+        outputd_chip_ref_rate="${OUTPUTD_CHIP_REF_SAMPLE_RATE}"
+        outputd_chip_ref_period="${OUTPUTD_CHIP_REF_PERIOD_FRAMES}"
+        outputd_chip_ref_buffer="${OUTPUTD_CHIP_REF_BUFFER_FRAMES}"
     fi
     set_env_var "$ENV_FILE" JASPER_MIC_DEVICE_RAW "$raw_udp"
     set_env_var "$ENV_FILE" JASPER_MIC_DEVICE_DTLN "$dtln_udp"
@@ -241,6 +274,22 @@ write_leg_env() {
     set_env_var "$ENV_FILE" JASPER_MIC_DEVICE_CHIP_AEC_150 "$chip_150_udp"
     set_env_var "$ENV_FILE" JASPER_MIC_DEVICE_CHIP_AEC_210 "$chip_210_udp"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ENABLED "$chip_flag"
+    set_env_var "$ENV_FILE" JASPER_AEC_REF_SOURCE "$ref_source"
+    set_env_var "$ENV_FILE" JASPER_AEC_OUTPUTD_REF_UDP_HOST "$bridge_ref_host"
+    set_env_var "$ENV_FILE" JASPER_AEC_OUTPUTD_REF_UDP_PORT "$bridge_ref_port"
+
+    mark_outputd_restart_if_changed JASPER_OUTPUTD_CHIP_REF_PCM "$outputd_chip_ref_pcm"
+    mark_outputd_restart_if_changed JASPER_OUTPUTD_REFERENCE_UDP_TARGET "$outputd_ref_target"
+    if [[ "$chip_flag" == "1" || "$producer_was_active" == "1" ]]; then
+        mark_outputd_restart_if_changed JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE "$outputd_chip_ref_rate"
+        mark_outputd_restart_if_changed JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES "$outputd_chip_ref_period"
+        mark_outputd_restart_if_changed JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES "$outputd_chip_ref_buffer"
+    fi
+    set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_PCM "$outputd_chip_ref_pcm"
+    set_env_var "$ENV_FILE" JASPER_OUTPUTD_REFERENCE_UDP_TARGET "$outputd_ref_target"
+    set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE "$outputd_chip_ref_rate"
+    set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES "$outputd_chip_ref_period"
+    set_env_var "$ENV_FILE" JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES "$outputd_chip_ref_buffer"
 }
 
 card_id_from_spec() {
@@ -399,6 +448,13 @@ restart_voice() {
     run_systemctl restart jasper-voice.service
 }
 
+restart_outputd_if_needed() {
+    if [[ "$OUTPUTD_RESTART_NEEDED" == "1" ]]; then
+        reset_failed_units jasper-outputd.service
+        run_systemctl restart jasper-outputd.service
+    fi
+}
+
 stop_voice() {
     run_systemctl stop jasper-voice.service
     reset_failed_units jasper-voice.service
@@ -417,6 +473,11 @@ AEC_UDP_PORT_RAW="${JASPER_AEC_UDP_PORT_RAW:-9877}"
 AEC_UDP_PORT_DTLN="${JASPER_AEC_UDP_PORT_DTLN:-9878}"
 AEC_UDP_PORT_CHIP_AEC_150="${JASPER_AEC_UDP_PORT_CHIP_AEC_150:-9887}"
 AEC_UDP_PORT_CHIP_AEC_210="${JASPER_AEC_UDP_PORT_CHIP_AEC_210:-9888}"
+AEC_OUTPUTD_REF_UDP_PORT="${JASPER_AEC_OUTPUTD_REF_UDP_PORT:-9891}"
+OUTPUTD_CHIP_REF_PCM="${JASPER_OUTPUTD_CHIP_REF_PCM:-plughw:CARD=Array,DEV=0}"
+OUTPUTD_CHIP_REF_SAMPLE_RATE="${JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE:-16000}"
+OUTPUTD_CHIP_REF_PERIOD_FRAMES="${JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES:-320}"
+OUTPUTD_CHIP_REF_BUFFER_FRAMES="${JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES:-1280}"
 UDP_DEVICE="udp:${AEC_UDP_PORT}"
 split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-$AEC_MIC_DEVICE}"
 CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
@@ -454,12 +515,14 @@ if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
     log "custom JASPER_MIC_DEVICE=${CURRENT_MIC}; leaving voice config untouched"
     stop_disable_aec
     write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+    restart_outputd_if_needed
     exit 0
 fi
 
 if [[ "$AEC_MODE" == "disabled" ]]; then
     stop_disable_aec
     write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+    restart_outputd_if_needed
     if [[ -n "$PRESENT_MIC" ]]; then
         if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
             set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"
@@ -489,6 +552,7 @@ if aec_ready "$AEC_MIC_DEVICE"; then
         log "6-channel ${AEC_MIC_DEVICE} present; AEC UDP mic already selected"
     fi
     write_leg_env "1" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+    restart_outputd_if_needed
     enable_start_aec
     restart_voice
     exit 0
@@ -496,6 +560,7 @@ fi
 
 stop_disable_aec
 write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+restart_outputd_if_needed
 if [[ -n "$PRESENT_MIC" ]]; then
     if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"

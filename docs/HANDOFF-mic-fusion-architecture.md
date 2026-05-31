@@ -396,10 +396,10 @@ via a precedence ladder:**
 
 The session-source plumbing rides the capture-profile work (Phase 2,
 since it selects among profile-declared streams); the chip-AEC leg
-promotion is its first real exercise — its session-source decision (keep
-`:9876` as the session/heartbeat carrier and forward the chip beam into
-it, rather than double-AEC the `on` leg) is scoped in the chip-AEC
-promotion plan.
+promotion is its first real exercise. Its session-source decision is now
+concrete: keep `:9876` as the session/heartbeat carrier and forward the
+selected chip beam into it, rather than double-AEC the `on` leg. The two
+beam scoring legs stay on `:9887` / `:9888`.
 
 ### 2.8 Liveness heartbeat — decoupled from both wake and session
 

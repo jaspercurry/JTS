@@ -590,14 +590,14 @@ section (the "L is auto-select beam, R is Silence" baseline).
 bridge consumes XVF capture channel 1 (`MIC_CHANNEL_INDEX = 1`), so
 `jasper-aec-init` writes and read-back verifies OP_L=`(8, 0)` and
 OP_R=`(8, 0)`. Leaving OP_R at the Seeed default `OP_R=(0, 0)` mutes
-the bridge input. The wake-corpus chip-AEC comparison profile is the
-narrow exception: while corpus test mode owns
-`/var/lib/jasper/wake_corpus_bridge.env`, `jasper-aec-init`
-temporarily writes and read-back verifies OP_L=`(7, 0)` and
-OP_R=`(7, 1)` to expose the fixed-gated 150°/210° ASR outputs as
-corpus-only capture legs. Exiting corpus test mode removes that overlay
-and re-runs the production init, which explicitly restores OP_L=`(8, 0)`
-and OP_R=`(8, 0)`.
+the bridge input. Chip-AEC mode is the narrow exception: when the
+production wake toggle sets `JASPER_AEC_CHIP_AEC_ENABLED=1`, or when
+corpus test mode sets `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1`,
+`jasper-aec-init` temporarily writes and read-back verifies
+OP_L=`(7, 0)` and OP_R=`(7, 1)` to expose the fixed-gated 150°/210°
+ASR outputs. Turning chip-AEC off, or exiting corpus test mode, re-runs
+the normal production init, which explicitly restores OP_L=`(8, 0)` and
+OP_R=`(8, 0)`.
 
 **These commands address slots 0/1 only.** There is no
 `AUDIO_MGR_OP_2` / `_OP_3` / `_OP_4` / `_OP_5` — the routing for
@@ -1438,4 +1438,4 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-05-31 (production OP_R non-silent routing plus corpus-only chip-AEC routing restore/readback rechecked)
+Last verified: 2026-05-31 (production OP_R non-silent routing plus production/corpus chip-AEC routing restore/readback rechecked)

@@ -1,11 +1,12 @@
 [Unit]
 Description=Software AEC bridge — WebRTC AEC3 cancels speaker echo from XVF raw mic
 # Captures from pcm.jasper_capture (host-clocked dsnoop on the
-# renderer→camilla loopback, the AEC reference) AND from
-# hw:CARD=Array,DEV=0 channel 1 (ASR beam, exposed by 6-ch
-# firmware variant 2.0.8). Outputs the AEC'd mono mic over UDP to
-# 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876) for jasper-voice to
-# receive via UdpMicCapture (JASPER_MIC_DEVICE=udp:9876).
+# renderer→camilla loopback, the default software-AEC reference) AND
+# from hw:CARD=Array,DEV=0 channel 1 on the 6-ch firmware. In opt-in
+# chip-AEC mode, the reference comes from outputd's UDP final-speaker
+# tap and the bridge forwards a chip ASR beam to
+# 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876) instead of running
+# WebRTC AEC3.
 #
 # Historical note: this used to write to a second snd-aloop card
 # (LoopbackAEC) that jasper-voice read via PortAudio. Replaced
@@ -19,11 +20,10 @@ Description=Software AEC bridge — WebRTC AEC3 cancels speaker echo from XVF ra
 # come from /etc/jasper/jasper.env — see docs/HANDOFF-aec.md
 # "Tuning findings" for the chosen production values.
 #
-# REPLACES the previous CamillaDSP-based bridge that was trying to
-# feed the XVF chip's USB-IN as far-end reference. The chip's AEC
-# turned out to be architecturally incompatible with our external-
-# DAC topology — see jasper/cli/aec_bridge.py header for the
-# detailed analysis.
+# REPLACES the previous CamillaDSP-based bridge. The default production
+# path is WebRTC AEC3; the user-authorized chip-AEC carve-out is narrow
+# and opt-in, with outputd owning the XVF USB-IN reference producer.
+# See jasper/cli/aec_bridge.py and docs/CHIP-AEC-EXPERIMENT.md.
 After=jasper-fanin.service jasper-camilla.service jasper-aec-init.service sound.target
 Requires=jasper-camilla.service
 # `Wants=` so init runs whenever bridge starts (init is a one-shot
