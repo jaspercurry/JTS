@@ -3539,6 +3539,8 @@ def check_web_design_assets() -> CheckResult:
         web_root / "assets" / "system-status" / "js" / "main.js",
         web_root / "assets" / "sound-profile" / "sound.css",
         web_root / "assets" / "sound-profile" / "js" / "main.js",
+        web_root / "assets" / "correction" / "correction.css",
+        web_root / "assets" / "correction" / "js" / "main.js",
         web_root / "assets" / "shared" / "js" / "dialog.js",
     )
     missing = [str(p.relative_to(web_root)) for p in required if not p.is_file()]

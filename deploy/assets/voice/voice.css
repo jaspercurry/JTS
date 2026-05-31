@@ -1,0 +1,144 @@
+/* voice.css — page-specific styles for /voice/ (the voice-provider wizard).
+ *
+ * Only the visuals the shared /assets/app.css doesn't already cover live here:
+ * the active-provider radio group, the provider-card header row, the
+ * collapsible pricing-rate disclosures, and the monospace research-prompt
+ * textareas. Everything else (.page, .info-card, .field, .form-actions,
+ * .form-hint, .badge, .btn--*, .banner, .eyebrow, .section) comes from
+ * app.css. This file adds classes only — it defines no :root tokens and reads
+ * the shared design tokens so it re-skins with the rest of the system.
+ *
+ * Loaded via canonical_page(page_css_href="/assets/voice/voice.css"), served
+ * static by nginx from /assets/ and cache-busted by the build SHA. */
+
+/* Active-provider chooser ------------------------------------------------- */
+/* A radio per provider, laid out as a tappable row. The whole <label> is the
+ * hit target (the native radio sits inside it). Disabled rows (no API key yet)
+ * are dimmed with a dashed border so it's clear they can't be selected. */
+.active-group {
+  gap: 0.4rem;
+}
+
+.provider-radio {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.provider-radio:hover {
+  border-color: color-mix(in oklch, var(--primary) 45%, var(--border));
+}
+
+.provider-radio input[type="radio"] {
+  flex: none;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.provider-radio.is-disabled {
+  cursor: not-allowed;
+  border-style: dashed;
+  background: color-mix(in oklch, var(--muted) 8%, transparent);
+  color: var(--muted);
+}
+
+.provider-radio__name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.provider-radio__price {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.provider-radio__status {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Provider cards ---------------------------------------------------------- */
+/* Title + vendor eyebrow on the left, status badge pinned to the right. */
+.provider-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.provider-card__head .section__title {
+  font-size: 1.05rem;
+}
+
+/* Collapsible disclosures (pricing editor, research prompt) --------------- */
+/* app.css ships no shared <details> component, so the wizard styles its own
+ * here. A card-style summary with a caret that rotates on open; the body sits
+ * just below in a recessed panel. Scoped to .pricing-disclosure so it can't
+ * collide with any future shared disclosure primitive. */
+.pricing-disclosure {
+  margin-block-start: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.pricing-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.6rem 0.8rem;
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--foreground);
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pricing-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pricing-disclosure > summary::before {
+  content: "▸";
+  color: var(--muted);
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.pricing-disclosure[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.pricing-disclosure > .pricing-disclosure__body {
+  padding: 0 0.8rem 0.8rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.price-model {
+  display: grid;
+  gap: 0.5rem;
+  padding-block-start: 0.5rem;
+  border-block-start: 1px solid var(--border);
+}
+
+/* The research-prompt + paste-back textareas: full width, monospace. */
+.prompt-box {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pricing-disclosure > summary::before {
+    transition: none;
+  }
+}

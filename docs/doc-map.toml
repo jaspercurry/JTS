@@ -577,6 +577,7 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-management-ui.md",
+  "docs/HANDOFF-canonical-ui-migration.md",
 ]
 requires_docs_when = [
   "The shared page shell (canonical_page), the design tokens or shared components in app.css, the static ES-module delivery convention, or the /assets static-asset routing changes.",

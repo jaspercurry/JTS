@@ -39,11 +39,9 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ._common import (
-    NAV_BACK_CSS,
-    NAV_BACK_HTML,
     begin_request,
-    csrf_fetch_helpers_js,
-    csrf_meta_html,
+    canonical_header,
+    canonical_page,
     reject_csrf,
     send_html_response,
     verify_csrf,
@@ -182,109 +180,58 @@ def _read_pi_ssid() -> str:
 # ============================================================
 # HTML rendering
 # ============================================================
-
-
-_PAGE_STYLE = """
-  body { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-         max-width: 620px; margin: 2em auto; padding: 0 1em; color: #222; }
-  h1 { margin-bottom: 0.25em; } h2 { margin-top: 2em; }
-  .sub { color: #666; margin-top: 0; }
-  .msg { background: #e8f4ff; border: 1px solid #abd; padding: 0.6em 0.8em;
-          border-radius: 6px; margin: 1em 0; }
-  .err { background: #ffe8e8; border-color: #d99; }
-  .ok  { background: #e8ffec; border-color: #9c9; }
-  button, a.btn {
-    background: #1db954; color: white; border: 0;
-    padding: 0.6em 1.2em; border-radius: 4px; font-size: 1em;
-    cursor: pointer; text-decoration: none; display: inline-block;
-  }
-  button[disabled] { background: #bbb; cursor: not-allowed; }
-  button.secondary, a.btn.secondary { background: #4a4a4a; }
-  button:hover:not([disabled]), a.btn:hover { filter: brightness(1.1); }
-  .device-card {
-    background: #f4f4f4; padding: 0.8em 1em; border-radius: 6px;
-    margin: 0.6em 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.95em;
-  }
-  .device-card .port { font-weight: 600; color: #1a6; }
-  .device-card .meta { color: #666; font-size: 0.85em; margin-top: 0.3em; }
-  .fw-banner { padding: 0.6em 0.8em; border-radius: 6px; margin: 1em 0;
-               font-size: 0.92em; }
-  .fw-banner.ok { background: #e8ffec; border: 1px solid #9c9; color: #2a5a2a; }
-  .fw-banner.warn { background: #fff6e0; border: 1px solid #d9b97a; color: #6a4a14; }
-  .fw-banner code { background: rgba(0,0,0,0.06); padding: 0 0.25em;
-                    border-radius: 3px; font-size: 0.95em; }
-  .fw-banner pre { background: #1e1e1e; color: #ddd; padding: 0.6em;
-                   border-radius: 4px; font-size: 0.85em; margin: 0.5em 0 0 0; }
-  .spinner {
-    display: inline-block; width: 1em; height: 1em;
-    border: 2px solid #ddd; border-top-color: #1db954;
-    border-radius: 50%; animation: spin 0.8s linear infinite;
-    vertical-align: middle; margin-right: 0.4em;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  pre { background: #1e1e1e; color: #ddd; padding: 0.8em; border-radius: 6px;
-        overflow-x: auto; font-size: 0.85em; }
-""" + NAV_BACK_CSS
-
-
-def _wrap_page(title: str, body: str, csrf_token: str = "") -> bytes:
-    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(title)}</title>
-<style>{_PAGE_STYLE}</style>
-</head>
-<body>
-{csrf}
-{NAV_BACK_HTML}
-<h1>{html.escape(title)}</h1>
-{body}
-</body>
-</html>""".encode()
+#
+# Migrated to the canonical design system (canonical_page + app.css). The
+# landing page is a static server-rendered card (no JS); the setup page's
+# scan/provision behaviour ships as the ES module /assets/dial/js/main.js,
+# which reads the CSRF token from the <meta name="jts-csrf"> tag
+# canonical_page() emits. Page-specific styling lives in /assets/dial/dial.css.
 
 
 def _landing_html(csrf_token: str = "") -> bytes:
-    body = """
-<p class="sub">JTS supports a small family of wireless accessories. This
-page can onboard an ELECROW CrowPanel ESP32-S3 <strong>rotary
-dial</strong> — volume, play/pause, hold-to-talk. A web onboarding
-flow for the Waveshare AMOLED touch satellite is in progress; for
-now that one is onboarded from the Pi shell with
-<code>jasper-satellite-onboard</code>.</p>
+    body = f"""
+{canonical_header("Accessories")}
+<main class="page">
+  <p class="form-hint">JTS supports a small family of wireless accessories. This
+  page can onboard an ELECROW CrowPanel ESP32-S3 <strong>rotary
+  dial</strong> — volume, play/pause, hold-to-talk. A web onboarding
+  flow for the Waveshare AMOLED touch satellite is in progress; for
+  now that one is onboarded from the Pi shell with
+  <code>jasper-satellite-onboard</code>.</p>
 
-<h2>Onboard a rotary dial</h2>
+  <div class="info-card">
+    <h2 class="section__title">Onboard a rotary dial</h2>
+    <ol class="form-hint">
+      <li>Plug the dial into a USB-C port on the JTS Pi.</li>
+      <li>Tap <strong>Continue</strong> below — the next page detects the
+      device and lets you flash + provision it with the Pi's WiFi.</li>
+      <li>Once it's online, unplug from the Pi and connect to USB power.
+      The dial reconnects to WiFi from flash on every subsequent boot.</li>
+    </ol>
+    <div class="form-actions">
+      <a class="btn btn--primary" href="setup">Continue</a>
+    </div>
+  </div>
 
-<ol>
-  <li>Plug the dial into a USB-C port on the JTS Pi.</li>
-  <li>Click <strong>Continue</strong> below — the next page detects the
-  device and lets you flash + provision it with the Pi's WiFi.</li>
-  <li>Once it's online, unplug from the Pi and connect to USB power.
-  The dial reconnects to WiFi from flash on every subsequent boot.</li>
-</ol>
-
-<p style="margin-top: 2em;"><a class="btn" href="setup">Continue</a></p>
-
-<p class="sub" style="margin-top: 3em; font-size: 0.85em;">
-This wizard runs <code>jasper-dial-onboard</code> behind the scenes —
-the same CLI tool also works directly from the Pi shell if you
-prefer.</p>
+  <p class="form-hint">This wizard runs <code>jasper-dial-onboard</code> behind
+  the scenes — the same CLI tool also works directly from the Pi shell if you
+  prefer.</p>
+</main>
 """
-    return _wrap_page("Accessories", body, csrf_token)
+    return canonical_page("Accessories", body, csrf_token=csrf_token)
 
 
-def _setup_html(
-    *, ssid: str, firmware: dict[str, Any], csrf_token: str = "",
-) -> bytes:
-    ssid_disp = html.escape(ssid) if ssid else "(unknown — check Pi WiFi)"
+def _firmware_banner_html(firmware: dict[str, Any]) -> str:
+    """Render the firmware-freshness banner for the setup page. Three states,
+    mirroring _read_firmware_status(): present + source-newer (warn), present +
+    up-to-date (ok), and not staged (warn). The state machine is unchanged from
+    the legacy page; only the wrapper class moved to the canonical .fw-banner
+    surface (tone driven by --status-ok / --status-warn in dial.css)."""
     if firmware["present"]:
         size_kb = (firmware["size_bytes"] or 0) // 1024
         if firmware.get("source_newer"):
             source_mtime = html.escape(firmware.get("source_mtime_iso") or "unknown")
-            fw_banner = (
+            return (
                 f'<div class="fw-banner warn">'
                 f'<strong>Firmware staged, but source is newer.</strong> '
                 f'Force Flash will use <code>{html.escape(firmware["path"])}</code> '
@@ -294,151 +241,53 @@ def _setup_html(
                 f'bash /opt/jasper/firmware/dial/build.sh</pre>'
                 f'</div>'
             )
-        else:
-            fw_banner = (
-                f'<div class="fw-banner ok">'
-                f'<strong>Firmware ready to flash:</strong> '
-                f'<code>{html.escape(firmware["path"])}</code> '
-                f'({size_kb} KB, built {html.escape(firmware["mtime_iso"])})'
-                f'</div>'
-            )
-    else:
-        fw_banner = (
-            '<div class="fw-banner warn">'
-            '<strong>No firmware staged.</strong> '
-            'Force Flash will not flash anything until <code>jasper-dial.bin</code> '
-            'is built. JTS skips optional accessory firmware builds during '
-            'base speaker installs; run once on the Pi (SSH in as <code>pi</code>):'
-            '<pre>sudo /opt/jasper/.venv/bin/pip install platformio\n'
-            'bash /opt/jasper/firmware/dial/build.sh</pre>'
-            'then reload this page. (PlatformIO pulls ~300-500 MB of ESP32 '
-            'toolchain on first run, so we only install it when you ask.)'
-            '</div>'
+        return (
+            f'<div class="fw-banner ok">'
+            f'<strong>Firmware ready to flash:</strong> '
+            f'<code>{html.escape(firmware["path"])}</code> '
+            f'({size_kb} KB, built {html.escape(firmware["mtime_iso"])})'
+            f'</div>'
         )
+    return (
+        '<div class="fw-banner warn">'
+        '<strong>No firmware staged.</strong> '
+        'Force Flash will not flash anything until <code>jasper-dial.bin</code> '
+        'is built. JTS skips optional accessory firmware builds during '
+        'base speaker installs; run once on the Pi (SSH in as <code>pi</code>):'
+        '<pre>sudo /opt/jasper/.venv/bin/pip install platformio\n'
+        'bash /opt/jasper/firmware/dial/build.sh</pre>'
+        'then reload this page. (PlatformIO pulls ~300-500 MB of ESP32 '
+        'toolchain on first run, so we only install it when you ask.)'
+        '</div>'
+    )
+
+
+def _setup_html(
+    *, ssid: str, firmware: dict[str, Any], csrf_token: str = "",
+) -> bytes:
+    ssid_disp = html.escape(ssid) if ssid else "(unknown — check Pi WiFi)"
+    fw_banner = _firmware_banner_html(firmware)
 
     body = f"""
-<p class="sub">Plug a rotary dial into the Pi's USB-C port. As soon as
-it's detected we'll show you the option to provision it onto the Pi's
-WiFi network ({ssid_disp}).</p>
+{canonical_header("Onboard a Rotary Dial", back_href=".", back_label="Accessories")}
+<main class="page">
+  <p class="form-hint">Plug a rotary dial into the Pi's USB-C port. As soon as
+  it's detected we'll show you the option to provision it onto the Pi's
+  WiFi network ({ssid_disp}).</p>
 
-{fw_banner}
+  {fw_banner}
 
-<div id="status"><span class="spinner"></span>Scanning for a device…</div>
-<div id="devices"></div>
-<div id="result"></div>
-
-<p style="margin-top: 2em;"><a class="btn secondary" href=".">← Back</a></p>
-
-<script>
-const statusEl = document.getElementById('status');
-const devicesEl = document.getElementById('devices');
-const resultEl = document.getElementById('result');
-let pollTimer = null;
-let lastDevices = [];
-let busy = false;
-{csrf_fetch_helpers_js()}
-
-async function scan() {{
-  if (busy) return;
-  try {{
-    const r = await fetch('scan', {{ cache: 'no-store' }});
-    const data = await r.json();
-    render(data.devices || []);
-  }} catch (e) {{
-    console.warn('scan failed', e);
-  }}
-}}
-
-function render(devices) {{
-  if (devices.length === lastDevices.length &&
-      devices.every((d, i) => d.port === (lastDevices[i] && lastDevices[i].port))) {{
-    return; // no change
-  }}
-  lastDevices = devices;
-  if (devices.length === 0) {{
-    statusEl.innerHTML = '<span class="spinner"></span>Waiting for a USB device…';
-    devicesEl.innerHTML = '';
-    return;
-  }}
-  statusEl.textContent = devices.length + ' device(s) detected:';
-  devicesEl.innerHTML = devices.map(d => `
-    <div class="device-card">
-      <div class="port">${{escapeHtml(d.port)}}</div>
-      <div class="meta">
-        VID ${{escapeHtml(d.vid)}} · PID ${{escapeHtml(d.pid)}} · Serial ${{escapeHtml(d.serial || '(none)')}}<br>
-        ${{escapeHtml(d.description)}}
-      </div>
-      <p style="margin-top: 0.8em;">
-        <button data-action="provision" data-port="${{escapeHtml(d.port)}}" data-force="false">Provision (smart)</button>
-        <button class="secondary" data-action="provision" data-port="${{escapeHtml(d.port)}}" data-force="true">Force flash + provision</button>
-      </p>
-      <p class="sub" style="margin-top: 0.4em; font-size: 0.85em;">
-        <strong>Smart</strong> probes the device first — if it's already
-        running JTS firmware, only the WiFi creds get pushed (no flash).
-        Use <strong>Force</strong> only if the device is stuck or you
-        want to bring an unflashed ESP32-S3 onto JTS.
-      </p>
-    </div>
-  `).join('');
-}}
-
-devicesEl.addEventListener('click', function(e) {{
-  const btn = e.target.closest('button[data-action="provision"]');
-  if (!btn) return;
-  provision(btn.dataset.port || '', btn.dataset.force === 'true');
-}});
-
-async function provision(port, force) {{
-  if (busy) return;
-  busy = true;
-  // Stop polling while we run — the onboard call will reset the chip,
-  // and the polling loop would interfere.
-  clearInterval(pollTimer);
-  resultEl.innerHTML = '<div class="msg"><span class="spinner"></span>Provisioning ' + escapeHtml(port) + '…<br><small>This can take 30-90 seconds. Don\\'t unplug.</small></div>';
-  try {{
-    const r = await fetch('onboard', {{
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: JSON.stringify({{ port: port, force_flash: force }}),
-    }});
-    const data = await r.json();
-    if (data.ok) {{
-      resultEl.innerHTML = `
-        <div class="msg ok">
-          <strong>Done.</strong> ${{data.message || 'Dial is online.'}}
-          <p style="margin: 0.4em 0 0 0;"><small>You can unplug from the Pi now and connect to USB power.</small></p>
-        </div>
-        ${{data.log ? '<details><summary>Show log</summary><pre>' + escapeHtml(data.log) + '</pre></details>' : ''}}
-      `;
-    }} else {{
-      resultEl.innerHTML = `
-        <div class="msg err">
-          <strong>Failed.</strong> ${{escapeHtml(data.error || 'Unknown error')}}
-        </div>
-        ${{data.log ? '<details open><summary>Log</summary><pre>' + escapeHtml(data.log) + '</pre></details>' : ''}}
-      `;
-    }}
-  }} catch (e) {{
-    resultEl.innerHTML = '<div class="msg err">Request failed: ' + escapeHtml(String(e)) + '</div>';
-  }} finally {{
-    busy = false;
-    // Resume polling so the user can onboard another dial without
-    // reloading the page.
-    pollTimer = setInterval(scan, 2000);
-  }}
-}}
-
-function escapeHtml(s) {{
-  return String(s).replace(/[&<>"']/g, c => ({{
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }})[c]);
-}}
-
-scan();
-pollTimer = setInterval(scan, 2000);
-</script>
+  <div id="status"><span class="spinner"></span>Scanning for a device…</div>
+  <div id="devices"></div>
+  <div id="result"></div>
+</main>
+<script type="module" src="/assets/dial/js/main.js"></script>
 """
-    return _wrap_page("Onboard a Rotary Dial", body, csrf_token)
+    return canonical_page(
+        "Onboard a Rotary Dial", body,
+        csrf_token=csrf_token,
+        page_css_href="/assets/dial/dial.css",
+    )
 
 
 # ============================================================

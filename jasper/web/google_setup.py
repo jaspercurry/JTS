@@ -23,6 +23,15 @@ Routes (paths the app sees AFTER nginx strips the /google/ prefix):
                             display name, redirect back to /
   POST /remove              remove an account by name
   POST /default             change the default account
+
+Presentation: this page renders through the canonical design system
+(`canonical_page` + `canonical_header` + `canonical_banner`,
+`/assets/app.css`, page CSS at `/assets/google/google.css`). All page
+behaviour — the setup-wizard progress tracker, the copy-to-clipboard
+buttons, the Client-ID reveal, and the destructive-action confirms —
+lives in the ES module `/assets/google/js/main.js`; there is no inline
+`<script>` here. The forms stay server-rendered request/response, same
+as before the restyle.
 """
 from __future__ import annotations
 
@@ -46,8 +55,10 @@ from ..google_creds import (
     save_token,
 )
 from ._common import (
-    PAGE_STYLE,
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
     delete_env_file,
     read_env_file,
@@ -57,11 +68,17 @@ from ._common import (
     send_html_response,
     send_see_other,
     verify_csrf,
-    wrap_page,
     write_env_file,
 )
 
 logger = logging.getLogger(__name__)
+
+# Page-specific stylesheet served from /assets/google/google.css. App.css
+# carries the shared tokens/primitives (.page, .info-card, .deflist,
+# .badge, .field, .form-actions, .form-hint, .btn--*); google.css adds
+# only what's unique to this wizard (the account list, the multi-step
+# setup walkthrough, callouts, and the copy-row widget).
+_PAGE_CSS_HREF = "/assets/google/google.css"
 
 
 # Persisted CLIENT_ID/SECRET. Same shape as spotify_credentials.env so
@@ -124,243 +141,36 @@ def _restart_voice_daemon() -> None:
 
 # ----------------------------------------------------------------------
 # HTML rendering.
+#
+# Each of the three states (`_setup_wizard_html`, `_redirect_uri_page_html`,
+# `_management_html`) builds its body string and wraps it via
+# `_render_page`, which emits the canonical shell + header + flash banner
+# + the page's ES module. Page behaviour is in /assets/google/js/main.js.
 # ----------------------------------------------------------------------
 
 
-_GOOGLE_PAGE_STYLE = PAGE_STYLE + """
-  /* Account list — same shape as Spotify's account cards but
-     simpler (no inline playlist management). */
-  ul.accounts { list-style: none; padding: 0; }
-  ul.accounts li {
-    background: #f4f4f4; padding: 0.7em 0.9em;
-    border-radius: 6px; margin-bottom: 0.5em;
-    display: flex; align-items: center; gap: 0.6em;
-    flex-wrap: wrap;
-  }
-  ul.accounts li .name { font-weight: 600; }
-  ul.accounts li .email {
-    color: #666; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.9em;
-  }
-  ul.accounts li .badge {
-    background: #4a8; color: white; padding: 0.1em 0.5em;
-    border-radius: 4px; font-size: 0.8em;
-  }
-  ul.accounts li .actions {
-    margin-left: auto; display: flex; gap: 0.4em;
-  }
-  ul.accounts li .actions form { margin: 0; }
-  ul.accounts li .actions button {
-    padding: 0.3em 0.7em; font-size: 0.85em;
-  }
+def _render_page(title: str, body: str, *, csrf_token: str, status_msg: str = "") -> bytes:
+    """Wrap a state's body in the canonical document shell.
 
-  /* ---- multi-step wizard (state 1: no creds yet) ---- */
-  ol.wizard-steps {
-    list-style: none; padding: 0; margin: 1.4em 0;
-  }
-  li.wizard-step {
-    background: #fff; border: 1px solid #d8d8d8;
-    border-radius: 7px; margin-bottom: 0.7em;
-    overflow: hidden;
-    transition: border-color 0.15s ease, background 0.15s ease;
-  }
-  li.wizard-step.done {
-    background: #f4faf4; border-color: #cde6cd;
-  }
-  li.wizard-step.active {
-    border-color: #1db954; box-shadow: 0 0 0 1px #1db954;
-  }
-  li.wizard-step > details > summary {
-    list-style: none;
-    cursor: pointer; user-select: none; -webkit-user-select: none;
-    padding: 0.85em 1em;
-    display: flex; align-items: center; gap: 0.8em;
-    font-weight: 600; font-size: 1.04em;
-  }
-  li.wizard-step > details > summary::-webkit-details-marker { display: none; }
-  li.wizard-step > details > summary::after {
-    content: "▸"; color: #999; font-size: 0.9em;
-    transition: transform 0.15s ease;
-    margin-left: auto;
-  }
-  li.wizard-step > details[open] > summary::after { transform: rotate(90deg); }
-  .step-num {
-    display: inline-flex; width: 1.85em; height: 1.85em;
-    border-radius: 50%; background: #ddd; color: #444;
-    font-size: 0.85em; font-weight: 700;
-    align-items: center; justify-content: center;
-    flex-shrink: 0;
-  }
-  li.wizard-step.done .step-num { background: #4a8; color: white; }
-  li.wizard-step.active .step-num { background: #1db954; color: white; }
-  li.wizard-step.done .step-num::before { content: "✓"; }
-  li.wizard-step.done .step-num span { display: none; }
-  .step-title { flex: 1; }
-  .step-status {
-    font-weight: 400; font-size: 0.85em; color: #888;
-    font-variant-numeric: tabular-nums;
-  }
-  li.wizard-step.done .step-status { color: #4a8; }
-  li.wizard-step.done .step-status::before { content: "done — "; }
-  .step-body {
-    padding: 0 1em 1em 1em;
-  }
-  .step-body h3 {
-    font-size: 0.98em; margin: 1.1em 0 0.2em;
-    color: #444; text-transform: uppercase; letter-spacing: 0.04em;
-  }
-  .step-body p { margin: 0.45em 0; }
-  .step-body ol, .step-body ul {
-    padding-left: 1.4em; margin: 0.5em 0;
-  }
-  .step-body li { margin-bottom: 0.35em; }
-  .step-body code {
-    background: #fafafa; border: 1px solid #e0e0e0;
-    border-radius: 3px; padding: 0.05em 0.4em;
-    font-size: 0.92em;
-  }
-  button.mark-done {
-    margin-top: 1.1em; background: #1db954; color: white;
-  }
-  li.wizard-step.done button.mark-done { display: none; }
-
-  /* Callout box for important gotchas inside step bodies. */
-  .callout {
-    background: #fff8e1; border-left: 4px solid #ffb300;
-    padding: 0.7em 0.9em; margin: 0.9em 0;
-    border-radius: 0 6px 6px 0;
-    font-size: 0.96em;
-  }
-  .callout strong:first-child { color: #b07b00; }
-
-  /* `details.disclosure` styling — Connection details, Setup
-     guide, OAuth client settings — lives in the shared PAGE_STYLE
-     in jasper/web/_common.py so spotify/google/correction all
-     share the same look. */
-
-  /* The paste-creds form is inside the last wizard step but visually
-     separated — it's the action that completes the whole flow. */
-  .creds-form-wrap {
-    margin-top: 1em; padding-top: 1em;
-    border-top: 1px dashed #d0d0d0;
-  }
-
-  /* "Reset wizard progress" — subtle, top-right. */
-  .wizard-progress-reset {
-    float: right; background: transparent; color: #888;
-    padding: 0.25em 0.6em; font-size: 0.82em;
-    margin-top: -0.4em;
-  }
-  .wizard-progress-reset:hover {
-    color: #d44; background: #fee; filter: none;
-  }
+    Mirrors the reference migration (`speaker_setup._index_html`): a
+    `canonical_header` with the back-to-home button, the flash
+    `canonical_banner`, the body inside `<main class="page">`, then the
+    page's ES module loaded by `src`. The CSRF token rides in the
+    `<meta name="jts-csrf">` tag (emitted by `canonical_page` when
+    `csrf_token` is given) so the cached module can read it; the
+    server-rendered forms still carry their own hidden `csrf_token`
+    field via `csrf_field_html`."""
+    page_body = f"""
+{canonical_header(title)}
+<main class="page">
+  {canonical_banner(status_msg)}
+{body}
+</main>
+<script type="module" src="/assets/google/js/main.js"></script>
 """
-
-
-def _wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
-    page = wrap_page(title, body, status_msg=status_msg).decode()
-    return page.replace(
-        f"<style>{PAGE_STYLE}</style>",
-        f"<style>{_GOOGLE_PAGE_STYLE}</style>",
-    ).encode()
-
-
-# Standalone (non-f-string) so the script body uses normal `{`/`}`
-# rather than f-string `{{`/`}}` escapes. Inserted into the active
-# wizard body but omitted from the read-only "View setup guide"
-# rendering — there's nothing to track when the wizard is reference-only.
-_SETUP_WIZARD_SCRIPT = """
-<script>
-(function () {
-  // Progress-tracking via localStorage. Each step has a "mark done"
-  // button that adds its step number to a JSON array; on page load
-  // we collapse done steps and auto-open the first not-done one.
-  // The browser's native <details> toggle still works after init
-  // (we only set state once, so manually re-opening a done step to
-  // re-read it stays sticky).
-  var STORAGE_KEY = 'jts.google.wizard.done';
-
-  function loadDone() {
-    try {
-      var raw = localStorage.getItem(STORAGE_KEY);
-      var arr = raw ? JSON.parse(raw) : [];
-      return Array.isArray(arr) ? arr : [];
-    } catch (e) { return []; }
-  }
-  function saveDone(arr) {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); }
-    catch (e) { /* private mode / quota — silent */ }
-  }
-
-  function init() {
-    var done = loadDone();
-    var firstNotDoneOpened = false;
-    document.querySelectorAll('li.wizard-step').forEach(function (el) {
-      var step = el.dataset.step;
-      var details = el.querySelector('details');
-      if (!details) return;
-      var isDone = done.indexOf(step) !== -1;
-      if (isDone) {
-        el.classList.add('done');
-        details.removeAttribute('open');
-      } else if (!firstNotDoneOpened) {
-        firstNotDoneOpened = true;
-        el.classList.add('active');
-        details.setAttribute('open', '');
-      }
-    });
-  }
-
-  function markDone(stepEl) {
-    var step = stepEl.dataset.step;
-    var done = loadDone();
-    if (done.indexOf(step) === -1) done.push(step);
-    saveDone(done);
-    stepEl.classList.add('done');
-    stepEl.classList.remove('active');
-    var details = stepEl.querySelector('details');
-    if (details) details.removeAttribute('open');
-    // Open the next not-done sibling (skip already-done ones).
-    var next = stepEl.nextElementSibling;
-    while (next && next.classList.contains('done')) {
-      next = next.nextElementSibling;
-    }
-    if (next) {
-      next.classList.add('active');
-      var nDetails = next.querySelector('details');
-      if (nDetails) nDetails.setAttribute('open', '');
-      setTimeout(function () {
-        next.scrollIntoView({behavior: 'smooth', block: 'start'});
-      }, 80);
-    }
-  }
-
-  document.addEventListener('DOMContentLoaded', function () {
-    init();
-    document.querySelectorAll('button.mark-done').forEach(function (btn) {
-      btn.addEventListener('click', function (e) {
-        e.preventDefault();
-        var stepEl = btn.closest('li.wizard-step');
-        if (stepEl) markDone(stepEl);
-      });
-    });
-  });
-})();
-
-async function copyStep4Redirect() {
-  var input = document.getElementById('step4-redirect');
-  var fb = document.getElementById('step4-redirect-fb');
-  try {
-    await navigator.clipboard.writeText(input.value);
-  } catch (e) {
-    input.select();
-    document.execCommand('copy');
-  }
-  fb.classList.add('shown');
-  setTimeout(function () { fb.classList.remove('shown'); }, 1800);
-}
-</script>
-"""
+    return canonical_page(
+        title, page_body, csrf_token=csrf_token, page_css_href=_PAGE_CSS_HREF,
+    )
 
 
 def _setup_wizard_html(redirect_uri: str, csrf_token: str = "", *, status_msg: str = "") -> bytes:
@@ -369,8 +179,8 @@ def _setup_wizard_html(redirect_uri: str, csrf_token: str = "", *, status_msg: s
     read-only mode, inside the state-3 management page as a
     "View setup guide" disclosure — see `_setup_wizard_body`."""
     body = _setup_wizard_body(redirect_uri, csrf_token, read_only=False)
-    return _wrap_page(
-        "Set up Google on this speaker", body, status_msg=status_msg,
+    return _render_page(
+        "Set up Google", body, csrf_token=csrf_token, status_msg=status_msg,
     )
 
 
@@ -383,6 +193,11 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
     no paste-creds form, and the redirect URI in step 4 displays as
     inline text rather than a copy widget (the management page has
     its own redirect URI section with a copy button).
+
+    The wizard's interactive behaviour (progress tracking, "mark done",
+    reset-progress confirm, copy-to-clipboard) is delegated to
+    /assets/google/js/main.js — this function emits only markup with
+    `data-*` hooks the module binds to.
 
     The four steps mirror Google's actual UI as of May 2026:
       1. Create a Cloud project.
@@ -399,44 +214,45 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
     if read_only:
         progress_button = ""
         intro = (
-            '<p class="sub">Reference copy of the 4-step setup. Credentials are already saved on this speaker — see <strong>Connection details</strong> above for which Cloud project the wizard pointed at. Use these steps to re-verify any decision, or to share the setup story with someone building their own JTS.</p>'
+            '<p class="form-hint">Reference copy of the 4-step setup. Credentials are already saved on this speaker — see <strong>Connection details</strong> above for which Cloud project the wizard pointed at. Use these steps to re-verify any decision, or to share the setup story with someone building their own JTS.</p>'
         )
         mark_done = ""
         redirect_widget = f'<p style="margin-top:0.3em"><code>{redirect_safe}</code></p>'
         creds_form = ""
-        script = ""
     else:
-        progress_button = """<button type="button" class="wizard-progress-reset secondary"
-        onclick="jtsConfirm('Forget which steps you marked done? The form at the bottom still works either way.').then(function(ok){ if (ok) { try { localStorage.removeItem('jts.google.wizard.done'); } catch(e) {} location.reload(); } })">
-  Reset progress
-</button>"""
-        intro = '<p class="sub">Connect this speaker to Google Calendar + Gmail. Takes about 5 minutes the first time. Each step has a link to the right Google page — open them in new tabs and click <strong>I\'ve done this →</strong> when each is finished.</p>'
-        mark_done = '<button class="mark-done" type="button">I\'ve done this →</button>'
+        # The reset-progress confirm and click handler live in the ES
+        # module; this button just carries the data-action hook.
+        progress_button = """<button type="button" class="btn btn--ghost wizard-progress-reset"
+        data-action="reset-progress">Reset progress</button>"""
+        intro = '<p class="form-hint">Connect this speaker to Google Calendar + Gmail. Takes about 5 minutes the first time. Each step has a link to the right Google page — open them in new tabs and click <strong>I\'ve done this →</strong> when each is finished.</p>'
+        mark_done = '<button class="btn btn--primary mark-done" type="button">I\'ve done this →</button>'
+        # data-copy points the delegated copy handler at the input by id.
         redirect_widget = f"""<div class="copy-row" style="margin-top:0.3em">
-              <input id="step4-redirect" type="text" readonly value="{redirect_safe}" onclick="this.select();">
-              <button type="button" onclick="copyStep4Redirect()">Copy</button>
+              <input id="step4-redirect" type="text" readonly value="{redirect_safe}" data-select-on-click>
+              <button type="button" class="btn btn--default" data-copy="step4-redirect" data-copy-feedback="step4-redirect-fb">Copy</button>
               <span id="step4-redirect-fb" class="copy-feedback">Copied!</span>
             </div>"""
         creds_form = f"""<div class="creds-form-wrap">
           <form method="post" action="setup-credentials">
             {csrf_field_html(csrf_token) if csrf_token else ''}
-            <label for="client_id">Client ID</label>
-            <input id="client_id" name="client_id" type="text" required
-                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-                   placeholder="123456789012-abc….apps.googleusercontent.com">
-
-            <label for="client_secret">Client Secret</label>
-            <input id="client_secret" name="client_secret" type="password" required
-                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-                   placeholder="GOCSPX-…">
-            <small>Stored on this speaker only at <code>/var/lib/jasper/google_credentials.env</code>. Never sent anywhere except Google.</small>
-
-            <p style="margin-top:1.4em">
-              <button type="submit">Save credentials →</button>
-            </p>
+            <div class="field">
+              <label for="client_id">Client ID</label>
+              <input id="client_id" name="client_id" type="text" required
+                     autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                     placeholder="123456789012-abc….apps.googleusercontent.com">
+            </div>
+            <div class="field">
+              <label for="client_secret">Client Secret</label>
+              <input id="client_secret" name="client_secret" type="password" required
+                     autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                     placeholder="GOCSPX-…">
+              <p class="form-hint">Stored on this speaker only at <code>/var/lib/jasper/google_credentials.env</code>. Never sent anywhere except Google.</p>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn--primary">Save credentials →</button>
+            </div>
           </form>
         </div>"""
-        script = _SETUP_WIZARD_SCRIPT
     return f"""
 {progress_button}
 {intro}
@@ -496,7 +312,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
           Open the <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience tab ↗</a>. Under <strong>Publishing status</strong> (will say "Testing"), click <strong>PUBLISH APP</strong>. The "Push to production?" modal mentions submitting for verification — that doesn't apply under Google's <a href="https://support.google.com/cloud/answer/13464323" target="_blank" rel="noopener">personal-use exception ↗</a> (fewer than 100 users). Click <strong>CONFIRM</strong>. After publish, refresh tokens stop expiring; the FIRST time anyone signs in they'll see a "Google hasn't verified this app" warning — click <strong>Advanced → Go to JTS Speaker (unsafe)</strong> once per household member; afterwards it's invisible.
         </div>
 
-        <p class="hint"><strong>Don't visit the "Data Access" tab.</strong> Scopes are requested at consent regardless of what's there, and that tab is for submitting your app for verification — Google won't let you add Gmail-readonly without a written justification and demo video. Not what we want.</p>
+        <p class="form-hint"><strong>Don't visit the "Data Access" tab.</strong> Scopes are requested at consent regardless of what's there, and that tab is for submitting your app for verification — Google won't let you add Gmail-readonly without a written justification and demo video. Not what we want.</p>
 
         {mark_done}
       </div>
@@ -517,7 +333,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
           <li>Open <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">the Calendar API page ↗</a>. Confirm the project picker in the top bar shows the project from Step 1, then click the blue <strong>ENABLE</strong> button. Takes ~10 seconds.</li>
           <li>Open <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">the Gmail API page ↗</a>. Same: confirm project, click <strong>ENABLE</strong>.</li>
         </ol>
-        <p class="hint">If you navigated to either page without a project context, a "Select a project" modal appears first — pick the one from Step 1.</p>
+        <p class="form-hint">If you navigated to either page without a project context, a "Select a project" modal appears first — pick the one from Step 1.</p>
         {mark_done}
       </div>
     </details>
@@ -557,8 +373,6 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
     </details>
   </li>
 </ol>
-
-{script}
 """
 
 
@@ -569,20 +383,20 @@ def _redirect_uri_section_html(redirect_uri: str) -> str:
     client settings"). The setup wizard's step 4 includes this URL
     inline so the user adds it during initial client creation;
     this section exists for the cases where they need to re-add
-    or fix it after the fact."""
+    or fix it after the fact. The Copy button is wired by the
+    delegated copy handler in /assets/google/js/main.js."""
     redirect_safe = html.escape(redirect_uri)
     return f"""
 <h3>The redirect URL</h3>
 <p>Your OAuth client needs this URL in its <strong>Authorized redirect URIs</strong> list. The setup wizard's step 4 included this when you created the client; if you skipped it or recreated the client, add it now.</p>
 
 <div class="copy-row">
-  <input id="redirect-uri" type="text" readonly value="{redirect_safe}"
-         onclick="this.select();">
-  <button type="button" onclick="copyRedirect()">Copy</button>
+  <input id="redirect-uri" type="text" readonly value="{redirect_safe}" data-select-on-click>
+  <button type="button" class="btn btn--default" data-copy="redirect-uri" data-copy-feedback="copy-feedback">Copy</button>
   <span id="copy-feedback" class="copy-feedback">Copied!</span>
 </div>
 
-<p class="hint" style="margin-top:0.6em">It's a github.io URL because Google rejects <code>.local</code> mDNS names and bare LAN IPs. The page at that URL is a tiny static bouncer (<a href="https://github.com/jaspercurry/google-oauth-callback" target="_blank" rel="noopener">source</a>) that redirects the browser back here. No data passes through it.</p>
+<p class="form-hint" style="margin-top:0.6em">It's a github.io URL because Google rejects <code>.local</code> mDNS names and bare LAN IPs. The page at that URL is a tiny static bouncer (<a href="https://github.com/jaspercurry/google-oauth-callback" target="_blank" rel="noopener">source</a>) that redirects the browser back here. No data passes through it.</p>
 
 <ol class="steps">
   <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">the Clients page ↗</a> and click your OAuth 2.0 Client ID. (If you bookmarked the old <code>/apis/credentials</code> URL, it still works — Google redirects it here.)</li>
@@ -590,24 +404,9 @@ def _redirect_uri_section_html(redirect_uri: str) -> str:
   <li>Click <strong>+ ADD URI</strong>, paste the URL above, then <strong>SAVE</strong> at the bottom.</li>
 </ol>
 
-<p class="hint">
+<p class="form-hint">
   <strong>Heads up — propagation delay:</strong> Google says redirect-URI changes can take "5 minutes to a few hours" to take effect, though usually it's well under a minute. If sign-in fails with <code>redirect_uri_mismatch</code>, wait 60 seconds and retry.
 </p>
-
-<script>
-async function copyRedirect() {{
-  const input = document.getElementById('redirect-uri');
-  const fb = document.getElementById('copy-feedback');
-  try {{
-    await navigator.clipboard.writeText(input.value);
-  }} catch (e) {{
-    input.select();
-    document.execCommand('copy');
-  }}
-  fb.classList.add('shown');
-  setTimeout(() => fb.classList.remove('shown'), 1800);
-}}
-</script>
 """
 
 
@@ -632,12 +431,17 @@ def _connection_details_html(client_id: str) -> str:
     Cloud Console for this specific project. Rendered in state 2 and
     state 3 — anywhere the wizard knows there are credentials to
     inspect. Distinct from the existing 'OAuth client settings'
-    details, which is for destructive ops (reset credentials)."""
+    details, which is for destructive ops (reset credentials).
+
+    The "Show full" button reveals the Client ID without leaking it
+    into inline JS: the full value rides in a `data-full` attribute
+    (escaped for an HTML attribute) that the delegated reveal handler
+    in /assets/google/js/main.js reads and writes into the display."""
     masked = (
         html.escape(client_id[:8] + "…" + client_id[-30:])
         if len(client_id) > 38 else "configured"
     )
-    full_json = json.dumps(client_id)  # safe for inline JS
+    full_attr = html.escape(client_id, quote=True)
     project_number = _project_number_from_client_id(client_id)
     if project_number:
         n = urllib.parse.quote(project_number)
@@ -650,7 +454,7 @@ def _connection_details_html(client_id: str) -> str:
 </ul>"""
     else:
         project_links_html = (
-            '<p class="hint">Couldn\'t auto-detect the project from the Client ID. '
+            '<p class="form-hint">Couldn\'t auto-detect the project from the Client ID. '
             'Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">'
             'console.cloud.google.com ↗</a> and pick the project from the top-bar switcher.</p>'
         )
@@ -664,12 +468,13 @@ def _connection_details_html(client_id: str) -> str:
       <li>Gmail — <strong>read-only</strong>; the speaker cannot send, modify, or delete email</li>
       <li>Profile + email — used once at link time to label the linked account</li>
     </ul>
-    <p class="hint">To revoke access from Google's side at any time, visit <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a> on each linked account and remove the app (its name is whatever you set on the Branding tab — "JTS Speaker" by default). Removing here only deletes the speaker's local refresh token; revoking at Google invalidates it everywhere.</p>
+    <p class="form-hint">To revoke access from Google's side at any time, visit <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a> on each linked account and remove the app (its name is whatever you set on the Branding tab — "JTS Speaker" by default). Removing here only deletes the speaker's local refresh token; revoking at Google invalidates it everywhere.</p>
 
     <h3>OAuth client</h3>
     <p>Client ID: <code id="client-id-display">{masked}</code>
-       <button type="button" id="reveal-client-id" class="secondary"
-               onclick="revealClientId()" style="padding:0.2em 0.7em">Show full</button>
+       <button type="button" id="reveal-client-id" class="btn btn--default"
+               data-action="reveal-client-id" data-full="{full_attr}"
+               style="padding:0.2em 0.7em">Show full</button>
     </p>
     <p>Client Secret: never displayed. To rotate it, regenerate in the Cloud Console (link below) and re-paste it via Reset credentials below.</p>
 
@@ -677,31 +482,25 @@ def _connection_details_html(client_id: str) -> str:
     {project_links_html}
   </div>
 </details>
-
-<script>
-function revealClientId() {{
-  document.getElementById('client-id-display').textContent = {full_json};
-  document.getElementById('reveal-client-id').style.display = 'none';
-}}
-</script>
 """
 
 
 def _add_account_form_html(csrf_token: str = "") -> str:
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     return f"""
-<h2>Add a Google account</h2>
+<h2 class="section__title">Add a Google account</h2>
 <form method="post" action="start">
   {csrf}
-  <label for="name">Your name (label only)</label>
-  <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
-         placeholder="brittany" autocapitalize="off" autocorrect="off">
-  <small>Lowercase, no spaces. Used by voice ('what's on Brittany's calendar') and shown in the list below.</small>
-
-  <p style="margin-top:1em">
-    <button type="submit">Continue with Google →</button>
-  </p>
-  <small>You'll be sent to Google to sign in once. The refresh token stays on this speaker — read access only (Calendar + Gmail).</small>
+  <div class="field">
+    <label for="name">Your name (label only)</label>
+    <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
+           placeholder="brittany" autocapitalize="off" autocorrect="off">
+    <p class="form-hint">Lowercase, no spaces. Used by voice ('what's on Brittany's calendar') and shown in the list below.</p>
+  </div>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary">Continue with Google →</button>
+  </div>
+  <p class="form-hint">You'll be sent to Google to sign in once. The refresh token stays on this speaker — read access only (Calendar + Gmail).</p>
 </form>
 """
 
@@ -714,14 +513,19 @@ def _redirect_uri_page_html(
     already added the redirect URI during the wizard's step 4, so the
     primary action here is "link a household member's account". The
     redirect URI section lives in a collapsible <details> as a
-    fallback for the redirect_uri_mismatch case."""
+    fallback for the redirect_uri_mismatch case.
+
+    The destructive "Reset Google credentials" form carries a
+    `data-confirm` message that the delegated submit-guard in
+    /assets/google/js/main.js confirms (via the shared <dialog>)
+    before letting the native POST proceed."""
     masked = (
         client_id[:8] + "…" + client_id[-30:]
         if len(client_id) > 38 else "configured"
     )
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
-<p class="sub">Credentials saved (Client ID: <span class="credbox" style="display:inline-block; padding:0.05em 0.4em">{html.escape(masked)}</span>). One step left — link your first Google account.</p>
+<p class="form-hint">Credentials saved (Client ID: <code>{html.escape(masked)}</code>). One step left — link your first Google account.</p>
 
 {_add_account_form_html(csrf_token)}
 
@@ -733,28 +537,38 @@ def _redirect_uri_page_html(
     <p>If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
-          onsubmit="return jtsConfirmSubmit(this, 'Clear the saved Client ID and Secret? You\\'ll need to paste them again.', {{danger:true}});">
+          data-confirm="Clear the saved Client ID and Secret? You'll need to paste them again." data-confirm-danger>
       {csrf}
-      <button type="submit" class="danger">Reset Google credentials</button>
+      <button type="submit" class="btn btn--danger">Reset Google credentials</button>
     </form>
   </div>
 </details>
 """
-    return _wrap_page(
-        "Almost there — link a Google account", body, status_msg=status_msg,
+    return _render_page(
+        "Link a Google account", body, csrf_token=csrf_token, status_msg=status_msg,
     )
 
 
 def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: str = "") -> str:
+    """One linked-account row. The account name is untrusted-ish (user
+    label, validated to `[a-zA-Z0-9_-]+` on save) and the email comes
+    from Google; both are HTML-escaped before interpolation. The
+    remove-confirm message rides in `data-confirm` (escaped for an
+    attribute) — never inline JS — so the delegated submit-guard can
+    confirm before the native POST."""
     name = html.escape(account.name)
     email = html.escape(account.email or "(unknown email)")
-    badge = '<span class="badge">default</span>' if is_default else ""
+    badge = '<span class="badge" style="--tone: var(--status-ok)">default</span>' if is_default else ""
     set_default = (
-        '<button class="secondary" type="submit" disabled>Default</button>'
+        '<button class="btn btn--default" type="submit" disabled>Default</button>'
         if is_default
-        else '<button class="secondary" type="submit">Set default</button>'
+        else '<button class="btn btn--default" type="submit">Set default</button>'
     )
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
+    remove_confirm = html.escape(
+        f"Remove {account.name}? The refresh token will be deleted from this speaker.",
+        quote=True,
+    )
     return f"""
 <li>
   <span class="name">{name}</span>
@@ -767,10 +581,10 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: st
       {set_default}
     </form>
     <form method="post" action="remove"
-          onsubmit="return jtsConfirmSubmit(this, 'Remove {name}? The refresh token will be deleted from this speaker.', {{danger:true}});">
+          data-confirm="{remove_confirm}" data-confirm-danger>
       {csrf}
       <input type="hidden" name="name" value="{name}">
-      <button class="danger" type="submit">Remove</button>
+      <button class="btn btn--danger" type="submit">Remove</button>
     </form>
   </span>
 </li>"""
@@ -792,16 +606,16 @@ def _management_html(
     # when at least one account is already linked (state 3). State 2
     # uses _redirect_uri_page_html, which has its own intro framing.
     add_account_clarification = (
-        '<p class="hint" style="margin-top:1.6em"><strong>Adding another '
+        '<p class="form-hint" style="margin-top:1.6em"><strong>Adding another '
         'household member?</strong> They just sign in with their own '
         'Google account below — no Google Cloud setup to redo. The '
         "speaker's OAuth client serves everyone (up to the 100-user "
         'cap on this Cloud project).</p>'
     )
     body = f"""
-<p class="sub">Each household member links their Google account once. The voice loop reads Calendar + Gmail data per-account on demand — say "what's on Brittany's calendar" or "any new emails for Jasper" to disambiguate; bare requests use the default account.</p>
+<p class="form-hint">Each household member links their Google account once. The voice loop reads Calendar + Gmail data per-account on demand — say "what's on Brittany's calendar" or "any new emails for Jasper" to disambiguate; bare requests use the default account.</p>
 
-<h2>Linked accounts</h2>
+<h2 class="section__title">Linked accounts</h2>
 <ul class="accounts">
 {''.join(items)}
 </ul>
@@ -823,15 +637,15 @@ def _management_html(
   <div class="disclosure-body">
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
-          onsubmit="return jtsConfirmSubmit(this, 'Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked.', {{danger:true}});">
+          data-confirm="Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked." data-confirm-danger>
       {csrf}
-      <button type="submit" class="danger">Reset Google credentials</button>
+      <button type="submit" class="btn btn--danger">Reset Google credentials</button>
     </form>
   </div>
 </details>
 """
-    return _wrap_page(
-        "Google accounts on this speaker", body, status_msg=status_msg,
+    return _render_page(
+        "Google accounts", body, csrf_token=csrf_token, status_msg=status_msg,
     )
 
 

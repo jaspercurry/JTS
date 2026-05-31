@@ -1,0 +1,253 @@
+/* spotify.css — page-specific styles for the /spotify/ wizard.
+ *
+ * Only the visuals app.css does NOT cover live here (per the canonical
+ * design-system rule: shared primitives stay in app.css, single-page
+ * components stay in the page's own stylesheet). Everything else on this
+ * page — .page, .info-card, .deflist, .badge, .field/.form-actions/
+ * .form-hint, .banner, .btn--*, .section__title, .eyebrow — comes from
+ * /assets/app.css. Served from /assets/spotify/spotify.css with ETag
+ * revalidation (a real, lintable static file, unlike inline page_css).
+ *
+ * The bespoke pieces:
+ *   - the "advanced surface" disambiguation note (steers basic users to
+ *     /sources/),
+ *   - the bounce/manual OAuth mode picker (radio cards),
+ *   - the readonly redirect-URI copy row + copied-feedback,
+ *   - the per-account expand/collapse cards + token-health badges,
+ *   - the inline "add playlist" row with live name preview,
+ *   - the manual-mode pre-warn callout.
+ * Status colour is one knob everywhere: a component sets --tone to a
+ * status token and the rule reads it (mirrors app.css's .badge/.banner).
+ */
+
+/* Tighten the page rhythm: sections stack with comfortable gaps. */
+.page > * + * { margin-top: 18px; }
+.page h2 {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  margin: 4px 0 0;
+}
+.page h3 {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  margin: 12px 0 4px;
+  color: var(--foreground);
+}
+.page p { margin: 0; line-height: 1.55; }
+
+/* Stepped numbered instructions (redirect-URI setup). */
+.steps { padding-left: 1.3em; margin: 8px 0; }
+.steps > li { margin-bottom: 8px; line-height: 1.5; }
+
+/* The "this wizard is the advanced surface" note. Reuses .info-card's
+   accent treatment via --tone; sits at the top of every page. */
+.advanced-note { --tone: var(--status-ok); }
+.advanced-note a { color: var(--primary); font-weight: 600; }
+
+/* Read-only "copy this URL" row: input fills, button hugs, feedback
+   fades in beside it. */
+.copy-row { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.copy-row input {
+  flex: 1 1 240px; min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.copy-feedback {
+  align-self: center;
+  color: var(--status-ok);
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.copy-feedback.shown { opacity: 1; }
+
+/* Bounce / manual OAuth mode picker: radio cards, picked one highlighted. */
+.mode-picker { display: flex; flex-direction: column; gap: 10px; }
+.mode-picker label {
+  display: block;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.mode-picker label.selected {
+  border-color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 8%, var(--surface));
+}
+.mode-picker input[type="radio"] { margin-right: 8px; }
+.mode-picker .mode-title { font-weight: 600; }
+.mode-picker .mode-sub {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Per-account expand/collapse card. Header row shows name + badges +
+   playlist count; opening reveals the actions + playlist editor. */
+.account {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.account + .account { margin-top: 10px; }
+.account > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.account > summary::-webkit-details-marker { display: none; }
+.account > summary::before {
+  content: "";
+  width: 8px; height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  flex: none;
+}
+.account[open] > summary::before { transform: rotate(45deg); }
+.account > summary .acct-name { font-weight: 600; flex: 1; }
+.account > summary .pl-count {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.account .account-body {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--border);
+}
+.account-actions { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.account-actions form { margin: 0; }
+
+/* Token-health badge — one knob (--tone) selects the status colour.
+   Reuses the same status vocabulary as app.css's .badge but kept here
+   because the glyph + help-cursor are spotify-specific. */
+.health-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: help;
+  color: var(--tone, var(--status-idle));
+  background: color-mix(in oklab, var(--tone, var(--status-idle)) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--tone, var(--status-idle)) 35%, transparent);
+}
+.health-badge.health-ok { --tone: var(--status-ok); }
+.health-badge.health-revoked { --tone: var(--status-danger); }
+.health-badge.health-warn { --tone: var(--status-warn); }
+
+/* Re-link banner inside a revoked card. */
+.relink-notice {
+  --tone: var(--status-danger);
+  background: color-mix(in oklab, var(--tone) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--tone) 30%, transparent);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.relink-notice p { margin: 0 0 10px; }
+
+/* Custom-playlist list inside an account. */
+.pl-list { list-style: none; padding: 0; margin: 4px 0 8px; }
+.pl-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 8px 8px 12px;
+  margin-bottom: 6px;
+}
+.pl-list li .pl-name {
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pl-list li form { margin: 0; }
+.pl-empty { color: var(--muted); font-style: italic; margin: 4px 0 8px; }
+
+/* The inline "add playlist" reveal form. Hidden until the add button is
+   clicked; [hidden]+!important beats the display:flex below on first paint. */
+.pl-add { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.pl-add[hidden] { display: none !important; }
+.pl-add .pl-input {
+  flex: 1 1 240px; min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.pl-preview {
+  flex-basis: 100%;
+  min-height: 1.2em;
+  font-size: 13px;
+  color: var(--muted);
+}
+.pl-preview.success { color: var(--status-ok); font-weight: 600; }
+.pl-preview.error { color: var(--status-danger); }
+
+/* Manual-mode pre-warn callout (after /start in manual mode). */
+.prewarn {
+  --tone: var(--status-warn);
+  background: color-mix(in oklab, var(--tone) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--tone) 30%, transparent);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+.prewarn h3 { margin-top: 0; }
+.prewarn ol { padding-left: 1.3em; margin: 8px 0 0; }
+.prewarn ol > li { margin-bottom: 6px; line-height: 1.5; }
+
+/* Paste-the-callback-URL textarea (manual mode + bounce fallback). */
+.paste {
+  width: 100%;
+  min-height: 5em;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+  background: var(--surface);
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+/* Masked Client-ID chip in the post-credentials sub line. */
+.credchip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-feedback,
+  .account > summary::before { transition: none; }
+}

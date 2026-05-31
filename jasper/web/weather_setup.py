@@ -10,6 +10,11 @@ The weather tool has two location paths:
 This page owns only the bare-question default and units. It stores
 rounded coordinates (same privacy posture as /transit/) plus a display
 label; the raw address typed into the form is never persisted.
+
+Migrated to the canonical design system: renders through
+``canonical_page`` with the page-specific CSS in
+``/assets/weather/weather.css``. It is a plain server-rendered
+request/response form, so it ships no ES module.
 """
 from __future__ import annotations
 
@@ -24,8 +29,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .. import location_state
 from ..transit import geocode as geocode_mod
 from ._common import (
-    PAGE_STYLE,
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
     delete_env_file,
     read_env_file,
@@ -35,7 +42,6 @@ from ._common import (
     send_html_response,
     send_see_other,
     verify_csrf,
-    wrap_page,
     write_env_file,
 )
 
@@ -208,52 +214,7 @@ def _apply_save(
     return new, None
 
 
-_WEATHER_PAGE_STYLE = PAGE_STYLE + """
-  .weather-help { color: #555; font-size: 0.93em;
-                  margin: 0.4em 0 1.2em; line-height: 1.5; }
-  .privacy-note { color: #666; font-size: 0.85em; margin: 0.4em 0 0;
-                  line-height: 1.5; }
-  .privacy-note a { color: #1db954; }
-  .location-result {
-    background: #f0fff4; border: 1px solid #1db954;
-    padding: 0.7em 0.9em; border-radius: 6px;
-    margin: 0.8em 0 1.2em;
-  }
-  .location-result strong { display: block; }
-  .location-result .coords {
-    color: #666; font-size: 0.85em; font-variant-numeric: tabular-nums;
-  }
-  .location-result .source {
-    color: #666; font-size: 0.85em; margin-top: 0.25em;
-  }
-  .legacy-result {
-    background: #fff7e6; border-color: #f0c060;
-  }
-  details.advanced { margin-top: 1.2em; }
-  details.advanced > summary {
-    cursor: pointer; padding: 0.6em 0.8em; border-radius: 6px;
-    background: #f4f4f4; border: 1px solid #e6e6e6;
-    font-weight: 600; color: #444;
-    user-select: none; -webkit-user-select: none;
-  }
-  details.advanced > summary:hover { background: #ececec; }
-  details.advanced .advanced-body {
-    padding: 0.8em 0.4em 0.4em; border: 1px solid #e6e6e6;
-    border-top: none; border-radius: 0 0 6px 6px;
-    margin-top: -1px;
-  }
-  .save-row { margin-top: 1.4em; display: flex;
-              gap: 0.6em; align-items: center; flex-wrap: wrap; }
-  .clear-form { margin-top: 1.2em; }
-"""
-
-
-def _wrap_weather_page(title: str, body: str, *, status_msg: str = "") -> bytes:
-    page = wrap_page(title, body, status_msg=status_msg).decode()
-    return page.replace(
-        f"<style>{PAGE_STYLE}</style>",
-        f"<style>{_WEATHER_PAGE_STYLE}</style>",
-    ).encode()
+WEATHER_PAGE_CSS_HREF = "/assets/weather/weather.css"
 
 
 def _current_location_html(
@@ -267,27 +228,41 @@ def _current_location_html(
         source = "transit"
 
     if loc is not None:
-        source_text = (
-            "Saved weather location."
-            if source == "weather"
-            else "Using the transit location until a weather-specific location is saved."
-        )
+        if source == "weather":
+            source_text = "Saved weather location."
+            tone = "var(--status-ok)"
+            badge = "Saved"
+        else:
+            source_text = (
+                "Using the transit location until a "
+                "weather-specific location is saved."
+            )
+            tone = "var(--status-idle)"
+            badge = "From transit"
         display = loc.display_name or "(saved location)"
         return f"""
-<div class="location-result">
-  <strong>{html.escape(display)}</strong>
-  <span class="coords">{loc.lat:.3f}, {loc.lon:.3f} (~110&nbsp;m precision)</span>
-  <div class="source">{html.escape(source_text)}</div>
+<div class="info-card info-card--accent" style="--tone: {tone};">
+  <div class="loc-head">
+    <strong class="loc-name">{html.escape(display)}</strong>
+    <span class="badge">{badge}</span>
+  </div>
+  <p class="loc-coords">{loc.lat:.3f}, {loc.lon:.3f} (~110&nbsp;m precision)</p>
+  <p class="info-card__hint">{html.escape(source_text)}</p>
 </div>"""
 
     legacy = _value_for(weather_state, DEFAULT_LOCATION_ENV).strip()
     if legacy:
         return f"""
-<div class="location-result legacy-result">
-  <strong>{html.escape(legacy)}</strong>
-  <div class="source">Legacy place-name default. Save this page to store rounded coordinates for faster, more reliable bare weather questions.</div>
+<div class="info-card info-card--accent" style="--tone: var(--status-warn);">
+  <div class="loc-head">
+    <strong class="loc-name">{html.escape(legacy)}</strong>
+    <span class="badge">Legacy</span>
+  </div>
+  <p class="info-card__hint">Legacy place-name default. Save this page to
+  store rounded coordinates for faster, more reliable bare weather
+  questions.</p>
 </div>"""
-    return '<p class="msg">No weather default is set yet.</p>'
+    return '<div class="info-card"><p class="info-card__note">No weather default is set yet.</p></div>'
 
 
 def _units_options_html(active: str) -> str:
@@ -311,56 +286,81 @@ def _index_html(
     current_html = _current_location_html(weather_state, transit_state)
     units_options = _units_options_html(_units(weather_state))
     body = f"""
-<p class="sub">Default location for weather questions.</p>
-<p class="weather-help">
-  Used when the user asks for weather without naming a place.
-</p>
+{canonical_header("Weather")}
+<main class="page">
+  {canonical_banner(status_msg)}
+  <p class="form-hint">Default location used when the user asks for the
+  weather without naming a place.</p>
 
-<h2>Current default</h2>
-{current_html}
+  <section class="section">
+    <div class="section__head"><h2 class="section__title">Current default</h2></div>
+    {current_html}
+  </section>
 
-<form method="post" action="save">
-  {csrf}
-  <h2>Set weather location</h2>
-  <label for="location">Location</label>
-  <input id="location" name="location" type="text"
-         placeholder="Tampa, FL or 123 Main St, Brooklyn NY"
-         autocomplete="street-address">
-  <p class="privacy-note">
-    This is sent to <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noopener">OpenStreetMap (Nominatim)</a>
-    to look up coordinates. Only rounded coordinates and the display label are saved on this speaker.
-    <a href="https://operations.osmfoundation.org/policies/nominatim/" target="_blank" rel="noopener">Policy ↗</a>
-  </p>
+  <form method="post" action="./save">
+    {csrf}
+    <section class="section">
+      <div class="section__head">
+        <h2 class="section__title">Set weather location</h2>
+      </div>
 
-  <label for="units">Temperature units</label>
-  <select id="units" name="units">
-    {units_options}
-  </select>
+      <div class="field">
+        <label for="location">Location</label>
+        <input id="location" name="location" type="text"
+               placeholder="Tampa, FL or 123 Main St, Brooklyn NY"
+               autocomplete="street-address">
+        <p class="form-hint">
+          Sent to <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noopener">OpenStreetMap (Nominatim)</a>
+          to look up coordinates. Only rounded coordinates and the display
+          label are saved on this speaker.
+          <a href="https://operations.osmfoundation.org/policies/nominatim/" target="_blank" rel="noopener">Policy &#8599;</a>
+        </p>
+      </div>
 
-  <details class="advanced">
-    <summary>Manual coordinates</summary>
-    <div class="advanced-body">
-      <label for="manual_lat">Latitude</label>
-      <input id="manual_lat" name="manual_lat" type="text"
-             inputmode="decimal" placeholder="40.653">
-      <label for="manual_lon">Longitude</label>
-      <input id="manual_lon" name="manual_lon" type="text"
-             inputmode="decimal" placeholder="-74.007">
-      <small>Manual coordinates bypass geocoding.</small>
+      <div class="field">
+        <label for="units">Temperature units</label>
+        <select id="units" name="units">
+          {units_options}
+        </select>
+      </div>
+
+      <details class="advanced">
+        <summary>Manual coordinates</summary>
+        <div class="advanced-body">
+          <div class="field">
+            <label for="manual_lat">Latitude</label>
+            <input id="manual_lat" name="manual_lat" type="text"
+                   inputmode="decimal" placeholder="40.653">
+          </div>
+          <div class="field">
+            <label for="manual_lon">Longitude</label>
+            <input id="manual_lon" name="manual_lon" type="text"
+                   inputmode="decimal" placeholder="-74.007">
+          </div>
+          <p class="form-hint">Manual coordinates bypass geocoding.</p>
+        </div>
+      </details>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary">Save</button>
+      </div>
+    </section>
+  </form>
+
+  <form method="post" action="./clear" class="clear-form">
+    {csrf}
+    <div class="form-actions">
+      <button type="submit" class="btn btn--danger">Clear weather default</button>
     </div>
-  </details>
-
-  <div class="save-row">
-    <button type="submit">Save</button>
-  </div>
-</form>
-
-<form method="post" action="clear" class="clear-form">
-  {csrf}
-  <button type="submit" class="danger">Clear weather default</button>
-</form>
+  </form>
+</main>
 """
-    return _wrap_weather_page("Weather", body, status_msg=status_msg)
+    return canonical_page(
+        "Weather",
+        body,
+        csrf_token=csrf_token,
+        page_css_href=WEATHER_PAGE_CSS_HREF,
+    )
 
 
 def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:

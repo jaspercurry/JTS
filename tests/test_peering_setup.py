@@ -57,8 +57,10 @@ def test_get_root_renders_off_by_default(server_with_state):
     resp = urllib.request.urlopen(server_with_state["url"] + "/")
     body = resp.read().decode("utf-8")
     assert resp.status == 200
-    # Status card shows OFF
-    assert "OFF" in body
+    # Status card shows the off state. The canonical page renders the
+    # status as a title-case label in the info-card <dd> ("Off"), not the
+    # legacy uppercase "OFF" badge.
+    assert "<dd>Off</dd>" in body
     # Peer ID is rendered
     assert "test-peer-uuid" in body
     # The toggle checkbox exists and is NOT checked
@@ -77,7 +79,9 @@ def test_get_root_renders_on_when_state_says_so(server_with_state, monkeypatch):
     monkeypatch.setattr(peering_setup, "_fetch_peer_status", lambda **kw: None)
     resp = urllib.request.urlopen(server_with_state["url"] + "/")
     body = resp.read().decode("utf-8")
-    assert "ON" in body
+    # Status card shows the on state — title-case label in the info-card
+    # <dd> ("On") under the canonical page, not the legacy "ON" badge.
+    assert "<dd>On</dd>" in body
     assert "kitchen" in body
     assert "Discovered peers" in body
     assert "No sibling peers visible yet" in body

@@ -2171,7 +2171,14 @@ def test_web_design_assets_ok_when_installed(monkeypatch, tmp_path: Path):
     assets = tmp_path / "assets"
     (assets / "fonts").mkdir(parents=True)
     (assets / "app.css").write_text("/* css */")
-    for page, css in (("system-status", "system.css"), ("sound-profile", "sound.css")):
+    # /correction/ migrated onto the canonical design system, so the check's
+    # required set now also pins its per-page CSS + ES module entry — lay it
+    # down alongside the original two migrated pages.
+    for page, css in (
+        ("system-status", "system.css"),
+        ("sound-profile", "sound.css"),
+        ("correction", "correction.css"),
+    ):
         (assets / page / "js").mkdir(parents=True)
         (assets / page / css).write_text("/* page css */")
         (assets / page / "js" / "main.js").write_text("// module")

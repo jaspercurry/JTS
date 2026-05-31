@@ -447,6 +447,131 @@ svg { display: block; }
   gap: 8px;
 }
 
+/* ---------------- forms ---------------- */
+/* The shared "settings form" vocabulary for migrated wizards: a stack of
+   labelled fields, themed text inputs, an action row, and a hint line.
+   Server-rendered forms keep their POST behaviour; only the classes change.
+   Field labels are the EYEBROW tier (font-display, uppercase) — the same
+   wayfinding treatment as `.deflist dt` row labels, per the three-tier
+   typographic grammar in docs/HANDOFF-management-ui.md. */
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+/* Themed inputs. Enumerated text-ish types + select + textarea so we don't
+   accidentally restyle checkboxes/radios (the `.toggle` checkbox below is
+   visually-hidden and must keep its native box model). Focus ring comes
+   from the shared `:focus-visible` rule near the end of this file. */
+.field input[type="text"],
+.field input[type="email"],
+.field input[type="password"],
+.field input[type="number"],
+.field input[type="search"],
+.field input[type="url"],
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.field input:hover,
+.field select:hover,
+.field textarea:hover { border-color: var(--foreground-020); }
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  outline: none;          /* :focus-visible provides the visible ring */
+  border-color: var(--primary);
+}
+.field input:disabled,
+.field select:disabled,
+.field textarea:disabled { opacity: 0.6; cursor: not-allowed; }
+.field textarea { min-height: 5rem; resize: vertical; }
+/* The action row at the bottom of a form (Save / Cancel). */
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+/* Helper / hint text under a field or form. */
+.form-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.form-hint code {
+  font-size: 0.95em;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--foreground-005);
+}
+
+/* ---------------- flash banner ---------------- */
+/* The canonical twin of wrap_page()'s inline status div, built by
+   jasper.web._common.canonical_banner(). Severity is the only variant:
+   ok (saved/cleared), info (neutral), danger (error/fail). Tone reuses the
+   status token vocabulary so the banner re-skins with the rest of the UI. */
+.banner {
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: color-mix(in oklab, var(--tone, var(--status-idle)) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone, var(--status-idle)) 45%, transparent);
+}
+.banner--ok { --tone: var(--status-ok); }
+.banner--info { --tone: var(--status-idle); }
+.banner--danger { --tone: var(--status-danger); }
+
+/* ---------------- toggle switch ---------------- */
+/* The canonical, token-themed twin of _common.py's TOGGLE_CSS. Both style
+   the SAME markup emitted by toggle_html()
+   (<label class="toggle"><input type="checkbox"><span class="track"></span>),
+   so a migrated page reuses that helper unchanged. A native checkbox carries
+   the state (keyboard + a11y for free); the .track span is the visual switch.
+   Canonical pages load app.css; legacy pages load TOGGLE_CSS — never both on
+   one page (the two are deliberate twins, not co-loaded). */
+.toggle { position: relative; display: inline-block; width: 44px; height: 24px; flex: none; }
+.toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.toggle .track {
+  position: absolute;
+  inset: 0;
+  background: var(--foreground-020);
+  border-radius: 999px;
+  transition: background 150ms ease;
+}
+.toggle .track::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  background: var(--card);
+  border-radius: 50%;
+  box-shadow: var(--shadow);
+  transition: transform 150ms ease;
+}
+.toggle input:checked + .track { background: var(--primary); }
+.toggle input:checked + .track::before { transform: translateX(20px); }
+.toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
+.toggle input:focus-visible + .track {
+  outline: 3px solid var(--primary-040);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .toggle .track,
+  .toggle .track::before { transition: none; }
+}
+
 /* ---------------- a11y ---------------- */
 .sr-only {
   position: absolute;

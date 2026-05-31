@@ -1,0 +1,55 @@
+/* Page-specific styles for the /weather/ wizard.
+ *
+ * Loaded via canonical_page(page_css_href=...) from
+ * jasper/web/weather_setup.py. Holds only the visuals app.css does not
+ * already cover: the current-default info-card's name/badge/coords layout,
+ * the privacy-note link colour, and the "Manual coordinates" <details>
+ * disclosure (app.css has no details/summary rules). Everything else
+ * (.page, .section, .info-card, .field, .form-actions, .form-hint,
+ * .badge, .btn--*) comes from the shared stylesheet.
+ */
+
+/* Current-default card: name + badge on one row, coords as tabular data. */
+.loc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.loc-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+.loc-coords {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Links inside hints/notes pick up the brand colour. */
+.form-hint a,
+.info-card__hint a { color: var(--primary); }
+
+/* "Manual coordinates" disclosure — app.css does not style <details>. */
+details.advanced { margin: 0.5rem 0 0; }
+details.advanced > summary {
+  cursor: pointer;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--foreground);
+  user-select: none;
+  -webkit-user-select: none;
+}
+details.advanced > summary:hover {
+  background: color-mix(in oklab, var(--foreground) 6%, var(--surface));
+}
+/* Focus ring comes from app.css's global :focus-visible rule. */
+details.advanced[open] > summary { margin-bottom: 0.75rem; }
+
+/* Sit the destructive "Clear" form a little below the save form. */
+.clear-form { margin-top: 1.25rem; }

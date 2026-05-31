@@ -18,6 +18,15 @@ Restart: every successful save kicks `systemctl restart jasper-voice`.
 The voice loop comes back ~3-5 s later on the new provider; the cue
 manager's `cant_connect` plays if the new key is rejected upstream.
 
+This page renders on the canonical design system (the redesigned
+management look): `canonical_page()` + the shared /assets/app.css
+primitives, with a small page-specific stylesheet at
+/assets/voice/voice.css for the active-provider radio group and the
+pricing-rate grid. Page behaviour (clipboard copy + clear-key confirm)
+ships as the ES module /assets/voice/js/main.js — no inline <script>.
+The forms stay server-rendered request/response POSTs; only the
+presentation changed.
+
 URL surface (after nginx strips the /voice/ prefix):
   GET  /                          page render
   POST /save                      save credentials + active provider, restart
@@ -63,8 +72,10 @@ from jasper.usage import (
 )
 
 from ._common import (
-    PAGE_STYLE,
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
     delete_env_file,
     mask_secret,
@@ -75,7 +86,6 @@ from ._common import (
     send_html_response,
     send_see_other,
     verify_csrf,
-    wrap_page,
     write_env_file,
     write_json_file,
 )
@@ -88,6 +98,13 @@ logger = logging.getLogger(__name__)
 # layers this file ON TOP so wizard-written values win.
 PROVIDER_FILE = "/var/lib/jasper/voice_provider.env"
 DISCOVERY_CACHE_FILE = DEFAULT_CACHE_PATH
+
+# Page-specific stylesheet served static from /assets/ (the same path as
+# app.css + the fonts). Only the visuals app.css doesn't already cover
+# live here: the active-provider radio group, the pricing-rate grid, and
+# the readonly research-prompt textarea sizing. Cache-busted by build SHA
+# via canonical_page(page_css_href=...).
+VOICE_PAGE_CSS_HREF = "/assets/voice/voice.css"
 
 
 # Provider metadata lives in jasper.voice.catalog so the wizard's provider,
@@ -156,81 +173,16 @@ def _active_provider_id(state: dict[str, str]) -> str:
 
 
 # ----------------------------------------------------------------------
-# HTML rendering.
+# HTML rendering (canonical design system).
 # ----------------------------------------------------------------------
-
-
-_VOICE_PAGE_STYLE = PAGE_STYLE + """
-  /* Active-provider radio group at the top of the page. */
-  .active-group { background: #f4f4f4; border-radius: 6px;
-                   padding: 0.8em 1em; margin: 0.6em 0 1.4em; }
-  .active-group h2 { margin-top: 0; }
-  .active-group label.radio {
-    display: flex; align-items: center; gap: 0.6em;
-    padding: 0.5em 0.6em; border-radius: 5px;
-    margin-bottom: 0.25em; cursor: pointer;
-    background: #fff; border: 1px solid #e0e0e0;
-  }
-  .active-group label.radio:hover { background: #fafffb; }
-  .active-group label.radio.disabled {
-    color: #888; cursor: not-allowed; background: #f8f8f8;
-    border-style: dashed;
-  }
-  .active-group label.radio input[type=radio] {
-    width: auto; flex: none; margin: 0;
-  }
-  .active-group label.radio .name { font-weight: 600; flex: 1; }
-  .active-group label.radio .pricing {
-    color: #888; font-size: 0.85em; font-variant-numeric: tabular-nums;
-  }
-
-  /* Per-provider configuration cards. Reuse the .account/.account-body
-     pattern from _common so they look like the Spotify accounts. */
-  .provider-body label { font-size: 0.95em; }
-  .provider-body .meta {
-    font-size: 0.88em; color: #555; margin: 0.4em 0;
-  }
-  .provider-body .meta code {
-    background: #fafafa; border: 1px solid #e0e0e0;
-    border-radius: 3px; padding: 0.05em 0.4em;
-  }
-  .provider-body .actions {
-    display: flex; gap: 0.6em; margin-top: 1em; align-items: center;
-    flex-wrap: wrap;
-  }
-  .provider-body .actions form { margin: 0; }
-  .provider-body .key-source {
-    font-size: 0.85em; color: #888; margin-top: 0.2em;
-  }
-  .provider-body .model-discovery-status {
-    color: #666; font-size: 0.85em; margin: 0.35em 0 0.2em;
-  }
-  .provider-body .model-discovery-actions {
-    margin-top: 0.45em; gap: 0.7em;
-  }
-  .provider-body .model-discovery-actions .hint {
-    flex: 1 1 14em; margin: 0;
-  }
-"""
-
-
-def _wrap_voice_page(title: str, body: str, *, status_msg: str = "") -> bytes:
-    """Voice wizard page wrapper. Same wrap_page structure as the
-    Spotify wizard, but with the additional voice-specific style
-    block injected so the per-provider cards and the active-provider
-    radio group render correctly."""
-    page = wrap_page(title, body, status_msg=status_msg).decode()
-    return page.replace(
-        f"<style>{PAGE_STYLE}</style>",
-        f"<style>{_VOICE_PAGE_STYLE}</style>",
-    ).encode()
 
 
 def _active_radio_html(state: dict[str, str]) -> str:
     """The 'use this provider' radio block at the top of the page.
-    Disabled radios are marked aria-disabled so screen readers report
-    the correct state — the disabled attribute alone suppresses the
-    underlying input but the wrapping <label> handles the click."""
+
+    Disabled radios are also marked aria-disabled so screen readers
+    report the correct state — the disabled attribute alone suppresses
+    the underlying input but the wrapping <label> handles the click."""
     active = _active_provider_id(state)
     rows = []
     for p in PROVIDERS:
@@ -242,24 +194,27 @@ def _active_radio_html(state: dict[str, str]) -> str:
         if not configured:
             radio_attrs.append("disabled")
         radio_input = f"<input {' '.join(radio_attrs)}>"
-        cls = "radio disabled" if not configured else "radio"
+        cls = "provider-radio is-disabled" if not configured else "provider-radio"
+        aria_disabled = ' aria-disabled="true"' if not configured else ""
         status = (
             "configured" if configured
             else f"no {p.key_env} yet — paste below first"
         )
         rows.append(f"""
-          <label class="{cls}">
-            {radio_input}
-            <span class="name">{html.escape(p.label)}</span>
-            <span class="pricing">{html.escape(p.cost_hint)}</span>
-            <span class="meta" style="margin: 0">{html.escape(status)}</span>
-          </label>""")
+        <label class="{cls}"{aria_disabled}>
+          {radio_input}
+          <span class="provider-radio__name">{html.escape(p.label)}</span>
+          <span class="provider-radio__price">{html.escape(p.cost_hint)}</span>
+          <span class="provider-radio__status">{html.escape(status)}</span>
+        </label>""")
     return f"""
-<div class="active-group">
-  <h2>Use this provider for voice</h2>
-  <p class="hint">Pick which real-time backend the wake-word loop talks to. Only providers with a saved API key can be selected. Press <strong>Save and restart</strong> at the bottom of the page to apply.</p>
-  {''.join(rows)}
-</div>"""
+    <div class="info-card active-group">
+      <p class="eyebrow">Use this provider for voice</p>
+      <p class="info-card__hint">Pick which real-time backend the wake-word
+      loop talks to. Only providers with a saved API key can be selected.
+      Press <strong>Save</strong> at the bottom of the page to apply.</p>
+      {''.join(rows)}
+    </div>"""
 
 
 def _model_select_html(
@@ -330,7 +285,7 @@ def _model_discovery_status_html(
             "Catalog models are shown. Refresh is manual and never "
             "changes the active model by itself."
         )
-    return f'<p class="model-discovery-status">{status}</p>'
+    return f'<p class="form-hint">{status}</p>'
 
 
 def _voice_select_html(provider: ProviderCatalogEntry, current: str) -> str:
@@ -358,7 +313,8 @@ def _provider_extras_html(
 ) -> str:
     """Render any provider-specific extra controls (today: OpenAI's
     reasoning_effort dropdown). Empty string when the provider has no
-    extras."""
+    extras. Each extra is a canonical .field (eyebrow label + select +
+    hint)."""
     if not provider.extras:
         return ""
     out = []
@@ -380,11 +336,13 @@ def _provider_extras_html(
                 f'{html.escape(current)} (custom)</option>',
             )
         out.append(f"""
+        <div class="field">
           <label for="{provider.id}_{spec.name}">{html.escape(spec.label)}</label>
           <select id="{provider.id}_{spec.name}" name="{provider.id}_{spec.name}" form="save-form">
             {''.join(rows)}
           </select>
-          <small>{html.escape(spec.hint)}</small>""")
+          <p class="form-hint">{html.escape(spec.hint)}</p>
+        </div>""")
     return "\n".join(out)
 
 
@@ -446,37 +404,43 @@ def _pricing_section_html(
             is_custom = abs(e - d) > 1e-9
             value_attr = f"{e:g}" if is_custom else ""
             placeholder = "set a rate" if unpriced else f"default {d:g}"
-            chip = ' <span class="badge">custom</span>' if is_custom else ""
+            chip = (
+                ' <span class="badge" style="--tone:var(--status-ok)">custom</span>'
+                if is_custom else ""
+            )
             name = f"price__{html.escape(model_id)}__{field}"
             rows.append(f"""
-            <label>{html.escape(_BUCKET_LABELS[field])}{chip}</label>
-            <input type="number" min="0" step="0.01" inputmode="decimal"
-                   name="{name}" value="{value_attr}"
-                   placeholder="{html.escape(placeholder)}">""")
+            <div class="field">
+              <label>{html.escape(_BUCKET_LABELS[field])}{chip}</label>
+              <input type="number" min="0" step="0.01" inputmode="decimal"
+                     name="{name}" value="{value_attr}"
+                     placeholder="{html.escape(placeholder)}">
+            </div>""")
         needs = (
-            ' <span class="badge muted">needs pricing</span>' if unpriced else ""
+            ' <span class="badge" style="--tone:var(--status-warn)">needs pricing</span>'
+            if unpriced else ""
         )
         blocks.append(f"""
-          <div class="price-model" style="margin:0.75em 0; padding-top:0.5em; border-top:1px solid rgba(0,0,0,0.08)">
-            <p class="meta" style="margin:0 0 0.3em"><code>{html.escape(model_id)}</code>{needs}</p>
+          <div class="price-model">
+            <p class="form-hint"><code>{html.escape(model_id)}</code>{needs}</p>
             {''.join(rows)}
           </div>""")
     as_of_txt = (
         f"Bundled rates as of {html.escape(default_as_of)}. " if default_as_of else ""
     )
     return f"""
-    <details class="disclosure">
+    <details class="pricing-disclosure">
       <summary>Pricing rates</summary>
-      <div class="disclosure-body">
-        <p class="hint">{as_of_txt}Used to estimate spend on the /system
+      <div class="pricing-disclosure__body">
+        <p class="form-hint">{as_of_txt}Used to estimate spend on the /system
         dashboard. Blank = use the bundled default; clear a box to reset.
         Edits apply to future sessions after the daemon restarts.</p>
         <form method="post" action="pricing">
           {csrf_field_html(csrf_token)}
           <input type="hidden" name="provider" value="{provider.id}">
           {''.join(blocks)}
-          <div class="actions" style="margin-top:0.75em">
-            <button class="secondary" type="submit">Save {html.escape(provider.label)} rates</button>
+          <div class="form-actions">
+            <button class="btn btn--default" type="submit">Save {html.escape(provider.label)} rates</button>
           </div>
         </form>
       </div>
@@ -531,41 +495,46 @@ def _pricing_refresh_html(
 ) -> str:
     """Phase-3 section: a copyable research prompt (auto-filled with the
     speaker's exact current models) + a paste-back box that imports the
-    chatbot's JSON. Standalone form POSTing to /pricing-import."""
+    chatbot's JSON. Standalone form POSTing to /pricing-import.
+
+    The "Copy prompt" button is wired by the page's ES module (it carries
+    no inline JS); it targets the textarea by id."""
     prompt = html.escape(_pricing_research_prompt(discovery))
     return f"""
-<h2 style="margin-top:2em">Refresh all rates from a chatbot</h2>
-<p class="hint">No provider API returns voice-model prices, so this speaker
-can't fetch them automatically. Copy the prompt below into any AI chatbot
-— it lists the exact models this speaker uses and asks for current official
-prices — then paste back the JSON it replies with.</p>
-<details class="disclosure">
-  <summary>1. Copy this research prompt</summary>
-  <div class="disclosure-body">
-    <textarea id="pricing-prompt" readonly rows="14"
-      style="width:100%; font-family:monospace; font-size:0.8em">{prompt}</textarea>
-    <div class="actions" style="margin-top:0.5em">
-      <button type="button" class="secondary"
-        onclick="const t=document.getElementById('pricing-prompt');t.focus();t.select();navigator.clipboard&amp;&amp;navigator.clipboard.writeText(t.value)">Copy prompt</button>
-    </div>
-  </div>
-</details>
-<details class="disclosure">
-  <summary>2. Paste the JSON it gives you back</summary>
-  <div class="disclosure-body">
-    <form method="post" action="pricing-import">
-      {csrf_field_html(csrf_token)}
-      <textarea name="payload" rows="12"
-        style="width:100%; font-family:monospace; font-size:0.8em"
-        placeholder="{{&quot;models&quot;: {{&quot;gpt-realtime-2&quot;: {{&quot;audio_input_per_million_usd&quot;: 32}}}}}}"></textarea>
-      <div class="actions" style="margin-top:0.5em">
-        <button class="secondary" type="submit">Validate &amp; import rates</button>
-      </div>
-    </form>
-    <p class="hint">Replaces the per-model overrides with the validated
-    values, then restarts the voice daemon.</p>
-  </div>
-</details>"""
+    <section class="section">
+      <h2 class="section__title">Refresh all rates from a chatbot</h2>
+      <p class="form-hint">No provider API returns voice-model prices, so this
+      speaker can't fetch them automatically. Copy the prompt below into any AI
+      chatbot — it lists the exact models this speaker uses and asks for current
+      official prices — then paste back the JSON it replies with.</p>
+      <details class="pricing-disclosure">
+        <summary>1. Copy this research prompt</summary>
+        <div class="pricing-disclosure__body">
+          <textarea id="pricing-prompt" class="prompt-box" readonly rows="14">{prompt}</textarea>
+          <div class="form-actions">
+            <button type="button" class="btn btn--default"
+                    id="copy-prompt" data-copy-target="pricing-prompt">Copy prompt</button>
+          </div>
+        </div>
+      </details>
+      <details class="pricing-disclosure">
+        <summary>2. Paste the JSON it gives you back</summary>
+        <div class="pricing-disclosure__body">
+          <form method="post" action="pricing-import">
+            {csrf_field_html(csrf_token)}
+            <div class="field">
+              <textarea name="payload" class="prompt-box" rows="12"
+                placeholder="{{&quot;models&quot;: {{&quot;gpt-realtime-2&quot;: {{&quot;audio_input_per_million_usd&quot;: 32}}}}}}"></textarea>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn--default" type="submit">Validate &amp; import rates</button>
+            </div>
+          </form>
+          <p class="form-hint">Replaces the per-model overrides with the validated
+          values, then restarts the voice daemon.</p>
+        </div>
+      </details>
+    </section>"""
 
 
 def _provider_card_html(
@@ -578,8 +547,10 @@ def _provider_card_html(
     *,
     is_active: bool,
 ) -> str:
-    """One <details> card per provider. Open by default for the active
-    provider so the user lands on what's currently in flight."""
+    """One .info-card per provider (the canonical provider_cards
+    archetype). The card body holds the masked API-key field, the model
+    + voice selects, any provider extras, the collapsible pricing editor,
+    and a clear-key form (when configured)."""
     configured = _provider_is_configured(state, provider)
     key_value = _value_for(state, provider.key_env)
     masked = mask_secret(key_value) if key_value else ""
@@ -589,23 +560,27 @@ def _provider_card_html(
     voice_value = _value_for(
         state, provider.voice_env, default_voice_id(provider.id),
     )
-    badge_html = (
-        '<span class="badge">configured</span>' if configured
-        else '<span class="badge muted">not configured</span>'
-    )
-    active_badge = (
-        ' <span class="badge" style="background:#1db954">active</span>'
-        if is_active else ""
-    )
-    open_attr = " open" if (is_active or not configured) else ""
+    if is_active:
+        status_badge = (
+            '<span class="badge" style="--tone:var(--status-ok)">active</span>'
+        )
+    elif configured:
+        status_badge = (
+            '<span class="badge" style="--tone:var(--status-idle)">configured</span>'
+        )
+    else:
+        status_badge = (
+            '<span class="badge" style="--tone:var(--status-warn)">'
+            'not configured</span>'
+        )
     key_source = ""
     if configured and not state.get(provider.key_env):
         # Key came from /etc/jasper/jasper.env (set by the operator,
         # not the wizard). Saving here writes a wizard-owned override.
         key_source = (
-            '<p class="key-source">Currently sourced from '
-            '/etc/jasper/jasper.env — saving here will override it '
-            'in /var/lib/jasper/voice_provider.env.</p>'
+            '<p class="form-hint">Currently sourced from '
+            '<code>/etc/jasper/jasper.env</code> — saving here will override it '
+            'in <code>/var/lib/jasper/voice_provider.env</code>.</p>'
         )
     extras = _provider_extras_html(provider, state)
     placeholder = (
@@ -614,16 +589,18 @@ def _provider_card_html(
     )
     clear_form = ""
     if configured:
-        clear_form = f'''
-    <div class="actions">
-      <form method="post" action="clear-credentials"
-            onsubmit="return jtsConfirmSubmit(this, 'Clear the saved {html.escape(provider.label)} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults.', {{danger:true}});">
-        {csrf_field_html(csrf_token)}
-        <input type="hidden" name="provider" value="{provider.id}">
-        <button class="danger" type="submit">Clear key</button>
-      </form>
-    </div>
-    '''
+        # The clear-key confirm is wired by the page's ES module (a
+        # delegated submit handler on [data-confirm]); no inline JS.
+        clear_form = f"""
+        <form method="post" action="clear-credentials"
+              data-confirm="Clear the saved {html.escape(provider.label, quote=True)} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults."
+              data-confirm-danger="1">
+          {csrf_field_html(csrf_token)}
+          <input type="hidden" name="provider" value="{provider.id}">
+          <div class="form-actions">
+            <button class="btn btn--danger" type="submit">Clear key</button>
+          </div>
+        </form>"""
     refresh_disabled = "" if configured else " disabled"
     refresh_hint = (
         "Queries the provider with this speaker's saved key, caches "
@@ -632,49 +609,55 @@ def _provider_card_html(
         f"Paste a {provider.key_env} first, then refresh available models."
     )
     return f"""
-<details class="account"{open_attr}>
-  <summary>
-    <span class="name">{html.escape(provider.label)}</span>
-    <span class="meta" style="margin:0; font-size:0.85em">{html.escape(provider.vendor)}</span>
-    {badge_html}{active_badge}
-  </summary>
-  <div class="account-body provider-body">
-    <p class="meta">
-      Cost: <strong>{html.escape(provider.cost_hint)}</strong>.
-      Get a key:
-      <a href="{html.escape(provider.key_url)}" target="_blank" rel="noopener">{html.escape(provider.vendor)} console ↗</a>
-    </p>
+    <div class="info-card provider-card">
+      <div class="provider-card__head">
+        <div>
+          <h2 class="section__title">{html.escape(provider.label)}</h2>
+          <p class="eyebrow">{html.escape(provider.vendor)}</p>
+        </div>
+        {status_badge}
+      </div>
+      <p class="info-card__hint">
+        Cost: <strong>{html.escape(provider.cost_hint)}</strong>.
+        Get a key:
+        <a href="{html.escape(provider.key_url, quote=True)}" target="_blank" rel="noopener">{html.escape(provider.vendor)} console ↗</a>
+      </p>
 
-    <label for="{provider.id}_key">{html.escape(provider.key_env)}</label>
-    <input id="{provider.id}_key" name="{provider.id}_key" form="save-form"
-           type="password" autocomplete="off" autocapitalize="off"
-           autocorrect="off" spellcheck="false"
-           placeholder="{html.escape(placeholder)}">
-    {f'<p class="meta">Currently saved: <code>{html.escape(masked)}</code></p>' if masked else ''}
-    {key_source}
+      <div class="field">
+        <label for="{provider.id}_key">{html.escape(provider.key_env)}</label>
+        <input id="{provider.id}_key" name="{provider.id}_key" form="save-form"
+               type="password" autocomplete="off" autocapitalize="off"
+               autocorrect="off" spellcheck="false"
+               placeholder="{html.escape(placeholder, quote=True)}">
+        {f'<p class="form-hint">Currently saved: <code>{html.escape(masked)}</code></p>' if masked else ''}
+        {key_source}
+      </div>
 
-    <label for="{provider.id}_model">Model</label>
-    {_model_select_html(provider, model_value, discovered)}
-    {_model_discovery_status_html(provider, discovered)}
-    <div class="actions model-discovery-actions">
+      <div class="field">
+        <label for="{provider.id}_model">Model</label>
+        {_model_select_html(provider, model_value, discovered)}
+        {_model_discovery_status_html(provider, discovered)}
+      </div>
       <form method="post" action="refresh-models">
         {csrf_field_html(csrf_token)}
         <input type="hidden" name="provider" value="{provider.id}">
-        <button class="secondary" type="submit"{refresh_disabled}>Refresh available models</button>
+        <div class="form-actions">
+          <button class="btn btn--ghost" type="submit"{refresh_disabled}>Refresh available models</button>
+          <span class="form-hint">{html.escape(refresh_hint)}</span>
+        </div>
       </form>
-      <span class="hint">{html.escape(refresh_hint)}</span>
-    </div>
 
-    <label for="{provider.id}_voice">TTS voice</label>
-    {_voice_select_html(provider, voice_value)}
+      <div class="field">
+        <label for="{provider.id}_voice">TTS voice</label>
+        {_voice_select_html(provider, voice_value)}
+      </div>
 
-    {extras}
+      {extras}
 
-    {_pricing_section_html(provider, discovered, overrides, default_as_of, csrf_token)}
+      {_pricing_section_html(provider, discovered, overrides, default_as_of, csrf_token)}
 
-    {clear_form}
-  </div>
-</details>"""
+      {clear_form}
+    </div>"""
 
 
 def _index_html(
@@ -702,44 +685,56 @@ def _index_html(
         for p in PROVIDERS
     )
     # Page structure note: HTML forbids nested forms, so the outer
-    # "save" form CANNOT enclose the per-card "Clear key" forms. Layout:
+    # "save" form CANNOT enclose the per-card "Clear key" / "Refresh" /
+    # "Pricing" forms. Layout:
     #   <form id="save-form">  ← active radios + csrf
-    #     ...
     #   </form>                ← form closes BEFORE the cards
-    #   <h2>Provider keys</h2>
-    #   {cards}                ← card inputs use form="save-form"
-    #                            attribute to associate with the outer
-    #                            form by ID. Clear-key forms inside
-    #                            cards stand alone with their own csrf field.
-    #   <button form="save-form">  ← submit explicitly attaches
+    #   {cards}                ← card inputs (key/model/voice/extras) use
+    #                            form="save-form" to associate with the
+    #                            outer form by ID. The per-card clear /
+    #                            refresh / pricing forms stand alone, each
+    #                            with their own csrf field.
+    #   <button form="save-form">  ← the Save submit explicitly attaches
     body = f"""
-<p class="sub">Configure the real-time voice backend for this speaker.
-Paste an API key into any provider you want to enable, pick which one is
-active, and save — the voice daemon picks up the change on its next
-restart (about 5 seconds).</p>
+{canonical_header("Voice provider")}
+<main class="page">
+  {canonical_banner(status_msg)}
+  <p class="form-hint">Configure the real-time voice backend for this speaker.
+  Paste an API key into any provider you want to enable, pick which one is
+  active, and save — the voice daemon picks up the change on its next restart
+  (about 5 seconds).</p>
 
-<form method="post" action="save" id="save-form">
-{csrf_field_html(csrf_token)}
-{_active_radio_html(state)}
-</form>
+  <form method="post" action="save" id="save-form">
+    {csrf_field_html(csrf_token)}
+    {_active_radio_html(state)}
+  </form>
 
-<h2>Provider keys</h2>
-<p class="hint">Pasted keys are stored on this speaker only, written to
-<code>/var/lib/jasper/voice_provider.env</code> at mode 0600. They are
-never sent anywhere except the relevant provider's API.</p>
-{cards}
+  <section class="section">
+    <h2 class="section__title">Provider keys</h2>
+    <p class="form-hint">Pasted keys are stored on this speaker only, written
+    to <code>/var/lib/jasper/voice_provider.env</code> at mode 0600. They are
+    never sent anywhere except the relevant provider's API.</p>
+    {cards}
+  </section>
 
-<p style="margin-top:2em">
-  <button type="submit" form="save-form">Save and restart voice</button>
-</p>
-{_pricing_refresh_html(discovery, csrf_token)}
+  <div class="form-actions">
+    <button type="submit" form="save-form" class="btn btn--primary">Save and restart voice</button>
+  </div>
 
-<p class="hint" style="margin-top:2em">
-  See <a href="https://github.com/jaspercurry/JTS/blob/main/docs/HANDOFF-voice-providers.md" target="_blank" rel="noopener">HANDOFF-voice-providers.md</a> for architecture, per-provider trade-offs, and the steps for adding a fourth backend.
-</p>
+  {_pricing_refresh_html(discovery, csrf_token)}
+
+  <p class="form-hint" style="margin-block-start:2rem">
+    See <a href="https://github.com/jaspercurry/JTS/blob/main/docs/HANDOFF-voice-providers.md" target="_blank" rel="noopener">HANDOFF-voice-providers.md</a>
+    for architecture, per-provider trade-offs, and the steps for adding a fourth backend.
+  </p>
+</main>
+<script type="module" src="/assets/voice/js/main.js"></script>
 """
-    return _wrap_voice_page(
-        "Voice provider on this speaker", body, status_msg=status_msg,
+    return canonical_page(
+        "Voice provider",
+        body,
+        csrf_token=csrf_token,
+        page_css_href=VOICE_PAGE_CSS_HREF,
     )
 
 

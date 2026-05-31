@@ -8,6 +8,15 @@ to skip flashing without any user-facing warning."""
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+# The /dial/ setup page is now the canonical shell; its scan/provision
+# behaviour ships as this ES module rather than an inline <script>. Tests that
+# guard the device-rendering JS read the module file directly.
+_DIAL_MAIN_JS = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "assets" / "dial" / "js" / "main.js"
+)
 
 
 def test_read_firmware_status_present(tmp_path):
@@ -150,7 +159,14 @@ def test_setup_html_html_escapes_paths():
 
 def test_setup_html_escapes_usb_device_fields_before_rendering():
     """USB descriptors come from attached hardware, so the browser-side
-    template must escape them before assigning innerHTML."""
+    template must escape them before assigning innerHTML.
+
+    Post-migration the device-rendering template lives in the
+    /assets/dial/js/main.js ES module, not the page's inline <script>. The
+    page HTML still carries the CSRF token in its meta tag (the module reads
+    it); the escape-before-innerHTML guarantee and the data-action provision
+    wiring (vs. an inline onclick carrying an untrusted port) are asserted
+    against the module."""
     from jasper.web.dial_setup import _setup_html
 
     firmware = {
@@ -163,8 +179,13 @@ def test_setup_html_escapes_usb_device_fields_before_rendering():
         ssid="HomeWiFi", firmware=firmware, csrf_token="csrf-token",
     ).decode("utf-8")
 
+    # CSRF token still rides in the page meta tag for the module to read.
     assert 'meta name="jts-csrf" content="csrf-token"' in html_str
-    assert "${escapeHtml(d.port)}" in html_str
-    assert "${escapeHtml(d.description)}" in html_str
-    assert 'data-action="provision"' in html_str
-    assert 'onclick="provision' not in html_str
+
+    # The untrusted-field escaping + delegated provision wiring moved into
+    # the ES module — assert it there, same guarantee, new location.
+    js = _DIAL_MAIN_JS.read_text()
+    assert "${escapeHtml(d.port)}" in js
+    assert "${escapeHtml(d.description)}" in js
+    assert 'data-action="provision"' in js
+    assert 'onclick="provision' not in js

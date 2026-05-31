@@ -415,6 +415,107 @@ def test_canonical_page_links_page_stylesheet_with_cache_bust():
 
 
 # ----------------------------------------------------------------------
+# Canonical header (the shared .app-header top bar)
+# ----------------------------------------------------------------------
+
+
+def test_canonical_header_renders_app_header_with_back_and_title():
+    out = _common.canonical_header("Speaker name")
+    assert 'class="app-header"' in out
+    assert '<h1 class="app-header__title">Speaker name</h1>' in out
+    # Back affordance: an icon-button linking home, drawn from the shared sprite.
+    assert 'class="icon-button"' in out
+    assert 'href="/"' in out
+    assert 'aria-label="Home"' in out
+    assert '<use href="#icon-back">' in out
+    # Default right slot is an empty placeholder so the 3-col grid stays balanced.
+    assert out.count("<span></span>") == 1
+
+
+def test_canonical_header_escapes_title_and_back_attrs():
+    out = _common.canonical_header(
+        "<script>x</script>", back_href='"/evil', back_label='<b>L</b>',
+    )
+    assert "<script>" not in out
+    assert "&lt;script&gt;x&lt;/script&gt;" in out
+    # Attribute-injection via back_href / back_label must be neutralised.
+    assert '"/evil' not in out
+    assert "&quot;/evil" in out
+    assert "&lt;b&gt;L&lt;/b&gt;" in out
+
+
+def test_canonical_header_honours_custom_back_target():
+    out = _common.canonical_header("Sound", back_href="/sound/", back_label="Back")
+    assert 'href="/sound/"' in out
+    assert 'aria-label="Back"' in out
+
+
+def test_canonical_header_places_right_html_in_right_slot():
+    out = _common.canonical_header(
+        "T", right_html='<button class="btn">Edit</button>',
+    )
+    assert '<button class="btn">Edit</button>' in out
+    # The supplied right_html replaces the empty placeholder.
+    assert "<span></span>" not in out
+
+
+# ----------------------------------------------------------------------
+# Canonical banner (the shared .banner flash, twin of wrap_page's status div)
+# ----------------------------------------------------------------------
+
+
+def test_canonical_banner_blank_renders_nothing():
+    assert _common.canonical_banner("") == ""
+    assert _common.canonical_banner("   ") == ""
+
+
+def test_canonical_banner_ok_for_saved_and_cleared():
+    for msg in ("Saved. Speaker renamed.", "Cleared the cache."):
+        out = _common.canonical_banner(msg)
+        assert 'class="banner banner--ok"' in out
+        assert 'role="status"' in out
+
+
+def test_canonical_banner_danger_for_error_or_fail():
+    for msg in ("Could not save: disk error", "That request failed"):
+        assert 'class="banner banner--danger"' in _common.canonical_banner(msg)
+
+
+def test_canonical_banner_info_for_neutral_message():
+    out = _common.canonical_banner("Name unchanged.")
+    assert 'class="banner banner--info"' in out
+
+
+def test_canonical_banner_classing_mirrors_wrap_page():
+    # The whole point of the twin: a flash string lands in the same severity
+    # bucket on a migrated page as it does on a legacy wrap_page() wizard.
+    cases = {
+        "Saved.": "ok",
+        "Cleared.": "ok",
+        "Could not save: error": "danger",
+        "Connection failed": "danger",
+        "Name unchanged.": "info",
+    }
+    for msg, expected in cases.items():
+        legacy = _common.wrap_page("T", "", status_msg=msg).decode()
+        if expected == "ok":
+            assert 'class="msg ok"' in legacy
+            assert "banner--ok" in _common.canonical_banner(msg)
+        elif expected == "danger":
+            assert 'class="msg err"' in legacy
+            assert "banner--danger" in _common.canonical_banner(msg)
+        else:
+            assert '<div class="msg">' in legacy or 'class="msg"' in legacy
+            assert "banner--info" in _common.canonical_banner(msg)
+
+
+def test_canonical_banner_escapes_message():
+    out = _common.canonical_banner("<script>alert(1)</script>")
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+# ----------------------------------------------------------------------
 # Token shape validation
 # ----------------------------------------------------------------------
 

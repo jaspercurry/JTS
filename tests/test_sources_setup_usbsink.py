@@ -35,7 +35,9 @@ def test_index_html_uses_shared_toggle_markup_and_csrf_meta():
     assert 'id="t-airplay"' in html
     assert 'id="t-bluetooth"' in html
     assert "{toggle_" not in html
-    assert "headers: jsonHeaders()" in html
+    # Behaviour now ships as an ES module (post canonical-design migration);
+    # the page references it and the jsonHeaders() CSRF plumbing lives there.
+    assert '<script type="module" src="/assets/sources/js/main.js">' in html
 
 
 # ----------------------------------------------------------------------

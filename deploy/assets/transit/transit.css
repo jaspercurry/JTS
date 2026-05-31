@@ -1,0 +1,176 @@
+/* ==========================================================================
+   /transit/ — page-specific styles for the transit configuration wizard.
+
+   Loaded by canonical_page(page_css_href="/assets/transit/transit.css") from
+   jasper/web/transit_setup.py, on top of the shared /assets/app.css. Only
+   visuals app.css does NOT already provide live here: the stop/station picker
+   rows, the bus-stop cluster headings, the locked-bus-card callout, the
+   geocode result panel, and the no-coverage card. Everything else (cards,
+   fields, buttons, badges, the flash banner, the e-bike toggle) reuses the
+   canonical primitives.
+
+   Colours read the design tokens (var(--…)) so this page re-skins with the
+   rest of the system; no hardcoded hex.
+   ========================================================================== */
+
+/* Each provider gets a card. .info-card carries the look; .provider-card adds
+   the per-card rhythm and is the hook the picker rows / headings nest under. */
+.provider-card { margin: 0.875rem 0; }
+.provider-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.4rem;
+}
+.provider-card__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.provider-card__blurb {
+  margin: 0 0 0.8rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* Stop / station picker rows. A tappable card-row wrapping a radio or
+   checkbox; the whole row is the hit target (the <label> wraps the input). */
+.stop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  margin: 0.3rem 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.stop-row:hover { background: var(--card); border-color: var(--muted); }
+.stop-row.active { border-color: var(--primary); background: color-mix(in oklab, var(--primary) 8%, var(--surface)); }
+.stop-row input[type="radio"],
+.stop-row input[type="checkbox"] { flex: none; margin: 0; }
+.stop-row .name { font-weight: 600; }
+.stop-row .meta {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  text-align: right;
+}
+
+/* Bus-stop cluster header — groups opposing-direction stops at one MTA-named
+   intersection (e.g. "4 AV/39 ST"). Directions sit one indent below as rows. */
+.cluster-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0.9rem 0 0.2rem;
+}
+.cluster-heading strong { font-size: 0.95rem; }
+.cluster-heading .meta { color: var(--muted); font-size: 0.8125rem; }
+
+/* Locked bus card — restrict to "go register + paste a key". Reuses the
+   warn status token so it reads as the same severity as a warn badge. */
+.locked-card {
+  margin: 0.5rem 0 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--status-warn) 12%, var(--card));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 35%, transparent);
+}
+.locked-card p { margin: 0 0 0.6rem; line-height: 1.5; }
+.locked-card p:last-child { margin-bottom: 0; }
+
+/* Geocode result panel — the "found you here" confirmation with a Change
+   button. Accent border to read as a settled/positive state. */
+.address-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--status-ok) 10%, var(--card));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-ok) 30%, transparent);
+}
+.address-result .label { flex: 1; min-width: 200px; }
+.address-result .label strong { display: block; }
+.address-result .label .coords {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.address-result form { margin: 0; }
+
+/* No-coverage card — dashed, muted; the area isn't supported yet. */
+.no-coverage {
+  padding: 1rem 1.125rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  color: var(--muted);
+  line-height: 1.55;
+}
+.no-coverage p { margin: 0 0 0.6rem; }
+.no-coverage p:last-child { margin-bottom: 0; }
+.no-coverage strong { color: var(--foreground); }
+
+/* Inline e-bike-only preference row: a label beside the canonical toggle. */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  margin: 0.3rem 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.toggle-row .toggle-row__text { flex: 1; }
+.toggle-row .name { font-weight: 600; display: block; }
+.toggle-row .meta { color: var(--muted); font-size: 0.8125rem; }
+
+/* Save row — keep the hint beside the button. */
+.save-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.2rem; }
+
+/* Advanced disclosure body padding. <details>/<summary> carry the native
+   marker; the body is a plain bordered region with our radius. */
+details.advanced { margin-top: 1.25rem; }
+details.advanced > summary {
+  cursor: pointer;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  font-weight: 600;
+  font-family: var(--font-display);
+  user-select: none;
+  -webkit-user-select: none;
+}
+details.advanced > summary:hover { border-color: var(--muted); }
+details.advanced[open] > summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+details.advanced .advanced-body {
+  padding: 0.6rem 0.9rem 0.9rem;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
+/* "Replace API key" mini-disclosure inside the unlocked bus card. */
+details.replace-key { margin-top: 1rem; }
+details.replace-key > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.saved-key { margin: 0.5rem 0; color: var(--muted); font-size: 0.8125rem; }
+.saved-key code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

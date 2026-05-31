@@ -26,6 +26,11 @@ The toggle is the only knob; there's no per-source settings on this page.
 State polling: clients GET /state every few seconds to reflect external
 changes (operator ran `systemctl stop shairport-sync` from SSH, etc.).
 
+This page renders on the canonical design system (canonical_page); its
+behaviour ships as the static ES module deploy/assets/sources/js/main.js,
+not inline <script>. The routes, JSON shapes, CSRF gate, systemctl/DBus
+backends, and fail-soft logging are unchanged from the legacy look.
+
 URL surface (after nginx strips /sources/):
   GET  /         page render
   GET  /state    {airplay, bluetooth, spotify_connect, usbsink} → {enabled: bool, available: bool}
@@ -45,15 +50,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from ._common import (
-    TOGGLE_CSS,
     begin_request,
-    csrf_fetch_helpers_js,
-    csrf_meta_html,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     reject_csrf,
     send_html_response,
     toggle_html,
     verify_csrf,
-    wrap_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,195 +214,109 @@ def _apply(source: str, enabled: bool) -> None:
         _set_unit(USBSINK_UNIT, enabled)
 
 
-# Per-row layout layered on top of PAGE_STYLE + TOGGLE_CSS. The iOS
-# switch markup itself (label.toggle > input + span.track) lives in
-# _common.TOGGLE_CSS so /wake/'s detection layers can reuse the same
-# visual without copy-pasting the rules.
-_PAGE_CSS = f"""
-<style>
-{TOGGLE_CSS}
-  .source-row {{
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 1em 0;
-    border-bottom: 1px solid #eee;
-  }}
-  .source-row:last-child {{ border-bottom: none; }}
-  .source-name {{ font-weight: 600; font-size: 1.05em; color: #222; }}
-  .source-note {{ color: #888; font-size: 0.9em; margin-top: 0.2em; }}
-</style>
+# Per-page CSS layered on app.css. Just the source-row layout + notes; the
+# toggle, card, header, and banner are shared primitives in app.css. Status
+# colour is the one knob: the unavailable note reuses --status-warn.
+_PAGE_CSS = """
+.sources { display: flex; flex-direction: column; }
+.source-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 0.9rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.source-row:last-child { border-bottom: none; }
+.source-text { min-width: 0; }
+.source-name { font-weight: 600; color: var(--text); }
+.source-note { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
+.source-note.warn { color: var(--status-warn); }
+.source-note code {
+  font-size: 0.95em; padding: 1px 5px;
+  border-radius: var(--radius-sm); background: var(--foreground-005);
+}
 """
 
 
-def _index_html(csrf_token: str = "") -> bytes:
-    """Render the sources page. Initial state is loaded from the server
-    on first poll (one extra round trip on page load — keeps the HTML
-    static and cache-friendly)."""
-    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
-    body = _PAGE_CSS + csrf + """
-<p class="sub">Turn each playback source on or off. AirPlay and Spotify
-Connect persist across reboots; Bluetooth comes back on after a reboot
-(use this for runtime mute, not permanent disable). USB Audio Input
-is off by default — flip it on to use JTS as a USB audio output for a
-computer plugged into the Pi's USB-C port.</p>
-
-<div id="sources">
-  <div class="source-row">
-    <div>
-      <div class="source-name">AirPlay</div>
-    </div>
-    {toggle_airplay}
-  </div>
-  <div class="source-row">
-    <div>
-      <div class="source-name">Bluetooth</div>
-      <div class="source-note" id="bt-note" style="display:none">
-        Bluetooth adapter not available on this device.
+def _source_row(
+    *, name: str, input_id: str, note_html: str = "", unavailable_html: str = "",
+) -> str:
+    """One source row: name + optional notes on the left, toggle on the
+    right. The toggle is disabled at first paint; the ES module's /state
+    poll hydrates checked/disabled within a poll cycle (mirrors the
+    legacy behaviour)."""
+    notes = ""
+    if note_html:
+        notes += note_html
+    if unavailable_html:
+        notes += unavailable_html
+    return f"""
+    <div class="source-row">
+      <div class="source-text">
+        <div class="source-name">{name}</div>
+        {notes}
       </div>
+      {toggle_html(input_id, disabled=True)}
     </div>
-    {toggle_bluetooth}
-  </div>
-  <div class="source-row">
-    <div>
-      <div class="source-name">Spotify Connect</div>
+    """
+
+
+def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
+    """Render the sources page. Initial toggle state is loaded from the
+    server on the first /state poll (one extra round trip on page load —
+    keeps the HTML static and cache-friendly)."""
+    rows = "".join([
+        _source_row(name="AirPlay", input_id="t-airplay"),
+        _source_row(
+            name="Bluetooth", input_id="t-bluetooth",
+            note_html=(
+                '<div class="source-note" id="bt-note" style="display:none">'
+                "Bluetooth adapter not available on this device.</div>"
+            ),
+        ),
+        _source_row(name="Spotify Connect", input_id="t-spotify_connect"),
+        _source_row(
+            name="USB Audio Input", input_id="t-usbsink",
+            note_html=(
+                '<div class="source-note" id="usbsink-note">'
+                "Plug a computer into the Pi's USB-C port (via the 8086 "
+                "splitter). Your computer sees the speaker as a USB audio "
+                "output device.</div>"
+            ),
+            unavailable_html=(
+                '<div class="source-note warn" id="usbsink-unavailable-note" '
+                'style="display:none">USB gadget mode not enabled in '
+                "<code>/boot/firmware/config.txt</code> — re-run install.sh "
+                "and reboot.</div>"
+            ),
+        ),
+    ])
+    body = f"""
+{canonical_header("Music sources")}
+<main class="page">
+  {canonical_banner(status_msg)}
+  <p class="form-hint">Turn each playback source on or off. AirPlay and
+  Spotify Connect persist across reboots; Bluetooth comes back on after a
+  reboot (use this for runtime mute, not permanent disable). USB Audio
+  Input is off by default — flip it on to use JTS as a USB audio output
+  for a computer plugged into the Pi's USB-C port.</p>
+
+  <section class="info-card">
+    <h2 class="section__title">Sources</h2>
+    <div class="sources" id="sources">
+      {rows}
     </div>
-    {toggle_spotify}
-  </div>
-  <div class="source-row">
-    <div>
-      <div class="source-name">USB Audio Input</div>
-      <div class="source-note" id="usbsink-note">
-        Plug a computer into the Pi's USB-C port (via the 8086 splitter).
-        Your computer sees the speaker as a USB audio output device.
-      </div>
-      <div class="source-note" id="usbsink-unavailable-note" style="display:none">
-        USB gadget mode not enabled in /boot/firmware/config.txt —
-        re-run install.sh and reboot.
-      </div>
-    </div>
-    {toggle_usbsink}
-  </div>
-</div>
-
-<script>
-  // Four toggles, all wired to the same backend. Optimistic UI: we
-  // flip the checkbox immediately, then POST and reconcile from the
-  // response (rolls back on failure). Poll /state every 4 s when the
-  // tab is visible — picks up external systemctl changes from SSH.
-  (function() {
-    var POLL_MS = 4000;
-    var SOURCES = ['airplay', 'bluetooth', 'spotify_connect', 'usbsink'];
-    var inFlight = {};
-    var dirty = {};
-    var ignorePollUntil = 0;
-    var latestState = {};
-    function el(id) { return document.getElementById(id); }
-    {csrf_fetch_helpers_js}
-
-    function applyState(state) {
-      latestState = state;
-      SOURCES.forEach(function(name) {
-        var s = state[name] || {};
-        var input = el('t-' + name);
-        if (dirty[name]) return;  // user toggled mid-flight; don't clobber
-        input.checked = !!s.enabled;
-        input.disabled = s.available === false;
-      });
-      var btUnavailable = state.bluetooth && state.bluetooth.available === false;
-      el('bt-note').style.display = btUnavailable ? '' : 'none';
-      // USB sink shows a "needs reboot" note when the dtoverlay
-      // is missing (install.sh hasn't been run with the gadget
-      // section, or it's been manually removed).
-      var usbUnavailable = state.usbsink && state.usbsink.available === false;
-      el('usbsink-note').style.display = usbUnavailable ? 'none' : '';
-      el('usbsink-unavailable-note').style.display = usbUnavailable ? '' : 'none';
-    }
-
-    async function fetchState() {
-      if (document.visibilityState === 'hidden') return;
-      if (Date.now() < ignorePollUntil) return;
-      try {
-        var resp = await fetch('./state', {cache: 'no-store'});
-        if (resp.ok) applyState(await resp.json());
-      } catch (_) {}
-    }
-
-    async function postToggle(name, want) {
-      // Optimistic flip already happened on click. Mark dirty so polls
-      // don't overwrite while we wait for the server.
-      dirty[name] = true;
-      inFlight[name] = true;
-      // Pause polling briefly so a poll fired right before this POST
-      // doesn't reconcile back to the old value.
-      ignorePollUntil = Date.now() + 1500;
-      try {
-        var resp = await fetch('./set', {
-          method: 'POST',
-          headers: jsonHeaders(),
-          body: JSON.stringify({source: name, enabled: want}),
-        });
-        if (resp.ok) {
-          var state = await resp.json();
-          dirty[name] = false;
-          applyState(state);
-        } else {
-          // Server refused — roll back the optimistic flip.
-          dirty[name] = false;
-          el('t-' + name).checked = !want;
-        }
-      } catch (_) {
-        dirty[name] = false;
-        el('t-' + name).checked = !want;
-      } finally {
-        inFlight[name] = false;
-      }
-    }
-
-    SOURCES.forEach(function(name) {
-      var input = el('t-' + name);
-      input.addEventListener('change', async function() {
-        // Warn before turning Bluetooth off while a wireless remote
-        // (volume knob, etc.) is paired — otherwise the remote
-        // silently stops working until BT is turned back on.
-        if (name === 'bluetooth' && !input.checked &&
-            latestState.bluetooth && latestState.bluetooth.hasPairedHid) {
-          var ok = await jtsConfirm(
-            'Turning Bluetooth off will also disconnect paired ' +
-            'wireless remotes (volume knob, etc.). They will not ' +
-            'work again until Bluetooth is turned back on.\\n\\n' +
-            'Turn Bluetooth off anyway?',
-            {danger: true},
-          );
-          if (!ok) {
-            // Revert the optimistic flip and skip the POST entirely.
-            input.checked = true;
-            return;
-          }
-        }
-        postToggle(name, input.checked);
-      });
-    });
-
-    setInterval(fetchState, POLL_MS);
-    fetchState();
-  })();
-</script>
+  </section>
+</main>
+<script type="module" src="/assets/sources/js/main.js"></script>
 """
-    body = (body
-        .replace("{csrf_fetch_helpers_js}", csrf_fetch_helpers_js())
-        .replace("{toggle_airplay}", toggle_html("t-airplay", disabled=True))
-        .replace("{toggle_bluetooth}", toggle_html("t-bluetooth", disabled=True))
-        .replace("{toggle_spotify}", toggle_html("t-spotify_connect", disabled=True))
-        .replace("{toggle_usbsink}", toggle_html("t-usbsink", disabled=True)))
-    return wrap_page("Sources", body)
+    return canonical_page(
+        "Music sources", body, csrf_token=csrf_token, page_css=_PAGE_CSS,
+    )
 
 
 def _make_handler() -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
-
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -422,7 +340,10 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path == "/":
                 ctx = begin_request(self)
-                self._send_html(_index_html(ctx["csrf_token"]))
+                send_html_response(
+                    self,
+                    _index_html(ctx["csrf_token"], status_msg=ctx["flash"]),
+                )
                 return
             if path == "/state":
                 try:

@@ -43,6 +43,9 @@ from typing import Any
 
 from ._common import (
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
     read_env_file,
     read_form,
@@ -50,7 +53,6 @@ from ._common import (
     send_html_response,
     send_see_other,
     verify_csrf,
-    wrap_page,
     write_env_file,
 )
 
@@ -96,73 +98,87 @@ def _restart_shairport() -> None:
 
 
 def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:
-    """Render the toggle page. Two radio options with use-case copy."""
+    """Render the mode page. Two radio options with use-case copy.
+
+    Restyled onto the canonical design system: the document shell comes
+    from ``canonical_page`` (links /assets/app.css), the top bar from
+    ``canonical_header``, and any flash from ``canonical_banner``. The
+    mode choice stays a server-rendered radio group (``_apply_save``
+    reads ``form["mode"]``); each option is a ``.choice`` card styled by
+    the page stylesheet. There is no client JS — the form POSTs to
+    ./save like every other wizard."""
     fr_checked = "checked" if mode == "free-running" else ""
     sy_checked = "checked" if mode == "synced" else ""
     body = f"""
-<p class="sub">Controls how the AirPlay receiver handles clock drift between your
-sender (Mac, iPhone, iPad) and the speaker. The default works for
-everything — this toggle is here as a safety net.</p>
+{canonical_header("AirPlay sync mode")}
+<main class="page">
+  {canonical_banner(status_msg)}
+  <p class="form-hint">Controls how the AirPlay receiver handles clock drift
+  between your sender (Mac, iPhone, iPad) and the speaker. The default works
+  for everything — this setting is here as a safety net.</p>
 
-<form method="post" action="./save">
-  {csrf_field_html(csrf_token)}
-  <label style="font-weight: 400; display: block; padding: 0.6em 0;
-                border: 1px solid #e6e6e6; border-radius: 6px;
-                margin-bottom: 0.6em; padding-left: 0.8em;">
-    <input type="radio" name="mode" value="synced" {sy_checked}>
-    <strong>Synced</strong> (default — works for everything)
-    <div class="hint" style="padding-left: 1.6em;">
-      Tracks the AirPlay sender's clock. Music plays cleanly, video
-      A/V sync is preserved, and multi-room AirPlay with other
-      speakers stays in sync. Recommended unless you're hitting a
-      DAC-specific issue.
+  <form method="post" action="./save">
+    {csrf_field_html(csrf_token)}
+    <label class="choice">
+      <input type="radio" name="mode" value="synced" {sy_checked}>
+      <span class="choice__body">
+        <span class="choice__title">Synced <span class="choice__tag">default</span></span>
+        <span class="choice__hint">Tracks the AirPlay sender's clock. Music plays
+        cleanly, video A/V sync is preserved, and multi-room AirPlay with other
+        speakers stays in sync. Recommended unless you're hitting a DAC-specific
+        issue.</span>
+      </span>
+    </label>
+    <label class="choice">
+      <input type="radio" name="mode" value="free-running" {fr_checked}>
+      <span class="choice__body">
+        <span class="choice__title">Free-running <span class="choice__tag">fallback</span></span>
+        <span class="choice__hint">Plays audio without tracking the sender's clock.
+        Use this only if you've swapped to a USB DAC that exhibits periodic glitches
+        in synced mode (very-low-quality crystals can exceed shairport's
+        continuous-correction headroom). Tradeoffs: video A/V sync drifts over
+        multi-hour sessions; multi-room AirPlay drifts between speakers.</span>
+      </span>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn btn--primary">Save and restart AirPlay</button>
     </div>
-  </label>
-  <label style="font-weight: 400; display: block; padding: 0.6em 0;
-                border: 1px solid #e6e6e6; border-radius: 6px;
-                margin-bottom: 0.6em; padding-left: 0.8em;">
-    <input type="radio" name="mode" value="free-running" {fr_checked}>
-    <strong>Free-running</strong> (fallback)
-    <div class="hint" style="padding-left: 1.6em;">
-      Plays audio without tracking the sender's clock. Use this only
-      if you've swapped to a USB DAC that exhibits periodic glitches
-      in synced mode (very-low-quality crystals can exceed shairport's
-      continuous-correction headroom). Tradeoffs: video A/V sync
-      drifts over multi-hour sessions; multi-room AirPlay drifts
-      between speakers.
-    </div>
-  </label>
-  <button type="submit">Save and restart AirPlay</button>
-</form>
+  </form>
 
-<details class="disclosure">
-  <summary>Why this knob exists</summary>
-  <div class="disclosure-body">
-    <p>The JTS audio chain runs shairport-sync → snd-aloop →
-    CamillaDSP → dmix → USB DAC. Earlier in the project, shairport's
-    drift correction periodically misfired on this chain — its
-    <code>snd_pcm_delay()</code> reads the loopback ring fill instead
-    of the actual DAC latency, so a slow clock-drift between the host
-    and the dongle would trigger a discrete "tear" every ~60 s
-    (confirmed against
-    <a href="https://github.com/mikebrady/shairport-sync/issues/1980">
-    mikebrady/shairport-sync#1980</a>).</p>
-    <p>We fixed it by raising shairport's
-    <code>resync_threshold_in_seconds</code> to 0.2 in the conf
-    template, which keeps it in the continuous ±1-sample-stuffing
-    path that smoothly absorbs ~667 ppm of drift. Synced mode is now
-    glitch-free on this hardware. The toggle remains in case a
-    future DAC swap produces drift beyond the continuous path's
-    headroom (~2500 ppm) — flip to free-running and the speaker plays
-    happily without trying to sync.</p>
-    <p>Setting persists across reboots in
-    <code>/var/lib/jasper/airplay_mode.env</code>. CLI:
-    <code>jasper-airplay-mode set [synced|free-running]</code>. Full
-    history in <code>docs/HANDOFF-airplay.md</code>.</p>
-  </div>
-</details>
+  <details class="disclosure">
+    <summary>Why this knob exists</summary>
+    <div class="disclosure__body">
+      <p>The JTS audio chain runs shairport-sync → snd-aloop →
+      CamillaDSP → dmix → USB DAC. Earlier in the project, shairport's
+      drift correction periodically misfired on this chain — its
+      <code>snd_pcm_delay()</code> reads the loopback ring fill instead
+      of the actual DAC latency, so a slow clock-drift between the host
+      and the dongle would trigger a discrete "tear" every ~60 s
+      (confirmed against
+      <a href="https://github.com/mikebrady/shairport-sync/issues/1980">
+      mikebrady/shairport-sync#1980</a>).</p>
+      <p>We fixed it by raising shairport's
+      <code>resync_threshold_in_seconds</code> to 0.2 in the conf
+      template, which keeps it in the continuous ±1-sample-stuffing
+      path that smoothly absorbs ~667 ppm of drift. Synced mode is now
+      glitch-free on this hardware. The setting remains in case a
+      future DAC swap produces drift beyond the continuous path's
+      headroom (~2500 ppm) — flip to free-running and the speaker plays
+      happily without trying to sync.</p>
+      <p>Setting persists across reboots in
+      <code>/var/lib/jasper/airplay_mode.env</code>. CLI:
+      <code>jasper-airplay-mode set [synced|free-running]</code>. Full
+      history in <code>docs/HANDOFF-airplay.md</code>.</p>
+    </div>
+  </details>
+</main>
 """
-    return wrap_page("AirPlay sync mode", body, status_msg=status_msg)
+    return canonical_page(
+        "AirPlay sync mode",
+        body,
+        csrf_token=csrf_token,
+        page_css_href="/assets/airplay/airplay.css",
+    )
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:

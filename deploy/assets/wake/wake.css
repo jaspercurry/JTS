@@ -1,0 +1,165 @@
+/* wake.css — page-specific visuals for /wake/.
+ *
+ * Only what app.css doesn't already cover: the detection-layer rows, the
+ * sensitivity slider, and the wake-word model-picker radio cards. Shared
+ * chrome (.app-header, .page, .section, .info-card, .badge, .btn--*, .field)
+ * comes from app.css. Everything here is themed off the canonical design
+ * tokens — no hardcoded palette — so it re-skins with the rest of the UI. */
+
+.wake-help {
+  color: var(--muted);
+  font-size: 0.93rem;
+  margin: 0.4rem 0 1.4rem;
+  line-height: 1.5;
+}
+
+/* ----- Detection layers + sensitivity ------------------------------------ */
+
+/* The card body is an .info-card from app.css; these style the rows inside. */
+.layers-card .info-card__note {
+  margin: 0 0 0.4rem;
+}
+
+.layer-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.layer-row:last-of-type {
+  border-bottom: none;
+}
+.layer-row.is-disabled {
+  opacity: 0.55;
+}
+.layer-row .layer-body {
+  flex: 1;
+}
+.layer-row .layer-name {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.layer-row .layer-desc {
+  color: var(--muted);
+  font-size: 0.86rem;
+  margin-top: 0.15rem;
+  line-height: 1.4;
+}
+.layer-row .layer-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 0.25rem;
+  font-variant-numeric: tabular-nums;
+}
+.layer-row .layer-status {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 0.1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sensitivity-row {
+  padding-top: 0.9rem;
+  margin-top: 0.4rem;
+  border-top: 1px solid var(--border);
+}
+.sensitivity-row .layer-body {
+  width: 100%;
+}
+.sensitivity-control {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: 0.6rem;
+}
+.sensitivity-control input[type="range"] {
+  flex: 1;
+  accent-color: var(--primary);
+}
+.sensitivity-control input[type="range"]:disabled {
+  opacity: 0.4;
+}
+.sensitivity-control .sensitivity-value {
+  min-width: 3em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+
+/* ----- Wake-word model picker -------------------------------------------- */
+
+.wake-row {
+  display: block;
+  padding: 0.9rem 1rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 0.6rem;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.wake-row:hover {
+  border-color: var(--primary);
+}
+.wake-row.is-active {
+  border-color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 8%, var(--card));
+}
+.wake-row.is-unavailable {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.wake-row.is-unavailable:hover {
+  border-color: var(--border);
+}
+.wake-row .wake-row__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.25rem;
+}
+.wake-row input[type="radio"] {
+  width: auto;
+  flex: none;
+  margin: 0;
+  accent-color: var(--primary);
+}
+.wake-row .wake-row__label {
+  font-weight: 600;
+  color: var(--foreground);
+  flex: 1;
+}
+.wake-row .pronunciation {
+  color: var(--foreground);
+  font-size: 0.93rem;
+  margin: 0.15rem 0 0.35rem 1.6rem;
+  font-style: italic;
+}
+.wake-row .wake-row__desc {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0.2rem 0 0 1.6rem;
+}
+.wake-row .wake-row__stats {
+  color: var(--muted);
+  font-size: 0.83rem;
+  margin: 0.4rem 0 0 1.6rem;
+  font-variant-numeric: tabular-nums;
+}
+.wake-row .wake-row__stats a {
+  color: var(--muted);
+  text-decoration: underline;
+}
+.wake-row .wake-row__stats a:hover {
+  color: var(--primary);
+}
+
+/* The "recommended"/"not downloaded" pills reuse .badge from app.css; the
+ * tone knob picks the colour. .badge--muted is the un-toned grey pill. */
+.badge--muted {
+  --tone: var(--status-idle);
+}

@@ -1,0 +1,129 @@
+/* Page CSS for /airplay/ — the AirPlay sync-mode chooser.
+ *
+ * Only styles unique to this page live here; everything shared (tokens, .page,
+ * .app-header, .form-hint, .form-actions, .btn, the icon sprite) comes from
+ * /assets/app.css. Loaded via canonical_page(..., page_css_href=). Lives at the
+ * page dir root (deploy/assets/airplay/airplay.css), matching sound-profile/,
+ * spotify/, voice/, wake/, weather/ — install.sh copies each page dir's root
+ * *.css, so no install.sh edit is needed.
+ *
+ * Two bits aren't covered by app.css and live here:
+ *   1. `.choice` — a radio-option card. app.css's `.field` rule deliberately
+ *      leaves <input type="radio"> unstyled, and this page's mode picker is a
+ *      mutually-exclusive radio group (not the on/off `.toggle` checkbox), so
+ *      it gets its own card treatment that highlights the selected option.
+ *   2. `.disclosure` — the canonical re-skin of the legacy "Why this knob
+ *      exists" <details>, using design tokens instead of the old hex palette.
+ *
+ * Keep this file in sync with the markup in jasper/web/airplay_setup.py.
+ */
+
+/* ---- Radio-option cards. One per mode; the native radio stays the input
+ *      (keyboard + a11y for free) and the card is its clickable label. ---- */
+.choice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+  cursor: pointer;
+  transition: box-shadow 150ms ease, background-color 150ms ease;
+}
+.choice:hover { background: var(--foreground-005); }
+/* Selected option: ring + tint in the primary colour, matching .info-card--accent. */
+.choice:has(input:checked) {
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 55%, transparent);
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+}
+.choice input[type="radio"] {
+  margin: 2px 0 0;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+.choice:focus-within {
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--primary) 60%, transparent);
+}
+
+.choice__body { display: flex; flex-direction: column; gap: 4px; }
+/* Card title — middle tier of the typographic grammar (cased, display font). */
+.choice__title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+/* Inline qualifier ("default" / "fallback") — eyebrow tier. */
+.choice__tag {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.choice__hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+/* ---- "Why this knob exists" disclosure, canonical re-skin. ---- */
+.disclosure {
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+.disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 14px 40px 14px 16px;
+  position: relative;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary::after {
+  content: "";
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: translateY(-65%) rotate(45deg);
+  transition: transform 150ms ease;
+}
+.disclosure[open] > summary::after { transform: translateY(-25%) rotate(-135deg); }
+.disclosure > .disclosure__body {
+  padding: 0 16px 16px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  border-top: 1px solid var(--border);
+}
+.disclosure > .disclosure__body > * + * { margin-top: 10px; }
+.disclosure__body code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.92em;
+  background: var(--foreground-005);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+}
+.disclosure__body a { color: var(--primary); }
+
+@media (prefers-reduced-motion: reduce) {
+  .choice,
+  .disclosure > summary::after { transition: none; }
+}
