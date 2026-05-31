@@ -1393,8 +1393,10 @@ class _LegRuntime:
 # Per-leg wake_events column mapping. The peak_score column is irregular
 # for back-compat with the historical corpus (aec_on/aec_off vs
 # dtln_aec), so the columns are listed explicitly rather than derived
-# from the token. A 4th leg adds an entry here + the matching additive
-# columns in jasper.wake_events.
+# from the token. A new leg adds an entry here + the matching additive
+# columns in jasper.wake_events. The chip-AEC beam legs use a regular
+# `<field>_chip_aec_{150,210}` column shape (no historical corpus to
+# stay back-compat with — they shipped already-additive).
 _LEG_DB: dict[str, dict[str, str]] = {
     "on": {
         "trigger_kind": "fire_aec_on", "peak_score": "peak_score_aec_on",
@@ -1408,6 +1410,18 @@ _LEG_DB: dict[str, dict[str, str]] = {
         "trigger_kind": "fire_dtln", "peak_score": "peak_score_dtln_aec",
         "peak_offset": "peak_offset_ms_dtln", "mic_rms": "mic_rms_dbfs_dtln",
     },
+    "chip_aec_150": {
+        "trigger_kind": "fire_chip_aec_150",
+        "peak_score": "peak_score_chip_aec_150",
+        "peak_offset": "peak_offset_ms_chip_aec_150",
+        "mic_rms": "mic_rms_dbfs_chip_aec_150",
+    },
+    "chip_aec_210": {
+        "trigger_kind": "fire_chip_aec_210",
+        "peak_score": "peak_score_chip_aec_210",
+        "peak_offset": "peak_offset_ms_chip_aec_210",
+        "mic_rms": "mic_rms_dbfs_chip_aec_210",
+    },
 }
 
 # Which Config field carries each wake leg's mic device string. Kept here
@@ -1417,11 +1431,15 @@ _LEG_DB: dict[str, dict[str, str]] = {
 # token is "off" but its device var is cfg.mic_device_raw — the
 # operator-facing "raw" vocabulary (JASPER_MIC_DEVICE_RAW). The reconciler
 # sets/clears these vars from the JASPER_WAKE_LEG_* booleans; an empty
-# string means the leg is not configured. A 4th leg adds an entry here.
+# string means the leg is not configured. A new leg adds an entry here.
+# The chip-AEC beam legs map their token straight to the matching cfg
+# field (no token/field skew, unlike "off"->mic_device_raw).
 _LEG_DEVICE_ATTR: dict[str, str] = {
     "on": "mic_device",
     "off": "mic_device_raw",
     "dtln": "mic_device_dtln",
+    "chip_aec_150": "mic_device_chip_aec_150",
+    "chip_aec_210": "mic_device_chip_aec_210",
 }
 
 
@@ -2197,6 +2215,10 @@ class WakeLoop:
                      fallback)
           - 'dtln' → DTLN-aec output (the triple-stream tertiary leg
                      added 2026-05-23 per the triple-stream plan)
+          - 'chip_aec_150' / 'chip_aec_210' → the XVF3800 hardware-AEC ASR
+                     beams (opt-in, hardware-conditional; the chip-AEC
+                     promotion). Scored exactly like the software legs —
+                     this method is leg-agnostic via self._legs.
 
         Always tracks the leg's recent peak. If the threshold is crossed
         AND we win the OR-gate race against the other legs, fires a

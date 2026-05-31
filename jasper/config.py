@@ -163,6 +163,12 @@ class Config:
     mic_device: str
     mic_device_raw: str
     mic_device_dtln: str
+    # Optional XVF3800 chip-AEC beam legs (the fixed 150°/210° ASR beams
+    # the bridge forwards on UDP 9887/9888). Empty by default → the leg is
+    # not built; the AEC reconciler sets these from JASPER_WAKE_LEG_CHIP_AEC
+    # only on 6-channel firmware. See docs/HANDOFF-mic-fusion-architecture.md.
+    mic_device_chip_aec_150: str
+    mic_device_chip_aec_210: str
     mic_capture_rate: int
     mic_capture_channels: int
     wake_events_dir: str
@@ -493,6 +499,21 @@ class Config:
             # See docs/HANDOFF-mic-quality-v2.md "Triple-stream
             # architecture plan" for context.
             mic_device_dtln=_env("JASPER_MIC_DEVICE_DTLN", ""),
+            # JASPER_MIC_DEVICE_CHIP_AEC_150 / _210: optional fourth/fifth
+            # wake legs carrying the XVF3800's hardware-AEC ASR beams (fixed
+            # at 150° / 210°), which the bridge forwards on UDP 9887 / 9888
+            # when the chip is driven into production chip-AEC mode. When set
+            # (typically `udp:9887` / `udp:9888`), WakeLoop spawns a
+            # WakeWordDetector per beam and OR-gates their fires with the
+            # software legs. HARDWARE-CONDITIONAL + opt-in: the AEC reconciler
+            # only sets these from JASPER_WAKE_LEG_CHIP_AEC on 6-channel
+            # firmware, and clears JASPER_MIC_DEVICE_RAW/_DTLN at the same
+            # time (single-chip mutual exclusion). Empty / absent → the leg
+            # is not built (byte-identical to a no-chip install). See
+            # docs/HANDOFF-mic-fusion-architecture.md §2.4 +
+            # docs/CHIP-AEC-EXPERIMENT.md.
+            mic_device_chip_aec_150=_env("JASPER_MIC_DEVICE_CHIP_AEC_150", ""),
+            mic_device_chip_aec_210=_env("JASPER_MIC_DEVICE_CHIP_AEC_210", ""),
             # The XVF3800 supports 16 kHz mono natively, so 16000/1 is the
             # default. Mics that only do 44.1 / 48 kHz (UMIK-2 et al.) need
             # JASPER_MIC_CAPTURE_RATE=48000 and JASPER_MIC_CAPTURE_CHANNELS=2;

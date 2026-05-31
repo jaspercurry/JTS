@@ -157,7 +157,20 @@ CREATE TABLE IF NOT EXISTS wake_events (
   -- to existing DBs via the schema migration in `open()`).
   mic_muted           INTEGER,    -- 0/1; null on pre-migration rows
   mic_rms_dbfs_on     REAL,       -- instantaneous RMS at fire-time, AEC ON leg
-  mic_rms_dbfs_off    REAL        -- same for AEC OFF; null in single-stream
+  mic_rms_dbfs_off    REAL,       -- same for AEC OFF; null in single-stream
+
+  -- Chip-AEC beam legs (XVF3800 fixed 150°/210° ASR beams). Opt-in,
+  -- hardware-conditional wake legs promoted from corpus-only capture;
+  -- null unless the household enabled the chip leg via /wake/. Same
+  -- per-leg score/offset/RMS shape as the software legs above. (Per-leg
+  -- WAV capture for these beams is a deliberate follow-up — see
+  -- attach_audio / _finalize_event_audio in jasper.voice_daemon.)
+  peak_score_chip_aec_150     REAL,
+  peak_score_chip_aec_210     REAL,
+  peak_offset_ms_chip_aec_150 INTEGER,
+  peak_offset_ms_chip_aec_210 INTEGER,
+  mic_rms_dbfs_chip_aec_150   REAL,
+  mic_rms_dbfs_chip_aec_210   REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_wake_events_ts       ON wake_events(ts_utc);
@@ -204,6 +217,17 @@ _MIGRATION_COLUMNS: list[tuple[str, str]] = [
     # new Phase-1 acoustic-condition label. Both ALTER in idempotently.
     ("music_renderer", "TEXT"),
     ("condition_class", "TEXT"),
+    # Chip-AEC beam legs (XVF3800 fixed 150°/210° ASR beams) — opt-in,
+    # hardware-conditional wake legs. Additive per-leg score columns so
+    # an already-deployed Pi backfills them when the chip leg is enabled.
+    # Mirror the per-leg score/offset/RMS shape of the software legs; the
+    # CREATE TABLE block carries the same six for fresh DBs.
+    ("peak_score_chip_aec_150", "REAL"),
+    ("peak_score_chip_aec_210", "REAL"),
+    ("peak_offset_ms_chip_aec_150", "INTEGER"),
+    ("peak_offset_ms_chip_aec_210", "INTEGER"),
+    ("mic_rms_dbfs_chip_aec_150", "REAL"),
+    ("mic_rms_dbfs_chip_aec_210", "REAL"),
 ]
 
 
@@ -346,6 +370,17 @@ class WakeEventStore:
         peak_offset_ms_dtln: int | None = None,
         mic_rms_dbfs_dtln: float | None = None,
         fired_legs: str | None = None,
+        # Chip-AEC beam legs (XVF3800 150°/210° ASR beams). Optional —
+        # null on every install until the chip leg is enabled via /wake/,
+        # at which point voice_daemon._LEG_DB routes the per-beam
+        # score/offset/RMS into these columns. Per-leg WAV capture for the
+        # chip beams is a deliberate follow-up (no audio_* kwargs here yet).
+        peak_score_chip_aec_150: float | None = None,
+        peak_score_chip_aec_210: float | None = None,
+        peak_offset_ms_chip_aec_150: int | None = None,
+        peak_offset_ms_chip_aec_210: int | None = None,
+        mic_rms_dbfs_chip_aec_150: float | None = None,
+        mic_rms_dbfs_chip_aec_210: float | None = None,
     ) -> None:
         """INSERT a new wake event row. Audio is attached separately
         via `attach_audio` after the post-fire capture window closes —
@@ -370,11 +405,15 @@ class WakeEventStore:
                   voice_provider, bridge_config_json,
                   mic_muted, mic_rms_dbfs_on, mic_rms_dbfs_off,
                   peak_score_dtln_aec, peak_offset_ms_dtln,
-                  mic_rms_dbfs_dtln, fired_legs
+                  mic_rms_dbfs_dtln, fired_legs,
+                  peak_score_chip_aec_150, peak_score_chip_aec_210,
+                  peak_offset_ms_chip_aec_150, peak_offset_ms_chip_aec_210,
+                  mic_rms_dbfs_chip_aec_150, mic_rms_dbfs_chip_aec_210
                 ) VALUES (
                   ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?,
                   ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                  ?, ?, ?, ?
+                  ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -391,6 +430,9 @@ class WakeEventStore:
                     mic_rms_dbfs_on, mic_rms_dbfs_off,
                     peak_score_dtln_aec, peak_offset_ms_dtln,
                     mic_rms_dbfs_dtln, fired_legs,
+                    peak_score_chip_aec_150, peak_score_chip_aec_210,
+                    peak_offset_ms_chip_aec_150, peak_offset_ms_chip_aec_210,
+                    mic_rms_dbfs_chip_aec_150, mic_rms_dbfs_chip_aec_210,
                 ),
             )
 

@@ -220,6 +220,39 @@ ALTER TABLE wake_events ADD COLUMN audio_dtln_path TEXT;
 ALTER TABLE wake_events ADD COLUMN fired_legs TEXT;
 ```
 
+### Chip-AEC beam legs (shipped: chip-AEC promotion P1, 2026-05-31)
+
+The chip-AEC promotion
+([HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
+§2.4) turns the XVF3800's fixed 150°/210° hardware-AEC ASR beams from
+corpus-only capture into opt-in, hardware-conditional **scored wake
+legs**. Each beam gets the same per-leg score / offset / fire-time-RMS
+columns as the software legs, added via **both** `CREATE TABLE` (fresh
+DBs) and `_MIGRATION_COLUMNS` (already-deployed Pis backfill on
+`open()`):
+
+```sql
+-- Per-beam peak score / peak offset / fire-time mic RMS, one set per
+-- fixed ASR beam (150° and 210°). NULL on every install until the
+-- household enables the chip leg via /wake/ (default OFF), so the
+-- columns are byte-cost-only until then.
+ALTER TABLE wake_events ADD COLUMN peak_score_chip_aec_150     REAL;
+ALTER TABLE wake_events ADD COLUMN peak_score_chip_aec_210     REAL;
+ALTER TABLE wake_events ADD COLUMN peak_offset_ms_chip_aec_150 INTEGER;
+ALTER TABLE wake_events ADD COLUMN peak_offset_ms_chip_aec_210 INTEGER;
+ALTER TABLE wake_events ADD COLUMN mic_rms_dbfs_chip_aec_150   REAL;
+ALTER TABLE wake_events ADD COLUMN mic_rms_dbfs_chip_aec_210   REAL;
+```
+
+A chip-beam fire records `trigger_kind = 'fire_chip_aec_150'` /
+`'fire_chip_aec_210'` and adds `chip_aec_150` / `chip_aec_210` to the
+`fired_legs` CSV (so the Venn / solo-save queries above generalize to
+the chip beams with no query rewrite). **Per-leg WAV capture for the
+chip beams is a deliberate follow-up** — there is no
+`audio_chip_aec_*_path` column yet, because the software legs'
+`audio_*_path` retention + `rolled_off` plumbing is validated on-device
+before extending its filename parsing to the chip beams.
+
 Future extension for the custom-trained wake-word model (when that
 track ships):
 
@@ -612,5 +645,7 @@ listens on 9877 until PR 2 ships. PR 2 alone (without PR 3) gives
 dual-stream wake triggering with no persistence — still useful
 but loses the funnel data. The full value lands with PR 3.
 
-Last verified: 2026-05-27 (footer/status check; wake telemetry code
-paths not changed in this PR)
+Last verified: 2026-05-31 (chip-AEC promotion P1 added the six
+`*_chip_aec_{150,210}` score columns to `jasper.wake_events`; the
+Schema section above was re-verified against that code. Other sections
+spot-checked, not fully re-verified.)

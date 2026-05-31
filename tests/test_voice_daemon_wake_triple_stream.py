@@ -43,12 +43,17 @@ def _make_wake_loop_triple(
     *,
     detector_off=None,
     detector_dtln=None,
+    detector_chip_aec_150=None,
+    detector_chip_aec_210=None,
     spend_allowed: bool = True,
     conn_paused: bool = False,
 ) -> WakeLoop:
-    """Three-leg WakeLoop with a mocked wake_event_store. Bypasses
+    """Multi-leg WakeLoop with a mocked wake_event_store. Bypasses
     __init__ — only the attrs `_handle_wake_frame` touches are
-    populated, plus the telemetry store stub we assert on."""
+    populated, plus the telemetry store stub we assert on.
+
+    The chip-AEC beam legs are opt-in (pass a detector to wire one in),
+    mirroring the optional off/dtln legs."""
     wl = WakeLoop.__new__(WakeLoop)
     wl._cfg = MagicMock()
     wl._cfg.peering_enabled = False
@@ -67,6 +72,14 @@ def _make_wake_loop_triple(
     if detector_dtln is not None:
         wl._legs["dtln"] = _LegRuntime(
             by_token("dtln"), MagicMock(), detector_dtln, None,
+        )
+    if detector_chip_aec_150 is not None:
+        wl._legs["chip_aec_150"] = _LegRuntime(
+            by_token("chip_aec_150"), MagicMock(), detector_chip_aec_150, None,
+        )
+    if detector_chip_aec_210 is not None:
+        wl._legs["chip_aec_210"] = _LegRuntime(
+            by_token("chip_aec_210"), MagicMock(), detector_chip_aec_210, None,
         )
     wl._wake_fire_lock = asyncio.Lock()
     from jasper.wake_fusion import WakeFuser
@@ -220,6 +233,54 @@ async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_le
     assert legs == {"on", "off", "dtln"}, kwargs["fired_legs"]
 
 
+# ---------------------------------------------------------------------------
+# Chip-AEC beam legs — the promotion's fire-path / telemetry wiring
+# ---------------------------------------------------------------------------
+
+
+async def test_chip_aec_150_fire_records_trigger_and_score():
+    """A chip-AEC beam fire routes through its own _LEG_DB entry:
+    trigger_kind="fire_chip_aec_150" and the score lands in
+    peak_score_chip_aec_150 (not a software-leg column). Pins the
+    chip-AEC promotion's telemetry wiring the way the DTLN test pins
+    the third leg's."""
+    detector_chip = _make_detector(threshold=0.5)
+    detector_chip.score_frame.return_value = 0.79
+    wl = _make_wake_loop_triple(detector_chip_aec_150=detector_chip)
+
+    await wl._handle_wake_frame(_frame(), leg="chip_aec_150")
+
+    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    assert kwargs["trigger_kind"] == "fire_chip_aec_150"
+    assert kwargs["peak_score_chip_aec_150"] == pytest.approx(0.79)
+    assert "chip_aec_150" in kwargs["fired_legs"].split(","), kwargs["fired_legs"]
+    # Sibling beam + software-leg score columns stay None when unconfigured.
+    assert kwargs["peak_score_chip_aec_210"] in (None, 0.0)
+    assert kwargs["peak_score_aec_off"] in (None, 0.0)
+
+
+async def test_chip_beam_corroborates_in_fired_legs_when_software_leg_fires():
+    """When the AEC-on leg wins the race but a chip beam was fresh + above
+    its threshold at the same instant, fired_legs includes the chip beam —
+    the OR-gate corroboration is leg-count-agnostic and counts chip beams,
+    and the corroborating beam's recent score lands in its own column."""
+    detector_chip = _make_detector(threshold=0.5)
+    wl = _make_wake_loop_triple(detector_chip_aec_150=detector_chip)
+    wl._detector.score_frame.return_value = 0.90  # "on" wins the race
+    now = asyncio.get_event_loop().time()
+    wl._legs["chip_aec_150"].recent_score = 0.81
+    wl._legs["chip_aec_150"].recent_score_at = now
+
+    await wl._handle_wake_frame(_frame(), leg="on")
+
+    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    assert kwargs["trigger_kind"] == "fire_aec_on"  # "on" claimed the lock
+    assert set(kwargs["fired_legs"].split(",")) == {"on", "chip_aec_150"}, (
+        kwargs["fired_legs"]
+    )
+    assert kwargs["peak_score_chip_aec_150"] == pytest.approx(0.81)
+
+
 def test_leg_db_covers_all_wake_input_legs():
     """Every wake-input leg in the registry must have a _LEG_DB telemetry
     mapping — otherwise _handle_wake_frame would KeyError on a leg present
@@ -242,16 +303,24 @@ def test_leg_db_covers_all_wake_input_legs():
 # ---------------------------------------------------------------------------
 
 
-def _cfg(mic_device="udp:9876", mic_device_raw="", mic_device_dtln=""):
-    """Minimal Config stand-in for _configured_wake_legs (which reads
-    three attrs by name). SimpleNamespace, not MagicMock — a MagicMock's
-    auto-created attrs are truthy and would defeat the empty-string
-    gating the function under test relies on."""
+def _cfg(
+    mic_device="udp:9876",
+    mic_device_raw="",
+    mic_device_dtln="",
+    mic_device_chip_aec_150="",
+    mic_device_chip_aec_210="",
+):
+    """Minimal Config stand-in for _configured_wake_legs (which reads each
+    wake-input leg's device attr by name). SimpleNamespace, not MagicMock —
+    a MagicMock's auto-created attrs are truthy and would defeat the
+    empty-string gating the function under test relies on."""
     from types import SimpleNamespace
     return SimpleNamespace(
         mic_device=mic_device,
         mic_device_raw=mic_device_raw,
         mic_device_dtln=mic_device_dtln,
+        mic_device_chip_aec_150=mic_device_chip_aec_150,
+        mic_device_chip_aec_210=mic_device_chip_aec_210,
     )
 
 
@@ -301,6 +370,50 @@ def test_configured_wake_legs_primary_always_present():
     from jasper.voice_daemon import _configured_wake_legs
     legs = _configured_wake_legs(_cfg(mic_device=""))
     assert [s.token for s, _ in legs] == ["on"]
+
+
+def test_configured_wake_legs_chip_legs_not_built_when_unset():
+    """Byte-identical-when-off proof for the chip-AEC promotion: with the
+    chip device vars empty (the default), the chip legs are NOT built — so
+    an install that hasn't opted in opens no chip UDP listener and the
+    configured leg set is exactly the pre-promotion software legs."""
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="udp:9876", mic_device_raw="udp:9877",
+        mic_device_dtln="udp:9878",
+    ))
+    tokens = [s.token for s, _ in legs]
+    assert tokens == ["on", "off", "dtln"]
+    assert "chip_aec_150" not in tokens
+    assert "chip_aec_210" not in tokens
+
+
+def test_configured_wake_legs_chip_legs_built_when_set():
+    """Each chip beam leg is built (with its device) when its device var is
+    non-empty. With only the chip vars set, the software off/dtln legs stay
+    unbuilt (single-chip mutual exclusion is the reconciler's job; here we
+    just confirm the per-leg gating threads the chip device through)."""
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="udp:9876",
+        mic_device_chip_aec_150="udp:9887",
+        mic_device_chip_aec_210="udp:9888",
+    ))
+    assert [(s.token, dev) for s, dev in legs] == [
+        ("on", "udp:9876"),
+        ("chip_aec_150", "udp:9887"),
+        ("chip_aec_210", "udp:9888"),
+    ]
+
+
+def test_configured_wake_legs_chip_beams_gate_independently():
+    """One chip beam can be configured without the other — voice never opens
+    a UDP listener for an unconfigured beam."""
+    from jasper.voice_daemon import _configured_wake_legs
+    legs = _configured_wake_legs(_cfg(
+        mic_device="udp:9876", mic_device_chip_aec_150="udp:9887",
+    ))
+    assert [s.token for s, _ in legs] == ["on", "chip_aec_150"]
 
 
 def test_leg_device_attr_covers_all_wake_input_legs():

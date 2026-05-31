@@ -80,21 +80,35 @@ class LegSpec:
 
 
 # Ordered registry. Production wake legs first (matching the daemon's
-# "on" -> "off" -> "dtln" priority), then corpus-only legs. Ports match
-# jasper.cli.aec_bridge's OUT_PORT* emit constants.
+# "on" -> "off" -> "dtln" -> "chip_aec_150" -> "chip_aec_210" priority),
+# then corpus-only legs. Ports match jasper.cli.aec_bridge's OUT_PORT*
+# emit constants (so the file is grouped by wake_input, not by port — the
+# chip legs' ports 9887/9888 sit above the corpus ports by design).
 REGISTRY: tuple[LegSpec, ...] = (
     # --- production wake-detection legs (OR-gated by WakeLoop) ---
+    # Always-built software legs: the AEC reference is mic-independent, so
+    # these run against any mic (aec3, chip-direct raw, DTLN).
     LegSpec("aec3", "on", 9876, LegKind.SOFTWARE_AEC, wake_input=True),
     LegSpec("chip_direct", "off", 9877, LegKind.CHIP_DSP, wake_input=True),
     LegSpec("dtln", "dtln", 9878, LegKind.NEURAL_AEC, wake_input=True),
+    # Hardware-conditional chip-AEC beam legs — the XVF3800's fixed 150°/
+    # 210° ASR beams. Promoted from corpus-only to opt-in, hardware-gated
+    # wake inputs: WakeLoop only builds a chip leg when its device var
+    # (cfg.mic_device_chip_aec_150/_210) is non-empty, which the AEC
+    # reconciler sets from JASPER_WAKE_LEG_CHIP_AEC only on 6-channel
+    # firmware. Default unset => not built => byte-identical to today on
+    # any install that hasn't opted in. The two beams come as a firmware-
+    # fixed pair; ports 9887/9888 + tokens are frozen (the wake-corpus
+    # recorder + analysis tooling key off them). See
+    # docs/HANDOFF-mic-fusion-architecture.md §2.4 + docs/CHIP-AEC-EXPERIMENT.md.
+    LegSpec("chip_aec_150", "chip_aec_150", 9887, LegKind.HARDWARE_AEC, wake_input=True),
+    LegSpec("chip_aec_210", "chip_aec_210", 9888, LegKind.HARDWARE_AEC, wake_input=True),
     # --- corpus-only legs (recorder + offline tooling; not wake inputs) ---
     LegSpec("raw0", "raw0", 9879, LegKind.RAW, wake_input=False),
     LegSpec("reference", "ref", 9880, LegKind.REFERENCE, wake_input=False),
     LegSpec("usb_raw", "usb_raw", 9881, LegKind.RAW, wake_input=False),
     LegSpec("usb_aec3", "usb_webrtc", 9882, LegKind.SOFTWARE_AEC, wake_input=False),
     LegSpec("usb_dtln", "usb_dtln", 9883, LegKind.NEURAL_AEC, wake_input=False),
-    LegSpec("chip_aec_150", "chip_aec_150", 9887, LegKind.HARDWARE_AEC, wake_input=False),
-    LegSpec("chip_aec_210", "chip_aec_210", 9888, LegKind.HARDWARE_AEC, wake_input=False),
     LegSpec(
         "xvf_raw0_aec3",
         "xvf_raw0_webrtc_aec3",
