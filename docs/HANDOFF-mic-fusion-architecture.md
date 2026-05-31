@@ -670,14 +670,16 @@ CPU-gated.
   edits, derived from per-(leg, condition) false-fire / miss rates in the
   labelled corpus); and **1.4 — the verifier / corroboration stage (§2.6)**,
   the committed precision half of recall→verify (decided 2026-05-31, a
-  first-class stage, *not* an afterthought). 1.4 builds inside the same
-  `WakeFuser` seam: begin with a shared VAD veto + cross-leg corroboration
-  (require the AEC-on leg to confirm during TTS to kill `tts_bleed`; require
-  ≥2 legs for the raw/chip-direct FP classes), **fail open on the wake path**,
-  and measure FA/h against a fresh corpus window before tightening. The
-  verifier is what makes *adding* recall legs (more beams, a 4th arm) safe
-  rather than FA-inflating — so it lands before, not after, the leg count
-  grows.
+  first-class stage, *not* an afterthought). **The seam is landed:**
+  `WakeFuser.verify()` + its `_handle_wake_frame` hook, default always-fire
+  (behavior-identical to the OR-gate) and fail-open by contract. **Remaining
+  inside the seam** are the corroboration rules — a shared VAD veto +
+  cross-leg corroboration (require the AEC-on leg to confirm during TTS to
+  kill `tts_bleed`; require ≥2 legs for the raw/chip-direct FP classes) —
+  each gated on measuring FA/h against a fresh corpus window before
+  tightening. The verifier is what makes *adding* recall legs (more beams, a
+  4th arm) safe rather than FA-inflating — so the seam lands before, not
+  after, the leg count grows.
 - **Build:** `default_threshold_offset` per `LegSpec`; a lightweight
   `ConditionContext` estimator (music flag from the **playback-ref RMS
   the bridge already computes**; noise floor / SNR proxy) — *done in 1.1b,

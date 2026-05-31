@@ -33,3 +33,13 @@ def test_negative_offset_lowers_threshold():
 def test_unknown_pair_falls_back_to_base():
     f = WakeFuser(offsets={("off", "music"): 0.1})
     assert f.effective_threshold("dtln", "ambient", 0.42) == 0.42
+
+
+# --- Phase 1.4: the verify (corroboration) stage of recall -> verify ---
+
+def test_verify_defaults_to_fire():
+    # No corroboration rules configured -> always fire, so the verify stage
+    # is behavior-identical to a plain OR-gate (the Phase 1.4 seam contract).
+    f = WakeFuser()
+    assert f.verify("on", {"on"}, "quiet") is True
+    assert f.verify("off", {"off", "dtln"}, "music") is True

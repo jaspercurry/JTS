@@ -2275,6 +2275,22 @@ class WakeLoop:
         for _other in self._legs.values():
             _other.detector.reset()
 
+        # Verify stage (recall → verify, Phase 1.4 seam). The OR-gate above is
+        # RECALL: a leg crossed its threshold and won the race, *proposing* a
+        # fire. `verify()` is the PRECISION stage — it corroborates before the
+        # turn opens. Default is always-fire (behavior-identical to the
+        # OR-gate); corroboration rules fill in later and fail open. On a
+        # suppress the detectors are already reset above (the utterance
+        # elevated them either way) and the only refractory held is the short
+        # WAKE_REFRACTORY_SEC, so a genuine wake immediately after is not
+        # blinded.
+        if not self._fuser.verify(leg, fired_set, self._current_condition):
+            logger.info(
+                "event=wake.suppressed leg=%s fired=%s threshold=%.2f",
+                leg, fired_legs, detector.threshold,
+            )
+            return
+
         import time as _time
         self._wake_event_at_monotonic = _time.monotonic()
         # Per-leg score summary for the log: each configured leg's most-
