@@ -10,7 +10,13 @@ and `/system/` ([`jasper/web/system_setup.py`](../jasper/web/system_setup.py)),
 both rendered via `canonical_page()` + `/assets/app.css`, with page behaviour
 delivered as static ES modules under `deploy/assets/<page>/js/` (no inline
 `<script>`). See the "Canonical design system" subsection of
-[AGENTS.md](../AGENTS.md) for the delivery convention. Setup wizard,
+[AGENTS.md](../AGENTS.md) for the delivery convention. On 2026-05-30 a
+**restyle-in-place** foundation landed (shared `canonical_header` /
+`canonical_banner`, `app.css` form/banner/toggle vocabulary, shared `http.js`,
+dynamic `install.sh` asset copy) so the remaining server-rendered wizards can
+adopt the look without reinventing chrome; `/speaker/`
+([`jasper/web/speaker_setup.py`](../jasper/web/speaker_setup.py)) is the
+reference migration. See "Restyle-in-place migration" below. Setup wizard,
 conditional prompts, and fuller row-state hydration remain future phases.
 
 The first shared cross-page module is the confirm/alert dialog,
@@ -21,6 +27,125 @@ suppress ("prevent this page from creating more dialogs") — that suppression
 silently defeated `/system/`'s restart/reboot guards. The legacy
 `wrap_page()` wizards migrate to the same helper via a behaviourally-identical
 inline twin in `_common.py`.
+
+## Restyle-in-place migration (legacy → canonical)
+
+`/system/` and `/sound/` were rebuilt as client-side render targets. Most of
+the remaining ~15 wizards don't need that — they're plain server-rendered
+forms. The cheap path for them is a **restyle-in-place**: keep the
+server-rendered form and its POST request/response flow, swap only the
+document wrapper and the CSS classes, and move any inline `<script>` into an
+ES module. The shared foundation below lets a page do that **without
+reinventing chrome**. `/speaker/`
+([`jasper/web/speaker_setup.py`](../jasper/web/speaker_setup.py)) is the
+reference migration (2026-05-30).
+
+**The rule for a migrated page:** render with `canonical_page()`, build the
+body from the shared helpers, keep `csrf_field_html()` inside the `<form>`,
+preserve the existing routes + save handler + flash, and extract inline JS
+into `deploy/assets/<page>/js/main.js`. Reuse the shared layer; don't
+re-declare chrome that already exists.
+
+### Shared helpers in `_common.py`
+
+- **`canonical_header(title, *, back_href="/", back_label="Home",
+  right_html="")`** → the `.app-header` sticky top bar. Single source of truth
+  for the back button (`#icon-back` sprite symbol) + centred title + an
+  optional right-slot (`right_html`, default an empty `<span>` so the
+  3-column grid stays balanced). `title`/`back_href`/`back_label` are escaped;
+  `right_html` is caller-trusted (escape untrusted strings before passing).
+- **`canonical_banner(message)`** → the `.banner` flash, the canonical twin of
+  `wrap_page()`'s inline status `<div>`. Same string → same severity, so a
+  flash written by the shared `send_see_other(flash=...)` reads identically on
+  legacy and migrated pages: contains "error"/"fail" → `banner--danger`;
+  starts with "saved"/"cleared" → `banner--ok`; else `banner--info`. Blank
+  message → `""`, so `canonical_banner(flash)` can drop into the body
+  unconditionally.
+- **Switches reuse `toggle_html()`** — the existing native-checkbox helper.
+  There is no canonical switch helper; the canonical `.toggle` CSS in
+  `app.css` styles the *same* markup `toggle_html()` emits.
+
+### `app.css` form / banner / toggle vocabulary
+
+New shared classes (added 2026-05-30; no existing rule or `:root` token value
+was changed):
+
+- **Form:** `.field` (a labelled field stack; its `<label>` is the EYEBROW
+  tier), themed text inputs (`input[type=text|email|password|number|search|
+  url]`, `select`, `textarea` — token borders/radii/fonts, focus ring from the
+  shared `:focus-visible`), `.form-actions` (button row), `.form-hint` (helper
+  text, with `code` styling).
+- **Banner:** `.banner` + `.banner--ok` / `.banner--info` / `.banner--danger`,
+  tone driven by the same `--status-*` token vocabulary as the rest of the UI.
+- **Toggle:** the `.toggle` / `.toggle .track` / `.toggle input:checked +
+  .track` vocabulary — the token-themed twin of `_common.py`'s `TOGGLE_CSS`,
+  matching `toggle_html()`'s markup, with `:disabled` / `:focus-visible` /
+  `prefers-reduced-motion` states.
+
+Canonical pages load `app.css`; legacy pages load `TOGGLE_CSS`. They are
+deliberate twins — **never co-load both on one page.**
+
+### Shared `http.js` ES module
+
+[`deploy/assets/shared/js/http.js`](../deploy/assets/shared/js/http.js) is the
+second cross-page module (after `dialog.js`). Exports `csrfHeaders(headers)`,
+`jsonHeaders()`, `getJSON(path)`, `postJSON(path, body)` — CSRF-aware fetch
+helpers that read the token from the `<meta name="jts-csrf">` tag at call time
+(so the cacheable module bakes in no secret), same `X-CSRF-Token` contract as
+the inline wizards. A migrated page imports it by absolute path
+(`/assets/shared/js/http.js`). `system-status/js/api.js` is now a thin
+re-export of `csrfHeaders`/`jsonHeaders`/`getJSON` from it (behaviour-identical;
+`postJSON` is new and imported from the shared module directly).
+
+### Dynamic asset copy (`install.sh`)
+
+The asset-copy step now discovers **every** directory under `deploy/assets/`
+(each page slug, plus `shared`; `fonts` excluded — copied separately) and
+copies the same per-dir shape (root `*.css`, then `js/*.js` if present).
+Migrating a new wizard therefore needs **no `install.sh` edit** — adding
+`deploy/assets/<page>/` is enough. This also closes the silent-404 failure
+mode where a new page's CSS/JS never reached the Pi. `jasper-doctor`'s
+`check_web_design_assets` keys off a fixed required-file list, so new shared
+modules (like `http.js`) don't trip a false warning.
+
+### Archetype recipes
+
+Concrete layouts for the wizards still to migrate. Each names the exact
+canonical classes; all wrap their body in `canonical_header(title)` +
+`canonical_banner(flash)` + `<main class="page">`.
+
+- **Settings form** (`/speaker/`, `/weather/`, `/airplay/`): inside
+  `<main class="page">`, one `<form method="post" action="./save">` carrying
+  `csrf_field_html()`; each input is a `.field` (EYEBROW `<label>` + themed
+  `input`/`select` + a `.form-hint`); close with a `.form-actions` row holding
+  a `.btn.btn--primary` submit. A destructive secondary action is a
+  `.btn.btn--ghost` or `.btn.btn--danger` in the same row.
+- **Toggle list** (`/sources/`, `/wake/` detection legs): an `.info-card`
+  (or one per group) containing rows of "label + `toggle_html(id,
+  checked=…)`" laid out with `.control-head` / flex; the checkbox POSTs (or
+  fetches via `postJSON` from `http.js`). One `.section__title` names each
+  card; row labels stay EYEBROW.
+- **Integration card** (`/ha/`, `/google/`, `/spotify/` — three states): a
+  single `.info-card` whose body switches on connection state. **Not
+  configured:** a `.form-hint` explainer + a `.btn.btn--primary` ("Find…" /
+  "Connect"). **Connect / paste token:** a `.field` for the URL/token + a
+  `.form-actions` submit. **Connected:** a `.deflist` of status rows
+  (name/version/agent) + a `.badge` (tone `--status-ok`) + a `.btn.btn--ghost`
+  disconnect. Use `canonical_banner` for the soft-unlock / error notices.
+- **Provider cards** (`/voice/`): a stack of `.info-card`s, one per provider,
+  each with a `.section__title` (provider name), a `.field` API-key input, and
+  `.field` `<select>`s for model + voice; a single radio group at the top
+  ("use this provider") chooses the active one; one `.form-actions` submit
+  saves all. Pricing/notes go in `.form-hint` / `.info-card__hint`.
+- **Scan + connect list** (`/wifi/`, `/bluetooth/`): a current-state
+  `.info-card` at top (`.deflist` + `.badge`); a scan `.btn.btn--ghost` that
+  fetches via `getJSON` and renders results as rows (each: escaped name +
+  signal/security + a connect `.btn`); a "join by name" `.field` fallback
+  `<form>`; a collapsible saved-list with per-row forget `.btn.btn--danger`.
+  **Escape every device-provided name** before `innerHTML`; pass connect/forget
+  targets via escaped `data-*` + a delegated handler, never inline JS;
+  confirm destructive actions with `jtsConfirm(msg, {danger:true})` from
+  `dialog.js`.
 
 **Typographic grammar (three tiers).** Different semantic levels use different
 *combinations* of type axes (size + weight + case + colour) so hierarchy reads
@@ -1196,7 +1321,12 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-05-28 (Phase 1 landing-page implementation, local font
-asset serving, landing page, integrations page, nginx route map,
+Last verified: 2026-05-30 (restyle-in-place foundation +
+`/speaker/` reference migration: `canonical_header` / `canonical_banner`
+helpers, `app.css` form/banner/toggle vocabulary, shared `http.js`, dynamic
+`install.sh` asset copy, archetype recipes — `tests/test_web_common.py`,
+`tests/test_web_speaker_setup.py`, and the design-system / wizard-convention /
+main-import guards. Prior pass 2026-05-28: Phase 1 landing-page
+implementation, local font asset serving, integrations page, nginx route map,
 `jasper/web/__main__.py`, `/system/` dashboard, live `http://jts.local/`, and
 2026-05-28 design/iOS research refresh)

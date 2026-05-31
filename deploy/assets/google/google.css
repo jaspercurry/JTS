@@ -1,0 +1,264 @@
+/* google.css — page-specific styles for the /google/ OAuth wizard.
+ *
+ * App.css owns the shared design layer (tokens, .page, .info-card,
+ * .deflist, .badge, .field, .form-actions, .form-hint, .btn--*, .eyebrow,
+ * .section__title). This file adds only what is unique to this wizard:
+ *   - the linked-account list (state 3)
+ *   - the multi-step setup walkthrough (state 1)
+ *   - the callout box for in-step gotchas
+ *   - the <details class="disclosure"> panels (Connection details, etc.)
+ *   - the copy-to-clipboard row widget
+ * All colours read the canonical oklch tokens so the page re-skins with the
+ * rest of the design system; status tones use the --status-* knobs.
+ */
+
+/* ---- linked-account list (state 3) -------------------------------------- */
+ul.accounts {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1em;
+}
+ul.accounts li {
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 0.7em 0.9em;
+  border-radius: var(--radius-md);
+  margin-bottom: 0.5em;
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  flex-wrap: wrap;
+}
+ul.accounts li .name {
+  font-weight: 600;
+}
+ul.accounts li .email {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+ul.accounts li .actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.4em;
+}
+ul.accounts li .actions form {
+  margin: 0;
+}
+
+/* ---- multi-step setup walkthrough (state 1) ----------------------------- */
+ol.wizard-steps {
+  list-style: none;
+  padding: 0;
+  margin: 1.4em 0;
+}
+li.wizard-step {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 0.7em;
+  overflow: hidden;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+li.wizard-step.done {
+  background: color-mix(in oklch, var(--status-ok) 8%, var(--surface));
+  border-color: color-mix(in oklch, var(--status-ok) 35%, var(--border));
+}
+li.wizard-step.active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+li.wizard-step > details > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 0.85em 1em;
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  font-weight: 600;
+  font-size: 1.04em;
+}
+li.wizard-step > details > summary::-webkit-details-marker {
+  display: none;
+}
+li.wizard-step > details > summary::after {
+  content: "\25b8"; /* ▸ */
+  color: var(--muted);
+  font-size: 0.9em;
+  transition: transform 0.15s ease;
+  margin-left: auto;
+}
+li.wizard-step > details[open] > summary::after {
+  transform: rotate(90deg);
+}
+.step-num {
+  display: inline-flex;
+  width: 1.85em;
+  height: 1.85em;
+  border-radius: 50%;
+  background: var(--muted);
+  color: var(--primary-foreground);
+  font-size: 0.85em;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+li.wizard-step.done .step-num {
+  background: var(--status-ok);
+}
+li.wizard-step.active .step-num {
+  background: var(--primary);
+}
+li.wizard-step.done .step-num::before {
+  content: "\2713"; /* ✓ */
+}
+li.wizard-step.done .step-num span {
+  display: none;
+}
+.step-title {
+  flex: 1;
+}
+.step-status {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+li.wizard-step.done .step-status {
+  color: color-mix(in oklch, var(--status-ok) 80%, var(--foreground));
+}
+li.wizard-step.done .step-status::before {
+  content: "done \2014 "; /* "done — " */
+}
+.step-body {
+  padding: 0 1em 1em 1em;
+}
+.step-body h3 {
+  font-family: var(--font-display);
+  font-size: 0.78em;
+  margin: 1.3em 0 0.3em;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+.step-body p {
+  margin: 0.45em 0;
+}
+.step-body ol,
+.step-body ul {
+  padding-left: 1.4em;
+  margin: 0.5em 0;
+}
+.step-body li {
+  margin-bottom: 0.35em;
+}
+.step-body code,
+.disclosure-body code,
+.form-hint code {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.05em 0.4em;
+  font-size: 0.92em;
+}
+button.mark-done {
+  margin-top: 1.1em;
+}
+li.wizard-step.done button.mark-done {
+  display: none;
+}
+.creds-form-wrap {
+  margin-top: 1em;
+  padding-top: 1em;
+  border-top: 1px dashed var(--border);
+}
+
+/* "Reset wizard progress" — subtle, top-right. .btn--ghost carries the
+   base look; this just floats it. */
+.wizard-progress-reset {
+  float: right;
+  font-size: 0.82em;
+  padding: 0.25em 0.6em;
+  margin-top: -0.4em;
+}
+
+/* ---- callout box for important in-step gotchas -------------------------- */
+.callout {
+  background: color-mix(in oklch, var(--status-warn) 12%, var(--surface));
+  border-left: 4px solid var(--status-warn);
+  padding: 0.7em 0.9em;
+  margin: 0.9em 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  font-size: 0.96em;
+}
+
+/* ---- disclosure panels (Connection details / OAuth client settings) ----- */
+details.disclosure {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin: 1em 0;
+  background: var(--surface);
+}
+details.disclosure > summary {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 0.8em 1em;
+  font-weight: 600;
+}
+details.disclosure[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+.disclosure-body {
+  padding: 0.5em 1em 1em;
+}
+.disclosure-body h3 {
+  font-family: var(--font-display);
+  font-size: 0.78em;
+  margin: 1.3em 0 0.3em;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* ---- copy-to-clipboard row widget --------------------------------------- */
+.copy-row {
+  display: flex;
+  gap: 0.4em;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.copy-row input[type="text"] {
+  flex: 1;
+  min-width: 14em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 0.5em 0.7em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--foreground);
+}
+.copy-feedback {
+  color: var(--status-ok);
+  font-size: 0.85em;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.copy-feedback.shown {
+  opacity: 1;
+}
+
+/* The redirect-URL re-reference steps (numbered list inside disclosures). */
+ol.steps {
+  padding-left: 1.4em;
+  margin: 0.6em 0;
+}
+ol.steps li {
+  margin-bottom: 0.35em;
+}

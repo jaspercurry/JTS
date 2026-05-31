@@ -65,13 +65,12 @@ import httpx
 
 from .. import home_assistant as _ha_mod
 from ._common import (
-    DIALOG_CSS,
-    NAV_BACK_HTML,
-    PAGE_STYLE,
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
     delete_env_file,
-    dialog_helpers_js,
     mask_secret,
     read_env_file,
     read_form,
@@ -82,6 +81,13 @@ from ._common import (
     verify_csrf,
     write_env_file,
 )
+
+# Page-specific stylesheet served static from /assets/. Shared primitives
+# (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
+# .banner, .btn--*, .section__title, .eyebrow) come from /assets/app.css;
+# only the discover-result rows, the inline loading spinner, and the
+# post-save "configuring" restart chip live in home-assistant.css.
+HA_PAGE_CSS_HREF = "/assets/home-assistant/home-assistant.css"
 
 logger = logging.getLogger(__name__)
 
@@ -499,187 +505,87 @@ def _render_index(state: dict[str, str], csrf_token: str = "", *, status_msg: st
         body = _state_partial_html(state, csrf_token)
     else:
         body = _state_none_html(state, csrf_token)
-    return _wrap("Home Assistant", body, status_msg=status_msg)
+    return _wrap("Home Assistant", body, csrf_token=csrf_token, status_msg=status_msg)
 
 
-def _wrap(title: str, body: str, *, status_msg: str = "") -> bytes:
-    """Local wrap_page replacement that adds the wizard-specific JS
-    + CSS to the shared PAGE_STYLE."""
-    lowered = status_msg.lower()
-    if "error" in lowered or "fail" in lowered or "couldn't" in lowered:
-        msg_class = "msg err"
-    elif lowered.startswith(("saved", "connected", "cleared", "disconnected")):
-        msg_class = "msg ok"
-    else:
-        msg_class = "msg"
-    msg_html = (
-        f'<p class="{msg_class}">{html.escape(status_msg)}</p>'
-        if status_msg else ""
+def _wrap(
+    title: str, body: str, *, csrf_token: str = "", status_msg: str = "",
+) -> bytes:
+    """Wrap a state's body fragment in the canonical document shell.
+
+    Single chokepoint for all three /ha/ states: emits the .app-header
+    back bar, the flash banner, the body inside <main class="page">, and
+    the page's ES module. The CSRF <meta> (which the module reads for its
+    fetch POSTs) + the cache-busted app.css/home-assistant.css links come
+    from canonical_page(). Page-specific CSS lives in the static
+    /assets/home-assistant/home-assistant.css (page_css_href), never inline."""
+    full = (
+        canonical_header(title)
+        + '<main class="page">'
+        + canonical_banner(status_msg)
+        + body
+        + "</main>"
+        + '<script type="module" src="/assets/home-assistant/js/main.js"></script>'
     )
-    extra_css = """
-      .discover-card { background: #f4f4f4; padding: 1em; border-radius: 8px; }
-      .discover-list { display: flex; flex-direction: column; gap: 0.5em;
-                       margin-top: 0.8em; }
-      .discover-row {
-        padding: 0.7em 0.9em; background: #fff; border: 1px solid #e6e6e6;
-        border-radius: 6px; cursor: pointer; transition: border-color 0.15s;
-      }
-      .discover-row:hover { border-color: #1db954; }
-      .discover-row .row-name { font-weight: 600; }
-      .discover-row .row-url { color: #666; font-size: 0.9em;
-                                font-family: ui-monospace, monospace; }
-      .discover-empty { color: #888; font-size: 0.92em; font-style: italic;
-                        margin-top: 0.6em; }
-      .recent-urls { margin-top: 1em; }
-      .recent-urls .recent-link {
-        display: inline-block; margin: 0.2em 0.3em 0.2em 0;
-        padding: 0.3em 0.6em; background: #fff; border: 1px solid #e6e6e6;
-        border-radius: 4px; font-size: 0.88em;
-        font-family: ui-monospace, monospace; color: #444; cursor: pointer;
-      }
-      .recent-urls .recent-link:hover { border-color: #1db954; color: #1db954; }
-      .spinner {
-        display: inline-block; width: 1em; height: 1em; margin-right: 0.3em;
-        border: 2px solid #ccc; border-top-color: #1db954; border-radius: 50%;
-        animation: spin 0.8s linear infinite; vertical-align: -2px;
-      }
-      @keyframes spin { to { transform: rotate(360deg); } }
-      .status-grid {
-        display: grid; grid-template-columns: max-content 1fr; gap: 0.5em 1em;
-        margin: 1em 0;
-      }
-      .status-grid dt { font-weight: 600; color: #555; }
-      .status-grid dd { margin: 0; font-family: ui-monospace, monospace; }
-      .danger-zone {
-        margin-top: 2em; padding: 1em; background: #fff5f5;
-        border: 1px solid #fcc; border-radius: 6px;
-      }
-      .danger-zone p { margin: 0 0 0.6em; color: #844; font-size: 0.92em; }
-      .voice-pack-card {
-        margin: 1.4em 0; padding: 1em 1.2em;
-        background: #f4f9f4; border: 1px solid #c9e3c9;
-        border-radius: 8px;
-      }
-      .voice-pack-card h2 { margin: 0 0 0.6em; font-size: 1.05em; }
-      .voice-pack-card p { margin: 0.4em 0; font-size: 0.94em; }
-      .voice-pack-card code {
-        background: #e6e6e6; padding: 0.1em 0.3em; border-radius: 3px;
-        font-family: ui-monospace, monospace; font-size: 0.92em;
-      }
-    """
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(title)} · JTS speaker</title>
-<style>{PAGE_STYLE}{extra_css}{DIALOG_CSS}</style>
-</head>
-<body>
-{NAV_BACK_HTML}
-<h1>{html.escape(title)}</h1>
-{msg_html}
-<script>{dialog_helpers_js()}</script>
-{body}
-</body>
-</html>""".encode()
+    return canonical_page(
+        title, full,
+        csrf_token=csrf_token,
+        page_css_href=HA_PAGE_CSS_HREF,
+    )
 
 
 def _state_none_html(state: dict[str, str], csrf_token: str = "") -> str:
     """Render state 1: no URL set. Discover + manual entry side-by-side
-    plus any recent URLs the user previously connected to."""
+    plus any recent URLs the user previously connected to.
+
+    Behaviour (discover scan, recent-chip + result-row click-to-fill)
+    lives in /assets/home-assistant/js/main.js — this function only
+    renders static markup. Recent URLs ride in escaped data-url
+    attributes; discovered-instance names/URLs are untrusted (mDNS-
+    advertised) and the module builds those rows via DOM/text APIs."""
     recent = _recent_urls(state)
     recent_html = ""
     if recent:
         chips = " ".join(
-            f'<a class="recent-link" data-url="{html.escape(u)}">{html.escape(u)}</a>'
+            f'<button type="button" class="btn btn--ghost recent-link" '
+            f'data-url="{html.escape(u, quote=True)}">{html.escape(u)}</button>'
             for u in recent
         )
         recent_html = f"""
         <div class="recent-urls">
-          <strong>Recent:</strong> {chips}
+          <span class="eyebrow">Recent</span> {chips}
         </div>"""
     return f"""
-<p class="sub">Connect your speaker to Home Assistant so it can control
+<p class="form-hint">Connect your speaker to Home Assistant so it can control
 your smart-home devices when you ask (lights, switches, thermostats,
 scenes, scripts, automations).</p>
 
-<h2>1. Choose a Home Assistant instance</h2>
-
-<div class="discover-card">
-  <button id="discover-btn" type="button">Find Home Assistant on this network</button>
-  <span id="discover-status" class="hint" style="margin-left: 0.6em;"></span>
+<div class="info-card">
+  <h2 class="section__title">Choose a Home Assistant instance</h2>
+  <div class="form-actions">
+    <button id="discover-btn" type="button" class="btn btn--default">Find Home Assistant on this network</button>
+    <span id="discover-status" class="form-hint"></span>
+  </div>
   <div id="discover-results" class="discover-list"></div>
   {recent_html}
 </div>
 
-<h2 style="margin-top: 1.4em;">Or enter the URL manually</h2>
 <form id="manual-form" method="post" action="./save">
   {csrf_field_html(csrf_token) if csrf_token else ''}
-  <label for="url">Home Assistant URL</label>
-  <input type="text" name="url" id="url" placeholder="http://homeassistant.local:8123"
-         autocomplete="off" autocapitalize="off" spellcheck="false">
-  <small>Common values: <code>homeassistant.local:8123</code>,
-  <code>192.168.1.42:8123</code>, or whatever address you use to open
-  Home Assistant in your browser.</small>
+  <div class="field">
+    <label for="url">Or enter the URL manually</label>
+    <input type="text" name="url" id="url" placeholder="http://homeassistant.local:8123"
+           autocomplete="off" autocapitalize="off" spellcheck="false">
+    <p class="form-hint">Common values: <code>homeassistant.local:8123</code>,
+    <code>192.168.1.42:8123</code>, or whatever address you use to open
+    Home Assistant in your browser.</p>
+  </div>
   <input type="hidden" name="token" value="">
   <input type="hidden" name="agent_id" value="">
-  <p style="margin-top: 1em;">
-    <button type="submit">Continue</button>
-  </p>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary">Continue &rarr;</button>
+  </div>
 </form>
-
-<script>
-  // Discover button: POST /discover, render the result list, fill the
-  // manual URL when a row is clicked.
-  const btn = document.getElementById('discover-btn');
-  const status = document.getElementById('discover-status');
-  const results = document.getElementById('discover-results');
-  const urlField = document.getElementById('url');
-
-  btn.addEventListener('click', async () => {{
-    btn.disabled = true;
-    status.innerHTML = '<span class="spinner"></span>Scanning the network…';
-    results.innerHTML = '';
-    try {{
-      const r = await fetch('./discover', {{method: 'POST'}});
-      const data = await r.json();
-      const items = (data && data.instances) || [];
-      if (items.length === 0) {{
-        results.innerHTML =
-          '<div class="discover-empty">No Home Assistant instances ' +
-          'found on this network. Use the manual URL field below.</div>';
-      }} else {{
-        results.innerHTML = items.map(it =>
-          '<div class="discover-row" data-url="' + it.url + '">' +
-          '<div class="row-name">' + (it.location_name || 'Home Assistant') +
-          (it.version ? ' <span class="hint">(' + it.version + ')</span>' : '') +
-          '</div><div class="row-url">' + it.url + '</div></div>'
-        ).join('');
-        // Wire each row to the manual URL field
-        results.querySelectorAll('.discover-row').forEach(row => {{
-          row.addEventListener('click', () => {{
-            urlField.value = row.dataset.url;
-            urlField.focus();
-            urlField.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-          }});
-        }});
-      }}
-      status.textContent = '';
-    }} catch (e) {{
-      status.textContent = 'Scan failed: ' + e.message;
-    }}
-    btn.disabled = false;
-  }});
-
-  // Recent-URLs chips: clicking fills the manual URL field.
-  document.querySelectorAll('.recent-link').forEach(el => {{
-    el.addEventListener('click', () => {{
-      urlField.value = el.dataset.url;
-      urlField.focus();
-    }});
-  }});
-</script>
 """
 
 
@@ -703,13 +609,10 @@ def _state_partial_html(state: dict[str, str], csrf_token: str = "") -> str:
         # state-2 re-render preserves the user's prior choice.
         checked_attr = "checked" if not verify_ssl else ""
         ssl_block = f"""
-  <label style="display: flex; align-items: center; gap: 0.5em;
-                font-weight: 400; margin-top: 1em;">
-    <input type="checkbox" name="accept_self_signed" value="on"
-           {checked_attr}
-           style="width: auto; margin: 0;">
+  <label class="check-field">
+    <input type="checkbox" name="accept_self_signed" value="on" {checked_attr}>
     <span><strong>Accept a self-signed certificate.</strong>
-    <span class="hint" style="display: block; margin-top: 0.2em;">
+    <span class="form-hint">
       Enable this only for Home Assistant instances on your own LAN
       that don't have a publicly-trusted certificate. Leaving it off
       is the safe default and works for Nabu Casa / Let's Encrypt /
@@ -718,36 +621,35 @@ def _state_partial_html(state: dict[str, str], csrf_token: str = "") -> str:
   </label>
   <input type="hidden" name="accept_self_signed_present" value="1">"""
     return f"""
-<p class="sub">Step 2 of 2 — paste a token so the speaker can talk to
+<p class="form-hint">Step 2 of 2 — paste a token so the speaker can talk to
 Home Assistant.</p>
 
-<div style="background: #f4f4f4; padding: 0.7em 1em; border-radius: 8px;
-            margin-bottom: 1em; font-family: ui-monospace, monospace;
-            font-size: 0.92em; color: #555; word-break: break-all;">
-  {html.escape(url)}
+<div class="info-card">
+  <span class="eyebrow">Home Assistant URL</span>
+  <p class="url-display">{html.escape(url)}</p>
 </div>
 
 <form method="post" action="./save">
   {csrf_field_html(csrf_token) if csrf_token else ''}
   <input type="hidden" name="url" value="{html.escape(url)}">
 
-  <label for="token">Long-Lived Access Token</label>
-  <textarea name="token" id="token" rows="3" style="width: 100%; padding: 0.5em;
-            font-family: ui-monospace, monospace; font-size: 0.9em;
-            border: 1px solid #bbb; border-radius: 4px; box-sizing: border-box;"
-            autocomplete="off" autocapitalize="off" spellcheck="false"
-            placeholder="eyJ0eXAiOi…  (~180 characters)"></textarea>
-  <small>In Home Assistant, open
-    <a href="{html.escape(profile_url)}" target="_blank" rel="noopener">{html.escape(profile_url)}</a>,
-    scroll to the bottom, click <strong>Create Token</strong>, name it
-    something like &ldquo;JTS Speaker&rdquo;, and paste the value here.
-    The token is shown only once — copy it carefully.</small>
+  <div class="field">
+    <label for="token">Long-Lived Access Token</label>
+    <textarea name="token" id="token" rows="3" class="token-input"
+              autocomplete="off" autocapitalize="off" spellcheck="false"
+              placeholder="eyJ0eXAiOi…  (~180 characters)"></textarea>
+    <p class="form-hint">In Home Assistant, open
+      <a href="{html.escape(profile_url)}" target="_blank" rel="noopener">{html.escape(profile_url)}</a>,
+      scroll to the bottom, click <strong>Create Token</strong>, name it
+      something like &ldquo;JTS Speaker&rdquo;, and paste the value here.
+      The token is shown only once — copy it carefully.</p>
+  </div>
   {ssl_block}
 
-  <p style="margin-top: 1em;">
-    <button type="submit">Verify and save</button>
-    <a class="btn secondary" href="./reset">Use a different URL</a>
-  </p>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary">Verify and save</button>
+    <a class="btn btn--ghost" href="./reset">Use a different URL</a>
+  </div>
 </form>
 """
 
@@ -1009,55 +911,72 @@ def _state_connected_html(state: dict[str, str], csrf_token: str = "") -> str:
     """Render state 3: URL + token both set. We optimistically display
     the connection as healthy; the user can hit "Test connection" to
     verify against the live HA. Includes an advanced agent picker
-    and a Disconnect button."""
+    and a Disconnect button.
+
+    Behaviour (Test connection, agent-picker populate, post-save
+    restart-poll, and the two voice-pack copy buttons) lives in
+    /assets/home-assistant/js/main.js. The current agent id and the
+    voice-pack prompt template ride in the #ha-page-data JSON block so
+    the cacheable module carries no page-specific data; the live URL +
+    token are NEVER rendered into the page DOM — the module fetches them
+    lazily from /credentials-for-copy on the user's click (see that
+    handler's docstring)."""
     url = state.get(ENV_URL, "")
     token = state.get(ENV_TOKEN, "")
     agent_id = state.get(ENV_AGENT_ID, "")
+    # agent_id is registry-free user text; the voice-pack prompt is a
+    # trusted in-repo constant. Both are JSON-encoded into a typed data
+    # island the module reads — never interpolated into executable JS.
+    page_data = json.dumps({
+        "currentAgent": agent_id,
+        "voicePackPrompt": VOICE_PACK_PROMPT,
+    })
     return f"""
-<p class="sub">Connected. The speaker will delegate smart-home requests
+<p class="form-hint">Connected. The speaker will delegate smart-home requests
 to this Home Assistant instance.</p>
 
-<dl class="status-grid">
-  <dt>URL</dt>
-  <dd>{html.escape(url)}</dd>
-  <dt>Token</dt>
-  <dd>{html.escape(mask_secret(token))}</dd>
-  <dt>Agent</dt>
-  <dd id="agent-display">{html.escape(agent_id) if agent_id else "(Home Assistant default)"}</dd>
-</dl>
+<div class="info-card">
+  <dl class="deflist">
+    <dt>URL</dt>
+    <dd>{html.escape(url)}</dd>
+    <dt>Token</dt>
+    <dd>{html.escape(mask_secret(token))}</dd>
+    <dt>Agent</dt>
+    <dd id="agent-display">{html.escape(agent_id) if agent_id else "(Home Assistant default)"}</dd>
+  </dl>
+  <div class="form-actions">
+    <button id="test-btn" type="button" class="btn btn--default">Test connection</button>
+    <span id="test-status" class="form-hint"></span>
+  </div>
+</div>
 
-<p>
-  <button id="test-btn" type="button">Test connection</button>
-  <span id="test-status" class="hint" style="margin-left: 0.6em;"></span>
-</p>
-
-<div class="voice-pack-card">
-  <h2>Make voice phrases work for your setup</h2>
-  <p>HA's default voice agent only understands precise phrasing —
+<div class="info-card">
+  <h2 class="section__title">Make voice phrases work for your setup</h2>
+  <p class="form-hint">HA's default voice agent only understands precise phrasing —
   "turn off the bedroom lights" works, but "bedroom off" or
   "bedroom dark" doesn't. The fix is sentence-trigger automations
   in HA, one per phrase, that route directly to your scenes and
   scripts.</p>
-  <p>Rather than write these by hand, copy the prompt below into
+  <p class="form-hint">Rather than write these by hand, copy the prompt below into
   your coding agent of choice (Claude Code, Cursor, Aider, ChatGPT
   with tool use, etc.) and let it audit your actual usage, ask a
   few clarifying questions, and deploy the pack.</p>
-  <p>
-    <button id="copy-voice-prompt-btn" type="button">📋 Copy prompt</button>
-    <button id="copy-voice-prompt-creds-btn" type="button" class="secondary">📋 Copy with HA credentials</button>
+  <div class="form-actions">
+    <button id="copy-voice-prompt-btn" type="button" class="btn btn--primary">Copy prompt</button>
+    <button id="copy-voice-prompt-creds-btn" type="button" class="btn btn--default">Copy with HA credentials</button>
     <span id="copy-voice-prompt-feedback" class="copy-feedback"></span>
-  </p>
-  <p class="hint" style="margin-top: 0.8em;"><strong>Recommended:</strong>
+  </div>
+  <p class="form-hint"><strong>Recommended:</strong>
   take an HA backup first (Settings → System → Backups → Create
   backup). The agent only creates automations prefixed
   <code>Voice:</code> and never modifies your existing ones, but
   a backup is cheap insurance.</p>
 </div>
 
-<details class="disclosure">
-  <summary>Conversation agent (advanced)</summary>
-  <div class="disclosure-body">
-    <p>By default the speaker uses whichever conversation agent you've
+<details class="info-card">
+  <summary><strong>Conversation agent (advanced)</strong></summary>
+  <div>
+    <p class="form-hint">By default the speaker uses whichever conversation agent you've
     set as the default in Home Assistant — Settings → Voice Assistants
     → Default agent. Override here only when you want JTS to use a
     different agent than your other Home Assistant interfaces (e.g.
@@ -1070,269 +989,36 @@ to this Home Assistant instance.</p>
       <!-- Token deliberately omitted. The save handler keeps the
            existing token when the form's token field is empty. -->
       <input type="hidden" name="token" value="">
-      <label for="agent_id">Agent override</label>
-      <select name="agent_id" id="agent_id">
-        <option value="">(use Home Assistant's default)</option>
-      </select>
-      <small>The list populates from your Home Assistant when you open
-      this page. Pick an option and click Save.</small>
-      <p style="margin-top: 0.8em;">
-        <button type="submit">Save agent override</button>
-      </p>
+      <div class="field">
+        <label for="agent_id">Agent override</label>
+        <select name="agent_id" id="agent_id">
+          <option value="">(use Home Assistant's default)</option>
+        </select>
+        <p class="form-hint">The list populates from your Home Assistant when you open
+        this page. Pick an option and click Save.</p>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary">Save agent override</button>
+      </div>
     </form>
   </div>
 </details>
 
-<div class="danger-zone">
-  <p><strong>Disconnect.</strong> Removes the URL and token from this
+<div class="info-card" style="--tone: var(--status-danger)">
+  <p class="form-hint"><strong>Disconnect.</strong> Removes the URL and token from this
   speaker. Smart-home commands will stop working until you reconnect.
   Doesn't change anything in Home Assistant itself.</p>
-  <form method="post" action="./disconnect"
-        onsubmit="return jtsConfirmSubmit(this, 'Disconnect this speaker from Home Assistant?', {{danger:true}});">
+  <form method="post" action="./disconnect" id="disconnect-form"
+        data-confirm="Disconnect this speaker from Home Assistant?"
+        data-confirm-danger="1">
     {csrf_field_html(csrf_token) if csrf_token else ''}
-    <button type="submit" class="danger">Disconnect</button>
+    <div class="form-actions">
+      <button type="submit" class="btn btn--danger">Disconnect</button>
+    </div>
   </form>
 </div>
 
-<script>
-  const agentSelect = document.getElementById('agent_id');
-  const agentDisplay = document.getElementById('agent-display');
-  const currentAgent = {json.dumps(agent_id)};
-
-  // restarting=1 marker → the page just landed from a successful
-  // /save. jasper-voice restarts asynchronously (--no-block), so
-  // /verify might 401 or hit a transient error for a few seconds.
-  // Poll /verify with a short cadence + a 15 s ceiling, show a
-  // "Configuring…" chip that clears once we see ok=true. Without
-  // this UX, the user sees a green "Connected to X" banner and may
-  // immediately try a voice command against a still-rebooting daemon.
-  const urlParams = new URLSearchParams(window.location.search);
-  const isRestarting = urlParams.get('restarting') === '1';
-
-  // Two endpoints, two purposes:
-  //   /ready  — one HA HTTP call (GET /api/). Used for the
-  //             restart-poll loop where we just need a yes/no.
-  //   /verify — three HA HTTP calls (/api/, /api/config,
-  //             /api/states). Used for the initial agent-picker
-  //             populate AND the final post-readiness enrichment.
-  async function pollReady() {{
-    try {{
-      const r = await fetch('./ready', {{method: 'POST'}});
-      const data = await r.json();
-      return Boolean(data && data.ok);
-    }} catch (e) {{
-      return false;
-    }}
-  }}
-  async function fullVerify() {{
-    try {{
-      const r = await fetch('./verify', {{method: 'POST'}});
-      return await r.json();
-    }} catch (e) {{
-      return null;
-    }}
-  }}
-
-  function populateAgents(data) {{
-    if (!data || !data.ok) return;
-    // Wipe any prior options except the default one.
-    while (agentSelect.options.length > 1) {{
-      agentSelect.remove(1);
-    }}
-    const agents = data.agents || [];
-    for (const a of agents) {{
-      const opt = document.createElement('option');
-      opt.value = a.entity_id;
-      opt.textContent = a.name + ' (' + a.entity_id + ')';
-      if (a.entity_id === currentAgent) opt.selected = true;
-      agentSelect.appendChild(opt);
-    }}
-    if (data.instance_name && data.instance_name !== 'Home Assistant') {{
-      document.title = data.instance_name + ' · Home Assistant · JTS speaker';
-    }}
-  }}
-
-  (async () => {{
-    if (!isRestarting) {{
-      // Regular page load: one /verify call to populate agents +
-      // instance metadata.
-      populateAgents(await fullVerify());
-      return;
-    }}
-    // Restart-window UX: insert a chip near the test button and poll
-    // /ready every 1 s for up to 15 s. The 15 s ceiling covers
-    // Type=notify boot for jasper-voice (model load + cue regen +
-    // realtime backend handshake on a Pi 5). One HA call per second
-    // instead of three — easier on HA when the household has an
-    // LLM-backed conversation agent that doesn't like burst traffic.
-    const chip = document.createElement('div');
-    chip.style.cssText = 'padding: 0.6em 0.9em; background: #fff4e0;' +
-      'border: 1px solid #f0c060; border-radius: 6px; margin: 1em 0;' +
-      'display: flex; align-items: center; gap: 0.5em;';
-    chip.innerHTML = '<span class="spinner"></span>' +
-      '<span>Configuring… the speaker is finishing its restart. ' +
-      'Voice commands will work in a few seconds.</span>';
-    document.querySelector('.status-grid').insertAdjacentElement('afterend', chip);
-
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline) {{
-      if (await pollReady()) {{
-        // Daemon is back. One full /verify to pull the agent list +
-        // instance name + version for the success chip.
-        const data = await fullVerify();
-        chip.style.background = '#e6f9ec';
-        chip.style.borderColor = '#1db954';
-        chip.innerHTML = '<span style="color: #14542a; font-weight: 600;">' +
-          '✓ Ready.</span> Smart-home commands work now.';
-        populateAgents(data);
-        history.replaceState(null, '', window.location.pathname);
-        return;
-      }}
-      await new Promise(r => setTimeout(r, 1000));
-    }}
-    // Timed out — show a friendly fallback.
-    chip.style.background = '#fff5f5';
-    chip.style.borderColor = '#fcc';
-    chip.innerHTML = '<span style="color: #844;">⚠</span> ' +
-      'The restart is taking longer than expected. Try ' +
-      '<button id="late-test" type="button" ' +
-      'style="background: #fff; color: #1db954; border: 1px solid #1db954;' +
-      'padding: 0.2em 0.5em; border-radius: 4px; margin: 0 0.2em;">Test connection</button> ' +
-      'in a moment.';
-    document.getElementById('late-test').addEventListener('click', async () => {{
-      populateAgents(await fullVerify());
-    }});
-    history.replaceState(null, '', window.location.pathname);
-  }})();
-
-  // Test connection button.
-  const testBtn = document.getElementById('test-btn');
-  const testStatus = document.getElementById('test-status');
-  testBtn.addEventListener('click', async () => {{
-    testBtn.disabled = true;
-    testStatus.innerHTML = '<span class="spinner"></span>Checking…';
-    try {{
-      const r = await fetch('./verify', {{method: 'POST'}});
-      const data = await r.json();
-      if (data.ok) {{
-        testStatus.innerHTML = '<span style="color: #14542a;">' +
-          '✓ Connected to ' + (data.instance_name || 'Home Assistant') +
-          (data.version ? ' (' + data.version + ')' : '') + '.</span>';
-      }} else {{
-        testStatus.innerHTML = '<span style="color: #a33;">' +
-          (data.error || 'Connection failed.') + '</span>';
-      }}
-    }} catch (e) {{
-      testStatus.textContent = 'Network error: ' + e.message;
-    }}
-    testBtn.disabled = false;
-  }});
-
-  // ---- Voice-pack prompt: two copy buttons -------------------------
-  // Default button copies the prompt with visible <placeholders> for
-  // URL + token (safer to share, includes brief paste-in instructions
-  // for the agent). Credentials button fetches the live values from
-  // ./credentials-for-copy after a confirm dialog that flags the
-  // security trade-off, substitutes them in, and copies. The live
-  // values are NEVER rendered into the page body — see
-  // do_POST('/credentials-for-copy') for the rationale.
-  // The template is JSON-encoded server-side so multi-line prose,
-  // backticks, and curly braces survive embedding in a JS string
-  // literal without quoting gymnastics.
-  const VOICE_PROMPT_TEMPLATE = {json.dumps(VOICE_PACK_PROMPT)};
-  const URL_PLACEHOLDER_FOR_SHARING = '<your HA URL, e.g. http://homeassistant.local:8123>';
-  const TOKEN_PLACEHOLDER_FOR_SHARING =
-    '<paste a long-lived access token from HA → Profile → Security → Long-Lived Access Tokens>';
-
-  async function copyToClipboard(text) {{
-    try {{
-      await navigator.clipboard.writeText(text);
-      return true;
-    }} catch (e) {{
-      // execCommand fallback for browsers that block writeText in
-      // non-secure contexts (rare on LAN but cheap insurance).
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
-      document.body.appendChild(ta);
-      ta.select();
-      let ok = false;
-      try {{ ok = document.execCommand('copy'); }} catch (e2) {{}}
-      document.body.removeChild(ta);
-      return ok;
-    }}
-  }}
-
-  function showCopyFeedback(msg, ok) {{
-    const fb = document.getElementById('copy-voice-prompt-feedback');
-    fb.textContent = msg;
-    fb.style.color = ok ? '#1db954' : '#a33';
-    fb.classList.add('shown');
-    setTimeout(() => fb.classList.remove('shown'), 3000);
-  }}
-
-  document.getElementById('copy-voice-prompt-btn')
-    .addEventListener('click', async () => {{
-      const text = VOICE_PROMPT_TEMPLATE
-        .replace('{{HA_URL_PLACEHOLDER}}', URL_PLACEHOLDER_FOR_SHARING)
-        .replace('{{HA_TOKEN_PLACEHOLDER}}', TOKEN_PLACEHOLDER_FOR_SHARING);
-      const ok = await copyToClipboard(text);
-      showCopyFeedback(
-        ok ? '✓ Prompt copied — paste into your coding agent'
-           : 'Copy failed — try selecting the page text manually',
-        ok);
-    }});
-
-  document.getElementById('copy-voice-prompt-creds-btn')
-    .addEventListener('click', async () => {{
-      const ok = await jtsConfirm(
-        'This will put your Home Assistant URL and a long-lived ' +
-        'access token onto your clipboard.\\n\\n' +
-        'Anyone with this token can control your Home Assistant. ' +
-        'Do NOT:\\n' +
-        '  • paste into a public chat or shared doc\\n' +
-        '  • commit to a git repo\\n' +
-        '  • share a screenshot of the prompt\\n\\n' +
-        'Continue?');
-      if (!ok) return;
-      // Fetch credentials lazily. The page intentionally never holds
-      // the live URL/token in DOM — see the server-side
-      // /credentials-for-copy handler's docstring. CSRF token is the
-      // same one the Disconnect form uses; we read it from the
-      // hidden input rather than plumbing a separate meta tag.
-      const csrfEl = document.querySelector('input[name="csrf_token"]');
-      if (!csrfEl) {{
-        showCopyFeedback('Could not fetch credentials (no CSRF token)', false);
-        return;
-      }}
-      let creds;
-      try {{
-        const r = await fetch('./credentials-for-copy', {{
-          method: 'POST',
-          headers: {{'X-CSRF-Token': csrfEl.value}},
-        }});
-        if (!r.ok) {{
-          showCopyFeedback(
-            `Could not fetch credentials (server returned ${{r.status}})`,
-            false);
-          return;
-        }}
-        creds = await r.json();
-      }} catch (e) {{
-        showCopyFeedback('Could not fetch credentials — network error', false);
-        return;
-      }}
-      const text = VOICE_PROMPT_TEMPLATE
-        .replace('{{HA_URL_PLACEHOLDER}}', creds.url)
-        .replace('{{HA_TOKEN_PLACEHOLDER}}', creds.token);
-      const copied = await copyToClipboard(text);
-      showCopyFeedback(
-        copied ? '✓ Prompt + credentials copied — paste into your coding agent'
-               : 'Copy failed — try the placeholder button instead',
-        copied);
-    }});
-</script>
+<script type="application/json" id="ha-page-data">{page_data}</script>
 """
 
 

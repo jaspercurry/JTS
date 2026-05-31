@@ -28,6 +28,13 @@ secret). The jasper-voice systemd unit sources it AFTER
 /etc/jasper/jasper.env so wizard-written values win over operator-
 managed defaults — same pattern as voice_provider.env.
 
+Presentation runs on the canonical design system: the page renders
+through ``canonical_page`` + ``canonical_header`` (app.css from
+/assets/), and its behaviour lives in the ES module at
+deploy/assets/wake/js/main.js (loaded as ``type="module"``). The
+page-specific layer-row / slider / model-picker visuals are in
+deploy/assets/wake/wake.css. There is no inline ``<script>``.
+
 URL surface (after nginx strips the /wake/ prefix):
   GET  /                page render
   GET  /detection.json  proxy jasper-control /aec — mode + bridge +
@@ -58,12 +65,10 @@ from typing import Any
 from .. import wake_models
 from ._common import (
     DEFAULT_CONTROL_BASE,
-    PAGE_STYLE,
-    TOGGLE_CSS,
     begin_request,
-    csrf_fetch_helpers_js,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
-    csrf_meta_html,
     delete_env_file,
     proxy_get,
     proxy_post,
@@ -76,7 +81,6 @@ from ._common import (
     send_see_other,
     toggle_html,
     verify_csrf,
-    wrap_page,
     write_env_file,
 )
 
@@ -84,6 +88,10 @@ logger = logging.getLogger(__name__)
 
 
 WAKE_MODEL_FILE = wake_models.WAKE_MODEL_FILE
+
+# Cache-busted link to this page's own stylesheet. canonical_page() links
+# app.css itself; page CSS rides in via page_css_href.
+WAKE_PAGE_CSS_HREF = "/assets/wake/wake.css"
 
 # Compiled-in default mirrored from jasper/config.py:_validate.
 # Tests + `_active_threshold` reference it; the slider's min/max/step
@@ -158,125 +166,6 @@ def _is_available(entry: wake_models.WakeModelEntry) -> bool:
 # ----------------------------------------------------------------------
 
 
-_WAKE_PAGE_STYLE = PAGE_STYLE + TOGGLE_CSS + """
-  .wake-help { color: #555; font-size: 0.93em; margin: 0.4em 0 1.4em;
-               line-height: 1.5; }
-
-  /* ----- Detection layers + sensitivity card ------------------- */
-  .layers-card {
-    background: #fafafa; border: 1px solid #e6e6e6;
-    border-radius: 8px; padding: 0.9em 1em 1em;
-    margin: 0.6em 0 1.6em;
-  }
-  .layers-card h2 {
-    font-size: 0.86em; margin: 0 0 0.5em;
-    text-transform: uppercase; letter-spacing: 0.04em; color: #666;
-  }
-  .layers-card .intro {
-    color: #666; font-size: 0.88em; margin: 0 0 0.8em;
-    line-height: 1.5;
-  }
-  .layer-row {
-    display: flex; align-items: flex-start; gap: 0.9em;
-    padding: 0.7em 0; border-bottom: 1px solid #eee;
-  }
-  .layer-row:last-of-type { border-bottom: none; }
-  .layer-row.disabled { opacity: 0.55; }
-  .layer-row .body { flex: 1; }
-  .layer-row .name {
-    font-weight: 600; font-size: 1.0em; color: #222;
-  }
-  .layer-row .desc {
-    color: #555; font-size: 0.86em; margin-top: 0.15em;
-    line-height: 1.4;
-  }
-  .layer-row .meta {
-    color: #888; font-size: 0.82em; margin-top: 0.25em;
-    font-variant-numeric: tabular-nums;
-  }
-  .layer-row .status {
-    color: #666; font-size: 0.82em; margin-top: 0.1em;
-    font-variant-numeric: tabular-nums;
-  }
-  .sensitivity-row {
-    padding-top: 0.9em; margin-top: 0.4em;
-    border-top: 1px solid #eee;
-  }
-  .sensitivity-row .name { font-weight: 600; color: #222; }
-  .sensitivity-row .desc {
-    color: #666; font-size: 0.85em; margin: 0.15em 0 0.6em;
-    line-height: 1.4;
-  }
-  .sensitivity-row .control {
-    display: flex; gap: 0.6em; align-items: center;
-  }
-  .sensitivity-row input[type=range] {
-    flex: 1; accent-color: #1db954;
-  }
-  .sensitivity-row input[type=range]:disabled { opacity: 0.4; }
-  .sensitivity-row .value {
-    min-width: 3em; text-align: right;
-    font-variant-numeric: tabular-nums; color: #444;
-  }
-
-  /* ----- Model picker rows ------------------------------------- */
-  .wake-row {
-    display: block; padding: 0.9em 1em;
-    background: #f4f4f4; border: 1px solid #e6e6e6; border-radius: 8px;
-    margin-bottom: 0.6em; cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease;
-  }
-  .wake-row:hover { background: #f0fff4; border-color: #1db954; }
-  .wake-row.active { background: #f0fff4; border-color: #1db954; }
-  .wake-row.unavailable { opacity: 0.55; cursor: not-allowed; }
-  .wake-row.unavailable:hover { background: #f4f4f4; border-color: #e6e6e6; }
-  .wake-row .header {
-    display: flex; align-items: center; gap: 0.6em;
-    margin-bottom: 0.25em;
-  }
-  .wake-row input[type=radio] {
-    width: auto; flex: none; margin: 0;
-  }
-  .wake-row .label {
-    font-weight: 600; font-size: 1.02em; color: #222; flex: 1;
-  }
-  .wake-row .badge {
-    background: #4a8; color: white; padding: 0.1em 0.55em;
-    border-radius: 4px; font-size: 0.78em;
-  }
-  .wake-row .badge.recommended { background: #1db954; }
-  .wake-row .badge.muted { background: #aaa; }
-  .wake-row .pronunciation {
-    color: #444; font-size: 0.93em; margin: 0.15em 0 0.35em 1.6em;
-    font-style: italic;
-  }
-  .wake-row .description {
-    color: #555; font-size: 0.9em; line-height: 1.5;
-    margin: 0.2em 0 0 1.6em;
-  }
-  .wake-row .stats {
-    color: #888; font-size: 0.83em; margin: 0.4em 0 0 1.6em;
-    font-variant-numeric: tabular-nums;
-  }
-  .wake-row .stats a {
-    color: #888; text-decoration: underline;
-  }
-  .wake-row .stats a:hover { color: #1db954; }
-
-  h2.section { font-size: 0.86em; margin: 1.6em 0 0.5em;
-                text-transform: uppercase; letter-spacing: 0.04em;
-                color: #666; }
-"""
-
-
-def _wrap_wake_page(title: str, body: str, *, status_msg: str = "") -> bytes:
-    page = wrap_page(title, body, status_msg=status_msg).decode()
-    return page.replace(
-        f"<style>{PAGE_STYLE}</style>",
-        f"<style>{_WAKE_PAGE_STYLE}</style>",
-    ).encode()
-
-
 # Layer rows render with `disabled` initially — the /detection.json poll
 # fires on page load and hydrates real state. Browsers don't fire
 # change events while disabled, so the user can't toggle into a bad
@@ -313,220 +202,53 @@ _LAYERS = (
 
 def _layers_card_html() -> str:
     """Render the detection-layers + sensitivity card. State is
-    hydrated by the /detection.json poll; first paint shows disabled
-    toggles with em-dash status so a slow upstream doesn't cause UI
-    flicker."""
+    hydrated by the /detection.json poll (deploy/assets/wake/js/main.js);
+    first paint shows disabled toggles with em-dash status so a slow
+    upstream doesn't cause UI flicker."""
     rows: list[str] = []
     for key, name, desc, meta, _gated in _LAYERS:
         rows.append(f"""
   <div class="layer-row" id="layer-row-{key}">
-    <div class="body">
-      <div class="name">{html.escape(name)}</div>
-      <div class="desc">{html.escape(desc)}</div>
-      <div class="meta">{html.escape(meta)}</div>
-      <div class="status" id="layer-status-{key}">—</div>
+    <div class="layer-body">
+      <div class="layer-name">{html.escape(name)}</div>
+      <div class="layer-desc">{html.escape(desc)}</div>
+      <div class="layer-meta">{html.escape(meta)}</div>
+      <div class="layer-status" id="layer-status-{key}">—</div>
     </div>
     {toggle_html(f"layer-{key}", disabled=True)}
   </div>""")
     return f"""
-<div class="layers-card">
-  <h2>Wake detection</h2>
-  <p class="intro">
-    Each layer scores the same wake word independently and OR-gates
-    its fires with the others. Add layers to catch wakes the AEC
-    sometimes misses; remove them to save RAM on 1 GB Pis. The
-    sensitivity slider applies to every active layer. Toggling
-    anything restarts jasper-voice (~15 s of dead wake).
-  </p>
-  {''.join(rows)}
-  <div class="layer-row sensitivity-row">
-    <div class="body" style="width:100%">
-      <div class="name">Sensitivity</div>
-      <div class="desc">
-        Lower = wake fires more easily (more false positives);
-        higher = needs a more confident match (more missed wakes).
-      </div>
-      <div class="control">
-        <input type="range" id="sensitivity-input"
-               min="0.05" max="0.95" step="0.05" value="0.5" disabled>
-        <span class="value" id="sensitivity-value">—</span>
-        <button class="secondary" id="sensitivity-save"
-                type="button" disabled>Save</button>
+<section class="section layers-card">
+  <div class="section__head">
+    <h2 class="section__title">Wake detection</h2>
+  </div>
+  <div class="info-card">
+    <p class="info-card__note">
+      Each layer scores the same wake word independently and OR-gates
+      its fires with the others. Add layers to catch wakes the AEC
+      sometimes misses; remove them to save RAM on 1 GB Pis. The
+      sensitivity slider applies to every active layer. Toggling
+      anything restarts jasper-voice (~15 s of dead wake).
+    </p>
+    {''.join(rows)}
+    <div class="layer-row sensitivity-row">
+      <div class="layer-body">
+        <div class="layer-name">Sensitivity</div>
+        <div class="layer-desc">
+          Lower = wake fires more easily (more false positives);
+          higher = needs a more confident match (more missed wakes).
+        </div>
+        <div class="sensitivity-control">
+          <input type="range" id="sensitivity-input"
+                 min="0.05" max="0.95" step="0.05" value="0.5" disabled>
+          <span class="sensitivity-value" id="sensitivity-value">—</span>
+          <button class="btn btn--ghost" id="sensitivity-save"
+                  type="button" disabled>Save</button>
+        </div>
       </div>
     </div>
   </div>
-</div>"""
-
-
-# JS that drives the detection card. Polls /detection.json every 3 s,
-# reconciles state into the toggles + slider, posts /layer/<name> or
-# /sensitivity on user interaction. Mirrors /sources/'s optimistic-
-# flip-with-reconcile pattern — same dirty-flag plumbing keeps a
-# poll from clobbering a click mid-flight. Slider uses an explicit
-# Save button instead of apply-on-change so a drag doesn't restart
-# the voice daemon on every pixel.
-_LAYERS_SCRIPT = r"""
-(() => {
-  __CSRF_FETCH_HELPERS__
-  const LAYERS = ['aec', 'raw', 'dtln'];
-  const POLL_MS = 3000;
-  const dirty = {};
-  let ignorePollUntil = 0;
-  let lastServerThreshold = null;
-
-  function el(id) { return document.getElementById(id); }
-
-  function statusLine(active, layerOn, gated, mode) {
-    if (gated && mode !== 'auto') return '— requires AEC on';
-    if (!layerOn) return '— off';
-    if (active) return '✓ active';
-    return '⏳ starting…';
-  }
-
-  function applyState(s) {
-    const mode = s.mode;
-    const bridgeOn = !!s.bridge_active;
-    const legs = s.legs || {};
-    const aecOn = (mode === 'auto');
-    const rawOn = !!(legs.raw && legs.raw.configured);
-    const dtlnOn = !!(legs.dtln && legs.dtln.configured);
-
-    // AEC master row.
-    if (!dirty.aec) {
-      el('layer-aec').checked = aecOn;
-      el('layer-aec').disabled = false;
-    }
-    el('layer-status-aec').textContent = aecOn
-      ? (bridgeOn ? '✓ active'
-                  : '⏳ starting (or chip not on 6-ch firmware)')
-      : '— disabled';
-    el('layer-row-aec').classList.toggle('disabled', !aecOn);
-
-    // Legs require AEC; reflect that in disabled state + status copy.
-    [['raw', rawOn], ['dtln', dtlnOn]].forEach(([name, on]) => {
-      if (!dirty[name]) {
-        el('layer-' + name).checked = on;
-        el('layer-' + name).disabled = !aecOn;
-      }
-      el('layer-status-' + name).textContent =
-        statusLine(bridgeOn, on, true, mode);
-      el('layer-row-' + name).classList.toggle('disabled', !aecOn);
-    });
-
-    // Sensitivity — only overwrite from server when the user isn't
-    // mid-drag and hasn't queued an unsaved change.
-    const slider = el('sensitivity-input');
-    const valueLabel = el('sensitivity-value');
-    const saveBtn = el('sensitivity-save');
-    const serverThr = (typeof s.threshold === 'number') ? s.threshold : 0.5;
-    slider.disabled = false;
-    if (lastServerThreshold === null ||
-        (Math.abs(parseFloat(slider.value) - lastServerThreshold) < 0.001
-         && !saveBtn.classList.contains('dirty'))) {
-      slider.value = serverThr.toFixed(2);
-      valueLabel.textContent = serverThr.toFixed(2);
-      saveBtn.disabled = true;
-      saveBtn.classList.remove('dirty');
-    }
-    lastServerThreshold = serverThr;
-  }
-
-  async function pollDetection() {
-    if (document.visibilityState === 'hidden') return;
-    if (Date.now() < ignorePollUntil) return;
-    try {
-      const r = await fetch('detection.json', { cache: 'no-store' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      applyState(await r.json());
-    } catch (e) {
-      LAYERS.forEach(name => {
-        el('layer-status-' + name).textContent = 'Disconnected';
-      });
-    }
-  }
-
-  async function postLayer(name, wanted) {
-    dirty[name] = true;
-    ignorePollUntil = Date.now() + 1500;
-    try {
-      const r = await fetch('layer/' + name, {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({ enabled: wanted }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
-      // Server returns the full state after applying — reconcile right
-      // away so the AEC-off → legs-disabled transition is instant.
-      dirty[name] = false;
-      applyState(body);
-    } catch (err) {
-      jtsAlert('Toggle failed: ' + err.message);
-      dirty[name] = false;
-      el('layer-' + name).checked = !wanted;  // roll back
-    }
-  }
-
-  LAYERS.forEach(name => {
-    el('layer-' + name).addEventListener('change', async () => {
-      const cb = el('layer-' + name);
-      if (name === 'aec' && !cb.checked && !await jtsConfirm(
-          'Disable AEC echo cancellation?\n\n' +
-          'jasper-voice will restart — wake unavailable ~15 s. ' +
-          'Turning AEC off also pauses the raw + DTLN layers ' +
-          '(they need the bridge running).')) {
-        cb.checked = true;
-        return;
-      }
-      if (name === 'dtln' && cb.checked && !await jtsConfirm(
-          'Enable DTLN neural AEC?\n\n' +
-          '+~75 MB RAM, +~25% one core. Recommended for 2 GB Pis.\n' +
-          'jasper-voice + bridge will restart (~15 s).')) {
-        cb.checked = false;
-        return;
-      }
-      postLayer(name, cb.checked);
-    });
-  });
-
-  const slider = el('sensitivity-input');
-  const valueLabel = el('sensitivity-value');
-  const saveBtn = el('sensitivity-save');
-  slider.addEventListener('input', () => {
-    const v = parseFloat(slider.value);
-    valueLabel.textContent = v.toFixed(2);
-    const changed = lastServerThreshold === null ||
-                    Math.abs(v - lastServerThreshold) > 0.001;
-    saveBtn.disabled = !changed;
-    saveBtn.classList.toggle('dirty', changed);
-  });
-  saveBtn.addEventListener('click', async () => {
-    const v = parseFloat(slider.value);
-    saveBtn.disabled = true;
-    saveBtn.textContent = '…';
-    try {
-      const r = await fetch('sensitivity', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({ value: v }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
-      saveBtn.classList.remove('dirty');
-    } catch (err) {
-      jtsAlert('Save failed: ' + err.message);
-    }
-    saveBtn.textContent = 'Save';
-    setTimeout(pollDetection, 500);
-  });
-
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') pollDetection();
-  });
-  pollDetection();
-  setInterval(pollDetection, POLL_MS);
-})();
-"""
+</section>"""
 
 
 def _row_html(
@@ -540,17 +262,17 @@ def _row_html(
     tell at a glance why they can't pick it."""
     classes = ["wake-row"]
     if is_active:
-        classes.append("active")
+        classes.append("is-active")
     if not available:
-        classes.append("unavailable")
+        classes.append("is-unavailable")
 
     badges = []
     if is_active:
         badges.append('<span class="badge">active</span>')
     if entry.recommended and not is_active:
-        badges.append('<span class="badge recommended">recommended</span>')
+        badges.append('<span class="badge">recommended</span>')
     if not available:
-        badges.append('<span class="badge muted">not downloaded</span>')
+        badges.append('<span class="badge badge--muted">not downloaded</span>')
 
     radio_attrs = ['type="radio"', 'name="model"', f'value="{html.escape(entry.key)}"']
     if is_active:
@@ -574,14 +296,14 @@ def _row_html(
 
     return f"""
 <label class="{' '.join(classes)}">
-  <div class="header">
+  <div class="wake-row__head">
     {radio}
-    <span class="label">{html.escape(entry.label)}</span>
+    <span class="wake-row__label">{html.escape(entry.label)}</span>
     {' '.join(badges)}
   </div>
   <div class="pronunciation">{html.escape(entry.pronunciation)}</div>
-  <div class="description">{html.escape(entry.description)}</div>
-  <div class="stats">{' · '.join(stats_bits)}</div>
+  <div class="wake-row__desc">{html.escape(entry.description)}</div>
+  <div class="wake-row__stats">{' · '.join(stats_bits)}</div>
 </label>"""
 
 
@@ -591,14 +313,16 @@ def _custom_row_html(model: str, *, is_active: bool) -> str:
     wizard never silently overwrites their choice. They keep it by
     leaving the radio alone; they replace it by picking a registered
     row and hitting Save."""
+    active_cls = " is-active" if is_active else ""
+    active_badge = '<span class="badge">active</span>' if is_active else ""
     return f"""
-<label class="wake-row {'active' if is_active else ''}" style="cursor:default">
-  <div class="header">
+<label class="wake-row{active_cls}" style="cursor:default">
+  <div class="wake-row__head">
     <input type="radio" name="model" value="__custom__" checked disabled>
-    <span class="label">Custom: {html.escape(model)}</span>
-    {'<span class="badge">active</span>' if is_active else ''}
+    <span class="wake-row__label">Custom: {html.escape(model)}</span>
+    {active_badge}
   </div>
-  <div class="description">
+  <div class="wake-row__desc">
     Set via <code>JASPER_WAKE_MODEL</code> in
     <code>/etc/jasper/jasper.env</code>. The wizard won't touch this
     unless you pick one of the rows above and hit Save (which writes
@@ -645,48 +369,45 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
             is_active=(active_entry is entry),
             available=_is_available(entry),
         ))
-    # CSRF meta tag rides at the top of the body — the detection-card
-    # JS reads it via querySelector for state-changing fetches; the
-    # model picker form uses a hidden field via csrf_field_html().
+    # The CSRF meta tag (read by the detection-card module for state-changing
+    # fetches) is emitted by canonical_page() when csrf_token is given; the
+    # model-picker form additionally carries a hidden field via
+    # csrf_field_html(). The page's behaviour ships as the ES module at
+    # /assets/wake/js/main.js — no inline <script>.
     body = f"""
-{csrf_meta_html(csrf_token) if csrf_token else ''}
+{canonical_header("Wake word")}
+<main class="page">
+  {_layers_card_html()}
 
-{_layers_card_html()}
+  <section class="section">
+    <div class="section__head">
+      <h2 class="section__title">Wake word</h2>
+    </div>
+    <p class="wake-help">
+      Pick which wake phrase the speaker listens for. Models marked
+      <em>not downloaded</em> failed their install-time fetch and can be
+      retried by re-running <code>bash scripts/deploy-to-pi.sh</code>.
+      Saving restarts the voice daemon; it's listening again in about
+      4 seconds.
+    </p>
 
-<h2 class="section">Wake word</h2>
-<p class="wake-help">
-  Pick which wake phrase the speaker listens for. Models marked
-  <em>not downloaded</em> failed their install-time fetch and can be
-  retried by re-running <code>bash scripts/deploy-to-pi.sh</code>.
-  Saving restarts the voice daemon; it's listening again in about
-  4 seconds.
-</p>
+    <form method="post" action="save" id="wake-form">
+      {csrf_field_html(csrf_token) if csrf_token else ''}
+      {''.join(rows)}
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" id="wake-save">Save and restart voice</button>
+      </div>
+    </form>
 
-<form method="post" action="save" id="wake-form">
-  {csrf_field_html(csrf_token) if csrf_token else ''}
-  {''.join(rows)}
-  <p style="margin-top:1.4em">
-    <button type="submit" id="wake-save">Save and restart voice</button>
-  </p>
-</form>
-
-{_privacy_disclosure_html()}
-
-<script>
-  // Disable the Save button + change its label the instant the form
-  // submits so the household sees something happen before the page
-  // reloads. Without this, the redirect (which fires before the
-  // daemon is fully back up) feels like a no-op — observed on PR #117.
-  document.getElementById('wake-form').addEventListener('submit', function() {{
-    var btn = document.getElementById('wake-save');
-    btn.disabled = true;
-    btn.textContent = 'Saving…';
-  }});
-</script>
-<script>{_LAYERS_SCRIPT.replace("__CSRF_FETCH_HELPERS__", csrf_fetch_helpers_js())}</script>
+    {_privacy_disclosure_html()}
+  </section>
+</main>
+<script type="module" src="/assets/wake/js/main.js"></script>
 """
-    return _wrap_wake_page(
-        "Wake word", body, status_msg=status_msg,
+    return canonical_page(
+        "Wake word", body,
+        csrf_token=csrf_token,
+        page_css_href=WAKE_PAGE_CSS_HREF,
     )
 
 

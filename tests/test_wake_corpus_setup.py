@@ -29,6 +29,25 @@ from jasper.web import wake_corpus_setup
 
 
 # ---------------------------------------------------------------------------
+# Relocated static assets. /wake-corpus/ moved onto the canonical design
+# system: the page behaviour now lives in an ES module and the bespoke CSS in
+# a page stylesheet, so the HTML render-shape assertions below check whichever
+# artifact a given string now lives in (page body vs module vs stylesheet),
+# mirroring how the /wifi/ migration relocated its inline JS + tests.
+# ---------------------------------------------------------------------------
+
+_ASSETS = Path(__file__).resolve().parents[1] / "deploy" / "assets" / "wake-corpus"
+
+
+def _module_js() -> str:
+    return (_ASSETS / "js" / "main.js").read_text()
+
+
+def _page_css() -> str:
+    return (_ASSETS / "wake-corpus.css").read_text()
+
+
+# ---------------------------------------------------------------------------
 # Fake UDP capture — yields fixed frames at a fast rate, deterministic.
 # ---------------------------------------------------------------------------
 
@@ -535,27 +554,29 @@ def test_make_server_accepts_prebound_socket(backend) -> None:
 
 def test_index_html_is_valid_shape() -> None:
     """Not a full HTML validator — just enough to catch obvious
-    breakage like missing </body>, unmatched template strings, etc."""
+    breakage like missing </body>, unmatched template strings, etc.
+    Canonical_page() emits the document shell (lowercase doctype)."""
     html_text = wake_corpus_setup._render_index_html("token123")
-    assert "<!DOCTYPE html>" in html_text
-    assert "<title>JTS Wake-Word Corpus Recorder</title>" in html_text
+    assert "<!doctype html>" in html_text
+    assert "<title>Wake-word corpus</title>" in html_text
     assert "</body>" in html_text
     assert "</html>" in html_text
-    # Key API paths must be referenced. The JS uses RELATIVE paths
-    # ('api/status' not '/api/status') so the same page works both
-    # standalone (http://host:8782/) and behind nginx
+    # No template placeholder should leak into the rendered page.
+    for stale in ("{header}", "{config_json}", "{csrf_token}", "{nav_back"):
+        assert stale not in html_text
+    # Key API paths must be referenced from the behaviour module. The JS uses
+    # RELATIVE paths ('api/status' not '/api/status') so the same page works
+    # both standalone (http://host:8782/) and behind nginx
     # (http://host/wake-corpus/). Absolute paths would 502 under nginx.
-    assert "api/status" in html_text
-    assert "api/session" in html_text
-    assert "api/clip/start" in html_text
-    assert "api/clip/stop" in html_text
+    js = _module_js()
+    assert "api/status" in js
+    assert "api/session" in js
+    assert "api/clip/start" in js
+    assert "api/clip/stop" in js
     # Defensive: ensure we don't regress to absolute paths in the JS.
-    # The server-side route definitions (handlers) DO use leading
-    # slashes, so we check for the leading-slash variants in the
-    # specific JS-call contexts.
-    assert "api('GET', 'api/status')" in html_text or \
-           'api("GET", "api/status")' in html_text
-    # All three conditions + distances must be selectable
+    assert "api('GET', 'api/status')" in js or \
+           'api("GET", "api/status")' in js
+    # All three conditions + distances must be selectable (page body).
     for c in ("quiet", "ambient", "music"):
         assert f'value="{c}"' in html_text
     for d in ("near", "mid", "far"):
@@ -567,27 +588,23 @@ def test_index_html_is_valid_shape() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_render_index_has_nav_back_home_link() -> None:
-    """Every JTS wizard page has a '← Home' link in the top-left
-    matching the shared `_common.NAV_BACK_HTML` constant. The recorder
-    isn't using `wrap_page()` (it builds its own HTML), so this is
-    the explicit guard that we don't forget to inject the nav link
-    + the matching `.nav-back` CSS."""
+def test_render_index_has_back_home_link() -> None:
+    """Every JTS wizard page has a back-to-Home affordance in the top-left.
+    On the canonical design system that's the shared `.app-header` back
+    button (canonical_header), which links '/' and labels itself 'Home'."""
     html_text = wake_corpus_setup._render_index_html("token")
-    # The link itself
-    assert 'class="nav-back"' in html_text
+    assert "app-header" in html_text
     assert 'href="/"' in html_text
-    assert "← Home" in html_text
-    # The CSS that styles it
-    assert ".nav-back {" in html_text
+    assert 'aria-label="Home"' in html_text
+    assert "#icon-back" in html_text
 
 
 def test_render_index_embeds_csrf_token() -> None:
-    """The CSRF token must appear in a meta tag so the JS can read it.
-    Token is HTML-escaped defensively (even though secrets.token_hex
-    only produces hex chars)."""
+    """The CSRF token must appear in the canonical meta tag so the shared
+    http.js helpers can read it. Token is HTML-escaped defensively (even
+    though secrets.token_hex only produces hex chars)."""
     html_text = wake_corpus_setup._render_index_html("abc123def")
-    assert 'name="csrf-token"' in html_text
+    assert 'name="jts-csrf"' in html_text
     assert 'content="abc123def"' in html_text
 
 
@@ -599,13 +616,16 @@ def test_render_index_escapes_csrf_token() -> None:
     assert "&lt;script&gt;" in html_text or "&quot;&gt;" in html_text
 
 
-def test_csrf_header_name_constant_matches_html() -> None:
-    """The HTML's hardcoded X-CSRF-Token must match the server's
-    CSRF_HEADER constant — otherwise the JS sends a header the
-    server doesn't check."""
+def test_csrf_header_name_constant_matches_module() -> None:
+    """The server's CSRF_HEADER must stay X-CSRF-Token — the contract the
+    shared http.js jsonHeaders() helper used by the behaviour module sends.
+    The page exposes the token via the <meta name=jts-csrf> tag; jsonHeaders()
+    reads it and attaches the X-CSRF-Token header the server's _check_csrf
+    compares against."""
     html_text = wake_corpus_setup._render_index_html("t")
     assert wake_corpus_setup.CSRF_HEADER == "X-CSRF-Token"
-    assert "'X-CSRF-Token'" in html_text or '"X-CSRF-Token"' in html_text
+    assert 'name="jts-csrf"' in html_text
+    assert 'import { jsonHeaders } from "/assets/shared/js/http.js"' in _module_js()
 
 
 # ---------------------------------------------------------------------------
@@ -994,13 +1014,13 @@ def test_html_has_ambient_radio_button() -> None:
 
 def test_html_renders_ambient_in_counts_matrix() -> None:
     """The per-cell counts table includes an ambient column so the
-    operator sees their progress in the third condition. We just
-    need the column label to appear in the JS literal that builds
-    the header row."""
-    html_text = wake_corpus_setup._render_index_html("t")
+    operator sees their progress in the third condition. The counts
+    matrix is built by the behaviour module's renderCounts(), so the
+    column label + per-row key live there."""
+    js = _module_js()
     # The renderCounts JS literal — header row + per-row keys
-    assert '">ambient<' in html_text
-    assert '`${d}-ambient`' in html_text
+    assert '">ambient<' in js
+    assert '`${d}-ambient`' in js
 
 
 def test_html_has_mic_level_bar_elements() -> None:
@@ -1013,9 +1033,8 @@ def test_html_has_mic_level_bar_elements() -> None:
 
 
 def test_html_subscribes_to_level_sse() -> None:
-    """The JS opens an EventSource to the level endpoint on load."""
-    html_text = wake_corpus_setup._render_index_html("t")
-    assert "EventSource('api/recording/level')" in html_text
+    """The behaviour module opens an EventSource to the level endpoint on load."""
+    assert "EventSource('api/recording/level')" in _module_js()
 
 
 def test_html_count_guidance_matches_two_session_protocol() -> None:
@@ -1028,11 +1047,12 @@ def test_html_count_guidance_matches_two_session_protocol() -> None:
 
 def test_html_delete_button_uses_trash_icon() -> None:
     """Delete button is small + uses a trash icon (was previously
-    wide text 'delete', which overlapped the audio player)."""
-    html_text = wake_corpus_setup._render_index_html("t")
+    wide text 'delete', which overlapped the audio player). The clip rows
+    are rendered by the behaviour module, so assert against it."""
+    js = _module_js()
     # The icon character + the icon class
-    assert "🗑" in html_text
-    assert '"danger icon"' in html_text
+    assert "🗑" in js
+    assert '"danger icon"' in js
 
 
 def test_clip_row_audio_cell_does_not_block_trash_button() -> None:
@@ -1051,15 +1071,15 @@ def test_clip_row_audio_cell_does_not_block_trash_button() -> None:
     A future CSS edit dropping either leg would silently re-introduce
     the "I see the audio but can't find the delete button" bug.
     """
-    html_text = wake_corpus_setup._render_index_html("t")
+    css = _page_css()
     # Leg 1: minmax(0, …) in the .clip grid template
-    assert "minmax(0," in html_text, (
+    assert "minmax(0," in css, (
         "the .clip row's audio column needs minmax(0, …) so the "
         "audio's intrinsic min-content doesn't force the grid to grow"
     )
     # Leg 2: explicit width constraints on the audio element
-    assert ".clip audio" in html_text
-    assert "min-width: 0" in html_text
+    assert ".clip audio" in css
+    assert "min-width: 0" in css
 
 
 # ---------------------------------------------------------------------------
@@ -1352,7 +1372,7 @@ def test_combined_web_lazy_wake_corpus_serves_after_first_request(
     try:
         status, body = get("/")
         assert status == 200
-        assert b"Wake-Word Corpus Recorder" in body
+        assert b"Wake-word corpus" in body
 
         status, body = get("/api/status")
         assert status == 200
@@ -2501,38 +2521,48 @@ def test_html_has_include_raw_mic_0_checkbox() -> None:
 
 
 def test_html_has_include_usb_mic_checkbox() -> None:
-    """Begin-a-new-session form has the corpus USB/ref toggle."""
+    """Begin-a-new-session form has the corpus USB/ref toggle. The checkbox
+    + label live in the page body; the include_usb_mic payload key lives in
+    the behaviour module."""
     html_text = wake_corpus_setup._render_index_html("t")
     assert 'id="include-usb-mic"' in html_text
     assert 'USB mic + reference' in html_text
-    assert 'include_usb_mic' in html_text
     assert '16 kHz reference' in html_text
     assert 'id="usb-mic-note"' not in html_text
+    assert 'include_usb_mic' in _module_js()
 
 
 def test_html_has_dtln_session_checkboxes() -> None:
-    """Begin-a-new-session form exposes XVF and USB DTLN toggles."""
+    """Begin-a-new-session form exposes XVF and USB DTLN toggles. Checkboxes
+    in the body, payload keys in the module."""
     html_text = wake_corpus_setup._render_index_html("t")
     assert 'id="include-dtln"' in html_text
     assert 'id="include-usb-dtln"' in html_text
-    assert 'include_dtln' in html_text
-    assert 'include_usb_dtln' in html_text
     assert 'USB DTLN' in html_text
+    js = _module_js()
+    assert 'include_dtln' in js
+    assert 'include_usb_dtln' in js
 
 
 def test_html_has_aec3_sweep_checkbox() -> None:
-    """Begin-a-new-session form exposes the bounded AEC3 sweep mode."""
+    """Begin-a-new-session form exposes the bounded AEC3 sweep mode. The
+    checkbox is in the body; the sweep variant legs + labels ride in the
+    JSON config island (so they're in the rendered page) and the
+    include_aec3_sweep payload key is in the module."""
     html_text = wake_corpus_setup._render_index_html("t")
     assert 'id="include-aec3-sweep"' in html_text
     assert "AEC3 sweep" in html_text
-    assert "include_aec3_sweep" in html_text
+    assert "include_aec3_sweep" in _module_js()
     for variant in wake_corpus_setup.AEC3_SWEEP_VARIANTS:
+        # Both leg + label are serialized into the wake-corpus-config island.
         assert variant.leg in html_text
         assert variant.label in html_text
 
 
 def test_html_test_mode_button_follows_capture_leg_choices() -> None:
-    """The operator chooses capture legs before entering test mode."""
+    """The operator chooses capture legs before entering test mode. The leg
+    checkboxes + Begin button live in the body; the corpus-test-mode call
+    lives in the module."""
     html_text = wake_corpus_setup._render_index_html("t")
     button_idx = html_text.index('id="session-begin"')
     assert html_text.index('id="include-raw-mic-0"') < button_idx
@@ -2540,52 +2570,60 @@ def test_html_test_mode_button_follows_capture_leg_choices() -> None:
     assert html_text.index('id="include-aec3-sweep"') < button_idx
     assert html_text.index('id="include-usb-mic"') < button_idx
     assert html_text.index('id="include-usb-dtln"') < button_idx
-    assert "api/corpus-test-mode" in html_text
     assert "voice-toggle" not in html_text
     assert "bridge-output-disable" not in html_text
+    assert "api/corpus-test-mode" in _module_js()
 
 
 def test_html_loaded_session_enters_test_mode_without_new_session() -> None:
     """Loaded sessions should not be labeled as newly-started sessions.
 
     The button enters corpus test mode using the loaded session's saved
-    legs instead of beginning a second session.
+    legs instead of beginning a second session. This dynamic button-text
+    + flow logic lives in the behaviour module; the unload control + its
+    'Loaded session' empty state are guarded there too.
     """
-    html_text = wake_corpus_setup._render_index_html("t")
-    assert "Enter corpus test mode" in html_text
-    assert "Stop voice & resume recording" in html_text
-    assert "Stop voice & apply outputs" in html_text
-    assert "Apply bridge outputs" in html_text
-    assert "Ready to record" in html_text
-    assert "Enter corpus test mode for loaded session" not in html_text
-    assert 'id="session-unload"' in html_text
-    assert "api/session/unload" in html_text
-    assert "'Loaded session'" in html_text
-    assert "sessionBridgeReady" in html_text
-    assert "latestStatus?.session_id" in html_text
-    assert "latestStatus.include_dtln" in html_text
-    assert "latestStatus.include_aec3_sweep" in html_text
-    assert "Session active" not in html_text
+    js = _module_js()
+    assert "Enter corpus test mode" in js
+    assert "Stop voice & resume recording" in js
+    assert "Stop voice & apply outputs" in js
+    assert "Apply bridge outputs" in js
+    assert "Ready to record" in js
+    assert "Enter corpus test mode for loaded session" not in js
+    assert "api/session/unload" in js
+    assert "'Loaded session'" in js
+    assert "sessionBridgeReady" in js
+    assert "latestStatus?.session_id" in js
+    assert "latestStatus.include_dtln" in js
+    assert "latestStatus.include_aec3_sweep" in js
+    assert "Session active" not in js
+    # The unload button element itself is server-rendered in the body.
+    assert 'id="session-unload"' in wake_corpus_setup._render_index_html("t")
 
 
 def test_html_confirm_enables_missing_bridge_outputs() -> None:
     """The Begin flow offers a deliberate bridge enable/restart retry
-    instead of silently starting a session with missing WAV legs."""
-    html_text = wake_corpus_setup._render_index_html("t")
-    assert "can_enable_bridge_outputs" in html_text
-    assert "enable_bridge_outputs: true" in html_text
-    assert "restart the affected audio daemons" in html_text
+    instead of silently starting a session with missing WAV legs. This
+    retry flow lives in the behaviour module."""
+    js = _module_js()
+    assert "can_enable_bridge_outputs" in js
+    assert "enable_bridge_outputs: true" in js
+    assert "restart the affected audio daemons" in js
 
 
 def test_html_playback_uses_leg_selector() -> None:
-    """Clip rows let the operator choose any recorded leg for playback."""
+    """Clip rows let the operator choose any recorded leg for playback. The
+    clip rendering + leg-ordering live in the behaviour module; the
+    AEC3-sweep + USB labels ride in the JSON config island."""
+    js = _module_js()
     html_text = wake_corpus_setup._render_index_html("t")
-    assert 'data-audio-leg' in html_text
-    assert 'legLabel(leg)' in html_text
-    assert 'orderedLegs(c.files || {})' in html_text
-    assert "'usb_dtln', 'ref'" in html_text
-    assert 'encodeURIComponent(ev.target.value)' in html_text
-    assert "on: 'XVF WebRTC AEC3'" in html_text
+    assert 'data-audio-leg' in js
+    assert 'legLabel(leg)' in js
+    assert 'orderedLegs(c.files || {})' in js
+    assert "'usb_dtln', 'ref'" in js
+    assert 'encodeURIComponent(ev.target.value)' in js
+    assert "on: 'XVF WebRTC AEC3'" in js
+    # The sweep/legacy leg labels are injected via the config island.
     assert "aec3_variant_1" in html_text
     assert "aec3_variant_2" in html_text
     assert "aec3_variant_3" in html_text
@@ -2595,20 +2633,20 @@ def test_html_playback_uses_leg_selector() -> None:
     assert "aec3_gentle_dnd" in html_text
     assert "aec3_nearend_fast" in html_text
     assert "aec3_slow_attack" in html_text
-    assert "usb_webrtc: 'USB AEC3 edge combo 80 ms'" in html_text
-    assert "USB_AEC3_SWEEP_BASELINE_LABEL" in html_text
-    assert "session?.include_aec3_sweep" in html_text
-    assert "usb_dtln: 'USB DTLN'" in html_text
+    assert "USB AEC3 edge combo 80 ms" in html_text  # usb_webrtc corpus label
+    assert "USB_AEC3_SWEEP_BASELINE_LABEL" in js
+    assert "session?.include_aec3_sweep" in js
+    assert "usb_dtln: 'USB DTLN'" in js
 
 
 def test_html_js_calls_sessions_endpoints() -> None:
     """JS must call the right relative API paths (not absolute —
-    nginx prefix-strip would 502 those)."""
-    html_text = wake_corpus_setup._render_index_html("t")
-    assert "'api/sessions'" in html_text or '"api/sessions"' in html_text
-    assert "'api/session/load'" in html_text or '"api/session/load"' in html_text
-    assert "'api/session/unload'" in html_text or '"api/session/unload"' in html_text
-    assert "api/session/${" in html_text  # DELETE template literal
+    nginx prefix-strip would 502 those). The calls live in the module."""
+    js = _module_js()
+    assert "'api/sessions'" in js or '"api/sessions"' in js
+    assert "'api/session/load'" in js or '"api/session/load"' in js
+    assert "'api/session/unload'" in js or '"api/session/unload"' in js
+    assert "api/session/${" in js  # DELETE template literal
 
 
 # ---------------------------------------------------------------------------

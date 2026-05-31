@@ -1,0 +1,527 @@
+/* ============================================================
+   /correction/ — page-specific styles (canonical design system).
+   ------------------------------------------------------------
+   Loaded by canonical_page(..., page_css_href="/assets/correction/correction.css").
+
+   Shared primitives (.page, .app-header, .btn--*, .field, .info-card,
+   .eyebrow, .disclosure-twin, .jts-dialog) come from app.css — don't
+   redefine them. Only the measurement-viz vocabulary unique to room
+   correction lives here: the live mic-level meter, the capture-settings
+   constraint table, the quality / confidence / runtime cards, the
+   frequency-response canvas, the designed-filter (PEQ) list, the
+   per-band results table, the measurement state badge, and the
+   session-report panel. These are genuinely single-page visuals
+   (charts, audio meters, modal-band tables), so they stay here.
+
+   Colours read the canonical tokens (var(--surface)/--border/--muted/
+   --text/--radius-*/--status-*), matching wifi.css — soft status tints
+   use color-mix(in oklab, var(--status-X) N%, transparent) so the page
+   re-skins with the rest of the design system. The legacy page used
+   hard-coded hex (#1db954 / #d44 / #fff3cd …); those are gone.
+   ============================================================ */
+
+/* Stack the page sections with a consistent rhythm. The body is a flat
+   list of cards + workflow blocks (not a single form), so give each
+   direct child of <main> a little breathing room. */
+.correction-stack > * { margin-top: 1.25rem; }
+.correction-stack > *:first-child { margin-top: 0; }
+
+.hidden { display: none !important; }
+
+.page-sub { color: var(--muted); margin: 0 0 0.5rem; font-size: 0.95rem; }
+.hint { color: var(--muted); font-size: 0.9rem; }
+
+/* Generic heading sizes for the <h2>/<h3> the page (and the relocated JS)
+   write into cards / workflow blocks. Quiet and on-brand. */
+.correction-stack h2 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 1.25rem 0 0.5rem;
+  color: var(--text);
+}
+.correction-stack h3 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+  color: var(--text);
+}
+
+/* Bare <label>s inside the relocated workflow markup (label > select
+   nesting). app.css themes inputs globally; these set label weight +
+   block layout. */
+.correction-stack label {
+  display: block;
+  margin: 0.6rem 0 0.2rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.correction-stack .mic-row label,
+.correction-stack .chart-controls label { margin: 0; }
+
+/* The relocated markup uses bare <select>/<input>/<button> (not .field
+   wrappers). app.css scopes its input theming to `.field input` etc., so
+   give these the same token-driven look directly. */
+.correction-stack select,
+.correction-stack input[type="text"],
+.correction-stack input[type="file"] {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  box-sizing: border-box;
+}
+.correction-stack .chart-controls select { width: auto; }
+.correction-stack select:focus,
+.correction-stack input:focus { outline: none; border-color: var(--primary); }
+
+/* ---- Current-correction banner ---------------------------------------- */
+#current-correction {
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+  margin: 0.5rem 0 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+}
+#current-correction.applied {
+  background: color-mix(in oklab, var(--status-ok) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-ok) 45%, transparent);
+  border-color: transparent;
+}
+#current-correction.flat { color: var(--muted); }
+#current-correction.custom {
+  background: color-mix(in oklab, var(--status-warn) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 45%, transparent);
+  border-color: transparent;
+}
+#current-correction .label { font-weight: 600; }
+
+/* ---- Microphone panel + calibration rows ------------------------------ */
+.mic-panel {
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.9rem 1rem;
+  margin: 1rem 0;
+}
+.mic-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
+.mic-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; }
+.mic-row label { flex: 1 1 180px; }
+.mic-row button { flex: 0 0 auto; }
+.mic-status { margin: 0.6rem 0 0; color: var(--muted); }
+.mic-status.ok { color: var(--status-ok); font-weight: 600; }
+.mic-status.bad { color: var(--status-danger); font-weight: 600; }
+.cal-preview { font-variant-numeric: tabular-nums; color: var(--muted); }
+
+/* ---- Capture settings (constraint table + live level meter) ----------- */
+.level-bar-track {
+  height: 28px;
+  background: var(--surface-quiet);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin: 0.5rem 0 0.2rem;
+}
+.level-bar-fill {
+  height: 100%;
+  background: linear-gradient(
+    to right,
+    var(--status-ok) 0%, var(--status-ok) 70%,
+    var(--status-warn) 88%, var(--status-danger) 100%
+  );
+  transition: width 0.05s linear;
+  width: 0%;
+}
+.level-readout {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.constraint-table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.93rem; }
+.constraint-table th,
+.constraint-table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.constraint-table th { color: var(--muted); font-weight: 600; }
+.constraint-table .ok { color: var(--status-ok); font-weight: 600; }
+.constraint-table .bad { color: var(--status-danger); font-weight: 600; }
+
+/* ---- Inline status / warning banners written by the JS ---------------- */
+.err-banner {
+  border-radius: var(--radius-md);
+  padding: 0.7rem 0.9rem;
+  margin: 1rem 0;
+  color: var(--text);
+  background: color-mix(in oklab, var(--status-danger) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-danger) 50%, transparent);
+}
+.quality-banner {
+  border-radius: var(--radius-md);
+  padding: 0.7rem 0.9rem;
+  margin: 0.5rem 0;
+  font-size: 0.94rem;
+  color: var(--text);
+}
+.quality-banner.warn {
+  background: color-mix(in oklab, var(--status-warn) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 50%, transparent);
+}
+.quality-banner.fail {
+  background: color-mix(in oklab, var(--status-danger) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-danger) 50%, transparent);
+}
+.quality-banner ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+
+.browser-audio-card {
+  border-radius: var(--radius-md);
+  padding: 0.7rem 0.9rem;
+  margin: 0.5rem 0;
+  font-size: 0.94rem;
+  color: var(--text);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.browser-audio-card.ok {
+  background: color-mix(in oklab, var(--status-ok) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-ok) 45%, transparent);
+}
+.browser-audio-card.warn {
+  background: color-mix(in oklab, var(--status-warn) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 50%, transparent);
+}
+.browser-audio-card.fail {
+  background: color-mix(in oklab, var(--status-danger) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-danger) 50%, transparent);
+}
+.browser-audio-card ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+
+/* A neutral inline note box (position prompt, autolevel status). */
+.note-box {
+  border-radius: var(--radius-md);
+  padding: 0.7rem 0.9rem;
+  margin: 0.5rem 0;
+  color: var(--text);
+  background: color-mix(in oklab, var(--status-warn) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 40%, transparent);
+}
+
+/* ---- Confidence / runtime-integrity cards ----------------------------- */
+.confidence-card,
+.runtime-card {
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+  margin: 0.8rem 0;
+  background: color-mix(in oklab, var(--secondary) 40%, transparent);
+}
+.confidence-card.high,
+.runtime-card.ok { border-left-color: var(--status-ok); }
+.confidence-card.medium,
+.runtime-card.warn { border-left-color: var(--status-warn); }
+.confidence-card.low,
+.runtime-card.fail { border-left-color: var(--status-danger); }
+.confidence-card h3,
+.runtime-card h3 { margin-top: 0; }
+.confidence-card .confidence-score {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.confidence-card .gate-list {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+}
+.confidence-card .gate {
+  display: inline-block;
+  border-radius: var(--radius-sm);
+  padding: 0.18rem 0.45rem;
+  font-size: 0.86rem;
+  background: var(--surface-quiet);
+  color: var(--muted);
+}
+.confidence-card .gate.allowed {
+  background: color-mix(in oklab, var(--status-ok) 16%, transparent);
+  color: var(--text);
+}
+.confidence-card .gate.blocked {
+  background: color-mix(in oklab, var(--status-danger) 14%, transparent);
+  color: var(--text);
+}
+.confidence-card ul,
+.runtime-card ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+
+/* ---- Results summary (metric grid + per-band table) ------------------- */
+.results-summary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--secondary) 40%, transparent);
+  padding: 0.75rem 0.9rem;
+  margin: 0.8rem 0;
+}
+.results-summary h3 { margin: 0 0 0.45rem; }
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+.metric {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.55rem 0.65rem;
+}
+.metric .label { display: block; color: var(--muted); font-size: 0.82rem; }
+.metric .value {
+  display: block;
+  font-size: 1.08rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 0.1rem;
+}
+.band-table { width: 100%; border-collapse: collapse; margin-top: 0.55rem; font-size: 0.9rem; }
+.band-table th,
+.band-table td {
+  padding: 0.35rem 0.45rem;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+}
+.band-table th:first-child,
+.band-table td:first-child { text-align: left; }
+@media (max-width: 520px) {
+  .band-table,
+  .band-table thead,
+  .band-table tbody,
+  .band-table tr,
+  .band-table th,
+  .band-table td { display: block; }
+  .band-table thead { display: none; }
+  .band-table tr {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.4rem 0.55rem;
+    margin: 0.55rem 0;
+    background: var(--surface);
+  }
+  .band-table td {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    border-bottom: 1px solid var(--border);
+    text-align: right;
+    padding: 0.3rem 0;
+  }
+  .band-table td:first-child { font-weight: 700; }
+  .band-table td:last-child { border-bottom: 0; }
+  .band-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-weight: 600;
+    text-align: left;
+  }
+  .band-table td:first-child::before { content: ''; }
+}
+.band-pill {
+  display: inline-block;
+  border-radius: var(--radius-sm);
+  padding: 0.1rem 0.35rem;
+  font-size: 0.82rem;
+  background: var(--surface-quiet);
+  color: var(--muted);
+}
+.band-pill.high { background: color-mix(in oklab, var(--status-ok) 16%, transparent); color: var(--text); }
+.band-pill.medium { background: color-mix(in oklab, var(--status-warn) 18%, transparent); color: var(--text); }
+.band-pill.low { background: color-mix(in oklab, var(--status-danger) 14%, transparent); color: var(--text); }
+
+/* ---- Frequency-response chart ----------------------------------------- */
+.chart-controls {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  align-items: end;
+  margin: 0.6rem 0;
+}
+.chart-controls label {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+.chart-controls label.stacked { display: block; }
+.chart-controls select { min-width: 135px; }
+.chart-wrap {
+  width: 100%;
+  max-width: 580px;
+  margin: 1rem 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+canvas#chart { display: block; width: 100%; height: 240px; }
+
+/* ---- Designed-filter (PEQ) list --------------------------------------- */
+.peq-list {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92rem;
+}
+.peq-list table { width: 100%; border-collapse: collapse; }
+.peq-list th,
+.peq-list td {
+  text-align: right;
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.peq-list th:first-child,
+.peq-list td:first-child { text-align: left; }
+
+/* ---- Measurement state badge ------------------------------------------ */
+.state-badge {
+  display: inline-block;
+  padding: 0.2rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: var(--surface-quiet);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.state-badge.needs_noise_capture,
+.state-badge.preparing,
+.state-badge.needs_repeat_capture,
+.state-badge.analyzing {
+  background: color-mix(in oklab, var(--status-warn) 20%, transparent);
+  color: var(--text);
+}
+.state-badge.sweeping,
+.state-badge.awaiting_capture,
+.state-badge.awaiting_repeat_capture {
+  background: color-mix(in oklab, var(--status-idle) 20%, transparent);
+  color: var(--text);
+}
+.state-badge.ready,
+.state-badge.applied {
+  background: var(--status-ok);
+  color: var(--primary-foreground);
+}
+.state-badge.failed {
+  background: var(--status-danger);
+  color: var(--primary-foreground);
+}
+.state-badge.idle { background: var(--surface-quiet); color: var(--muted); }
+
+/* The measurement workflow's buttons reuse .btn / .btn--* from app.css;
+   the relocated JS toggles `disabled` directly and app.css styles
+   .btn:disabled. Nothing extra needed here. */
+
+/* ---- Session-report panel --------------------------------------------- */
+.report-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+}
+.session-list { display: grid; gap: 0.6rem; margin-top: 0.7rem; }
+.session-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.7rem 0.8rem;
+  background: color-mix(in oklab, var(--secondary) 40%, transparent);
+}
+.session-item p { margin: 0.25rem 0 0.55rem; }
+.session-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.privacy-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.08rem 0.45rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: color-mix(in oklab, var(--status-warn) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 45%, transparent);
+}
+.session-report {
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 0.8rem 0.9rem;
+  margin-top: 0.9rem;
+  background: var(--surface);
+}
+.session-report.ready { border-left-color: var(--status-ok); }
+.session-report.caution { border-left-color: var(--status-warn); }
+.session-report.blocked { border-left-color: var(--status-danger); }
+.session-report h3 { margin: 0 0 0.4rem; }
+.session-report h4 { margin: 0.75rem 0 0.3rem; }
+.session-report ul { margin: 0.25rem 0 0; padding-left: 1.2rem; }
+
+/* ---- Advice disclosure ------------------------------------------------- */
+details.advice {
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.8rem 0.7rem;
+  margin: 1rem 0;
+}
+details.advice summary { cursor: pointer; font-weight: 600; }
+details.advice ol { margin: 0.5rem 0; }
+
+/* ---- "Not Private" cert disclosure ------------------------------------ */
+/* The page uses class="disclosure" + ".disclosure-body" (legacy markup).
+   app.css doesn't ship a .disclosure rule, so style it here like wifi.css's
+   saved-networks collapse: a card-edged summary with a rotating caret. */
+details.disclosure { margin-top: 1.75rem; }
+details.disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 0.85rem 2.4em 0.85rem 1rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--secondary) 50%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text);
+  position: relative;
+  transition: background 150ms ease;
+}
+details.disclosure > summary:hover { background: var(--surface-hover); }
+details.disclosure[open] > summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+details.disclosure > summary::-webkit-details-marker { display: none; }
+details.disclosure > summary::after {
+  content: "▸";
+  position: absolute;
+  right: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  transition: transform 150ms ease;
+}
+details.disclosure[open] > summary::after { transform: translateY(-50%) rotate(90deg); }
+details.disclosure > .disclosure-body {
+  padding: 0.6rem 1rem 1rem;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  box-shadow: inset 0 0 0 1px var(--border);
+  border-top: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  details.disclosure > summary,
+  details.disclosure > summary::after { transition: none; }
+}

@@ -41,10 +41,11 @@ from typing import Any
 
 from ..peering.config import default_room as _default_room_from_hostname
 from ._common import (
-    PAGE_STYLE,
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
-    delete_env_file,
     read_env_file,
     read_form,
     reject_csrf,
@@ -52,7 +53,6 @@ from ._common import (
     send_html_response,
     send_see_other,
     verify_csrf,
-    wrap_page,
     write_env_file,
 )
 
@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 PEERING_ENV_FILE = "/var/lib/jasper/peering.env"
 PEER_ID_FILE = "/var/lib/jasper/peer_id"
 PEERING_UDS_PATH = "/run/jasper/peering.sock"
+PEERING_PAGE_CSS_HREF = "/assets/peering/peering.css"
 
 
 # ----------------------------------------------------------------------
@@ -148,44 +149,20 @@ def _fetch_peer_status(uds_path: str = PEERING_UDS_PATH, timeout: float = 1.0) -
 # ----------------------------------------------------------------------
 # HTML rendering.
 # ----------------------------------------------------------------------
-
-
-# Page-specific CSS appended into the body via an inline <style>.
-# Avoids monkey-patching `_common.PAGE_STYLE` (which the wake wizard
-# historically did) — the shared sheet stays untouched and these
-# rules just cascade on top.
-_PEERS_EXTRA_CSS = """
-  .peer-status {
-    background: #f4f4f4; border: 1px solid #e6e6e6;
-    border-radius: 8px; padding: 0.9em 1em; margin-bottom: 1.2em;
-  }
-  .peer-status.on { background: #f0fff4; border-color: #1db954; }
-  .peer-status .pair { display: flex; gap: 0.5em; margin: 0.3em 0; }
-  .peer-status .pair .label { color: #666; min-width: 6em; }
-  .peer-status .pair .val { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                            color: #222; font-size: 0.95em; word-break: break-all; }
-  .peer-row {
-    background: #fafafa; border: 1px solid #e6e6e6;
-    border-radius: 6px; padding: 0.6em 0.8em; margin-bottom: 0.4em;
-    display: flex; align-items: center; gap: 0.8em;
-  }
-  .peer-row .name { font-weight: 600; flex: 1; }
-  .peer-row .id   { color: #888; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                    font-size: 0.85em; }
-  .peer-row .badge { background: #4a8; color: white; padding: 0.1em 0.5em;
-                     border-radius: 4px; font-size: 0.78em; }
-  .peer-empty {
-    color: #666; font-style: italic;
-    padding: 0.6em 0.8em; background: #fafafa;
-    border: 1px dashed #ddd; border-radius: 6px;
-  }
-  .toggle-row {
-    display: flex; align-items: center; gap: 1em;
-    margin: 1.4em 0;
-  }
-  .toggle-row label { margin: 0; cursor: pointer; }
-  .checkbox-row input { width: auto; margin-right: 0.4em; }
-"""
+#
+# Migrated to the canonical design system (canonical_page + canonical_header
+# + canonical_banner + /assets/app.css). Page-specific visuals (the
+# discovered-peer rows, the form's inline checkbox layout) live in
+# deploy/assets/peering/peering.css, linked via page_css_href. The status
+# summary reuses the shared .info-card / .deflist / .badge vocabulary; its
+# ON/OFF tone rides the single --tone knob.
+#
+# This page has no inline JavaScript — the form is a plain server-rendered
+# POST to /save — so there is intentionally no ES module and no <script>
+# tag. The two boolean controls stay native checkboxes (name=enabled /
+# name=primary) so the server-rendered POST still submits their values;
+# the shared toggle_html() helper renders a bare checkbox with no
+# name/value and so cannot drive a native form submission.
 
 
 def _render_page(*, state_path: str, csrf_token: str, status_msg: str = "") -> bytes:
@@ -195,111 +172,117 @@ def _render_page(*, state_path: str, csrf_token: str, status_msg: str = "") -> b
     primary = _primary(state)
     pid = _peer_id()
 
-    status_class = "peer-status on" if on else "peer-status"
     rendered_pid = html.escape(pid)
     rendered_room = html.escape(room)
+    status_tone = "var(--status-ok)" if on else "var(--status-idle)"
+    status_label = "On" if on else "Off"
+    primary_text = (
+        "Yes — small bias in tie-breakers" if primary else "No"
+    )
 
-    peer_rows_html = ""
+    discovered_section = ""
     if on:
         status = _fetch_peer_status()
         peers = (status or {}).get("peers", [])
         # Drop self.
         peers = [p for p in peers if p.get("peer_id") != pid]
         if peers:
+            rows = []
             for p in peers:
-                short_id = (p.get("peer_id") or "?")[:8]
+                short_id = html.escape((p.get("peer_id") or "?")[:8])
                 pname = html.escape(p.get("room", "") or "(no room)")
                 paddr = html.escape(p.get("address", "") or "?")
-                ptag = '<span class="badge">primary</span>' if p.get("primary") else ""
-                peer_rows_html += (
-                    f'<div class="peer-row">'
-                    f'<span class="name">{pname}</span>'
-                    f'{ptag}'
-                    f'<span class="id">{short_id}… @ {paddr}</span>'
-                    f'</div>'
+                ptag = (
+                    '<span class="badge" style="--tone: var(--status-ok);">'
+                    'primary</span>'
+                    if p.get("primary") else ""
                 )
+                rows.append(
+                    '<li class="peer-row">'
+                    f'<span class="peer-row__name">{pname}</span>'
+                    f'{ptag}'
+                    f'<span class="peer-row__id">{short_id}… @ {paddr}</span>'
+                    '</li>'
+                )
+            peers_html = f'<ul class="peer-list">{"".join(rows)}</ul>'
         else:
-            peer_rows_html = (
-                '<div class="peer-empty">'
+            peers_html = (
+                '<p class="peer-empty">'
                 'No sibling peers visible yet. Enable peering on another '
                 'JTS speaker on the same network for it to appear here.'
-                '</div>'
+                '</p>'
             )
-
-    discovered_section = ""
-    if on:
         discovered_section = f"""
-        <h2>Discovered peers</h2>
-        {peer_rows_html}
-        """
+  <section class="section">
+    <h2 class="section__title">Discovered peers</h2>
+    {peers_html}
+  </section>"""
 
-    on_attr = "checked" if on else ""
-    primary_attr = "checked" if primary else ""
+    enabled_checked = " checked" if on else ""
+    primary_checked = " checked" if primary else ""
 
     body = f"""
-    <style>{_PEERS_EXTRA_CSS}</style>
-    <p class="sub">
-      When multiple JTS speakers are on the same network, peering lets
-      them coordinate so that only one device responds to each wake
-      event. Off by default — turning it on costs nothing on a
-      single-device setup, but the speakers don't even look for each
-      other until you enable it.
-    </p>
+{canonical_header("Speaker peering")}
+<main class="page">
+  {canonical_banner(status_msg)}
+  <p class="form-hint">
+    When multiple JTS speakers are on the same network, peering lets them
+    coordinate so that only one device responds to each wake event. Off by
+    default — turning it on costs nothing on a single-device setup, but the
+    speakers don't even look for each other until you enable it.
+  </p>
 
-    <div class="{status_class}">
-      <div class="pair">
-        <span class="label">Status:</span>
-        <span class="val">{'ON' if on else 'OFF'}</span>
-      </div>
-      <div class="pair">
-        <span class="label">Peer ID:</span>
-        <span class="val">{rendered_pid}</span>
-      </div>
-      <div class="pair">
-        <span class="label">Room:</span>
-        <span class="val">{rendered_room}</span>
-      </div>
-      <div class="pair">
-        <span class="label">Primary:</span>
-        <span class="val">{'yes (small bias in tie-breakers)' if primary else 'no'}</span>
-      </div>
-    </div>
+  <section class="info-card" style="--tone: {status_tone};">
+    <dl class="deflist">
+      <div><dt>Status</dt><dd>{status_label}</dd></div>
+      <div><dt>Peer ID</dt><dd><code>{rendered_pid}</code></dd></div>
+      <div><dt>Room</dt><dd>{rendered_room}</dd></div>
+      <div><dt>Primary</dt><dd>{primary_text}</dd></div>
+    </dl>
+  </section>
+{discovered_section}
 
-    {discovered_section}
+  <form method="post" action="/save">
+    {csrf_field_html(csrf_token)}
 
-    <form method="POST" action="/save">
-      {csrf_field_html(csrf_token)}
-      <div class="toggle-row checkbox-row">
-        <label><input type="checkbox" name="enabled" value="1" {on_attr}>
-          Enable peering on this speaker
-        </label>
-      </div>
+    <label class="peer-check">
+      <input type="checkbox" name="enabled" value="1"{enabled_checked}>
+      <span class="peer-check__text">
+        <span class="peer-check__label">Enable peering on this speaker</span>
+      </span>
+    </label>
 
+    <div class="field">
       <label for="room">Room name (shown to other speakers)</label>
       <input type="text" id="room" name="room" value="{rendered_room}"
-             placeholder="kitchen, bedroom, …" maxlength="32">
+             placeholder="kitchen, bedroom, …" maxlength="32"
+             autocomplete="off" autocapitalize="words" spellcheck="false">
+    </div>
 
-      <div class="toggle-row checkbox-row">
-        <label><input type="checkbox" name="primary" value="1" {primary_attr}>
-          Mark this as the primary speaker
-          <small style="color:#666;">
-            — gives this speaker a small ranking bias in close calls.
-            Useful when one Pi is in a louder/main room and you want
-            it to win ties.
-          </small>
-        </label>
-      </div>
+    <label class="peer-check">
+      <input type="checkbox" name="primary" value="1"{primary_checked}>
+      <span class="peer-check__text">
+        <span class="peer-check__label">Mark this as the primary speaker</span>
+        <span class="peer-check__hint">Gives this speaker a small ranking
+          bias in close calls. Useful when one Pi is in a louder / main
+          room and you want it to win ties.</span>
+      </span>
+    </label>
 
-      <p style="margin-top: 1.6em;">
-        <button type="submit">Save and restart</button>
-        <small style="margin-left: 0.6em; color: #666;">
-          Saves to /var/lib/jasper/peering.env. Restarts jasper-voice
-          and jasper-control so both daemons pick up the new config.
-        </small>
-      </p>
-    </form>
-    """
-    return wrap_page("Speaker peering", body, status_msg=status_msg)
+    <div class="form-actions">
+      <button type="submit" class="btn btn--primary">Save and restart</button>
+    </div>
+    <p class="form-hint">Saves to <code>/var/lib/jasper/peering.env</code>.
+      Restarts jasper-voice and jasper-control so both daemons pick up the
+      new config.</p>
+  </form>
+</main>
+"""
+    return canonical_page(
+        "Speaker peering", body,
+        csrf_token=csrf_token,
+        page_css_href=PEERING_PAGE_CSS_HREF,
+    )
 
 
 # ----------------------------------------------------------------------

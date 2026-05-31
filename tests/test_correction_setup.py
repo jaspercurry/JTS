@@ -25,8 +25,24 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
+from pathlib import Path
+
 from jasper.web import correction_setup
+
 from ._web_test_helpers import request_with_csrf
+
+# The page's behaviour was relocated VERBATIM into a static ES module when
+# /correction/ migrated to the canonical design system (chrome-only restyle).
+# Render-surface assertions that used to look for inline JS now read the
+# module; the intent (the behaviour ships to the browser) is unchanged.
+_CORRECTION_MODULE = (
+    Path(__file__).resolve().parents[1]
+    / "deploy" / "assets" / "correction" / "js" / "main.js"
+)
+
+
+def _module_js() -> str:
+    return _CORRECTION_MODULE.read_text()
 
 
 # ---------- Page render ----------------------------------------------------
@@ -41,11 +57,12 @@ def test_render_page_substitutes_hostname():
 
 
 def test_render_page_substitutes_required_sample_rate():
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     # The constant lands in the JS as a numeric literal — check it shows
-    # up. The JS bails on any other rate.
+    # up. The JS bails on any other rate. (The migration baked it in as a
+    # literal; the old __REQUIRED_SR__ Python substitution is gone, but the
+    # module's relocation-note comment names it, so don't assert its absence.)
     assert "var REQUIRED_SR = 48000;" in body
-    assert "__REQUIRED_SR__" not in body
 
 
 def test_render_page_no_unfilled_placeholders():
@@ -62,12 +79,17 @@ def test_render_page_no_unfilled_placeholders():
 
 
 def test_render_page_embeds_csrf_meta_and_fetch_helpers():
+    # The CSRF meta tag stays in the page (canonical_page renders it); the
+    # fetch helpers moved into the shared ES module, which now IMPORTS
+    # csrfHeaders/jsonHeaders from /assets/shared/js/http.js rather than
+    # inlining them. Assert both surfaces keep the X-CSRF-Token contract.
     body = correction_setup._render_page("jts.local", "csrf-token").decode()
     assert 'meta name="jts-csrf" content="csrf-token"' in body
-    assert "function csrfHeaders(headers)" in body
-    assert "function jsonHeaders()" in body
-    assert "headers: jsonHeaders()" in body
-    assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in body
+    js = _module_js()
+    assert 'from "/assets/shared/js/http.js"' in js
+    assert "jsonHeaders" in js and "csrfHeaders" in js
+    assert "headers: jsonHeaders()" in js
+    assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in js
 
 
 def test_render_page_includes_ca_download_link():
@@ -88,8 +110,11 @@ def test_render_page_home_link_returns_to_plain_http():
     must use an absolute HTTP URL so it does not inherit the HTTPS
     origin and hit nginx's 443 catch-all."""
     body = correction_setup._render_page("jts.local").decode()
-    assert 'class="nav-back" href="http://jts.local/"' in body
-    assert 'class="nav-back" href="/"' not in body
+    # Migrated to the canonical sticky header: the back affordance is the
+    # round .icon-button. It must still point at the absolute plain-HTTP root
+    # so it does not inherit the HTTPS origin and hit nginx's 443 catch-all.
+    assert 'class="icon-button" href="http://jts.local/"' in body
+    assert 'href="/"' not in body
 
 
 def test_read_json_body_rejects_invalid_content_length():
@@ -142,7 +167,7 @@ def test_render_page_requests_constraints_explicitly():
     ignore the constraint, but we have to ASK first. Verify the JS
     actually sets these. Without this, even a correctly-implemented
     Safari would give us processed audio."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     assert "echoCancellation: false" in body
     assert "noiseSuppression: false" in body
     assert "autoGainControl: false" in body
@@ -151,29 +176,33 @@ def test_render_page_requests_constraints_explicitly():
 
 
 def test_render_page_includes_mic_picker_and_calibration_controls():
+    # Markup (the picker + model dropdown) stays in the page; the device
+    # enumeration + calibration fetch/upload plumbing moved to the module.
     body = correction_setup._render_page("jts.local").decode()
     assert 'id="input-device-select"' in body
-    assert "enumerateDevices" in body
-    assert "audioConstraints.deviceId = {exact: inputDeviceSelect.value}" in body
     assert 'id="mic-model-select"' in body
     assert "Dayton Audio iMM-6 / iMM-6C" in body
     assert "miniDSP UMIK-1" in body
-    assert "calibration/fetch" in body
-    assert "calibration/upload" in body
-    assert "calibration_id: selectedCalibrationId" in body
-    assert "function invalidateLoadedCalibration()" in body
-    assert "micSerialInput.addEventListener('input'" in body
-    assert "micOrientationSelect.addEventListener('change'" in body
-    assert "calibrationSignSelect.addEventListener('change'" in body
-    assert "calibrationFileInput.addEventListener('change'" in body
+    js = _module_js()
+    assert "enumerateDevices" in js
+    assert "audioConstraints.deviceId = {exact: inputDeviceSelect.value}" in js
+    assert "calibration/fetch" in js
+    assert "calibration/upload" in js
+    assert "calibration_id: selectedCalibrationId" in js
+    assert "function invalidateLoadedCalibration()" in js
+    assert "micSerialInput.addEventListener('input'" in js
+    assert "micOrientationSelect.addEventListener('change'" in js
+    assert "calibrationSignSelect.addEventListener('change'" in js
+    assert "calibrationFileInput.addEventListener('change'" in js
 
 
 def test_render_page_includes_browser_audio_path_report():
     body = correction_setup._render_page("jts.local").decode()
-    assert 'id="browser-audio-report"' in body
-    assert "function renderBrowserAudioReport(report)" in body
-    assert "renderBrowserAudioLocal(actual, problems)" in body
-    assert "browser_audio_report" in body
+    assert 'id="browser-audio-report"' in body  # markup stays in the page
+    js = _module_js()  # rendering logic moved to the module
+    assert "function renderBrowserAudioReport(report)" in js
+    assert "renderBrowserAudioLocal(actual, problems)" in js
+    assert "browser_audio_report" in js
 
 
 def test_sanitize_input_device_hashes_browser_ids():
@@ -206,7 +235,7 @@ def test_render_page_reads_back_settings_for_verify():
     a red banner if EC/NS/AGC didn't actually take effect. If this
     check ever falls out, future phases would silently measure with
     Safari's processed audio — which is exactly the wrong thing."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     assert ".getSettings()" in body
     # All three constraint names appear in the verify section.
     assert "actual.echoCancellation" in body
@@ -220,7 +249,7 @@ def test_render_page_does_not_loop_mic_back_to_speaker():
     laptop, terrible on a smart speaker that's the room's TARGET (the
     feedback loop would be instant and ear-melting). Keep the comment
     that documents the deliberate omission as a regression pin."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     # node.connect(ctx.destination) MUST NOT appear.
     assert "node.connect(ctx.destination)" not in body
     # The anti-feedback comment must be there to flag the omission as
@@ -234,7 +263,7 @@ def test_render_page_serves_audioworklet_inline():
     into Phase 1 sweep capture, where worklet timing matters. If a
     future change replaces the worklet with ScriptProcessorNode, the
     sweep capture refactor breaks."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     assert "AudioWorkletProcessor" in body
     assert "AudioWorkletNode" in body
     assert "audioWorklet.addModule" in body
@@ -244,7 +273,7 @@ def test_render_page_requests_wake_lock():
     """A 2-minute sweep on iOS Safari without Wake Lock = screen
     locks mid-measurement = AudioContext suspended = capture lost.
     Pin the request here so it's not optimized away later."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     assert "wakeLock" in body
     assert "screen" in body  # request type
 
@@ -256,7 +285,7 @@ def test_render_page_treats_undefined_constraints_as_ok():
     feature is off (iOS has these off by default for getUserMedia).
     The page must NOT mark undefined as 'bad' — that was a
     real first-pass-test bug. Pin the corrected behavior."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     # Helper function exists.
     assert "isAudioProcessingOff" in body
     # Only TRUE counts as a problem (not 'truthy', because
@@ -276,69 +305,77 @@ def test_render_page_includes_autolevel_controls():
     finding — speaker-to-iPhone-at-couch path attenuation can leave
     the mic below the lock band even at max safe volume)."""
     body = correction_setup._render_page("jts.local").decode()
-    # All three control buttons present (start + manual-lock + cancel).
+    # All three control buttons present (start + manual-lock + cancel) — markup.
     assert 'id="autolevel"' in body
     assert 'id="autolevel-lock"' in body
     assert 'id="autolevel-cancel"' in body
     assert "Auto-level" in body
     assert "Lock now" in body
-    # JS handlers exist + target the right endpoints.
-    assert "startAutolevel" in body
-    assert "autolevel/start" in body
-    assert "autolevel/lock" in body
+    # JS handlers exist + target the right endpoints (now in the module).
+    js = _module_js()
+    assert "startAutolevel" in js
+    assert "autolevel/start" in js
+    assert "autolevel/lock" in js
     # Adaptive target band — computed from measured noise floor at
     # the start of autolevel rather than hard-coded.
-    assert "computeTargetBand" in body
-    assert "AUTOLEVEL_SNR_DESIRED_LOW" in body
-    assert "AUTOLEVEL_SNR_DESIRED_HIGH" in body
+    assert "computeTargetBand" in js
+    assert "AUTOLEVEL_SNR_DESIRED_LOW" in js
+    assert "AUTOLEVEL_SNR_DESIRED_HIGH" in js
     # Preflight noise-floor measurement step is present.
-    assert "Measuring room noise" in body
+    assert "Measuring room noise" in js
 
 
 def test_render_page_includes_strategy_and_design_audit_controls():
     body = correction_setup._render_page("jts.local").decode()
-    assert 'id="strategy-select"' in body
+    assert 'id="strategy-select"' in body  # picker markup stays in the page
     assert "Balanced" in body
     assert "Assertive" in body
-    assert "strategy_choice: strategyChoice" in body
     assert 'id="design-report"' in body
-    assert "renderDesignReport" in body
+    js = _module_js()  # the wiring + render moved to the module
+    assert "strategy_choice: strategyChoice" in js
+    assert "renderDesignReport" in js
 
 
 def test_render_page_includes_results_visualization_controls():
     body = correction_setup._render_page("jts.local").decode()
+    # Markup containers + chart controls stay in the page.
     assert 'id="results-summary"' in body
     assert 'id="chart-smoothing"' in body
     assert 'id="chart-show-spread"' in body
     assert 'id="chart-show-filter"' in body
     assert 'id="chart-show-band"' in body
     assert 'id="runtime-integrity-panel"' in body
-    assert "renderResultsSummary" in body
-    assert "renderRuntimeIntegrity" in body
-    assert "recommendedNextAction" in body
     assert "spatial spread" in body
+    js = _module_js()  # the renderers moved to the module
+    assert "renderResultsSummary" in js
+    assert "renderRuntimeIntegrity" in js
+    assert "recommendedNextAction" in js
 
 
 def test_render_page_includes_read_only_measurement_reports():
     body = correction_setup._render_page("jts.local").decode()
+    # Section containers stay in the page; the report fetch/render/strings
+    # moved into the module.
     assert 'id="measurement-reports"' in body
     assert 'id="session-history"' in body
     assert 'id="session-report"' in body
-    assert "loadSessionReports" in body
-    assert "session-report?id=" in body
-    assert "session/delete" in body
-    assert "Private raw recordings" in body
-    assert "What looks trustworthy" in body
+    js = _module_js()
+    assert "loadSessionReports" in js
+    assert "session-report?id=" in js
+    assert "session/delete" in js
+    assert "Private raw recordings" in js
+    assert "What looks trustworthy" in js
 
 
 def test_render_page_includes_noise_and_repeat_capture_flow():
     body = correction_setup._render_page("jts.local").decode()
-    assert 'id="repeat-main-position"' in body
+    assert 'id="repeat-main-position"' in body  # markup stays in the page
     assert 'id="repeat-position"' in body
-    assert "capturePreSweepNoise" in body
-    assert "upload-noise" in body
-    assert "repeat-position" in body
-    assert "awaiting_repeat_capture" in body
+    js = _module_js()  # the capture/upload flow moved to the module
+    assert "capturePreSweepNoise" in js
+    assert "upload-noise" in js
+    assert "repeat-position" in js
+    assert "awaiting_repeat_capture" in js
 
 
 def test_render_page_shows_result_before_drawing_chart():
@@ -347,7 +384,7 @@ def test_render_page_shows_result_before_drawing_chart():
     0×0 (hidden ancestor) and the chart renders blank. Real user
     bug — got 5 PEQ filters but an empty frequency-response box.
     """
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     # The fix marker comment must stay so a refactor doesn't silently
     # reintroduce the old order.
     assert "show resultSection BEFORE drawing the chart" in body
@@ -360,7 +397,7 @@ def test_render_page_redraws_chart_on_resize():
     """Phone rotation / external display change should re-render
     the chart at the new canvas size, not stretch the old bitmap.
     Pin the resize + orientationchange listeners."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     assert "scheduleChartRedraw" in body
     assert "orientationchange" in body
 
@@ -371,7 +408,7 @@ def test_render_page_autolevel_target_band_clamps():
     pushing the iPhone mic toward clipping). A regression here
     would cause silent off-by-default-target failures we'd only
     catch on hardware."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     assert "AUTOLEVEL_TARGET_DB_FLOOR = -30" in body
     assert "AUTOLEVEL_TARGET_DB_CEILING = -10" in body
 
@@ -382,10 +419,14 @@ def test_render_page_amp_message_is_generic_not_tpa3255():
     amp. Generic 'turn up your amplifier' is the right wording.
     Pin the wording so a future revision doesn't accidentally
     reintroduce the brand-specific text."""
+    # The amp wording lives in the autolevel status copy, which moved into
+    # the module; the brand-specific text must not reappear in either surface.
     body = correction_setup._render_page("jts.local").decode()
-    assert "turn up your amplifier" in body.lower() or \
-        "turn up your amp" in body.lower()
+    js = _module_js()
+    combined = (body + js).lower()
+    assert "turn up your amplifier" in combined or "turn up your amp" in combined
     assert "TPA3255" not in body
+    assert "TPA3255" not in js
 
 
 def test_render_page_placement_advice_says_head_height():
@@ -403,7 +444,7 @@ def test_render_page_continue_button_hidden_outside_needs_next_position():
     sweep and a double-tap fired /next-position from the wrong
     state. Fix is the central applyButtonPolicy that hides everything
     by default and re-shows per state."""
-    body = correction_setup._render_page("jts.local").decode()
+    body = _module_js()  # behaviour relocated to the static ES module
     assert "applyButtonPolicy" in body
     # Default is hidden + disabled.
     assert "continueBtn.classList.add('hidden')" in body

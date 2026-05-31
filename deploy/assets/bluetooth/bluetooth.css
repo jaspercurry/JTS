@@ -1,0 +1,272 @@
+/* bluetooth.css — page-specific styling for /bluetooth/.
+ *
+ * Shared chrome (.app-header, .page, .section, .info-card, .eyebrow, .btn--*,
+ * .toggle, .banner, the icon sprite) lives in app.css; this file holds only
+ * the bits app.css doesn't cover: the live device list, the streaming pair
+ * card, the adapter-toggle rows, RSSI/battery metrics, and the unicode device
+ * glyphs. Everything is themed off the canonical design tokens so it sits with
+ * the rest of the redesigned UI. */
+
+/* Intro blurb + trailing note. */
+.bt-intro {
+  color: var(--muted);
+  margin: 0 0 1.25rem;
+  line-height: 1.5;
+}
+.bt-footnote {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-top: 2.5rem;
+}
+
+/* Adapter on/off + discoverable toggles, grouped in one card. */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0;
+}
+.toggle-row + .toggle-row {
+  border-top: 1px solid var(--border);
+}
+.toggle-row .label {
+  display: block;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.toggle-row .hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 0.15rem;
+  line-height: 1.4;
+}
+
+/* The Scan button keeps a stable width across the "Scan" ⇄ "Scanning"
+   label flip so the header doesn't jitter. */
+#scan-btn {
+  min-width: 8em;
+}
+.btn-spinner {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid color-mix(in oklch, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: bt-spin 0.8s linear infinite;
+  vertical-align: -0.15em;
+  margin-right: 0.45em;
+}
+
+/* The section header that carries the inline Scan button. */
+.bt-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/* Live device list. Each row is a flex line inside a bordered card. */
+.device-list {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin: 0.5rem 0;
+}
+.device-list .empty {
+  color: var(--muted);
+  padding: 1rem 1.2rem;
+  font-style: italic;
+}
+.device {
+  display: flex;
+  align-items: center;
+  padding: 0.8rem 1.2rem;
+  border-bottom: 1px solid var(--border);
+  gap: 1rem;
+}
+.device:last-child {
+  border-bottom: 0;
+}
+.device .icon {
+  font-size: 1.5em;
+  width: 1.5em;
+  text-align: center;
+  color: var(--muted);
+}
+.device .info {
+  flex: 1;
+  min-width: 0;
+}
+.device .name {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.device .meta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.device .actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+/* Per-device status pill. Tone is one knob — each modifier sets --tone and
+   the pill reads it, mirroring the .badge vocabulary in app.css. */
+.device .badge {
+  display: inline-block;
+  padding: 0.1em 0.55em;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin-left: 0.4rem;
+  vertical-align: 0.05em;
+  color: var(--tone, var(--status-idle));
+  background: color-mix(in oklch, var(--tone, var(--status-idle)) 16%, var(--card));
+}
+.device .badge.connected  { --tone: var(--status-ok); }
+.device .badge.connecting { --tone: var(--status-warn); }
+.device .badge.paired     { --tone: var(--status-idle); }
+
+/* RSSI + battery readouts on the right of a paired row. */
+.device .rssi {
+  color: var(--muted);
+  font-size: 0.8rem;
+  min-width: 3em;
+  text-align: right;
+}
+.device .metrics {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+  margin-right: 0.4rem;
+}
+.device .metric {
+  text-align: right;
+  line-height: 1.1;
+}
+.device .metric .label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.15rem;
+}
+.device .metric .value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.device .metric .value.bars {
+  letter-spacing: 0.04em;
+}
+
+/* Streaming pair card — appears inline under a device while it's pairing.
+   Defaults to a warn-toned surface; flips to ok / danger on the terminal
+   stage via the modifier classes. */
+.pair-card {
+  --tone: var(--status-warn);
+  background: color-mix(in oklch, var(--tone) 12%, var(--card));
+  border: 1px solid color-mix(in oklch, var(--tone) 45%, var(--border));
+  padding: 0.8rem 1.2rem;
+  border-radius: var(--radius-lg);
+  margin: 0.8rem 0;
+}
+.pair-card--ok    { --tone: var(--status-ok); }
+.pair-card--error { --tone: var(--status-danger); }
+.pair-card .stage {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.2rem 0;
+  color: var(--muted);
+}
+.pair-card .stage.active {
+  color: var(--foreground);
+  font-weight: 600;
+}
+.pair-card .stage.done {
+  color: var(--status-ok);
+}
+.pair-card .passkey {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 2em;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.4rem 0;
+  color: var(--foreground);
+}
+.pair-card .prompt-buttons {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+.pair-card .pair-waiting {
+  color: var(--muted);
+  text-align: center;
+  font-size: 0.85rem;
+}
+.pair-card .pair-detail {
+  color: var(--muted);
+  margin-top: 0.4rem;
+}
+.pair-card .pair-error-head {
+  color: var(--status-danger);
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+/* Centred numeric/PIN entry inside the pair card. */
+.pair-input {
+  font-size: 1.5em;
+  text-align: center;
+  padding: 0.3rem;
+  margin: 0.5rem auto;
+  display: block;
+  width: 6em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--foreground);
+}
+.pair-input--wide {
+  font-size: 1.3em;
+  width: 10em;
+}
+
+/* Spinners. The small per-stage spinner; @keyframes shared with .btn-spinner. */
+.spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: bt-spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+@keyframes bt-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .btn-spinner {
+    animation: none;
+  }
+}
+
+/* Device-class glyphs (unicode; no icon font). Slugs come from bluez's
+   `icon` property, sanitised server/client-side to [a-z0-9_-]. */
+.icon-phone::before            { content: "\1F4F1"; }
+.icon-computer::before         { content: "\1F4BB"; }
+.icon-audio-headphones::before { content: "\1F3A7"; }
+.icon-audio-card::before       { content: "\1F50A"; }
+.icon-input-keyboard::before   { content: "\1F39B"; }
+.icon-device::before           { content: "\1F4E1"; }

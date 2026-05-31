@@ -57,8 +57,10 @@ from .. import location_state, transit
 from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
 from ._common import (
-    PAGE_STYLE,
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
     delete_env_file,
     read_env_file,
@@ -68,7 +70,7 @@ from ._common import (
     verify_csrf,
     read_form,
     restart_voice_daemon,
-    wrap_page,
+    toggle_html,
     write_env_file,
 )
 
@@ -207,6 +209,17 @@ def _mask_key(value: str) -> str:
     if len(value) <= 8:
         return "…" * len(value)
     return f"{value[:4]}…{value[-4:]}"
+
+
+def _badge_html(configured: bool) -> str:
+    """A canonical status badge for a provider card's header.
+
+    One knob: ``--tone`` selects the accent the ``.badge`` primitive reads,
+    so a configured card greens (status-ok) and an unconfigured one stays
+    neutral (status-idle) — matching the rest of the design system."""
+    if configured:
+        return '<span class="badge" style="--tone:var(--status-ok)">configured</span>'
+    return '<span class="badge" style="--tone:var(--status-idle)">not configured</span>'
 
 
 # ----------------------------------------------------------------------
@@ -361,130 +374,38 @@ def _apply_clear(current: dict[str, str]) -> dict[str, str]:
 # ----------------------------------------------------------------------
 
 
-_TRANSIT_PAGE_STYLE = PAGE_STYLE + """
-  .transit-help { color: #555; font-size: 0.93em;
-                  margin: 0.4em 0 1.4em; line-height: 1.5; }
-  .privacy-note { color: #666; font-size: 0.85em; margin: 0.4em 0 0;
-                  line-height: 1.5; }
-  .privacy-note a { color: #1db954; }
-
-  /* Address geocode result panel. */
-  .address-result {
-    background: #f0fff4; border: 1px solid #1db954;
-    padding: 0.7em 0.9em; border-radius: 6px;
-    margin: 0.8em 0 1.2em;
-    display: flex; align-items: flex-start; gap: 0.5em;
-    flex-wrap: wrap;
-  }
-  .address-result .label { flex: 1; min-width: 200px; }
-  .address-result .label strong { display: block; }
-  .address-result .label .coords {
-    color: #666; font-size: 0.85em; font-variant-numeric: tabular-nums;
-  }
-  .address-result form { margin: 0; }
-  .address-result form button {
-    background: #4a4a4a; padding: 0.4em 0.9em; font-size: 0.88em;
-  }
-
-  /* Provider card. Reuses .account/.account-body but each is always
-     open since the page is configuration-flow, not browse-flow. */
-  .provider-card {
-    background: #f4f4f4; border-radius: 8px;
-    margin-bottom: 1em; padding: 1em 1.2em;
-    border: 1px solid #e6e6e6;
-  }
-  .provider-card h2 {
-    margin: 0 0 0.2em; font-size: 1.08em;
-    display: flex; align-items: center; gap: 0.6em;
-  }
-  .provider-card h2 .badge {
-    background: #4a8; color: white;
-    padding: 0.1em 0.55em; border-radius: 4px;
-    font-size: 0.72em; font-weight: 500;
-  }
-  .provider-card h2 .badge.warn { background: #c80; }
-  .provider-card h2 .badge.muted { background: #aaa; }
-  .provider-card .blurb {
-    color: #555; font-size: 0.9em; margin: 0 0 0.8em; line-height: 1.5;
-  }
-
-  /* Stop picker rows. */
-  .stop-row {
-    display: block; padding: 0.6em 0.8em; margin: 0.25em 0;
-    background: white; border: 1px solid #e6e6e6; border-radius: 6px;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s;
-  }
-  .stop-row:hover { background: #f0fff4; border-color: #1db954; }
-  .stop-row input[type=radio],
-  .stop-row input[type=checkbox] {
-    width: auto; flex: none; margin-right: 0.6em;
-  }
-  .stop-row.active { background: #f0fff4; border-color: #1db954; }
-  .stop-row .name { font-weight: 600; }
-
-  /* Bus-stop cluster header — groups opposing-direction stops at
-     the same MTA-named intersection (e.g. "4 AV/39 ST"). The
-     directions sit one indent below as `.stop-row` rows. */
-  .cluster-heading {
-    margin: 0.9em 0 0.2em; padding: 0.2em 0;
-    display: flex; align-items: baseline; gap: 0.5em;
-  }
-  .cluster-heading strong { color: #222; font-size: 0.98em; }
-  .cluster-heading .meta { color: #888; font-size: 0.85em; }
-
-  .stop-row .meta {
-    color: #888; font-size: 0.85em;
-    font-variant-numeric: tabular-nums;
-    margin-left: 0.4em;
-  }
-
-  /* Locked bus card — restrict to "go register + paste key". */
-  .locked-card {
-    background: #fff7e6; border: 1px solid #f0c060;
-    padding: 0.9em 1em; border-radius: 6px;
-    margin: 0.5em 0 1em;
-  }
-  .locked-card .icon {
-    font-size: 1.1em; margin-right: 0.4em;
-  }
-  .locked-card p { margin: 0 0 0.6em; line-height: 1.5; }
-
-  /* Advanced section. */
-  details.advanced { margin-top: 1.5em; }
-  details.advanced > summary {
-    cursor: pointer; padding: 0.6em 0.8em; border-radius: 6px;
-    background: #f4f4f4; border: 1px solid #e6e6e6;
-    font-weight: 600; color: #444;
-    user-select: none; -webkit-user-select: none;
-  }
-  details.advanced > summary:hover { background: #ececec; }
-  details.advanced .advanced-body {
-    padding: 0.8em 0.4em 0.4em; border: 1px solid #e6e6e6;
-    border-top: none; border-radius: 0 0 6px 6px;
-    margin-top: -1px;
-  }
-  details.advanced label { margin-top: 0.7em; }
-
-  /* No-coverage card. */
-  .no-coverage {
-    background: #fafafa; border: 1px dashed #d0d0d0;
-    padding: 1em; border-radius: 6px; color: #555;
-    line-height: 1.55;
-  }
-
-  /* Save button row. */
-  .save-row { margin-top: 1.6em; display: flex;
-              gap: 0.6em; align-items: center; }
-"""
+# Page-specific CSS for the picker rows, cluster headings, locked-bus card,
+# geocode result panel, and no-coverage card lives in the static stylesheet
+# served from /assets/ (cache-busted by build SHA via canonical_page). Shared
+# primitives (cards, fields, buttons, badges, banner, toggle) come from
+# app.css.
+TRANSIT_CSS_HREF = "/assets/transit/transit.css"
 
 
-def _wrap_transit_page(title: str, body: str, *, status_msg: str = "") -> bytes:
-    page = wrap_page(title, body, status_msg=status_msg).decode()
-    return page.replace(
-        f"<style>{PAGE_STYLE}</style>",
-        f"<style>{_TRANSIT_PAGE_STYLE}</style>",
-    ).encode()
+def _wrap_transit_page(title: str, body_main: str, *, status_msg: str = "") -> bytes:
+    """Assemble the canonical document shell around the page's <main> content.
+
+    ``body_main`` is the inner HTML of ``<main class="page">`` (everything
+    below the sticky header and the flash banner). This helper prepends the
+    canonical header + banner, wraps the content in ``<main>``, appends the
+    page's ES module, and hands the lot to ``canonical_page`` so the shared
+    stylesheet, CSRF meta tag, and icon sprite are emitted once."""
+    body = (
+        canonical_header(title)
+        + '\n<main class="page">\n'
+        + canonical_banner(status_msg)
+        + body_main
+        + '\n</main>\n'
+        + '<script type="module" src="/assets/transit/js/main.js"></script>'
+    )
+    # csrf_token is woven into the forms via csrf_field_html already; the meta
+    # tag is unused by this page's module (it posts via real forms, not fetch)
+    # but canonical_page only emits it when a token is passed, so pass "" and
+    # rely on the hidden form fields for CSRF. Page CSS rides as a real,
+    # lintable static file (page_css_href), the preferred canonical form.
+    return canonical_page(
+        title, body, page_css_href=TRANSIT_CSS_HREF,
+    )
 
 
 def _address_section_html(state: dict[str, str], csrf_token: str) -> str:
@@ -494,53 +415,56 @@ def _address_section_html(state: dict[str, str], csrf_token: str) -> str:
 
     if coords is not None:
         lat, lon = coords
-        # "Found you here" panel with a Re-geocode form.
+        # "Found you here" panel with a Re-geocode form, revealed by the
+        # module's Change button (data-action="change-address").
         return f"""
-<h2>Where you are</h2>
-<div class="address-result">
+<p class="eyebrow">Where you are</p>
+<div class="address-result" id="address-result">
   <div class="label">
     <strong>{html.escape(display) or "(saved location)"}</strong>
     <span class="coords">{lat:.3f}, {lon:.3f} (~110&nbsp;m precision)</span>
   </div>
-  <form method="post" action="geocode">
-    {csrf}
-    <input type="hidden" name="_redo" value="1">
-    <button type="button" onclick="document.getElementById('redo-form').style.display='block';this.parentElement.style.display='none';">Change…</button>
-  </form>
+  <button type="button" class="btn btn--ghost" data-action="change-address">Change…</button>
 </div>
-<form method="post" action="geocode" id="redo-form" style="display:none">
+<form method="post" action="geocode" id="redo-form" hidden>
   {csrf}
-  <label for="address-redo">New address</label>
-  <input id="address-redo" name="address" type="text"
-         placeholder="123 Main St, Brooklyn NY"
-         autocomplete="street-address">
-  <p class="privacy-note">
-    Your address is sent to <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noopener">OpenStreetMap (Nominatim)</a>
-    to look up coordinates. Only the coordinates (rounded to ~110&nbsp;m) are saved on this speaker.
-    <a href="https://operations.osmfoundation.org/policies/nominatim/" target="_blank" rel="noopener">Policy ↗</a>
-  </p>
-  <button type="submit">Find nearby stops</button>
+  <div class="field">
+    <label for="address-redo">New address</label>
+    <input id="address-redo" name="address" type="text"
+           placeholder="123 Main St, Brooklyn NY"
+           autocomplete="street-address">
+    <p class="form-hint">
+      Your address is sent to <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noopener">OpenStreetMap (Nominatim)</a>
+      to look up coordinates. Only the coordinates (rounded to ~110&nbsp;m) are saved on this speaker.
+      <a href="https://operations.osmfoundation.org/policies/nominatim/" target="_blank" rel="noopener">Policy ↗</a>
+    </p>
+  </div>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary">Find nearby stops</button>
+  </div>
 </form>"""
 
     # Cold state — no coords yet. Big address input as the only thing
     # the user can do.
     return f"""
-<h2>Where you are</h2>
-<p class="transit-help">
-  Enter your home address. We'll use it to find nearby transit stops.
-</p>
+<p class="eyebrow">Where you are</p>
+<p class="form-hint">Enter your home address. We'll use it to find nearby transit stops.</p>
 <form method="post" action="geocode">
   {csrf}
-  <label for="address">Home address</label>
-  <input id="address" name="address" type="text"
-         placeholder="123 Main St, Brooklyn NY"
-         autocomplete="street-address" autofocus>
-  <p class="privacy-note">
-    Your address is sent to <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noopener">OpenStreetMap (Nominatim)</a>
-    to look up coordinates. Only the coordinates (rounded to ~110&nbsp;m) are saved on this speaker — never the address itself.
-    <a href="https://operations.osmfoundation.org/policies/nominatim/" target="_blank" rel="noopener">Policy ↗</a>
-  </p>
-  <button type="submit">Find nearby stops</button>
+  <div class="field">
+    <label for="address">Home address</label>
+    <input id="address" name="address" type="text"
+           placeholder="123 Main St, Brooklyn NY"
+           autocomplete="street-address" autofocus>
+    <p class="form-hint">
+      Your address is sent to <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noopener">OpenStreetMap (Nominatim)</a>
+      to look up coordinates. Only the coordinates (rounded to ~110&nbsp;m) are saved on this speaker — never the address itself.
+      <a href="https://operations.osmfoundation.org/policies/nominatim/" target="_blank" rel="noopener">Policy ↗</a>
+    </p>
+  </div>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary">Find nearby stops</button>
+  </div>
 </form>"""
 
 
@@ -575,17 +499,23 @@ def _subway_card_html(
     coords = _coords(state)
     if coords is None:
         return f"""
-<section class="provider-card">
-  <h2>{html.escape(provider.label)} <span class="badge muted">awaiting address</span></h2>
-  <p class="blurb">Enter your address above to find nearby subway stations.</p>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
+    <span class="badge" style="--tone:var(--status-idle)">awaiting address</span>
+  </div>
+  <p class="provider-card__blurb">Enter your address above to find nearby subway stations.</p>
 </section>"""
 
     stops = provider.find_stops_near(*coords, count=5)
     if not stops or stops[0].distance_mi > MAX_NEAREST_STOP_MILES:
         return f"""
-<section class="provider-card">
-  <h2>{html.escape(provider.label)} <span class="badge muted">no stations nearby</span></h2>
-  <p class="blurb">Nearest station is more than {MAX_NEAREST_STOP_MILES:.0f}&nbsp;mi away.</p>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
+    <span class="badge" style="--tone:var(--status-idle)">no stations nearby</span>
+  </div>
+  <p class="provider-card__blurb">Nearest station is more than {MAX_NEAREST_STOP_MILES:.0f}&nbsp;mi away.</p>
 </section>"""
 
     active_stop = _value_for(state, "JASPER_SUBWAY_STATION_ID")
@@ -598,10 +528,7 @@ def _subway_card_html(
     if active_dir not in ("uptown", "downtown"):
         active_dir = "both"
 
-    badge = (
-        '<span class="badge">configured</span>' if active_stop
-        else '<span class="badge muted">not configured</span>'
-    )
+    badge = _badge_html(bool(active_stop))
     rows_html = _stop_picker_rows_html(
         radio_name="nyc_subway_stop",
         stops=stops,
@@ -619,16 +546,21 @@ def _subway_card_html(
         for v, label in dir_options
     )
     return f"""
-<section class="provider-card">
-  <h2>{html.escape(provider.label)} {badge}</h2>
-  <p class="blurb">Pick the station closest to home. &ldquo;Next train&rdquo; questions return every line that stops here, including trains rerouted from other lines during service changes.</p>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
+    {badge}
+  </div>
+  <p class="provider-card__blurb">Pick the station closest to home. &ldquo;Next train&rdquo; questions return every line that stops here, including trains rerouted from other lines during service changes.</p>
   {rows_html}
 
-  <label for="nyc_subway_direction">Default direction</label>
-  <select id="nyc_subway_direction" name="nyc_subway_direction" form="save-form">
-    {dir_html}
-  </select>
-  <small>Used when the voice query doesn't name a direction. Pick &ldquo;Both&rdquo; if you want every train in either direction by default; the voice tool still honors a specific direction on request.</small>
+  <div class="field">
+    <label for="nyc_subway_direction">Default direction</label>
+    <select id="nyc_subway_direction" name="nyc_subway_direction" form="save-form">
+      {dir_html}
+    </select>
+    <p class="form-hint">Used when the voice query doesn't name a direction. Pick &ldquo;Both&rdquo; if you want every train in either direction by default; the voice tool still honors a specific direction on request.</p>
+  </div>
 </section>"""
 
 
@@ -638,9 +570,12 @@ def _bus_card_html(
     coords = _coords(state)
     if coords is None:
         return f"""
-<section class="provider-card">
-  <h2>{html.escape(provider.label)} <span class="badge muted">awaiting address</span></h2>
-  <p class="blurb">Enter your address above to find nearby bus stops.</p>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
+    <span class="badge" style="--tone:var(--status-idle)">awaiting address</span>
+  </div>
+  <p class="provider-card__blurb">Enter your address above to find nearby bus stops.</p>
 </section>"""
 
     key_source = _bus_key_source(state)
@@ -651,22 +586,27 @@ def _bus_card_html(
         # the user to do until they have a key.
         register_url = provider.credentials[0].help_url
         return f"""
-<section class="provider-card">
-  <h2>{html.escape(provider.label)} <span class="badge warn">needs an API key</span></h2>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
+    <span class="badge" style="--tone:var(--status-warn)">needs an API key</span>
+  </div>
   <div class="locked-card">
-    <p><span class="icon">🔑</span><strong>MTA BusTime needs a free API key</strong></p>
+    <p>🔑 <strong>MTA BusTime needs a free API key</strong></p>
     <p>The endpoint that finds nearby bus stops requires a key. It's free, no payment info — but takes about 30 minutes to approve after you request one.</p>
     <p>
-      <a class="btn" href="{html.escape(register_url)}" target="_blank" rel="noopener">Get a free API key ↗</a>
+      <a class="btn btn--primary" href="{html.escape(register_url)}" target="_blank" rel="noopener">Get a free API key ↗</a>
     </p>
   </div>
-  <label for="nyc_bus_key">{html.escape(provider.credentials[0].label)}</label>
-  <input id="nyc_bus_key" name="nyc_bus_key" type="password"
-         form="save-form"
-         autocomplete="off" autocapitalize="off"
-         autocorrect="off" spellcheck="false"
-         placeholder="{html.escape(provider.credentials[0].placeholder)}">
-  <small>Paste your key here, then save. We'll validate it against MTA, then show nearby stops on the next page.</small>
+  <div class="field">
+    <label for="nyc_bus_key">{html.escape(provider.credentials[0].label)}</label>
+    <input id="nyc_bus_key" name="nyc_bus_key" type="password"
+           form="save-form"
+           autocomplete="off" autocapitalize="off"
+           autocorrect="off" spellcheck="false"
+           placeholder="{html.escape(provider.credentials[0].placeholder)}">
+    <p class="form-hint">Paste your key here, then save. We'll validate it against MTA, then show nearby stops on the next page.</p>
+  </div>
 </section>"""
 
     # Key is set — either in state (wizard-owned) or in env (operator
@@ -710,21 +650,20 @@ def _bus_card_html(
     saved_picks = parse_bus_stops(_value_for(state, "JASPER_BUS_STOPS"))
     saved_ids_norm = {sid.removeprefix("MTA_") for sid, _ in saved_picks}
 
-    badge = (
-        '<span class="badge">configured</span>' if saved_picks
-        else '<span class="badge muted">not configured</span>'
-    )
+    badge = _badge_html(bool(saved_picks))
 
     error_html = ""
     if error:
         error_html = (
-            f'<p class="msg err">Couldn\'t fetch bus stops: {html.escape(error)}. '
-            f'Your saved configuration is unchanged; try again later or use the '
-            f'<em>Advanced</em> section to enter a stop ID manually.</p>'
+            f'<div class="banner banner--danger" role="status">Couldn\'t fetch '
+            f'bus stops: {html.escape(error)}. Your saved configuration is '
+            f'unchanged; try again later or use the Advanced section to enter a '
+            f'stop ID manually.</div>'
         )
     elif not stops:
         error_html = (
-            '<p class="msg">No bus stops within ~1&nbsp;km of your coordinates.</p>'
+            '<div class="banner banner--info" role="status">No bus stops within '
+            '~1&nbsp;km of your coordinates.</div>'
         )
 
     # Soft-unlock banner: only render when the key is from os.environ
@@ -735,13 +674,13 @@ def _bus_card_html(
     external_notice_html = ""
     if key_source == "env":
         external_notice_html = (
-            '<p class="msg" style="background:#fff7e6;border-color:#f0c060;color:#5a4500">'
-            'ℹ️ Detected an MTA BusTime API key in '
+            '<div class="banner banner--info" role="status">'
+            'Detected an MTA BusTime API key in '
             '<code>/etc/jasper/jasper.env</code> (set outside the wizard). '
             'The daemon is using it already. Saving any change here will '
             'persist your picks (and the key) into '
             '<code>/var/lib/jasper/transit.env</code>, where the wizard '
-            'owns it from then on.</p>'
+            'owns it from then on.</div>'
         )
 
     # Masked-key readout — same shape as voice_setup.py shows for OAuth
@@ -754,9 +693,9 @@ def _bus_card_html(
         "env": "/etc/jasper/jasper.env (external)",
     }.get(key_source, "")
     masked_key_html = (
-        f'<p class="meta" style="margin-top:0.4em">Saved key: '
+        f'<p class="saved-key">Saved key: '
         f'<code>{html.escape(masked)}</code> '
-        f'<span style="color:#888">({html.escape(key_source_label)})</span></p>'
+        f'({html.escape(key_source_label)})</p>'
         if masked else ""
     )
 
@@ -840,10 +779,17 @@ def _bus_card_html(
         for sid, label in saved_picks
     )
 
+    # The hidden field round-trips the multi-select; the page's ES module
+    # (deploy/assets/transit/js/main.js, syncPicker for .bus-stop-pick) keeps
+    # it in lockstep with the checkboxes. Format matches `parse_bus_stops`:
+    # "id|label,id|label".
     return f"""
-<section class="provider-card">
-  <h2>{html.escape(provider.label)} {badge}</h2>
-  <p class="blurb">Pick every bus stop near home you want included in &ldquo;next bus&rdquo; answers. Both directions at an intersection? Check both — the voice answer names each stop so you'll hear which is which.</p>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
+    {badge}
+  </div>
+  <p class="provider-card__blurb">Pick every bus stop near home you want included in &ldquo;next bus&rdquo; answers. Both directions at an intersection? Check both — the voice answer names each stop so you'll hear which is which.</p>
   {external_notice_html}
   {error_html}
   {rows_html}
@@ -851,38 +797,18 @@ def _bus_card_html(
   <input type="hidden" name="nyc_bus_stops" id="nyc-bus-stops-hidden"
          form="save-form"
          value="{html.escape(initial_picks_value)}">
-  <script>
-    // Sync checkbox state into the hidden field on every change so a
-    // multi-select round-trips cleanly through the urlencoded form.
-    // The hidden value format matches `parse_bus_stops` in
-    // jasper/bus.py: "id|label,id|label".
-    (function() {{
-      var hidden = document.getElementById('nyc-bus-stops-hidden');
-      function sync() {{
-        var parts = [];
-        document.querySelectorAll('.bus-stop-pick:checked').forEach(function(cb) {{
-          var sid = cb.dataset.stopId || '';
-          var label = (cb.dataset.stopLabel || '').replace(/[|,]/g, ' ');
-          parts.push(label ? (sid + '|' + label) : sid);
-        }});
-        hidden.value = parts.join(',');
-      }}
-      document.querySelectorAll('.bus-stop-pick').forEach(function(cb) {{
-        cb.addEventListener('change', sync);
-      }});
-      sync();  // initial reconciliation
-    }})();
-  </script>
 
-  <details style="margin-top: 1em">
-    <summary style="cursor:pointer; color:#666; font-size:0.9em">Replace API key</summary>
+  <details class="replace-key">
+    <summary>Replace API key</summary>
     {masked_key_html}
-    <label for="nyc_bus_key">{html.escape(provider.credentials[0].label)}</label>
-    <input id="nyc_bus_key" name="nyc_bus_key" type="password"
-           form="save-form"
-           autocomplete="off" autocapitalize="off"
-           autocorrect="off" spellcheck="false"
-           placeholder="paste a new key to replace, or leave blank to keep">
+    <div class="field">
+      <label for="nyc_bus_key">{html.escape(provider.credentials[0].label)}</label>
+      <input id="nyc_bus_key" name="nyc_bus_key" type="password"
+             form="save-form"
+             autocomplete="off" autocapitalize="off"
+             autocorrect="off" spellcheck="false"
+             placeholder="paste a new key to replace, or leave blank to keep">
+    </div>
   </details>
 </section>"""
 
@@ -901,9 +827,12 @@ def _citibike_card_html(
     coords = _coords(state)
     if coords is None:
         return f"""
-<section class="provider-card">
-  <h2>{html.escape(provider.label)} <span class="badge muted">awaiting address</span></h2>
-  <p class="blurb">Enter your address above to find nearby Citi Bike stations.</p>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
+    <span class="badge" style="--tone:var(--status-idle)">awaiting address</span>
+  </div>
+  <p class="provider-card__blurb">Enter your address above to find nearby Citi Bike stations.</p>
 </section>"""
 
     error: str | None = None
@@ -929,34 +858,40 @@ def _citibike_card_html(
         in {"1", "true", "yes"}
     )
 
-    badge = (
-        '<span class="badge">configured</span>' if saved_picks
-        else '<span class="badge muted">not configured</span>'
-    )
+    badge = _badge_html(bool(saved_picks))
 
     error_html = ""
     if error:
         error_html = (
-            f'<p class="msg err">Couldn\'t fetch Citi Bike stations: '
-            f'{html.escape(error)}. Your saved configuration is unchanged; '
-            f'try again in a minute.</p>'
+            f'<div class="banner banner--danger" role="status">Couldn\'t fetch '
+            f'Citi Bike stations: {html.escape(error)}. Your saved configuration '
+            f'is unchanged; try again in a minute.</div>'
         )
     elif not stops:
         error_html = (
-            '<p class="msg">No Citi Bike stations within range of your '
-            'coordinates.</p>'
+            '<div class="banner banner--info" role="status">No Citi Bike '
+            'stations within range of your coordinates.</div>'
         )
 
-    # Household-wide toggle. Sits above the picker because it changes
-    # the meaning of the picker's rendered counts (you might want to
-    # ignore stations with no e-bikes when this is on, even if they
-    # have plenty of classic bikes).
+    # Household-wide toggle. Sits above the picker because it changes the
+    # meaning of the picker's rendered counts (you might want to ignore
+    # stations with no e-bikes when this is on, even if they have plenty of
+    # classic bikes). This is a native form control submitted with save-form,
+    # so it can't use toggle_html() (which omits name/form); it reuses the
+    # canonical `.toggle` CSS contract directly with the attributes the POST
+    # needs. The label sits beside it in a `.toggle-row`.
+    checked_attr = " checked" if ebike_only else ""
     ebike_checkbox_html = f"""
-<label class="stop-row" style="background:#f4f8ff; border-color:#9bb7d4">
-  <input type="checkbox" name="citibike_ebike_only" form="save-form"{' checked' if ebike_only else ''}>
-  <span class="name">Only mention e-bikes in voice answers</span>
-  <span class="meta">classic-bike counts are hidden when on</span>
-</label>"""
+<div class="toggle-row">
+  <span class="toggle-row__text">
+    <span class="name">Only mention e-bikes in voice answers</span>
+    <span class="meta">classic-bike counts are hidden when on</span>
+  </span>
+  <label class="toggle">
+    <input type="checkbox" name="citibike_ebike_only" form="save-form"{checked_attr}>
+    <span class="track"></span>
+  </label>
+</div>"""
 
     rows_html_parts: list[str] = []
     for s in stops:
@@ -994,44 +929,27 @@ def _citibike_card_html(
     # Hidden field doubles as the "card was rendered" marker for
     # _apply_save — if it's missing from the POST, the card wasn't
     # shown (out-of-coverage user) and citibike state must not be
-    # mutated. Always emit it, even when the picker is empty.
+    # mutated. Always emit it, even when the picker is empty. The page's
+    # ES module (syncPicker for .citibike-pick) keeps it in lockstep with
+    # the checkboxes; format matches `parse_saved_stations`: "id|label,...".
     return f"""
-<section class="provider-card">
-  <h2>{html.escape(provider.label)} {badge}</h2>
-  <p class="blurb">Pick every Citi Bike station near home you want in answers. The voice answer splits e-bikes from classic bikes and reports open docks. Snapshot counts below are live at page load; the voice tool re-fetches every time you ask, so they go stale within ~30 seconds.</p>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(provider.label)}</h2>
+    {badge}
+  </div>
+  <p class="provider-card__blurb">Pick every Citi Bike station near home you want in answers. The voice answer splits e-bikes from classic bikes and reports open docks. Snapshot counts below are live at page load; the voice tool re-fetches every time you ask, so they go stale within ~30 seconds.</p>
   {error_html}
 
-  <h3 style="margin: 1.2em 0 0.4em; font-size: 0.95em; color: #444">Household-wide preference</h3>
+  <p class="eyebrow">Household-wide preference</p>
   {ebike_checkbox_html}
 
-  <h3 style="margin: 1.2em 0 0.4em; font-size: 0.95em; color: #444">Stations near you</h3>
+  <p class="eyebrow" style="margin-top:1.1rem">Stations near you</p>
   {rows_html}
 
   <input type="hidden" name="citibike_stations" id="citibike-stations-hidden"
          form="save-form"
          value="{html.escape(initial_picks_value)}">
-  <script>
-    // Mirror of the bus-stops sync — keep the hidden field in lockstep
-    // with checkbox state so the multi-select round-trips through
-    // urlencoded POST. Format matches `parse_saved_stations` in
-    // jasper/citibike.py: "id|label,id|label".
-    (function() {{
-      var hidden = document.getElementById('citibike-stations-hidden');
-      function sync() {{
-        var parts = [];
-        document.querySelectorAll('.citibike-pick:checked').forEach(function(cb) {{
-          var sid = cb.dataset.stationId || '';
-          var label = (cb.dataset.stationLabel || '').replace(/[|,]/g, ' ');
-          parts.push(label ? (sid + '|' + label) : sid);
-        }});
-        hidden.value = parts.join(',');
-      }}
-      document.querySelectorAll('.citibike-pick').forEach(function(cb) {{
-        cb.addEventListener('change', sync);
-      }});
-      sync();
-    }})();
-  </script>
 </section>"""
 
 
@@ -1065,34 +983,44 @@ def _advanced_section_html(state: dict[str, str], csrf_token: str) -> str:
 <details class="advanced">
   <summary>Advanced — enter coordinates or stop IDs manually</summary>
   <div class="advanced-body">
-    <p class="hint">If you'd rather not geocode an address, paste coordinates from any map app. Three-decimal precision (~110&nbsp;m) is plenty.</p>
-    <form method="post" action="geocode" style="margin-bottom:1em">
+    <p class="form-hint">If you'd rather not geocode an address, paste coordinates from any map app. Three-decimal precision (~110&nbsp;m) is plenty.</p>
+    <form method="post" action="geocode">
       {csrf_field_html(csrf_token)}
-      <label for="manual_lat">Latitude</label>
-      <input id="manual_lat" name="manual_lat" type="text"
-             placeholder="40.646" value="{html.escape(lat)}">
-      <label for="manual_lon">Longitude</label>
-      <input id="manual_lon" name="manual_lon" type="text"
-             placeholder="-73.994" value="{html.escape(lon)}">
-      <button type="submit" class="secondary">Save coordinates</button>
+      <div class="field">
+        <label for="manual_lat">Latitude</label>
+        <input id="manual_lat" name="manual_lat" type="text"
+               placeholder="40.646" value="{html.escape(lat)}">
+      </div>
+      <div class="field">
+        <label for="manual_lon">Longitude</label>
+        <input id="manual_lon" name="manual_lon" type="text"
+               placeholder="-73.994" value="{html.escape(lon)}">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn--default">Save coordinates</button>
+      </div>
     </form>
 
-    <p class="hint">Or override the picked stops directly. Useful if your stop didn't show up in the nearest list.</p>
-    <label for="adv_sub_stop">Subway station ID</label>
-    <input id="adv_sub_stop" name="nyc_subway_stop" type="text"
-           form="save-form"
-           placeholder="B12"
-           value="{html.escape(sub_stop)}">
-    <small>GTFS Stop ID (e.g. <code>B12</code> for 9 Av on the D). Look up at
-      <a href="https://data.ny.gov/Transportation/MTA-Subway-Stations/39hk-dx4f" target="_blank" rel="noopener">data.ny.gov</a>.
-    </small>
+    <p class="form-hint">Or override the picked stops directly. Useful if your stop didn't show up in the nearest list.</p>
+    <div class="field">
+      <label for="adv_sub_stop">Subway station ID</label>
+      <input id="adv_sub_stop" name="nyc_subway_stop" type="text"
+             form="save-form"
+             placeholder="B12"
+             value="{html.escape(sub_stop)}">
+      <p class="form-hint">GTFS Stop ID (e.g. <code>B12</code> for 9 Av on the D). Look up at
+        <a href="https://data.ny.gov/Transportation/MTA-Subway-Stations/39hk-dx4f" target="_blank" rel="noopener">data.ny.gov</a>.
+      </p>
+    </div>
 
-    <label for="adv_bus_stops">Bus stops</label>
-    <input id="adv_bus_stops" name="nyc_bus_stops" type="text"
-           form="save-form"
-           placeholder="MTA_302680|4 Av/39 St eastbound,MTA_302682|4 Av/39 St westbound"
-           value="{html.escape(bus_stops_raw)}">
-    <small>Comma-separated list. Each entry is <code>id</code> or <code>id|label</code>. Accepts either <code>MTA_302680</code> or just <code>302680</code>. Find IDs on the BusTime bus-stop sign or at <a href="https://bustime.mta.info/" target="_blank" rel="noopener">bustime.mta.info</a>.</small>
+    <div class="field">
+      <label for="adv_bus_stops">Bus stops</label>
+      <input id="adv_bus_stops" name="nyc_bus_stops" type="text"
+             form="save-form"
+             placeholder="MTA_302680|4 Av/39 St eastbound,MTA_302682|4 Av/39 St westbound"
+             value="{html.escape(bus_stops_raw)}">
+      <p class="form-hint">Comma-separated list. Each entry is <code>id</code> or <code>id|label</code>. Accepts either <code>MTA_302680</code> or just <code>302680</code>. Find IDs on the BusTime bus-stop sign or at <a href="https://bustime.mta.info/" target="_blank" rel="noopener">bustime.mta.info</a>.</p>
+    </div>
   </div>
 </details>"""
 
@@ -1103,7 +1031,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     if coords is None:
         # No coords yet — only the address section is interactive.
         body = f"""
-<p class="sub">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
+<p class="form-hint">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
 {_address_section_html(state, csrf_token)}
 {_advanced_section_html(state, csrf_token)}"""
         return _wrap_transit_page("Transit", body, status_msg=status_msg)
@@ -1111,7 +1039,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     providers_covering = transit.covering(*coords)
     if not providers_covering:
         body = f"""
-<p class="sub">Configure transit settings.</p>
+<p class="form-hint">Configure transit settings.</p>
 {_address_section_html(state, csrf_token)}
 {_no_coverage_html()}
 {_advanced_section_html(state, csrf_token)}"""
@@ -1136,35 +1064,39 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
             cards.append(_citibike_card_html(p, state))
         else:
             cards.append(f"""
-<section class="provider-card">
-  <h2>{html.escape(p.label)} <span class="badge muted">no UI yet</span></h2>
-  <p class="blurb">This provider is in the registry but doesn't have a wizard card yet. Add one to <code>jasper/web/transit_setup.py</code>.</p>
+<section class="info-card provider-card">
+  <div class="provider-card__head">
+    <h2 class="provider-card__title">{html.escape(p.label)}</h2>
+    <span class="badge" style="--tone:var(--status-idle)">no UI yet</span>
+  </div>
+  <p class="provider-card__blurb">This provider is in the registry but doesn't have a wizard card yet. Add one to <code>jasper/web/transit_setup.py</code>.</p>
 </section>""")
 
+    # The Clear form's destructive confirm lives in the page's ES module
+    # (clear-form submit listener → jtsConfirm), not an inline onsubmit —
+    # canonical pages carry no inline dialog helper.
     body = f"""
-<p class="sub">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
+<p class="form-hint">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
 
 {_address_section_html(state, csrf_token)}
 
 <form method="post" action="save" id="save-form">
   {csrf_field_html(csrf_token) if csrf_token else ''}
-  <h2>Transit options near you</h2>
+  <p class="eyebrow">Transit options near you</p>
   {''.join(cards)}
 
   <div class="save-row">
-    <button type="submit">Save and restart voice</button>
-    <span class="hint">Voice picks up the new settings in about 5 seconds.</span>
+    <button type="submit" class="btn btn--primary">Save and restart voice</button>
+    <span class="form-hint">Voice picks up the new settings in about 5 seconds.</span>
   </div>
 </form>
 
 {_advanced_section_html(state, csrf_token)}
 
-<p class="hint" style="margin-top:2em">
-  <form method="post" action="clear" style="display:inline" onsubmit="return jtsConfirmSubmit(this, 'Clear all saved transit settings? Subway and bus tools will stop responding until reconfigured.', {{danger:true}});">
-    {csrf_field_html(csrf_token) if csrf_token else ''}
-    <button type="submit" class="danger">Clear all transit settings</button>
-  </form>
-</p>"""
+<form method="post" action="clear" id="clear-form" style="margin-top:2rem">
+  {csrf_field_html(csrf_token) if csrf_token else ''}
+  <button type="submit" class="btn btn--danger">Clear all transit settings</button>
+</form>"""
     return _wrap_transit_page("Transit", body, status_msg=status_msg)
 
 
@@ -1200,9 +1132,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     logger.exception("transit wizard render failed")
                     body = _wrap_transit_page(
                         "Transit",
-                        f'<p class="msg err">Couldn\'t render the page: '
-                        f'{html.escape(str(e))}. Check the daemon logs for '
-                        f'the full traceback (<code>journalctl -u jasper-web</code>).</p>',
+                        f'<div class="banner banner--danger" role="status">'
+                        f'Couldn\'t render the page: {html.escape(str(e))}. '
+                        f'Check the daemon logs for the full traceback '
+                        f'(<code>journalctl -u jasper-web</code>).</div>',
                     )
                 send_html_response(self, body)
                 return

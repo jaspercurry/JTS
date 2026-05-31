@@ -330,10 +330,14 @@ def test_poweroff_requires_csrf(dashboard_server) -> None:
     assert ("POST", "/system/poweroff") not in received
 
 
-_MODULE_DIR = (
-    Path(__file__).resolve().parent.parent
-    / "deploy" / "assets" / "system-status" / "js"
-)
+_ASSETS_DIR = Path(__file__).resolve().parent.parent / "deploy" / "assets"
+_MODULE_DIR = _ASSETS_DIR / "system-status" / "js"
+
+# The CSRF/JSON fetch plumbing the /system/ modules used to inline now lives in
+# the cross-page shared module; system-status/api.js just re-exports it. Scan it
+# alongside the page modules so the "CSRF read from the meta tag" guarantee is
+# still asserted at its (new) canonical home.
+_SHARED_HTTP_JS = _ASSETS_DIR / "shared" / "js" / "http.js"
 
 
 # The /system/ UI is a layered set of static ES modules. These guards scan
@@ -346,9 +350,11 @@ _EXPECTED_MODULES = (
 
 
 def _system_js() -> str:
-    return "\n".join(
-        (_MODULE_DIR / f"{name}.js").read_text() for name in _EXPECTED_MODULES
-    )
+    parts = [(_MODULE_DIR / f"{name}.js").read_text() for name in _EXPECTED_MODULES]
+    # Include the shared http.js the modules import, so guards that follow a
+    # string into its shared home (CSRF meta read, X-CSRF-Token) still hold.
+    parts.append(_SHARED_HTTP_JS.read_text())
+    return "\n".join(parts)
 
 
 def test_static_modules_present() -> None:

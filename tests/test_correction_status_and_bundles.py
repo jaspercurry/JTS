@@ -981,14 +981,23 @@ def test_render_page_includes_current_correction_banner():
     """Pin the banner element + reset-from-banner button in the
     rendered page so a future stylesheet refactor doesn't drop them.
     """
+    from pathlib import Path
+
     from jasper.web import correction_setup
     body = correction_setup._render_page("jts.local").decode()
+    # Banner markup + the auto-reset hint stay in the page; the render/refresh
+    # logic moved into the relocated static ES module when /correction/ adopted
+    # the canonical design system (chrome-only restyle).
     assert 'id="current-correction"' in body
     assert 'id="current-correction-label"' in body
     assert 'id="current-correction-reset"' in body
-    assert "renderCurrentCorrection" in body
-    assert "refreshCurrentCorrection" in body
     # The hint near the Run measurement button explains the auto-
     # reset behavior so users aren't surprised by sweeps wiping
     # their correction.
     assert "Each measurement starts from flat" in body
+    module_js = (
+        Path(__file__).resolve().parents[1]
+        / "deploy" / "assets" / "correction" / "js" / "main.js"
+    ).read_text()
+    assert "renderCurrentCorrection" in module_js
+    assert "refreshCurrentCorrection" in module_js

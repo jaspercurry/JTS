@@ -1,30 +1,12 @@
-// api.js — CSRF-aware fetch helpers.
+// api.js — CSRF-aware fetch helpers for the /system/ dashboard.
 //
-// The CSRF token rides in the <meta name="jts-csrf"> tag that
-// canonical_page() renders into the (no-store) HTML; we read it at call time
-// so the cacheable module never bakes in a secret. Same X-CSRF-Token contract
-// as the inline wizards.
+// These helpers are now the shared cross-page module
+// /assets/shared/js/http.js; this file re-exports them so the system-status
+// modules keep importing `./api.js` unchanged. Same X-CSRF-Token contract,
+// same behaviour — see http.js for the rationale (the token rides in the
+// <meta name="jts-csrf"> tag so the cacheable module bakes in no secret).
+//
+// http.js additionally exports postJSON(); import it directly from the shared
+// module when a new caller needs a JSON POST.
 
-function csrfToken() {
-  const meta = document.querySelector("meta[name=jts-csrf]");
-  return meta ? meta.content : "";
-}
-
-export function csrfHeaders(headers) {
-  const out = headers || {};
-  const token = csrfToken();
-  if (token) out["X-CSRF-Token"] = token;
-  return out;
-}
-
-export function jsonHeaders() {
-  return csrfHeaders({ "Content-Type": "application/json" });
-}
-
-// GET + parse JSON; throws on a non-2xx status or transport failure so the
-// caller can distinguish "control is down" from a successful render.
-export async function getJSON(path) {
-  const r = await fetch(path, { cache: "no-store" });
-  if (!r.ok) throw new Error("HTTP " + r.status);
-  return r.json();
-}
+export { csrfHeaders, jsonHeaders, getJSON } from "../../shared/js/http.js";

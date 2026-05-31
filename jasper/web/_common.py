@@ -675,6 +675,68 @@ def canonical_page(
 </html>""".encode()
 
 
+def canonical_header(
+    title: str,
+    *,
+    back_href: str = "/",
+    back_label: str = "Home",
+    right_html: str = "",
+) -> str:
+    """The canonical sticky top bar (`.app-header`) for a migrated wizard.
+
+    Single source of truth for the sub-page chrome: a round back button on
+    the left (links ``back_href``, labelled ``back_label`` for screen
+    readers, drawn from the shared ``#icon-back`` sprite symbol), the page
+    title centred, and an optional ``right_html`` slot on the right (an
+    action button, a badge, …). The 3-column grid in ``.app-header__row``
+    keeps the title optically centred, so the right slot defaults to an
+    empty ``<span>`` placeholder rather than collapsing the grid.
+
+    ``title`` / ``back_href`` / ``back_label`` are escaped; ``right_html``
+    is caller-trusted markup (it's the caller's job to escape any untrusted
+    strings it interpolates, exactly as with ``canonical_page``'s body)."""
+    right = right_html or "<span></span>"
+    return (
+        '<header class="app-header"><div class="app-header__row">'
+        f'<a class="icon-button" href="{html.escape(back_href, quote=True)}" '
+        f'aria-label="{html.escape(back_label, quote=True)}">'
+        '<svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>'
+        '</a>'
+        f'<h1 class="app-header__title">{html.escape(title)}</h1>'
+        f'{right}'
+        '</div></header>'
+    )
+
+
+def canonical_banner(message: str) -> str:
+    """A canonical flash banner (`.banner`) for a migrated wizard.
+
+    The canonical twin of ``wrap_page``'s inline status ``<div>``: same
+    message → same severity, so a flash string written by the shared
+    ``send_see_other(flash=...)`` reads identically on legacy and migrated
+    pages. An empty / blank message renders nothing (returns ``""``) so the
+    caller can unconditionally drop ``canonical_banner(flash)`` into the
+    body. Severity classing mirrors ``wrap_page`` exactly:
+
+      * contains "error" or "fail" (case-insensitive) → ``banner--danger``
+      * starts with "saved" / "cleared" → ``banner--ok``
+      * otherwise → ``banner--info``
+    """
+    if not message or not message.strip():
+        return ""
+    lowered = message.lower()
+    if "error" in lowered or "fail" in lowered:
+        tone = "banner--danger"
+    elif lowered.startswith(("saved", "cleared")):
+        tone = "banner--ok"
+    else:
+        tone = "banner--info"
+    return (
+        f'<div class="banner {tone}" role="status">'
+        f'{html.escape(message)}</div>'
+    )
+
+
 def read_env_file(path: str) -> dict[str, str]:
     """Parse a systemd-style EnvironmentFile (KEY=VALUE per line, no
     quoting). Returns {} if the file is missing or unreadable.

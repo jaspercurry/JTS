@@ -93,8 +93,10 @@ from ..spotify_router import (
 )
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ._common import (
-    PAGE_STYLE,
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
     delete_env_file,
     read_env_file,
@@ -104,9 +106,16 @@ from ._common import (
     send_html_response,
     send_see_other,
     verify_csrf,
-    wrap_page,
     write_env_file,
 )
+
+# Page-specific stylesheet served static from /assets/. Shared primitives
+# (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
+# .banner, .btn--*, .section__title, .eyebrow) come from /assets/app.css;
+# only the bounce/manual mode picker, the copy row, the per-account cards +
+# token-health badges, the inline playlist editor, and the manual-mode
+# pre-warn callout live in spotify.css.
+SPOTIFY_PAGE_CSS_HREF = "/assets/spotify/spotify.css"
 
 logger = logging.getLogger(__name__)
 
@@ -222,137 +231,52 @@ def _restart_spotify_consumers() -> None:
 # ============================================================
 
 
-_SPOTIFY_PAGE_STYLE = PAGE_STYLE + """
-  ul.accounts { list-style: none; padding: 0; }
-  ul.accounts li { background: #f4f4f4; padding: 0.6em 0.8em;
-                    border-radius: 6px; margin-bottom: 0.4em;
-                    display: flex; align-items: center; gap: 0.6em; }
-  ul.accounts li .name { font-weight: 600; flex: 1; }
-  ul.accounts li .badge { background: #4a8; color: white; padding: 0.1em 0.5em;
-                            border-radius: 4px; font-size: 0.8em; }
-  .health-badge { padding: 0.18em 0.6em; border-radius: 5px;
-                  font-size: 0.8em; font-weight: 600;
-                  display: inline-block; cursor: help;
-                  letter-spacing: 0.01em;
-                  border: 1px solid transparent; }
-  .health-badge.health-ok { background: #e7f6ec; color: #1c7c3a;
-                            border-color: #bce0c8; }
-  .health-badge.health-revoked { background: #fce8e8; color: #9b2222;
-                                  border-color: #efb6b6; }
-  .health-badge.health-warn { background: #fff3d6; color: #8a6100;
-                              border-color: #e7ce85; }
-  .relink-notice { background: #fff3f1;
-                   border: 1px solid #e7b9b3;
-                   border-left: 4px solid #c44;
-                   border-radius: 6px;
-                   padding: 0.85em 1em;
-                   margin: 0 0 1em; }
-  .relink-notice p { margin: 0 0 0.8em; line-height: 1.45; }
-  .relink-notice button { padding: 0.45em 1.1em; font-weight: 600; }
-  .account-actions { display: flex; gap: 0.5em; margin: 0.7em 0 0.6em; }
-  .account-actions form { margin: 0; }
-  .account-actions button { padding: 0.35em 0.8em; font-size: 0.9em; }
-
-  /* Playlist list inside an expanded account */
-  .pl-section h3 { font-size: 0.95em; margin: 0.8em 0 0.3em; color: #444; }
-  ul.pl-list { list-style: none; padding: 0; margin: 0.3em 0 0.6em; }
-  ul.pl-list li {
-    display: flex; align-items: center; gap: 0.5em;
-    background: #fff; border: 1px solid #e6e6e6; border-radius: 5px;
-    padding: 0.5em 0.6em 0.5em 0.7em; margin-bottom: 0.3em;
-    font-size: 0.95em;
-  }
-  ul.pl-list li .pl-name { font-weight: 600; flex: 1;
-                            overflow: hidden; text-overflow: ellipsis;
-                            white-space: nowrap; }
-  ul.pl-list li form { margin: 0; }
-  ul.pl-list li .pl-x {
-    background: transparent; color: #888; border: 0;
-    width: 28px; height: 28px; padding: 0;
-    border-radius: 50%; cursor: pointer;
-    font-size: 1.1em; line-height: 1;
-    display: inline-flex; align-items: center; justify-content: center;
-  }
-  ul.pl-list li .pl-x:hover { background: #fee; color: #d44; filter: none; }
-  .pl-empty { color: #888; font-size: 0.9em; font-style: italic;
-              margin: 0.4em 0 0.6em; }
-  .add-playlist-btn {
-    background: transparent; color: #1db954; border: 1px solid #1db954;
-    padding: 0.4em 0.85em; font-size: 0.9em; font-weight: 600;
-  }
-  .add-playlist-btn:hover { background: #f0fff4; filter: none; }
-  /* Initial display:none beats display:flex on toggle reveal — using
-     [hidden]+!important is the simpler fix than restructuring. */
-  form.pl-add { display: flex; align-items: center; gap: 0.5em;
-                margin-top: 0.5em; flex-wrap: wrap; }
-  form.pl-add[hidden] { display: none !important; }
-  form.pl-add .pl-input {
-    flex: 1 1 240px; min-width: 0;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.85em; padding: 0.45em 0.6em;
-  }
-  form.pl-add .pl-submit { padding: 0.45em 0.9em; font-size: 0.9em; }
-  .pl-preview { font-size: 0.88em; color: #666;
-                flex-basis: 100%; min-height: 1.2em; margin-top: 0.1em; }
-  .pl-preview.success { color: #1db954; font-weight: 600; }
-  .pl-preview.error   { color: #b33; }
-
-  /* Mode picker (bounce / manual) on the credentials wizard */
-  .mode-picker { display: flex; flex-direction: column; gap: 0.6em;
-                 margin: 0.4em 0 0.4em; }
-  .mode-picker label {
-    display: block; font-weight: normal; padding: 0.7em 0.9em;
-    background: #f4f4f4; border: 1px solid #ddd; border-radius: 6px;
-    cursor: pointer; margin: 0;
-  }
-  .mode-picker label.selected { background: #f0fff4; border-color: #1db954; }
-  .mode-picker input[type=radio] { margin-right: 0.5em; }
-  .mode-picker .mode-title { font-weight: 600; }
-  .mode-picker .mode-sub { color: #666; font-size: 0.92em;
-                           margin-top: 0.25em; display: block; }
-
-  /* Manual-mode pre-warn page (after /start) */
-  .prewarn { background: #fff8e6; border: 1px solid #e0c577;
-             border-radius: 6px; padding: 0.8em 1em; margin: 1em 0; }
-  .prewarn h3 { margin-top: 0; color: #6b4f00; }
-  .prewarn ol { padding-left: 1.4em; margin: 0.6em 0; }
-  .prewarn ol > li { margin-bottom: 0.5em; }
-  textarea.paste {
-    width: 100%; min-height: 5em; padding: 0.5em; border: 1px solid #bbb;
-    border-radius: 4px; font-size: 0.9em; box-sizing: border-box;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: #fff;
-  }
-"""
-
-
-# Disambiguation banner shown at the top of every Spotify wizard page.
+# Disambiguation note shown at the top of every Spotify wizard page.
 # The /spotify/ wizard was historically the only "Spotify setup" surface
 # even though it only handles the Web API account side; users would
 # land here looking to make basic Spotify Connect (phone-side
-# "pick JTS in the app") work and feel lost. This banner steers the
-# basic case to /sources/ and frames this wizard as advanced.
+# "pick JTS in the app") work and feel lost. This note steers the
+# basic case to /sources/ and frames this wizard as advanced. Rendered
+# as a canonical .info-card so it shares the design system's accent
+# treatment instead of carrying inline styles.
 _DISAMBIGUATION_BANNER = """
-<div style="background:#f0fff4; border:1px solid #1db954; border-radius:6px;
-            padding:0.7em 0.9em; margin:0.6em 0 1.2em; font-size:0.92em;
-            line-height:1.5; color:#114a2c;">
-  <strong>Heads up:</strong> basic Spotify Connect (picking JTS from
-  your Spotify app's device picker) needs no setup — it's already on.
-  Turn it on or off on the <a href="/sources/" style="color:#0a5a2d;
-  font-weight:600;">Sources page</a>. This wizard is for the
-  <em>advanced</em> case: voice cold-start (&ldquo;Hey Jarvis, play
-  Hamilton&rdquo;) and multi-account routing, which need per-account
-  OAuth.
+<div class="info-card advanced-note">
+  <p><strong>Heads up:</strong> basic Spotify Connect (picking JTS from
+  your Spotify app's device picker) needs no setup &mdash; it's already on.
+  Turn it on or off on the <a href="/sources/">Sources page</a>. This
+  wizard is for the <em>advanced</em> case: voice cold-start
+  (&ldquo;Hey Jarvis, play Hamilton&rdquo;) and multi-account routing,
+  which need per-account OAuth.</p>
 </div>
 """
 
 
-def _wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
-    page = wrap_page(title, _DISAMBIGUATION_BANNER + body, status_msg=status_msg).decode()
-    return page.replace(
-        f"<style>{PAGE_STYLE}</style>",
-        f"<style>{_SPOTIFY_PAGE_STYLE}</style>",
-    ).encode()
+def _wrap_page(
+    title: str, body: str, *, csrf_token: str = "", status_msg: str = "",
+) -> bytes:
+    """Wrap a page body in the canonical document shell.
+
+    Single chokepoint for all five /spotify/ page states (setup wizard,
+    redirect-URI page, manual pre-warn, management, plus their shared
+    chrome): emits the .app-header back bar, the flash banner, the
+    disambiguation note, the body inside <main class="page">, and the
+    page's ES module. The CSRF <meta> + cache-busted app.css/spotify.css
+    links come from canonical_page(). Page-specific CSS lives in the
+    static /assets/spotify/spotify.css (page_css_href), never inline."""
+    full = (
+        canonical_header(title)
+        + '<main class="page">'
+        + canonical_banner(status_msg)
+        + _DISAMBIGUATION_BANNER
+        + body
+        + "</main>"
+        + '<script type="module" src="/assets/spotify/js/main.js"></script>'
+    )
+    return canonical_page(
+        title, full,
+        csrf_token=csrf_token,
+        page_css_href=SPOTIFY_PAGE_CSS_HREF,
+    )
 
 
 def _mode_picker_html(*, selected: str = "bounce") -> str:
@@ -378,22 +302,11 @@ def _mode_picker_html(*, selected: str = "bounce") -> str:
     <span class="mode-title">Manual paste</span>
     <span class="mode-sub">
       No external infrastructure at all. After you approve on Spotify,
-      your phone shows "cannot connect" — that's expected; you copy
+      your phone shows "cannot connect" &mdash; that's expected; you copy
       the URL and paste it back into this page.
     </span>
   </label>
 </div>
-<script>
-// Highlight the selected radio's label so the picked card is obvious.
-document.querySelectorAll('.mode-picker input[type=radio]').forEach(function(r) {{
-  r.addEventListener('change', function() {{
-    document.querySelectorAll('.mode-picker label').forEach(function(l) {{
-      l.classList.remove('selected');
-    }});
-    r.parentElement.classList.add('selected');
-  }});
-}});
-</script>
 """
 
 
@@ -402,17 +315,17 @@ def _setup_wizard_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
     a Spotify Developer App and pasting the credentials."""
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
-<p class="sub">Connect this speaker to Spotify. Takes about two minutes.</p>
+<p class="form-hint">Connect this speaker to Spotify. Takes about two minutes.</p>
 
 <h2>Step 1: Create a Spotify Developer App</h2>
 <p>If you don't already have one, create a new app on Spotify's developer
-   dashboard. Any name and description is fine — this is just an identity
+   dashboard. Any name and description is fine &mdash; this is just an identity
    for your speaker.</p>
-<p><a class="btn" href="https://developer.spotify.com/dashboard"
-       target="_blank" rel="noopener">Open Spotify Developer Dashboard ↗</a></p>
-<p class="hint">After clicking <strong>Create app</strong>, you'll land
+<p><a class="btn btn--default" href="https://developer.spotify.com/dashboard"
+       target="_blank" rel="noopener">Open Spotify Developer Dashboard &#8599;</a></p>
+<p class="form-hint">After clicking <strong>Create app</strong>, you'll land
    on the app's overview page. The Client ID is shown immediately. You
-   do <em>not</em> need the Client Secret — this speaker uses the PKCE
+   do <em>not</em> need the Client Secret &mdash; this speaker uses the PKCE
    flow, which is designed for clients that can't keep secrets.</p>
 
 <h2>Step 2: Pick how Spotify should send you back here</h2>
@@ -425,29 +338,23 @@ def _setup_wizard_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
   <input type="hidden" name="mode" id="mode-input" value="bounce">
 
   <h2>Step 3: Paste the Client ID</h2>
-  <label for="client_id">Client ID</label>
-  <input id="client_id" name="client_id" type="text" required
-         autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-         placeholder="32 hex characters, e.g. 1a2b3c…">
-  <small>Stored locally on the speaker. The Client Secret is not needed.</small>
+  <div class="field">
+    <label for="client_id">Client ID</label>
+    <input id="client_id" name="client_id" type="text" required
+           autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="32 hex characters, e.g. 1a2b3c&hellip;">
+    <p class="form-hint">Stored locally on the speaker. The Client Secret is not needed.</p>
+  </div>
 
-  <p style="margin-top:1.4em">
-    <button type="submit">Save and continue →</button>
-  </p>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary">Save and continue &rarr;</button>
+  </div>
 </form>
-
-<script>
-// Mirror the picked radio into the hidden form field so the POST
-// carries the chosen mode without needing the radios to live inside
-// the same form (they don't — the picker is a sibling block).
-document.querySelectorAll('.mode-picker input[type=radio]').forEach(function(r) {{
-  r.addEventListener('change', function() {{
-    document.getElementById('mode-input').value = r.value;
-  }});
-}});
-</script>
 """
-    return _wrap_page("Set up Spotify on this speaker", body, status_msg=status_msg)
+    return _wrap_page(
+        "Set up Spotify on this speaker", body,
+        csrf_token=csrf_token, status_msg=status_msg,
+    )
 
 
 def _redirect_uri_section_html(redirect_uri: str, client_id: str, mode: str) -> str:
@@ -472,36 +379,22 @@ def _redirect_uri_section_html(redirect_uri: str, client_id: str, mode: str) -> 
 
 <div class="copy-row">
   <input id="redirect-uri" type="text" readonly value="{redirect_safe}"
-         onclick="this.select();">
-  <button type="button" onclick="copyRedirect()">Copy</button>
-  <span id="copy-feedback" class="copy-feedback">Copied!</span>
+         data-select-on-click>
+  <button type="button" class="btn btn--default"
+          data-copy-target="redirect-uri">Copy</button>
+  <span class="copy-feedback">Copied!</span>
 </div>
-<p class="hint">{mode_note}</p>
+<p class="form-hint">{mode_note}</p>
 
 <ol class="steps">
-  <li>Click <strong>Open this app's settings ↗</strong> below — opens in a new tab.</li>
+  <li>Click <strong>Open this app's settings &#8599;</strong> below &mdash; opens in a new tab.</li>
   <li>On Spotify's page, click <strong>Settings</strong> (or <strong>Edit</strong>),
       scroll to <strong>Redirect URIs</strong>, paste the URL above, click
       <strong>Add</strong>, then <strong>Save</strong> at the bottom.</li>
   <li>Come back here and add your account below.</li>
 </ol>
 
-<p><a class="btn secondary" href="{dashboard_link}" target="_blank" rel="noopener">Open this app's settings ↗</a></p>
-
-<script>
-async function copyRedirect() {{
-  const input = document.getElementById('redirect-uri');
-  const fb = document.getElementById('copy-feedback');
-  try {{
-    await navigator.clipboard.writeText(input.value);
-  }} catch (e) {{
-    input.select();
-    document.execCommand('copy');
-  }}
-  fb.classList.add('shown');
-  setTimeout(() => fb.classList.remove('shown'), 1800);
-}}
-</script>
+<p><a class="btn btn--default" href="{dashboard_link}" target="_blank" rel="noopener">Open this app's settings &#8599;</a></p>
 """
 
 
@@ -511,15 +404,17 @@ def _add_account_form_html(csrf_token: str = "") -> str:
 <h2>Add an account</h2>
 <form method="post" action="start">
   {csrf}
-  <label for="name">Your name (label only)</label>
-  <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
-         placeholder="brittany" autocapitalize="off" autocorrect="off">
-  <small>Lowercase, no spaces. Just an internal label — pick anything.</small>
+  <div class="field">
+    <label for="name">Your name (label only)</label>
+    <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
+           placeholder="brittany" autocapitalize="off" autocorrect="off">
+    <p class="form-hint">Lowercase, no spaces. Just an internal label &mdash; pick anything.</p>
+  </div>
 
-  <p style="margin-top:1em">
-    <button type="submit">Continue with Spotify →</button>
-  </p>
-  <small>You'll be sent to Spotify to log in once. The token stays on this speaker.</small>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary">Continue with Spotify &rarr;</button>
+  </div>
+  <p class="form-hint">You'll be sent to Spotify to log in once. The token stays on this speaker.</p>
 </form>
 """
 
@@ -533,8 +428,8 @@ def _redirect_uri_page_html(
     masked = client_id[:4] + "…" + client_id[-4:] if len(client_id) > 8 else "configured"
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
-<p class="sub">Credentials saved (Client ID:
-   <span class="credbox" style="display:inline-block; padding:0.05em 0.4em">{html.escape(masked)}</span>,
+<p class="form-hint">Credentials saved (Client ID:
+   <span class="credchip">{html.escape(masked)}</span>,
    mode: <strong>{html.escape(mode)}</strong>).
    Two steps left.</p>
 
@@ -542,13 +437,19 @@ def _redirect_uri_page_html(
 
 {_add_account_form_html(csrf_token)}
 
-<form method="post" action="reset-credentials" style="margin-top:3em"
-      onsubmit="return jtsConfirmSubmit(this, 'Clear the saved Client ID? You\\'ll need to paste it again.', {{danger:true}});">
+<form method="post" action="reset-credentials"
+      data-confirm="Clear the saved Client ID? You'll need to paste it again."
+      data-confirm-danger="1">
   {csrf}
-  <button type="submit" class="danger">Reset Spotify credentials</button>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--danger">Reset Spotify credentials</button>
+  </div>
 </form>
 """
-    return _wrap_page("Almost there — connect Spotify", body, status_msg=status_msg)
+    return _wrap_page(
+        "Almost there — connect Spotify", body,
+        csrf_token=csrf_token, status_msg=status_msg,
+    )
 
 
 def _manual_paste_form_html(csrf_token: str = "", *, hint: str | None = None) -> str:
@@ -556,20 +457,22 @@ def _manual_paste_form_html(csrf_token: str = "", *, hint: str | None = None) ->
     the manual-mode pre-warn page (primary path) and on the index as a
     fallback for bounce mode (when the auto-redirect couldn't reach
     the speaker, e.g. user is on cellular)."""
-    extra = f'<p class="hint">{html.escape(hint)}</p>' if hint else ""
+    extra = f'<p class="form-hint">{html.escape(hint)}</p>' if hint else ""
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     return f"""
 <form method="post" action="paste-callback">
   {csrf}
-  <label for="pasted">Paste the redirect URL Spotify sent you to</label>
-  <textarea id="pasted" name="pasted" class="paste" required
-            autocomplete="off" autocapitalize="off" autocorrect="off"
-            spellcheck="false"
-            placeholder="http://127.0.0.1:8888/callback?code=AQAAA…&state=…"></textarea>
-  {extra}
-  <p style="margin-top:0.8em">
-    <button type="submit">Finish connecting →</button>
-  </p>
+  <div class="field">
+    <label for="pasted">Paste the redirect URL Spotify sent you to</label>
+    <textarea id="pasted" name="pasted" class="paste" required
+              autocomplete="off" autocapitalize="off" autocorrect="off"
+              spellcheck="false"
+              placeholder="http://127.0.0.1:8888/callback?code=AQAAA&hellip;&amp;state=&hellip;"></textarea>
+    {extra}
+  </div>
+  <div class="form-actions">
+    <button type="submit" class="btn btn--primary">Finish connecting &rarr;</button>
+  </div>
 </form>
 """
 
@@ -583,7 +486,7 @@ def _manual_prewarn_page_html(
     like a failure, then offers the paste field."""
     auth_safe = html.escape(authorize_url)
     body = f"""
-<p class="sub">Adding account <strong>{html.escape(account_name)}</strong>
+<p class="form-hint">Adding account <strong>{html.escape(account_name)}</strong>
    in manual mode.</p>
 
 <div class="prewarn">
@@ -591,29 +494,27 @@ def _manual_prewarn_page_html(
   <ol>
     <li>Tap <strong>Open Spotify Authorization</strong> below.</li>
     <li>Approve on Spotify.</li>
-    <li>Your phone will try to load <code>http://127.0.0.1:8888/…</code>
+    <li>Your phone will try to load <code>http://127.0.0.1:8888/&hellip;</code>
         and show <strong>"cannot connect"</strong>.
         <strong>That's expected.</strong></li>
-    <li>Copy the URL from your browser's address bar — the whole thing,
-        starting with <code>http://127.0.0.1:8888/callback?code=…</code>.</li>
+    <li>Copy the URL from your browser's address bar &mdash; the whole thing,
+        starting with <code>http://127.0.0.1:8888/callback?code=&hellip;</code>.</li>
     <li>Come back to this page and paste it below.</li>
   </ol>
 </div>
 
-<p><a class="btn" href="{auth_safe}" target="_blank" rel="noopener">Open Spotify Authorization ↗</a></p>
+<p><a class="btn btn--primary" href="{auth_safe}" target="_blank" rel="noopener">Open Spotify Authorization &#8599;</a></p>
 
 {_manual_paste_form_html(csrf_token,
     hint=("Paste the entire URL — the speaker will pick out the code "
           "and state automatically.")
 )}
 
-<p style="margin-top:2em">
-  <a href=".">← Cancel and go back</a>
-</p>
+<p><a href=".">&larr; Cancel and go back</a></p>
 """
     return _wrap_page(
         f"Connecting {account_name} on Spotify — manual mode",
-        body, status_msg=status_msg,
+        body, csrf_token=csrf_token, status_msg=status_msg,
     )
 
 
@@ -621,15 +522,20 @@ def _account_playlists_section_html(account: Account, csrf_token: str = "") -> s
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     rows = []
     for uri, name in account.playlists.items():
+        # The playlist name is untrusted (it comes from Spotify); it rides in
+        # the escaped data-confirm attribute, never interpolated into JS, so
+        # the shared dialog can't be markup-injected.
+        confirm_msg = html.escape(f"Remove {name}?", quote=True)
         rows.append(f"""
           <li title="{html.escape(uri)}">
             <span class="pl-name">{html.escape(name)}</span>
             <form method="post" action="playlist-remove"
-                  onsubmit="return jtsConfirmSubmit(this, 'Remove {html.escape(name)}?', {{danger:true}});">
+                  data-confirm="{confirm_msg}" data-confirm-danger="1">
               {csrf}
               <input type="hidden" name="account" value="{html.escape(account.name)}">
               <input type="hidden" name="uri" value="{html.escape(uri)}">
-              <button class="pl-x" type="submit" aria-label="Remove playlist">×</button>
+              <button class="btn btn--ghost" type="submit"
+                      aria-label="Remove playlist">&times;</button>
             </form>
           </li>""")
     list_html = (
@@ -641,15 +547,15 @@ def _account_playlists_section_html(account: Account, csrf_token: str = "") -> s
 <div class="pl-section" data-account="{acct}">
   <h3>Custom playlists</h3>
   {list_html}
-  <button type="button" class="add-playlist-btn secondary"
+  <button type="button" class="btn btn--ghost add-playlist-btn"
           data-target="pl-add-{acct}">+ Add Spotify playlist</button>
   <form method="post" action="playlist-add" class="pl-add" id="pl-add-{acct}" hidden>
     {csrf}
     <input type="hidden" name="account" value="{acct}">
     <input type="text" class="pl-input" name="url_or_uri"
-           placeholder="https://open.spotify.com/playlist/… or spotify:playlist:…"
+           placeholder="https://open.spotify.com/playlist/&hellip; or spotify:playlist:&hellip;"
            autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <button type="submit" class="pl-submit" disabled>Add</button>
+    <button type="submit" class="btn btn--primary pl-submit" disabled>Add</button>
     <span class="pl-preview"></span>
   </form>
 </div>"""
@@ -711,7 +617,7 @@ def _relink_notice_html(status: AccountStatus | None, name: str, csrf_token: str
   <form method="post" action="start">
     {csrf_field_html(csrf_token) if csrf_token else ''}
     <input type="hidden" name="name" value="{safe_name}">
-    <button class="primary" type="submit">Re-link {safe_name}</button>
+    <button class="btn btn--primary" type="submit">Re-link {safe_name}</button>
   </form>
 </div>"""
 
@@ -731,7 +637,9 @@ def _account_card_html(
     name = html.escape(account.name)
     badges = []
     if is_default:
-        badges.append('<span class="badge">default</span>')
+        badges.append(
+            '<span class="badge" style="--tone: var(--status-ok)">default</span>'
+        )
     health = _health_badge_html(status)
     if health:
         badges.append(health)
@@ -741,15 +649,19 @@ def _account_card_html(
     auto_open = is_open or (status is not None and status.state == ACCOUNT_REVOKED)
     open_attr = " open" if auto_open else ""
     set_default_btn = (
-        '<button class="secondary" type="submit" disabled>Default</button>'
+        '<button class="btn btn--default" type="submit" disabled>Default</button>'
         if is_default else
-        '<button class="secondary" type="submit">Set default</button>'
+        '<button class="btn btn--default" type="submit">Set default</button>'
     )
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
+    # The account name is registry-constrained to [a-zA-Z0-9_-]+, but it still
+    # rides in the escaped data-confirm attribute (never interpolated into JS)
+    # so the shared dialog stays injection-safe regardless of caller.
+    remove_confirm = html.escape(f"Remove {account.name}?", quote=True)
     return f"""
 <details class="account"{open_attr}>
   <summary>
-    <span class="name">{name}</span>
+    <span class="acct-name">{name}</span>
     {badge_html}
     <span class="pl-count">{count_label}</span>
   </summary>
@@ -762,75 +674,15 @@ def _account_card_html(
         {set_default_btn}
       </form>
       <form method="post" action="remove"
-            onsubmit="return jtsConfirmSubmit(this, 'Remove {name}?', {{danger:true}});">
+            data-confirm="{remove_confirm}" data-confirm-danger="1">
         {csrf}
         <input type="hidden" name="name" value="{name}">
-        <button class="danger" type="submit">Remove account</button>
+        <button class="btn btn--danger" type="submit">Remove account</button>
       </form>
     </div>
     {_account_playlists_section_html(account, csrf_token)}
   </div>
 </details>"""
-
-
-_PLAYLIST_JS = r"""
-<script>
-(function() {
-  // Live preview: as the user pastes a URL, debounce and ask the server
-  // for the playlist name. Submit button enables only when preview hits.
-  document.querySelectorAll('form.pl-add').forEach(function(form) {
-    var section = form.parentElement;
-    var acct = section.dataset.account;
-    var input = form.querySelector('.pl-input');
-    var preview = form.querySelector('.pl-preview');
-    var submit = form.querySelector('.pl-submit');
-    var timer = null;
-    var seq = 0;
-    function reset() {
-      submit.disabled = true;
-      preview.textContent = '';
-      preview.className = 'pl-preview';
-    }
-    input.addEventListener('input', function() {
-      clearTimeout(timer);
-      reset();
-      var value = input.value.trim();
-      if (!value) return;
-      timer = setTimeout(function() {
-        var mySeq = ++seq;
-        preview.textContent = 'Looking up…';
-        var u = new URL('playlist-preview', window.location.href);
-        u.searchParams.set('account', acct);
-        u.searchParams.set('url', value);
-        fetch(u).then(function(r) { return r.json(); }).then(function(j) {
-          if (mySeq !== seq) return;
-          if (j.error) {
-            preview.textContent = j.error;
-            preview.classList.add('error');
-            return;
-          }
-          preview.textContent = '✓ ' + j.name;
-          preview.classList.add('success');
-          submit.disabled = false;
-        }).catch(function() {
-          if (mySeq !== seq) return;
-          preview.textContent = "Couldn't reach speaker.";
-          preview.classList.add('error');
-        });
-      }, 350);
-    });
-  });
-  document.querySelectorAll('.add-playlist-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      var target = document.getElementById(btn.dataset.target);
-      target.hidden = false;
-      btn.style.display = 'none';
-      target.querySelector('.pl-input').focus();
-    });
-  });
-})();
-</script>
-"""
 
 
 def _claim_speaker_section_html() -> str:
@@ -851,29 +703,29 @@ def _claim_speaker_section_html() -> str:
     page. The script wraps that, plus the start/stop dance.
     """
     return """
-<details class="disclosure">
-  <summary>Cold-start voice commands (one-time setup)</summary>
-  <div class="disclosure-body">
+<details class="info-card">
+  <summary><strong>Cold-start voice commands (one-time setup)</strong></summary>
+  <div>
     <p>Voice <code>"play X"</code> from silence (no AirPlay session)
        needs the Pi's Spotify Connect (librespot) to be logged in to
        a Spotify account. Linking an account above only sets up the
-       <em>Web API</em> client — librespot is a separate process and
+       <em>Web API</em> client &mdash; librespot is a separate process and
        needs its own one-time sign-in.</p>
     <p>Two ways to do that:</p>
-    <ol>
+    <ol class="steps">
       <li>Open Spotify on any device on this Wi-Fi, tap the device
           picker, and select <strong>JTS</strong> once. The credential
           is then cached locally and survives restarts.</li>
-      <li>Run the OAuth claim script from your laptop — no phone needed:
-          <pre>bash scripts/claim-librespot.sh</pre>
+      <li>Run the OAuth claim script from your laptop &mdash; no phone needed:
+          <code>bash scripts/claim-librespot.sh</code>.
           It SSH-tunnels librespot's OAuth callback port, opens Spotify
           auth in your browser, and writes credentials to
           <code>/var/cache/librespot</code>.</li>
     </ol>
-    <p class="sub">librespot can only be logged in as one user at a
+    <p class="form-hint">librespot can only be logged in as one user at a
        time. Whichever person last claimed it is the account voice
        cold-starts will play through. Other household members can
-       still use Spotify Connect from their phone normally — that's
+       still use Spotify Connect from their phone normally &mdash; that's
        a separate code path that doesn't depend on this state.</p>
   </div>
 </details>"""
@@ -900,48 +752,52 @@ def _management_html(
 
     csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
-<p class="sub">Each household member links their own Spotify account once.
+<p class="form-hint">Each household member links their own Spotify account once.
    The speaker identifies the active listener by cross-referencing the
    AirPlay-pushed track title with each account's currently-playing
-   Spotify track — no per-device setup needed.</p>
+   Spotify track &mdash; no per-device setup needed.</p>
 
 <h2>Accounts</h2>
-<p class="accounts-help">Click an account to manage it. Custom playlists
+<p class="form-hint">Click an account to manage it. Custom playlists
    let you reach Spotify-owned algorithmic playlists (Discover Weekly,
-   Daily Mix, Release Radar, Daylist) by voice — they're hidden from
+   Daily Mix, Release Radar, Daylist) by voice &mdash; they're hidden from
    Spotify's search API, so paste the share link from Spotify desktop's
-   right-click → Share → Copy link.</p>
+   right-click &rarr; Share &rarr; Copy link.</p>
 {''.join(cards)}
 
 {_add_account_form_html(csrf_token)}
 
 {_claim_speaker_section_html()}
 
-<details class="disclosure">
-  <summary>Spotify app settings (redirect URI, OAuth mode, reset credentials)</summary>
-  <div class="disclosure-body">
+<details class="info-card">
+  <summary><strong>Spotify app settings (redirect URI, OAuth mode, reset credentials)</strong></summary>
+  <div>
     <p>Currently using <strong>{html.escape(mode)}</strong> mode.
        To switch, reset credentials and choose the other mode when re-pasting
        your Client ID.</p>
     {_redirect_uri_section_html(redirect_uri, client_id, mode)}
 
-    <h3 style="margin-top:1.6em">If a phone can't reach the speaker after authorizing</h3>
+    <h3>If a phone can't reach the speaker after authorizing</h3>
     <p>This happens on cellular or a different Wi-Fi. Paste the URL from
        the GitHub Pages bounce-page fallback (or from the address bar in
        manual mode) here:</p>
     {_manual_paste_form_html(csrf_token)}
 
-    <form method="post" action="reset-credentials" style="margin-top:2em"
-          onsubmit="return jtsConfirmSubmit(this, 'Clear the saved Client ID? Existing OAuthed accounts will keep working until their tokens expire.', {{danger:true}});">
+    <form method="post" action="reset-credentials"
+          data-confirm="Clear the saved Client ID? Existing OAuthed accounts will keep working until their tokens expire."
+          data-confirm-danger="1">
       {csrf}
-      <button type="submit" class="danger">Reset Spotify credentials</button>
+      <div class="form-actions">
+        <button type="submit" class="btn btn--danger">Reset Spotify credentials</button>
+      </div>
     </form>
   </div>
 </details>
-
-{_PLAYLIST_JS}
 """
-    return _wrap_page("Spotify accounts on this speaker", body, status_msg=status_msg)
+    return _wrap_page(
+        "Spotify accounts on this speaker", body,
+        csrf_token=csrf_token, status_msg=status_msg,
+    )
 
 
 def _read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:

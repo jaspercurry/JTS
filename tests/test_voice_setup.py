@@ -376,16 +376,19 @@ def test_index_renders_active_radio_checked_for_active_provider():
     nearby = page[idx - 200: idx + 200]
     assert "checked" in nearby
     # Title element is present so the page renders cleanly.
-    assert "<title>Voice provider on this speaker</title>" in page
+    assert "<title>Voice provider</title>" in page
 
 
 def test_index_disables_radio_for_unconfigured_provider(monkeypatch):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    idx = page.index('value="grok"')
-    nearby = page[idx - 200: idx + 200]
-    assert "disabled" in nearby
+    # The grok radio input carries the `disabled` attribute, and its row is
+    # marked is-disabled (canonical dimmed/dashed styling) + aria-disabled.
+    assert 'name="active" value="grok" disabled' in page
+    idx = page.index('name="active" value="grok"')
+    row_start = page.rfind("<label", 0, idx)
+    assert "provider-radio is-disabled" in page[row_start:idx]
 
 
 def test_index_masks_existing_key_in_card():
@@ -398,18 +401,22 @@ def test_index_masks_existing_key_in_card():
     assert "9999" in page  # last 4 chars
 
 
-def test_index_active_card_starts_open():
-    """The active provider's card opens by default so the user lands
-    on what's in flight without an extra click."""
+def test_index_active_card_renders_controls_and_active_badge():
+    """On the canonical design every provider card is an always-open flat
+    .info-card (no collapse), so the active provider's controls are visible
+    without a click. The active provider's card carries the 'active' badge."""
     state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    # Find the openai card by its input name (only appears inside the
-    # details body — distinct from the description's label text).
+    # Find the openai card by its key input, then walk up to the card root.
     idx = page.index('name="openai_key"')
-    head = page.rfind('<details', 0, idx)
+    head = page.rfind('class="info-card provider-card"', 0, idx)
     assert head != -1
-    open_section = page[head: head + 200]
-    assert "open" in open_section
+    card = page[head: page.index('name="openai_key"', head) + 300]
+    # The active provider's badge sits in the card head.
+    head_block = page[head: idx]
+    assert "active</span>" in head_block
+    # The key input + model select are present (controls are visible).
+    assert 'name="openai_key"' in card
 
 
 def test_index_save_form_does_not_enclose_cards():
@@ -425,7 +432,7 @@ def test_index_save_form_does_not_enclose_cards():
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     save_form_open = page.index('id="save-form"')
     save_form_close = page.index("</form>", save_form_open)
-    first_card = page.index("<details", save_form_close)
+    first_card = page.index('class="info-card provider-card"', save_form_close)
     # The first card must come AFTER the save form has closed.
     assert save_form_close < first_card, (
         "outer save form must close before the cards begin "
@@ -484,9 +491,11 @@ def test_index_save_button_associates_with_save_form_via_attribute():
     )
 
 
-def test_index_unconfigured_card_starts_open_to_invite_paste(monkeypatch):
-    """A card with no saved key opens by default so the user doesn't
-    have to click to discover where to paste."""
+def test_index_unconfigured_card_shows_paste_field(monkeypatch):
+    """A card with no saved key still renders its paste field directly (the
+    canonical cards are always-open flat .info-cards), so the user doesn't
+    have to click to discover where to paste. The card shows the
+    'not configured' badge and the empty key input."""
     # Make sure environment doesn't supply keys (could carry from
     # /etc/jasper/jasper.env on a developer's machine).
     for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
@@ -494,9 +503,9 @@ def test_index_unconfigured_card_starts_open_to_invite_paste(monkeypatch):
     state = {}
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     idx = page.index('name="gemini_key"')
-    head = page.rfind('<details', 0, idx)
+    head = page.rfind('class="info-card provider-card"', 0, idx)
     assert head != -1
-    assert "open" in page[head: head + 200]
+    assert "not configured</span>" in page[head: idx]
 
 
 # ---------- Mask helper ----------------------------------------------------

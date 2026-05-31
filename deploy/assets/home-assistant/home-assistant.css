@@ -1,0 +1,190 @@
+/* /ha/ — Home Assistant connection wizard.
+ *
+ * Page-specific visuals only. Shared primitives (.page, .info-card, .deflist,
+ * .field, .form-actions, .form-hint, .btn--*, .badge, .eyebrow, .section__title,
+ * .banner) live in /assets/app.css. What's here is the genuinely single-page
+ * stuff: the mDNS discover-result rows, the inline loading spinner, the
+ * post-save restart chip, and a few small field tweaks (token textarea width,
+ * monospace URL display, copy-button feedback, ok/err status tones). */
+
+/* ---- discover results (state 1) ---- */
+
+.discover-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+  margin-top: var(--space-3, 0.75rem);
+}
+
+/* Each row is a real <button> for keyboard/focus semantics; strip the chrome
+ * and lay it out as a stacked name + url card. */
+.discover-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.7rem 0.9rem;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e6e6e6);
+  border-radius: var(--radius-md, 0.5rem);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.15s ease;
+}
+
+.discover-row:hover,
+.discover-row:focus-visible {
+  border-color: var(--accent, #6f8f6a);
+}
+
+.discover-row .row-name {
+  display: block;
+  font-weight: 600;
+}
+
+.discover-row .row-version {
+  font-weight: 400;
+  color: var(--text-muted, #666);
+}
+
+.discover-row .row-url {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--text-muted, #666);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+  word-break: break-all;
+}
+
+.discover-empty {
+  margin-top: var(--space-2, 0.5rem);
+  color: var(--text-muted, #888);
+  font-size: 0.92em;
+  font-style: italic;
+}
+
+/* Recent-URL chips reuse .btn--ghost; just tighten the spacing + go monospace
+ * so a URL list scans as data. */
+.recent-urls {
+  margin-top: var(--space-3, 0.75rem);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+}
+
+.recent-urls .recent-link {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.88em;
+}
+
+/* ---- token paste field + URL display (state 2) ---- */
+
+.url-display {
+  margin: 0.35rem 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.92em;
+  color: var(--text-muted, #555);
+  word-break: break-all;
+}
+
+.token-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+}
+
+/* Checkbox + label row for the self-signed-cert opt-in. */
+.check-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: var(--space-3, 0.75rem);
+  font-weight: 400;
+}
+
+.check-field input[type="checkbox"] {
+  width: auto;
+  margin: 0.2rem 0 0;
+  flex: none;
+}
+
+.check-field .form-hint {
+  margin-top: 0.2rem;
+}
+
+/* ---- inline loading spinner (states 1 + 3) ---- */
+
+.ha-spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.35rem;
+  border: 2px solid var(--border, #ccc);
+  border-top-color: var(--accent, #6f8f6a);
+  border-radius: 50%;
+  vertical-align: -0.15em;
+  animation: ha-spin 0.8s linear infinite;
+}
+
+@keyframes ha-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ha-spinner {
+    animation: none;
+  }
+}
+
+/* ---- post-save restart chip (state 3) ---- */
+
+.ha-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: var(--space-4, 1rem) 0;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--tone, var(--border, #ccc));
+  border-radius: var(--radius-md, 0.5rem);
+  font-size: 0.94em;
+}
+
+.ha-chip--busy {
+  --tone: var(--status-warn, #f0c060);
+  background: color-mix(in oklch, var(--status-warn, #f0c060) 12%, transparent);
+}
+
+.ha-chip--ok {
+  --tone: var(--status-ok, #1db954);
+  background: color-mix(in oklch, var(--status-ok, #1db954) 12%, transparent);
+}
+
+.ha-chip--warn {
+  --tone: var(--status-danger, #cc4b4b);
+  background: color-mix(in oklch, var(--status-danger, #cc4b4b) 10%, transparent);
+}
+
+/* ---- status text tones (Test connection + copy feedback) ---- */
+
+.ha-ok {
+  color: var(--status-ok, #14542a);
+}
+
+.ha-err {
+  color: var(--status-danger, #a33);
+}
+
+.copy-feedback {
+  margin-left: 0.5rem;
+  font-size: 0.92em;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.copy-feedback.shown {
+  opacity: 1;
+}

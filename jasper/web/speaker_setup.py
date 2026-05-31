@@ -34,13 +34,15 @@ from ..speaker_name import (
 from ..speaker_name_discovery import NameConflict, find_name_conflicts
 from ._common import (
     begin_request,
+    canonical_banner,
+    canonical_header,
+    canonical_page,
     csrf_field_html,
     read_form,
     reject_csrf,
     send_html_response,
     send_see_other,
     verify_csrf,
-    wrap_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -165,35 +167,34 @@ def _index_html(
     status_msg: str = "",
 ) -> bytes:
     value = html.escape(current_name, quote=True)
-    default = html.escape(DEFAULT_SPEAKER_NAME)
+    default_attr = html.escape(DEFAULT_SPEAKER_NAME, quote=True)
+    default_text = html.escape(DEFAULT_SPEAKER_NAME)
     body = f"""
-<p class="sub">Change the name shown in AirPlay, Spotify Connect,
-Bluetooth, and USB Audio. The address stays <code>jts.local</code>.</p>
+{canonical_header("Speaker name")}
+<main class="page">
+  {canonical_banner(status_msg)}
+  <p class="form-hint">Change the name shown in AirPlay, Spotify Connect,
+  Bluetooth, and USB Audio. The address stays <code>jts.local</code>.</p>
 
-<form method="post" action="./save" id="speaker-name-form">
-  {csrf_field_html(csrf_token)}
-  <label for="speaker-name">Speaker name</label>
-  <input id="speaker-name" name="name" value="{value}" maxlength="{MAX_SPEAKER_NAME_CHARS}"
-         autocomplete="off" autocapitalize="words" spellcheck="false">
-  <p class="hint">Default: {default}. Use {MAX_SPEAKER_NAME_CHARS} characters or fewer.</p>
-  <button type="submit">Save and restart</button>
-</form>
-
-<script>
-const form = document.getElementById('speaker-name-form');
-const input = document.getElementById('speaker-name');
-form.addEventListener('submit', async function(event) {{
-  event.preventDefault();
-  const name = input.value.trim() || '{default}';
-  const ok = await jtsConfirm(
-    'Rename speaker to "' + name + '"? This restarts audio, Bluetooth, ' +
-    'and voice services. You may need to reconnect from your phone or computer.'
-  );
-  if (ok) form.submit();
-}});
-</script>
+  <form method="post" action="./save" id="speaker-name-form"
+        data-default="{default_attr}">
+    {csrf_field_html(csrf_token)}
+    <div class="field">
+      <label for="speaker-name">Speaker name</label>
+      <input id="speaker-name" type="text" name="name" value="{value}"
+             maxlength="{MAX_SPEAKER_NAME_CHARS}"
+             autocomplete="off" autocapitalize="words" spellcheck="false">
+      <p class="form-hint">Default: {default_text}. Use {MAX_SPEAKER_NAME_CHARS}
+      characters or fewer.</p>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn--primary">Save and restart</button>
+    </div>
+  </form>
+</main>
+<script type="module" src="/assets/speaker/js/main.js"></script>
 """
-    return wrap_page("Speaker name", body, status_msg=status_msg)
+    return canonical_page("Speaker name", body, csrf_token=csrf_token)
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:

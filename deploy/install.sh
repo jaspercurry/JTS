@@ -2720,18 +2720,28 @@ install_nginx_site() {
     # the dir), so an empty dir can't leave a literal *.css/*.js to fail
     # `install` and abort the deploy under `set -euo pipefail`.
     # `shared` carries cross-page ES modules (the <dialog> confirm/alert
-    # helper at shared/js/dialog.js) — same copy shape as a page, no .css.
-    for _page in system-status sound-profile shared; do
+    # helper at shared/js/dialog.js, the CSRF fetch helpers at
+    # shared/js/http.js) — same copy shape as a page, no .css.
+    #
+    # Discovered dynamically: every directory under deploy/assets/ (each
+    # canonical page's slug, plus `shared`) is copied with the same per-dir
+    # shape — root *.css, then js/*.js if present. `fonts` is excluded; it's
+    # copied above. Migrating a new wizard therefore needs NO edit here —
+    # adding deploy/assets/<page>/ is enough, which closes the silent-404
+    # failure mode where a new page's CSS/JS never reached the Pi.
+    for _asset_dir in "${REPO_DIR}/deploy/assets/"*/; do
+        _page="$(basename "${_asset_dir}")"
+        [[ "${_page}" == "fonts" ]] && continue
         install -d -m 0755 "/usr/share/jasper-web/assets/${_page}"
-        if compgen -G "${REPO_DIR}/deploy/assets/${_page}/"*.css > /dev/null; then
+        if compgen -G "${_asset_dir}"*.css > /dev/null; then
             install -m 0644 \
-                "${REPO_DIR}/deploy/assets/${_page}/"*.css \
+                "${_asset_dir}"*.css \
                 "/usr/share/jasper-web/assets/${_page}/"
         fi
-        if compgen -G "${REPO_DIR}/deploy/assets/${_page}/js/"*.js > /dev/null; then
+        if compgen -G "${_asset_dir}js/"*.js > /dev/null; then
             install -d -m 0755 "/usr/share/jasper-web/assets/${_page}/js"
             install -m 0644 \
-                "${REPO_DIR}/deploy/assets/${_page}/js/"*.js \
+                "${_asset_dir}js/"*.js \
                 "/usr/share/jasper-web/assets/${_page}/js/"
         fi
     done
