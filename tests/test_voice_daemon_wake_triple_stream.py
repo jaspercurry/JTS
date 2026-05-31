@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types as _types
+from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
@@ -26,6 +27,10 @@ import pytest
 # voice_daemon → audio_io → sounddevice (eager module-level import).
 if "sounddevice" not in sys.modules:
     sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
+if "rapidfuzz" not in sys.modules:
+    rapidfuzz = _types.ModuleType("rapidfuzz")
+    rapidfuzz.fuzz = _types.SimpleNamespace()
+    sys.modules["rapidfuzz"] = rapidfuzz
 
 from jasper.voice_daemon import WakeLoop, _LegRuntime  # noqa: E402
 from jasper.wake_legs import by_token  # noqa: E402
@@ -279,6 +284,35 @@ async def test_chip_beam_corroborates_in_fired_legs_when_software_leg_fires():
         kwargs["fired_legs"]
     )
     assert kwargs["peak_score_chip_aec_150"] == pytest.approx(0.81)
+
+
+async def test_finalize_event_audio_attaches_chip_beam_rings(monkeypatch):
+    """Wake-event audio capture follows the configured leg set. In chip-AEC
+    mode, both chip beam capture rings are persisted as explicit per-leg
+    WAV payloads rather than only recording the historical `audio_on` path."""
+    wl = _make_wake_loop_triple(
+        detector_chip_aec_150=_make_detector(),
+        detector_chip_aec_210=_make_detector(),
+    )
+    monkeypatch.setattr("jasper.voice_daemon.CAPTURE_POST_SEC", 0.0)
+    frame_on = np.full(4, 1, dtype=np.int16)
+    frame_150 = np.full(4, 150, dtype=np.int16)
+    frame_210 = np.full(4, 210, dtype=np.int16)
+    wl._legs["on"].capture_ring = deque([frame_on])
+    wl._legs["chip_aec_150"].capture_ring = deque([frame_150])
+    wl._legs["chip_aec_210"].capture_ring = deque([frame_210])
+    wl._snapshot_ring = WakeLoop._snapshot_ring
+    wl._wake_event_store.attach_audio = AsyncMock()
+
+    await wl._finalize_event_audio("evt-chip")
+
+    kwargs = wl._wake_event_store.attach_audio.await_args.kwargs
+    assert kwargs["event_id"] == "evt-chip"
+    assert kwargs["audio_on"] == frame_on.tobytes()
+    assert kwargs["audio_off"] is None
+    assert kwargs["audio_dtln"] is None
+    assert kwargs["audio_chip_aec_150"] == frame_150.tobytes()
+    assert kwargs["audio_chip_aec_210"] == frame_210.tobytes()
 
 
 async def test_wake_log_omits_unconfigured_leg_scores(caplog):

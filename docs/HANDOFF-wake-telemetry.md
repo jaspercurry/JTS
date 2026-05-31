@@ -232,6 +232,11 @@ DBs) and `_MIGRATION_COLUMNS` (already-deployed Pis backfill on
 `open()`):
 
 ```sql
+-- Per-beam WAV paths. Same retention semantics as audio_on/off/dtln:
+-- NULL when not captured; "rolled_off" once retention deletes the WAV.
+ALTER TABLE wake_events ADD COLUMN audio_chip_aec_150_path TEXT;
+ALTER TABLE wake_events ADD COLUMN audio_chip_aec_210_path TEXT;
+
 -- Per-beam peak score / peak offset / fire-time mic RMS, one set per
 -- fixed ASR beam (150° and 210°). NULL on every install until the
 -- household enables the chip leg via /wake/ (default OFF), so the
@@ -247,11 +252,18 @@ ALTER TABLE wake_events ADD COLUMN mic_rms_dbfs_chip_aec_210   REAL;
 A chip-beam fire records `trigger_kind = 'fire_chip_aec_150'` /
 `'fire_chip_aec_210'` and adds `chip_aec_150` / `chip_aec_210` to the
 `fired_legs` CSV (so the Venn / solo-save queries above generalize to
-the chip beams with no query rewrite). **Per-leg WAV capture for the
-chip beams is a deliberate follow-up** — there is no
-`audio_chip_aec_*_path` column yet, because the software legs'
-`audio_*_path` retention + `rolled_off` plumbing is validated on-device
-before extending its filename parsing to the chip beams.
+the chip beams with no query rewrite). Each chip beam also gets its own
+6-second WAV path:
+
+- `audio_chip_aec_150_path` →
+  `<event_id>.aec-chip-aec-150.wav`
+- `audio_chip_aec_210_path` →
+  `<event_id>.aec-chip-aec-210.wav`
+
+This is intentionally separate from `audio_on_path`. In chip-AEC mode,
+the production primary stream on `:9876` may be the selected chip beam
+for session audio, but the fusion review needs explicit files for both
+active hardware legs.
 
 Future extension for the custom-trained wake-word model (when that
 track ships):
@@ -287,6 +299,9 @@ CLAUDE.md debug dump).
   wake-events.sqlite3-shm    ← shared-memory index
   20260522T143011Z-001.aec-on.wav    ← 6 s, 16 kHz mono = 192 KB
   20260522T143011Z-001.aec-off.wav   ← 6 s, 16 kHz mono = 192 KB
+  20260522T143011Z-001.aec-dtln.wav
+  20260522T143011Z-001.aec-chip-aec-150.wav
+  20260522T143011Z-001.aec-chip-aec-210.wav
   20260522T143011Z-002.aec-on.wav
   20260522T143011Z-002.aec-off.wav
   ...
@@ -294,18 +309,20 @@ CLAUDE.md debug dump).
 
 **Retention split:**
 - **Audio WAVs** — 500 MB ring buffer, oldest-first deletion. At
-  ~400 KB per event (two 192 KB WAVs + JSON overhead), holds
-  ~1250 events ≈ 3-6 weeks at typical use. Cleanup runs once per
-  hour or when total exceeds the cap.
+  ~192 KB per captured leg, two-leg events are ~400 KB and chip-AEC
+  mode with `on` + two chip-beam files is ~575 KB. Five-leg review
+  captures approach ~1 MB/event. Cleanup runs once per hour or when
+  total exceeds the cap.
 - **DB rows** — kept indefinitely. Per-row footprint is small
   (~500 B), so even 10 years at 50 events/day stays under 100 MB.
   The row is useful for funnel stats long after the audio has
   rolled off.
 
-When the audio is rolled off, the DB row keeps `audio_on_path` /
-`audio_off_path` but a sentinel value (NULL or `'rolled_off'`) is
-written; queries can filter by `audio_on_path IS NOT NULL` to
-restrict to events that still have audio on disk.
+When the audio is rolled off, any non-NULL `audio_*_path` column gets
+the `'rolled_off'` sentinel. Columns that were never captured remain
+NULL. Queries can filter by `audio_on_path IS NOT NULL` (or by the
+specific leg path needed for a review) to restrict to events that still
+have audio on disk.
 
 ### Pulling the corpus to a laptop
 
@@ -645,7 +662,8 @@ listens on 9877 until PR 2 ships. PR 2 alone (without PR 3) gives
 dual-stream wake triggering with no persistence — still useful
 but loses the funnel data. The full value lands with PR 3.
 
-Last verified: 2026-05-31 (chip-AEC promotion P1 added the six
-`*_chip_aec_{150,210}` score columns to `jasper.wake_events`; the
-Schema section above was re-verified against that code. Other sections
-spot-checked, not fully re-verified.)
+Last verified: 2026-05-31 (chip-AEC audio capture added
+`audio_chip_aec_{150,210}_path` columns and per-beam WAV retention to
+`jasper.wake_events`; the Schema, File layout, and Retention sections
+above were re-verified against that code. Other sections spot-checked,
+not fully re-verified.)

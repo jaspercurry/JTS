@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Weekly review of the triple-stream wake-event corpus — which legs
-# (AEC ON, AEC OFF, DTLN-aec) are actually firing, where they
-# disagree, and which events are worth listening to.
+# Weekly review of the wake-event corpus — which configured wake legs
+# (AEC3, chip-direct, DTLN-aec, opt-in chip-AEC beams) are actually
+# firing, where they disagree, and which events are worth listening to.
 #
 # Usage:
 #   bash scripts/analyze-three-leg.sh                          # analyzes wake-events/latest
@@ -11,7 +11,7 @@
 # Run after `bash scripts/fetch-wake-events.sh` (which lands the
 # corpus under wake-events/<UTC-timestamp>/ + updates the
 # `wake-events/latest` symlink). Reports:
-#   - Venn-style fire breakdown (which legs crossed threshold)
+#   - Fire breakdown by fired-leg pattern
 #   - Per-leg score distribution
 #   - "Solo save" events (one leg only) per leg
 #   - Listening playlist with afplay commands

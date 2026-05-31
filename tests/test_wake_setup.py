@@ -414,6 +414,23 @@ def test_index_html_renders_detection_card():
     assert 'id="layer-status-chip_aec"' in html
 
 
+def test_index_html_renders_microphone_status_card():
+    """The compact mic card gives a fresh install visibility into the
+    detected mic/topology without making users read env files."""
+    html = wake_setup._index_html({}).decode()
+    assert "Microphone" in html
+    for dom_id in (
+        "mic-status-name",
+        "mic-status-firmware",
+        "mic-status-mode",
+        "mic-status-session-source",
+        "mic-status-wake-legs",
+        "mic-status-wake-word",
+        "mic-status-warning",
+    ):
+        assert f'id="{dom_id}"' in html
+
+
 def test_index_html_chip_aec_row_explains_mutual_exclusion():
     """The chip-AEC layer row tells the household it's mutually exclusive
     with raw + DTLN (one chip can't do both) and needs the 6-ch firmware

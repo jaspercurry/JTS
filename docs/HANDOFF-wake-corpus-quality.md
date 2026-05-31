@@ -99,8 +99,8 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `raw` / chip-direct | XVF chip-direct stream used by the current raw wake leg | Yes | This is the useful XVF raw-ish production leg. |
 | `dtln` | XVF path through the DTLN neural AEC leg | Yes when enabled in production | High resource cost; useful as corpus data when enabled. |
 | `raw0` | Truly raw XVF mic 0 / chip channel 2, no chip DSP and no software AEC | No | Corpus-only future-proofing for cheap-mic portability work. |
-| `chip_aec_150` | XVF on-chip AEC ASR output with fixed gated 150° beam | No | Corpus-only chip-AEC comparison profile. Treat as hardware-AEC evidence, not a production wake leg yet. |
-| `chip_aec_210` | XVF on-chip AEC ASR output with fixed gated 210° beam | No | Corpus-only chip-AEC comparison profile. Keep paired with 150° because mic orientation changes can swap the winner. |
+| `chip_aec_150` | XVF on-chip AEC ASR output with fixed gated 150° beam | Yes when chip-AEC mode is enabled | Production hardware-AEC wake leg and corpus comparison leg. Keep explicit because it may duplicate `aec` when the primary production stream is repointed to the selected chip beam. |
+| `chip_aec_210` | XVF on-chip AEC ASR output with fixed gated 210° beam | Yes when chip-AEC mode is enabled | Production hardware-AEC wake leg and corpus comparison leg. Keep paired with 150° because mic orientation changes can swap the winner. |
 | `xvf_raw0_webrtc_aec3` | Truly raw XVF mic 0 through software WebRTC AEC3 | No | Same raw channel as `raw0`, processed with the current software AEC3 baseline for chip-vs-software comparison. |
 | `xvf_raw0_dtln` | Truly raw XVF mic 0 through DTLN | No | Optional and resource-sensitive; useful when comparing neural AEC against chip AEC and WebRTC AEC3. |
 | `usb_raw` | Cheap USB mic capture with no JTS software processing | No | Watch hardware AGC/limiter state carefully. |
@@ -539,4 +539,5 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-29 (v10 - chip-AEC comparison profile legs added)
+Last verified: 2026-05-31 (v11 - chip-AEC beams promoted to optional
+production wake legs with per-beam wake-event WAV paths)

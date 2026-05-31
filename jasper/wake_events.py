@@ -149,6 +149,8 @@ CREATE TABLE IF NOT EXISTS wake_events (
 
   audio_on_path       TEXT,
   audio_off_path      TEXT,
+  audio_chip_aec_150_path TEXT,
+  audio_chip_aec_210_path TEXT,
 
   label               TEXT,
   label_notes         TEXT,
@@ -162,9 +164,7 @@ CREATE TABLE IF NOT EXISTS wake_events (
   -- Chip-AEC beam legs (XVF3800 fixed 150°/210° ASR beams). Opt-in,
   -- hardware-conditional wake legs promoted from corpus-only capture;
   -- null unless the household enabled the chip leg via /wake/. Same
-  -- per-leg score/offset/RMS shape as the software legs above. (Per-leg
-  -- WAV capture for these beams is a deliberate follow-up — see
-  -- attach_audio / _finalize_event_audio in jasper.voice_daemon.)
+  -- per-leg score/offset/RMS shape as the software legs above.
   peak_score_chip_aec_150     REAL,
   peak_score_chip_aec_210     REAL,
   peak_offset_ms_chip_aec_150 INTEGER,
@@ -195,6 +195,12 @@ _MIGRATION_COLUMNS: list[tuple[str, str]] = [
     ("peak_offset_ms_dtln", "INTEGER"),
     ("mic_rms_dbfs_dtln", "REAL"),
     ("audio_dtln_path", "TEXT"),
+    # Chip-AEC beam WAV paths. These are independent from the historical
+    # audio_on_path primary stream: in chip mode the primary stream may be
+    # repointed to chip_aec_150 for session audio, but review tooling still
+    # needs explicit per-beam files to inspect each active fusion leg.
+    ("audio_chip_aec_150_path", "TEXT"),
+    ("audio_chip_aec_210_path", "TEXT"),
     # CSV of leg names that crossed threshold to fire the event
     # (e.g. "aec_on,dtln" or "aec_off"). Lets the weekly review
     # answer "which engines are pulling weight?" directly.
@@ -373,8 +379,7 @@ class WakeEventStore:
         # Chip-AEC beam legs (XVF3800 150°/210° ASR beams). Optional —
         # null on every install until the chip leg is enabled via /wake/,
         # at which point voice_daemon._LEG_DB routes the per-beam
-        # score/offset/RMS into these columns. Per-leg WAV capture for the
-        # chip beams is a deliberate follow-up (no audio_* kwargs here yet).
+        # score/offset/RMS into these columns.
         peak_score_chip_aec_150: float | None = None,
         peak_score_chip_aec_210: float | None = None,
         peak_offset_ms_chip_aec_150: int | None = None,
@@ -443,6 +448,8 @@ class WakeEventStore:
         audio_on: bytes | None,
         audio_off: bytes | None,
         audio_dtln: bytes | None = None,
+        audio_chip_aec_150: bytes | None = None,
+        audio_chip_aec_210: bytes | None = None,
     ) -> None:
         """Write the per-leg WAVs to disk and UPDATE the row with
         their filenames. Triggers a retention sweep if the total
@@ -455,6 +462,8 @@ class WakeEventStore:
         on_filename: str | None = None
         off_filename: str | None = None
         dtln_filename: str | None = None
+        chip_aec_150_filename: str | None = None
+        chip_aec_210_filename: str | None = None
         if audio_on is not None:
             on_filename = f"{event_id}.aec-on.wav"
             _write_wav(self._base_dir / on_filename, audio_on)
@@ -464,14 +473,31 @@ class WakeEventStore:
         if audio_dtln is not None:
             dtln_filename = f"{event_id}.aec-dtln.wav"
             _write_wav(self._base_dir / dtln_filename, audio_dtln)
+        if audio_chip_aec_150 is not None:
+            chip_aec_150_filename = f"{event_id}.aec-chip-aec-150.wav"
+            _write_wav(self._base_dir / chip_aec_150_filename, audio_chip_aec_150)
+        if audio_chip_aec_210 is not None:
+            chip_aec_210_filename = f"{event_id}.aec-chip-aec-210.wav"
+            _write_wav(self._base_dir / chip_aec_210_filename, audio_chip_aec_210)
         async with self._lock():
             self._conn.execute(  # type: ignore[union-attr]
                 """
                 UPDATE wake_events
-                SET audio_on_path = ?, audio_off_path = ?, audio_dtln_path = ?
+                SET audio_on_path = ?,
+                    audio_off_path = ?,
+                    audio_dtln_path = ?,
+                    audio_chip_aec_150_path = ?,
+                    audio_chip_aec_210_path = ?
                 WHERE event_id = ?
                 """,
-                (on_filename, off_filename, dtln_filename, event_id),
+                (
+                    on_filename,
+                    off_filename,
+                    dtln_filename,
+                    chip_aec_150_filename,
+                    chip_aec_210_filename,
+                    event_id,
+                ),
             )
         # Retention sweep AFTER the new files are written, so the
         # newly-written WAVs are eligible to survive the sweep (the
@@ -719,8 +745,8 @@ class WakeEventStore:
                 logger.warning("wake_events: failed to delete %s: %s", f, e)
                 continue
             total -= sz
-            # Filename shape: `<event_id>.aec-on.wav` or `.aec-off.wav`.
-            # Strip both extensions to recover the event_id.
+            # Filename shape: `<event_id>.aec-<leg>.wav`. Strip the
+            # leg suffix to recover the event_id.
             event_id = f.name.rsplit(".aec-", 1)[0]
             deleted_event_ids.add(event_id)
         if deleted_event_ids:
@@ -739,7 +765,7 @@ class WakeEventStore:
         that audio existed (vs NULL, which would mean "no audio was
         ever captured").
 
-        All three per-leg path columns are updated so downstream
+        All per-leg path columns are updated so downstream
         readers can use the canonical `audio_*_path != 'rolled_off'
         AND IS NOT NULL` filter against any of them. Dropping the
         DTLN column from this list (as the original implementation
@@ -755,11 +781,19 @@ class WakeEventStore:
                     audio_off_path = CASE WHEN audio_off_path IS NOT NULL
                                           THEN ? ELSE NULL END,
                     audio_dtln_path = CASE WHEN audio_dtln_path IS NOT NULL
-                                           THEN ? ELSE NULL END
+                                           THEN ? ELSE NULL END,
+                    audio_chip_aec_150_path =
+                        CASE WHEN audio_chip_aec_150_path IS NOT NULL
+                             THEN ? ELSE NULL END,
+                    audio_chip_aec_210_path =
+                        CASE WHEN audio_chip_aec_210_path IS NOT NULL
+                             THEN ? ELSE NULL END
                 WHERE event_id = ?
                 """,
                 [
                     (
+                        ROLLED_OFF_SENTINEL,
+                        ROLLED_OFF_SENTINEL,
                         ROLLED_OFF_SENTINEL,
                         ROLLED_OFF_SENTINEL,
                         ROLLED_OFF_SENTINEL,
