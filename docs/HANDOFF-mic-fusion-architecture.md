@@ -1,12 +1,13 @@
 # Handoff: pluggable-mic boundary + multi-channel wake fusion architecture
 
 > **Status: living draft — design + execution plan, updated as phases
-> land (first written 2026-05-29). Phase 0.1 (leg registry, #366) and
-> Phase 0.2 (the LegRuntime refactor, #369) are merged; Phase 0.3
-> (registry-driven construction at the run() wiring site) + Phase 0.4
-> (consumer migration to the registry) are implemented and in review;
-> the rest is planned. Not a record of shipped state — verify against
-> code.** This
+> land (first written 2026-05-29; prior-art sweep folded in 2026-05-31).
+> Phase 0 (leg registry + `LegRuntime`, #366/#369/#381) and Phase
+> 1.0–1.3a (condition taxonomy, per-fire telemetry, the `WakeFuser`
+> seam, live-condition refresh — #385/#390) are merged. Remaining on the
+> wake-precision phase: 1.3b (corpus-tuned offsets) and the now
+> first-class 1.4 verifier (§2.6). Phases 2–5 are planned. Not a record
+> of shipped state — verify against code.** This
 > doc owns the *architecture* of the mic-swap boundary and the
 > leg-count-agnostic wake-fusion layer: the interfaces, the staging,
 > and the named decisions. It is the architectural companion to the
@@ -49,7 +50,10 @@
    `ConditionContext` and returns one decision. Mic-swaps (more/fewer
    legs) and fusion upgrades (OR → per-condition thresholds →
    logistic regression → attention) move on *independent axes*
-   through the same interface.
+   through the same interface — which is internally **recall → verify**:
+   the OR proposes a fire, a first-class verifier corroborates it before
+   the turn opens (§2.6), because flat OR inflates false-accepts with
+   every added leg (the prior-art-universal precision stage).
 
 4. **Honor the existing `jasper/mics/` decision.** We do *not* build a
    `MicProfile` Protocol/ABC from one data point. We extend the
@@ -66,12 +70,21 @@
    single highest-ROI accuracy lever per the research review).
 
 6. **Staging:** Phase 0 leg registry → Phase 1 per-condition thresholds
+   **+ verifier (recall→verify)**
    → Phase 2 capture-profile + cheap-USB capture → Phase 3 learned
    fusion (data-gated) → Phase 4 second mic / 4th arm (trigger-gated)
    → Phase 5 attention fusion (CPU-gated, probably never on a Pi 5 ≤4
    legs). Wake-model training augmentation is the top accuracy lever but
    is a **parallel track, not a phase** — it lives in
    [HANDOFF-wake-training-experiment.md](HANDOFF-wake-training-experiment.md).
+
+7. **Session source ≠ wake legs.** The single stream fed to the LLM per
+   turn is a *selection* over the profile's streams (pin → dynamic →
+   AEC'd default; §2.7), distinct from the OR-fused wake legs, with a
+   liveness heartbeat decoupled from both (§2.8). A 2026-05-31 prior-art
+   sweep (§4.2) confirmed the direction is sound — every mechanism has
+   shipped (Amazon, Home Assistant, the KWS literature); the
+   *integration* is the novel, open-source part.
 
 ---
 
@@ -120,8 +133,8 @@ Three layers, two stable interfaces. ASCII:
                                   ┌───────────────────────────────────────┐
                                   │  WakeFuser  (LEG-COUNT-AGNOSTIC)        │
                                   │   {leg: score} + ConditionContext       │
-                                  │   S1 OR+refractory → S2 per-cond θ →     │
-                                  │   S3 logistic-regression → S4 attention  │
+                                  │   RECALL: per-cond OR-gate (S1→learned) │
+                                  │   VERIFY: VAD + cross-leg corrob (§2.6)  │
                                   └───────────────────────────────────────┘
                                                   │ one decision + fired_legs CSV
                                                   ▼
@@ -266,10 +279,148 @@ class WakeFuser(Protocol):
 ```
 
 Every fusion stage (§5) is a different `WakeFuser` implementation
-behind this one interface. Stage 1 is the *current* lock-race OR-gate,
-re-expressed as a fuser that reads per-leg thresholds from the
-registry. The interface never changes as legs grow or fusion gets
-smarter — that orthogonality is the design's whole payoff.
+behind this one interface, and `decide()` is internally a **recall →
+verify** pipeline (§2.6): a recall stage (leg scores → per-condition
+OR-gate) *proposes* a fire, and a verify stage *corroborates* it before
+the turn opens. Today's lock-race OR-gate is the recall stage,
+re-expressed to read per-leg thresholds from the registry; the verifier
+is the next first-class stage (Phase 1.4). The interface never changes
+as legs grow or either stage gets smarter — that orthogonality is the
+design's whole payoff.
+
+### 2.6 The verifier / corroboration stage (recall → verify)
+
+OR-fusing N legs is a **recall** mechanism: more legs catch more real
+wakes, but a flat OR is a *union of error sets* — every leg's
+false-accepts pass straight through, so false-accepts rise
+**monotonically with N**. This is not a tuning detail; it is the
+structural reason every production wake stack pairs a high-recall first
+stage with a **precision second stage**. Alexa runs on-device detect →
+cloud second-stage verify ([Amazon Alexa: cloud-based wake-word
+verification](https://developer.amazon.com/en-US/blogs/alexa/post/b136b3e7-0ba8-4589-aaf9-2a037fc4e9c9/cloud-based-wake-word-verification-improves-alexa-wake-word-accuracy-on-your-avs-product));
+the general edge pattern is tiny-recall-model → larger-precision-model
+([Picovoice wake-word guide](https://picovoice.ai/blog/complete-guide-to-wake-word/)),
+and a published refinement stage cut false alarms **up to 7–8×**
+([arXiv:2304.03416](https://arxiv.org/pdf/2304.03416)).
+
+So the JTS wake pipeline is **recall → verify, with the verifier a
+first-class, committed stage** — not a someday-inside-learned-fusion
+afterthought (decided 2026-05-31). It runs after the OR proposes a
+winner and decides whether to actually fire:
+
+- **Where it earns its keep:** the raw and chip-direct legs are exactly
+  where `tts_bleed` and `music_vocals` (our telemetry's own labeled FP
+  classes) enter — so the union-FAR penalty lands hardest on the very
+  legs that buy recall. The verifier is what lets us keep those legs
+  *without* paying their false fires.
+- **Cheap mechanisms that fit the repo (no cloud, Pi-budget):** a shared
+  Silero-VAD veto (openWakeWord already carries one); a per-leg
+  confidence floor; **cross-leg corroboration** (require ≥2 legs, or
+  require the AEC-on leg to confirm during TTS to kill `tts_bleed`); or
+  re-scoring the fired window on the session-source stream. All live
+  *inside the `WakeFuser`* (§2.5) — the seam already merged in Phase
+  1.2 — so the verifier grows the fuser; it never touches the leg loops.
+- **Composes with, not competes with, learned fusion (Phase 3).** The
+  logistic-regression fuser is a *smarter recall+verify in one model*;
+  the heuristic verifier is what we run until that's data-justified, and
+  the fallback if it underperforms.
+- **Resilience — fails open, never closed.** The verifier may only ever
+  *suppress a marginal* fire; it can never block a confident single-leg
+  wake, and any verifier bug must fail toward firing on the wake path,
+  never toward deafness (the no-silent-deafness rule, AGENTS.md).
+
+### 2.7 Session source — the per-turn audio handed to the LLM
+
+The legs answer *"did someone say the wake word?"* A distinct question
+is *"once we're in a turn, which stream do we feed the speech-to-speech
+LLM?"* These are **different jobs with different optima**: wake
+detection is a ~1 s pattern match (broad OR for recall), while the
+session needs sustained intelligibility across a multi-second command —
+the best leg at the wake instant is not necessarily the best stream for
+the seconds that follow. Home Assistant's 2026.6 dual-mic source states
+the same split ("the more-processed channel for wake… the less-processed
+for STT… whichever works best per stage",
+[ESPHome voice_assistant](https://esphome.io/components/voice_assistant/));
+we generalize their two fixed lanes to **N profile-declared streams**.
+
+**Session source is a per-turn *selection* over the profile's streams,
+via a precedence ladder:**
+
+1. **Explicit user pin** — the operator names a stream (advanced
+   override).
+2. **Dynamic policy** — e.g. use the beam that fired the wake as a
+   direction proxy (a beamformer's firing beam ≈ the talker's bearing).
+   *This rung is our most novel and least-proven idea, and ships behind
+   a measurement gate:* one commercial embedded stack (DSP Concepts)
+   does the opposite — it *freezes* spatial adaptation at wake
+   ([DSP Concepts AWE](https://documentation.dspconcepts.com/awe-designer/8.D.2.3/wake-word-engine-and-asr-integration-for-awe-core-)) —
+   and Amazon's production selector keys on a signal-quality metric
+   (SIR), not wake-likelihood
+   ([Amazon SIR Beam Selector](https://www.amazon.science/publications/sir-beam-selector-for-amazon-echo-devices-audio-front-end)).
+   So treat "firing-beam → session-beam" as a hypothesis to validate
+   against the corpus, with an SNR/SIR-scored fallback. The XVF also
+   exposes a true DOA over USB (`AEC_AZIMUTH_VALUES`,
+   [respeaker host_control](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md)) —
+   a cleaner direction signal than inferring it from which software leg
+   crossed threshold.
+3. **Profile default** — the profile's recommended (echo-cancelled)
+   stream.
+
+**Bounds + safety:**
+
+- **Candidates = streams the active profile actually declares,** so the
+  choice is self-validating (you cannot pin `chip_aec_150` on a mic with
+  no chip) and the wizard shows only the options real for *that*
+  hardware.
+- **AEC'd is the default, not a gate.** A non-AEC stream is *allowed* as
+  the session source but **warned** — it's low-risk today (half-duplex +
+  aggressive music ducking), and the echo concern is mostly a *future
+  barge-in* one. We keep it open (open-source flexibility) behind a clear
+  inline caveat rather than locking it.
+- **Lock per turn.** The source is chosen when wake fires and held for
+  the whole turn. We *hard-select* one stream for the LLM, so a
+  mid-utterance switch would be an audible seam the provider's
+  endpointing must absorb — hence the lock. (Soft per-frame attention
+  blending avoids the seam but isn't free on a Pi, and isn't how a
+  single-stream LLM session is fed.) Amazon's beam-selection patent
+  ships this exact "select on wake, hold for the utterance," with our
+  rationale verbatim: without the lock, "an extraneous, sudden noise
+  event" can swing capture away from the talker mid-utterance
+  ([US9734822B1](https://patents.google.com/patent/US9734822B1/en) — JTS
+  is convergent prior art; low risk for an OSS project, noted for
+  awareness).
+- **Barge-in gets a vote later.** Full-duplex barge-in needs a clean echo
+  reference to work at all, so when it lands it may constrain or auto-pick
+  an AEC'd stream regardless of the transcription pin. We leave the door
+  open; we don't build it now.
+
+The session-source plumbing rides the capture-profile work (Phase 2,
+since it selects among profile-declared streams); the chip-AEC leg
+promotion is its first real exercise — its session-source decision (keep
+`:9876` as the session/heartbeat carrier and forward the chip beam into
+it, rather than double-AEC the `on` leg) is scoped in the chip-AEC
+promotion plan.
+
+### 2.8 Liveness heartbeat — decoupled from both wake and session
+
+A third concern historically fused onto the primary leg: the
+capture-pipeline **liveness heartbeat** the watchdog reads. It must
+track *"are frames flowing from the capture pipeline?"* — not the
+identity of any one leg, and not the per-turn session source. Decoupling
+it means a user's session-source pin (even a flaky stream) can never
+take down wake detection or trip the watchdog, and a single leg stalling
+surfaces as *that leg* rather than masquerading as a whole-pipeline
+death.
+
+This pairs with a concrete resilience finding from the prior-art sweep:
+openWakeWord's most-reported bug is a **stale-buffer false fire after a
+stream stalls and resumes**
+([openWakeWord #141](https://github.com/dscripka/openWakeWord/discussions/141)) —
+exactly our "mic disappears then returns" edge. So the heartbeat asserts
+*every configured leg is receiving frames*, and a leg that reconnects
+must `reset()` its detector buffer before scoring again. It sits on the
+same supervisor/health-probe pattern as the shipped T5.2
+`SystemSupervisor` — no new daemon, just the right probe.
 
 ---
 
@@ -291,7 +442,13 @@ smarter — that orthogonality is the design's whole payoff.
 
 ---
 
-## 4. Engagement with the research review
+## 4. Prior-art grounding
+
+Two reviews inform this design: an earlier engagement (§4.1) and a
+focused 2026-05-31 web sweep (§4.2) that validated the direction and
+surfaced the refinements now folded into §2 and §5.
+
+### 4.1 The earlier research review
 
 **Adopt as-is (it matches the codebase or is straightforwardly right):**
 
@@ -348,6 +505,111 @@ smarter — that orthogonality is the design's whole payoff.
   held-out *fresh capture session* are mandatory; report intervals,
   not point estimates.
 
+### 4.2 The 2026-05-31 web prior-art sweep — what it validated and changed
+
+A five-angle web review (full agent report archived in the session)
+checked each pillar against shipped systems and the literature.
+**Verdict: the direction is well-grounded, not speculative — every
+mechanism has shipped somewhere; the novel part is the *integration* and
+the open-source packaging.** No OSS project was found assembling a
+data-declared capture profile + N-leg OR-fusion + per-turn session-source
+ladder + decoupled liveness in one place.
+
+**Validated (prior art directly supports):**
+
+- **OR-fusion is openWakeWord's intended use** — `predict()` returns a
+  per-model score dict; caller-side gating is by design
+  ([openWakeWord](https://github.com/dscripka/openWakeWord)).
+  Multichannel KWS literally **max-pools per-beam scores** (= our
+  OR-gate) and beats single-channel in noise
+  ([arXiv:2507.15558](https://arxiv.org/pdf/2507.15558)). Per-leg
+  thresholds are standard.
+- **Keeping a raw channel alongside processed legs** mirrors
+  multichannel-KWS's "omni channel as undistorted reference" — we
+  already do this (`off`/raw always OR-ed).
+- **Wake-vs-session split is near-verbatim prior art** — HA 2026.6
+  dual-mic source + VOCAL's two-channel wake/STT design
+  ([ESPHome](https://esphome.io/components/voice_assistant/),
+  [VOCAL](https://vocal.com/echo-cancellation/aec-barge-in/)).
+- **Per-turn session-source select + lock + wake-informed selection** is
+  shipped by Amazon (US9734822B1); beam-selection-for-ASR is the
+  production norm.
+- **DTLN downstream of hardware AEC is explicitly sanctioned** by its
+  author — so our parallel DTLN *leg* is not harmful double-AEC
+  ([PiDTLN](https://github.com/SaneBow/PiDTLN/blob/main/README.md)).
+- The chip's **own routing is data-driven** (`AUDIO_MGR_OP_*`
+  (category, source) pairs) and the **single-mode constraint is
+  documented upstream** ("both focused beams must be fixed; not possible
+  to fix only one",
+  [XMOS datasheet](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/datasheet/03_audio_pipeline.html))
+  — so modeling it as a profile *mode* is correct, not a workaround.
+
+**Changed / added to the plan (the refinements, now folded into §2/§5):**
+
+1. **Recall → verify is now first-class** (§2.6, Phase 1.4) — flat OR's
+   union-FAR is *the* reason every production stack adds a precision
+   stage; up to 7–8× FA reduction cited
+   ([arXiv:2304.03416](https://arxiv.org/pdf/2304.03416)).
+2. **1 GB budget: ~1 detector ≈ 1 leg, not "20 models free."** The
+   famous openWakeWord figure assumes a *shared* mel+embedding backbone;
+   our legs run on *different* streams, so the frontend is **not**
+   shared. Budget per-leg; if RAM bites, share the frontend across legs
+   on the *same* stream (the documented cheaper path,
+   [arXiv:2507.15558](https://arxiv.org/pdf/2507.15558)). This sharpens
+   §3's CPU note and is the single most important budget caveat.
+3. **Two-level profile structure (mode ⊃ streams).** PipeWire/ALSA-UCM
+   separate a mutually-exclusive device **profile/mode** from the
+   **streams** readable within it
+   ([PipeWire](https://docs.pipewire.org/page_pulseaudio.html)). The XVF
+   single-mode quirk lives in the *mode* layer; raw/processed/beam tags
+   live in the *stream* layer (§2.1 grows this split as it gains
+   capability fields).
+4. **The dynamic session-source rung is gated on measurement** (§2.7) —
+   DSP Concepts does the opposite, Amazon uses SIR not wake-likelihood,
+   and the chip exposes real DOA.
+5. **Double-AEC tripwire as a profile invariant:** a stream already
+   hardware-AEC'd must never be designated as input to a host
+   software-AEC stage. Our design is currently safe (parallel legs, not
+   stacked); bake the invariant so we can't *re-introduce* the hazard
+   ([MS Teams AEC thread](https://techcommunity.microsoft.com/t5/microsoft-teams/acoustic-echo-cancellation-aec-for-teams-rooms-integration/td-p/1364592)).
+6. **Resilience: `reset()` on leg reconnect** + heartbeat asserts every
+   leg is fed (§2.8) — openWakeWord's stale-buffer false fire maps to
+   our mic-vanish/return edge.
+7. **Single-process leg topology is validated:** Wyoming users running
+   detectors in separate processes hit mic-device contention
+   ([wyoming-satellite #275](https://github.com/rhasspy/wyoming-satellite/issues/275))
+   — our one-process, one-capture-pipeline design (§2.3) avoids it.
+
+**Naming adopted (borrow, don't coin):** **profile** for the device mode
+(PipeWire/ALSA-UCM); **`direct`/`processed`** stream tags +
+**`directionality`/`orientation`**
+([Android `MicrophoneInfo`](https://developer.android.com/reference/android/media/MicrophoneInfo));
+**`ConflictingDevices`** for mutually-exclusive modes + **`Priority`**
+for "recommended session source"
+([ALSA UCM](https://www.alsa-project.org/alsa-doc/alsa-lib/group__ucm__conf.html));
+Wyoming's **`installed`/`attribution`/`models[]`** (already echoed in
+`wake_models.py`). Keep **"leg"** and **"session source"** (no
+established term) — but never call a leg a "model" (collides with
+openWakeWord's per-keyword model).
+
+**Diagnose-before-encoding flags (do NOT bake as fact):**
+
+- **Verify the "XVF fixed 150°/210°, single-mode" claim against the
+  *pinned* `_6chl` firmware before encoding it as profile data.** Public
+  docs are ambiguous (they also describe concurrent multi-beam +
+  auto-select + AEC, and *dynamic* DOA azimuths). Our on-hardware
+  observation is the authority — but confirm it's a property of the
+  specific firmware variant we flash, and say so in the profile comment.
+  Both fixed beams come as a *pair*, and 2↔6-ch is a *firmware flash*,
+  not a runtime toggle — the profile must encode the loaded mux layout.
+- **Thin claims flagged, not settled:** the Amazon SIR 46%/39% figures
+  (abstract-level — verify before quoting), HA's exact per-stage
+  channel-selection logic (product behavior, not a published spec), and
+  the precise XVF simultaneity limit (verify on firmware). The
+  cross-vendor generality of "single-mode" is *our inference* (an
+  XVF-class observation, not a law). Novelty is stated as "no OSS
+  equivalent found," not "first ever."
+
 ---
 
 ## 5. Staged execution plan
@@ -389,7 +651,7 @@ CPU-gated.
   `analyze-three-leg.sh` output is byte-comparable on the same corpus;
   `/state` `legs` block unchanged.
 
-### Phase 1 — Per-leg + per-condition thresholds  *(the real "Stage 1" delta)*
+### Phase 1 — Wake precision: per-condition recall + verifier  *(the real "Stage 1" delta)*
 - **Gate:** Phase 0.
 - **Landed, all behavior-preserving:** **1.0** the condition-taxonomy SSOT
   (`jasper/wake_conditions.py`); **1.1a** the `condition_class` column + the
@@ -403,10 +665,19 @@ CPU-gated.
   per-frame path via `CONDITION_REFRESH_SEC`) so the gate keys on a current
   condition the moment offsets exist. Production fires are condition-labelled
   and the fuser seam is live. **Remaining:** **1.3b** — fill `WakeFuser`'s
-  per-(leg, condition) offsets from the corpus. This is the **only data-gated
-  step**: a `WakeFuser(offsets={...})` change, no hot-path or signature edits,
-  derived from per-(leg, condition) false-fire / miss rates in the labelled
-  corpus.
+  per-(leg, condition) offsets from the corpus (the **only data-gated**
+  recall step: a `WakeFuser(offsets={...})` change, no hot-path or signature
+  edits, derived from per-(leg, condition) false-fire / miss rates in the
+  labelled corpus); and **1.4 — the verifier / corroboration stage (§2.6)**,
+  the committed precision half of recall→verify (decided 2026-05-31, a
+  first-class stage, *not* an afterthought). 1.4 builds inside the same
+  `WakeFuser` seam: begin with a shared VAD veto + cross-leg corroboration
+  (require the AEC-on leg to confirm during TTS to kill `tts_bleed`; require
+  ≥2 legs for the raw/chip-direct FP classes), **fail open on the wake path**,
+  and measure FA/h against a fresh corpus window before tightening. The
+  verifier is what makes *adding* recall legs (more beams, a 4th arm) safe
+  rather than FA-inflating — so it lands before, not after, the leg count
+  grows.
 - **Build:** `default_threshold_offset` per `LegSpec`; a lightweight
   `ConditionContext` estimator (music flag from the **playback-ref RMS
   the bridge already computes**; noise floor / SNR proxy) — *done in 1.1b,
@@ -517,6 +788,16 @@ CPU-gated.
 
 ## 7. Open decisions (need a call before/at the relevant phase)
 
+**Resolved 2026-05-31 (recorded here; detail in §2 / §4.2):** (a) the
+wake pipeline is **recall → verify**, with the verifier a *first-class,
+committed* stage rather than something deferred into learned fusion
+(§2.6, Phase 1.4); (b) **session source** is a per-turn selection over
+profile-declared streams via a pin → dynamic → default ladder,
+AEC'd-by-default but user-overridable-with-warning, locked per turn
+(§2.7); (c) **naming** borrows established vocabulary (`profile`,
+`direct`/`processed`, `ConflictingDevices`, `Priority`) instead of
+coining new terms (§4.2). The items below remain open.
+
 1. **N-leg telemetry shape — additive columns vs normalized child
    table.** *Recommendation: additive columns now* (matches the
    existing schema, `analyze-three-leg.sh`, and CSV export; fine for
@@ -542,11 +823,9 @@ CPU-gated.
    Proposed names: `aec3`, `chip_direct` (token `off`), `dtln`,
    `chip_aec`, `raw0`. Settle at Phase 0 implementation.
 
-4. **Doc home / routing.** This doc is a new design doc, not yet wired
-   into the README doc-atlas or `doc-map.toml` — intentionally, until
-   the plan is agreed (so we don't create an orphan we then restructure).
-   On agreement: add the atlas line and a `doc-map.toml` entry under
-   `aec-and-mic` / `wake-and-wake-corpus`.
+4. **Doc home / routing — resolved.** The plan is agreed (2026-05-31)
+   and the doc is wired into the README doc-atlas and `doc-map.toml`
+   (under `wake-and-wake-corpus`). No longer open.
 
 ---
 
@@ -622,4 +901,4 @@ the wake cluster before each daemon-touching PR.
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-05-31
