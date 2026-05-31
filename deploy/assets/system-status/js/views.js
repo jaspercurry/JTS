@@ -94,7 +94,7 @@ export function buildPage(root, handlers) {
   const svcBody = h("div");
   const services = collapsible({
     title: "Per-service usage", open: true,
-    body: h("div", null,
+    body: h("div.info-card", null,
       h("p.info-card__note", null,
         "Cgroup CPU and memory by service; totals show unlisted system work."),
       svcBody),

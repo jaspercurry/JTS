@@ -19,7 +19,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
 export function buildDebugCard() {
   const rows = h("div.debug-rows");
   const countdown = h("p.info-card__note", { "attr:aria-live": "polite" });
-  const body = h("div", null,
+  const body = h("div.info-card", null,
     h("p.info-card__note", null,
       "Raise one subsystem's logging to DEBUG for troubleshooting. " +
       "Voice and AEC restart briefly to apply; it auto-expires on its own."),

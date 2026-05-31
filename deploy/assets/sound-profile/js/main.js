@@ -54,6 +54,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
+  var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
   function csrfHeaders(headers) {
@@ -493,8 +494,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         '<input type="range" class="range__input" min="' + (opts.log ? 0 : min) + '" max="' + (opts.log ? 1000 : max) +
           '" step="' + (opts.step || 0.1) + '" value="' + (opts.log ? freqToSlider(value, min, max) : value) +
           '" data-range="' + opts.kind + '" aria-label="' + escapeHtml(label) + '"></div>' +
-      '<div class="range__readout"><button type="button" class="range__readout-btn" data-readout="' + opts.kind + '">' +
-        escapeHtml(opts.format(value)) + '</button></div>' +
+      '<div class="range__readout"><span class="range__readout-value" data-readout="' + opts.kind + '">' +
+        escapeHtml(opts.format(value)) + '</span></div>' +
     '</div>';
   }
   function freqToSlider(freq, min, max) {
@@ -542,8 +543,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var min = -limits.simple_gain_db, max = limits.simple_gain_db;
     var pct = (clamp(value, min, max) - min) / (max - min) * 100;
     return '<div class="simple-col" data-field="' + escapeHtml(slot.field) + '">' +
-      '<div class="simple-col__readout"><button type="button" class="simple-col__readout-btn" data-readout-field="' +
-        escapeHtml(slot.field) + '">' + fmtDb(value) + '</button></div>' +
+      '<div class="simple-col__readout"><span class="simple-col__readout-value" data-readout-field="' +
+        escapeHtml(slot.field) + '">' + fmtDb(value) + '</span></div>' +
       '<div class="vrange"><div class="vrange__track"></div><div class="vrange__zero"></div>' +
         '<div class="vrange__thumb" style="bottom:calc(' + pct + '% - 6px)"></div>' +
         '<input type="range" class="vrange__input" min="' + min + '" max="' + max + '" step="0.1" value="' + value +
@@ -600,21 +601,21 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var dirty = draftModified();
     if (editing.kind === 'user') {
       return '<div class="btn-row">' +
-          '<button type="button" class="btn btn--primary" data-act="overwrite"' + (dirty ? '' : ' disabled') + '>Overwrite</button>' +
+          '<button type="button" class="btn btn--primary" data-act="overwrite" data-dirty-action' + (dirty ? '' : ' disabled') + '>Overwrite</button>' +
           '<button type="button" class="btn btn--ghost" data-act="begin-name">Save as new</button></div>' +
         '<div class="btn-row">' +
           '<button type="button" class="btn btn--ghost" data-act="begin-rename">Rename</button>' +
-          '<button type="button" class="btn btn--ghost" data-act="discard"' +
-            (dirty ? '' : ' disabled') + '>Discard edits</button></div>';
+          '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' +
+            (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
     }
     if (editing.kind === 'preset') {
       return '<div class="btn-row">' +
           '<button type="button" class="btn btn--primary" data-act="begin-name">Save as new</button>' +
-          '<button type="button" class="btn btn--ghost" data-act="discard"' + (dirty ? '' : ' disabled') + '>Discard edits</button></div>';
+          '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' + (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
     }
     return '<div class="btn-row">' +
         '<button type="button" class="btn btn--primary" data-act="begin-name">Save profile</button>' +
-        '<button type="button" class="btn btn--ghost" data-act="discard"' + (dirty ? '' : ' disabled') + '>Discard</button></div>';
+        '<button type="button" class="btn btn--ghost" data-act="reset-draft" data-dirty-action' + (dirty ? '' : ' disabled') + '>Reset draft</button></div>';
   }
 
   // ---- backend integration -------------------------------------------
@@ -790,6 +791,12 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   // Body re-render + optimistic graph (via schedulePreview) + live audio.
   function onDraftChanged(immediate) { renderDraft(); schedulePreview(); requestLiveSource({immediate: immediate}); }
+  function refreshDraftActionState() {
+    var dirty = draftModified();
+    el('view-body').querySelectorAll('[data-dirty-action]').forEach(function(btn) {
+      btn.disabled = !dirty;
+    });
+  }
   function refreshActiveCount() {
     var e = el('active-count');
     if (!e) return;
@@ -838,7 +845,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     else if (act === 'cancel-name') { naming = false; renderDraft(); }
     else if (act === 'finalize-name') { finalizeName(); }
     else if (act === 'overwrite') { overwrite(); }
-    else if (act === 'discard') { discardEdits(); }
+    else if (act === 'reset-draft') { resetDraft(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -856,10 +863,11 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var range = ev.target.getAttribute('data-range');
     if (field) {
       draft.simple_eq[field] = clamp(ev.target.value, -limits.simple_gain_db, limits.simple_gain_db);
-      var btn = el('view-body').querySelector('[data-readout-field="' + field + '"]');
-      if (btn) btn.textContent = fmtDb(draft.simple_eq[field]);
+      var readout = el('view-body').querySelector('[data-readout-field="' + field + '"]');
+      if (readout) readout.textContent = fmtDb(draft.simple_eq[field]);
       positionThumb(ev.target);
       refreshActiveCount();
+      refreshDraftActionState();
       schedulePreview(); requestLiveSource({immediate: false});
     } else if (range) {
       var row = ev.target.closest('.band-row');
@@ -873,6 +881,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       var ro = row.querySelector('[data-readout="' + range + '"]');
       if (ro) ro.textContent = range === 'freq' ? fmtFreq(band.freq_hz) : (range === 'gain' ? fmtDb(band.gain_db) + ' dB' : fmtQ(band.q));
       positionThumb(ev.target);
+      refreshDraftActionState();
       schedulePreview(); requestLiveSource({immediate: false});
     }
   });
@@ -884,6 +893,20 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     }
   });
   el('view-body').addEventListener('change', function(ev) {
+    var field = ev.target.getAttribute('data-field');
+    if (field) {
+      var next = clamp(ev.target.value, -limits.simple_gain_db, limits.simple_gain_db);
+      if (Math.abs(next) <= ZERO_DETENT_DB) next = 0;
+      draft.simple_eq[field] = next;
+      ev.target.value = next;
+      var readout = el('view-body').querySelector('[data-readout-field="' + field + '"]');
+      if (readout) readout.textContent = fmtDb(next);
+      positionThumb(ev.target);
+      refreshActiveCount();
+      refreshDraftActionState();
+      schedulePreview(); requestLiveSource({immediate: false});
+      return;
+    }
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
     else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
   });
@@ -936,7 +959,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     activeBand = Math.max(0, Math.min(activeBand, draft.parametric_bands.length - 1));
     onDraftChanged(true);
   }
-  function discardEdits() {
+  function resetDraft() {
     draft = sourceProfile();
     if (editing.kind !== 'new') draft = withIdentity(draft, editing.id, editing.name);
     mode = draft.parametric_bands.length ? 'peq' : 'simple';

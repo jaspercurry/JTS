@@ -228,6 +228,31 @@ def test_sound_module_draws_width_region_only_for_expanded_peq_band():
     assert ".band-width.selected" not in css
 
 
+def test_sound_module_reset_draft_and_simple_zero_detent():
+    """Draft reset is the user-facing revert action, and Simple sliders get a
+    tiny release-time zero detent so neutral is easy without per-band buttons."""
+    js = _SOUND_MODULE.read_text()
+    assert "Reset draft" in js
+    assert 'data-act="reset-draft"' in js
+    assert "function resetDraft()" in js
+    assert "Discard" not in js
+    assert "var ZERO_DETENT_DB = 0.1;" in js
+    assert "Math.abs(next) <= ZERO_DETENT_DB" in js
+    assert "ev.target.getAttribute('data-field')" in js
+
+
+def test_sound_readouts_are_not_fake_edit_controls():
+    """Readouts are display-only; exact numeric editing was intentionally not
+    shipped, so they must not masquerade as text-edit buttons."""
+    js = _SOUND_MODULE.read_text()
+    css = _SOUND_CSS.read_text()
+    assert "range__readout-value" in js
+    assert "simple-col__readout-value" in js
+    assert "readout-btn" not in js
+    assert "readout-input" not in js
+    assert "cursor: text" not in css
+
+
 def test_sound_module_prefers_explicit_profile_identity_then_stock_matches():
     js = _SOUND_MODULE.read_text()
     fn_start = js.index("function findIdFor(profile)")
