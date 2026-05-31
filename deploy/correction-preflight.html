@@ -1,67 +1,72 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Room correction setup — JTS speaker</title>
+  <link rel="stylesheet" href="/assets/app.css?v=__APP_CSS_VERSION__">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-           max-width: 620px; margin: 2em auto; padding: 0 1em; color: #222; }
-    h1 { margin-bottom: 0.25em; }
-    .sub { color: #666; margin-top: 0; line-height: 1.45; }
-    .nav-back {
-      display: inline-block; color: #666; text-decoration: none;
-      font-size: 0.92em; margin-bottom: 0.6em;
-    }
-    .nav-back:hover { color: #222; }
-    .panel { background: #fff8e1; border: 1px solid #d6b656;
-             border-radius: 8px; padding: 0.9em 1em; margin: 1.2em 0;
-             color: #4c3a00; line-height: 1.5; }
-    .panel strong { color: #2f2500; }
-    ol { padding-left: 1.4em; line-height: 1.5; }
-    li { margin-bottom: 0.7em; }
-    .hint { color: #666; font-size: 0.92em; line-height: 1.45; }
-    .actions { display: flex; gap: 0.7em; flex-wrap: wrap; margin-top: 1.3em; }
-    a.btn {
-      background: #1db954; color: white; border: 0;
-      padding: 0.65em 1.1em; border-radius: 4px; font-size: 1em;
-      cursor: pointer; text-decoration: none; display: inline-block;
-    }
-    a.btn.secondary { background: #4a4a4a; }
-    a.btn:hover { filter: brightness(1.1); }
+    /* Page-specific spacing only; shared tokens, fonts, and components
+       (.app-header, .page, .info-card, .btn, .ico) come from app.css.
+       This is the static, plain-HTTP preflight nginx serves before the
+       HTTPS-only /correction/ measurement UI, so it links the canonical
+       stylesheet directly instead of rendering through canonical_page().
+       install.sh stamps __APP_CSS_VERSION__ with the deployed build SHA
+       (same as deploy/index.html) so the immutable-cached app.css busts
+       on each deploy. */
+    .page > * + * { margin-top: 1.1rem; }
+    .preflight-steps { margin: 0; padding-left: 1.3em; line-height: 1.55; }
+    .preflight-steps li + li { margin-top: 0.6em; }
   </style>
 </head>
 <body>
-  <a class="nav-back" href="/">← Home</a>
-  <h1>Room correction</h1>
-  <p class="sub">
-    The next page measures your room using this device's microphone.
-    Browsers only allow that on HTTPS, so this one JTS screen has to
-    switch from normal HTTP to HTTPS.
-  </p>
+  <svg class="sr-only" aria-hidden="true" focusable="false">
+    <symbol id="icon-back" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m15 18-6-6 6-6"></path>
+    </symbol>
+  </svg>
 
-  <div class="panel">
-    <strong>You may see "Your connection is not private."</strong>
-    That is expected here. The speaker uses a local certificate because
-    it lives on your home network, not on the public internet.
-  </div>
+  <header class="app-header"><div class="app-header__row">
+    <a class="icon-button" href="/" aria-label="Home">
+      <svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>
+    </a>
+    <h1 class="app-header__title">Room correction</h1>
+    <span></span>
+  </div></header>
 
-  <ol>
-    <li>Tap <strong>OK, proceed</strong> below.</li>
-    <li>On the browser warning, open <strong>Show Details</strong> or
-      <strong>Advanced</strong>, then choose the option to continue to
-      this website.</li>
-  </ol>
+  <main class="page">
+    <p>
+      The next page measures your room using this device's microphone.
+      Browsers only allow that on HTTPS, so this one JTS screen has to
+      switch from normal HTTP to HTTPS.
+    </p>
 
-  <p class="hint">
-    To silence the warning permanently on this device, install and trust
-    the JTS root certificate from the room-correction page.
-  </p>
+    <div class="info-card info-card--accent">
+      <p>
+        <strong>You may see "Your connection is not private."</strong>
+        That is expected here. The speaker uses a local certificate because
+        it lives on your home network, not on the public internet.
+      </p>
+    </div>
 
-  <div class="actions">
-    <a class="btn" id="proceed" href="https://jts.local/correction/">OK, proceed</a>
-    <a class="btn secondary" href="/">Cancel</a>
-  </div>
+    <ol class="preflight-steps">
+      <li>Tap <strong>OK, proceed</strong> below.</li>
+      <li>On the browser warning, open <strong>Show Details</strong> or
+        <strong>Advanced</strong>, then choose the option to continue to
+        this website.</li>
+    </ol>
+
+    <p class="form-hint">
+      To silence the warning permanently on this device, install and trust
+      the JTS root certificate from the room-correction page.
+    </p>
+
+    <div class="form-actions">
+      <a class="btn btn--primary" id="proceed" href="https://jts.local/correction/">OK, proceed</a>
+      <a class="btn btn--ghost" href="/">Cancel</a>
+    </div>
+  </main>
 
   <script>
     (function () {

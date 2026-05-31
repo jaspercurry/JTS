@@ -351,6 +351,22 @@ def test_room_correction_preflight_switches_to_https() -> None:
     assert "https://' + window.location.hostname + '/correction/'" in html
 
 
+def test_room_correction_preflight_uses_canonical_design() -> None:
+    html = _preflight_html()
+
+    # Migrated onto the canonical design system (the static-page analog of
+    # canonical_page()): links the shared, SHA-busted stylesheet and uses
+    # the .app-header / .btn / .info-card vocabulary.
+    assert '/assets/app.css?v=__APP_CSS_VERSION__' in html
+    assert 'class="app-header"' in html
+    assert 'class="btn btn--primary"' in html
+    assert 'href="#icon-back"' in html
+    # The old hand-rolled look is gone: no Spotify-green buttons, no inline
+    # system-font stack (both now come from app.css).
+    assert "#1db954" not in html
+    assert "-apple-system" not in html
+
+
 def test_nginx_serves_correction_preflight_on_http_only() -> None:
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
 
@@ -374,11 +390,57 @@ def test_nginx_serves_static_management_assets() -> None:
     assert 'Cache-Control "public, max-age=31536000, immutable"' in nginx
 
 
+def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
+    # The /correction/ measurement UI is the one wizard served over HTTPS
+    # (getUserMedia needs a secure context) and links /assets/app.css + its
+    # ES module by absolute path. The 443 server block must serve /assets/
+    # itself; otherwise those subresources fall through to the downgrade
+    # catch-all, 308 to HTTP, and browsers block them as mixed content —
+    # leaving the page unstyled and its JS (mic capture, sweep) dead.
+    nginx = _NGINX_PATH.read_text(encoding="utf-8")
+    https_block = nginx[nginx.index("listen 443") :]
+
+    assert "location /assets/" in https_block
+    assert "location ~* ^/assets/.+\\.js$" in https_block
+    # Must precede the HTTP-downgrade catch-all so assets are served, not
+    # redirected.
+    assert https_block.index("location /assets/") < https_block.index(
+        "return 308 http://$host$request_uri;"
+    )
+
+
 def test_install_copies_correction_preflight_page() -> None:
     install = _INSTALL_PATH.read_text(encoding="utf-8")
 
     assert "deploy/correction-preflight.html" in install
     assert "/usr/share/jasper-web/correction-preflight.html" in install
+
+
+def test_install_stamps_preflight_app_css_version() -> None:
+    # The preflight is static HTML linking the immutable app.css, so it
+    # carries the __APP_CSS_VERSION__ placeholder and install.sh must
+    # substitute it with the build SHA — exactly as it does for index.html.
+    install = _INSTALL_PATH.read_text(encoding="utf-8")
+    preflight = _preflight_html()
+
+    assert "/assets/app.css?v=__APP_CSS_VERSION__" in preflight
+    # Join bash `\`-continuations so the sed command and its target file
+    # collapse onto one logical line. This tolerates a one-line or a
+    # line-wrapped sed without coupling the test to install.sh's formatting.
+    joined = re.sub(r"\\\n\s*", " ", install)
+    assert any(
+        "sed" in line
+        and "__APP_CSS_VERSION__" in line
+        and "correction-preflight.html" in line
+        for line in joined.splitlines()
+    ), "install.sh must sed __APP_CSS_VERSION__ into correction-preflight.html"
+
+
+def test_install_prunes_retired_integrations_page() -> None:
+    # The /integrations page was deleted; install.sh must remove the orphaned
+    # file from previously-deployed Pis so it does not linger unreachable.
+    install = _INSTALL_PATH.read_text(encoding="utf-8")
+    assert "rm -f /usr/share/jasper-web/integrations.html" in install
 
 
 def test_install_copies_landing_page_font_assets() -> None:

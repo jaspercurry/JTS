@@ -349,7 +349,6 @@ deploy/
   index.html                    Static landing page
   assets/fonts/                 Local web fonts for static management UI
   correction-preflight.html     HTTP warning before HTTPS room correction
-  integrations.html             Static integrations sub-page
   nginx-jasper.conf             Main nginx site: HTTP wizards + HTTPS correction UI
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)

@@ -281,8 +281,8 @@ PAGE_STYLE = """
 #      including cross-origin entries. Deep-link entries from
 #      a phone-launcher / email / Slack had length > 1, so the JS
 #      fired history.back() and exited JTS entirely.
-# Pages with a different natural parent (e.g. Spotify / Google live
-# under /integrations) can override the label per-wizard.
+# Pages with a different natural parent can override the label
+# per-wizard.
 NAV_BACK_HTML = '<a class="nav-back" href="/">← Home</a>'
 
 # CSS for `.nav-back` is included in `PAGE_STYLE` above. Re-exported

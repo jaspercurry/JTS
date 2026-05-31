@@ -3604,6 +3604,75 @@ def check_correction_web_service() -> CheckResult:
     )
 
 
+def _probe_https_status(
+    host: str, port: int, path: str, *, timeout: float = 4.0
+) -> "tuple[int, str]":
+    """GET ``path`` over HTTPS without following redirects, returning
+    ``(status, location_header)``.
+
+    Certificate verification is intentionally disabled: the speaker's cert is
+    issued by a private CA and this probe checks nginx *routing* (a 200 vs a
+    308 down to ``http://``), not certificate validity. ``http.client`` is used
+    rather than ``urllib`` precisely because it does not follow redirects — the
+    308 is the signal we are looking for. Factored out so tests can stub it."""
+    import http.client
+    import ssl
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(host, port, context=ctx, timeout=timeout)
+    try:
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        return resp.status, (resp.getheader("Location", "") or "")
+    finally:
+        conn.close()
+
+
+def check_correction_https_assets() -> CheckResult:
+    """nginx's 443 block must serve ``/assets/``, not redirect it to HTTP.
+
+    ``/correction/`` is the one wizard served over HTTPS (getUserMedia needs a
+    secure context). Its measurement UI links ``/assets/app.css`` and its ES
+    module by absolute path; if the 443 server block does not serve
+    ``/assets/`` itself, those subresources fall through to the HTTP-downgrade
+    catch-all, ``308`` to ``http://``, and browsers block them as mixed content
+    — the page renders unstyled and its JS (mic capture, sweep) never runs.
+
+    ``check_web_design_assets`` covers the files existing on disk; this covers
+    them being *reachable over HTTPS*. Skips on a dev checkout (no web root) and
+    when 443 is unreachable (nginx liveness has its own checks)."""
+    web_root = Path(os.environ.get("JASPER_WEB_SHARE_DIR", "/usr/share/jasper-web"))
+    if not (web_root / "assets" / "app.css").is_file():
+        return CheckResult(
+            "correction HTTPS assets", "ok", "not installed (skipped)"
+        )
+    try:
+        status, location = _probe_https_status("127.0.0.1", 443, "/assets/app.css")
+    except OSError:
+        return CheckResult(
+            "correction HTTPS assets", "ok",
+            "nginx 443 not reachable (skipped; see nginx / correction-web checks)",
+        )
+    if status == 200:
+        return CheckResult(
+            "correction HTTPS assets", "ok",
+            "https://127.0.0.1/assets/app.css → 200",
+        )
+    if status in (301, 302, 307, 308) and location.startswith("http://"):
+        return CheckResult(
+            "correction HTTPS assets", "warn",
+            f"/assets over HTTPS → {status} → {location}: the /correction/ UI's "
+            "CSS/JS will be mixed-content-blocked. Add an `/assets/` location to "
+            "the nginx 443 server block and redeploy.",
+        )
+    return CheckResult(
+        "correction HTTPS assets", "warn",
+        f"https://127.0.0.1/assets/app.css → HTTP {status} (expected 200); redeploy.",
+    )
+
+
 def check_correction_state_dirs() -> CheckResult:
     root = _correction_root()
     expected = [
@@ -4071,6 +4140,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # correction session.
         check_web_design_assets,
         check_correction_web_service,
+        check_correction_https_assets,
         check_correction_state_dirs,
         check_camilla_volume_limit,
         check_correction_current_config,
