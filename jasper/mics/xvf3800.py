@@ -161,15 +161,14 @@ MIXER_VOLUME_MAX = 60  # ALSA units; 0=-60 dB, 60=0 dB on this device
 #   2 = Raw mic 0  (pre-everything — no BF, no NS, no AGC, no HPF)
 #   3-5 = Raw mics 1-3
 #
-# We use channel 1 (ASR beam). This is the canonical XVF3800 voice-
-# assistant capture channel — used by Seeed's own examples, the
-# Reachy Mini stack, and the formatBCE/ESPHome integration. We get
-# the chip's 4-mic beamforming, noise suppression, AGC, and HPF for
-# free; we only need to keep the chip's own AEC stage out of the
-# path (jasper-aec-init writes `SHF_BYPASS=1` for that, because the
-# chip's AEC pipeline is incompatible with our external-DAC
-# topology — see docs/HANDOFF-aec.md). Software AEC3 then runs on
-# top of an already-cleaned mic input.
+# We use channel 1 because it is the canonical XVF3800 voice-assistant
+# capture channel — used by Seeed's own examples, the Reachy Mini stack,
+# and the formatBCE/ESPHome integration. In production,
+# jasper-aec-init writes `SHF_BYPASS=1` because the chip's AEC pipeline
+# is incompatible with our external-DAC topology. Empirically that also
+# bypasses the chip SHF post-processing path on channels 0/1, so this is
+# a raw-ish input rather than a beamformed / NS / AGC output. Software
+# AEC3 then runs on top of that host-side.
 #
 # Was previously channel 2 (raw mic 0). The switch was made on
 # 2026-05-15 after measuring that raw mic 0 has literally no chip

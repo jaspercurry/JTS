@@ -246,6 +246,7 @@ topology. Trade-off documented in "Lessons learned" below.
 | Knob | Production value | Where | Why this value |
 |---|---|---|---|
 | **Mic channel** | **1 (ASR beam, post-SHF tap)** | `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX` | Canonical XVF3800 voice-assistant channel choice. With our `SHF_BYPASS=1`, ch 1 effectively carries raw-ish mic data; the chip-processing benefit usually associated with ch 0/1 is gated on SHF_BYPASS=0. Channel 2 (explicit raw mic 0, Category 1) would be functionally similar in our config — see "Caveat" above. |
+| **Chip output mux** | **OP_L=`(8,0)`, OP_R=`(8,0)`** | `jasper-aec-init` | The bridge reads channel 1. Seeed's firmware default for channel 1 is OP_R=`(0,0)` (silence), so production init must keep OP_R on a non-silent route. 2026-05-31 failure mode: restoring OP_R to the firmware default made `jasper-aec-bridge` report `mic=0` even though ALSA capture and UDP output were healthy. |
 | **Chip SHF** | **BYPASSED (`SHF_BYPASS=1`)** | `jasper-aec-init` | Chip's own AEC requires the chip to drive the speaker via its own codec; we use an external USB DAC. Chip AEC mirrors host UAC volume into AEC_FAR_EXTGAIN and sabotages the reference signal in our topology. **SHF_BYPASS=1 disables the ENTIRE SHF stage (AEC + BF + NS + AGC) on channels 0/1**, not just AEC — see Caveat above. The chip-side HPF stays. |
 | **Chip HPF** | **125 Hz, 4th-order Butter (`AEC_HPFONOFF=2`)** | `jasper-aec-init` | XMOS shipping default for smart-speaker presets. Applied at mic ingress before the SHF block (so survives SHF_BYPASS). Cuts LF rumble at the source. Configurable via `JASPER_AEC_CHIP_HPF_HZ` (off/70/125/150/180). |
 | **Ref-side HPF** | **125 Hz, 2nd-order Butter** | `_ref_thread` in `jasper/cli/aec_bridge.py` | Matches chip mic-side HPF cutoff so AEC3 sees symmetric bands. Configurable via `JASPER_AEC_REF_HPF_HZ`. |
@@ -2530,4 +2531,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-05-30.
+Last verified: 2026-05-31.
