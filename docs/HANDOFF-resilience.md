@@ -49,6 +49,14 @@ Three classes of fragility composed into the incident:
    ALSA PCM hits `SND_PCM_STATE_DISCONNECTED`. `snd_pcm_recover()`
    does not recover that state per the ALSA contract; there's no
    in-process retry.
+   *(Detecting this stall is two-pronged as of 2026-05-31: the
+   original continuous-empty counter — `JASPER_AEC_STALL_RESTART_SEC`,
+   5 s — plus a slow-drip frame-rate watchdog,
+   `JASPER_AEC_STALL_DRIP_MAX_WINDOWS`, that catches an intermittent
+   trickle the continuous counter keeps resetting through. The first
+   never fired during a ~13 h deaf-but-trickling episode; the rate
+   watchdog closes that gap. Both raise `BridgeStalled` → systemd
+   restart; see `_MicStarvationWatchdog` in `jasper/cli/aec_bridge.py`.)*
 2. **Blocking I/O in a Python daemon defeats `SIGTERM`** — the
    GIL + bytecode-boundary signal-handler model means a blocked C
    call cannot be interrupted by Python's `signal.signal` handler.

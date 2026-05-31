@@ -367,8 +367,10 @@ def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:
 
 
 class BridgeStalled(RuntimeError):
-    """Mic capture has produced no frames for the configured
-    threshold (JASPER_AEC_STALL_RESTART_SEC, default 5s).
+    """Mic capture has stalled — either no frames for the configured
+    continuous threshold (JASPER_AEC_STALL_RESTART_SEC, default 5s) or a
+    sustained sub-usable frame *rate* (the slow-drip case caught by
+    `_MicStarvationWatchdog`; JASPER_AEC_STALL_DRIP_MAX_WINDOWS).
 
     Raised by `_aec_loop` to bail with a non-zero exit code so
     systemd's `Restart=on-failure` revives us with a fresh
@@ -1148,6 +1150,77 @@ def _usb_mic_thread(usb_q: Queue) -> None:
         _shutdown.wait()
 
 
+class _MicStarvationWatchdog:
+    """Catches a *slow-drip* mic stall that the continuous-empty detector
+    (`consecutive_empty_sec >= stall_restart_sec`) structurally misses.
+
+    That detector resets to zero on a single mic frame, so an intermittent
+    trickle — a frame every few seconds — keeps it oscillating below the
+    threshold forever, even though the mic is effectively dead (well under
+    1 usable frame/s vs ~12.5/s healthy). Observed 2026-05-31: the bridge ran
+    ~13 h in that state with NRestarts=0 until a manual restart.
+
+    This watchdog measures the mic frame *rate* over rolling windows and
+    flags a restart only after `max_starved_windows` *consecutive* low-rate
+    windows. Conservative by design: a brief blip (one low window) clears
+    when the next window recovers, a healthy or merely-degraded mic never
+    trips, and `max_starved_windows <= 0` disables it entirely.
+
+    No threads and no blocking I/O — it emits one diagnostic warning per
+    starved window (the buildup log) — so it still unit-tests directly: feed
+    it `record_frame()` on each consumed frame and `stalled(now)` once per
+    loop iteration with a monotonic clock.
+    """
+
+    def __init__(
+        self,
+        *,
+        window_sec: float = 10.0,
+        min_frames_per_window: int = 10,   # < ~1 frame/s averaged over window
+        max_starved_windows: int = 3,      # ~30 s sustained before restart
+    ) -> None:
+        self._window_sec = window_sec
+        self._min_frames = min_frames_per_window
+        self._max_starved = max_starved_windows
+        self._window_start: float | None = None
+        self._frames = 0
+        self._starved_windows = 0
+
+    def record_frame(self) -> None:
+        """Call once per mic frame actually consumed from the queue."""
+        self._frames += 1
+
+    def stalled(self, now: float) -> bool:
+        """Call every loop iteration with a monotonic timestamp. Returns
+        True once the mic frame rate has stayed below the floor for
+        `max_starved_windows` consecutive windows — i.e. time to exit
+        non-zero for a systemd restart."""
+        if self._max_starved <= 0:
+            return False
+        if self._window_start is None:
+            self._window_start = now
+            return False
+        if now - self._window_start < self._window_sec:
+            return False
+        # A full window elapsed — score it, then roll over.
+        if self._frames < self._min_frames:
+            self._starved_windows += 1
+            # Buildup logging — mirrors the continuous detector's "stall
+            # growing" warnings so a slow-drip restart is never a surprise in
+            # the journal: the operator watches the rate collapse first.
+            logger.warning(
+                "mic starvation: %d frames in last ~%.0fs window (floor %d) "
+                "— %d/%d low-rate windows before bridge restart",
+                self._frames, self._window_sec, self._min_frames,
+                self._starved_windows, self._max_starved,
+            )
+        else:
+            self._starved_windows = 0
+        self._frames = 0
+        self._window_start = now
+        return self._starved_windows >= self._max_starved
+
+
 def _aec_loop(  # noqa: PLR0915
     ref_q: Queue, mic_q: Queue, engine: _Aec3Engine,
     heartbeat: Optional[Heartbeat] = None,
@@ -1203,6 +1276,15 @@ def _aec_loop(  # noqa: PLR0915
         float(os.environ.get("JASPER_AEC_STALL_RESTART_SEC", "5"))
     )
     consecutive_empty_sec = 0
+    # Additive slow-drip stall watchdog (see _MicStarvationWatchdog). The
+    # consecutive-empty check above resets on a single frame, so an
+    # intermittent trickle never trips it; this escalates a sustained low
+    # frame rate. JASPER_AEC_STALL_DRIP_MAX_WINDOWS=0 disables it.
+    drip_watchdog = _MicStarvationWatchdog(
+        max_starved_windows=int(
+            os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")
+        ),
+    )
     """Drain both queues frame-by-frame, run the selected AEC
     engine, write to Loopback. The two queues drift independently;
     we loosely sync by always pulling one mic frame and the
@@ -1598,9 +1680,22 @@ def _aec_loop(  # noqa: PLR0915
 
     try:
         while not _shutdown.is_set():
+            # Slow-drip stall watchdog (additive to the consecutive-empty
+            # check below): catches a mic delivering frames too slowly to be
+            # usable but often enough to keep consecutive_empty_sec below
+            # threshold. See _MicStarvationWatchdog.
+            if drip_watchdog.stalled(time.monotonic()):
+                raise BridgeStalled(
+                    "mic frame rate collapsed to a slow drip (sustained "
+                    "starvation across windows while occasional frames kept "
+                    "the consecutive-empty counter below threshold) — exiting "
+                    "non-zero so systemd Restart=on-failure revives a fresh "
+                    "InputStream"
+                )
             try:
                 mic_bytes = mic_q.get(timeout=1.0)
                 consecutive_empty_sec = 0
+                drip_watchdog.record_frame()
             except Empty:
                 consecutive_empty_sec += 1
                 # Log once at stall onset, then every 2 s so the journal

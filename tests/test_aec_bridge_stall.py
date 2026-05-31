@@ -742,3 +742,69 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     dtln_cls.assert_called_once()
     usb_dtln_engine.close.assert_called_once()
     usb_engine.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Slow-drip stall watchdog (_MicStarvationWatchdog) — the rate-based detector
+# that catches an intermittent trickle the consecutive-empty check misses.
+# Regression for the 2026-05-31 incident: the bridge ran ~13 h effectively
+# deaf (a frame every few seconds) without the continuous counter ever
+# reaching its threshold, so it never restarted.
+# ---------------------------------------------------------------------------
+
+
+def test_starvation_watchdog_flags_sustained_slow_drip(caplog):
+    """A mic delivering ~1 frame every 15 s (far below the per-window floor)
+    trips the watchdog after max_starved_windows windows — the failure mode
+    the consecutive-empty counter never catches, because each trickle resets
+    it. The buildup is logged before the restart (observability)."""
+    wd = aec_bridge._MicStarvationWatchdog(
+        window_sec=10.0, min_frames_per_window=10, max_starved_windows=3,
+    )
+    stalled_at = None
+    with caplog.at_level("WARNING"):
+        for step in range(500):          # 50 s in 0.1 s steps
+            now = step * 0.1
+            if step % 150 == 0:          # one frame every 15 s
+                wd.record_frame()
+            if wd.stalled(now):
+                stalled_at = now
+                break
+    assert stalled_at is not None, "watchdog never escalated on a slow drip"
+    # 3 starved windows of 10 s, scored at window boundaries.
+    assert 29.0 <= stalled_at <= 41.0
+    # The collapse is visible in the journal, not a silent restart.
+    assert any("mic starvation" in r.message for r in caplog.records)
+
+
+def test_starvation_watchdog_healthy_mic_never_trips():
+    """A full-rate mic (~12.5 frames/s) keeps every window well above the
+    floor — the watchdog must never escalate."""
+    wd = aec_bridge._MicStarvationWatchdog(
+        window_sec=10.0, min_frames_per_window=10, max_starved_windows=3,
+    )
+    for step in range(900):              # 72 s at ~12.5 frames/s
+        now = step * 0.08
+        wd.record_frame()
+        assert not wd.stalled(now)
+
+
+def test_starvation_watchdog_brief_blip_recovers():
+    """One starved window followed by recovery never reaches the consecutive
+    count — a brief ALSA stutter must not flap the daemon."""
+    wd = aec_bridge._MicStarvationWatchdog(
+        window_sec=10.0, min_frames_per_window=10, max_starved_windows=3,
+    )
+    for step in range(900):
+        now = step * 0.1
+        if now >= 10.0:                  # silent for the first window, then healthy
+            wd.record_frame()
+        assert not wd.stalled(now)
+
+
+def test_starvation_watchdog_disabled_when_max_windows_zero():
+    """max_starved_windows=0 is the off switch — never escalates, even with a
+    totally dead mic."""
+    wd = aec_bridge._MicStarvationWatchdog(max_starved_windows=0)
+    for step in range(1000):
+        assert not wd.stalled(step * 1.0)   # no frames ever, still never trips
