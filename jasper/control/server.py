@@ -1405,7 +1405,7 @@ async def _get_state(
             "spend_allowed": (voice_st or {}).get("spend_allowed"),
             "connection_paused": (voice_st or {}).get("connection_paused"),
             "mic_muted": (voice_st or {}).get("mic_muted"),
-            "tts_source_peak_dbfs": (voice_st or {}).get("tts_source_peak_dbfs"),
+            "tts_source_rms_dbfs": (voice_st or {}).get("tts_source_rms_dbfs"),
             # Runtime-armed wake-leg tokens from jasper-voice's
             # session_status. jasper-doctor's check_wake_legs cross-checks
             # this against the configured intent in aec_mode.env to surface

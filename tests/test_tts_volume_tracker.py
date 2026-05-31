@@ -81,12 +81,17 @@ def _tracker(
     silence_threshold_dbfs: float = -50.0,
     window_sec: float = 8.0,
     initial_anchor_dbfs: float = -120.0,
+    source_rms_dbfs: float | None = -3.0,
 ) -> TtsVolumeTracker:
     """Default initial anchor is -120 dBFS so the silence-fallback
     branch reverts to legacy `master + offset` behavior in tests
     that don't explicitly exercise the anchor path. Tests that DO
-    exercise the anchor path pass an explicit value."""
-    return TtsVolumeTracker(
+    exercise the anchor path pass an explicit value.
+
+    `source_rms_dbfs` primes the measured source loudness (default -3 dBFS
+    so the gain-formula tests have a fixed, known source); pass None for a
+    fresh tracker sitting on the seed (the source-measurement tests)."""
+    tracker = TtsVolumeTracker(
         cam, tts,
         offset_db=offset_db,
         music_headroom_db=headroom_db,
@@ -94,11 +99,15 @@ def _tracker(
         music_window_sec=window_sec,
         initial_anchor_dbfs=initial_anchor_dbfs,
     )
+    if source_rms_dbfs is not None:
+        tracker.note_source_chunk(_pcm_with_rms(source_rms_dbfs))
+    return tracker
 
 
-def _pcm_with_peak(peak_dbfs: float, n: int = 2400) -> bytes:
-    """A mono int16 PCM chunk whose peak sample sits at `peak_dbfs`."""
-    amp = int(round(32768 * 10 ** (peak_dbfs / 20.0)))
+def _pcm_with_rms(rms_dbfs: float, n: int = 2400) -> bytes:
+    """A mono int16 PCM chunk at a constant amplitude whose RMS (= peak,
+    for a constant signal) sits at `rms_dbfs`."""
+    amp = int(round(32768 * 10 ** (rms_dbfs / 20.0)))
     amp = max(1, min(32767, amp))
     return np.full(n, amp, dtype=np.int16).tobytes()
 
@@ -129,9 +138,9 @@ async def test_silence_at_master_zero():
 
 @pytest.mark.asyncio
 async def test_music_targets_rms_plus_headroom():
-    """Music playing: gain = windowed_rms + headroom - gemini_peak,
+    """Music playing: gain = windowed_rms + headroom - source_rms,
     capped at ceiling. With master=-5, music_rms=-30, headroom=12,
-    gemini_peak=-3:
+    source_rms=-3:
       target = -30 + 12 - (-3) = -15
       ceiling = -5 + -8 = -13
       result = min(-15, -13) = -15
@@ -149,7 +158,7 @@ async def test_loud_music_clamped_only_by_hearing_safety_cap():
     above MAX_TTS_GAIN_DB, only the hearing-safety cap binds —
     NOT the master+offset ceiling (that one's a silence-fallback
     backstop, not applicable while we're actively measuring music).
-      master=-5, music_rms=-10 (loud), headroom=12, tts_peak=-3
+      master=-5, music_rms=-10 (loud), headroom=12, source_rms=-3
       target = -10 + 12 - (-3) = 5  → way above MAX
       MAX_TTS_GAIN_DB = -6 in TtsPlayout
       result = -6   (NOT -13, the old ceiling-binds value)
@@ -190,7 +199,7 @@ async def test_loud_music_at_low_master_matches_music_not_master():
     New behavior: tracker matches measured music; only the hearing-
     safety MAX cap binds.
 
-      master=-25, music_rms=-15 (loud source), headroom=12, peak=-3
+      master=-25, music_rms=-15 (loud source), headroom=12, source_rms=-3
       target = -15 + 12 - (-3) = 0
       MAX_TTS_GAIN_DB = -6   (NOT the old ceiling at -33)
       result = -6.
@@ -321,7 +330,7 @@ async def test_target_quantized_to_1db():
 async def test_anchor_used_during_silence():
     """No music currently playing, but we have an anchor → use it.
     This is the iPhone-disconnect fix: anchor=-30, headroom=12,
-    gemini=-3 → target = -30 + 12 - (-3) = -15.
+    source_rms=-3 → target = -30 + 12 - (-3) = -15.
     master=-5, ceiling=-13. min(-15, -13) = -15."""
     cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-80.0, -80.0))
     tts = _tts()
@@ -438,7 +447,7 @@ async def test_regression_airplay_listening_level_70_does_not_clobber_tts():
       - provider OpenAI gpt-realtime-2 (active source: AirPlay)
       - listening_level 70%  →  main_volume = -15 dB
       - anchor_dbfs ≈ -26 dBFS (modern pop through CamillaDSP)
-      - headroom = 16 dB (env default), tts_peak = -3 dB, offset = 0
+      - headroom = 16 dB (scenario value), source RMS = -3 dB, offset = 0
 
     Under the old "ceiling = master+offset clamps everything" rule:
       target = -26 + 16 - (-3) = -7
@@ -458,7 +467,7 @@ async def test_regression_airplay_listening_level_70_does_not_clobber_tts():
     tracker = _tracker(
         cam, tts,
         offset_db=0.0,        # production default
-        headroom_db=16.0,     # production default
+        headroom_db=16.0,     # scenario value: target clears the ceiling
     )
     await tracker.apply_now()
     # Pre-fix: tts.gain_db would have been -15 (master ceiling clobber).
@@ -563,7 +572,7 @@ async def test_gain_compute_event_fires_on_user_perceptible_change(caplog):
     for fragment in (
         "branch=music",          # which decision path
         "windowed_rms=-26.0",    # input — what playback_rms reported
-        "source_peak_dbfs=-3.0", # measured source level (seed until measured)
+        "source_rms_dbfs=-3.0",  # measured source loudness (seed until measured)
         "anchor_dbfs=-26.0",     # anchor (just updated from windowed)
         "main_volume_db=-15.0",  # CamillaDSP master at the moment
         "offset_db=0.0",         # the deprecated knob's value
@@ -622,94 +631,92 @@ async def test_gain_compute_event_branch_label_matches_formula(
     )
 
 
-# --- measured per-provider source loudness (cross-provider volume) --------
+# --- measured per-provider source LOUDNESS / RMS (cross-provider volume) --
 
 @pytest.mark.asyncio
-async def test_source_peak_seeds_at_minus_3_until_measured():
-    """Before any audio is observed, the source estimate is the seed
-    (-3 dBFS, Gemini's level) so behaviour matches the historical
-    constant — the basis every other test in this file relies on."""
-    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-30.0, -30.0))
+async def test_source_rms_seeds_until_measured():
+    """Before any audio is observed, the source estimate is the RMS seed."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-48.0, -48.0))
     tts = _tts()
-    tracker = _tracker(cam, tts, offset_db=-8.0, headroom_db=12.0)
+    tracker = _tracker(
+        cam, tts, offset_db=-8.0, headroom_db=12.0, source_rms_dbfs=None,
+    )
     await tracker.apply_now()
-    assert tracker.source_peak_dbfs == -3.0
-    # target = -30 + 12 - (-3) = -15.
-    assert tts.gain_db == -15.0
+    assert tracker.source_rms_dbfs == TtsVolumeTracker.SOURCE_RMS_SEED_DBFS
+    # Music branch: target = -48 + 12 - (-20) = -16.
+    assert tts.gain_db == -16.0
 
 
 @pytest.mark.asyncio
 async def test_quiet_provider_is_boosted_to_match_music():
-    """The cross-provider bug: a provider quieter than the -3 seed (e.g.
-    OpenAI) must get MORE gain so its TTS lands at the same music+
-    headroom target as a louder provider."""
-    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-30.0, -30.0))
+    """A provider with quieter RMS gets MORE gain so its output RMS lands
+    at the same music+headroom target as a louder one."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-48.0, -48.0))
     tts = _tts()
-    tracker = _tracker(cam, tts, offset_db=-8.0, headroom_db=12.0)
-    for _ in range(60):
-        tracker.note_source_chunk(_pcm_with_peak(-9.0))
-    assert tracker.source_peak_dbfs == pytest.approx(-9.0, abs=0.3)
+    tracker = _tracker(
+        cam, tts, offset_db=-8.0, headroom_db=12.0, source_rms_dbfs=None,
+    )
+    for _ in range(40):
+        tracker.note_source_chunk(_pcm_with_rms(-24.0))
+    assert tracker.source_rms_dbfs == pytest.approx(-24.0, abs=0.3)
     await tracker.apply_now()
-    # Music branch: target = -30 + 12 - (-9) = -9, i.e. 6 dB louder than
-    # the seed's -15 — the quiet provider is normalized up to match.
-    assert tts.gain_db == -9.0
+    # target = -48 + 12 - (-24) = -12.
+    assert tts.gain_db == -12.0
 
 
 @pytest.mark.asyncio
-async def test_providers_reach_same_output_level_once_measured():
-    """The definition of the fix: after each provider's source loudness
-    is measured, the OUTPUT level (native source peak + applied gain) is
-    identical regardless of the provider's native loudness. Levels kept
-    at/above -12 dBFS so the hearing-safety MAX cap doesn't bind (below
-    that the cap intentionally limits boost — a safety floor, not a
-    normalization bug)."""
+async def test_providers_reach_same_output_rms_once_measured():
+    """The definition of the fix: after each provider's RMS is measured,
+    the OUTPUT RMS (source_rms + applied gain) is identical regardless of
+    native loudness — equal perceived loudness. Music kept quiet enough
+    that the -6 dB hearing-safety cap doesn't bind."""
     outputs = []
-    for src_peak in (-3.0, -9.0, -12.0):
-        cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-30.0, -30.0))
+    for src_rms in (-16.0, -22.0, -28.0):
+        cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-49.0, -49.0))
         tts = _tts()
-        tracker = _tracker(cam, tts, offset_db=-8.0, headroom_db=12.0)
-        for _ in range(80):
-            tracker.note_source_chunk(_pcm_with_peak(src_peak))
+        tracker = _tracker(
+            cam, tts, offset_db=-8.0, headroom_db=6.0, source_rms_dbfs=None,
+        )
+        for _ in range(40):
+            tracker.note_source_chunk(_pcm_with_rms(src_rms))
         await tracker.apply_now()
-        outputs.append(round(src_peak + tts.gain_db))
+        outputs.append(round(src_rms + tts.gain_db))
     assert len(set(outputs)) == 1, f"providers not equalized: {outputs}"
 
 
 def test_silent_chunks_do_not_move_source_estimate():
-    """Inter-word/sentence gaps (below the voiced floor) must not drag
-    the estimate down — that would over-boost the next turn."""
+    """Inter-word/sentence gaps (below the voiced floor) must not drag the
+    loudness estimate down — that would over-boost the next turn."""
     cam = _FakeCamilla()
     tts = _tts()
-    tracker = _tracker(cam, tts)
+    tracker = _tracker(cam, tts, source_rms_dbfs=None)
     for _ in range(20):
-        tracker.note_source_chunk(_pcm_with_peak(-60.0))  # below voiced floor
-    assert tracker.source_peak_dbfs == -3.0  # unchanged from seed
+        tracker.note_source_chunk(_pcm_with_rms(-60.0))  # below voiced floor
+    assert tracker.source_rms_dbfs == TtsVolumeTracker.SOURCE_RMS_SEED_DBFS
 
 
 def test_note_source_chunk_is_failsoft_on_garbage():
     """Measurement must never raise into the playback path."""
     cam = _FakeCamilla()
     tts = _tts()
-    tracker = _tracker(cam, tts)
+    tracker = _tracker(cam, tts, source_rms_dbfs=None)
     tracker.note_source_chunk(b"")      # empty
     tracker.note_source_chunk(b"\x01")  # 1 byte — not a clean int16 frame
-    assert tracker.source_peak_dbfs == -3.0
+    assert tracker.source_rms_dbfs == TtsVolumeTracker.SOURCE_RMS_SEED_DBFS
 
 
-def test_source_peak_tracks_true_peak_not_average():
-    """REGRESSION (2026-05-31, the deployed-and-too-loud report): real
-    speech alternates loud vowels and near-silent gaps, so the source
-    estimate must track the loud PEAK the gain formula needs — NOT an
-    average that lands ~6 dB below it and over-gains TTS. On the Pi,
-    Gemini's per-chunk peaks averaged -8.8 dBFS but truly peaked ~-3, so
-    the old EWMA made the voice ~6 dB louder than the music+headroom
-    target instead of equalizing it.
-    """
+def test_source_rms_is_loudness_not_peak():
+    """RMS measures LOUDNESS, not peak: with loud and quiet voiced chunks
+    the estimate is the POWER-mean (true RMS), dominated by the loud
+    chunks — not the peak (max) and not a naive dB-average. This is what
+    makes a compressed voice (Gemini) and a dynamic one (OpenAI) come out
+    equally loud rather than equal-peak (the 2026-05-31 too-loud report)."""
     cam = _FakeCamilla()
     tts = _tts()
-    tracker = _tracker(cam, tts)
-    # 1-in-8 chunks loud (-3 dBFS vowels), the rest quiet (-20 dBFS).
+    tracker = _tracker(cam, tts, source_rms_dbfs=None)
+    # Half loud (-12 dBFS RMS), half quiet (-30 dBFS RMS).
     for i in range(64):
-        tracker.note_source_chunk(_pcm_with_peak(-3.0 if i % 8 == 0 else -20.0))
-    # Tracks the loud peak (~-3), not the ~-17 dBFS average an EWMA gives.
-    assert tracker.source_peak_dbfs == pytest.approx(-3.0, abs=0.5)
+        tracker.note_source_chunk(_pcm_with_rms(-12.0 if i % 2 == 0 else -30.0))
+    # Power-mean: 10*log10((10^-1.2 + 10^-3.0)/2) ≈ -15 dBFS — NOT -12
+    # (the peak/max) and NOT -21 (a naive dB-average).
+    assert tracker.source_rms_dbfs == pytest.approx(-15.0, abs=0.5)
