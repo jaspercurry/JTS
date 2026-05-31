@@ -513,6 +513,20 @@ def _aec_bridge_active() -> bool:
         return False
 
 
+def _kick_aec_reconciler() -> None:
+    """Apply a persisted AEC-mode/leg change through the reconciler.
+
+    Use `restart`, not `start`: the reconciler is a Type=oneshot unit.
+    A rapid toggle can write new intent while the previous reconcile is
+    still active; `systemctl start` would be a no-op in that state and
+    leave runtime env one click behind the UI.
+    """
+    subprocess.Popen(
+        ["systemctl", "restart", "--no-block",
+         "jasper-aec-reconcile.service"],
+    )
+
+
 def _fresh_jasper_env() -> dict[str, str]:
     """Fresh view of /etc/jasper/jasper.env.
 
@@ -576,6 +590,12 @@ def _mic_status(
     primary_device = _env_value(env, "JASPER_MIC_DEVICE", "Array")
     aec_device = _env_value(env, "JASPER_AEC_MIC_DEVICE", "Array")
     chip_primary = _env_value(env, "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", "chip_aec_150")
+    runtime_chip_enabled = _parse_env_bool(
+        _env_value(env, "JASPER_AEC_CHIP_AEC_ENABLED", "0"),
+        default=False,
+    )
+    runtime_chip_150 = _env_value(env, "JASPER_MIC_DEVICE_CHIP_AEC_150", "")
+    runtime_chip_210 = _env_value(env, "JASPER_MIC_DEVICE_CHIP_AEC_210", "")
     direct_mic_configured = bool(
         primary_device
         and not primary_device.startswith("udp:")
@@ -627,6 +647,14 @@ def _mic_status(
     chip_mode = bool(state["leg_chip_aec"])
     raw_on = bool(state["leg_raw"])
     dtln_on = bool(state["leg_dtln"])
+    chip_runtime_active = bool(
+        mode == "auto"
+        and bridge_active
+        and chip_available
+        and runtime_chip_enabled
+        and runtime_chip_150
+        and runtime_chip_210
+    )
     warnings: list[str] = []
 
     if mode != "auto":
@@ -634,8 +662,8 @@ def _mic_status(
         session_source = _mic_source_label(primary_device)
         wake_legs = ["Direct mic"]
     elif chip_mode:
-        processing_mode = "Chip-AEC"
-        if bridge_active:
+        processing_mode = "Chip-AEC" if chip_runtime_active else "Chip-AEC pending"
+        if chip_runtime_active:
             session_source = (
                 "Chip AEC 210 beam via :9876"
                 if chip_primary == "chip_aec_210"
@@ -657,6 +685,8 @@ def _mic_status(
         warnings.append("AEC bridge is not active yet.")
     if chip_mode and not chip_available:
         warnings.append("Chip-AEC needs the XVF3800 6-channel firmware.")
+    if chip_mode and chip_available and bridge_active and not chip_runtime_active:
+        warnings.append("Chip-AEC is selected but the reconciler has not applied it yet.")
     if not xvf_present and (mode == "auto" or chip_mode):
         warnings.append("XVF3800 mic is not detected.")
 
@@ -2247,7 +2277,9 @@ def _make_handler(
                 # direct). Called by the /wake/ page's AEC layer toggle
                 # (after a current-state read for idempotent set-state
                 # semantics). Non-blocking — the wizard polls /aec to
-                # see when the transition lands (~10-15 s).
+                # see when the transition lands (~10-15 s). The kick
+                # uses systemctl restart so rapid toggles cannot be
+                # swallowed while the oneshot reconciler is already active.
                 #
                 # Risk model: LAN-local + browser-origin guard, same
                 # as /system/restart/*. This is still not auth; it is
@@ -2265,13 +2297,10 @@ def _make_handler(
                     )
                     return
                 try:
-                    subprocess.Popen(
-                        ["systemctl", "start",
-                         "jasper-aec-reconcile.service"],
-                    )
+                    _kick_aec_reconciler()
                 except (OSError, subprocess.SubprocessError) as e:
                     self._send_json(
-                        {"error": f"reconciler start failed: {e}"},
+                        {"error": f"reconciler restart failed: {e}"},
                         status=502,
                     )
                     return
@@ -2329,13 +2358,10 @@ def _make_handler(
                     )
                     return
                 try:
-                    subprocess.Popen(
-                        ["systemctl", "start",
-                         "jasper-aec-reconcile.service"],
-                    )
+                    _kick_aec_reconciler()
                 except (OSError, subprocess.SubprocessError) as e:
                     self._send_json(
-                        {"error": f"reconciler start failed: {e}"},
+                        {"error": f"reconciler restart failed: {e}"},
                         status=502,
                     )
                     return
