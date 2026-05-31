@@ -16,8 +16,9 @@ variants, DFU flow, ALSA mixer invariants, ranked hypothesis ladder
 for raw-mic-silence symptoms, and diagnostic cookbook. This doc
 (HANDOFF-aec.md) explains the *engine* and the *why* (why software
 AEC is still production default, plus Option D — the chip-AEC variant
-that became a positive lab result on 2026-05-29 but is not yet
-productionized, see [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)).
+that became a positive lab result on 2026-05-29 and now exists as an
+opt-in production wake path under validation, see
+[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)).
 HANDOFF-xvf3800.md explains the *chip*.
 The `jasper/mics/xvf3800.py` profile module is the canonical
 source for chip-specific constants consumed at runtime.
@@ -45,11 +46,13 @@ is on the 6-channel firmware variant.** `install.sh` seeds
 `jasper-aec-reconcile.service`, and runs the reconciler once. The
 reconciler flips `JASPER_MIC_DEVICE` to `udp:9876` only when the
 configured AEC mic is actually present with 6-channel firmware, then
-enables / starts `jasper-aec-init` + `jasper-aec-bridge`. The chip's
-on-board AEC is not in the production audio path today. A 2026-05-29
-lab pass proved Option D can work with direct source fanout + fixed ASR
-beams, but that path still needs production integration before it can
-replace or supplement the software bridge.
+enables / starts `jasper-aec-init` + `jasper-aec-bridge`. The default
+path remains WebRTC AEC3. The chip's on-board AEC is available only
+through the opt-in chip-AEC wake leg: `JASPER_WAKE_LEG_CHIP_AEC=1`
+drives `JASPER_AEC_CHIP_AEC_ENABLED=1`, outputd's direct final-output
+fanout to the XVF USB-IN reference, the volatile 150°/210° ASR beam
+profile, and the bridge's `:9876` chip-beam repoint plus
+`:9887`/`:9888` scoring legs.
 
 As of the 2026-05-28 outputd mainline topology, `jasper-outputd` owns the
 physical DAC, but the AEC bridge still consumes the old content-only
@@ -1291,7 +1294,7 @@ Realistic bring-up sequence:
 |---|---|
 | Weekend prototype: route music to USB-in, measure, tune `SYS_DELAY`, verify convergence | 2–3 days |
 | Corpus pilot integration: outputd direct reference fanout, recorder-owned env lifecycle, volatile aec-init chip profile, explicit chip-AEC corpus legs | Landed 2026-05-29 |
-| Productionize: production policy/reconciler logic for chip-AEC mode vs current bridge mode, boot-time persistence choices, jasper-doctor `AEC_AECCONVERGED` checks if chip AEC becomes a production leg | 1–2 weeks |
+| Productionize: production policy/reconciler logic for chip-AEC mode vs current bridge mode, boot-time persistence choices, bridge `:9876` repoint, outputd reference producer, and basic on-device validation | Landed as opt-in branch 2026-05-31; telemetry/doctor convergence checks remain follow-up |
 | Risk: PLL loop bandwidth on the chip's USB Adaptive Mode could introduce timing jitter that pushes the AEC peak past tap 40 intermittently. If so, the fallback is making the host-side ALSA period smaller (already in the bring-up plan above). No CamillaDSP-side SRC bypass possible since USB-IN is 16 kHz only — see correction note above. | — |
 
 **Verdict for future scoping:** feasibility is confirmed in lab, and

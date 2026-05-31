@@ -65,6 +65,7 @@ def test_production_profile_restores_corpus_mutated_chip_state(monkeypatch) -> N
     _install_fake_xvf(monkeypatch, dev)
     _stub_amixer(monkeypatch)
     monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
+    monkeypatch.delenv("JASPER_AEC_CHIP_AEC_ENABLED", raising=False)
 
     assert aec_init.main() == 0
 
@@ -97,6 +98,27 @@ def test_corpus_profile_applies_and_verifies_expected_chip_routes(monkeypatch) -
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [233]
+    assert writes["AEC_ASROUTONOFF"] == [1]
+    assert writes["AEC_FIXEDBEAMSONOFF"] == [1]
+    assert writes["AEC_FIXEDBEAMSGATING"] == [1]
+    assert writes["AUDIO_MGR_OP_L"] == [7, 0]
+    assert writes["AUDIO_MGR_OP_R"] == [7, 1]
+    assert dev.dev.closed is True
+
+
+def test_production_chip_profile_uses_chip_flag_and_delay(monkeypatch) -> None:
+    dev = _FakeXvfDevice()
+    _install_fake_xvf(monkeypatch, dev)
+    _stub_amixer(monkeypatch)
+    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    monkeypatch.setenv("JASPER_AEC_CHIP_SYS_DELAY", "12")
+
+    assert aec_init.main() == 0
+
+    writes = _write_map(dev)
+    assert writes["SHF_BYPASS"] == [0]
+    assert writes["AUDIO_MGR_SYS_DELAY"] == [12]
     assert writes["AEC_ASROUTONOFF"] == [1]
     assert writes["AEC_FIXEDBEAMSONOFF"] == [1]
     assert writes["AEC_FIXEDBEAMSGATING"] == [1]

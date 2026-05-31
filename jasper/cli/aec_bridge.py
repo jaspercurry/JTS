@@ -1,19 +1,19 @@
 """Software AEC bridge — `jasper-aec-bridge` (Python).
 
-REPLACES the CamillaDSP-based aec-bridge. Production echo
-cancellation is software AEC3. The XVF3800's on-chip AEC remains
-off for the production wake/voice path, while the wake-corpus
-recorder has a separate experimental chip-AEC comparison profile
-that can temporarily route outputd's final speaker buffer into the
-chip USB-IN reference and capture chip 150/210 ASR beams as
-corpus-only legs.
+REPLACES the CamillaDSP-based aec-bridge. Default production echo
+cancellation is software AEC3. Opt-in chip-AEC production mode
+(`JASPER_AEC_CHIP_AEC_ENABLED=1`) routes outputd's final speaker
+buffer into the XVF3800 USB-IN reference, captures the chip's
+150°/210° ASR beams, forwards the selected primary beam on :9876,
+and emits both beams on :9887/:9888 for wake scoring. The wake-corpus
+recorder uses the same chip profile under its corpus-only flag so
+the labeled comparison data and production mode stay aligned.
 
-This bridge does the AEC in software, with chip-processed mic
-(channel 1 of the chip's 6-channel USB capture — the ASR beam
-with chip BF + NS + AGC + HPF applied, but with the chip's own
-AEC stage disabled via SHF_BYPASS=1 in jasper-aec-init) as
-near-end, and the host-side music chain as far-end. The engine
-is WebRTC AEC3 via the `jasper_aec3` pybind11 binding around
+In default mode this bridge does the AEC in software, with the
+recommended XVF capture channel as near-end and the host-side music
+chain as far-end. With `SHF_BYPASS=1` in jasper-aec-init, channels
+0/1 are raw-ish chip feeds rather than beamformed/NS/AGC outputs.
+The engine is WebRTC AEC3 via the `jasper_aec3` pybind11 binding around
 Trixie's `libwebrtc-audio-processing-dev` (v1.3-3 — which IS
 AEC3; the 1.x is package-API stability versioning, not algorithm
 version). AEC3 includes a frequency-domain residual echo
@@ -29,16 +29,16 @@ is channel 0/1 — see HANDOFF-xvf3800.md §3.
 Topology:
 
     pcm.jasper_capture (48k stereo, host clock)
-       or corpus-only outputd UDP final-speaker tap
+       or outputd UDP final-speaker tap in chip-AEC/corpus mode
        │  reference signal (what the speaker is being asked to play)
        ▼
     [downsample 48→16k, L+R summed to mono, HPF at 125 Hz]         16k mono ref
        │
        │      hw:Array,0 ch 1 (16k mono, chip clock)
-       │  production chip ASR beam: BF + NS + AGC + HPF, chip AEC disabled
+       │  default production mic: raw-ish channel 1, chip AEC disabled
        │       │
        ▼       ├──────────────────────────────────────────────────┐
-    WebRTC AEC3 (jasper_aec3 binding)                             │
+    WebRTC AEC3 (default) OR chip beam passthrough (chip mode)     │
        │  AEC'd mono mic                                          │  chip-direct mic (pre-AEC3)
        ▼                                                          ▼
     UDP 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876)      UDP 127.0.0.1:JASPER_AEC_UDP_PORT_RAW
@@ -153,12 +153,10 @@ REF_RATE = 48000  # what we ask plug for; plug resamples slave to this
 REF_CHANNELS = 2
 
 # Capture device for the mic. Chip's 6-ch firmware exposes
-# channels 0=Conference, 1=ASR (both go through BF + NS + AGC +
-# HPF; the chip's own AEC stage is disabled via SHF_BYPASS=1 in
-# jasper-aec-init), 2-5=raw mics 0-3 (no chip processing of any
-# kind). The mic profile pins MIC_CHANNEL_INDEX=1 (ASR beam) —
-# canonical XVF3800 voice-assistant choice per Seeed wiki and
-# every public reference design.
+# channels 0/1 are the chip's processed-output lanes when SHF_BYPASS=0
+# and raw-ish lanes when SHF_BYPASS=1 (the default production state);
+# channels 2-5 are raw mics 0-3 (no chip processing of any kind). The
+# mic profile pins MIC_CHANNEL_INDEX=1 for the default WebRTC AEC3 path.
 # Device names are PortAudio substring matches (sounddevice's
 # backend) — NOT ALSA pcm strings. PortAudio enumerates ALSA
 # cards by their card description, not by hw:CARD= syntax.
@@ -184,9 +182,9 @@ OUT_PORT = int(os.environ.get("JASPER_AEC_UDP_PORT", "9876"))
 OUT_RATE = 16000
 
 # Secondary UDP output: chip-direct mic stream, pre-AEC3 — exactly
-# the same near-end input AEC3 consumes (chip ch 1 = ASR beam with
-# chip BF + NS + AGC + HPF applied, chip AEC disabled via
-# SHF_BYPASS=1). Emitted on a separate port so jasper-voice's wake
+# the same near-end input AEC3 consumes in default production
+# (chip ch 1, raw-ish when SHF_BYPASS=1). Emitted on a separate port
+# so jasper-voice's wake
 # loop (PR 2 of the wake-telemetry series) can score wake-word
 # detection on BOTH the post-AEC stream (OUT_PORT) and the chip-
 # direct stream (OUT_PORT_RAW). Same 1280-sample / 16 kHz mono
@@ -417,6 +415,19 @@ def _env_bool(name: str, default: str) -> bool:
     return os.environ.get(name, default).strip().lower() in (
         "1", "true", "yes", "on",
     )
+
+
+def _chip_aec_primary_leg() -> str:
+    value = os.environ.get(
+        "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", "chip_aec_150",
+    ).strip()
+    if value in {"chip_aec_150", "chip_aec_210"}:
+        return value
+    logger.warning(
+        "event=chip_aec_primary_invalid value=%r fallback=chip_aec_150",
+        value,
+    )
+    return "chip_aec_150"
 
 
 def _cfg_value(
@@ -1044,9 +1055,11 @@ def _mic_thread(
     chip_aec_qs: Optional[dict[str, Queue]] = None,
 ) -> None:
     """Capture 16k 6ch from XVF chip (6-ch firmware), pluck
-    channel MIC_CHANNEL_INDEX (default 1 = ASR beam, chip
-    BF+NS+AGC+HPF applied, chip AEC disabled via SHF_BYPASS) and
-    push mono int16 frames into mic_q.
+    channel MIC_CHANNEL_INDEX (default 1 = the normal WebRTC-AEC3
+    near-end feed) and push mono int16 frames into mic_q. In default
+    production SHF_BYPASS=1 makes channels 0/1 raw-ish. In chip-AEC
+    mode SHF_BYPASS=0 and OP_L/R=[7,0]/[7,1] make channels 0/1 the
+    fixed 150°/210° ASR beams.
 
     If `raw0_q` is provided, ALSO extract channel 2 (raw mic 0, no
     chip DSP) and push it onto that queue. Used by the truly-raw
@@ -1222,10 +1235,12 @@ class _MicStarvationWatchdog:
 
 
 def _aec_loop(  # noqa: PLR0915
-    ref_q: Queue, mic_q: Queue, engine: _Aec3Engine,
+    ref_q: Queue, mic_q: Queue, engine: Optional[_Aec3Engine],
     heartbeat: Optional[Heartbeat] = None,
     raw0_q: Optional[Queue] = None,
     chip_aec_qs: Optional[dict[str, Queue]] = None,
+    production_chip_aec_enabled: bool = False,
+    chip_aec_primary_leg: str = "chip_aec_150",
     emit_ref: bool = False,
     usb_raw_q: Optional[Queue] = None,
     xvf_raw0_webrtc_enabled: bool = False,
@@ -1251,7 +1266,10 @@ def _aec_loop(  # noqa: PLR0915
     # chip's mic output is below OpenAI's server-VAD threshold for
     # most of a typical utterance, so the model only sees ~400 ms of
     # a 1.2 s phrase.
-    raw_agc_enabled = _env_bool("JASPER_AEC_RAW_AGC_ENABLED", "0")
+    raw_agc_enabled = (
+        _env_bool("JASPER_AEC_RAW_AGC_ENABLED", "0")
+        and not production_chip_aec_enabled
+    )
     raw_agc_target_dbfs = int(os.environ.get(
         "JASPER_AEC_RAW_AGC_TARGET_DBFS",
         os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"),
@@ -1308,6 +1326,8 @@ def _aec_loop(  # noqa: PLR0915
     import socket
     import time
     import wave
+    if production_chip_aec_enabled and not chip_aec_qs:
+        raise RuntimeError("chip-AEC mode requires chip_aec_qs")
     # UDP output: localhost, non-blocking sendto. Replaces the old
     # PortAudio RawOutputStream writing to hw:LoopbackAEC,0. `sendto`
     # never blocks on `lo` at our rate (~256 kbps), so the main
@@ -1458,7 +1478,7 @@ def _aec_loop(  # noqa: PLR0915
                 )
 
     aec3_sweep_paths: list[dict[str, object]] = []
-    if _env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
+    if (not production_chip_aec_enabled) and _env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
         if (
             AEC3_SWEEP_INPUT_SOURCE == AEC3_SWEEP_SOURCE_USB
             and usb_raw_q is None
@@ -1552,7 +1572,7 @@ def _aec_loop(  # noqa: PLR0915
     out_sock_dtln = None
     out_dest_dtln = None
     out_batch_dtln = bytearray()
-    if _env_bool("JASPER_AEC_DTLN_ENABLED", "0"):
+    if (not production_chip_aec_enabled) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0"):
         try:
             from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
             dtln_size = int(os.environ.get("JASPER_AEC_DTLN_SIZE", "256"))
@@ -1572,11 +1592,12 @@ def _aec_loop(  # noqa: PLR0915
                 "Continuing with AEC3 only.", e,
             )
 
-    output_parts = [
-        f"aec={OUT_HOST}:{OUT_PORT}",
-        f"raw={OUT_HOST}:{OUT_PORT_RAW}",
-        f"raw0={OUT_HOST}:{OUT_PORT_RAW0}",
-    ]
+    output_parts = [f"aec={OUT_HOST}:{OUT_PORT}"]
+    if production_chip_aec_enabled:
+        output_parts.append(f"aec_source={chip_aec_primary_leg}")
+    else:
+        output_parts.append(f"raw={OUT_HOST}:{OUT_PORT_RAW}")
+    output_parts.append(f"raw0={OUT_HOST}:{OUT_PORT_RAW0}")
     if dtln_engine is not None:
         output_parts.append(f"dtln={OUT_HOST}:{OUT_PORT_DTLN}")
     for leg, port in (
@@ -1784,17 +1805,18 @@ def _aec_loop(  # noqa: PLR0915
             # input below — engine.process still receives ungained
             # mic_bytes so AEC3's adaptive filter doesn't see a
             # moving level target).
-            raw_emit_bytes = (
-                raw_agc.process(mic_bytes) if raw_agc is not None
-                else mic_bytes
-            )
-            emit_packet(
-                sock=out_sock_raw,
-                dest=out_dest_raw,
-                batch=out_batch_raw,
-                pcm=raw_emit_bytes,
-                leg="off",
-            )
+            if not production_chip_aec_enabled:
+                raw_emit_bytes = (
+                    raw_agc.process(mic_bytes) if raw_agc is not None
+                    else mic_bytes
+                )
+                emit_packet(
+                    sock=out_sock_raw,
+                    dest=out_dest_raw,
+                    batch=out_batch_raw,
+                    pcm=raw_emit_bytes,
+                    leg="off",
+                )
 
             # Truly-raw mic 0 (chip channel 2 — no chip DSP) UDP
             # leg. Drained independently of mic_q so a backlog on
@@ -1861,12 +1883,14 @@ def _aec_loop(  # noqa: PLR0915
                                 leg="xvf_raw0_dtln",
                             )
 
+            chip_frames: dict[str, bytes] = {}
             if chip_aec_qs:
                 for leg, q in chip_aec_qs.items():
                     try:
                         chip_bytes = q.get_nowait()
                     except Empty:
                         continue
+                    chip_frames[leg] = chip_bytes
                     emit_packet(
                         sock=out_sock_chip_aec[leg],
                         dest=out_dest_chip_aec[leg],
@@ -1875,7 +1899,18 @@ def _aec_loop(  # noqa: PLR0915
                         leg=leg,
                     )
 
-            clean = engine.process(mic_bytes, ref_bytes)
+            if production_chip_aec_enabled:
+                clean = chip_frames.get(chip_aec_primary_leg, b"")
+                if not clean:
+                    logger.warning(
+                        "event=chip_aec_primary_missing leg=%s action=skip_frame",
+                        chip_aec_primary_leg,
+                    )
+                    continue
+            else:
+                if engine is None:
+                    raise RuntimeError("AEC3 engine missing outside chip-AEC mode")
+                clean = engine.process(mic_bytes, ref_bytes)
             # Save pre-gain output for the RMS metric — we want
             # "attenuation" to reflect what AEC actually accomplished,
             # not how much the post-gain stage amplified the residual.
@@ -2079,16 +2114,30 @@ def _aec_loop(  # noqa: PLR0915
                         100.0 * _out_clipped_samples / _out_total_samples
                         if _out_total_samples else 0.0
                     )
-                    logger.info(
-                        "rms over %.1fs: ref=%.0f mic=%.0f aec=%.0f → "
-                        "attenuation=%.1f dB (frames=%d ref_q=%d mic_q=%d "
-                        "ref_starve=%d ref_clip=%.2f%% out_clip=%.2f%%)",
-                        rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
-                        ref_rms, mic_rms, aec_rms, attn_db,
-                        frames_processed, ref_q.qsize(), mic_q.qsize(),
-                        _ref_starved_frames,
-                        ref_clip_pct, out_clip_pct,
-                    )
+                    if production_chip_aec_enabled:
+                        logger.info(
+                            "chip_aec rms over %.1fs: ref=%.0f near=%s:%.0f "
+                            "primary=%s:%.0f level_delta=%.1f dB "
+                            "(frames=%d ref_q=%d mic_q=%d ref_starve=%d "
+                            "ref_clip=%.2f%% out_clip=%.2f%%)",
+                            rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
+                            ref_rms, "chip_aec_210", mic_rms,
+                            chip_aec_primary_leg, aec_rms, attn_db,
+                            frames_processed, ref_q.qsize(), mic_q.qsize(),
+                            _ref_starved_frames,
+                            ref_clip_pct, out_clip_pct,
+                        )
+                    else:
+                        logger.info(
+                            "rms over %.1fs: ref=%.0f mic=%.0f aec=%.0f → "
+                            "attenuation=%.1f dB (frames=%d ref_q=%d mic_q=%d "
+                            "ref_starve=%d ref_clip=%.2f%% out_clip=%.2f%%)",
+                            rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
+                            ref_rms, mic_rms, aec_rms, attn_db,
+                            frames_processed, ref_q.qsize(), mic_q.qsize(),
+                            _ref_starved_frames,
+                            ref_clip_pct, out_clip_pct,
+                        )
                 last_log = now
                 rms_window_frames = 0
                 sum_mic_sq = sum_ref_sq = sum_aec_sq = 0.0
@@ -2160,29 +2209,39 @@ def main() -> int:
     corpus_chip_aec_enabled = _env_bool(
         "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
     )
+    production_chip_aec_enabled = _env_bool("JASPER_AEC_CHIP_AEC_ENABLED", "0")
+    chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled
+    chip_aec_primary_leg = _chip_aec_primary_leg()
     corpus_xvf_raw0_webrtc_enabled = _env_bool(
         "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED", "0",
     )
     corpus_xvf_raw0_dtln_enabled = _env_bool(
         "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED", "0",
     )
+    raw_out_detail = (
+        "disabled-chip-aec-mode"
+        if production_chip_aec_enabled else f"udp://{OUT_HOST}:{OUT_PORT_RAW}"
+    )
     logger.info(
         "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d "
-        "aec_out=udp://%s:%d raw_out=udp://%s:%d @%d "
+        "aec_out=udp://%s:%d raw_out=%s @%d "
         "corpus_ref=%s corpus_usb=%s corpus_usb_dtln=%s "
         "corpus_aec3_sweep=%s corpus_aec3_sweep_source=%s "
-        "corpus_chip_aec=%s corpus_xvf_raw0_webrtc=%s "
+        "corpus_chip_aec=%s production_chip_aec=%s "
+        "chip_aec_primary=%s corpus_xvf_raw0_webrtc=%s "
         "corpus_xvf_raw0_dtln=%s",
         REF_DEVICE if REF_SOURCE == "alsa" else f"udp:{OUTPUTD_REF_UDP_PORT}",
         REF_RATE, MIC_DEVICE, SAMPLE_RATE,
         MIC_CHANNELS, MIC_CHANNEL_INDEX,
-        OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW, OUT_RATE,
+        OUT_HOST, OUT_PORT, raw_out_detail, OUT_RATE,
         "on" if corpus_ref_enabled else "off",
         "on" if corpus_usb_enabled else "off",
         "on" if corpus_usb_dtln_enabled else "off",
         "on" if corpus_aec3_sweep_enabled else "off",
         AEC3_SWEEP_INPUT_SOURCE,
         "on" if corpus_chip_aec_enabled else "off",
+        "on" if production_chip_aec_enabled else "off",
+        chip_aec_primary_leg,
         "on" if corpus_xvf_raw0_webrtc_enabled else "off",
         "on" if corpus_xvf_raw0_dtln_enabled else "off",
     )
@@ -2193,6 +2252,20 @@ def main() -> int:
             REF_SOURCE,
         )
         return 1
+    if production_chip_aec_enabled:
+        if REF_SOURCE != "outputd_udp":
+            logger.error(
+                "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
+                "JASPER_AEC_REF_SOURCE=outputd_udp; got %r",
+                REF_SOURCE,
+            )
+            return 1
+        if not os.environ.get("JASPER_OUTPUTD_CHIP_REF_PCM", "").strip():
+            logger.error(
+                "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
+                "JASPER_OUTPUTD_CHIP_REF_PCM so outputd feeds XVF USB-IN",
+            )
+            return 1
     if corpus_usb_dtln_enabled and not corpus_usb_enabled:
         logger.warning(
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 is ignored unless "
@@ -2220,7 +2293,7 @@ def main() -> int:
             logger.error("%s", e)
             return 1
 
-    engine = _select_engine()
+    engine = None if production_chip_aec_enabled else _select_engine()
 
     # Signal handlers for clean shutdown
     def on_signal(signum, _frame):
@@ -2241,7 +2314,7 @@ def main() -> int:
             "chip_aec_150": Queue(maxsize=QUEUE_MAXSIZE),
             "chip_aec_210": Queue(maxsize=QUEUE_MAXSIZE),
         }
-        if corpus_chip_aec_enabled else None
+        if chip_aec_enabled else None
     )
     usb_q: Queue[bytes] | None = (
         Queue(maxsize=QUEUE_MAXSIZE) if corpus_usb_enabled else None
@@ -2285,6 +2358,8 @@ def main() -> int:
             heartbeat=heartbeat,
             raw0_q=raw0_q,
             chip_aec_qs=chip_aec_qs,
+            production_chip_aec_enabled=production_chip_aec_enabled,
+            chip_aec_primary_leg=chip_aec_primary_leg,
             emit_ref=corpus_ref_enabled,
             usb_raw_q=usb_q,
             xvf_raw0_webrtc_enabled=corpus_xvf_raw0_webrtc_enabled,
@@ -2300,7 +2375,8 @@ def main() -> int:
         return 1
     finally:
         heartbeat.stop()
-        engine.close()
+        if engine is not None:
+            engine.close()
         _bridge_stats.write_snapshot()
         ref_t.join(timeout=2)
         mic_t.join(timeout=2)

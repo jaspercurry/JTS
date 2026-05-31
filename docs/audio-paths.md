@@ -410,14 +410,16 @@ CamillaDSP processing. So:
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. Acceptable today; if it becomes a problem,
   move the dsnoop tap downstream of CamillaDSP.
-- Corpus-only exception: the wake-corpus chip-AEC comparison profile can
-  temporarily ask outputd to publish its final speaker buffer as both an
-  XVF USB-IN reference and an `outputd_udp` reference tap for
-  `jasper-aec-bridge`. The UDP tap stays at outputd's 48 kHz graph
-  rate; the XVF USB-IN side output is downsampled to the chip's 16 kHz
-  playback contract. That path is recorder-owned and removed when
-  corpus test mode exits; production AEC still uses the
-  `pcm.jasper_capture` reference above.
+- Chip-AEC exception: production chip-AEC mode and the wake-corpus
+  chip-AEC comparison profile can ask outputd to publish its final
+  speaker buffer as both an XVF USB-IN reference and an `outputd_udp`
+  reference tap for `jasper-aec-bridge`. The UDP tap stays at outputd's
+  48 kHz graph rate; the XVF USB-IN side output is downsampled to the
+  chip's 16 kHz playback contract. The production path is opt-in via
+  `JASPER_WAKE_LEG_CHIP_AEC=1` / `JASPER_AEC_CHIP_AEC_ENABLED=1`;
+  the recorder owns the same overlay during corpus chip-AEC comparison
+  sessions and removes its test env when corpus mode exits. Default
+  software AEC still uses the `pcm.jasper_capture` reference above.
 
 ## Related
 
@@ -431,4 +433,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-30 (source handoff guard, future-source checklist, source-capabilities plan link, outputd topology, TTS drain/flush boundary, and wake-corpus chip-AEC reference exception rechecked)
+Last verified: 2026-05-31 (source handoff guard, future-source checklist, source-capabilities plan link, outputd topology, TTS drain/flush boundary, and chip-AEC outputd reference exception rechecked)

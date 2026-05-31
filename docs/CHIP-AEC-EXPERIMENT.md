@@ -15,17 +15,41 @@ guardrail is now being lifted:** the `chip_aec_150` / `chip_aec_210`
 beams are being promoted from corpus-only capture to **opt-in,
 hardware-conditional, scored production wake legs** (see
 [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
-§2.4). Landed so far, all **default OFF**: the leg
-registry/config/telemetry (chip-AEC promotion P1) and the control
-surface — the reconciler `JASPER_WAKE_LEG_CHIP_AEC` boolean + single-chip
-mutual exclusion, `/aec` status + `available` flag, the `/wake/` toggle,
-install seed/migrate (P2 hardware-free). Still pending on-device
-validation: the production chip-AEC profile in `jasper-aec-init`, the
-bridge Option-A `:9876` repoint + `:9887`/`:9888` emit (P2
-hardware-coupled), and the deploy + on-device validation (P4). **Until
-those land and validate, the chip-AEC leg is wired but inert** — the
-current production wake path is still the WebRTC AEC3 bridge, and chip
-AEC is **not yet a functional `jasper-voice` wake input.**
+§2.4).
+
+**Execution plan for the production turn-up.** Land this in two bounded
+steps, with a Pi validation gate between them:
+
+1. **Production-safe repair first.** Restore the normal production mux to
+   `SHF_BYPASS=1` + `AUDIO_MGR_OP_L/R=[8,0]`, merge, deploy, and verify
+   live readback before touching chip-AEC mode. This prevents a prior
+   corpus/test overlay from leaving the production ASR channel silent.
+2. **Producer + chip mode second.** Make the existing `/wake/` chip-AEC
+   toggle actually drive the hardware-coupled producer path:
+   `jasper-aec-init` applies the read-back-verified chip-AEC profile when
+   `JASPER_AEC_CHIP_AEC_ENABLED=1`; the reconciler enables outputd's
+   direct final-output fanout to both the XVF USB-IN reference PCM and the
+   bridge's `outputd_udp` tap; and `jasper-aec-bridge` forwards the chosen
+   chip beam into `:9876` while also emitting `chip_aec_150` / `chip_aec_210`
+   on `:9887` / `:9888`.
+3. **Turn on only after deploy.** Enable `JASPER_WAKE_LEG_CHIP_AEC=1` via
+   the normal wake/AEC control path after the producer is deployed. The
+   mode remains default-OFF, 6-channel-firmware-gated, mutually exclusive
+   with raw/DTLN, and volatile on the chip side: never `SAVE_CONFIGURATION`
+   or `REBOOT`.
+4. **Validation gate.** Confirm outputd logs `event=outputd.chip_ref.opened`
+   and `event=outputd.reference_udp.enabled`, `aec-init` logs
+   `event=chip_profile_applied mode=chip_aec`, `aec-bridge` logs the chip
+   primary source on `:9876` plus `:9887`/`:9888`, and `/system` /
+   `jasper-doctor` see the armed runtime legs `on`, `chip_aec_150`, and
+   `chip_aec_210`.
+
+Landed so far, all **default OFF**: the leg registry/config/telemetry
+(chip-AEC promotion P1), the control surface — the reconciler
+`JASPER_WAKE_LEG_CHIP_AEC` boolean + single-chip mutual exclusion, `/aec`
+status + `available` flag, the `/wake/` toggle, install seed/migrate (P2
+hardware-free) — and the production mux repair in step 1. The remaining
+work in this branch is step 2 plus the deploy/validation in steps 3-4.
 
 The topology diagram below still records the original 2026-05-23
 dmix-era experiment shape, not the current 2026-05-26 fan-in /
@@ -113,7 +137,7 @@ infrastructure to change — these are values, not new code paths.
 
 | # | Tunable (what you measure) | Plug-in point | Shape | "Good" = |
 |---|---|---|---|---|
-| 1 | **Chip DSP profile** — `SHF_BYPASS`, the fixed beam azimuths (150°/210°), `AEC_ASROUTONOFF`, `AEC_AECEMPHASISONOFF`, `AEC_FAR_EXTGAIN`, `AUDIO_MGR_OP_L/R` | `jasper/cli/aec_init.py` production chip-AEC mode (pending on-device), gated by the reconciler's `JASPER_AEC_CHIP_AEC_ENABLED=1` | XVF register writes, **read-back-verified** (a failed write is a mode-transition failure, not a warning). Best-known values: the "Best lab configuration" block above. **Brick hazard: never `SAVE_CONFIGURATION` / `REBOOT`.** | the beam carries ASR-shaped speech with music cancelled (the 02-vs-03 ear test + low reference correlation) |
+| 1 | **Chip DSP profile** — `SHF_BYPASS`, the fixed beam azimuths (150°/210°), `AEC_ASROUTONOFF`, `AEC_AECEMPHASISONOFF`, `AEC_FAR_EXTGAIN`, `AUDIO_MGR_OP_L/R` | `jasper/cli/aec_init.py` production chip-AEC mode, gated by the reconciler's `JASPER_AEC_CHIP_AEC_ENABLED=1` | XVF register writes, **read-back-verified** (a failed write is a mode-transition failure, not a warning). Best-known values: the "Best lab configuration" block above. **Brick hazard: never `SAVE_CONFIGURATION` / `REBOOT`.** | the beam carries ASR-shaped speech with music cancelled (the 02-vs-03 ear test + low reference correlation) |
 | 2 | **Per-(leg, condition) wake-threshold offsets** | `jasper/wake_fusion.py` `WakeFuser(offsets={...})` (the Phase-1.3 seam — already wired into the OR-gate) | `{(leg_token, condition): float}` additive offset in [0,1] score units, e.g. `{("chip_aec_150","music"): +0.05}`. Absent pair ⇒ base threshold (today's behavior) | per-(leg, condition) FRR improves with no FA/h regression on a fresh labeled corpus window |
 | 3 | **Wake model for the beams** — does the active model (`jarvis_v2`) score the chip beam well, or does it need a beam-specific model? | the wake-model registry ([`jasper/wake_models.py`](../jasper/wake_models.py)) + `JASPER_WAKE_THRESHOLD` | a registered model + threshold (same mechanism as every other leg) | the chip-beam score distribution separates real wakes from noise at the chosen threshold (cf. the `raw0` warning in HANDOFF-mic-fusion §2.8 — an unconditioned stream can need its own model) |
 | 4 | **Per-leg cost** (RAM / CPU) | the `_LAYERS` row in [`jasper/web/wake_setup.py`](../jasper/web/wake_setup.py) + the AGENTS.md sub-toggle table | `<RAM> · <CPU>` label (currently the estimate `~10 MB · light`) | the displayed figure matches measured Pi-5 resident cost |
@@ -641,9 +665,9 @@ old feeder-path drift was a harness artifact; direct source fanout held
 about `~1 ppm` over 15 minutes; controlled direct A/B showed useful chip
 AEC reduction; ASR fixed gated `150°/210°` with `AEC_AECEMPHASISONOFF=2`
 was the best tested wake-shaped output, with `150°` the standout beam;
-the wake-corpus recorder now has a corpus-only chip-AEC comparison
-profile for collecting those legs intentionally; `jasper-aec-init`
-now read-back verifies entry and explicitly restores production chip
-routing on exit). This doc still preserves a dmix-era experiment
+the wake-corpus recorder and opt-in production wake mode now share a
+chip-AEC profile for collecting/scoring those legs intentionally;
+`jasper-aec-init` now read-back verifies entry and explicitly restores
+normal production chip routing on exit). This doc still preserves a dmix-era experiment
 snapshot in places; current production topology lives in
 `docs/audio-paths.md`.

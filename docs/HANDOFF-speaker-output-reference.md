@@ -118,11 +118,11 @@ Rechecked against the current tree on 2026-05-28:
   as the pre-outputd rollback config that writes to `jasper_out`.
 - `jasper/cli/aec_bridge.py` opens `jasper_ref`, downsamples the 48 kHz
   stereo content reference to 16 kHz mono, and tracks reference
-  starvation/queue drops. In the corpus-only chip-AEC profile it can
-  instead receive outputd's final-buffer UDP tap via
-  `JASPER_AEC_REF_SOURCE=outputd_udp`. The production AEC migration
-  should replace only the reference reader first; mic capture and UDP
-  mic output can stay.
+  starvation/queue drops. In opt-in chip-AEC mode and the wake-corpus
+  chip-AEC comparison profile it receives outputd's final-buffer UDP
+  tap via `JASPER_AEC_REF_SOURCE=outputd_udp` while outputd also feeds
+  the XVF USB-IN reference PCM. Default software AEC still uses
+  `jasper_ref`.
 - `rust/jasper-fanin` is already a good model for the Rust service
   style: blocking ALSA output as timing owner, non-blocking inputs,
   preallocated buffers, systemd watchdog, xrun counters, and small
@@ -651,4 +651,4 @@ datum: how much assistant audio was actually heard.
   segments, synchronous `FLUSH_SYNC` acknowledgements with
   `audio_played_ms`, and DAC-delay-based drained-frame estimation.
 
-Last verified: 2026-05-30
+Last verified: 2026-05-31
