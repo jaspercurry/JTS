@@ -485,7 +485,7 @@ def _prep_session_status(wl) -> None:
     # loudness (the per-provider TTS-loudness telemetry); the real daemon
     # always has a tracker, so give the __new__-built loop a stub one.
     wl._tts_volume_tracker = MagicMock()
-    wl._tts_volume_tracker.source_peak_dbfs = -20.0
+    wl._tts_volume_tracker.source_rms_dbfs = -20.0
 
 
 def test_session_status_reports_armed_legs_triple():

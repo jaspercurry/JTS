@@ -570,18 +570,20 @@ class Config:
             # coming out of the speaker, accounting for renderer-side
             # volume sliders (AirPlay sender, Spotify Connect, etc.)
             # that don't touch CamillaDSP's main_volume.
-            # Headroom is added on top of the windowed music RMS to
-            # produce the TTS effective output peak target. With music
-            # ducking ~25 dB during TTS, the comparison the user
-            # actually feels is "TTS during duck" vs "music when not
-            # ducked", so we want TTS *slightly louder* than the
-            # music level. 16 dB headroom + voice's ~9-12 dB crest
-            # factor ≈ TTS RMS lands ~4-7 dB above music RMS, which
-            # reads as "a touch louder than music" without being
-            # shouty. Higher → more dominance over music; clamped to
-            # -6 dB max gain by audio_io's hearing-safety cap.
+            # The tracker measures the TTS source RMS directly and targets
+            # `music_rms + headroom` in the RMS (loudness) domain, so
+            # headroom is "how many dB louder than the music should the
+            # voice's loudness be." 5 dB ≈ a touch above the music — clear
+            # voice over song without shouting. (This was 16 when the
+            # source was measured by PEAK; matching peaks left a compressed
+            # provider like Gemini perceptibly louder, so we switched to
+            # RMS and dropped the number to the loudness-domain equivalent
+            # ~4-7 dB the old design intended.) With music ducking ~25 dB
+            # during TTS the voice sits well above the ducked bed
+            # regardless. Higher → more dominance; clamped to -6 dB max
+            # gain by audio_io's hearing-safety cap.
             tts_music_headroom_db=_env_float(
-                "JASPER_TTS_MUSIC_HEADROOM_DB", 16.0,
+                "JASPER_TTS_MUSIC_HEADROOM_DB", 5.0,
             ),
             # Below this windowed RMS, the tracker treats the room as
             # silent and falls back to the legacy "main_volume +

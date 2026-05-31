@@ -75,12 +75,13 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == "/run/jasper-outputd/tts.sock"
     assert cfg.tts_output_rate == 48000
-    # Defaults updated 2026-05-10: offset 0 (was -8) lets the tracker
-    # drive level instead of stacking conservatism, and headroom 16
-    # (was 12) targets TTS slightly above music RMS so voice reads
-    # as "a touch louder than the song" given the duck.
+    # offset 0 (was -8) lets the tracker drive level instead of stacking
+    # conservatism. headroom 5 dB = "voice loudness a touch above the
+    # music RMS": the tracker measures the TTS source RMS directly, so
+    # this is a loudness-domain target (it was 16 in the peak-measured
+    # era; matching peaks left compressed voices like Gemini louder).
     assert cfg.tts_gain_db == 0.0
-    assert cfg.tts_music_headroom_db == 16.0
+    assert cfg.tts_music_headroom_db == 5.0
     assert cfg.tts_silence_threshold_dbfs == -50.0
     assert cfg.tts_music_window_sec == 8.0
     assert cfg.volume_state_path == "/var/lib/jasper/speaker_volume.json"
