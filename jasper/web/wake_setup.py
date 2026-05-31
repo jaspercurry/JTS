@@ -210,7 +210,10 @@ _LAYERS = (
         "as the wake layers. Mutually exclusive with the raw + DTLN "
         "layers — turning this on pauses them (the chip can't do both "
         "at once). Needs the 6-channel firmware.",
-        "~10 MB · 2 detectors",
+        # Two openWakeWord detectors (one per beam), no neural engine.
+        # Estimate pending on-device measurement; matches the format of
+        # the rows above (<RAM> · <CPU>).
+        "~10 MB · light",
         True,
     ),
 )

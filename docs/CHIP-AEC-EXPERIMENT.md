@@ -100,6 +100,36 @@ The chip-AEC beams are being promoted from corpus-only to opt-in,
 telemetry review of each beam's recall / false-accept contribution
 against a fresh corpus window (`scripts/analyze-three-leg.sh`).
 
+### Plug-in contract — what you measure off-box and where it lands
+
+The leg *infrastructure* (registry → config → reconciler → voice wiring →
+telemetry columns → `/wake/` toggle) is built and default-OFF. To make the
+chip beams actually *perform*, four tunables get measured by an off-box
+test harness and plugged into the slots below. Nothing here needs the leg
+infrastructure to change — these are values, not new code paths.
+
+| # | Tunable (what you measure) | Plug-in point | Shape | "Good" = |
+|---|---|---|---|---|
+| 1 | **Chip DSP profile** — `SHF_BYPASS`, the fixed beam azimuths (150°/210°), `AEC_ASROUTONOFF`, `AEC_AECEMPHASISONOFF`, `AEC_FAR_EXTGAIN`, `AUDIO_MGR_OP_L/R` | `jasper/cli/aec_init.py` production chip-AEC mode (pending on-device), gated by the reconciler's `JASPER_AEC_CHIP_AEC_ENABLED=1` | XVF register writes, **read-back-verified** (a failed write is a mode-transition failure, not a warning). Best-known values: the "Best lab configuration" block above. **Brick hazard: never `SAVE_CONFIGURATION` / `REBOOT`.** | the beam carries ASR-shaped speech with music cancelled (the 02-vs-03 ear test + low reference correlation) |
+| 2 | **Per-(leg, condition) wake-threshold offsets** | `jasper/wake_fusion.py` `WakeFuser(offsets={...})` (the Phase-1.3 seam — already wired into the OR-gate) | `{(leg_token, condition): float}` additive offset in [0,1] score units, e.g. `{("chip_aec_150","music"): +0.05}`. Absent pair ⇒ base threshold (today's behavior) | per-(leg, condition) FRR improves with no FA/h regression on a fresh labeled corpus window |
+| 3 | **Wake model for the beams** — does the active model (`jarvis_v2`) score the chip beam well, or does it need a beam-specific model? | the wake-model registry ([`jasper/wake_models.py`](../jasper/wake_models.py)) + `JASPER_WAKE_THRESHOLD` | a registered model + threshold (same mechanism as every other leg) | the chip-beam score distribution separates real wakes from noise at the chosen threshold (cf. the `raw0` warning in HANDOFF-mic-fusion §2.8 — an unconditioned stream can need its own model) |
+| 4 | **Per-leg cost** (RAM / CPU) | the `_LAYERS` row in [`jasper/web/wake_setup.py`](../jasper/web/wake_setup.py) + the AGENTS.md sub-toggle table | `<RAM> · <CPU>` label (currently the estimate `~10 MB · light`) | the displayed figure matches measured Pi-5 resident cost |
+
+**Frozen — do NOT change while tuning** (the historical corpus + analysis
+tooling key off these): the leg tokens `chip_aec_150` / `chip_aec_210`,
+their UDP ports `9887` / `9888`, the additive `wake_events` score columns,
+and the `fire_chip_aec_{150,210}` `trigger_kind`s. New telemetry is
+additive only.
+
+Two **separate** workstreams own the *review* of those plugged-in values
+(not the leg infrastructure, and intentionally out of scope here): per-leg
+chip WAV capture (no `audio_chip_aec_*` columns yet — see `attach_audio` /
+`_finalize_event_audio`) and the `scripts/_analyze_three_leg.py` per-leg
+breakdown (its `LEGS` / `SCORE_COLS` / `AUDIO_COLS` / `canonical_order` are
+still the 3-leg set). Land those alongside the on-device PR when you're
+ready to run the telemetry review; the `fired_legs` CSV + the chip score
+columns already record the data.
+
 > ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
 > reconciler toggle" says *"Architecture is fixed; swap the engine,
 > not the topology"* and names "dual-USB-sink hardware-AEC retry"
