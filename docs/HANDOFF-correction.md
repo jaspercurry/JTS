@@ -287,6 +287,22 @@
   structured run issues. The run envelope states the human-in-the-loop
   principle: preference tuning is subjective, JTS can propose safe
   options, and the listener decides what sounds better.
+- ✅ **Phase 2.20 — first advisor model-call adapter + sound audition
+  executor.** Implemented 2026-05-31. `jasper.calibration_agent.model_client`
+  adds an opt-in, stdlib OpenAI Responses adapter behind
+  `jasper-calibration-agent --call-advisor`. It sends only the redacted
+  advisor prompt package, requests structured JSON, sets `store: false`,
+  logs only provider/model/status metadata, and still treats local
+  `response.validate_advisor_response` as the safety gate. No model call
+  happens unless the operator explicitly passes `--call-advisor`, and
+  the model id remains explicit (`--advisor-model` or
+  `JASPER_CALIBRATION_ADVISOR_MODEL`). `jasper.calibration_agent.sound_actions`
+  wires validated `propose_preference_eq_audition` actions into the
+  existing `/sound/` audition backend only when `--audition-sound` is
+  passed. That path emits/loads `sound_audition.yml`, preserves room
+  PEQs, never persists a sound profile, never controls volume, and
+  returns a debug-safe action result with config basename rather than
+  raw paths.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -305,12 +321,14 @@ browser-audio metadata substrate, correction visualization surface,
 durable runtime-integrity bundle evidence, acoustic-quality evidence,
 agent-readiness packet, and bundle inspect/export tooling have landed.
 Replay-grade analysis artifacts, explicit evidence permissions, and
-FIR runtime inspection/staging have also landed. The next
-software/hardware boundary is acoustic browser smoke testing and then
-threshold tuning for the native SNR/repeatability evidence; generated
-or applied FIR should still wait until the measurement substrate can
-prove capture quality, runtime health, spatial stability, and
-headroom.
+FIR runtime inspection/staging have also landed. The advisor harness
+now has its first model-call adapter and reversible sound-audition
+executor, but generated/applied room correction remains deterministic
+and hardware-gated. The next software/hardware boundary is acoustic
+browser smoke testing and then threshold tuning for the native
+SNR/repeatability evidence; generated or applied FIR should still wait
+until the measurement substrate can prove capture quality, runtime
+health, spatial stability, and headroom.
 The rationale and source links live in
 [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
@@ -1292,6 +1310,7 @@ Current versions:
 | `jasper.correction.evidence` packet | `artifact_schema_version` | `2` | Read-only review envelope for humans and future LLMs; no side effects and no raw audio. v2 adds `capability_permissions` and `missing_evidence`. |
 | `jasper.calibration_agent.advisor_context` packet | `artifact_schema_version` | `1` | Redacted LLM-ready context envelope derived from the evidence packet. Excludes raw audio, absolute paths, raw serials, untrusted browser labels, and user-entered profile names; carries read-only-first bounded-action permissions/prohibitions. |
 | `jasper.calibration_agent.prompt` package | `artifact_schema_version` | `1` | Provider-neutral prompt package for a future model call. Contains system instructions, response contract, and redacted advisor context; no model call and no side effects. |
+| `jasper.calibration_agent.model_client` call | `artifact_schema_version` | `1` | Opt-in provider-call envelope for a candidate advisor response. Contains provider/model/status/usage and parsed advisor JSON only; no raw provider text, no secrets, and no DSP side effects. |
 | `jasper.calibration_agent.response` validation | `artifact_schema_version` | `1` | Deterministic validation envelope for future advisor JSON. Produces a safe action plan or rejects unsafe fields/actions; persistence remains user-confirmation-gated and model profile payloads are DSP-shape-only. |
 | `jasper.calibration_agent.actions` run | `artifact_schema_version` | `1` | Deterministic run envelope for a validated advisor plan. Presentation actions can complete immediately; audition/commit actions require caller-owned executors and keep subjective listener judgment explicit. |
 
@@ -1509,7 +1528,8 @@ Internal:
 
 ---
 
-Last verified: 2026-05-31 (Decision 1 / Decision 3: the 443 block now also
-serves `/assets/` statically so the migrated measurement UI's canonical
-CSS/JS aren't mixed-content-blocked — full rationale in
-HANDOFF-management-ui.md. Prior pass 2026-05-30.)
+Last verified: 2026-05-31 (Phase 2.20 advisor model-call adapter +
+reversible sound-audition executor documented; Decision 1 / Decision 3:
+the 443 block now also serves `/assets/` statically so the migrated
+measurement UI's canonical CSS/JS aren't mixed-content-blocked — full
+rationale in HANDOFF-management-ui.md. Prior pass 2026-05-30.)

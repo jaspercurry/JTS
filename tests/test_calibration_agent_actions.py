@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jasper.calibration_agent import actions, cli, response, tools
+from jasper.calibration_agent import actions, cli, model_client, response, tools
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
@@ -179,3 +179,44 @@ def test_cli_run_advisor_actions_is_side_effect_free(tmp_path: Path, capsys):
     assert out["kind"] == "jts_advisor_action_run"
     assert out["status"] == "pending_human"
     assert out["side_effects"] == []
+
+
+def test_cli_call_advisor_validates_model_output_without_sound_side_effect(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    sessions = tmp_path / "sessions"
+    write_golden_correction_bundle(sessions, "abc")
+
+    def fake_call_advisor(*_args, **_kwargs):
+        return {
+            "artifact_schema_version": model_client.MODEL_CALL_SCHEMA_VERSION,
+            "kind": model_client.MODEL_CALL_KIND,
+            "provider": "openai",
+            "model": "test-model",
+            "response_id": "resp_test",
+            "provider_status": "completed",
+            "advisor_response": _advisor_response_with_audition(),
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+            "side_effects": ["provider_api_call"],
+        }
+
+    monkeypatch.setattr(model_client, "call_advisor", fake_call_advisor)
+
+    rc = cli.main([
+        "abc",
+        "--sessions-dir",
+        str(sessions),
+        "--call-advisor",
+        "--advisor-model",
+        "test-model",
+    ])
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["kind"] == "jts_advisor_model_review"
+    assert out["model_call"]["response_id"] == "resp_test"
+    assert out["validation"]["accepted"] is True
+    assert out["action_run"]["status"] == "pending_human"
+    assert out["side_effects"] == ["provider_api_call"]

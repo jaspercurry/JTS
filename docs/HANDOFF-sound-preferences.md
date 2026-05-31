@@ -128,8 +128,15 @@ backend as a validated, non-persisting apply: it writes a separate
 `/sound/apply`, without persisting the profile. The redesigned UI no
 longer drives it — editing previews through the faster `/sound/live-draft`
 path and commits through durable apply — but it is intentionally retained
-as the validated-preview surface a future "propose, preview, then approve"
-AI helper can build on.
+as the validated-preview surface for "propose, preview, then approve"
+AI helper flows. As of 2026-05-31,
+`jasper.calibration_agent.sound_actions` can opt into that exact backend
+for validated advisor `propose_preference_eq_audition` actions. The CLI
+flag is `jasper-calibration-agent --call-advisor --audition-sound` (or
+`--run-advisor-actions <path> --audition-sound` for offline response
+fixtures). This remains reversible: no profile persistence, no volume
+authority, and the action result reports the generated config basename
+rather than exposing raw filesystem paths.
 
 ## Files
 
@@ -425,8 +432,10 @@ can be diagnosed without scraping journal logs.
 
 ## Future Work
 
-- AI helper that proposes bounded `SoundProfile` edits and asks the user
-  to approve before applying.
+- Browser/voice AI helper UI around the existing advisor harness: propose
+  bounded `SoundProfile` edits, audition them through `/sound/audition`,
+  compare against the listener's chosen baseline, then ask the user before
+  saving anything.
 - Optional profile export/import once we know what users want to share.
 - A clipping indicator (live on `/sound/`, backed by a `/state` field from
   CamillaDSP's clipped-sample counter, with doctor carrying the cumulative
@@ -435,4 +444,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-05-30
+Last verified: 2026-05-31

@@ -1,6 +1,6 @@
 # Management UI — redesign proposal + reference
 
-**Status:** Reference · created 2026-05-22 · refreshed 2026-05-29.
+**Status:** Reference · created 2026-05-22 · refreshed 2026-05-31.
 Phase 1 IA/visual reshape implemented on 2026-05-28 in
 `deploy/index.html`; the 2026-05-28 polish pass adopted the static reference
 style, local Figtree/Outfit font assets, and a quieter one-column settings
@@ -16,8 +16,11 @@ delivered as static ES modules under `deploy/assets/<page>/js/` (no inline
 dynamic `install.sh` asset copy) so the remaining server-rendered wizards can
 adopt the look without reinventing chrome; `/speaker/`
 ([`jasper/web/speaker_setup.py`](../jasper/web/speaker_setup.py)) is the
-reference migration. See "Restyle-in-place migration" below. Setup wizard,
-conditional prompts, and fuller row-state hydration remain future phases.
+reference migration. On 2026-05-31 the remaining 16 wizard surfaces were
+migrated on main (`b38d643`), and `/correction/` preflight plus HTTPS
+asset-serving fixes followed (`c7da1db`). See "Restyle-in-place migration"
+below. Setup wizard, conditional prompts, and fuller row-state hydration
+remain future phases.
 
 The first shared cross-page module is the confirm/alert dialog,
 [`deploy/assets/shared/js/dialog.js`](../deploy/assets/shared/js/dialog.js)
@@ -1346,16 +1349,17 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-05-31 (correction plain-HTTP preflight migrated to the
+Last verified: 2026-05-31 (all 16 remaining wizard surfaces now landed on the
+canonical design system; correction plain-HTTP preflight migrated to the
 canonical look; `/assets` static-asset routing mirrored into the HTTPS (443)
 server block to fix the correction UI's mixed-content asset blocking; the
 dead, unlinked `/integrations` page removed entirely — guards in
 `tests/test_landing_page_html.py`. Prior pass 2026-05-30: restyle-in-place
-foundation + `/speaker/` reference migration: `canonical_header` / `canonical_banner`
-helpers, `app.css` form/banner/toggle vocabulary, shared `http.js`, dynamic
-`install.sh` asset copy, archetype recipes — `tests/test_web_common.py`,
-`tests/test_web_speaker_setup.py`, and the design-system / wizard-convention /
-main-import guards. Prior pass 2026-05-28: Phase 1 landing-page
-implementation, local font asset serving, integrations page, nginx route map,
-`jasper/web/__main__.py`, `/system/` dashboard, live `http://jts.local/`, and
-2026-05-28 design/iOS research refresh)
+foundation + `/speaker/` reference migration: `canonical_header` /
+`canonical_banner` helpers, `app.css` form/banner/toggle vocabulary, shared
+`http.js`, dynamic `install.sh` asset copy, archetype recipes —
+`tests/test_web_common.py`, `tests/test_web_speaker_setup.py`, and the
+design-system / wizard-convention / main-import guards. Prior pass 2026-05-28:
+Phase 1 landing-page implementation, local font asset serving, integrations
+page, nginx route map, `jasper/web/__main__.py`, `/system/` dashboard, live
+`http://jts.local/`, and 2026-05-28 design/iOS research refresh)

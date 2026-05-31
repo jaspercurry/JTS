@@ -1,6 +1,6 @@
 # HANDOFF: LLM-driven calibration agent
 
-> **Status: research + early substrate (2026-05-29).** This is the
+> **Status: research + early substrate (2026-05-31).** This is the
 > design-space document for the guided calibration/tuning arc. Phase
 > 0a substrate has landed: calibrated mic registry/parser,
 > Dayton/miniDSP serial lookup, manual upload fallback, input-device
@@ -13,9 +13,10 @@
 > permissions and missing-evidence reporting, replay-grade
 > `analysis/` artifacts, FIR coefficient inspect/stage substrate,
 > `jasper-calibration-agent` intake / prompt-package / response-validation
-> CLI modes, and an on-demand
-> `/correction/` measurement-report surface. The LLM agent itself is
-> still not implemented.
+> CLI modes, an opt-in OpenAI Responses model-call adapter, a reversible
+> `/sound/` audition executor for validated advisor proposals, and an
+> on-demand `/correction/` measurement-report surface. The full
+> conversational LLM/tool loop is still not implemented.
 >
 > **What this proposes:** build toward a guided speaker-tuning system
 > on top of the existing `/correction/` wizard. The first layer is
@@ -918,6 +919,22 @@ Current distilled corpus files:
   decides what sounds better. Deterministic validation rejects raw
   audio, CamillaDSP YAML, FIR taps/coefficients, volume control,
   shell/command authority, unknown action types, and out-of-range EQ.
+- ✅ **First advisor model-call adapter + sound audition executor.**
+  Implemented 2026-05-31 as `jasper.calibration_agent.model_client`
+  and `jasper.calibration_agent.sound_actions`. The CLI can now run
+  `--call-advisor` to make an explicit OpenAI Responses API request
+  using the redacted advisor prompt package. The adapter uses stdlib
+  HTTP only, requests structured JSON, sets provider `store: false`,
+  redacts secrets from logs/output, and returns a candidate advisor
+  response that still must pass the local validator. The model id is
+  intentionally operator-supplied (`--advisor-model` or
+  `JASPER_CALIBRATION_ADVISOR_MODEL`) so the code does not bake in a
+  stale preference. Passing `--audition-sound` wires validated
+  `propose_preference_eq_audition` actions into the existing
+  `/sound/audition` backend. That is the first non-read-only side
+  effect, but it is reversible and bounded: no volume control, no raw
+  CamillaDSP YAML, no room-correction apply, no profile persistence,
+  and the listener remains the judge.
 - Extend the markdown corpus under `docs/calibration-agent/` as
   needed. The current prompt package uses the redacted advisor context
   plus corpus snippets; a later provider adapter can add fuller corpus
@@ -944,8 +961,10 @@ Current distilled corpus files:
 
 ### Phase B — Multi-provider + tool-call loop
 
-- Add OpenAI (Responses + tool use) and Gemini (function calling)
-  adapters.
+- Expand beyond the first OpenAI Responses single-call adapter into the
+  real multi-provider loop: OpenAI tool use, Gemini function calling,
+  and any future provider that can honor the same deterministic action
+  contract.
 - Implement `propose_alternative_peq` (simulate a filter set,
   return predicted curve) and `get_measurement_plot` (PNG render).
 - Provider picker in
@@ -1139,6 +1158,8 @@ Microphone calibration:
 - [miniDSP — UMIK-2 user manual](https://www.minidsp.com/images/documents/miniDSP%20UMIK-2-User%20Manual.pdf)
 
 LLM-agent prior art:
+- [OpenAI Responses API reference](https://platform.openai.com/docs/api-reference/responses)
+- [OpenAI Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs?api-mode=responses)
 - [LUMIR — LLM agent for IR spectroscopy](https://www.sciencedirect.com/science/article/abs/pii/S0003267025012516)
 - [IR-Agent — Expert-inspired LLM agents](https://arxiv.org/html/2508.16112v1)
 - [EIS + LLM (Battery Design, 2025)](https://www.batterydesign.net/how-well-can-an-llm-interpret-electrochemical-impedance-spectroscopy-eis-data/)
@@ -1157,4 +1178,4 @@ Codebase:
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-05-31

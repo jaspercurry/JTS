@@ -1,13 +1,13 @@
 # Handoff: canonical design-system migration (all wizards)
 
-> **Status: session artifact / cleanup checklist.** Snapshot from
-> 2026-05-31. Captures what a working session changed (all 16 remaining
-> web wizards migrated to the canonical design system), the issues hit
-> along the way, and the exact cleanup the operator still owns (AEC
-> conflict resolution, rebase onto main, commit/PR, on-Pi verification).
-> The work is **uncommitted** in worktree `gallant-cerf-a77c86` as of
-> this writing. Current operational truth for the design system itself
-> lives in [HANDOFF-management-ui.md](HANDOFF-management-ui.md).
+> **Status: historical.** Snapshot from 2026-05-31 when the
+> restyle-in-place migration was being handed off. Preserved for
+> primary-source archaeology — specific facts about uncommitted
+> worktrees, conflicts, branch state, and verification gaps have drifted.
+> The 16-wizard migration later landed on main as `b38d643` and the
+> correction preflight / HTTPS asset fixes landed as `c7da1db`. Current
+> operational truth for the design system lives in
+> [HANDOFF-management-ui.md](HANDOFF-management-ui.md).
 
 > **Follow-up (2026-05-31, separate session).** Two gaps this checklist left
 > open are now closed: (1) the plain-HTTP `/correction/` **preflight** — a

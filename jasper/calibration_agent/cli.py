@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import actions, prompt, response, tools
+from jasper.sound.profile import PROFILE_LIBRARY_PATH, PROFILE_PATH
+
+from . import actions, model_client, prompt, response, tools
 
 
 def _fmt_issue(issue: dict[str, Any]) -> str:
@@ -298,8 +300,45 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--sound-library-path",
+        type=Path,
+        help="optional sound_profiles.json path for --audition-sound",
+    )
+    parser.add_argument(
+        "--sound-config-dir",
+        type=Path,
+        help="optional CamillaDSP config directory for --audition-sound",
+    )
+    parser.add_argument(
         "--user-message",
-        help="optional user-facing prompt text for --advisor-prompt-json",
+        help="optional user-facing prompt text for advisor prompt/model modes",
+    )
+    parser.add_argument(
+        "--advisor-provider",
+        default=None,
+        help="advisor provider for --call-advisor (currently: openai)",
+    )
+    parser.add_argument(
+        "--advisor-model",
+        default=None,
+        help=(
+            "model id for --call-advisor; otherwise "
+            "JASPER_CALIBRATION_ADVISOR_MODEL"
+        ),
+    )
+    parser.add_argument(
+        "--advisor-timeout-sec",
+        type=float,
+        default=None,
+        help="HTTP timeout for --call-advisor",
+    )
+    parser.add_argument(
+        "--audition-sound",
+        action="store_true",
+        help=(
+            "wire validated preference-EQ audition actions into the existing "
+            "/sound/ audition backend; does not persist profiles"
+        ),
     )
     parser.add_argument(
         "--user-confirmed",
@@ -341,8 +380,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "validate a proposed advisor response JSON and run the "
-            "side-effect-free action runner; DSP executors are not wired "
-            "to this CLI"
+            "action runner; DSP executors are side-effect-free unless "
+            "--audition-sound is passed"
+        ),
+    )
+    output.add_argument(
+        "--call-advisor",
+        action="store_true",
+        help=(
+            "call the configured advisor model, validate the response, and "
+            "run the action runner; requires OPENAI_API_KEY for provider=openai"
         ),
     )
     return parser
@@ -400,8 +447,49 @@ def main(argv: list[str] | None = None) -> int:
             advisor_context=intake["advisor_context"],
             user_confirmed=args.user_confirmed,
         )
-        run = actions.run_validated_action_plan(validation)
+        run = actions.run_validated_action_plan(
+            validation,
+            audition_executor=_sound_audition_executor(args),
+        )
         print(json.dumps(run, indent=2, sort_keys=True))
+        if not validation["accepted"] or not run["accepted"]:
+            return 1
+    elif args.call_advisor:
+        package = prompt.build_advisor_prompt_package(
+            intake["advisor_context"],
+            user_message=args.user_message,
+        )
+        try:
+            model_call = model_client.call_advisor(
+                package,
+                provider=args.advisor_provider,
+                model=args.advisor_model,
+                timeout_sec=args.advisor_timeout_sec,
+            )
+        except model_client.AdvisorModelError as e:
+            print(f"jasper-calibration-agent: advisor model call failed: {e}", file=sys.stderr)
+            return 2
+        validation = response.validate_advisor_response(
+            model_call["advisor_response"],
+            advisor_context=intake["advisor_context"],
+            user_confirmed=args.user_confirmed,
+        )
+        run = actions.run_validated_action_plan(
+            validation,
+            audition_executor=_sound_audition_executor(args),
+        )
+        envelope = {
+            "artifact_schema_version": 1,
+            "kind": "jts_advisor_model_review",
+            "model_call": model_call,
+            "validation": validation,
+            "action_run": run,
+            "side_effects": [
+                *model_call.get("side_effects", []),
+                *run.get("side_effects", []),
+            ],
+        }
+        print(json.dumps(envelope, indent=2, sort_keys=True))
         if not validation["accepted"] or not run["accepted"]:
             return 1
     elif args.json:
@@ -409,6 +497,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(render_markdown(intake), end="")
     return 0
+
+
+def _sound_audition_executor(args: argparse.Namespace) -> actions.ActionExecutor | None:
+    if not args.audition_sound:
+        return None
+    from .sound_actions import build_sound_audition_executor
+
+    return build_sound_audition_executor(
+        profile_path=args.sound_profile_path or PROFILE_PATH,
+        library_path=args.sound_library_path or PROFILE_LIBRARY_PATH,
+        config_dir=args.sound_config_dir,
+    )
 
 
 if __name__ == "__main__":
