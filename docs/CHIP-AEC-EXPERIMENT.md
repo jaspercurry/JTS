@@ -625,6 +625,76 @@ against XMOS docs + `docs/HANDOFF-xvf3800.md`:
 
 ---
 
+## DAC clock-domain dependency — chip-AEC is an all-USB-clock-domain design
+
+> **Read this before swapping the speaker DAC.** The "no cross-clock
+> drift" result above (and the ~1 ppm direct-fanout figure) is
+> conditional on the *speaker* being a USB-SOF-disciplined device — the
+> Apple USB-C dongle. It is **not** a property of the source fanout; it
+> is a property of the topology being all-USB.
+
+Chip-AEC needs **three** clocks coherent, not two:
+
+1. the mic A/D,
+2. the chip USB-IN reference endpoint, and
+3. **the airborne echo** — i.e. the speaker's D/A conversion clock.
+
+The XVF3800 USB Adaptive Mode PLL co-clocks (1) and (2) to the Pi USB
+SOF by design. (3) is coherent only because the Apple dongle is an
+adaptive/synchronous UAC DAC whose D/A is also locked to the same Pi
+USB SOF. All three are one clock.
+
+`jasper-outputd` is built on this assumption and has **no drift
+compensation anywhere**:
+
+- its loop is paced by the blocking write to `outputd_dac` (the DAC
+  "owns timing" — `rust/jasper-outputd/src/alsa_backend.rs`);
+- it fans the *same* mixed period to the chip USB-IN via an **integer**
+  48 k → 16 k decimator (`ChipRefDownsampler` in `main.rs`, which
+  *asserts* exact divisibility and rejects fractional ratios);
+- it hands that to the `outputd-chip-ref` writer through a bounded
+  queue whose only overflow tool is **drop the period**
+  (`event=outputd.chip_ref.queue_full action=drop_period`) / recover
+  xruns.
+
+A lossy producer/consumer pair stays glitch-free long-term only if both
+ends run at one physical rate. They do — because every endpoint (chip
+mic, chip USB-IN reference, Apple DAC) rides the one Pi USB SOF.
+
+### Why a self-clocked I2S HAT DAC (e.g. HiFiBerry DAC8x) breaks it
+
+A HiFiBerry DAC8x — and any "Pro"/"HD"/"Studio" board with onboard
+oscillators — is an I2S clock **master**: the airborne echo would be
+clocked by the HAT's own crystal, an independent clock domain from the
+USB-SOF mic. That breaks chip-AEC at **two** points the code cannot
+absorb:
+
+1. **Echo vs mic drift.** Tens of ppm between the HAT crystal and the
+   USB-SOF mic walks the echo delay past the chip's fixed
+   `AUDIO_MGR_SYS_DELAY` + 192 ms tail (no resampler) → convergence
+   rots, `AEC_AECCONVERGED` drops.
+2. **outputd producer/consumer split.** With the HAT as `outputd_dac`,
+   the main loop is paced by the HAT crystal while the chip-ref writer
+   still writes the chip USB-IN at USB-SOF rate. The bounded queue then
+   steadily drops periods (HAT faster) or underruns (HAT slower), so
+   the reference handed to the chip no longer tracks the echo
+   sample-for-sample — corrupting cancellation independently of (1).
+
+**Software AEC3 (the production default) is unaffected.** Its reference
+is the digital `pcm.jasper_capture` tap, and WebRTC AEC3 is built for
+independent render/capture clocks. A DAC8x on AEC3 is a routing +
+delay/level re-tune job, not an architecture break.
+
+### How to confirm before trusting a new DAC for chip-AEC
+
+Wire the new DAC as `outputd_dac`, keep the chip USB-IN reference fanout
+on, play music, and measure ref→air→mic drift with the same
+direct-fanout harness that produced the ~1 ppm Apple-DAC figure. Watch
+`journalctl -u jasper-outputd | grep -E 'chip_ref.(queue_full|xrun|write_failed)'`.
+~1 ppm with a clean chip-ref log ⇒ salvageable; tens of ppm with steady
+drops ⇒ the break. See [HANDOFF-aec.md](HANDOFF-aec.md) "DAC
+clock-domain dependency."
+
 ## Source citations
 
 References are by section header / identifier, not line number, so
