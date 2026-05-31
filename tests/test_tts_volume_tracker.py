@@ -694,3 +694,22 @@ def test_note_source_chunk_is_failsoft_on_garbage():
     tracker.note_source_chunk(b"")      # empty
     tracker.note_source_chunk(b"\x01")  # 1 byte — not a clean int16 frame
     assert tracker.source_peak_dbfs == -3.0
+
+
+def test_source_peak_tracks_true_peak_not_average():
+    """REGRESSION (2026-05-31, the deployed-and-too-loud report): real
+    speech alternates loud vowels and near-silent gaps, so the source
+    estimate must track the loud PEAK the gain formula needs — NOT an
+    average that lands ~6 dB below it and over-gains TTS. On the Pi,
+    Gemini's per-chunk peaks averaged -8.8 dBFS but truly peaked ~-3, so
+    the old EWMA made the voice ~6 dB louder than the music+headroom
+    target instead of equalizing it.
+    """
+    cam = _FakeCamilla()
+    tts = _tts()
+    tracker = _tracker(cam, tts)
+    # 1-in-8 chunks loud (-3 dBFS vowels), the rest quiet (-20 dBFS).
+    for i in range(64):
+        tracker.note_source_chunk(_pcm_with_peak(-3.0 if i % 8 == 0 else -20.0))
+    # Tracks the loud peak (~-3), not the ~-17 dBFS average an EWMA gives.
+    assert tracker.source_peak_dbfs == pytest.approx(-3.0, abs=0.5)

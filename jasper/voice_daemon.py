@@ -506,25 +506,26 @@ class TtsVolumeTracker:
 
     POLL_INTERVAL_SEC = 0.25
     # Cold-start seed for the per-provider source-loudness estimate
-    # (dBFS peak). Gemini's TTS output peaks ~-3 dBFS, so this seed is
-    # correct for Gemini and a safe, slightly-conservative start for
-    # quieter providers (OpenAI, Grok) until the live EWMA below
-    # converges — which it does within the first turn of audio. The bug
-    # this replaces: a *static* -3 assumed every provider was equally
-    # loud, so a quieter provider's TTS came out below the music+headroom
-    # target. We now MEASURE the source (note_source_chunk) instead of
-    # guessing it — the same "measure, don't guess" rule this class
-    # already applies to the music signal.
+    # (dBFS peak), used until note_source_chunk() has observed real audio.
+    # Gemini's TTS output peaks ~-3 dBFS, so this is a sane start; the
+    # measured window below corrects it within the first turn. The bug
+    # this whole mechanism replaces: a *static* -3 assumed every provider
+    # was equally loud, so a quieter provider's TTS came out below the
+    # music+headroom target. We MEASURE the source instead — the same
+    # "measure, don't guess" rule this class already applies to music.
     SOURCE_PEAK_SEED_DBFS = -3.0
-    # EWMA smoothing for the source-loudness estimate. ~0.2 converges
-    # ~90% within ~10 voiced chunks (≈1 s of speech) yet absorbs a single
-    # loud transient. Source loudness is constant per (provider, model,
-    # voice) and jasper-voice restarts on a provider switch, so this is
-    # "learn a constant once", not a fast control loop.
-    _SOURCE_PEAK_EWMA_ALPHA = 0.2
+    # Source loudness is the WINDOWED MAX of recent per-chunk peaks, not
+    # an average. Real speech alternates loud vowels and near-silent gaps;
+    # the gain formula needs the true utterance peak (what the old -3
+    # constant represented). Averaging per-chunk peaks lands ~6 dB BELOW
+    # that and over-gains TTS — the "voice got louder, not consistent"
+    # regression this replaces. Count-based (not wall-clock) so the
+    # estimate survives the silent gaps between turns; ~256 voiced chunks
+    # is several seconds of speech — enough to span an utterance while a
+    # stale loud transient still ages out.
+    _SOURCE_PEAK_WINDOW = 256
     # Only learn from voiced chunks. Inter-word/sentence gaps are near
-    # silence; folding them in would drag the estimate down and over-
-    # boost TTS. Anything below this peak is treated as a gap.
+    # silence and aren't part of the peak; anything below this is a gap.
     _SOURCE_PEAK_VOICED_FLOOR_DBFS = -45.0
 
     def __init__(
@@ -563,11 +564,11 @@ class TtsVolumeTracker:
         # first-boot. Updated continuously while music plays. Never
         # expires — the Pi doesn't move, the room context is stable.
         self._anchor_dbfs: float = float(initial_anchor_dbfs)
-        # Live per-provider source-loudness estimate (dBFS peak), seeded
-        # until note_source_chunk() has observed real audio. Persists
-        # across turns for the process lifetime; a provider switch
-        # restarts jasper-voice, which re-seeds it.
-        self._source_peak_dbfs: float = self.SOURCE_PEAK_SEED_DBFS
+        # Live per-provider source-loudness estimate: the windowed max of
+        # recent voiced-chunk peaks (dBFS), seeded until note_source_chunk()
+        # has observed real audio. Persists across turns for the process
+        # lifetime; a provider switch restarts jasper-voice, re-seeding it.
+        self._source_peaks: deque[float] = deque(maxlen=self._SOURCE_PEAK_WINDOW)
 
     def pause(self) -> None:
         self._paused = True
@@ -583,15 +584,18 @@ class TtsVolumeTracker:
 
     @property
     def source_peak_dbfs(self) -> float:
-        """Current estimate of the active provider's TTS source loudness
-        (dBFS peak) — measured, not assumed. The gain formula uses this
-        so every provider's TTS lands at the same level relative to music
-        regardless of its native output level."""
-        return self._source_peak_dbfs
+        """Current estimate of the active provider's TTS source loudness:
+        the windowed MAX of measured per-chunk peaks (the true utterance
+        peak), or the seed until audio has been observed. The gain formula
+        uses this so every provider's TTS lands at the same level relative
+        to music regardless of its native output level."""
+        if not self._source_peaks:
+            return self.SOURCE_PEAK_SEED_DBFS
+        return max(self._source_peaks)
 
     def note_source_chunk(self, pcm: bytes) -> None:
-        """Fold one provider TTS chunk's loudness into the source-peak
-        EWMA. Called for every assistant chunk as it is dequeued for
+        """Record one provider TTS chunk's peak into the source-loudness
+        window. Called for every assistant chunk as it is dequeued for
         playback (see _play_responses), independent of pause state —
         measurement never stops, only gain *recompute* pauses during a
         turn, so a turn's audio refines the estimate the next turn uses.
@@ -599,8 +603,7 @@ class TtsVolumeTracker:
         peak = _pcm_peak_dbfs(pcm)
         if peak is None or peak < self._SOURCE_PEAK_VOICED_FLOOR_DBFS:
             return
-        a = self._SOURCE_PEAK_EWMA_ALPHA
-        self._source_peak_dbfs = a * peak + (1.0 - a) * self._source_peak_dbfs
+        self._source_peaks.append(peak)
 
     def _record_rms(self, rms_dbfs: float) -> float:
         """Append latest RMS reading and return windowed peak."""
@@ -675,7 +678,7 @@ class TtsVolumeTracker:
         all clamping stages — enough to reconstruct any gain choice
         from logs alone, without correlating across the three separate
         log lines that used to be required."""
-        source_peak = self._source_peak_dbfs
+        source_peak = self.source_peak_dbfs
         target = self._compute_gain(vol_db, windowed_rms, source_peak)
         old_gain = self._tts.gain_db
         self._tts.set_gain_db(target)
