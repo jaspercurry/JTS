@@ -366,6 +366,78 @@ def test_aec_full_status_chip_available_tracks_firmware(
     assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
 
 
+def test_aec_full_status_chip_aec_pending_when_runtime_env_not_applied(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    """The status card must not present intent as applied runtime truth.
+
+    Rapid toggles can briefly leave aec_mode.env saying chip-AEC while the
+    reconciler-owned /etc env still has software-AEC active. Surface that as
+    pending so the dashboard matches what the mic LEDs/bridge are doing.
+    """
+    aec_mode_file.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
+    )
+    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
+    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+            "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
+            "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
+        },
+    )
+
+    status = server._aec_full_status()
+
+    assert status["legs"]["chip_aec"]["configured"] is True
+    assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
+    assert "not applied" in " ".join(status["microphone"]["warnings"])
+
+
+def test_aec_full_status_chip_aec_applied_requires_runtime_env(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    aec_mode_file.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
+    )
+    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
+    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
+            "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
+        },
+    )
+
+    status = server._aec_full_status()
+
+    assert status["microphone"]["processing_mode"] == "Chip-AEC"
+    assert status["microphone"]["session_source"] == "Chip AEC 150 beam via :9876"
+    assert status["microphone"]["warnings"] == []
+
+
 def test_aec_full_status_survives_firmware_probe_error(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
