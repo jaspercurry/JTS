@@ -22,6 +22,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10,
     simple_bands: [], headroom_trim_max_db: 12
   };
+  var DEFAULT_SAVED_ID = 'stock:flat';
   var FLAT = function() {
     return {enabled: true, curve_id: 'flat',
             simple_eq: zeroSimple(), parametric_bands: [],
@@ -49,6 +50,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var curvesById = {};
   var dspWriteEpoch = 'none';
   var applying = false;
+  var liveSourceSeq = 0, liveSourcePending = false, liveSourceOptions = {};
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
@@ -145,6 +147,20 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   function userEntries() { return library.filter(function(e) { return e.kind === 'custom'; }); }
   function presetEntries() { return library.filter(function(e) { return e.kind === 'stock'; }); }
+  function fallbackSavedId() {
+    if (entryById(DEFAULT_SAVED_ID)) return DEFAULT_SAVED_ID;
+    return library.length ? library[0].id : null;
+  }
+  function selectedSavedEntry() {
+    var entry = entryById(selectedId);
+    if (entry) return entry;
+    selectedId = fallbackSavedId();
+    return selectedId ? entryById(selectedId) : null;
+  }
+  function selectedSavedProfile() {
+    var entry = selectedSavedEntry();
+    return entry ? withIdentity(normalizeProfile(entry.profile), entry.id, entry.name) : null;
+  }
   function findIdFor(profile) {
     profile = normalizeProfile(profile);
     if (profile.profile_id && entryById(profile.profile_id)) return profile.profile_id;
@@ -174,7 +190,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   function liveProfile() {
     if (view === 'off') return null;
     if (view === 'saved') {
-      var entry = entryById(selectedId);
+      var entry = selectedSavedEntry();
       return entry ? normalizeProfile(entry.profile) : null;
     }
     return draft;
@@ -182,7 +198,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   function liveLabel() {
     if (view === 'off') return 'Bypass';
     if (view === 'saved') {
-      var entry = entryById(selectedId);
+      var entry = selectedSavedEntry();
       return entry ? entry.name : 'No profile selected';
     }
     if (editing.kind === 'new') return 'New profile' + (draftModified() ? ' · edited' : '');
@@ -280,16 +296,17 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   function drawBandMarkers() {
     if (view !== 'draft' || mode !== 'peq') return '';
+    var expandedBand = expandedPeqBandIndex();
     var html = '';
     (draft.parametric_bands || []).forEach(function(b, i) {
       if (!b || b.enabled === false) return;
-      var sel = i === activeBand ? ' selected' : '';
+      var sel = i === expandedBand ? ' selected' : '';
       var cx = gx(clamp(b.freq_hz, 20, 20000)), cy = gy(clamp(b.gain_db, MINDB, MAXDB));
-      if ((b.type || 'Peaking') === 'Peaking') {
+      if ((b.type || 'Peaking') === 'Peaking' && i === expandedBand) {
         var q = Math.max(Number(b.q || 1), 0.2);
         var lo = gx(clamp(b.freq_hz / Math.pow(2, 1 / q), 20, 20000));
         var hi = gx(clamp(b.freq_hz * Math.pow(2, 1 / q), 20, 20000));
-        html += '<rect class="band-width' + sel + '" x="' + Math.min(lo, hi).toFixed(1) +
+        html += '<rect class="band-width" x="' + Math.min(lo, hi).toFixed(1) +
                 '" y="' + padT + '" width="' + Math.abs(hi - lo).toFixed(1) +
                 '" height="' + (H - padB - padT) + '"></rect>';
       }
@@ -299,6 +316,10 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
               '" r="' + (sel ? 4.5 : 3.5) + '"></circle>';
     });
     return html;
+  }
+  function expandedPeqBandIndex() {
+    if (view !== 'draft' || mode !== 'peq' || allCollapsed || activeBand < 0) return -1;
+    return activeBand;
   }
   function renderGraph(payload, enabled) {
     var svg = el('plot');
@@ -319,12 +340,11 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var comp = payload.components || {};
     if (enabled) {
       html += drawArea(payload.preview || []);
-      html += drawPath(comp.curve || [], 'component');
-      html += drawPath(comp.simple || [], 'component');
-      (comp.advanced || []).forEach(function(item) {
-        html += drawPath(item.preview || [],
-          (view === 'draft' && mode === 'peq' && item.index === activeBand) ? 'component selected' : 'component');
+      var expandedBand = expandedPeqBandIndex();
+      var bandComponent = (comp.advanced || []).find(function(item) {
+        return item.index === expandedBand;
       });
+      if (bandComponent) html += drawPath(bandComponent.preview || [], 'component selected');
     }
     var curvePts = enabled
       ? (payload.preview || [])
@@ -353,6 +373,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     ['off', 'saved', 'draft'].forEach(function(v) {
       var btn = el('tab-' + v);
       btn.setAttribute('aria-pressed', v === view ? 'true' : 'false');
+      btn.classList.toggle('is-live', v === view);
     });
   }
   function render() {
@@ -403,6 +424,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     return n === 0 ? 'Flat' : n + ' band' + (n === 1 ? '' : 's');
   }
   function renderSaved() {
+    selectedSavedEntry();
     var users = userEntries(), presets = presetEntries();
     var userSection = '<section><div class="section-header">' +
       '<h2 class="eyebrow">Your profiles</h2>' +
@@ -616,7 +638,6 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     }
   }
   function scheduleLiveDraft(immediate) {
-    if (applying) return;
     liveSeq += 1; livePending = true;
     window.clearTimeout(liveTimer);
     liveTimer = window.setTimeout(runLiveDraft, immediate ? 0 : 180);
@@ -648,18 +669,42 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   // applies (Off, Saved-select) pass none and stay silent on success — the
   // active tab + "Now playing" label already convey state. Errors always
   // surface (no silent failure).
-  async function applyProfile(profile, okMsg) {
+  function requestLiveSource(options) {
+    liveSourceSeq += 1;
+    liveSourcePending = true;
+    liveSourceOptions = options || {};
+    return reconcileLiveSource();
+  }
+  async function reconcileLiveSource() {
+    if (!liveSourcePending || applying) return;
+    var options = liveSourceOptions || {};
+    liveSourcePending = false;
+    liveSourceOptions = {};
+    var seq = liveSourceSeq;
+    if (view === 'off') {
+      return applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}), options.okMsg, seq);
+    }
+    if (view === 'saved') {
+      return applySavedSelection(options.okMsg, seq);
+    }
+    scheduleLiveDraft(options.immediate === false ? false : true);
+  }
+  async function applyProfile(profile, okMsg, sourceSeq) {
+    sourceSeq = sourceSeq || liveSourceSeq;
     applying = true; cancelLiveDrafts();
-    if (okMsg) status('Applying…');
+    if (okMsg && sourceSeq === liveSourceSeq) status('Applying…');
     try {
       var resp = await fetch('./apply', {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(profile)});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'apply failed');
       ingestState(payload);
-      status(okMsg || '');
+      if (sourceSeq === liveSourceSeq) status(okMsg || '');
     } catch (e) {
-      status('Could not apply: ' + e.message, true);
-    } finally { applying = false; render(); }
+      if (sourceSeq === liveSourceSeq) status('Could not apply: ' + e.message, true);
+    } finally {
+      applying = false; render();
+      if (liveSourcePending) reconcileLiveSource();
+    }
   }
   async function profileMutate(path, body) {
     applying = true;
@@ -672,7 +717,10 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     } catch (e) {
       status('Could not update profiles: ' + e.message, true);
       return null;
-    } finally { applying = false; }
+    } finally {
+      applying = false;
+      if (liveSourcePending) reconcileLiveSource();
+    }
   }
 
   // Global sound settings (match-loudness, headroom). Optimistic: the controls
@@ -712,21 +760,24 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     // Off and Saved are durable: clicking Off applies a bypass; tapping a
     // saved profile applies it (see selectSaved). Draft is a live, non-
     // persistent preview until the footer Save commits it.
-    if (v === 'off') {
-      applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}));
-    } else if (v === 'draft') {
-      scheduleLiveDraft(true);
+    requestLiveSource({immediate: true});
+  }
+  function applySavedSelection(okMsg, sourceSeq) {
+    var profile = selectedSavedProfile();
+    if (!profile) {
+      status('No saved profiles available.', true);
+      return;
     }
+    return applyProfile(profile, okMsg, sourceSeq);
   }
   function selectSaved(id) {
     selectedId = id;
-    var entry = entryById(id);
     render();
-    if (entry) applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name));
+    requestLiveSource({immediate: true});
   }
   function newDraft() {
     draft = FLAT(); editing = {kind: 'new'}; mode = 'simple'; activeBand = 0; naming = false;
-    view = 'draft'; status(''); render(); scheduleLiveDraft(true);
+    view = 'draft'; status(''); render(); requestLiveSource({immediate: true});
   }
   function editEntry(id) {
     var entry = entryById(id);
@@ -735,10 +786,10 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     editing = {kind: entry.kind === 'custom' ? 'user' : 'preset', id: entry.id, name: entry.name};
     mode = draft.parametric_bands.length ? 'peq' : 'simple';
     activeBand = 0; naming = false; view = 'draft';
-    status('Editing ' + entry.name + '.'); render(); scheduleLiveDraft(true);
+    status('Editing ' + entry.name + '.'); render(); requestLiveSource({immediate: true});
   }
   // Body re-render + optimistic graph (via schedulePreview) + live audio.
-  function onDraftChanged(immediate) { renderDraft(); schedulePreview(); scheduleLiveDraft(immediate); }
+  function onDraftChanged(immediate) { renderDraft(); schedulePreview(); requestLiveSource({immediate: immediate}); }
   function refreshActiveCount() {
     var e = el('active-count');
     if (!e) return;
@@ -773,7 +824,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var act = t.getAttribute('data-act');
     var id = t.getAttribute('data-id');
     var index = Number(t.getAttribute('data-index'));
-    if (act === 'browse-presets') { view = 'saved'; render(); }
+    if (act === 'browse-presets') { setView('saved'); }
     else if (act === 'new-draft') { newDraft(); }
     else if (act === 'select') { selectSaved(id); }
     else if (act === 'edit') { editEntry(id); }
@@ -809,7 +860,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       if (btn) btn.textContent = fmtDb(draft.simple_eq[field]);
       positionThumb(ev.target);
       refreshActiveCount();
-      schedulePreview(); scheduleLiveDraft(false);
+      schedulePreview(); requestLiveSource({immediate: false});
     } else if (range) {
       var row = ev.target.closest('.band-row');
       var bi = Number(row.getAttribute('data-index'));
@@ -822,7 +873,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       var ro = row.querySelector('[data-readout="' + range + '"]');
       if (ro) ro.textContent = range === 'freq' ? fmtFreq(band.freq_hz) : (range === 'gain' ? fmtDb(band.gain_db) + ' dB' : fmtQ(band.q));
       positionThumb(ev.target);
-      schedulePreview(); scheduleLiveDraft(false);
+      schedulePreview(); requestLiveSource({immediate: false});
     }
   });
   el('view-body').addEventListener('input', function(ev) {
@@ -916,8 +967,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     if (payload && payload.profile_entry) {
       var entry = payload.profile_entry;
       library = payload.profile_library || library;
-      await applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name), 'Saved ' + entry.name + '.');
-      selectedId = entry.id; view = 'saved'; render();
+      selectedId = entry.id; view = 'saved';
+      await requestLiveSource({okMsg: 'Saved ' + entry.name + '.', immediate: true});
+      render();
     } else { render(); }
   }
   async function overwrite() {
@@ -925,8 +977,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var payload = await profileMutate('./profiles/save', {id: editing.id, name: editing.name, profile: draft});
     if (payload && payload.profile_entry) {
       var entry = payload.profile_entry;
-      await applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name), 'Updated ' + entry.name + '.');
-      selectedId = entry.id; view = 'saved'; render();
+      selectedId = entry.id; view = 'saved';
+      await requestLiveSource({okMsg: 'Updated ' + entry.name + '.', immediate: true});
+      render();
     }
   }
   async function deleteEntry(id) {
@@ -935,9 +988,14 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     if (!await jtsConfirm('Delete profile "' + entry.name + '"?', { danger: true })) return;
     var payload = await profileMutate('./profiles/delete', {id: id});
     if (payload) {
-      if (selectedId === id) selectedId = null;
       status('Deleted ' + entry.name + '.');
-      render();
+      if (selectedId === id) {
+        selectedId = fallbackSavedId();
+        render();
+        requestLiveSource({immediate: true});
+      } else {
+        render();
+      }
     }
   }
 
@@ -947,16 +1005,15 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       if (!resp.ok) throw new Error('state failed');
       var payload = await resp.json();
       ingestState(payload);
+      selectedId = findIdFor(applied);
       // Open on Off when no EQ is effectively applied — bypassed (enabled
       // false) OR flat (no active filters). Open on Saved with the applied
       // profile marked active otherwise. filter_count is the backend's
       // authoritative signal (len(build_sound_filters); 0 when disabled/flat).
       if (payload.filter_count > 0) {
         view = 'saved';
-        selectedId = findIdFor(applied);
       } else {
         view = 'off';
-        selectedId = null;
       }
       render();
     } catch (e) {

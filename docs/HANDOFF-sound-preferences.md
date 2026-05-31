@@ -19,12 +19,14 @@ It is deliberately separate from `/correction/`:
 
 The advanced parametric editor is intentionally touch-first: users
 adjust filter type, frequency, gain, and Q/width with controls while the
-graph visualizes the total curve and highlights the selected band.
+graph keeps the total response visually dominant. When a PEQ band row is
+expanded, the graph also shows that one band's individual response as a
+secondary overlay and, for peaking filters, its translucent width region;
+collapsed/non-selected bands remain passive markers only.
 Dragging points on the graph is deferred; the graph is a display
 surface, not the state authority. Advanced PEQ bands show a vertical
-frequency marker and, for peaking filters, a translucent width region
-even when gain is still 0 dB, so a newly-added band has a visible place
-on the response chart before it changes the sound.
+frequency marker even when gain is still 0 dB, so a newly-added band has
+a visible place on the response chart before it changes the sound.
 
 The Draft editor has two exclusive modes:
 
@@ -70,8 +72,10 @@ The top control is **Off / Saved / Draft**, and it is the live source:
 
 - **Off** — preference EQ disabled (bypass) while preserving room
   correction. Clicking Off durably applies a bypassed profile.
-- **Saved** — pick a Preset or one of Your profiles; tapping a row
-  durably applies it.
+- **Saved** — the saved-profile listening lane. Entering Saved
+  durably applies the currently selected saved profile; if there is no
+  remembered selection, it falls back to the Flat preset. Tapping a row
+  changes that remembered Saved selection and applies it immediately.
 - **Draft** — the editor. Dragging a control schedules a live Draft
   update: the browser updates the graph immediately, coalesces audio
   updates, and asks `/sound/live-draft` to upload a generated active
@@ -82,7 +86,14 @@ The top control is **Off / Saved / Draft**, and it is the live source:
   request is skipped.
 
 Off and Saved are **durable** (they go through `/sound/apply`); Draft is
-a live, non-persistent preview until the footer Save commits it. The
+a live, non-persistent preview until the footer Save commits it. The top
+tabs are therefore A/B/C listening controls, not passive navigation:
+Off bypasses, Saved resumes the saved reference profile, and Draft resumes
+the unsaved working profile. The browser treats those live-source changes
+as last-intent-wins: if a durable apply is already in flight, the newest
+Off/Saved/Draft intent is replayed after the apply returns, so quick A/B
+taps cannot leave the graph on one source while the speaker keeps playing
+another. The
 Draft footer adapts to origin: a new draft offers Save profile /
 Discard; editing a custom profile offers Overwrite / Save as new /
 Rename / Discard; editing a preset offers Save as new / Discard. Saving
@@ -135,7 +146,7 @@ AI helper can build on.
 
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
-  preview response, component overlays, the peak-boost `estimate_headroom_db`
+  preview response, expanded-band overlays, the peak-boost `estimate_headroom_db`
   metric, and `loudness_compensation_db` (the loudness-weighted gain the
   opt-in match-loudness setting applies).
 - `jasper/sound/settings.py` — import-cheap global output settings
@@ -435,4 +446,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-05-30
+Last verified: 2026-05-31
