@@ -417,9 +417,12 @@ run_systemctl() {
 reset_failed_units() {
     local unit
     for unit in "$@"; do
-        if "$SYSTEMCTL" is-failed --quiet "$unit"; then
-            run_systemctl reset-failed "$unit"
-        fi
+        # `reset-failed` is intentionally unconditional: besides clearing
+        # a failed state, systemd also clears the unit's start-rate
+        # counters. A controlled deploy/reconcile/toggle sequence can
+        # otherwise accumulate enough clean restarts to hit
+        # StartLimitAction=reboot even though no service is unhealthy.
+        run_systemctl reset-failed "$unit"
     done
 }
 

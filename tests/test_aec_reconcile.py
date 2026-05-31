@@ -96,6 +96,9 @@ def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> No
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
     commands = _systemctl_log(tmp_path)
     assert "enable jasper-aec-init.service jasper-aec-bridge.service" in commands
+    assert "reset-failed jasper-aec-init.service" in commands
+    assert "reset-failed jasper-aec-bridge.service" in commands
+    assert "is-failed --quiet" not in commands
     assert "start jasper-aec-init.service" in commands
     assert "restart jasper-aec-bridge.service" in commands
     assert "restart jasper-voice.service" in commands
