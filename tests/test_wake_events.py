@@ -234,14 +234,15 @@ def test_migration_columns_backfill_music_renderer_and_condition_class():
     assert "condition_class" in cols
 
 
-def test_migration_columns_include_chip_aec_score_columns():
-    """Chip-AEC promotion: the six per-beam score columns must be in
+def test_migration_columns_include_chip_aec_columns():
+    """Chip-AEC promotion: the per-beam score/audio columns must be in
     _MIGRATION_COLUMNS so an already-deployed Pi backfills them on upgrade
     (the same backfill gap music_renderer hit). CREATE TABLE carries the
-    same six for fresh DBs."""
+    same columns for fresh DBs."""
     from jasper.wake_events import _MIGRATION_COLUMNS
     cols = {name for name, _typ in _MIGRATION_COLUMNS}
     for c in (
+        "audio_chip_aec_150_path", "audio_chip_aec_210_path",
         "peak_score_chip_aec_150", "peak_score_chip_aec_210",
         "peak_offset_ms_chip_aec_150", "peak_offset_ms_chip_aec_210",
         "mic_rms_dbfs_chip_aec_150", "mic_rms_dbfs_chip_aec_210",
@@ -412,6 +413,43 @@ async def test_attach_audio_handles_missing_off_leg(
     assert row["audio_off_path"] is None
     assert (tmp_path / "evt-on-only.aec-on.wav").exists()
     assert not (tmp_path / "evt-on-only.aec-off.wav").exists()
+
+
+async def test_attach_audio_writes_chip_aec_beam_wavs(
+    store: WakeEventStore, tmp_path: Path,
+):
+    """Chip-AEC fusion review needs actual per-beam audio, not just
+    score columns. The historical primary `audio_on_path` remains
+    independent from the explicit chip beam paths."""
+    await store.begin_event(
+        event_id="evt-chip-audio", trigger_kind="fire_chip_aec_150",
+        peak_score_aec_on=0.1, peak_score_aec_off=None,
+        peak_score_chip_aec_150=0.9,
+        peak_score_chip_aec_210=0.4,
+        threshold=0.5, wake_model="jarvis_v2.onnx",
+        fired_legs="chip_aec_150",
+    )
+    await store.attach_audio(
+        event_id="evt-chip-audio",
+        audio_on=_pcm(0.5),
+        audio_off=None,
+        audio_chip_aec_150=_pcm(0.75),
+        audio_chip_aec_210=_pcm(1.0),
+    )
+    row = await store.get_event("evt-chip-audio")
+    assert row["audio_on_path"] == "evt-chip-audio.aec-on.wav"
+    assert row["audio_chip_aec_150_path"] == (
+        "evt-chip-audio.aec-chip-aec-150.wav"
+    )
+    assert row["audio_chip_aec_210_path"] == (
+        "evt-chip-audio.aec-chip-aec-210.wav"
+    )
+    assert _wav_duration(
+        tmp_path / "evt-chip-audio.aec-chip-aec-150.wav"
+    ) == pytest.approx(0.75, abs=0.01)
+    assert _wav_duration(
+        tmp_path / "evt-chip-audio.aec-chip-aec-210.wav"
+    ) == pytest.approx(1.0, abs=0.01)
 
 
 async def test_attach_audio_is_atomic_no_partial_wav_visible(
@@ -662,11 +700,11 @@ def test_schema_migration_adds_columns_to_existing_db(tmp_path: Path):
 
 
 def test_schema_migration_adds_chip_aec_columns_to_existing_db(tmp_path: Path):
-    """A DB created before the chip-AEC promotion (no chip score columns)
-    gets all six added via ALTER TABLE on open(), so an already-deployed Pi
-    backfills them on upgrade and can record chip-leg telemetry the moment
-    the household opts the chip leg in. A pre-existing row survives with
-    NULL chip columns."""
+    """A DB created before the chip-AEC promotion (no chip score/audio
+    columns) gets them added via ALTER TABLE on open(), so an already-
+    deployed Pi can record chip-leg telemetry the moment the household
+    opts the chip leg in. A pre-existing row survives with NULL chip
+    columns."""
     db_path = tmp_path / "wake-events.sqlite3"
     # Minimal pre-promotion core; the migration loop adds every
     # _MIGRATION_COLUMNS entry not already present (incl. the chip six).
@@ -696,6 +734,7 @@ def test_schema_migration_adds_chip_aec_columns_to_existing_db(tmp_path: Path):
     legacy_conn.close()
 
     chip_cols = [
+        "audio_chip_aec_150_path", "audio_chip_aec_210_path",
         "peak_score_chip_aec_150", "peak_score_chip_aec_210",
         "peak_offset_ms_chip_aec_150", "peak_offset_ms_chip_aec_210",
         "mic_rms_dbfs_chip_aec_150", "mic_rms_dbfs_chip_aec_210",
@@ -791,6 +830,42 @@ async def test_retention_marks_dtln_path_as_rolled_off(tmp_path: Path):
         # Second event keeps its real paths
         row2 = await s.get_event("evt-2")
         assert row2["audio_dtln_path"] == "evt-2.aec-dtln.wav"
+    finally:
+        s.close()
+
+
+async def test_retention_marks_chip_aec_paths_as_rolled_off(tmp_path: Path):
+    """Chip-AEC path columns participate in the same retention semantics
+    as on/off/dtln: when their WAVs are deleted, the DB path becomes the
+    rolled-off sentinel instead of pointing at a missing file."""
+    s = WakeEventStore(tmp_path, max_audio_bytes=100_000)
+    s.open()
+    try:
+        for i in (1, 2):
+            eid = f"evt-chip-{i}"
+            await s.begin_event(
+                event_id=eid, trigger_kind="fire_chip_aec_150",
+                peak_score_aec_on=0.0, peak_score_aec_off=None,
+                peak_score_chip_aec_150=0.9,
+                peak_score_chip_aec_210=0.3,
+                threshold=0.5, wake_model="jarvis_v2.onnx",
+                fired_legs="chip_aec_150",
+            )
+            await s.attach_audio(
+                event_id=eid,
+                audio_on=_pcm(1.0),
+                audio_off=None,
+                audio_chip_aec_150=_pcm(1.0),
+                audio_chip_aec_210=_pcm(1.0),
+            )
+        row = await s.get_event("evt-chip-1")
+        assert row["audio_on_path"] == ROLLED_OFF_SENTINEL
+        assert row["audio_chip_aec_150_path"] == ROLLED_OFF_SENTINEL
+        assert row["audio_chip_aec_210_path"] == ROLLED_OFF_SENTINEL
+        row2 = await s.get_event("evt-chip-2")
+        assert row2["audio_chip_aec_150_path"] == (
+            "evt-chip-2.aec-chip-aec-150.wav"
+        )
     finally:
         s.close()
 

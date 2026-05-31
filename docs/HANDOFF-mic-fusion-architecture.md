@@ -37,13 +37,13 @@
    profile describing *how to get a mono voice frame (and optionally a
    raw frame) out of the hardware*.
 
-2. **Make the leg set DATA, not hardcoded string literals.** Today
-   `on/off/dtln` is duplicated across ~10 surfaces. A single
+2. **Keep the leg set DATA, not hardcoded string literals.** The
    `jasper/wake_legs.py` registry (`LegSpec` frozen dataclass + `by_*`
-   lookups, modeled on the transit-provider pattern) makes "3 legs,"
-   "4 legs," and "replace AEC3 with chip-AEC" all *declarations*. This
-   is the keystone refactor; it is justified by present pain with the
-   one mic we have and does not require a second mic.
+   lookups, modeled on the transit-provider pattern) is now the shipped
+   source of truth for stable wake/corpus leg identity. "3 legs,"
+   "chip-AEC beams," and future "replace AEC3 with chip-AEC" policies
+   should stay declarations over that registry, not new scattered
+   string literals.
 
 3. **The fusion layer is leg-count-agnostic and stable across
    upgrades.** A `WakeFuser` consumes `{leg_name: score}` + a
@@ -61,13 +61,14 @@
    the Protocol only when a second concrete mic lands (the trigger the
    `mics/README.md` already names).
 
-5. **What's already shipped (don't re-pitch it):** the 3-leg detector
-   fleet, a lock-race+refractory OR-gate better than naive `any()`,
-   and 38-column per-leg telemetry with per-leg WAVs and
-   `analyze-three-leg.sh`. The real unbuilt delta is **per-leg +
-   per-condition thresholds** (today: one global threshold, zero
-   differential) and **multi-condition training augmentation** (the
-   single highest-ROI accuracy lever per the research review).
+5. **What's already shipped (don't re-pitch it):** the registry-backed
+   detector fleet (baseline AEC3/raw/DTLN plus opt-in chip beams), a
+   lock-race+refractory OR-gate better than naive `any()`, and per-leg
+   telemetry with per-leg WAVs and `analyze-three-leg.sh`. The real
+   unbuilt delta is **per-leg + per-condition thresholds** (today: one
+   global threshold, zero differential) and **multi-condition training
+   augmentation** (the single highest-ROI accuracy lever per the
+   research review).
 
 6. **Staging:** Phase 0 leg registry → Phase 1 per-condition thresholds
    **+ verifier (recall→verify)**
@@ -428,15 +429,16 @@ same supervisor/health-probe pattern as the shipped T5.2
 
 | Capability | Status | Where |
 |---|---|---|
-| 3-leg detector fleet (one OWW per leg, same model) | **Shipped** | `WakeLoop` in `voice_daemon.py` |
+| Registry-backed detector fleet (one OWW per configured production leg, same model) | **Shipped** | `WakeLoop` in `voice_daemon.py` + `jasper/wake_legs.py` |
 | Fusion = lock-race + shared 0.2 s refractory + `fired_legs` (better than naive OR) | **Shipped** | `_handle_wake_frame` |
 | Per-leg telemetry: peak score, peak offset, mic RMS, WAV-per-leg | **Shipped** | `wake_events.py` (`begin_event`, `_finalize_event_audio`) |
 | Music context (proxy) + bridge DSP config snapshot per event | **Shipped** | 38-col schema |
 | Corpus pull + audit + reset + `analyze-three-leg.sh` (incl. a threshold-tuning hint engine) | **Shipped** | `scripts/` |
+| Operator visibility for active mic/topology | **Shipped** | `/wake/` mic status card, backed by `jasper-control` `/aec` |
 | Mic-independent AEC reference | **Shipped** | `_ref_thread` / asoundrc |
 | Cheap-USB capture (resample + AEC3 + DTLN) | **Prototype** (corpus-only legs `usb_*`) | `_usb_mic_thread` |
 | Per-leg / per-condition thresholds | **Missing** (one global threshold) | — |
-| Data-driven leg set | **Missing** (hardcoded ×10 surfaces) | — |
+| Profile-derived leg policy | **Missing** (registry exists; mic profiles do not yet choose leg sets) | — |
 | Mic capability model / second profile | **Missing** | — |
 | Automatic condition class (quiet/music/noise) + SNR | **Missing** (manual `label` + a same-chain music proxy) | — |
 
@@ -773,11 +775,11 @@ CPU-gated.
   existing-but-empty `music_renderer` (from `RendererClient`) to
   disambiguate music from our own TTS bleed. These feed both Phase 1
   thresholds and Phase 4 features.
-- **N-leg columns:** when the 4th leg lands, add its columns via the
-  existing additive `_MIGRATION_COLUMNS` mechanism and extend
-  `_analyze_three_leg.py`'s `LEGS`/`SCORE_COLS`/`AUDIO_COLS` + the
-  canonical `fired_legs` order. The `fired_legs` CSV is already
-  leg-count-agnostic — it's the spine.
+- **N-leg review:** new leg columns land via the existing additive
+  `_MIGRATION_COLUMNS` mechanism. `fired_legs` stays the canonical
+  leg-count-agnostic spine, and `scripts/_analyze_three_leg.py`
+  discovers the available production legs from the fetched schema
+  rather than hardcoding only `on/off/dtln`.
 - **Labeling stays SQLite-only.** No `/wake-review/` web UI (explicit
   prior decision). Extend `analyze-three-leg.sh`, don't build a new
   tool (testing-tooling.md rule).

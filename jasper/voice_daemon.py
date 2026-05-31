@@ -2514,8 +2514,8 @@ class WakeLoop:
         )
 
     async def _finalize_event_audio(self, event_id: str) -> None:
-        """Wait the post-fire collection window, then snapshot both
-        capture rings and persist as WAV files via the store.
+        """Wait the post-fire collection window, then snapshot each
+        configured capture ring and persist WAV files via the store.
 
         Fire-and-forget — failure logs WARN but doesn't propagate.
         Capture truncation is acceptable on daemon shutdown (the row
@@ -2533,21 +2533,29 @@ class WakeLoop:
                 (CAPTURE_PRE_SEC + CAPTURE_POST_SEC)
                 * _MC.OUTPUT_RATE / _MC.OUTPUT_FRAME_SAMPLES
             )
-            audio_on = self._snapshot_ring(self._capture_ring_on, n_frames)
-            audio_off = self._snapshot_ring(self._capture_ring_off, n_frames)
-            audio_dtln = self._snapshot_ring(
-                getattr(self, "_capture_ring_dtln", None), n_frames,
-            ) if getattr(self, "_capture_ring_dtln", None) else None
             await self._wake_event_store.attach_audio(
                 event_id=event_id,
-                audio_on=audio_on,
-                audio_off=audio_off,
-                audio_dtln=audio_dtln,
+                audio_on=self._snapshot_leg_audio("on", n_frames),
+                audio_off=self._snapshot_leg_audio("off", n_frames),
+                audio_dtln=self._snapshot_leg_audio("dtln", n_frames),
+                audio_chip_aec_150=self._snapshot_leg_audio(
+                    "chip_aec_150", n_frames,
+                ),
+                audio_chip_aec_210=self._snapshot_leg_audio(
+                    "chip_aec_210", n_frames,
+                ),
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "wake_events: attach_audio failed for %s: %s", event_id, e,
             )
+
+    def _snapshot_leg_audio(self, leg: str, n_frames: int) -> bytes | None:
+        """Snapshot the trailing wake-event window for one configured leg."""
+        runtime = self._legs.get(leg)
+        if runtime is None:
+            return None
+        return self._snapshot_ring(runtime.capture_ring, n_frames)
 
     @staticmethod
     def _snapshot_ring(ring: deque, n_frames: int) -> bytes | None:

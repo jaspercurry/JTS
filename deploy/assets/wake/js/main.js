@@ -42,6 +42,43 @@ function statusLine(active, layerOn, mode) {
   return "⏳ starting…";
 }
 
+function setText(id, value) {
+  const node = el(id);
+  if (node) node.textContent = value || "—";
+}
+
+function wakePhraseText(wakeWord, threshold) {
+  if (!wakeWord) return "—";
+  const bits = [];
+  if (wakeWord.label) bits.push(wakeWord.label);
+  if (wakeWord.pronunciation) bits.push(wakeWord.pronunciation);
+  if (typeof threshold === "number") bits.push("threshold " + threshold.toFixed(2));
+  return bits.join(" · ") || "—";
+}
+
+function applyMicStatus(s) {
+  const mic = s.microphone || {};
+  const firmware = mic.firmware || {};
+  setText("mic-status-name", mic.name || "unknown");
+  setText("mic-status-firmware", firmware.label || "unknown");
+  setText("mic-status-mode", mic.processing_mode || "unknown");
+  setText("mic-status-session-source", mic.session_source || "unknown");
+  setText(
+    "mic-status-wake-legs",
+    Array.isArray(mic.wake_legs) && mic.wake_legs.length
+      ? mic.wake_legs.join(", ")
+      : "—",
+  );
+  setText("mic-status-wake-word", wakePhraseText(s.wake_word, s.threshold));
+
+  const warning = el("mic-status-warning");
+  const warnings = Array.isArray(mic.warnings) ? mic.warnings : [];
+  if (warning) {
+    warning.hidden = warnings.length === 0;
+    warning.textContent = warnings.join(" ");
+  }
+}
+
 // Reconcile server state into the toggles + slider. Skips any control the user
 // is mid-interaction with (tracked via `dirty` / the slider's unsaved state).
 function applyState(s) {
@@ -54,6 +91,8 @@ function applyState(s) {
   const chipOn = !!(legs.chip_aec && legs.chip_aec.configured);
   // Hardware gate: the chip-AEC beams only exist on the 6-ch firmware.
   const chipAvailable = !!(legs.chip_aec && legs.chip_aec.available);
+
+  applyMicStatus(s);
 
   // AEC master row.
   if (!dirty.aec) {
@@ -135,6 +174,17 @@ async function pollDetection() {
     LAYERS.forEach((name) => {
       el("layer-status-" + name).textContent = "Disconnected";
     });
+    setText("mic-status-name", "Disconnected");
+    setText("mic-status-firmware", "—");
+    setText("mic-status-mode", "—");
+    setText("mic-status-session-source", "—");
+    setText("mic-status-wake-legs", "—");
+    setText("mic-status-wake-word", "—");
+    const warning = el("mic-status-warning");
+    if (warning) {
+      warning.hidden = false;
+      warning.textContent = "Could not reach jasper-control.";
+    }
   }
 }
 

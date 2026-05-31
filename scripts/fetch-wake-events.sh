@@ -78,7 +78,7 @@ rsync -avz "${PI_USER}@${PI_HOST}:/tmp/wake-events-fetch/" "$OUT/" \
 # so the most recent events are at the top of the file. Uses Python
 # stdlib so no extra deps.
 python3 - <<PY
-import csv, sqlite3
+import csv, sqlite3, sys
 db = "${OUT}/wake-events.sqlite3"
 conn = sqlite3.connect(db)
 conn.row_factory = sqlite3.Row
@@ -87,16 +87,29 @@ conn.row_factory = sqlite3.Row
 # then context, then label fields at the end (where the user types).
 cols = [
     "ts_utc", "event_id", "trigger_kind",
-    "peak_score_aec_on", "peak_score_aec_off",
-    "peak_offset_ms_on", "peak_offset_ms_off",
+    "peak_score_aec_on", "peak_score_aec_off", "peak_score_dtln_aec",
+    "peak_score_chip_aec_150", "peak_score_chip_aec_210",
+    "peak_offset_ms_on", "peak_offset_ms_off", "peak_offset_ms_dtln",
+    "peak_offset_ms_chip_aec_150", "peak_offset_ms_chip_aec_210",
     "outcome", "outcome_detail",
     "mic_muted",
-    "mic_rms_dbfs_on", "mic_rms_dbfs_off",
+    "mic_rms_dbfs_on", "mic_rms_dbfs_off", "mic_rms_dbfs_dtln",
+    "mic_rms_dbfs_chip_aec_150", "mic_rms_dbfs_chip_aec_210",
     "music_active", "music_volume_db",
     "voice_provider", "wake_model", "threshold",
-    "audio_on_path", "audio_off_path",
+    "audio_on_path", "audio_off_path", "audio_dtln_path",
+    "audio_chip_aec_150_path", "audio_chip_aec_210_path",
     "label", "label_notes",
 ]
+existing = {r[1] for r in conn.execute("PRAGMA table_info(wake_events)")}
+missing = [c for c in cols if c not in existing]
+if missing:
+    print(
+        "  warning: wake_events DB lacks index columns: "
+        + ", ".join(missing),
+        file=sys.stderr,
+    )
+cols = [c for c in cols if c in existing]
 rows = list(conn.execute(
     f"SELECT {', '.join(cols)} FROM wake_events ORDER BY ts_utc DESC"
 ))
@@ -134,7 +147,7 @@ sudo rm -rf /tmp/wake-events-fetch
 
 echo "" >&2
 echo "Done. ${OUT}/ contains:" >&2
-echo "  - $(ls "$OUT/" | grep -c '\.wav$') WAVs (.aec-on + .aec-off + .aec-dtln per triple-stream event; legacy events have .aec-on + .aec-off only)" >&2
+echo "  - $(ls "$OUT/" | grep -c '\.wav$') WAVs (one file per captured wake leg; legacy events have fewer legs)" >&2
 echo "  - index.csv (spreadsheet) + index.tsv (grep)" >&2
 echo "  - wake-events.sqlite3 (full DB snapshot)" >&2
 echo "" >&2

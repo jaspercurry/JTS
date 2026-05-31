@@ -1,8 +1,12 @@
 """Wake-word page at /wake/.
 
-Two stacked sections, one page:
+Three stacked sections, one page:
 
-  1. **Detection layers + sensitivity** — iOS-style toggles (AEC3 echo
+  1. **Microphone status** — compact read-only card hydrated from the
+     same `/aec` JSON as the toggles. Shows detected mic, firmware,
+     processing mode, session source, active wake legs, and wake phrase.
+
+  2. **Detection layers + sensitivity** — iOS-style toggles (AEC3 echo
      cancellation, chip-direct mic, DTLN neural AEC, and the
      hardware-conditional XVF3800 chip-AEC beams) and a sensitivity
      slider. Polls jasper-control for live state, posts state-set
@@ -14,7 +18,7 @@ Two stacked sections, one page:
      with raw + DTLN — enabling it greys those out (one chip can't emit
      both the software legs and the chip beams).
 
-  2. **Wake-word model picker** — radio over the curated registry in
+  3. **Wake-word model picker** — radio over the curated registry in
      jasper/wake_models.py. Bundled openWakeWord names always show as
      available; non-bundled models surface a "not downloaded" hint when
      their `.onnx` file is missing on disk (install.sh fetches them on
@@ -270,6 +274,50 @@ def _layers_card_html() -> str:
 </section>"""
 
 
+def _mic_status_card_html() -> str:
+    """Render the compact read-only mic/topology card.
+
+    Values are placeholders until deploy/assets/wake/js/main.js hydrates
+    them from /detection.json. Keep this card non-controlling: the
+    detection layer rows below are the action surface.
+    """
+    return """
+<section class="section mic-status-card">
+  <div class="section__head">
+    <h2 class="section__title">Microphone</h2>
+  </div>
+  <div class="info-card">
+    <div class="mic-status-grid">
+      <div class="mic-status-item mic-status-item--wide">
+        <div class="mic-status-label">Detected mic</div>
+        <div class="mic-status-value" id="mic-status-name">checking…</div>
+      </div>
+      <div class="mic-status-item">
+        <div class="mic-status-label">Firmware</div>
+        <div class="mic-status-value" id="mic-status-firmware">checking…</div>
+      </div>
+      <div class="mic-status-item">
+        <div class="mic-status-label">Mode</div>
+        <div class="mic-status-value" id="mic-status-mode">checking…</div>
+      </div>
+      <div class="mic-status-item mic-status-item--wide">
+        <div class="mic-status-label">Session audio</div>
+        <div class="mic-status-value" id="mic-status-session-source">checking…</div>
+      </div>
+      <div class="mic-status-item mic-status-item--wide">
+        <div class="mic-status-label">Wake legs</div>
+        <div class="mic-status-value" id="mic-status-wake-legs">checking…</div>
+      </div>
+      <div class="mic-status-item mic-status-item--wide">
+        <div class="mic-status-label">Wake phrase</div>
+        <div class="mic-status-value" id="mic-status-wake-word">checking…</div>
+      </div>
+    </div>
+    <div class="mic-status-warning" id="mic-status-warning" hidden></div>
+  </div>
+</section>"""
+
+
 def _row_html(
     entry: wake_models.WakeModelEntry,
     *,
@@ -396,6 +444,8 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     body = f"""
 {canonical_header("Wake word")}
 <main class="page">
+  {_mic_status_card_html()}
+
   {_layers_card_html()}
 
   <section class="section">

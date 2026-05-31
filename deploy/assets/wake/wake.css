@@ -15,6 +15,49 @@
 
 /* ----- Detection layers + sensitivity ------------------------------------ */
 
+.mic-status-card .info-card {
+  padding-bottom: 1rem;
+}
+.mic-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1rem;
+}
+.mic-status-item {
+  min-width: 0;
+}
+.mic-status-item--wide {
+  grid-column: 1 / -1;
+}
+.mic-status-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.mic-status-value {
+  color: var(--foreground);
+  font-size: 0.95rem;
+  margin-top: 0.16rem;
+  overflow-wrap: anywhere;
+}
+.mic-status-warning {
+  margin-top: 0.85rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid color-mix(in oklch, var(--status-warn) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--status-warn) 10%, transparent);
+  color: var(--foreground);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 620px) {
+  .mic-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* The card body is an .info-card from app.css; these style the rows inside. */
 .layers-card .info-card__note {
   margin: 0 0 0.4rem;

@@ -1,8 +1,9 @@
-"""Weekly review of the triple-stream wake-event corpus.
+"""Weekly review of the multi-leg wake-event corpus.
 
-The OR-gate fires on any of three legs (AEC ON, AEC OFF, DTLN-aec).
-This tool answers: which legs are actually pulling weight, where do
-the legs disagree, and which events are worth listening to?
+The OR-gate fires on any configured wake leg (AEC3, chip-direct raw,
+DTLN-aec, and opt-in hardware AEC beams). This tool answers: which
+legs are actually pulling weight, where do the legs disagree, and
+which events are worth listening to?
 
 Output:
   [1] Fire breakdown — Venn-style count of which legs crossed
@@ -10,8 +11,7 @@ Output:
   [2] Per-leg score distribution — what scores does each leg
       typically reach? P10/P50/P90/Max across all events.
   [3] Distinct-leg contributions — events where exactly one leg
-      saved the wake. The "Only DTLN fired" set is the most
-      interesting: those events prove the third leg's distinct value.
+      saved the wake. Solo-save sets prove that leg's distinct value.
   [4] Listening playlist — N suggested events to audit by ear,
       sorted by category interest.
   [5] Funnel — how many wake events reached turn-open / speech /
@@ -25,29 +25,57 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import itertools
 import sqlite3
 import sys
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 
-# Canonical leg names per jasper/voice_daemon.py:1863-1874.
-# fired_legs stores these CSV-joined and sorted alphabetically:
-#   single: 'dtln', 'off', 'on'
-#   double: 'dtln,off', 'dtln,on', 'off,on'
-#   triple: 'dtln,off,on'
-LEGS = ("on", "off", "dtln")
-LEG_LABELS = {"on": "AEC ON", "off": "AEC OFF", "dtln": "DTLN-aec"}
-SCORE_COLS = {
-    "on":   "peak_score_aec_on",
-    "off":  "peak_score_aec_off",
-    "dtln": "peak_score_dtln_aec",
-}
-AUDIO_COLS = {
-    "on":   "audio_on_path",
-    "off":  "audio_off_path",
-    "dtln": "audio_dtln_path",
-}
+@dataclass(frozen=True)
+class LegReviewSpec:
+    """Review metadata for one wake-event leg.
+
+    Tokens match jasper.wake_legs' frozen on-disk vocabulary and the
+    fired_legs CSV. Score/audio column names are explicit because the
+    original on/off/dtln columns predate the regular chip column shape.
+    """
+
+    token: str
+    label: str
+    score_col: str
+    audio_col: str
+
+
+# Review vocabulary. This intentionally mirrors the stable wake-event
+# schema rather than importing jasper.voice_daemon; the review script
+# should stay stdlib-only and usable against fetched corpora off-box.
+LEG_SPECS: tuple[LegReviewSpec, ...] = (
+    LegReviewSpec("on", "AEC3", "peak_score_aec_on", "audio_on_path"),
+    LegReviewSpec("off", "Chip-direct", "peak_score_aec_off", "audio_off_path"),
+    LegReviewSpec("dtln", "DTLN-aec", "peak_score_dtln_aec", "audio_dtln_path"),
+    LegReviewSpec(
+        "chip_aec_150",
+        "Chip AEC 150",
+        "peak_score_chip_aec_150",
+        "audio_chip_aec_150_path",
+    ),
+    LegReviewSpec(
+        "chip_aec_210",
+        "Chip AEC 210",
+        "peak_score_chip_aec_210",
+        "audio_chip_aec_210_path",
+    ),
+)
+SCORE_COLS = {spec.token: spec.score_col for spec in LEG_SPECS}
+AUDIO_COLS = {spec.token: spec.audio_col for spec in LEG_SPECS}
+BASE_SELECT_COLS = (
+    "event_id", "ts_utc", "trigger_kind", "fired_legs",
+    "outcome", "outcome_detail",
+    "ts_turn_opened", "ts_speech_detected", "ts_tool_called",
+    "music_active", "label",
+)
 
 
 def percentiles(values: list[float], pcts: tuple[int, ...]) -> dict[int, float]:
@@ -88,22 +116,25 @@ def main() -> int:
     conn.row_factory = sqlite3.Row
 
     cols = {r[1] for r in conn.execute("PRAGMA table_info(wake_events)")}
-    has_dtln_schema = "fired_legs" in cols and "peak_score_dtln_aec" in cols
-    if not has_dtln_schema:
-        print("ERROR: this DB predates triple-stream migration; no fired_legs column",
+    if "fired_legs" not in cols:
+        print("ERROR: this DB predates multi-leg migration; no fired_legs column",
               file=sys.stderr)
         print("Pull a fresher corpus from the Pi (bash scripts/fetch-wake-events.sh)",
               file=sys.stderr)
         return 1
 
+    legs = tuple(spec for spec in LEG_SPECS if spec.score_col in cols)
+    if not legs:
+        print("ERROR: wake_events DB has no recognized per-leg score columns",
+              file=sys.stderr)
+        return 1
+    select_cols = list(BASE_SELECT_COLS)
+    for spec in legs:
+        select_cols.append(spec.score_col)
+        if spec.audio_col in cols:
+            select_cols.append(spec.audio_col)
     rows = list(conn.execute(
-        "SELECT event_id, ts_utc, trigger_kind, fired_legs, "
-        "peak_score_aec_on, peak_score_aec_off, peak_score_dtln_aec, "
-        "audio_on_path, audio_off_path, audio_dtln_path, "
-        "outcome, outcome_detail, "
-        "ts_turn_opened, ts_speech_detected, ts_tool_called, "
-        "music_active, label "
-        "FROM wake_events ORDER BY ts_utc"
+        f"SELECT {', '.join(select_cols)} FROM wake_events ORDER BY ts_utc"
     ))
     if not rows:
         print(f"  (empty DB at {db_path})")
@@ -113,47 +144,53 @@ def main() -> int:
     legacy = [r for r in rows if r["fired_legs"] is None]
 
     print("=" * 72)
-    print(f"Triple-stream wake-event analysis: {corpus}")
+    leg_tokens = tuple(spec.token for spec in legs)
+    print(f"Multi-leg wake-event analysis: {corpus}")
     print("=" * 72)
     print(f"  Time range: {rows[0]['ts_utc']} ... {rows[-1]['ts_utc']}")
     print(f"  Total events:        {len(rows)}")
-    print(f"  Triple-stream events: {len(triple)} (with fired_legs)")
-    print(f"  Legacy events:        {len(legacy)} (pre-migration, no DTLN score)")
+    print(f"  Multi-leg events:    {len(triple)} (with fired_legs)")
+    print(f"  Legacy events:       {len(legacy)} (pre-migration)")
+    print(f"  Analyzed legs:       {', '.join(spec.label for spec in legs)}")
     if not triple:
-        print("\n  No triple-stream events yet. Use the speaker, then re-fetch.")
+        print("\n  No multi-leg events yet. Use the speaker, then re-fetch.")
         return 0
+
+    pattern_count = Counter(r["fired_legs"] for r in triple)
 
     # ---------- [1] Fire breakdown ----------
     print()
     print("[1] Fire breakdown — which legs crossed threshold at fire time")
     print()
-    # Order so single-leg patterns appear first, then doubles, then triple.
-    # Lexically-sorted CSV from voice_daemon ensures canonical strings.
-    canonical_order = ["on", "off", "dtln",
-                       "off,on", "dtln,on", "dtln,off",
-                       "dtln,off,on"]
-    pattern_count = Counter(r["fired_legs"] for r in triple)
+    # fired_legs stores CSV-joined tokens sorted alphabetically by
+    # voice_daemon. Print every possible pattern while the leg set is
+    # small; once chip beams are included, print observed patterns plus
+    # all zero-count solo rows so the table stays readable.
+    canonical_order = _canonical_patterns(leg_tokens, observed=tuple(pattern_count))
     by_pattern: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for r in triple:
         by_pattern[r["fired_legs"]].append(r)
 
     total = len(triple)
-    print(f"  {'Legs fired':<24} {'Count':>6} {'%':>6}  Mean peak score (on / off / dtln)")
-    print(f"  {'-'*24} {'-'*6} {'-'*6}  {'-'*36}")
+    score_header = " / ".join(spec.token for spec in legs)
+    print(f"  {'Legs fired':<42} {'Count':>6} {'%':>6}  Mean peak score ({score_header})")
+    print(f"  {'-'*42} {'-'*6} {'-'*6}  {'-'*36}")
     for pat in canonical_order:
         n = pattern_count.get(pat, 0)
         if n == 0:
             # Still print zero-count rows so the reader sees every possible
             # pattern. Useful for "we shipped DTLN but it never fired alone".
-            zeros = (0.0, 0.0, 0.0)
-            print(f"  {pat:<24} {n:>6} {0.0:>5.0f}%  {zeros[0]:.3f} / {zeros[1]:.3f} / {zeros[2]:.3f}")
+            zero_scores = " / ".join("0.000" for _ in legs)
+            print(f"  {pat:<42} {n:>6} {0.0:>5.0f}%  {zero_scores}")
             continue
         evs = by_pattern[pat]
         pct = 100.0 * n / total
-        mean_on = sum(_score(e, "on") for e in evs) / n
-        mean_off = sum(_score(e, "off") for e in evs) / n
-        mean_dtln = sum(_score(e, "dtln") for e in evs) / n
-        print(f"  {pat:<24} {n:>6} {pct:>5.1f}%  {mean_on:.3f} / {mean_off:.3f} / {mean_dtln:.3f}")
+        means = []
+        for spec in legs:
+            scores = [_score(e, spec.token) or 0.0 for e in evs]
+            means.append(sum(scores) / n)
+        mean_text = " / ".join(f"{m:.3f}" for m in means)
+        print(f"  {pat:<42} {n:>6} {pct:>5.1f}%  {mean_text}")
     # Catch any patterns we didn't account for (paranoia — shouldn't happen
     # given voice_daemon sorts alphabetically into the canonical set).
     unknown = set(pattern_count) - set(canonical_order)
@@ -161,20 +198,21 @@ def main() -> int:
         evs = by_pattern[pat]
         n = len(evs)
         pct = 100.0 * n / total
-        print(f"  ⚠ {pat:<22} {n:>6} {pct:>5.1f}%  (unexpected pattern)")
+        print(f"  ! {pat:<40} {n:>6} {pct:>5.1f}%  (unexpected pattern)")
 
     # ---------- [2] Per-leg score distribution ----------
     print()
-    print("[2] Per-leg score distribution across ALL triple-stream events")
+    print("[2] Per-leg score distribution across ALL multi-leg events")
     print("    (the distribution shows what each leg 'sees', "
           "fired-or-not — useful for spotting a leg that's silently dead)")
     print()
-    print(f"  {'Leg':<10} {'P10':>7} {'P50':>7} {'P90':>7} {'Max':>7}   {'n_nonnull':>10}")
-    print(f"  {'-'*10} {'-'*7} {'-'*7} {'-'*7} {'-'*7}   {'-'*10}")
-    for leg in LEGS:
-        scores = [_score(r, leg) for r in triple if _score(r, leg) is not None]
+    label_width = max(12, max(len(spec.label) for spec in legs))
+    print(f"  {'Leg':<{label_width}} {'P10':>7} {'P50':>7} {'P90':>7} {'Max':>7}   {'n_nonnull':>10}")
+    print(f"  {'-'*label_width} {'-'*7} {'-'*7} {'-'*7} {'-'*7}   {'-'*10}")
+    for spec in legs:
+        scores = [_score(r, spec.token) for r in triple if _score(r, spec.token) is not None]
         pcs = percentiles(scores, (10, 50, 90, 100))
-        print(f"  {LEG_LABELS[leg]:<10} {pcs[10]:>7.3f} {pcs[50]:>7.3f} "
+        print(f"  {spec.label:<{label_width}} {pcs[10]:>7.3f} {pcs[50]:>7.3f} "
               f"{pcs[90]:>7.3f} {pcs[100]:>7.3f}   {len(scores):>10}")
 
     # ---------- [3] Distinct-leg contributions ----------
@@ -182,22 +220,23 @@ def main() -> int:
     print("[3] Distinct-leg contributions — events where exactly one leg fired")
     print("    (each leg's 'solo saves' prove its independent value)")
     print()
-    for leg in LEGS:
-        solo = by_pattern.get(leg, [])
-        emoji = "★" if leg == "dtln" and solo else " "  # DTLN-only = headline
+    for spec in legs:
+        solo = by_pattern.get(spec.token, [])
         pct = 100.0 * len(solo) / total if total else 0
-        print(f"  {emoji} Only {LEG_LABELS[leg]} fired: {len(solo):>4} events ({pct:.1f}% of triple)")
+        print(
+            f"    Only {spec.label} fired: {len(solo):>4} events "
+            f"({pct:.1f}% of multi-leg)"
+        )
 
     # ---------- [4] Listening playlist ----------
     print()
     print(f"[4] Listening playlist — top {args.top} per category")
     print()
-    categories = [
-        ("Only DTLN fired (proves DTLN's value)", by_pattern.get("dtln", []), "dtln"),
-        ("Only AEC ON fired", by_pattern.get("on", []), "on"),
-        ("Only AEC OFF fired (the dominant kind)", by_pattern.get("off", []), "off"),
-        ("All three legs agreed", by_pattern.get("dtln,off,on", []), None),
-    ]
+    categories: list[tuple[str, list[sqlite3.Row], str | None]] = []
+    for spec in legs:
+        categories.append((f"Only {spec.label} fired", by_pattern.get(spec.token, []), spec.token))
+    all_pattern = _pattern(leg_tokens)
+    categories.append(("All analyzed legs agreed", by_pattern.get(all_pattern, []), None))
     for title, evs, sort_leg in categories:
         if not evs:
             continue
@@ -205,18 +244,16 @@ def main() -> int:
         if sort_leg is not None:
             evs = sorted(evs, key=lambda r: -(_score(r, sort_leg) or 0))
         else:
-            evs = sorted(evs, key=lambda r: -max(
-                _score(r, "on") or 0, _score(r, "off") or 0, _score(r, "dtln") or 0
-            ))
+            evs = sorted(evs, key=lambda r: -max(_score(r, spec.token) or 0 for spec in legs))
         print(f"  {title}:")
         for r in evs[:args.top]:
-            audio_for_leg = AUDIO_COLS.get(sort_leg, "audio_off_path")
-            audio = r[audio_for_leg] if sort_leg else r["audio_off_path"]
+            audio = _audio_path(r, sort_leg, legs)
             if audio == "rolled_off" or audio is None:
                 audio = "<audio rolled off>"
-            scores = (f"on={r['peak_score_aec_on'] or 0:.2f} "
-                      f"off={r['peak_score_aec_off'] or 0:.2f} "
-                      f"dtln={r['peak_score_dtln_aec'] or 0:.2f}")
+            scores = " ".join(
+                f"{spec.token}={_score(r, spec.token) or 0:.2f}"
+                for spec in legs
+            )
             music = "music" if r["music_active"] else "quiet"
             print(f"    {r['ts_utc'][:19]}  evt={r['event_id'][:8]}  "
                   f"{scores}  [{music}]  outcome={r['outcome'] or '(open)'}")
@@ -261,26 +298,26 @@ def main() -> int:
     print("    in 0.40-0.49 (just under 0.50) suggests threshold tuning;")
     print("    a distribution near zero means the leg is genuinely silent.")
     print()
-    for solo_leg in LEGS:
-        solo_evs = by_pattern.get(solo_leg, [])
+    for solo_spec in legs:
+        solo_evs = by_pattern.get(solo_spec.token, [])
         if not solo_evs:
             continue
-        print(f"  When {LEG_LABELS[solo_leg]} fired ALONE ({len(solo_evs)} events):")
-        for other_leg in LEGS:
-            if other_leg == solo_leg:
+        print(f"  When {solo_spec.label} fired ALONE ({len(solo_evs)} events):")
+        for other_spec in legs:
+            if other_spec.token == solo_spec.token:
                 continue
             other_scores = [
-                _score(r, other_leg) for r in solo_evs
-                if _score(r, other_leg) is not None
+                _score(r, other_spec.token) for r in solo_evs
+                if _score(r, other_spec.token) is not None
             ]
             if not other_scores:
-                print(f"    {LEG_LABELS[other_leg]:<10} (no scores recorded)")
+                print(f"    {other_spec.label:<{label_width}} (no scores recorded)")
                 continue
             pcs = percentiles(other_scores, (10, 50, 90, 100))
             # Highlight the "just under threshold" zone — assume
             # threshold ~0.5; flag P90 if it's 0.30-0.49.
             tunable = "← tunable" if 0.30 <= pcs[90] < 0.50 else ""
-            print(f"    {LEG_LABELS[other_leg]:<10} P10={pcs[10]:.3f} "
+            print(f"    {other_spec.label:<{label_width}} P10={pcs[10]:.3f} "
                   f"P50={pcs[50]:.3f} P90={pcs[90]:.3f} Max={pcs[100]:.3f}  "
                   f"{tunable}")
         print()
@@ -294,6 +331,57 @@ def _score(row: sqlite3.Row, leg: str) -> float | None:
     """Look up a row's peak_score for a leg by canonical leg name."""
     val = row[SCORE_COLS[leg]]
     return float(val) if val is not None else None
+
+
+def _pattern(tokens: tuple[str, ...] | list[str]) -> str:
+    """fired_legs' canonical storage order: CSV of lexically sorted tokens."""
+    return ",".join(sorted(tokens))
+
+
+def _canonical_patterns(legs: tuple[str, ...], *, observed: tuple[str, ...]) -> list[str]:
+    """Patterns to print in the fire/funnel tables.
+
+    The original three-leg corpus printed all seven combinations. With
+    chip beams enabled the full powerset is 31 rows, which drowns out the
+    useful signal on small corpora. Preserve exhaustive output for three
+    or fewer legs; otherwise show every observed pattern plus all solo
+    rows so missing solo-save value stays visible.
+    """
+    if len(legs) <= 3:
+        patterns = [
+            _pattern(list(combo))
+            for n in range(1, len(legs) + 1)
+            for combo in itertools.combinations(legs, n)
+        ]
+        return sorted(patterns, key=lambda p: (p.count(","), p))
+    patterns = {_pattern([leg]) for leg in legs}
+    patterns.update(observed)
+    return sorted(patterns, key=lambda p: (p.count(","), p))
+
+
+def _audio_path(
+    row: sqlite3.Row,
+    preferred_leg: str | None,
+    legs: tuple[LegReviewSpec, ...],
+) -> str | None:
+    """Pick the best WAV path for a playlist row.
+
+    For solo-save rows we prefer that leg. For aggregate rows, or older
+    DBs missing a leg's audio column, fall back to the first available
+    leg audio path in review order.
+    """
+    if preferred_leg is not None:
+        col = AUDIO_COLS.get(preferred_leg)
+        if col is not None and col in row.keys():
+            val = row[col]
+            if val:
+                return str(val)
+    for spec in legs:
+        if spec.audio_col in row.keys():
+            val = row[spec.audio_col]
+            if val:
+                return str(val)
+    return None
 
 
 if __name__ == "__main__":

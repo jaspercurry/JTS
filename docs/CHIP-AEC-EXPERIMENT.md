@@ -145,17 +145,16 @@ infrastructure to change — these are values, not new code paths.
 **Frozen — do NOT change while tuning** (the historical corpus + analysis
 tooling key off these): the leg tokens `chip_aec_150` / `chip_aec_210`,
 their UDP ports `9887` / `9888`, the additive `wake_events` score columns,
-and the `fire_chip_aec_{150,210}` `trigger_kind`s. New telemetry is
-additive only.
+the additive `audio_chip_aec_{150,210}_path` columns, and the
+`fire_chip_aec_{150,210}` `trigger_kind`s. New telemetry is additive only.
 
-Two **separate** workstreams own the *review* of those plugged-in values
-(not the leg infrastructure, and intentionally out of scope here): per-leg
-chip WAV capture (no `audio_chip_aec_*` columns yet — see `attach_audio` /
-`_finalize_event_audio`) and the `scripts/_analyze_three_leg.py` per-leg
-breakdown (its `LEGS` / `SCORE_COLS` / `AUDIO_COLS` / `canonical_order` are
-still the 3-leg set). Land those alongside the on-device PR when you're
-ready to run the telemetry review; the `fired_legs` CSV + the chip score
-columns already record the data.
+The review tooling keeps the historical wrapper name
+`scripts/analyze-three-leg.sh`, but the underlying
+`scripts/_analyze_three_leg.py` now discovers the available wake legs from
+the fetched `wake_events` schema. It reports chip-beam fire patterns,
+score distributions, solo-save sets, listening prompts, and funnel
+conversion from the same telemetry spine: `fired_legs`, per-leg score
+columns, and explicit per-beam WAV paths.
 
 > ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
 > reconciler toggle" says *"Architecture is fixed; swap the engine,

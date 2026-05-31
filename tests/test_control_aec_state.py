@@ -278,6 +278,16 @@ def test_aec_full_status_includes_legs_and_threshold(
     monkeypatch.setattr(
         "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
     )
+    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
+    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+        },
+    )
     status = server._aec_full_status()
     assert status["mode"] == "auto"
     assert status["bridge_active"] is True
@@ -286,6 +296,12 @@ def test_aec_full_status_includes_legs_and_threshold(
     assert status["legs"]["chip_aec"]["configured"] is False
     assert status["legs"]["chip_aec"]["available"] is True
     assert status["threshold"] == 0.40
+    assert status["microphone"]["detected"] is True
+    assert status["microphone"]["firmware"]["state"] == "ok"
+    assert status["microphone"]["processing_mode"] == "Software AEC3"
+    assert status["microphone"]["session_source"] == "WebRTC AEC3 via :9876"
+    assert status["microphone"]["wake_legs"] == ["AEC3", "Chip-direct raw", "DTLN"]
+    assert status["wake_word"]["label"]
 
 
 def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monkeypatch):
@@ -301,19 +317,22 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
     monkeypatch.setattr(
         "jasper.mics.xvf3800.is_recommended_firmware", lambda: False,
     )
+    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: False)
+    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: None)
+    monkeypatch.setattr(server, "_fresh_jasper_env", lambda: {})
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     status = server._aec_full_status()
-    assert status == {
-        "mode": "disabled",
-        "bridge_active": False,
-        "legs": {
-            "raw": {"configured": True},   # boolean stays even with mode=disabled
-            "dtln": {"configured": False},
-            # chip default off; not available off the 6-ch firmware.
-            "chip_aec": {"configured": False, "available": False},
-        },
-        "threshold": 0.5,
+    assert status["mode"] == "disabled"
+    assert status["bridge_active"] is False
+    assert status["legs"] == {
+        "raw": {"configured": True},   # boolean stays even with mode=disabled
+        "dtln": {"configured": False},
+        # chip default off; not available off the 6-ch firmware.
+        "chip_aec": {"configured": False, "available": False},
     }
+    assert status["threshold"] == 0.5
+    assert status["microphone"]["processing_mode"] == "Direct mic"
+    assert status["microphone"]["firmware"]["state"] == "absent"
 
 
 def test_aec_full_status_chip_available_tracks_firmware(
@@ -331,14 +350,19 @@ def test_aec_full_status_chip_available_tracks_firmware(
     monkeypatch.setattr(
         "jasper.mics.xvf3800.is_recommended_firmware", lambda: False,
     )
+    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
+    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 2)
+    monkeypatch.setattr(server, "_fresh_jasper_env", lambda: {})
     status = server._aec_full_status()
     # Configured reflects the operator's intent even when unavailable.
     assert status["legs"]["chip_aec"]["configured"] is True
     assert status["legs"]["chip_aec"]["available"] is False
+    assert "Chip-AEC needs" in " ".join(status["microphone"]["warnings"])
 
     monkeypatch.setattr(
         "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
     )
+    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
     assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
 
 
@@ -359,6 +383,7 @@ def test_aec_full_status_survives_firmware_probe_error(
     )
     status = server._aec_full_status()
     assert status["legs"]["chip_aec"]["available"] is False
+    assert "microphone" in status
 
 
 def test_write_aec_leg_chip_aec_writes_boolean(aec_mode_file):
