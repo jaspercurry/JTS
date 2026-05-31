@@ -641,12 +641,18 @@ positive on ch0 but no corpus-ready decision: see
 `scripts/chip-aec-*.sh` scripts. They live on `main` as dormant
 infrastructure — production state is untouched until `bash
 scripts/chip-aec-setup.sh` runs; `chip-aec-teardown.sh` reverts.
-Not on the roadmap; preserved so we don't have to re-derive the
-question if AEC3 ever plateaus. **That carve-out is scoped to the
-convergence test only**: it does not re-open the codec-swap
-dismissal above, nor PipeWire `module-echo-cancel`, dual-USB-sink,
-or custom firmware. Agents proposing those remain bound by the
-policy.
+Not on the roadmap *for barge-in*; preserved so we don't have to
+re-derive the question if AEC3 ever plateaus. (Separately, the
+chip's fixed `150°`/`210°` ASR **beams** *are* now being promoted to
+opt-in wake-detection legs — a different use that rides the existing
+capture topology; see
+[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) +
+[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
+§2.4. That promotion does **not** re-open the barge-in trade here.)
+**The barge-in carve-out is scoped to the convergence test only**: it
+does not re-open the codec-swap dismissal above, nor PipeWire
+`module-echo-cancel`, dual-USB-sink, or custom firmware. Agents
+proposing those remain bound by the policy.
 
 ### Different AEC engine
 

@@ -4,8 +4,10 @@
 //
 //   1. The "Wake detection" card is live: it polls jasper-control's /aec state
 //      (proxied through this page's /detection.json) every few seconds and
-//      reconciles three toggles (AEC master, raw leg, DTLN leg) plus a
-//      sensitivity slider. User interaction POSTs back to /layer/<name> and
+//      reconciles the layer toggles (AEC master, raw leg, DTLN leg, and the
+//      hardware-conditional chip-AEC beams — mutually exclusive with raw +
+//      DTLN) plus a sensitivity slider. User interaction POSTs back to
+//      /layer/<name> and
 //      /sensitivity, which proxy on to jasper-control. This mirrors the
 //      optimistic-flip-with-reconcile pattern used elsewhere: a per-control
 //      `dirty` flag keeps an in-flight click from being clobbered by a poll.
@@ -24,7 +26,7 @@
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
-const LAYERS = ["aec", "raw", "dtln"];
+const LAYERS = ["aec", "raw", "dtln", "chip_aec"];
 const POLL_MS = 3000;
 
 const dirty = {};
@@ -49,6 +51,9 @@ function applyState(s) {
   const aecOn = mode === "auto";
   const rawOn = !!(legs.raw && legs.raw.configured);
   const dtlnOn = !!(legs.dtln && legs.dtln.configured);
+  const chipOn = !!(legs.chip_aec && legs.chip_aec.configured);
+  // Hardware gate: the chip-AEC beams only exist on the 6-ch firmware.
+  const chipAvailable = !!(legs.chip_aec && legs.chip_aec.available);
 
   // AEC master row.
   if (!dirty.aec) {
@@ -62,18 +67,42 @@ function applyState(s) {
     : "— disabled";
   el("layer-row-aec").classList.toggle("is-disabled", !aecOn);
 
-  // Raw + DTLN legs require AEC; reflect that in disabled state + status copy.
+  // Raw + DTLN legs require AEC, AND are mutually exclusive with the
+  // chip-AEC beams — one chip can't emit both, so when chip-AEC is on the
+  // reconciler clears them: grey them out and say why.
   [
     ["raw", rawOn],
     ["dtln", dtlnOn],
   ].forEach(([name, on]) => {
+    const blocked = !aecOn || chipOn;
     if (!dirty[name]) {
       el("layer-" + name).checked = on;
-      el("layer-" + name).disabled = !aecOn;
+      el("layer-" + name).disabled = blocked;
     }
-    el("layer-status-" + name).textContent = statusLine(bridgeOn, on, mode);
-    el("layer-row-" + name).classList.toggle("is-disabled", !aecOn);
+    el("layer-status-" + name).textContent = chipOn
+      ? "— paused (chip-AEC active)"
+      : statusLine(bridgeOn, on, mode);
+    el("layer-row-" + name).classList.toggle("is-disabled", blocked);
   });
+
+  // Chip-AEC beams: require AEC + the 6-ch firmware. Disabled (greyed) when
+  // AEC is off or the chip isn't on the 6-ch firmware; enabling pauses the
+  // raw + DTLN layers (mutual exclusion, handled above).
+  const chipBlocked = !aecOn || !chipAvailable;
+  if (!dirty.chip_aec) {
+    el("layer-chip_aec").checked = chipOn;
+    el("layer-chip_aec").disabled = chipBlocked;
+  }
+  el("layer-status-chip_aec").textContent = !aecOn
+    ? "— requires AEC on"
+    : !chipAvailable
+      ? "— needs 6-channel firmware"
+      : chipOn
+        ? bridgeOn
+          ? "✓ active"
+          : "⏳ starting…"
+        : "— off";
+  el("layer-row-chip_aec").classList.toggle("is-disabled", chipBlocked);
 
   // Sensitivity — only overwrite from the server when the user isn't mid-drag
   // and hasn't queued an unsaved change.
@@ -155,6 +184,20 @@ LAYERS.forEach((name) => {
       !(await jtsConfirm(
         "Enable DTLN neural AEC?\n\n" +
           "+~75 MB RAM, +~25% one core. Recommended for 2 GB Pis.\n" +
+          "jasper-voice + bridge will restart (~15 s).",
+      ))
+    ) {
+      cb.checked = false;
+      return;
+    }
+    if (
+      name === "chip_aec" &&
+      cb.checked &&
+      !(await jtsConfirm(
+        "Use the chip-AEC beams as the wake layers?\n\n" +
+          "This switches to the mic array's hardware echo-cancelled " +
+          "150°/210° beams and PAUSES the raw + DTLN layers — the chip " +
+          "can't do both at once.\n" +
           "jasper-voice + bridge will restart (~15 s).",
       ))
     ) {

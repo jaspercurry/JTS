@@ -1398,6 +1398,8 @@ by the **/wake/ Wake detection card**:
 JASPER_AEC_MODE=auto            # master — bridge on/off
 JASPER_WAKE_LEG_RAW=1           # additive raw leg (~5 MB / negligible)
 JASPER_WAKE_LEG_DTLN=0          # additive DTLN leg (~75 MB / 25% one core)
+JASPER_WAKE_LEG_CHIP_AEC=0      # XVF3800 chip-AEC beam legs (opt-in,
+                                # 6-ch-only, mutually exclusive w/ raw+DTLN)
 ```
 
 Defaults (universal — no RAM-conditional logic):
@@ -1406,16 +1408,31 @@ Defaults (universal — no RAM-conditional logic):
   the OSS baseline — cheap and gives OR-fusion wake-rate recovery.
 - **`JASPER_WAKE_LEG_DTLN=0`** on fresh installs. Opt-in for 2 GB
   Pis where the user has a wake-event corpus to evaluate.
+- **`JASPER_WAKE_LEG_CHIP_AEC=0`** on fresh installs. The chip-AEC
+  promotion (the XVF3800's fixed 150°/210° hardware-AEC ASR beams as
+  scored wake legs — see
+  [`docs/HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md)
+  §2.4). **In progress:** the leg registry/config/telemetry + this
+  control surface have landed (default OFF), but the production
+  `jasper-aec-init` chip profile + the bridge Option-A `:9876` repoint
+  are pending on-device validation, so flipping it on today leaves the
+  chip legs *inert* (nothing emits on `:9887`/`:9888`) **and** clears
+  raw/DTLN (mutual exclusion) — i.e. it degrades wake until the bridge
+  half ships. Do not enable in production before that lands + validates.
 
 The reconciler ([`deploy/bin/jasper-aec-reconcile`](deploy/bin/jasper-aec-reconcile))
 is the single writer of the underlying env vars the daemons read.
 It maps booleans → `JASPER_MIC_DEVICE_RAW=udp:9877`,
 `JASPER_MIC_DEVICE_DTLN=udp:9878`, `JASPER_AEC_DTLN_ENABLED=1`
 (empty/`0` when the boolean is off), then restarts the bridge and
-voice. Sub-toggles are only meaningful when the bridge is running;
-the reconciler clears the underlying vars when AEC is disabled so
-a stale leg config doesn't leave voice listening on a port nobody
-talks to.
+voice. For chip-AEC it maps `JASPER_WAKE_LEG_CHIP_AEC=1` (only on the
+6-channel-present path) → `JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887` +
+`JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888` + `JASPER_AEC_CHIP_AEC_ENABLED=1`,
+and **clears `JASPER_MIC_DEVICE_RAW`/`_DTLN`** (single chip can't emit
+the software legs and the chip beams at once — Option-A). Sub-toggles are
+only meaningful when the bridge is running; the reconciler clears the
+underlying vars when AEC is disabled so a stale leg config doesn't leave
+voice listening on a port nobody talks to.
 
 **Wake-word sensitivity slider** — lives on the same /wake/ Wake
 detection card as the model picker and the leg toggles (they share a
@@ -1485,21 +1502,29 @@ Targeted single-knob OS-layer fixes (a specific ALSA
 acceptable when measurement has localized the root cause to that
 layer — what's rejected is speculative re-architecture.
 
-**One scoped carve-out: chip-AEC with USB-IN reference (Option D).**
-The "no chip AEC" rejection above was for the variants we
-*tested* — none of which fed music to the chip's USB-IN as the AEC
-reference. That specific variant (mono music → chip USB-IN → chip
-HW AEC → mic via chip USB-OUT, with mic and reference clocks
-sharing the chip's USB Adaptive Mode PLL) was never measured.
-Infrastructure to answer it lives at
+**One scoped carve-out: chip-AEC with USB-IN reference (Option D) —
+now being promoted to a wake leg.** The "no chip AEC" rejection above
+was for the variants we *tested* — none of which fed music to the
+chip's USB-IN as the AEC reference. That specific variant (mono music →
+chip USB-IN → chip HW AEC → mic via chip USB-OUT, with mic and reference
+clocks sharing the chip's USB Adaptive Mode PLL) was measured in a
+2026-05-29 lab pass and works. Its infrastructure lives at
 [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) +
-`scripts/chip-aec-*.sh` + `jasper/chip_aec_experiment.py`, **shelved
-indefinitely** — no roadmap commitment, software AEC3 is good
-enough today. The carve-out is **narrow**: it does not re-open
-PipeWire, dual-USB-sink, or custom firmware; it does not license
-re-derivation of the same question outside that infrastructure.
-Agents should keep applying the "architecture is fixed" rule
-everywhere else.
+`scripts/chip-aec-*.sh` + `jasper/chip_aec_experiment.py`. **The chip's
+fixed 150°/210° ASR beams (`chip_aec_150`/`chip_aec_210`) are now being
+promoted from corpus-only capture to opt-in, hardware-conditional,
+scored production wake legs** — see
+[`docs/HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md)
+§2.4 and the `JASPER_WAKE_LEG_CHIP_AEC` toggle above. The leg
+registry/config/telemetry + control surface have landed (default OFF);
+the production `jasper-aec-init` chip profile + the bridge Option-A
+repoint + on-device validation are the remaining halves. The carve-out
+stays **narrow**: it does not re-open PipeWire, dual-USB-sink, or custom
+firmware, and the "architecture is fixed; swap the engine, not the
+topology" rule still binds everywhere else — the chip-AEC leg rides the
+existing dsnoop→engine→UDP→voice topology (it adds scored beam legs and
+forwards the chip beam into the existing `:9876` carrier; it does not
+re-architect the bridge).
 
 **Three layered bridge bugs were fixed on 2026-05-19.** Together
 they had been silently corrupting AEC's reference signal since

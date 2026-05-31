@@ -398,18 +398,30 @@ def test_index_html_renders_custom_row_for_unknown_active(monkeypatch):
 
 def test_index_html_renders_detection_card():
     """The detection-layers card sits at the top of /wake/ with one
-    row per layer (AEC, raw, DTLN) — each row carries an iOS toggle
-    that the page hydrates from /detection.json on load."""
+    row per layer (AEC, raw, DTLN, chip-AEC beams) — each row carries an
+    iOS toggle that the page hydrates from /detection.json on load."""
     html = wake_setup._index_html({}).decode()
     assert 'id="layer-aec"' in html
     assert 'id="layer-raw"' in html
     assert 'id="layer-dtln"' in html
+    assert 'id="layer-chip_aec"' in html
     # iOS toggle classes come from the shared _common.TOGGLE_CSS.
     assert 'class="toggle"' in html
     # Each row exposes a status element for the poll loop to fill.
     assert 'id="layer-status-aec"' in html
     assert 'id="layer-status-raw"' in html
     assert 'id="layer-status-dtln"' in html
+    assert 'id="layer-status-chip_aec"' in html
+
+
+def test_index_html_chip_aec_row_explains_mutual_exclusion():
+    """The chip-AEC layer row tells the household it's mutually exclusive
+    with raw + DTLN (one chip can't do both) and needs the 6-ch firmware
+    — so a user understands why enabling it greys the others out."""
+    html = wake_setup._index_html({}).decode()
+    assert "Chip-AEC beams" in html
+    assert "Mutually exclusive" in html or "pauses them" in html
+    assert "6-channel firmware" in html
 
 
 def test_index_html_includes_sensitivity_slider():
@@ -693,6 +705,19 @@ def test_layer_dtln_posts_aec_leg_with_body(wired_server):
     posts = [r for r in received if r[0] == "POST"]
     assert any(
         path == "/aec/leg" and parsed == {"leg": "dtln", "enabled": True}
+        for _, path, parsed in posts
+    )
+
+
+def test_layer_chip_aec_posts_aec_leg_with_body(wired_server):
+    """The chip-AEC layer rewrites to /aec/leg with leg='chip_aec' — the
+    single boolean the reconciler fans out to both fixed beams. Routing
+    is identical to raw/dtln; jasper-control's handler stays unchanged."""
+    base, received, _, _ = wired_server
+    _json_post_with_csrf(base, "/layer/chip_aec", {"enabled": True})
+    posts = [r for r in received if r[0] == "POST"]
+    assert any(
+        path == "/aec/leg" and parsed == {"leg": "chip_aec", "enabled": True}
         for _, path, parsed in posts
     )
 

@@ -77,21 +77,36 @@ def test_read_aec_state_defaults_when_file_missing(aec_mode_file):
         "mode": "auto",
         "leg_raw": True,
         "leg_dtln": False,
+        "leg_chip_aec": False,
     }
 
 
-def test_read_aec_state_parses_all_three_keys(aec_mode_file):
+def test_read_aec_state_parses_all_leg_keys(aec_mode_file):
     aec_mode_file.write_text(
         "JASPER_AEC_MODE=disabled\n"
         "JASPER_WAKE_LEG_RAW=0\n"
         "JASPER_WAKE_LEG_DTLN=1\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
     state = server._read_aec_state()
     assert state == {
         "mode": "disabled",
         "leg_raw": False,
         "leg_dtln": True,
+        "leg_chip_aec": True,
     }
+
+
+def test_read_aec_state_chip_aec_defaults_off_when_absent(aec_mode_file):
+    """Pre-chip-AEC deploys lack JASPER_WAKE_LEG_CHIP_AEC; the helper
+    surfaces the default (off) so the /wake/ UI doesn't show a stale or
+    accidentally-on chip toggle before the reconciler appends the key."""
+    aec_mode_file.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+    )
+    assert server._read_aec_state()["leg_chip_aec"] is False
 
 
 def test_read_aec_state_partial_file_uses_defaults_for_missing(aec_mode_file):
@@ -164,20 +179,24 @@ def test_write_aec_leg_writes_zero_for_off(aec_mode_file):
 
 
 def test_toggle_to_token_maps_to_real_wake_input_legs():
-    """Every operator toggle name maps to a real wake_input leg token in
-    the registry — and "raw" specifically resolves to the chip-direct
-    "off" leg on UDP 9877, NOT the "raw0" corpus leg (the easy-to-confuse
-    footgun). Guards _TOGGLE_TO_TOKEN against drifting onto the wrong leg
-    if the registry is ever reorganized."""
+    """Every operator toggle name maps to one-or-more real wake_input leg
+    tokens in the registry — and "raw" specifically resolves to the
+    chip-direct "off" leg on UDP 9877, NOT the "raw0" corpus leg (the
+    easy-to-confuse footgun). Guards _TOGGLE_TO_TOKEN against drifting onto
+    the wrong leg if the registry is ever reorganized. Values are tuples
+    because one toggle can arm several legs (chip_aec -> 150 + 210)."""
     from jasper.wake_legs import by_token, wake_input_legs
     wake_tokens = {leg.token for leg in wake_input_legs()}
-    for toggle, token in server._TOGGLE_TO_TOKEN.items():
-        assert token in wake_tokens, (
-            f"toggle {toggle!r} -> {token!r} is not a wake_input leg"
-        )
+    for toggle, tokens in server._TOGGLE_TO_TOKEN.items():
+        for token in tokens:
+            assert token in wake_tokens, (
+                f"toggle {toggle!r} -> {token!r} is not a wake_input leg"
+            )
     # The collision the map exists to document: operator "raw" == "off".
-    assert server._TOGGLE_TO_TOKEN["raw"] == "off"
+    assert server._TOGGLE_TO_TOKEN["raw"] == ("off",)
     assert by_token("off").udp_port == 9877
+    # The chip-AEC toggle arms both fixed-beam legs (one boolean, two legs).
+    assert server._TOGGLE_TO_TOKEN["chip_aec"] == ("chip_aec_150", "chip_aec_210")
 
 
 # ---------- _write_wake_threshold ------------------------------------------
@@ -254,11 +273,18 @@ def test_aec_full_status_includes_legs_and_threshold(
     # Stub the systemctl call — we don't want this unit test to
     # depend on a live jasper-aec-bridge.service.
     monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    # Stub the firmware probe so the chip leg's `available` flag is
+    # deterministic off-device (no /proc/asound/Array here).
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
+    )
     status = server._aec_full_status()
     assert status["mode"] == "auto"
     assert status["bridge_active"] is True
     assert status["legs"]["raw"]["configured"] is True
     assert status["legs"]["dtln"]["configured"] is True
+    assert status["legs"]["chip_aec"]["configured"] is False
+    assert status["legs"]["chip_aec"]["available"] is True
     assert status["threshold"] == 0.40
 
 
@@ -272,6 +298,9 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
     monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.is_recommended_firmware", lambda: False,
+    )
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     status = server._aec_full_status()
     assert status == {
@@ -280,6 +309,68 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
         "legs": {
             "raw": {"configured": True},   # boolean stays even with mode=disabled
             "dtln": {"configured": False},
+            # chip default off; not available off the 6-ch firmware.
+            "chip_aec": {"configured": False, "available": False},
         },
         "threshold": 0.5,
     }
+
+
+def test_aec_full_status_chip_available_tracks_firmware(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    """The chip-AEC leg's `available` flag mirrors
+    xvf3800.is_recommended_firmware() so the /wake/ toggle can grey out
+    on non-6-ch firmware. Configured state is independent of available."""
+    aec_mode_file.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.is_recommended_firmware", lambda: False,
+    )
+    status = server._aec_full_status()
+    # Configured reflects the operator's intent even when unavailable.
+    assert status["legs"]["chip_aec"]["configured"] is True
+    assert status["legs"]["chip_aec"]["available"] is False
+
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
+    )
+    assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
+
+
+def test_aec_full_status_survives_firmware_probe_error(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    """A failing firmware probe must never 500 the status GET the /wake/
+    page polls every 3 s — it degrades to available=False."""
+    aec_mode_file.write_text("JASPER_AEC_MODE=auto\n")
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: False)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+
+    def _boom():
+        raise RuntimeError("proc read blew up")
+
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.is_recommended_firmware", _boom,
+    )
+    status = server._aec_full_status()
+    assert status["legs"]["chip_aec"]["available"] is False
+
+
+def test_write_aec_leg_chip_aec_writes_boolean(aec_mode_file):
+    """The /aec/leg POST for chip_aec writes JASPER_WAKE_LEG_CHIP_AEC,
+    preserving the other leg keys (RMW)."""
+    aec_mode_file.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+    )
+    server._write_aec_leg("chip_aec", True)
+    body = aec_mode_file.read_text()
+    assert "JASPER_WAKE_LEG_CHIP_AEC=1" in body
+    assert "JASPER_WAKE_LEG_RAW=1" in body   # preserved
+    assert server._read_aec_state()["leg_chip_aec"] is True

@@ -154,12 +154,18 @@ def _write_mode_with_legs(
     mode: str = "auto",
     raw: str = "1",
     dtln: str = "0",
+    chip_aec: str | None = None,
 ) -> None:
-    (tmp_path / "aec_mode.env").write_text(
+    body = (
         f"JASPER_AEC_MODE={mode}\n"
         f"JASPER_WAKE_LEG_RAW={raw}\n"
         f"JASPER_WAKE_LEG_DTLN={dtln}\n"
     )
+    # When chip_aec is None the key is omitted, so ensure_mode_file
+    # appends the default (0) — exercising the pre-chip-AEC upgrade path.
+    if chip_aec is not None:
+        body += f"JASPER_WAKE_LEG_CHIP_AEC={chip_aec}\n"
+    (tmp_path / "aec_mode.env").write_text(body)
 
 
 def test_ensure_mode_file_seeds_default_leg_keys(tmp_path: Path) -> None:
@@ -284,3 +290,101 @@ def test_dtln_alone_is_valid_config(tmp_path: Path) -> None:
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:9878" in body
     assert "JASPER_AEC_DTLN_ENABLED=1" in body
+
+
+# ---------- Chip-AEC beam legs (chip-AEC promotion P2) --------------------
+# JASPER_WAKE_LEG_CHIP_AEC (one boolean) maps to BOTH chip-beam mic device
+# vars + the JASPER_AEC_CHIP_AEC_ENABLED bridge/init signal, and is
+# mutually exclusive with raw/DTLN (single-chip Option-A). Default off, so
+# any install that hasn't opted in is byte-identical to today. NOTE: the
+# bridge/aec-init halves that actually emit the chip beams are the
+# on-device follow-up — these tests pin the deterministic env-var policy.
+
+
+def test_ensure_mode_file_seeds_chip_aec_default(tmp_path: Path) -> None:
+    """Fresh install: the mode file gets JASPER_WAKE_LEG_CHIP_AEC=0
+    alongside the existing leg defaults. Must match install.sh's seed."""
+    _write_env(tmp_path, "Array")
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_WAKE_LEG_CHIP_AEC=0" in body
+
+
+def test_ensure_mode_file_appends_missing_chip_aec_key(tmp_path: Path) -> None:
+    """Pre-chip-AEC deploy: aec_mode.env lacks the chip key. Reconciler
+    appends it (default off), preserving the operator's existing keys."""
+    (tmp_path / "aec_mode.env").write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=1\n"
+    )
+    _write_env(tmp_path, "Array")
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_WAKE_LEG_DTLN=1" in body            # preserved
+    assert "JASPER_WAKE_LEG_CHIP_AEC=0" in body        # appended
+
+
+def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
+    """AEC auto + 6-ch + CHIP_AEC=1 → sets both chip-beam UDP devices +
+    JASPER_AEC_CHIP_AEC_ENABLED=1, and CLEARS raw/DTLN even though their
+    booleans are on (single-chip mutual exclusion: the bridge can't emit
+    the software legs and the chip beams at the same time)."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="1", chip_aec="1")
+    _write_card(tmp_path, channels=6)
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
+    assert "JASPER_AEC_DTLN_ENABLED=1" not in body
+
+
+def test_chip_aec_off_clears_chip_vars_keeps_raw_dtln(tmp_path: Path) -> None:
+    """Default (CHIP_AEC=0): chip vars cleared, raw/DTLN behave exactly as
+    before the promotion — the byte-identical-when-off guarantee."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="1", chip_aec="0")
+    _write_card(tmp_path, channels=6)
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:9878" in body
+    assert "JASPER_AEC_DTLN_ENABLED=1" in body
+
+
+def test_chip_aec_cleared_when_aec_disabled(tmp_path: Path) -> None:
+    """AEC disabled → chip vars cleared too, even with the chip boolean on.
+    The boolean stays in the mode file (intent preserved for re-enable)."""
+    _write_env(tmp_path, "Array")
+    _write_mode_with_legs(
+        tmp_path, mode="disabled", raw="1", dtln="0", chip_aec="1",
+    )
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
+    mode_body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_WAKE_LEG_CHIP_AEC=1" in mode_body
+
+
+def test_chip_aec_not_armed_without_6ch_firmware(tmp_path: Path) -> None:
+    """CHIP_AEC=1 but the mic isn't 6-channel → the bridge doesn't run, so
+    the chip vars stay cleared. The chip leg is structurally gated on the
+    6-ch firmware (the bridge-running branch is the only one that arms it)."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode_with_legs(
+        tmp_path, mode="auto", raw="0", dtln="0", chip_aec="1",
+    )
+    _write_card(tmp_path, channels=2)
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body

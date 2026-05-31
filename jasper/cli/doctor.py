@@ -1687,6 +1687,7 @@ def _voice_wake_legs_runtime() -> "set[str] | None":
 
 def _assess_wake_legs(
     aec_mode: str, raw: bool, dtln: bool, armed_runtime: "set[str] | None",
+    *, chip_aec: bool = False,
 ) -> CheckResult:
     """Compare configured wake-leg intent against what jasper-voice
     actually opened. Pure (the runtime set is passed in) so it's
@@ -1694,36 +1695,48 @@ def _assess_wake_legs(
 
     Maps the operator/config vocabulary to jasper.wake_legs tokens: the
     aec3 master is "on", the "raw" toggle is the chip-direct "off" leg,
-    and dtln is "dtln". `armed_runtime` is None when the daemon is
-    unreachable — then we report configured intent (the behaviour before
-    the runtime cross-check existed)."""
+    "dtln" is "dtln", and "chip_aec" is the pair of XVF3800 hardware-AEC
+    beam legs (chip_aec_150 + chip_aec_210). `armed_runtime` is None when
+    the daemon is unreachable — then we report configured intent (the
+    behaviour before the runtime cross-check existed).
+
+    Chip-AEC is single-chip mutually exclusive with raw/DTLN: when it's on,
+    the reconciler clears the raw/DTLN device vars *regardless* of their
+    booleans (it preserves the booleans as wizard intent), so the effective
+    leg set is the two chip beams + the primary "on" carrier. We must NOT
+    expect "off"/"dtln" in that mode, or this check would false-warn that
+    they're "not running" when they are intentionally off."""
     hint = "Toggle at http://jts.local/wake/ (Wake detection card)."
     if aec_mode != "auto":
         return CheckResult(
             "Wake legs", "ok",
             f"n/a — AEC mode is {aec_mode}; additive legs require AEC on",
         )
-    configured = [name for name, on in
-                  (("aec3", True), ("raw", raw), ("dtln", dtln)) if on]
+    if chip_aec:
+        configured = ["aec3", "chip_aec_150", "chip_aec_210"]
+        expected = {"on", "chip_aec_150", "chip_aec_210"}
+    else:
+        configured = [name for name, on in
+                      (("aec3", True), ("raw", raw), ("dtln", dtln)) if on]
+        expected = {"on"}
+        if raw:
+            expected.add("off")
+        if dtln:
+            expected.add("dtln")
     if armed_runtime is None:
         return CheckResult(
             "Wake legs", "ok",
             f"{len(configured)} leg(s) configured: "
             f"{', '.join(configured)}. {hint}",
         )
-    expected = {"on"}
-    if raw:
-        expected.add("off")
-    if dtln:
-        expected.add("dtln")
     missing = expected - armed_runtime
     if missing:
         return CheckResult(
             "Wake legs", "warn",
             f"configured {sorted(expected)} but jasper-voice armed only "
             f"{sorted(armed_runtime)}; {sorted(missing)} not running "
-            f"(bridge down, or see `journalctl -u jasper-voice | "
-            f"grep event=wake.leg_skipped`). {hint}",
+            f"(bridge down, chip not on 6-ch firmware, or see `journalctl "
+            f"-u jasper-voice | grep event=wake.leg_skipped`). {hint}",
         )
     return CheckResult(
         "Wake legs", "ok",
@@ -1734,8 +1747,8 @@ def _assess_wake_legs(
 
 def check_wake_legs_configured() -> CheckResult:
     """Reports which additive wake-detection legs are armed (raw
-    chip-direct + DTLN neural); the AEC3 master leg is reported
-    separately by check_aec_bridge_running.
+    chip-direct, DTLN neural, and the XVF3800 chip-AEC beam legs); the
+    AEC3 master leg is reported separately by check_aec_bridge_running.
 
     Reads configured intent from aec_mode.env and cross-checks it against
     what jasper-voice actually opened (/state.voice.wake_legs), so a
@@ -1746,12 +1759,15 @@ def check_wake_legs_configured() -> CheckResult:
     aec_mode = _aec_mode_setting()
     raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
     dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)
+    chip_aec = _wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC", False)
     # Only worth a control-plane round-trip when AEC (and thus the legs)
     # is actually on; _assess_wake_legs returns n/a otherwise.
     armed_runtime = (
         _voice_wake_legs_runtime() if aec_mode == "auto" else None
     )
-    return _assess_wake_legs(aec_mode, raw, dtln, armed_runtime)
+    return _assess_wake_legs(
+        aec_mode, raw, dtln, armed_runtime, chip_aec=chip_aec,
+    )
 
 
 def check_aec_bridge_running() -> CheckResult:

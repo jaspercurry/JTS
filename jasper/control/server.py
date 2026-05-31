@@ -360,19 +360,29 @@ _WAKE_MODEL_FILE = "/var/lib/jasper/wake_model.env"
 # Default leg policy — must match deploy/install.sh's reconcile_aec_state
 # and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on
 # by default (~5 MB / negligible CPU, gives OR-fusion wake-rate
-# recovery), DTLN is off by default (~75 MB / ~25% one core, opt-in).
+# recovery), DTLN is off by default (~75 MB / ~25% one core, opt-in),
+# chip-AEC is off by default (hardware-conditional, mutually exclusive
+# with raw/DTLN — the chip-AEC promotion).
 _LEG_DEFAULT_RAW = True
 _LEG_DEFAULT_DTLN = False
+_LEG_DEFAULT_CHIP_AEC = False
 
-# Operator-facing wake-leg toggle name -> jasper.wake_legs token. The
-# chip-direct / AEC-OFF leg is exposed to operators (the /wake/ card,
-# /aec/leg, the JASPER_WAKE_LEG_RAW env var, the bash reconciler) as
-# "raw", but its frozen wire token is "off". Do NOT confuse "raw" with
-# the "raw0" corpus-only leg (chip channel 2, no toggle). This map is the
-# single place that collision is spelled out; leg-toggle validation goes
-# through it. Keys are the toggle vocabulary; values are wake_input
-# tokens. See docs/HANDOFF-mic-fusion-architecture.md.
-_TOGGLE_TO_TOKEN = {"raw": "off", "dtln": "dtln"}
+# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). Values
+# are tuples because one operator toggle can arm more than one leg: the
+# "chip_aec" toggle (JASPER_WAKE_LEG_CHIP_AEC) arms BOTH fixed-beam legs
+# (chip_aec_150 + chip_aec_210), with the reconciler fanning the single
+# boolean out to JASPER_MIC_DEVICE_CHIP_AEC_150/_210. The chip-direct /
+# AEC-OFF leg is exposed to operators (the /wake/ card, /aec/leg, the
+# JASPER_WAKE_LEG_RAW env var, the bash reconciler) as "raw", but its frozen
+# wire token is "off". Do NOT confuse "raw" with the "raw0" corpus-only leg
+# (chip channel 2, no toggle). This map is the single place those mappings
+# are spelled out; leg-toggle validation goes through its keys. See
+# docs/HANDOFF-mic-fusion-architecture.md.
+_TOGGLE_TO_TOKEN = {
+    "raw": ("off",),
+    "dtln": ("dtln",),
+    "chip_aec": ("chip_aec_150", "chip_aec_210"),
+}
 
 
 def _parse_env_bool(raw: str, default: bool) -> bool:
@@ -397,6 +407,7 @@ def _read_aec_state() -> dict:
         "mode": "auto",
         "leg_raw": _LEG_DEFAULT_RAW,
         "leg_dtln": _LEG_DEFAULT_DTLN,
+        "leg_chip_aec": _LEG_DEFAULT_CHIP_AEC,
     }
     try:
         with open(_AEC_MODE_FILE) as f:
@@ -412,6 +423,10 @@ def _read_aec_state() -> dict:
                 elif line.startswith("JASPER_WAKE_LEG_DTLN="):
                     state["leg_dtln"] = _parse_env_bool(
                         line.split("=", 1)[1], _LEG_DEFAULT_DTLN,
+                    )
+                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC="):
+                    state["leg_chip_aec"] = _parse_env_bool(
+                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC,
                     )
     except OSError:
         pass
@@ -506,14 +521,31 @@ def _aec_full_status() -> dict:
     configured leg is implicitly "active" when (a) AEC mode is auto,
     (b) the bridge is active, and (c) the leg is configured on. DTLN
     load failures surface via jasper-doctor's check_aec_bridge_dtln_engine,
-    which the /system Diagnostics disclosure runs on demand."""
+    which the /system Diagnostics disclosure runs on demand.
+
+    The chip-AEC leg also carries an `available` flag: the XVF3800 chip
+    beams only exist on the 6-channel firmware, so the /wake/ toggle stays
+    disabled (with explanatory copy) when the chip isn't on that variant."""
     state = _read_aec_state()
+    # The chip-AEC beams require the 6-channel XVF firmware.
+    # is_recommended_firmware() reads /proc/asound and returns False when the
+    # card is absent or on the 2-ch variant; wrap defensively so a probe
+    # failure can never 500 a status GET the /wake/ page polls every 3 s.
+    try:
+        from ..mics import xvf3800
+        chip_available = xvf3800.is_recommended_firmware()
+    except Exception:  # noqa: BLE001
+        chip_available = False
     return {
         "mode": state["mode"],
         "bridge_active": _aec_bridge_active(),
         "legs": {
             "raw": {"configured": state["leg_raw"]},
             "dtln": {"configured": state["leg_dtln"]},
+            "chip_aec": {
+                "configured": state["leg_chip_aec"],
+                "available": chip_available,
+            },
         },
         "threshold": _read_wake_threshold(),
     }
@@ -2087,8 +2119,8 @@ def _make_handler(
 
             if self.path == "/aec/leg":
                 # Toggle one of the additive wake-detection legs
-                # (raw chip-direct or DTLN neural). The reconciler
-                # maps the boolean back to the underlying env vars
+                # (raw chip-direct, DTLN neural, or chip-AEC beams). The
+                # reconciler maps the boolean back to the underlying env vars
                 # the bridge + voice each read at startup, then
                 # restarts whichever daemons need to pick up the
                 # change. Per-leg sub-toggles are only meaningful
@@ -2110,7 +2142,9 @@ def _make_handler(
                 enabled_val = body.get("enabled")
                 if leg not in _TOGGLE_TO_TOKEN:
                     self._send_json(
-                        {"error": "leg must be 'raw' or 'dtln'"}, status=400,
+                        {"error": "leg must be one of: "
+                                  + ", ".join(sorted(_TOGGLE_TO_TOKEN))},
+                        status=400,
                     )
                     return
                 if not isinstance(enabled_val, bool):

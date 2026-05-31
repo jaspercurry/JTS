@@ -2315,17 +2315,19 @@ class WakeLoop:
 
         import time as _time
         self._wake_event_at_monotonic = _time.monotonic()
-        # Per-leg score summary for the log: each configured leg's most-
-        # recent score, or "none" if the leg is unconfigured or its last
-        # score is stale (a stopped stream shouldn't show a misleading old
-        # value). The firing leg's recent_score == `score` (just set).
+        # Per-leg score summary for the log — ONLY the legs this install
+        # actually built (self._legs), in priority order. A single-stream
+        # or non-chip-AEC install never emits score fields for legs it
+        # isn't running; the log adapts to the active mic/leg set rather
+        # than the static universe of every possible leg. "none" here means
+        # an ACTIVE leg whose last score is stale (its UDP stream dried up)
+        # — distinct from an unconfigured leg, which is simply absent. The
+        # firing leg's recent_score == `score` (just set).
         _parts = []
-        for _n in _LEG_DB:
-            _lr = self._legs.get(_n)
-            if _lr is None or (
-                _n != leg
-                and (_lr.recent_score_at == 0.0
-                     or (now_loop - _lr.recent_score_at) > WAKE_STALE_SCORE_SEC)
+        for _n, _lr in self._legs.items():
+            if _n != leg and (
+                _lr.recent_score_at == 0.0
+                or (now_loop - _lr.recent_score_at) > WAKE_STALE_SCORE_SEC
             ):
                 _parts.append(f"score_{_n}=none")
             else:

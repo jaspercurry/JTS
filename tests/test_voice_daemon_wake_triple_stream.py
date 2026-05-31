@@ -281,6 +281,47 @@ async def test_chip_beam_corroborates_in_fired_legs_when_software_leg_fires():
     assert kwargs["peak_score_chip_aec_150"] == pytest.approx(0.81)
 
 
+async def test_wake_log_omits_unconfigured_leg_scores(caplog):
+    """Adaptivity (mic/leg-set-driven, not the static universe): a
+    single-stream install logs only the leg it actually built — no
+    score_off / score_dtln / score_chip_aec_* noise for legs it isn't
+    running. Guards against the log regressing to iterating every possible
+    leg regardless of hardware."""
+    import logging
+    wl = _make_wake_loop_triple()  # "on" only — no off/dtln/chip detectors
+    wl._detector.score_frame.return_value = 0.91
+    with caplog.at_level(logging.INFO):
+        await wl._handle_wake_frame(_frame(), leg="on")
+    msg = next(
+        r.message for r in caplog.records if "event=wake.detected" in r.message
+    )
+    assert "score_on=0.91" in msg
+    assert "score_off" not in msg
+    assert "score_dtln" not in msg
+    assert "score_chip_aec" not in msg
+
+
+async def test_wake_log_emits_only_active_legs_with_chip(caplog):
+    """A chip-AEC install (on + the two chip beams, no software off/DTLN —
+    the reconciler's mutual exclusion) logs exactly those three legs, and
+    does NOT emit score_off / score_dtln for legs it isn't running."""
+    import logging
+    wl = _make_wake_loop_triple(
+        detector_chip_aec_150=_make_detector(),
+        detector_chip_aec_210=_make_detector(),
+    )
+    wl._detector.score_frame.return_value = 0.88
+    with caplog.at_level(logging.INFO):
+        await wl._handle_wake_frame(_frame(), leg="on")
+    msg = next(
+        r.message for r in caplog.records if "event=wake.detected" in r.message
+    )
+    assert "score_on=0.88" in msg
+    assert "score_chip_aec_150" in msg and "score_chip_aec_210" in msg
+    assert "score_off" not in msg
+    assert "score_dtln" not in msg
+
+
 def test_leg_db_covers_all_wake_input_legs():
     """Every wake-input leg in the registry must have a _LEG_DB telemetry
     mapping — otherwise _handle_wake_frame would KeyError on a leg present

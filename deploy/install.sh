@@ -1546,23 +1546,34 @@ migrate_wake_legs_config() {
     [[ -f "${jasper_env}" ]] || return 0
 
     local raw_line dtln_line dtln_enabled_line
+    local chip_150_line chip_210_line chip_enabled_line
     raw_line=$(grep -E '^JASPER_MIC_DEVICE_RAW=' "${jasper_env}" || true)
     dtln_line=$(grep -E '^JASPER_MIC_DEVICE_DTLN=' "${jasper_env}" || true)
     dtln_enabled_line=$(grep -E '^JASPER_AEC_DTLN_ENABLED=' "${jasper_env}" || true)
+    chip_150_line=$(grep -E '^JASPER_MIC_DEVICE_CHIP_AEC_150=' "${jasper_env}" || true)
+    chip_210_line=$(grep -E '^JASPER_MIC_DEVICE_CHIP_AEC_210=' "${jasper_env}" || true)
+    chip_enabled_line=$(grep -E '^JASPER_AEC_CHIP_AEC_ENABLED=' "${jasper_env}" || true)
 
-    if [[ -z "${raw_line}${dtln_line}${dtln_enabled_line}" ]]; then
+    if [[ -z "${raw_line}${dtln_line}${dtln_enabled_line}${chip_150_line}${chip_210_line}${chip_enabled_line}" ]]; then
         return 0
     fi
 
     install -d -m 0755 "${STATE_DIR}"
 
     local raw_value dtln_value dtln_enabled_value
+    local chip_150_value chip_210_value chip_enabled_value
     raw_value="${raw_line#JASPER_MIC_DEVICE_RAW=}"
     raw_value="${raw_value%[$'\r\n ']*}"
     dtln_value="${dtln_line#JASPER_MIC_DEVICE_DTLN=}"
     dtln_value="${dtln_value%[$'\r\n ']*}"
     dtln_enabled_value="${dtln_enabled_line#JASPER_AEC_DTLN_ENABLED=}"
     dtln_enabled_value="${dtln_enabled_value%[$'\r\n ']*}"
+    chip_150_value="${chip_150_line#JASPER_MIC_DEVICE_CHIP_AEC_150=}"
+    chip_150_value="${chip_150_value%[$'\r\n ']*}"
+    chip_210_value="${chip_210_line#JASPER_MIC_DEVICE_CHIP_AEC_210=}"
+    chip_210_value="${chip_210_value%[$'\r\n ']*}"
+    chip_enabled_value="${chip_enabled_line#JASPER_AEC_CHIP_AEC_ENABLED=}"
+    chip_enabled_value="${chip_enabled_value%[$'\r\n ']*}"
 
     # An operator running the dual-stream setup had RAW set to a
     # udp:* device. Empty value means they had explicitly cleared
@@ -1575,6 +1586,16 @@ migrate_wake_legs_config() {
     local want_dtln="0"
     if [[ -n "${dtln_value}" || "${dtln_enabled_value}" == "1" ]]; then
         want_dtln="1"
+    fi
+
+    # Chip-AEC beams: a hand-set chip device var OR the enabled flag is
+    # enough signal to preserve intent. New in the chip-AEC promotion;
+    # almost always a no-op (nobody hand-set these before), but mirrors
+    # the raw/DTLN translation so the reconciler stays the sole writer.
+    local want_chip_aec="0"
+    if [[ -n "${chip_150_value}" || -n "${chip_210_value}" \
+          || "${chip_enabled_value}" == "1" ]]; then
+        want_chip_aec="1"
     fi
 
     touch "${wizard_env}"
@@ -1590,10 +1611,18 @@ migrate_wake_legs_config() {
         echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_DTLN=${want_dtln}"
         echo "    from prior JASPER_MIC_DEVICE_DTLN=${dtln_value:-<unset>}, JASPER_AEC_DTLN_ENABLED=${dtln_enabled_value:-<unset>}"
     fi
+    if ! grep -qE '^JASPER_WAKE_LEG_CHIP_AEC=' "${wizard_env}"; then
+        echo "JASPER_WAKE_LEG_CHIP_AEC=${want_chip_aec}" >> "${wizard_env}"
+        echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_CHIP_AEC=${want_chip_aec}"
+        echo "    from prior JASPER_MIC_DEVICE_CHIP_AEC_150=${chip_150_value:-<unset>}, _210=${chip_210_value:-<unset>}, JASPER_AEC_CHIP_AEC_ENABLED=${chip_enabled_value:-<unset>}"
+    fi
 
     sed -i.bak '/^JASPER_MIC_DEVICE_RAW=/d' "${jasper_env}"
     sed -i.bak '/^JASPER_MIC_DEVICE_DTLN=/d' "${jasper_env}"
     sed -i.bak '/^JASPER_AEC_DTLN_ENABLED=/d' "${jasper_env}"
+    sed -i.bak '/^JASPER_MIC_DEVICE_CHIP_AEC_150=/d' "${jasper_env}"
+    sed -i.bak '/^JASPER_MIC_DEVICE_CHIP_AEC_210=/d' "${jasper_env}"
+    sed -i.bak '/^JASPER_AEC_CHIP_AEC_ENABLED=/d' "${jasper_env}"
     rm -f "${jasper_env}.bak"
 }
 
@@ -2562,14 +2591,19 @@ install_journald_persistent_storage() {
 
 reconcile_aec_state() {
     install -d -m 0755 "${STATE_DIR}"
-    # Three keys live in aec_mode.env, all owned by the /system
+    # Four keys live in aec_mode.env, all owned by the /wake/
     # wake-detection card after the per-leg-toggle refactor:
     #   - JASPER_AEC_MODE             master AEC bridge toggle
     #   - JASPER_WAKE_LEG_RAW         additive raw chip-direct leg (~5 MB)
     #   - JASPER_WAKE_LEG_DTLN        additive DTLN neural leg (~75 MB)
+    #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC beam legs (opt-in,
+    #                                 hardware-conditional, mutually
+    #                                 exclusive with raw/DTLN)
     # Defaults: AEC on, raw on (dual-stream is the OSS baseline —
     # cheap wake-rate win), DTLN off (heavy, opt-in for 2 GB Pis with
-    # a wake-event corpus). See the /system card and AGENTS.md
+    # a wake-event corpus), chip-AEC off (needs 6-ch firmware + the
+    # chip-AEC bridge/init halves; gate any default-on flip on a
+    # ~1-week telemetry review). See the /wake/ card and AGENTS.md
     # "AEC bridge — reconciler toggle" for the lever set.
     #
     # On upgrade, the reconciler's ensure_mode_file appends any
@@ -2578,7 +2612,7 @@ reconcile_aec_state() {
     # leg fields. Migration from hand-set underlying env vars in
     # /etc/jasper/jasper.env runs separately in migrate_wake_legs_config.
     if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
-        printf 'JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\n' \
+        printf 'JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' \
             > "${STATE_DIR}/aec_mode.env"
         chmod 0644 "${STATE_DIR}/aec_mode.env"
     fi

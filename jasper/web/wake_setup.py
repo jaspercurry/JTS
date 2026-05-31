@@ -2,13 +2,17 @@
 
 Two stacked sections, one page:
 
-  1. **Detection layers + sensitivity** — three iOS-style toggles
-     (AEC3 echo cancellation, chip-direct mic, DTLN neural AEC) and a
-     sensitivity slider. Polls jasper-control for live state, posts
-     state-set requests back. The AEC master gates the bridge entirely;
-     the raw + DTLN legs are sub-features layered on top, and are
-     disabled (visually + interactively) when AEC is off because they
-     consume the bridge's UDP stream.
+  1. **Detection layers + sensitivity** — iOS-style toggles (AEC3 echo
+     cancellation, chip-direct mic, DTLN neural AEC, and the
+     hardware-conditional XVF3800 chip-AEC beams) and a sensitivity
+     slider. Polls jasper-control for live state, posts state-set
+     requests back. The AEC master gates the bridge entirely; the raw +
+     DTLN legs are sub-features layered on top, and are disabled
+     (visually + interactively) when AEC is off because they consume the
+     bridge's UDP stream. The chip-AEC layer is additionally gated on the
+     6-channel firmware (its `available` flag) and is mutually exclusive
+     with raw + DTLN — enabling it greys those out (one chip can't emit
+     both the software legs and the chip beams).
 
   2. **Wake-word model picker** — radio over the curated registry in
      jasper/wake_models.py. Bundled openWakeWord names always show as
@@ -42,6 +46,8 @@ URL surface (after nginx strips the /wake/ prefix):
   POST /layer/aec       body {enabled: bool} — set AEC master
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
   POST /layer/dtln      body {enabled: bool} — set DTLN leg
+  POST /layer/chip_aec  body {enabled: bool} — set chip-AEC beam legs
+                        (one toggle arms both fixed 150°/210° beams)
   POST /sensitivity     body {value: float}  — set wake threshold
   POST /save            write wake_model.env + restart voice daemon
 
@@ -195,6 +201,19 @@ _LAYERS = (
         "Neural echo cancellation as a third wake layer. Best "
         "wake-rate boost; heaviest cost. Recommended only on 2 GB Pi.",
         "~75 MB · ~25% core",
+        True,
+    ),
+    (
+        "chip_aec",
+        "Chip-AEC beams (XVF3800)",
+        "Uses the mic array's hardware echo-cancelled 150°/210° beams "
+        "as the wake layers. Mutually exclusive with the raw + DTLN "
+        "layers — turning this on pauses them (the chip can't do both "
+        "at once). Needs the 6-channel firmware.",
+        # Two openWakeWord detectors (one per beam), no neural engine.
+        # Estimate pending on-device measurement; matches the format of
+        # the rows above (<RAM> · <CPU>).
+        "~10 MB · light",
         True,
     ),
 )
@@ -517,7 +536,10 @@ def _apply_layer(
         return proxy_post(
             "/aec/toggle", control_base=control_base, timeout=5.0,
         )
-    if layer in ("raw", "dtln"):
+    if layer in ("raw", "dtln", "chip_aec"):
+        # chip_aec is one wizard toggle that arms BOTH fixed beams; the
+        # /aec/leg handler + reconciler fan the single boolean out to
+        # JASPER_MIC_DEVICE_CHIP_AEC_150/_210.
         return proxy_post(
             "/aec/leg",
             control_base=control_base, timeout=5.0,
@@ -544,7 +566,7 @@ def _apply_sensitivity(
 # ----------------------------------------------------------------------
 
 
-_VALID_LAYERS = ("aec", "raw", "dtln")
+_VALID_LAYERS = ("aec", "raw", "dtln", "chip_aec")
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
