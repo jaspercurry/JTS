@@ -266,6 +266,8 @@ BRIDGE_CORPUS_OUTPUT_VARS = (
     "JASPER_AEC_OUTPUTD_REF_UDP_PORT",
     "JASPER_OUTPUTD_CHIP_REF_PCM",
     "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
+    "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE",
+    "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
     "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
@@ -273,7 +275,9 @@ BRIDGE_CORPUS_OUTPUT_VARS = (
 OUTPUTD_REF_UDP_TARGET = "127.0.0.1:9891"
 OUTPUTD_REF_UDP_PORT = "9891"
 DEFAULT_CHIP_REF_PCM = "plughw:CARD=Array,DEV=0"
-DEFAULT_CHIP_REF_BUFFER_FRAMES = "4096"
+DEFAULT_CHIP_REF_SAMPLE_RATE = "16000"
+DEFAULT_CHIP_REF_PERIOD_FRAMES = "320"
+DEFAULT_CHIP_REF_BUFFER_FRAMES = "1280"
 DEFAULT_USB_MIC_DEVICE = "USB PnP Sound Device"
 DEFAULT_USB_MIXER_CARD = "Device"
 USB_AGC_CONTROL = "Auto Gain Control"
@@ -311,6 +315,9 @@ def chip_aec_config_metadata() -> dict[str, object]:
         "reference_topology": "outputd_direct_fanout",
         "outputd_reference_udp_target": OUTPUTD_REF_UDP_TARGET,
         "chip_ref_pcm": DEFAULT_CHIP_REF_PCM,
+        "chip_ref_sample_rate": int(DEFAULT_CHIP_REF_SAMPLE_RATE),
+        "chip_ref_period_frames": int(DEFAULT_CHIP_REF_PERIOD_FRAMES),
+        "chip_ref_buffer_frames": int(DEFAULT_CHIP_REF_BUFFER_FRAMES),
         "SHF_BYPASS": 0,
         "AEC_ASROUTONOFF": 1,
         "AEC_ASROUTGAIN": 1.0,
@@ -877,11 +884,14 @@ def set_bridge_outputs_for_session(
 
     if include_dtln and not _env_truthy(system_env.get("JASPER_AEC_DTLN_ENABLED")):
         values["JASPER_AEC_DTLN_ENABLED"] = "1"
-    elif include_aec3_sweep and not include_dtln:
-        # AEC3 sweep is intentionally a separate low-resource test mode.
-        # The overlay file can temporarily park production DTLN while
-        # the operator is collecting same-utterance AEC3 variants; exit
-        # removes this override and restores the production intent.
+    elif (
+        (include_aec3_sweep or corpus_profile == PROFILE_CHIP_AEC_COMPARISON)
+        and not include_dtln
+    ):
+        # AEC3 sweep and chip-AEC comparison are controlled corpus test
+        # modes. Temporarily park production DTLN unless the operator
+        # explicitly selected the legacy dtln leg; exit removes this
+        # override and restores the production intent.
         values["JASPER_AEC_DTLN_ENABLED"] = "0"
     if include_usb_mic or include_usb_dtln or sweep_needs_usb:
         values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
@@ -901,6 +911,8 @@ def set_bridge_outputs_for_session(
         values["JASPER_AEC_OUTPUTD_REF_UDP_PORT"] = OUTPUTD_REF_UDP_PORT
         values["JASPER_OUTPUTD_CHIP_REF_PCM"] = DEFAULT_CHIP_REF_PCM
         values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] = OUTPUTD_REF_UDP_TARGET
+        values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"] = DEFAULT_CHIP_REF_SAMPLE_RATE
+        values["JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES"] = DEFAULT_CHIP_REF_PERIOD_FRAMES
         values["JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES"] = DEFAULT_CHIP_REF_BUFFER_FRAMES
     if include_xvf_raw0_dtln:
         values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] = "1"

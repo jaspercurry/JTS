@@ -69,7 +69,10 @@ consumed by `jasper-aec-bridge`
 (`JASPER_OUTPUTD_REFERENCE_UDP_TARGET`). This is deliberately not the
 production AEC reference path yet; it is a recorder-owned test mode that
 is enabled by `/var/lib/jasper/wake_corpus_bridge.env` and removed when
-the operator exits corpus test mode.
+the operator exits corpus test mode. The UDP tap stays at outputd's
+48 kHz graph rate for software AEC/corpus analysis; the chip-reference
+PCM is downsampled to the XVF3800 USB-IN contract (`16 kHz`, default
+`320`-frame periods, `1280`-frame buffer).
 
 There is intentionally no production fan-in reference side feed. A
 short-lived 2026-05-27 spike explored a Unix-datagram content mirror

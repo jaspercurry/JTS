@@ -44,6 +44,8 @@ pub struct OutputdState {
     dac_period_frames: AtomicU64,
     content_buffer_frames: AtomicU64,
     dac_buffer_frames: AtomicU64,
+    chip_ref_sample_rate: AtomicU64,
+    chip_ref_period_frames: AtomicU64,
     chip_ref_buffer_frames: AtomicU64,
     content_frames_read: AtomicU64,
     content_empty_period_count: AtomicU64,
@@ -84,6 +86,8 @@ impl OutputdState {
             dac_period_frames: AtomicU64::new(config.period_frames as u64),
             content_buffer_frames: AtomicU64::new(config.content_buffer_frames as u64),
             dac_buffer_frames: AtomicU64::new(config.dac_buffer_frames as u64),
+            chip_ref_sample_rate: AtomicU64::new(config.chip_ref_sample_rate as u64),
+            chip_ref_period_frames: AtomicU64::new(config.chip_ref_period_frames as u64),
             chip_ref_buffer_frames: AtomicU64::new(config.chip_ref_buffer_frames as u64),
             content_frames_read: AtomicU64::new(0),
             content_empty_period_count: AtomicU64::new(0),
@@ -183,8 +187,7 @@ impl OutputdState {
     }
 
     pub fn mark_tts_command_dropped(&self, audio_frames: u64) {
-        self.tts_dropped_commands
-            .fetch_add(1, Ordering::Relaxed);
+        self.tts_dropped_commands.fetch_add(1, Ordering::Relaxed);
         if audio_frames > 0 {
             self.tts_dropped_audio_frames
                 .fetch_add(audio_frames, Ordering::Relaxed);
@@ -328,15 +331,23 @@ impl OutputdState {
         buf.push(',');
         push_kv_u64(
             &mut buf,
+            "chip_ref_sample_rate",
+            self.chip_ref_sample_rate.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "chip_ref_period_frames",
+            self.chip_ref_period_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
             "chip_ref_buffer_frames",
             self.chip_ref_buffer_frames.load(Ordering::Relaxed),
         );
         buf.push(',');
-        push_kv_str_opt(
-            &mut buf,
-            "udp_target",
-            self.reference_udp_target.as_deref(),
-        );
+        push_kv_str_opt(&mut buf, "udp_target", self.reference_udp_target.as_deref());
         buf.push('}');
         buf.push(',');
 
@@ -599,6 +610,8 @@ mod tests {
             content_buffer_frames: 4096,
             dac_buffer_frames: 3072,
             chip_ref_pcm: None,
+            chip_ref_sample_rate: 16_000,
+            chip_ref_period_frames: 320,
             chip_ref_buffer_frames: 4096,
             reference_udp_target: None,
             stream_id: 1,
@@ -650,8 +663,8 @@ mod tests {
             r#""reference_sequence":42"#,
             r#""last_period_clipped_samples":3"#,
             r#""clipped_samples":3"#,
-            r#""reference_outputs":{"chip_ref_pcm":null,"chip_ref_buffer_frames":4096,"udp_target":null}"#,
-            r#""tts":{"pending_frames":512,"budget_frames":96000,"max_pending_frames":120000,"over_budget":true,"over_budget_periods":7,"over_budget_ms":149,"over_budget_streak_ms":64}"#,
+            r#""reference_outputs":{"chip_ref_pcm":null,"chip_ref_sample_rate":16000,"chip_ref_period_frames":320,"chip_ref_buffer_frames":4096,"udp_target":null}"#,
+            r#""tts":{"pending_frames":512,"budget_frames":96000,"max_pending_frames":120000,"over_budget":true,"over_budget_periods":7,"over_budget_ms":149,"over_budget_streak_ms":64,"dropped_commands":0,"dropped_audio_frames":0}"#,
             r#""watchdog""#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");

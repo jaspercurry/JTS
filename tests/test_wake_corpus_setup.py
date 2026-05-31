@@ -1848,12 +1848,54 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
     assert values["JASPER_OUTPUTD_CHIP_REF_PCM"] == wake_corpus_setup.DEFAULT_CHIP_REF_PCM
     assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == wake_corpus_setup.OUTPUTD_REF_UDP_TARGET
+    assert (
+        values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"]
+        == wake_corpus_setup.DEFAULT_CHIP_REF_SAMPLE_RATE
+    )
+    assert (
+        values["JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES"]
+        == wake_corpus_setup.DEFAULT_CHIP_REF_PERIOD_FRAMES
+    )
+    assert (
+        values["JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES"]
+        == wake_corpus_setup.DEFAULT_CHIP_REF_BUFFER_FRAMES
+    )
     assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED" not in values
     assert restarts == [
         wake_corpus_setup.OUTPUTD_UNIT,
         wake_corpus_setup.AEC_INIT_UNIT,
         wake_corpus_setup.BRIDGE_UNIT,
     ]
+
+
+def test_set_bridge_outputs_chip_profile_parks_production_dtln(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env="JASPER_AEC_DTLN_ENABLED=1\n",
+    )
+    monkeypatch.setattr(wake_corpus_setup, "restart_unit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+
+    changed = wake_corpus_setup.set_bridge_outputs_for_session(
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        include_dtln=False,
+        include_usb_mic=True,
+        include_usb_dtln=True,
+        include_xvf_raw0_dtln=True,
+    )
+
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in bridge_path.read_text().splitlines()
+    }
+    assert changed is True
+    assert values["JASPER_AEC_DTLN_ENABLED"] == "0"
+    assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
 
 
 def test_enable_bridge_outputs_rolls_back_when_restart_fails(

@@ -413,9 +413,11 @@ CamillaDSP processing. So:
 - Corpus-only exception: the wake-corpus chip-AEC comparison profile can
   temporarily ask outputd to publish its final speaker buffer as both an
   XVF USB-IN reference and an `outputd_udp` reference tap for
-  `jasper-aec-bridge`. That path is recorder-owned and removed when
-  corpus test mode exits; production AEC still uses the `pcm.jasper_capture`
-  reference above.
+  `jasper-aec-bridge`. The UDP tap stays at outputd's 48 kHz graph
+  rate; the XVF USB-IN side output is downsampled to the chip's 16 kHz
+  playback contract. That path is recorder-owned and removed when
+  corpus test mode exits; production AEC still uses the
+  `pcm.jasper_capture` reference above.
 
 ## Related
 
