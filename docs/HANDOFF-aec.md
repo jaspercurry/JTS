@@ -1294,13 +1294,13 @@ Realistic bring-up sequence:
 |---|---|
 | Weekend prototype: route music to USB-in, measure, tune `SYS_DELAY`, verify convergence | 2–3 days |
 | Corpus pilot integration: outputd direct reference fanout, recorder-owned env lifecycle, volatile aec-init chip profile, explicit chip-AEC corpus legs | Landed 2026-05-29 |
-| Productionize: production policy/reconciler logic for chip-AEC mode vs current bridge mode, boot-time persistence choices, bridge `:9876` repoint, outputd reference producer, and basic on-device validation | Landed as opt-in branch 2026-05-31; telemetry/doctor convergence checks remain follow-up |
+| Productionize: production policy/reconciler logic for chip-AEC mode vs current bridge mode, boot-time persistence choices, bridge `:9876` repoint, outputd reference producer, and basic on-device validation | Landed and deployed 2026-05-31 (`c95bfdd`); doctor/live-arm verification passed. Wake-event telemetry review and any default-ON decision remain follow-up. |
 | Risk: PLL loop bandwidth on the chip's USB Adaptive Mode could introduce timing jitter that pushes the AEC peak past tap 40 intermittently. If so, the fallback is making the host-side ALSA period smaller (already in the bring-up plan above). No CamillaDSP-side SRC bypass possible since USB-IN is 16 kHz only — see correction note above. | — |
 
-**Verdict for future scoping:** feasibility is confirmed in lab, and
-corpus-pilot integration exists. The next decision is empirical: record
-and score the same utterances across chip AEC, WebRTC AEC3, raw, USB,
-and optional DTLN legs. Current best chip settings:
+**Verdict for future scoping:** feasibility is confirmed in lab, and the
+opt-in production path now exists. The next decision is empirical:
+record and score wake events across chip AEC, WebRTC AEC3, raw, USB
+corpus legs, and optional DTLN legs. Current best chip settings:
 `AEC_ASROUTONOFF=1`, fixed gated `150°/210°`, `AEC_AECEMPHASISONOFF=2`,
 `AEC_FAR_EXTGAIN=0 dB`. Keep WebRTC AEC3 as the production default until
 the wake/corpus validation says the chip leg actually improves model

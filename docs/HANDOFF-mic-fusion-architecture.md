@@ -1,13 +1,16 @@
 # Handoff: pluggable-mic boundary + multi-channel wake fusion architecture
 
-> **Status: living draft — design + execution plan, updated as phases
-> land (first written 2026-05-29; prior-art sweep folded in 2026-05-31).
-> Phase 0 (leg registry + `LegRuntime`, #366/#369/#381) and Phase
-> 1.0–1.3a (condition taxonomy, per-fire telemetry, the `WakeFuser`
-> seam, live-condition refresh — #385/#390) are merged. Remaining on the
-> wake-precision phase: 1.3b (corpus-tuned offsets) and the now
-> first-class 1.4 verifier (§2.6). Phases 2–5 are planned. Not a record
-> of shipped state — verify against code.** This
+> **Status: living architecture + current work queue (first written
+> 2026-05-29; prior-art sweep folded in 2026-05-31). Phase 0 (leg
+> registry + `LegRuntime`, #366/#369/#381), Phase 1.0–1.3a (condition
+> taxonomy, per-fire telemetry, the `WakeFuser` seam, live-condition
+> refresh — #385/#390), and the opt-in chip-AEC producer/wake legs
+> (#395/#397/#403 plus the `c95bfdd` telemetry/status follow-up) are
+> merged and deployed. Remaining near-term work is empirical: validate
+> the chip-AEC legs on a fresh wake-event window before making any
+> default-on call. Phase 2 pluggable-mic / cheap-USB production support
+> remains planned, but is intentionally sequenced after chip-AEC
+> validation so we do not split the next testing pass.** This
 > doc owns the *architecture* of the mic-swap boundary and the
 > leg-count-agnostic wake-fusion layer: the interfaces, the staging,
 > and the named decisions. It is the architectural companion to the
@@ -86,6 +89,15 @@
    sweep (§4.2) confirmed the direction is sound — every mechanism has
    shipped (Amazon, Home Assistant, the KWS literature); the
    *integration* is the novel, open-source part.
+
+8. **Current priority (2026-05-31): validate chip-AEC before starting
+   pluggable mic production work.** The two open streams are not equally
+   urgent. Chip-AEC is now built and deployed, so the next valuable step
+   is to collect real wake telemetry and decide whether the XVF hardware
+   beams should become the recommended XVF mode. Generic USB mic support
+   is strategically important for OSS adoption and BOM reduction, but it
+   is a follow-up track; current USB evidence says it is useful corpus
+   data, not yet a better production path.
 
 ---
 
@@ -436,6 +448,7 @@ same supervisor/health-probe pattern as the shipped T5.2
 | Corpus pull + audit + reset + `analyze-three-leg.sh` (incl. a threshold-tuning hint engine) | **Shipped** | `scripts/` |
 | Operator visibility for active mic/topology | **Shipped** | `/wake/` mic status card, backed by `jasper-control` `/aec` |
 | Mic-independent AEC reference | **Shipped** | `_ref_thread` / asoundrc |
+| Opt-in chip-AEC producer path: `/wake/` intent → reconciler → outputd reference fanout → `aec-init` profile → bridge `:9876` repoint + `:9887`/`:9888` beams | **Shipped, default-OFF; telemetry validation pending** | `deploy/bin/jasper-aec-reconcile`, `jasper/cli/aec_init.py`, `jasper/cli/aec_bridge.py` |
 | Cheap-USB capture (resample + AEC3 + DTLN) | **Prototype** (corpus-only legs `usb_*`) | `_usb_mic_thread` |
 | Per-leg / per-condition thresholds | **Missing** (one global threshold) | — |
 | Profile-derived leg policy | **Missing** (registry exists; mic profiles do not yet choose leg sets) | — |
@@ -707,7 +720,10 @@ CPU-gated.
   in `_MIGRATION_COLUMNS`, so the idempotent ALTER backfills existing DBs.
 
 ### Phase 2 — Capture-profile capabilities + de-hardcode the bridge  *(prep the swap)*
-- **Gate:** Phase 0 (independent of Phase 1).
+- **Gate:** Phase 0 technically unblocks this, but product sequencing
+  now gates it on the chip-AEC telemetry pass. Do not start Phase 2 just
+  because the abstraction is attractive; the current fastest product win
+  is validating the already-deployed chip-AEC legs.
 - **Build:** capability fields on `xvf3800.py` (§2.1); bridge reads
   `MIC_DEVICE`/channels/voice-channel/native-rate from the profile;
   promote `_usb_mic_thread`'s resample path from corpus-only to a
@@ -731,6 +747,13 @@ CPU-gated.
   fires on all three legs via `analyze-three-leg.sh`; XVF path
   unchanged; **run one `/wake-corpus/` session and confirm raw0 +
   `usb_*` WAVs still record** (the corpus-regression check).
+
+**Why it still matters:** Phase 2 is the path to a lower-cost,
+vendor-resilient open-source build. It should reduce the hard dependency
+on the ~$70 XVF3800 by making a generic USB mic a supported production
+profile. But the expected result is "plumbing and observability work,"
+not guaranteed parity: `HANDOFF-usb-mic-wake.md` currently shows the
+cheap USB path as useful evidence but weaker than the XVF path.
 
 ### Phase 3 — Learned fusion (logistic regression)  *(data-gated)*
 - **Gate:** Phase 1 heuristics plateau **and** ~150–500 labeled
@@ -905,4 +928,7 @@ the wake cluster before each daemon-touching PR.
 
 ---
 
-Last verified: 2026-05-31
+Last verified: 2026-05-31 (post-`c95bfdd`: chip-AEC producer path,
+per-beam wake-event WAVs, `/wake/` mic status card, and the decision to
+validate chip-AEC before starting Phase 2 pluggable-mic production work
+were checked against current `main`.)

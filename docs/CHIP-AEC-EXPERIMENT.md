@@ -1,7 +1,7 @@
 # Chip-AEC experiment — conclusive test plan
 
-**Status: 2026-05-29 positive lab result; chip-AEC leg promotion IN
-PROGRESS (2026-05-31).**
+**Status: 2026-05-29 positive lab result; opt-in production path shipped
+and deployed on 2026-05-31.**
 The experiment is no longer a shelved negative. A same-day lab pass
 proved that the XVF3800's on-chip AEC can produce useful cancellation
 in JTS's external-DAC topology when the chip receives a clean USB-IN
@@ -10,57 +10,52 @@ comparison profile that can enter/exit the needed test state and label
 the `150°` / `210°` ASR beam outputs explicitly. That profile uses
 outputd's direct final-output fanout: a 48 kHz UDP reference for
 software AEC/corpus analysis plus a 16 kHz downsampled XVF3800 USB-IN
-reference PCM for chip AEC. **The corpus-only
-guardrail is now being lifted:** the `chip_aec_150` / `chip_aec_210`
-beams are being promoted from corpus-only capture to **opt-in,
-hardware-conditional, scored production wake legs** (see
-[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
-§2.4).
+reference PCM for chip AEC. The `chip_aec_150` / `chip_aec_210` beams
+are now **opt-in, hardware-conditional, scored production wake legs**
+(see [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
+§2.4). They stay default-OFF on fresh installs and are only armed when
+the 6-channel XVF firmware is present and the operator enables chip-AEC
+via `/wake/`.
 
-**Execution plan for the production turn-up.** Land this in two bounded
-steps, with a Pi validation gate between them:
+**Current production state (verified on Pi, 2026-05-31, build
+`c95bfdd`).**
 
-1. **Production-safe repair first.** Restore the normal production mux to
-   `SHF_BYPASS=1` + `AUDIO_MGR_OP_L/R=[8,0]`, merge, deploy, and verify
-   live readback before touching chip-AEC mode. This prevents a prior
-   corpus/test overlay from leaving the production ASR channel silent.
-2. **Producer + chip mode second.** Make the existing `/wake/` chip-AEC
-   toggle actually drive the hardware-coupled producer path:
-   `jasper-aec-init` applies the read-back-verified chip-AEC profile when
-   `JASPER_AEC_CHIP_AEC_ENABLED=1`; the reconciler enables outputd's
-   direct final-output fanout to both the XVF USB-IN reference PCM and the
-   bridge's `outputd_udp` tap; and `jasper-aec-bridge` forwards the chosen
-   chip beam into `:9876` while also emitting `chip_aec_150` / `chip_aec_210`
-   on `:9887` / `:9888`.
-3. **Turn on only after deploy.** Enable `JASPER_WAKE_LEG_CHIP_AEC=1` via
-   the normal wake/AEC control path after the producer is deployed. The
-   mode remains default-OFF, 6-channel-firmware-gated, mutually exclusive
-   with raw/DTLN, and volatile on the chip side: never `SAVE_CONFIGURATION`
-   or `REBOOT`.
-4. **Validation gate.** Confirm outputd logs `event=outputd.chip_ref.opened`
-   and `event=outputd.reference_udp.enabled`, `aec-init` logs
-   `event=chip_profile_applied mode=chip_aec`, `aec-bridge` logs the chip
-   primary source on `:9876` plus `:9887`/`:9888`, and `/system` /
-   `jasper-doctor` see the armed runtime legs `on`, `chip_aec_150`, and
-   `chip_aec_210`.
+- `jasper-aec-init` applies a read-back-verified volatile chip-AEC
+  profile when `JASPER_AEC_CHIP_AEC_ENABLED=1`, and restores
+  `SHF_BYPASS=1` + `AUDIO_MGR_OP_L/R=[8,0]` when chip-AEC is off.
+- `jasper-aec-reconcile` maps the single `/wake/` chip-AEC intent
+  (`JASPER_WAKE_LEG_CHIP_AEC=1`) to the bridge/init/outputd env needed
+  for hardware AEC. It enforces the single-chip exclusion by clearing
+  raw/DTLN runtime device vars while chip-AEC is active.
+- `jasper-outputd` can fan the final speaker buffer to the XVF USB-IN
+  reference PCM and to the bridge's UDP reference tap.
+- `jasper-aec-bridge` forwards the selected chip beam into `:9876`
+  as the session/heartbeat carrier and emits both explicit scoring legs
+  on `:9887` / `:9888`.
+- `wake_events` stores chip-beam scores, offsets, RMS, `fired_legs`,
+  and explicit per-beam WAV paths
+  (`audio_chip_aec_150_path`, `audio_chip_aec_210_path`).
+- `/wake/` shows the active mic/topology/wake legs in a compact status
+  card, so operators do not have to infer state from env files.
+- `jasper-doctor` on the deployed Pi reported all critical checks
+  passing and runtime wake legs armed as `on`, `chip_aec_150`, and
+  `chip_aec_210`.
 
-Landed so far, all **default OFF**: the leg registry/config/telemetry
-(chip-AEC promotion P1), the control surface — the reconciler
-`JASPER_WAKE_LEG_CHIP_AEC` boolean + single-chip mutual exclusion, `/aec`
-status + `available` flag, the `/wake/` toggle, install seed/migrate (P2
-hardware-free) — and the production mux repair in step 1. The remaining
-work in this branch is step 2 plus the deploy/validation in steps 3-4.
+**What remains is validation, not plumbing.** Keep chip-AEC opt-in until
+a fresh telemetry window shows its recall / false-accept contribution:
+record normal use and wake tests with music, fetch the wake-event
+corpus, run `scripts/analyze-three-leg.sh`, and inspect solo saves plus
+false fires for `chip_aec_150` and `chip_aec_210`. A default-ON flip for
+XVF installs is data-gated on that review.
 
 The topology diagram below still records the original 2026-05-23
 dmix-era experiment shape, not the current 2026-05-26 fan-in /
 outputd production topology. Current production wiring lives in
 [`docs/audio-paths.md`](audio-paths.md). The five
 `scripts/chip-aec-*.sh` scripts + `jasper/chip_aec_experiment.py` +
-this doc remain lab infrastructure: production state is untouched until
-someone explicitly opts in via
-[`scripts/chip-aec-setup.sh`](../scripts/chip-aec-setup.sh), and
-[`scripts/chip-aec-teardown.sh`](../scripts/chip-aec-teardown.sh)
-fully reverts.
+this doc remain lab infrastructure for reproducing the original tests.
+Do not use those scripts as the production control surface; production
+chip-AEC is now controlled by `/wake/` + the reconciler.
 
 **2026-05-29 headline result.** Option D is viable, with two important
 corrections to the earlier mental model:
@@ -120,7 +115,7 @@ continue, and exiting corpus mode explicitly restores the production
 `SHF_BYPASS=1` + OP_L/OP_R routing overlay. A failed chip write is a
 mode-transition failure, not a best-effort warning, because mislabeled
 corpus audio is worse than no corpus audio.
-The chip-AEC beams are being promoted from corpus-only to opt-in,
+The chip-AEC beams have been promoted from corpus-only to opt-in,
 **default-OFF** production wake legs (see
 [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
 §2.4). They stay default-OFF: gate any default-ON flip on a ~1-week
@@ -129,11 +124,11 @@ against a fresh corpus window (`scripts/analyze-three-leg.sh`).
 
 ### Plug-in contract — what you measure off-box and where it lands
 
-The leg *infrastructure* (registry → config → reconciler → voice wiring →
-telemetry columns → `/wake/` toggle) is built and default-OFF. To make the
-chip beams actually *perform*, four tunables get measured by an off-box
-test harness and plugged into the slots below. Nothing here needs the leg
-infrastructure to change — these are values, not new code paths.
+The leg *infrastructure* (registry → config → reconciler → bridge/init
+producer → voice wiring → telemetry columns/WAVs → `/wake/` toggle/status)
+is built and default-OFF. To tune how the chip beams perform, measure the
+values below and plug them into the existing slots. Nothing here needs the
+leg infrastructure to change — these are values, not new code paths.
 
 | # | Tunable (what you measure) | Plug-in point | Shape | "Good" = |
 |---|---|---|---|---|
@@ -659,14 +654,13 @@ they survive future doc edits (per [AGENTS.md](../AGENTS.md)
 
 ---
 
-Last operational verification: 2026-05-30 (live Pi lab pass found the
-old feeder-path drift was a harness artifact; direct source fanout held
-about `~1 ppm` over 15 minutes; controlled direct A/B showed useful chip
-AEC reduction; ASR fixed gated `150°/210°` with `AEC_AECEMPHASISONOFF=2`
-was the best tested wake-shaped output, with `150°` the standout beam;
-the wake-corpus recorder and opt-in production wake mode now share a
-chip-AEC profile for collecting/scoring those legs intentionally;
-`jasper-aec-init` now read-back verifies entry and explicitly restores
-normal production chip routing on exit). This doc still preserves a dmix-era experiment
-snapshot in places; current production topology lives in
-`docs/audio-paths.md`.
+Last operational verification: 2026-05-31 (deployed build `c95bfdd` to
+the Pi; `jasper-doctor` critical checks passed; runtime wake legs were
+armed as `on`, `chip_aec_150`, and `chip_aec_210`; `/wake/` now exposes
+the mic/topology status card. The prior live Pi lab pass found the old
+feeder-path drift was a harness artifact; direct source fanout held about
+`~1 ppm` over 15 minutes; controlled direct A/B showed useful chip AEC
+reduction; ASR fixed gated `150°/210°` with `AEC_AECEMPHASISONOFF=2` was
+the best tested wake-shaped output, with `150°` the standout beam). This
+doc still preserves a dmix-era experiment snapshot in places; current
+production topology lives in `docs/audio-paths.md`.

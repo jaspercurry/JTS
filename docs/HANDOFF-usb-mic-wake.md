@@ -6,6 +6,14 @@ now run USB-fed AEC3 sweep variants, but USB production work remains
 separate from the main XVF wake path until the delay/alignment questions
 below are answered.
 
+**Current priority (2026-05-31): not the next active build.** The
+generic USB mic path remains strategically important for open-source
+accessibility and BOM reduction, but the near-term product work is to
+validate the newly deployed opt-in XVF chip-AEC wake legs. Do not treat
+this file as an abandoned thread; treat it as the next hardware
+accessibility track after chip-AEC telemetry answers whether the XVF
+hardware beams should be the recommended XVF mode.
+
 ## Current State
 
 - The wake-corpus recorder can capture `usb_raw`, `usb_webrtc`, and
@@ -38,6 +46,12 @@ below are answered.
   unioned to 13/27. A separate offline waveform mix of
   `usb_webrtc + usb_dtln` reached 14/27 on that session, but added only
   one clip over the full original-leg union.
+- Production support for a generic USB mic is **not shipped**. The
+  current bridge still imports XVF-specific profile constants for the
+  primary production capture path, while the USB legs remain
+  corpus-only experiment streams. Phase 2 in
+  `HANDOFF-mic-fusion-architecture.md` is the intended path to make a
+  USB mic a first-class production profile.
 
 ## Leading Hypotheses
 
@@ -101,10 +115,18 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
 - Treat USB legs as corpus-only until a USB-specific chain and wake
   model beat the current XVF path in held-out testing.
 - Do not let USB experiments increase always-on production CPU/RAM cost.
+- Do not start by introducing a broad `MicProfile` Protocol. Add one
+  concrete second profile and only factor common shape after real XVF-vs
+  USB differences are visible in code.
+- Do not repurpose `_usb_mic_thread` in place for production without
+  preserving wake-corpus semantics; the recorder depends on the current
+  `usb_*` leg meanings and ports.
 - Prefer offline delay sweeps before adding live bridge complexity.
 - Keep the reference capture as-is unless the measurement proves the
   reference itself is inadequate.
 - Do not promote waveform-mixed USB outputs without hard-negative
   validation; the first mix result is interesting but not decisive.
 
-Last verified: 2026-05-29.
+Last verified: 2026-05-31 (re-read against current `main`: USB legs are
+still corpus-only; pluggable USB production support remains a deliberate
+Phase 2 follow-up after chip-AEC validation, not abandoned work).

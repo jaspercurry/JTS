@@ -28,13 +28,15 @@ matches that.
 **The plan in one paragraph.** Capture a known-conditions gold corpus
 (~85-105 positive Jarvis utterances across two sessions: 3 distances
 × 3 conditions, plus ~30-40 hard negatives in Session B). The
-browser recorder captures the three production software/chip-direct
-legs (`:9876` AEC ON, `:9877` chip-direct, `:9878` DTLN) plus opt-in
-`raw0` (`:9879`) for future cheap-mic portability. It can also opt into
-corpus-only cheap USB mic + reference legs (`:9880`/`:9881`/`:9882`)
-and a chip-AEC comparison profile (`:9887`/`:9888`) for testing
-hardware AEC against software AEC on the same utterance; those extra
-legs are not production wake inputs. Build an offline test harness and
+browser recorder captures the production software/chip-direct legs
+(`:9876` primary/session carrier, `:9877` chip-direct, `:9878` DTLN)
+plus opt-in `raw0` (`:9879`) for future cheap-mic portability. It can
+also opt into cheap USB mic + reference legs (`:9880`/`:9881`/`:9882`)
+and the XVF chip-AEC beams (`:9887`/`:9888`) for testing hardware AEC
+against software AEC on the same utterance. As of 2026-05-31,
+`chip_aec_150` / `chip_aec_210` are no longer corpus-only: they are
+default-OFF, 6-channel-firmware-gated production wake legs when chip-AEC
+mode is enabled. Build an offline test harness and
 scoring runner around that corpus. Train per-leg specialized Jarvis
 models (one for raw, one for AEC ON, one for DTLN) using
 `livekit-wakeword` + PR #69 (vendored), with Piper
@@ -392,8 +394,8 @@ written into per-leg quadrant directories at
 | `aec3_variant_1` | UDP `:9884` | parallel SW AEC3 slot 1. The input source is explicit metadata: legacy/manual source is `xvf`; new recorder AEC3-sweep sessions default to `usb`. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=80`. |
 | `aec3_variant_2` | UDP `:9885` | parallel SW AEC3 slot 2. Same source rule as slot 1. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=120`. |
 | `aec3_variant_3` | UDP `:9886` | parallel SW AEC3 slot 3. Same source rule as slot 1. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=160`. |
-| `chip_aec_150` | UDP `:9887` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `150°` (corpus-only chip profile) |
-| `chip_aec_210` | UDP `:9888` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `210°` (secondary beam for robustness if mic orientation shifts) |
+| `chip_aec_150` | UDP `:9887` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `150°` (default-OFF production wake leg when chip-AEC mode is enabled; also a corpus comparison leg) |
+| `chip_aec_210` | UDP `:9888` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `210°` (paired default-OFF production wake leg; keep because orientation shifts can swap the winner) |
 | `xvf_raw0_webrtc_aec3` | UDP `:9889` | chip ch2 raw0 → SW WebRTC AEC3 using the same outputd final-output reference as chip AEC |
 | `xvf_raw0_dtln` | UDP `:9890` | chip ch2 raw0 → SW DTLN-aec (optional, high resource risk) |
 
@@ -1764,6 +1766,8 @@ capture-health deltas from the bridge where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-29 (v29 — chip-AEC direct-fanout lab test
-produced a positive result, and the wake-corpus recorder now has a
-reversible chip-AEC comparison profile for pilot/gold-corpus capture)
+Last verified: 2026-05-31 (v30 — chip-AEC direct-fanout lab result is
+now productionized as default-OFF wake legs; build `c95bfdd` deployed
+with chip-AEC producer path, per-beam wake-event WAVs, and `/wake/` mic
+status visibility. USB mic production support remains a follow-up, not
+part of the immediate corpus blocker.)
