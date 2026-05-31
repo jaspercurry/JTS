@@ -500,6 +500,14 @@ def test_index_unconfigured_card_shows_paste_field(monkeypatch):
     # /etc/jasper/jasper.env on a developer's machine).
     for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
         monkeypatch.delenv(k, raising=False)
+    # Also neutralize the active-provider selection. CI sets
+    # JASPER_VOICE_PROVIDER=gemini ambiently (.github/workflows/tests.yml),
+    # which makes the gemini card render the "active" badge — that wins over
+    # the key state (_provider_card_html: is_active before configured), so
+    # "not configured" never appears even though the card still shows its
+    # paste field. This test asserts the inactive-AND-unconfigured rendering,
+    # so clear it (passes-local-fails-CI otherwise).
+    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
     state = {}
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     idx = page.index('name="gemini_key"')
