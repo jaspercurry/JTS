@@ -1166,9 +1166,10 @@ class _MicStarvationWatchdog:
     when the next window recovers, a healthy or merely-degraded mic never
     trips, and `max_starved_windows <= 0` disables it entirely.
 
-    Pure + framework-free (no threads, no I/O) so it unit-tests directly:
-    feed it `record_frame()` on each consumed frame and `stalled(now)` once
-    per loop iteration with a monotonic clock.
+    No threads and no blocking I/O — it emits one diagnostic warning per
+    starved window (the buildup log) — so it still unit-tests directly: feed
+    it `record_frame()` on each consumed frame and `stalled(now)` once per
+    loop iteration with a monotonic clock.
     """
 
     def __init__(
@@ -1204,6 +1205,15 @@ class _MicStarvationWatchdog:
         # A full window elapsed — score it, then roll over.
         if self._frames < self._min_frames:
             self._starved_windows += 1
+            # Buildup logging — mirrors the continuous detector's "stall
+            # growing" warnings so a slow-drip restart is never a surprise in
+            # the journal: the operator watches the rate collapse first.
+            logger.warning(
+                "mic starvation: %d frames in last ~%.0fs window (floor %d) "
+                "— %d/%d low-rate windows before bridge restart",
+                self._frames, self._window_sec, self._min_frames,
+                self._starved_windows, self._max_starved,
+            )
         else:
             self._starved_windows = 0
         self._frames = 0

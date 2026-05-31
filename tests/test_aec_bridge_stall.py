@@ -753,25 +753,28 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_starvation_watchdog_flags_sustained_slow_drip():
+def test_starvation_watchdog_flags_sustained_slow_drip(caplog):
     """A mic delivering ~1 frame every 15 s (far below the per-window floor)
     trips the watchdog after max_starved_windows windows — the failure mode
     the consecutive-empty counter never catches, because each trickle resets
-    it."""
+    it. The buildup is logged before the restart (observability)."""
     wd = aec_bridge._MicStarvationWatchdog(
         window_sec=10.0, min_frames_per_window=10, max_starved_windows=3,
     )
     stalled_at = None
-    for step in range(500):              # 50 s in 0.1 s steps
-        now = step * 0.1
-        if step % 150 == 0:              # one frame every 15 s
-            wd.record_frame()
-        if wd.stalled(now):
-            stalled_at = now
-            break
+    with caplog.at_level("WARNING"):
+        for step in range(500):          # 50 s in 0.1 s steps
+            now = step * 0.1
+            if step % 150 == 0:          # one frame every 15 s
+                wd.record_frame()
+            if wd.stalled(now):
+                stalled_at = now
+                break
     assert stalled_at is not None, "watchdog never escalated on a slow drip"
     # 3 starved windows of 10 s, scored at window boundaries.
     assert 29.0 <= stalled_at <= 41.0
+    # The collapse is visible in the journal, not a silent restart.
+    assert any("mic starvation" in r.message for r in caplog.records)
 
 
 def test_starvation_watchdog_healthy_mic_never_trips():
