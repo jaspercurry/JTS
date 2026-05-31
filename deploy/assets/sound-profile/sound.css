@@ -6,6 +6,18 @@
      Off / Saved / Draft tab strip below is sound-specific. */
   .app-header__tabs { border-bottom: 1px solid var(--border); }
   .app-header__tabs > div { max-width: 48rem; margin: 0 auto; padding: 12px 1.5rem; }
+  .app-header__tabs .segmented__btn { position: relative; }
+  .app-header__tabs .segmented__btn.is-live::after {
+    content: "";
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--destructive);
+    box-shadow: 0 0 0 2px var(--primary-foreground);
+  }
   @media (min-width: 768px) {
     .app-header__tabs > div { padding-left: 2.5rem; padding-right: 2.5rem; }
   }
@@ -39,8 +51,7 @@
   .eq-graph .area { fill: color-mix(in oklab, var(--accent) 14%, transparent); stroke: none; }
   .eq-graph .curve { fill: none; stroke: var(--primary); stroke-width: 2.5; stroke-linejoin: round; }
   .eq-graph.off .curve { stroke: var(--foreground-020); stroke-dasharray: 5 4; }
-  .eq-graph .band-width { fill: var(--primary); opacity: 0.08; }
-  .eq-graph .band-width.selected { opacity: 0.14; }
+  .eq-graph .band-width { fill: var(--primary); opacity: 0.14; }
   .eq-graph .band-marker { stroke: var(--primary-040); stroke-width: 1.2; stroke-dasharray: 3 4; }
   .eq-graph .band-dot { fill: var(--background); stroke: var(--primary); stroke-width: 2; }
   .eq-graph .band-dot.selected { fill: var(--primary); }
@@ -105,8 +116,8 @@
     background: var(--foreground-020);
   }
   .profile-row__dot--on {
-    background: var(--primary);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 30%, transparent);
+    background: var(--destructive);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--destructive) 25%, transparent);
   }
   .profile-row__name { margin: 0; font-size: 14px; font-weight: 500; }
   .profile-row__meta { margin: 2px 0 0; font-size: 12px; color: var(--muted-foreground); }

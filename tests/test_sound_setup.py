@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from jasper.correction.camilla_yaml import emit_correction_config
 from jasper.correction.peq import PEQ
@@ -80,6 +85,12 @@ _SOUND_MODULE = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
 )
+_SOUND_CSS = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "assets" / "sound-profile" / "sound.css"
+)
+_SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness.mjs"
+_NODE = shutil.which("node")
 
 
 def test_index_html_renders_canonical_sound_page():
@@ -127,6 +138,94 @@ def test_sound_module_preserves_editor_behaviour():
     assert "jsonHeaders()" in js
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
     assert "window.prompt" not in js
+
+
+def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
+    js = _SOUND_MODULE.read_text()
+    set_view_start = js.index("function setView(v)")
+    set_view_end = js.index("function applySavedSelection", set_view_start)
+    set_view_body = js[set_view_start:set_view_end]
+    reconcile_start = js.index("async function reconcileLiveSource()")
+    reconcile_end = js.index("async function applyProfile", reconcile_start)
+    reconcile_body = js[reconcile_start:reconcile_end]
+    delete_start = js.index("async function deleteEntry(id)")
+    delete_end = js.index("async function loadState()", delete_start)
+    delete_body = js[delete_start:delete_end]
+    load_start = js.index("async function loadState()")
+    load_body = js[load_start:]
+
+    assert "var DEFAULT_SAVED_ID = 'stock:flat';" in js
+    assert "function selectedSavedEntry()" in js
+    assert "function selectedSavedProfile()" in js
+    assert "function requestLiveSource(options)" in js
+    assert "function reconcileLiveSource()" in js
+    assert "requestLiveSource({immediate: true});" in set_view_body
+    assert "if (view === 'saved')" in reconcile_body
+    assert "return applySavedSelection(options.okMsg, seq);" in reconcile_body
+    assert "if (act === 'browse-presets') { setView('saved'); }" in js
+    assert "selectedId = fallbackSavedId();" in delete_body
+    assert "requestLiveSource({immediate: true});" in delete_body
+    assert "selectedId = findIdFor(applied);" in load_body
+
+
+def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+
+    proc = subprocess.run(
+        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert out["applyProfileIds"] == ["stock:flat"]
+    assert out["liveDraftRequests"] == 1
+    assert out["liveDraftEpoch"] == "apply-1"
+    assert out["liveTabMarked"] is True
+
+
+def test_sound_css_marks_live_sources_with_red_dots():
+    js = _SOUND_MODULE.read_text()
+    css = _SOUND_CSS.read_text()
+
+    assert "btn.classList.toggle('is-live', v === view);" in js
+    assert ".app-header__tabs .segmented__btn.is-live::after" in css
+    assert ".profile-row__dot--on" in css
+    assert "background: var(--destructive);" in css
+
+
+def test_sound_module_draws_only_expanded_peq_component_curve():
+    js = _SOUND_MODULE.read_text()
+    render_start = js.index("function renderGraph(payload, enabled)")
+    render_end = js.index("  // Render the graph", render_start)
+    render_body = js[render_start:render_end]
+
+    assert "function expandedPeqBandIndex()" in js
+    assert "item.index === expandedBand" in render_body
+    assert "component selected" in render_body
+    assert "(comp.advanced || []).forEach" not in render_body
+    assert "drawPath(comp.curve" not in render_body
+    assert "drawPath(comp.simple" not in render_body
+    assert "drawBandMarkers()" in render_body  # passive PEQ markers stay visible
+
+
+def test_sound_module_draws_width_region_only_for_expanded_peq_band():
+    js = _SOUND_MODULE.read_text()
+    markers_start = js.index("function drawBandMarkers()")
+    markers_end = js.index("function expandedPeqBandIndex()", markers_start)
+    markers_body = js[markers_start:markers_end]
+
+    assert "var expandedBand = expandedPeqBandIndex();" in markers_body
+    assert "i === expandedBand" in markers_body
+    assert "(b.type || 'Peaking') === 'Peaking' && i === expandedBand" in markers_body
+    assert "band-marker" in markers_body
+    assert "band-dot" in markers_body
+
+    css = _SOUND_CSS.read_text()
+    assert ".band-width.selected" not in css
 
 
 def test_sound_module_prefers_explicit_profile_identity_then_stock_matches():
