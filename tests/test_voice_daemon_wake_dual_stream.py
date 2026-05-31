@@ -139,6 +139,25 @@ async def test_subthreshold_frame_updates_recent_score_but_does_not_fire():
     wl._arbitrate_acquire_drain.assert_not_called()
 
 
+async def test_verify_false_suppresses_the_or_gate_fire(caplog):
+    """recall -> verify (Phase 1.4): a leg crosses threshold (recall proposes
+    a fire), but the fuser's verify() rejects it, so no turn opens. Detectors
+    are still reset (the utterance elevated them either way), and the only
+    refractory held is the short WAKE_REFRACTORY_SEC, so a genuine wake right
+    after is not blinded."""
+    wl = _make_wake_loop(detector_off=None)
+    wl._detector.score_frame.return_value = 0.85   # crosses threshold (recall)
+    wl._fuser.verify = lambda *a, **k: False        # precision stage rejects
+
+    with caplog.at_level(logging.INFO):
+        await wl._handle_wake_frame(_frame(), leg="on")
+
+    wl._arbitrate_acquire_drain.assert_not_called()  # no turn opened
+    wl._detector.reset.assert_called_once()          # utterance still deduped
+    assert any("event=wake.suppressed" in r.message for r in caplog.records)
+    assert not any("event=wake.detected" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # Dual-stream OR-gate
 # ---------------------------------------------------------------------------
