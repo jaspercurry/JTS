@@ -52,10 +52,15 @@ def make_weather_tools(weather):
                   runs past the end of the data and `end` is null
                   (say "rain continues past <last hour>" instead of
                   quoting an end time).
+          error: technical error string when the weather service failed
+          spoken_error: short user-facing failure sentence when present
 
         Sunrise/sunset are ISO 8601 local-time strings (e.g.
         "2026-05-21T20:14"). Convert to spoken form for the user
         ("Sunset is at 8:14 PM.").
+
+        When the response includes `spoken_error`, say that briefly
+        and do not add technical details from `error`.
 
         Pick the relevant sub-object based on the user's question:
           'now' / 'right now'             → response.now

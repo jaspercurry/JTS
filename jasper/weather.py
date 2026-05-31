@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+HTTP_ATTEMPTS = 2
+USER_FACING_WEATHER_UNAVAILABLE = (
+    "Sorry, I'm having trouble getting the weather right now. "
+    "Please try again in a bit."
+)
 
 # WMO weather interpretation codes. Source:
 # https://open-meteo.com/en/docs (Variables → Weather Code).
@@ -71,6 +76,10 @@ class _Location:
     name: str
     lat: float
     lon: float
+
+
+class WeatherResponseError(RuntimeError):
+    """Open-Meteo responded, but not with usable JSON."""
 
 
 @dataclass(frozen=True)
@@ -172,6 +181,35 @@ def _describe(code: int | None) -> str:
     if code is None:
         return "unknown"
     return WMO_DESCRIPTIONS.get(int(code), "unknown")
+
+
+def _exception_summary(exc: BaseException) -> str:
+    name = type(exc).__name__
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        return f"{name}: {response.status_code} {response.reason_phrase}"
+    detail = str(exc).strip()
+    return f"{name}: {detail}" if detail else name
+
+
+def _upstream_summary(exc: BaseException) -> str:
+    if isinstance(exc, WeatherResponseError):
+        return str(exc)
+    return _exception_summary(exc)
+
+
+def _is_retryable_http_error(exc: httpx.HTTPError) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or status >= 500
+    return isinstance(exc, httpx.RequestError)
+
+
+def _upstream_failure_payload(error: str) -> dict:
+    return {
+        "error": error,
+        "spoken_error": USER_FACING_WEATHER_UNAVAILABLE,
+    }
 
 
 def _norm(value: str) -> str:
@@ -614,6 +652,37 @@ class WeatherClient:
         if self._owns_http:
             await self._http.aclose()
 
+    async def _get_json(self, label: str, url: str, params: dict) -> dict:
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(1, HTTP_ATTEMPTS + 1):
+            try:
+                r = await self._http.get(url, params=params, timeout=5.0)
+                r.raise_for_status()
+                try:
+                    return r.json()
+                except ValueError as e:
+                    raise WeatherResponseError(_exception_summary(e)) from e
+            except httpx.HTTPError as e:
+                last_exc = e
+                retrying = (
+                    attempt < HTTP_ATTEMPTS
+                    and _is_retryable_http_error(e)
+                )
+                logger.warning(
+                    "event=weather_http_error endpoint=%s attempt=%d/%d "
+                    "retrying=%s error=%s",
+                    label,
+                    attempt,
+                    HTTP_ATTEMPTS,
+                    retrying,
+                    _exception_summary(e),
+                )
+                if retrying:
+                    continue
+                raise
+        assert last_exc is not None
+        raise last_exc
+
     async def _geocode(self, place: str) -> _Location | None:
         key = place.strip().lower()
         if key in self._geocode_cache:
@@ -624,13 +693,7 @@ class WeatherClient:
         params = {"name": parsed.search_name, "count": 20, "language": "en"}
         if parsed.country_code:
             params["countryCode"] = parsed.country_code
-        r = await self._http.get(
-            GEOCODE_URL,
-            params=params,
-            timeout=5.0,
-        )
-        r.raise_for_status()
-        data = r.json()
+        data = await self._get_json("geocode", GEOCODE_URL, params)
         raw_results = data.get("results") or []
         candidates = [
             _candidate_from_result(res, parsed.base)
@@ -677,9 +740,10 @@ class WeatherClient:
         return loc
 
     async def _forecast(self, loc: _Location) -> dict:
-        r = await self._http.get(
+        return await self._get_json(
+            "forecast",
             FORECAST_URL,
-            params={
+            {
                 "latitude": loc.lat,
                 "longitude": loc.lon,
                 "current": "temperature_2m,weather_code",
@@ -695,18 +759,17 @@ class WeatherClient:
                 "timezone": "auto",
                 "forecast_days": 14,
             },
-            timeout=5.0,
         )
-        r.raise_for_status()
-        return r.json()
 
     async def get_weather(self, location: str = "") -> dict:
         explicit_place = (location or "").strip()
         if explicit_place:
             try:
                 loc = await self._geocode(explicit_place)
-            except httpx.HTTPError as e:
-                return {"error": f"geocoding failed: {e}"}
+            except (httpx.HTTPError, WeatherResponseError) as e:
+                return _upstream_failure_payload(
+                    f"geocoding failed: {_upstream_summary(e)}"
+                )
             if loc is None:
                 return {"error": f"couldn't find location: {explicit_place}"}
         elif self._default_location is not None:
@@ -720,12 +783,16 @@ class WeatherClient:
                 }
             try:
                 loc = await self._geocode(place)
-            except httpx.HTTPError as e:
-                return {"error": f"geocoding failed: {e}"}
+            except (httpx.HTTPError, WeatherResponseError) as e:
+                return _upstream_failure_payload(
+                    f"geocoding failed: {_upstream_summary(e)}"
+                )
             if loc is None:
                 return {"error": f"couldn't find location: {place}"}
         try:
             forecast = await self._forecast(loc)
-        except httpx.HTTPError as e:
-            return {"error": f"weather lookup failed: {e}"}
+        except (httpx.HTTPError, WeatherResponseError) as e:
+            return _upstream_failure_payload(
+                f"weather lookup failed: {_upstream_summary(e)}"
+            )
         return _build_summary(forecast, loc.name, self._units)
