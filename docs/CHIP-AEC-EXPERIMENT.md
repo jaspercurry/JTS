@@ -1,15 +1,28 @@
 # Chip-AEC experiment — conclusive test plan
 
-**Status: 2026-05-29 positive lab result; corpus-recorder pilot
-integration exists, production wake path unchanged.**
+**Status: 2026-05-29 positive lab result; chip-AEC leg promotion IN
+PROGRESS (2026-05-31).**
 The experiment is no longer a shelved negative. A same-day lab pass
 proved that the XVF3800's on-chip AEC can produce useful cancellation
 in JTS's external-DAC topology when the chip receives a clean USB-IN
-far-end reference. The wake-corpus recorder now has a dedicated
-chip-AEC comparison profile that can enter/exit the needed test state
-and label the `150°` / `210°` ASR beam outputs explicitly. The current
-production wake path is still the WebRTC AEC3 bridge; chip AEC is
-**not** a production `jasper-voice` input.
+far-end reference. The wake-corpus recorder has a dedicated chip-AEC
+comparison profile that can enter/exit the needed test state and label
+the `150°` / `210°` ASR beam outputs explicitly. **The corpus-only
+guardrail is now being lifted:** the `chip_aec_150` / `chip_aec_210`
+beams are being promoted from corpus-only capture to **opt-in,
+hardware-conditional, scored production wake legs** (see
+[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
+§2.4). Landed so far, all **default OFF**: the leg
+registry/config/telemetry (chip-AEC promotion P1) and the control
+surface — the reconciler `JASPER_WAKE_LEG_CHIP_AEC` boolean + single-chip
+mutual exclusion, `/aec` status + `available` flag, the `/wake/` toggle,
+install seed/migrate (P2 hardware-free). Still pending on-device
+validation: the production chip-AEC profile in `jasper-aec-init`, the
+bridge Option-A `:9876` repoint + `:9887`/`:9888` emit (P2
+hardware-coupled), and the deploy + on-device validation (P4). **Until
+those land and validate, the chip-AEC leg is wired but inert** — the
+current production wake path is still the WebRTC AEC3 bridge, and chip
+AEC is **not yet a functional `jasper-voice` wake input.**
 
 The topology diagram below still records the original 2026-05-23
 dmix-era experiment shape, not the current 2026-05-26 fan-in /
@@ -80,9 +93,12 @@ continue, and exiting corpus mode explicitly restores the production
 `SHF_BYPASS=1` + OP_L/OP_R routing overlay. A failed chip write is a
 mode-transition failure, not a best-effort warning, because mislabeled
 corpus audio is worse than no corpus audio.
-Keep chip AEC corpus-only until its recall/false-accept contribution is
-measured against the fixed corpus; do not add it to production wake
-detection by default.
+The chip-AEC beams are being promoted from corpus-only to opt-in,
+**default-OFF** production wake legs (see
+[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
+§2.4). They stay default-OFF: gate any default-ON flip on a ~1-week
+telemetry review of each beam's recall / false-accept contribution
+against a fresh corpus window (`scripts/analyze-three-leg.sh`).
 
 > ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
 > reconciler toggle" says *"Architecture is fixed; swap the engine,
