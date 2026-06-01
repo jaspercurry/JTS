@@ -101,6 +101,12 @@ The foundation is partly built:
   so clean runtime readiness is still
   `status=warn` with `recommendation=run_hardware_validation` until
   measured drift/delay evidence exists.
+  `jasper-audio-hw-validate` is the explicit operator-controlled next
+  step: it passively observes outputd reference health and bridge
+  counters across a bounded window, then polls read-only XVF chip
+  profile/convergence state only after runtime/reference health passes.
+  It writes through the same schema-v1 helper and still does not
+  generate playback, open capture loops, or persist chip settings.
 - `/wake-corpus/` has the first additive reuse hook: new session and
   clip metadata write an `audio_context` snapshot with production
   profile classification, mic firmware/channel identity, selected leg
@@ -112,10 +118,11 @@ The gaps are exactly where future hardware support would hurt:
 - Mic capability facts are not yet rich enough to describe generic
   USB mics, hardware-AEC mics, or "raw only" mics in one place.
 - DAC capability/validation facts have only the first durable home: the
-  bounded readiness artifact records the configured DAC/outputd identity
-  and chip-reference runtime state. The decisive drift/delay gate for a
-  new DAC still lives in docs and lab methodology rather than a full
-  hardware-validation runner.
+  validation artifact records the configured DAC/outputd identity,
+  chip-reference runtime state, passive outputd/bridge health windows,
+  and read-only chip convergence/readback where available. The decisive
+  fixed-delay and long-window drift gate for a new DAC still needs an
+  explicit playback/capture validation mode.
 - "Intent" and "observed runtime truth" are still spread across env
   files, systemd state, chip read-backs, outputd health, bridge logs,
   wake legs, and dashboard cards.
@@ -250,15 +257,48 @@ convenience; the durable record is the timestamped artifact.
     "runtime_env": {"status": "pass"},
     "dac_reference": {"status": "pass"},
     "wake_legs": {"status": "pass"},
+    "outputd_reference_health": {"status": "pass"},
+    "bridge_counter_window": {"status": "pass"},
+    "chip_profile_readback": {"status": "pass"},
+    "chip_convergence": {"status": "not_observed"},
     "measured_drift_delay": {"status": "not_run"}
   },
-  "recommendation": "run_hardware_validation"
+  "recommendation": "run_drift_delay_validation"
 }
 ```
 
 This artifact is cheap to read from `/aec`, corpus metadata, and
 `jasper-doctor`. Missing/stale validation stays advisory unless the
 requested profile depends on chip-AEC.
+
+Operator commands:
+
+```sh
+jasper-audio-validate --stdout
+jasper-audio-hw-validate --dry-run
+sudo jasper-audio-hw-validate --duration-seconds 10 --stdout
+sudo jasper-audio-hw-validate --long-window --stdout
+```
+
+`jasper-audio-hw-validate` is explicit and bounded. It never runs from
+doctor, `/aec`, deploy, service startup, or the reconciler. The default
+10-second run samples already-running outputd/bridge state, reads
+schema-v1 runtime facts, and polls XVF read-only convergence/profile
+state only after chip-AEC runtime/reference health is good. It refuses
+when chip-AEC is not requested and active unless `--force` is passed.
+`--dry-run`/`--report-only` writes nothing and skips the observation
+sleep. Durations above 120 seconds require `--allow-long` or
+`--long-window`; the long-window preset is 30 minutes. The command does
+not generate audio, does not open capture loops, and does not call
+`SAVE_CONFIGURATION`, `REBOOT`, or any other XVF write path.
+
+The current hardware runner is passive evidence, not complete proof.
+`measured_drift_delay` remains `not_run` until an explicit
+operator-confirmed playback/capture probe is added, so the top-level
+artifact stays `status=warn` and recommends `run_drift_delay_validation`
+even when runtime, outputd, bridge, and chip readback checks are clean.
+Passive `AEC_AECCONVERGED=0` is reported as `not_observed`, not failure,
+because no explicit far-end stimulus may have been present.
 
 ---
 

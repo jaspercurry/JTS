@@ -412,6 +412,67 @@ def _active_chip_inputs() -> dict:
     }
 
 
+def _outputd_sample(
+    *,
+    reference_sequence: int,
+    dac_frames_written: int = 48_000,
+    dac_xruns: int = 0,
+    content_xruns: int = 0,
+    clipped_samples: int = 0,
+    progress_age_ms: int = 20,
+) -> dict:
+    sample = dict(_active_chip_inputs()["outputd_status"])
+    sample.update({
+        "content": {"xrun_count": content_xruns},
+        "dac": {
+            "pcm": "outputd_dac",
+            "sample_rate": 48000,
+            "frames_written": dac_frames_written,
+            "xrun_count": dac_xruns,
+        },
+        "mix": {
+            "reference_sequence": reference_sequence,
+            "clipped_samples": clipped_samples,
+        },
+        "watchdog": {"last_progress_age_ms": progress_age_ms},
+    })
+    return sample
+
+
+def _bridge_sample(
+    *,
+    frames_processed: int,
+    ref_starved_frames: int = 0,
+    queue_drops: int = 0,
+    udp_drops: int = 0,
+) -> dict:
+    return {
+        "schema_version": 1,
+        "updated_epoch_sec": NOW.timestamp(),
+        "counters": {
+            "frames_processed": frames_processed,
+            "ref_starved_frames": ref_starved_frames,
+            "queue_drops": {"mic": queue_drops, "chip": 0, "raw0": 0, "usb": 0, "ref": 0},
+            "udp_send_drops_by_leg": {
+                "on": udp_drops,
+                "chip_aec_150": 0,
+                "chip_aec_210": 0,
+            },
+            "packets_sent_by_leg": {"on": 10, "chip_aec_150": 10, "chip_aec_210": 10},
+        },
+    }
+
+
+def _chip_readback(sys_delay: int = 12) -> dict:
+    return {
+        "SHF_BYPASS": [0],
+        "AUDIO_MGR_SYS_DELAY": [sys_delay],
+        "AEC_ASROUTONOFF": [1],
+        "AEC_FIXEDBEAMSONOFF": [1],
+        "AEC_FIXEDBEAMSGATING": [1],
+    }
+
+
 def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     artifact = audio_validation.build_chip_aec_readiness_artifact(
         **_active_chip_inputs(),
@@ -465,6 +526,257 @@ def test_chip_aec_readiness_unknown_runtime_recommends_observability_fix():
         artifact.recommendation
         == "fix_runtime_observability_before_hardware_validation"
     )
+
+
+def test_chip_aec_hardware_validation_passive_evidence_warns_until_drift_probe():
+    inputs = _active_chip_inputs()
+    artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            _outputd_sample(reference_sequence=10, dac_frames_written=1000),
+            _outputd_sample(reference_sequence=14, dac_frames_written=5000),
+        ],
+        bridge_stats_samples=[
+            _bridge_sample(frames_processed=100),
+            _bridge_sample(frames_processed=140),
+        ],
+        chip_readback=_chip_readback(),
+        chip_convergence_polls=[
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        ],
+        duration_seconds=10,
+    )
+
+    assert artifact.status == "warn"
+    assert artifact.checks["outputd_reference_health"]["status"] == "pass"
+    assert artifact.checks["bridge_counter_window"]["status"] == "pass"
+    assert artifact.checks["chip_profile_readback"]["status"] == "pass"
+    assert artifact.checks["chip_convergence"]["status"] == "pass"
+    assert artifact.checks["measured_drift_delay"]["status"] == "not_run"
+    assert artifact.recommendation == "run_drift_delay_validation"
+    assert "No playback stimulus was generated." in artifact.notes
+    assert "No XVF chip settings were written or persisted." in artifact.notes
+
+
+def test_chip_aec_hardware_validation_zero_convergence_is_not_observed():
+    inputs = _active_chip_inputs()
+    artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            _outputd_sample(reference_sequence=10, dac_frames_written=1000),
+            _outputd_sample(reference_sequence=14, dac_frames_written=5000),
+        ],
+        bridge_stats_samples=[
+            _bridge_sample(frames_processed=100),
+            _bridge_sample(frames_processed=140),
+        ],
+        chip_readback=_chip_readback(),
+        chip_convergence_polls=[
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+        ],
+        duration_seconds=10,
+    )
+
+    assert artifact.status == "warn"
+    assert artifact.checks["chip_convergence"]["status"] == "not_observed"
+    assert "nothing meaningful" in artifact.checks["chip_convergence"]["summary"]
+    assert artifact.recommendation == "run_drift_delay_validation"
+
+
+def test_chip_aec_hardware_validation_fails_on_outputd_xrun_window():
+    inputs = _active_chip_inputs()
+    artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            _outputd_sample(reference_sequence=10, dac_xruns=0),
+            _outputd_sample(reference_sequence=14, dac_xruns=1),
+        ],
+        bridge_stats_samples=[
+            _bridge_sample(frames_processed=100),
+            _bridge_sample(frames_processed=140),
+        ],
+        duration_seconds=10,
+    )
+
+    assert artifact.status == "fail"
+    assert artifact.checks["outputd_reference_health"]["status"] == "fail"
+    assert artifact.recommendation == "fix_outputd_reference_health_before_chip_validation"
+    assert "outputd_reference_health" in artifact.errors[0]
+
+
+def test_chip_aec_hardware_validation_gates_chip_poll_until_ref_health_passes():
+    inputs = _active_chip_inputs()
+    artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            _outputd_sample(reference_sequence=10),
+            _outputd_sample(reference_sequence=10),
+        ],
+        bridge_stats_samples=[
+            _bridge_sample(frames_processed=100),
+            _bridge_sample(frames_processed=140),
+        ],
+        chip_readback=_chip_readback(),
+        chip_convergence_polls=[
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        ],
+        duration_seconds=10,
+    )
+
+    assert artifact.status == "warn"
+    assert artifact.checks["outputd_reference_health"]["status"] == "warn"
+    assert artifact.checks["chip_profile_readback"]["status"] == "not_run"
+    assert artifact.checks["chip_convergence"]["status"] == "not_run"
+    assert artifact.recommendation == "review_outputd_reference_health_before_chip_validation"
+
+
+def test_run_chip_aec_hardware_validation_refuses_inactive_without_force(monkeypatch):
+    inputs = _active_chip_inputs()
+    mode_env = dict(inputs["mode_env"])
+    mode_env["JASPER_WAKE_LEG_CHIP_AEC"] = "0"
+
+    monkeypatch.setattr(audio_validation, "_read_mode_env", lambda: mode_env)
+    monkeypatch.setattr(audio_validation, "_read_system_env", lambda: inputs["system_env"])
+    monkeypatch.setattr(audio_validation, "_probe_xvf_mic", lambda: inputs["mic_probe"])
+    monkeypatch.setattr(
+        audio_validation,
+        "_collect_service_states",
+        lambda: inputs["service_states"],
+    )
+    monkeypatch.setattr(
+        audio_validation,
+        "_query_outputd_status",
+        lambda _socket: inputs["outputd_status"],
+    )
+    monkeypatch.setattr(audio_validation, "_read_bridge_stats", lambda: inputs["bridge_stats"])
+    monkeypatch.setattr(
+        audio_validation,
+        "_read_voice_wake_legs",
+        lambda: inputs["voice_wake_legs"],
+    )
+    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
+
+    result = audio_validation.run_chip_aec_hardware_validation(
+        report_only=True,
+        now=NOW,
+    )
+
+    assert result.refused is True
+    assert result.artifact is None
+    assert "not the active runtime profile" in result.refusal_reason
+
+
+def test_run_chip_aec_hardware_validation_report_only_does_not_write(monkeypatch):
+    inputs = _active_chip_inputs()
+    wrote: list[str] = []
+
+    monkeypatch.setattr(audio_validation, "_read_mode_env", lambda: inputs["mode_env"])
+    monkeypatch.setattr(audio_validation, "_read_system_env", lambda: inputs["system_env"])
+    monkeypatch.setattr(audio_validation, "_probe_xvf_mic", lambda: inputs["mic_probe"])
+    monkeypatch.setattr(
+        audio_validation,
+        "_collect_service_states",
+        lambda: inputs["service_states"],
+    )
+    monkeypatch.setattr(
+        audio_validation,
+        "_query_outputd_status",
+        lambda _socket: inputs["outputd_status"],
+    )
+    monkeypatch.setattr(audio_validation, "_read_bridge_stats", lambda: inputs["bridge_stats"])
+    monkeypatch.setattr(
+        audio_validation,
+        "_read_voice_wake_legs",
+        lambda: inputs["voice_wake_legs"],
+    )
+    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
+    monkeypatch.setattr(
+        audio_validation,
+        "write_artifact",
+        lambda *_args, **_kwargs: wrote.append("artifact"),
+    )
+    monkeypatch.setattr(
+        audio_validation,
+        "write_latest_pointer",
+        lambda *_args, **_kwargs: wrote.append("latest"),
+    )
+
+    result = audio_validation.run_chip_aec_hardware_validation(
+        report_only=True,
+        now=NOW,
+    )
+
+    assert result.refused is False
+    assert result.artifact is not None
+    assert result.artifact.checks["outputd_reference_health"]["status"] == "not_run"
+    assert wrote == []
+
+
+def test_run_chip_aec_hardware_validation_uses_one_bounded_window(
+    monkeypatch,
+    tmp_path,
+):
+    inputs = _active_chip_inputs()
+    outputd_samples = iter([
+        _outputd_sample(reference_sequence=10, dac_frames_written=1000),
+        _outputd_sample(reference_sequence=11, dac_frames_written=2000),
+        _outputd_sample(reference_sequence=15, dac_frames_written=6000),
+    ])
+    bridge_samples = iter([
+        _bridge_sample(frames_processed=100),
+        _bridge_sample(frames_processed=110),
+        _bridge_sample(frames_processed=150),
+    ])
+    sleeps: list[float] = []
+    chip_poll_durations: list[float] = []
+
+    monkeypatch.setattr(audio_validation, "_read_mode_env", lambda: inputs["mode_env"])
+    monkeypatch.setattr(audio_validation, "_read_system_env", lambda: inputs["system_env"])
+    monkeypatch.setattr(audio_validation, "_probe_xvf_mic", lambda: inputs["mic_probe"])
+    monkeypatch.setattr(
+        audio_validation,
+        "_collect_service_states",
+        lambda: inputs["service_states"],
+    )
+    monkeypatch.setattr(
+        audio_validation,
+        "_query_outputd_status",
+        lambda _socket: next(outputd_samples),
+    )
+    monkeypatch.setattr(audio_validation, "_read_bridge_stats", lambda: next(bridge_samples))
+    monkeypatch.setattr(
+        audio_validation,
+        "_read_voice_wake_legs",
+        lambda: inputs["voice_wake_legs"],
+    )
+    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
+    monkeypatch.setattr(audio_validation.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        audio_validation,
+        "_read_chip_profile_parameters",
+        lambda: _chip_readback(),
+    )
+
+    def poll_chip(**kwargs):
+        chip_poll_durations.append(kwargs["duration_seconds"])
+        return [{audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]}]
+
+    monkeypatch.setattr(audio_validation, "_poll_chip_convergence", poll_chip)
+
+    result = audio_validation.run_chip_aec_hardware_validation(
+        directory=tmp_path,
+        duration_seconds=10,
+        now=NOW,
+    )
+
+    assert result.refused is False
+    assert result.path is not None
+    assert sleeps == [1.0]
+    assert chip_poll_durations == [9.0]
+    assert result.artifact is not None
+    assert result.artifact.checks["outputd_reference_health"]["status"] == "pass"
 
 
 def test_latest_artifact_summary_reads_timestamped_artifacts(tmp_path):

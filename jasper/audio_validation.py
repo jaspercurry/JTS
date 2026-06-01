@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -44,12 +45,26 @@ DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 ALLOWED_STATUSES = frozenset({"pass", "warn", "fail", "unknown"})
 CHIP_AEC_PROFILE = "xvf_chip_aec"
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
+HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
+DEFAULT_HARDWARE_OBSERVE_SECONDS = 10.0
+MAX_SHORT_HARDWARE_OBSERVE_SECONDS = 120.0
+LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
+MAX_LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
+DEFAULT_CHIP_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
 DEFAULT_SYSTEM_ENV_PATH = Path("/etc/jasper/jasper.env")
 DEFAULT_BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
 DEFAULT_BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 DEFAULT_OUTPUTD_STATUS_SOCKET = Path("/run/jasper-outputd/control.sock")
 EXPECTED_CHIP_WAKE_LEGS = ("on", "chip_aec_150", "chip_aec_210")
+CHIP_AEC_PROFILE_READBACK_COMMANDS = (
+    "SHF_BYPASS",
+    "AUDIO_MGR_SYS_DELAY",
+    "AEC_ASROUTONOFF",
+    "AEC_FIXEDBEAMSONOFF",
+    "AEC_FIXEDBEAMSGATING",
+)
+CHIP_AEC_CONVERGENCE_COMMAND = "AEC_AECCONVERGED"
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -121,6 +136,17 @@ class ArtifactLoadResult:
     @property
     def has_artifact(self) -> bool:
         return self.artifact is not None
+
+
+@dataclass(frozen=True)
+class HardwareValidationRun:
+    """Result from the operator-controlled hardware validation runner."""
+
+    artifact: ValidationArtifact | None
+    refused: bool = False
+    refusal_reason: str = ""
+    path: Path | None = None
+    latest_path: Path | None = None
 
 
 def make_artifact(
@@ -885,6 +911,446 @@ def _measured_drift_delay_check(journal_text: str | None) -> dict[str, JsonValue
     )
 
 
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except (OverflowError, ValueError):
+            return None
+    return None
+
+
+def _nested_int(mapping: Mapping[str, Any] | None, *keys: str) -> int | None:
+    current: Any = mapping
+    for key in keys:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return _as_int(current)
+
+
+def _nested_mapping(mapping: Mapping[str, Any] | None, *keys: str) -> Mapping[str, Any] | None:
+    current: Any = mapping
+    for key in keys:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, Mapping) else None
+
+
+def _counter_delta(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+    *keys: str,
+) -> int | None:
+    start = _nested_int(before, *keys)
+    end = _nested_int(after, *keys)
+    if start is None or end is None:
+        return None
+    return max(0, end - start)
+
+
+def _mapping_delta_total(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+    *keys: str,
+) -> int | None:
+    start_map = _nested_mapping(before, *keys)
+    end_map = _nested_mapping(after, *keys)
+    if start_map is None or end_map is None:
+        return None
+    total = 0
+    for key in set(start_map) | set(end_map):
+        start = _as_int(start_map.get(key)) or 0
+        end = _as_int(end_map.get(key)) or 0
+        total += max(0, end - start)
+    return total
+
+
+def _profile_runtime_ready(checks: Mapping[str, JsonValue]) -> bool:
+    required = (
+        "runtime_profile",
+        "mic_detected",
+        "runtime_env",
+        "service_state",
+        "dac_reference",
+    )
+    for name in required:
+        check = checks.get(name)
+        if not isinstance(check, Mapping) or check.get("status") != "pass":
+            return False
+    return True
+
+
+def _outputd_reference_health_check(
+    samples: list[Mapping[str, Any]],
+    *,
+    duration_seconds: float,
+    report_only: bool,
+) -> dict[str, JsonValue]:
+    if report_only:
+        return _check(
+            "not_run",
+            summary="Report-only mode did not observe outputd reference movement.",
+            required=True,
+            observed={"duration_seconds": duration_seconds, "sample_count": len(samples)},
+        )
+    if len(samples) < 2:
+        return _check(
+            "unknown",
+            summary="outputd STATUS could not be sampled across the validation window.",
+            observed={"duration_seconds": duration_seconds, "sample_count": len(samples)},
+        )
+    before = samples[0]
+    after = samples[-1]
+    sequence_delta = _counter_delta(before, after, "mix", "reference_sequence")
+    dac_frames_delta = _counter_delta(before, after, "dac", "frames_written")
+    dac_xrun_delta = _counter_delta(before, after, "dac", "xrun_count")
+    content_xrun_delta = _counter_delta(before, after, "content", "xrun_count")
+    clipped_delta = _counter_delta(before, after, "mix", "clipped_samples")
+    progress_age_ms = _nested_int(after, "watchdog", "last_progress_age_ms")
+    observed = {
+        "duration_seconds": round(duration_seconds, 3),
+        "sample_count": len(samples),
+        "reference_sequence_start": _nested_int(before, "mix", "reference_sequence"),
+        "reference_sequence_end": _nested_int(after, "mix", "reference_sequence"),
+        "reference_sequence_delta": sequence_delta,
+        "dac_frames_written_delta": dac_frames_delta,
+        "dac_xrun_delta": dac_xrun_delta,
+        "content_xrun_delta": content_xrun_delta,
+        "clipped_samples_delta": clipped_delta,
+        "last_progress_age_ms": progress_age_ms,
+    }
+    if (dac_xrun_delta or 0) > 0 or (content_xrun_delta or 0) > 0:
+        return _check(
+            "fail",
+            summary="outputd reported xruns during the validation window.",
+            observed=observed,
+            expected={"xrun_delta": 0},
+        )
+    if (clipped_delta or 0) > 0:
+        return _check(
+            "fail",
+            summary="outputd reported clipped samples during the validation window.",
+            observed=observed,
+            expected={"clipped_samples_delta": 0},
+        )
+    if sequence_delta is None or sequence_delta <= 0:
+        return _check(
+            "warn",
+            summary="outputd reference sequence did not advance during the validation window.",
+            observed=observed,
+            expected={"reference_sequence_delta": ">0"},
+        )
+    if progress_age_ms is not None and progress_age_ms > 2500:
+        return _check(
+            "warn",
+            summary="outputd watchdog progress is stale at the end of the validation window.",
+            observed=observed,
+            expected={"last_progress_age_ms": "<=2500"},
+        )
+    return _check(
+        "pass",
+        summary="outputd reference state advanced without xruns or clipping.",
+        observed=observed,
+    )
+
+
+def _bridge_counter_window_check(
+    samples: list[Mapping[str, Any]],
+    *,
+    duration_seconds: float,
+    report_only: bool,
+) -> dict[str, JsonValue]:
+    if report_only:
+        return _check(
+            "not_run",
+            summary="Report-only mode did not observe bridge counter movement.",
+            observed={"duration_seconds": duration_seconds, "sample_count": len(samples)},
+        )
+    if len(samples) < 2:
+        return _check(
+            "unknown",
+            summary="AEC bridge stats could not be sampled across the validation window.",
+            observed={"duration_seconds": duration_seconds, "sample_count": len(samples)},
+        )
+    before = samples[0]
+    after = samples[-1]
+    frames_delta = _counter_delta(before, after, "counters", "frames_processed")
+    ref_starved_delta = _counter_delta(before, after, "counters", "ref_starved_frames")
+    queue_drop_delta = _mapping_delta_total(before, after, "counters", "queue_drops")
+    udp_drop_delta = _mapping_delta_total(before, after, "counters", "udp_send_drops_by_leg")
+    observed = {
+        "duration_seconds": round(duration_seconds, 3),
+        "sample_count": len(samples),
+        "frames_processed_delta": frames_delta,
+        "ref_starved_frames_delta": ref_starved_delta,
+        "queue_drop_delta": queue_drop_delta,
+        "udp_send_drop_delta": udp_drop_delta,
+    }
+    drop_delta = (queue_drop_delta or 0) + (udp_drop_delta or 0)
+    if drop_delta > 0:
+        return _check(
+            "fail",
+            summary="AEC bridge dropped queued or UDP frames during the validation window.",
+            observed=observed,
+            expected={"queue_drop_delta": 0, "udp_send_drop_delta": 0},
+        )
+    if (ref_starved_delta or 0) > 0:
+        return _check(
+            "warn",
+            summary="AEC bridge reused stale reference frames during the validation window.",
+            observed=observed,
+            expected={"ref_starved_frames_delta": 0},
+        )
+    if frames_delta is None or frames_delta <= 0:
+        return _check(
+            "warn",
+            summary="AEC bridge did not process mic frames during the validation window.",
+            observed=observed,
+            expected={"frames_processed_delta": ">0"},
+        )
+    return _check(
+        "pass",
+        summary="AEC bridge counters advanced without drops or reference starvation.",
+        observed=observed,
+    )
+
+
+def _hardware_drift_delay_check(
+    *,
+    bridge_window_check: Mapping[str, JsonValue],
+    duration_seconds: float,
+) -> dict[str, JsonValue]:
+    observed = {
+        "duration_seconds": round(duration_seconds, 3),
+        "bridge_window_status": bridge_window_check.get("status"),
+        "bridge_window_observed": bridge_window_check.get("observed"),
+    }
+    return _check(
+        "not_run",
+        summary=(
+            "Fixed delay and long-window clock drift were not directly measured. "
+            "This runner only records passive bridge/reference stability evidence."
+        ),
+        observed=observed,
+        expected={"operator_probe": "explicit playback/capture drift-delay run"},
+    )
+
+
+def _expected_chip_readback(system_env: Mapping[str, str]) -> dict[str, list[int]]:
+    raw_delay = (
+        system_env.get("JASPER_AEC_CHIP_SYS_DELAY")
+        or os.environ.get("JASPER_AEC_CHIP_SYS_DELAY")
+        or "12"
+    )
+    try:
+        sys_delay = int(raw_delay)
+    except ValueError:
+        sys_delay = 12
+    return {
+        "SHF_BYPASS": [0],
+        "AUDIO_MGR_SYS_DELAY": [sys_delay],
+        "AEC_ASROUTONOFF": [1],
+        "AEC_FIXEDBEAMSONOFF": [1],
+        "AEC_FIXEDBEAMSGATING": [1],
+    }
+
+
+def _normalize_xvf_values(values: Any) -> list[int | float | str]:
+    if values is None:
+        return []
+    if isinstance(values, list):
+        raw = values
+    elif isinstance(values, tuple):
+        raw = list(values)
+    else:
+        raw = [values]
+    out: list[int | float | str] = []
+    for value in raw:
+        if isinstance(value, bool):
+            out.append(int(value))
+        elif isinstance(value, (int, float, str)):
+            out.append(value)
+    return out
+
+
+def _values_equal(expected: list[int | float], observed: list[int | float | str]) -> bool:
+    if len(expected) != len(observed):
+        return False
+    for want, got in zip(expected, observed, strict=True):
+        try:
+            if isinstance(want, float):
+                if abs(float(got) - want) > 1e-4:
+                    return False
+            elif int(got) != want:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def _chip_profile_readback_check(
+    readback: Mapping[str, Any] | None,
+    *,
+    system_env: Mapping[str, str],
+    skipped: bool,
+    skip_reason: str = "",
+) -> dict[str, JsonValue]:
+    expected = _expected_chip_readback(system_env)
+    if skipped:
+        return _check(
+            "not_run",
+            summary=skip_reason or "Chip readback was skipped.",
+            expected=expected,
+        )
+    if not isinstance(readback, Mapping) or not readback:
+        return _check(
+            "unknown",
+            summary="XVF3800 profile readback was unavailable.",
+            expected=expected,
+        )
+    observed = {
+        key: _normalize_xvf_values(readback.get(key))
+        for key in CHIP_AEC_PROFILE_READBACK_COMMANDS
+    }
+    mismatches = {
+        key: {"expected": value, "observed": observed.get(key, [])}
+        for key, value in expected.items()
+        if not _values_equal(value, observed.get(key, []))
+    }
+    if mismatches:
+        return _check(
+            "fail",
+            summary="XVF3800 chip-AEC profile readback does not match expected volatile settings.",
+            observed={"values": observed, "mismatches": mismatches},
+            expected=expected,
+        )
+    return _check(
+        "pass",
+        summary="XVF3800 chip-AEC volatile profile readback matches expected settings.",
+        observed=observed,
+        expected=expected,
+    )
+
+
+def _chip_convergence_check(
+    polls: list[Mapping[str, Any]],
+    *,
+    skipped: bool,
+    skip_reason: str = "",
+) -> dict[str, JsonValue]:
+    if skipped:
+        return _check(
+            "not_run",
+            summary=skip_reason or "Chip convergence polling was skipped.",
+            expected={
+                CHIP_AEC_CONVERGENCE_COMMAND: (
+                    "read-only poll after runtime/ref health passes"
+                ),
+            },
+        )
+    if not polls:
+        return _check(
+            "unknown",
+            summary="XVF3800 convergence polling produced no samples.",
+            expected={CHIP_AEC_CONVERGENCE_COMMAND: "0 or 1"},
+        )
+    values: list[int] = []
+    errors: list[str] = []
+    for poll in polls:
+        if "error" in poll:
+            errors.append(str(poll["error"]))
+            continue
+        value = _normalize_xvf_values(poll.get(CHIP_AEC_CONVERGENCE_COMMAND))
+        if value:
+            try:
+                values.append(int(value[0]))
+            except (TypeError, ValueError):
+                errors.append(f"invalid value {value[0]!r}")
+    observed = {
+        "poll_count": len(polls),
+        "values": values,
+        "errors": errors,
+        "converged_count": sum(1 for value in values if value == 1),
+    }
+    if not values:
+        return _check(
+            "unknown",
+            summary="XVF3800 convergence readback was unavailable.",
+            observed=observed,
+            expected={CHIP_AEC_CONVERGENCE_COMMAND: "0 or 1"},
+        )
+    if any(value == 1 for value in values):
+        return _check(
+            "pass",
+            summary="XVF3800 reported AEC convergence during the validation window.",
+            observed=observed,
+            expected={CHIP_AEC_CONVERGENCE_COMMAND: 1},
+        )
+    return _check(
+        "not_observed",
+        summary=(
+            "XVF3800 did not report AEC convergence during the passive window. "
+            "Without an explicit far-end stimulus, this may mean there was "
+            "nothing meaningful for the chip to converge on."
+        ),
+        observed=observed,
+        expected={
+            CHIP_AEC_CONVERGENCE_COMMAND:
+                "1 when meaningful far-end audio is present",
+        },
+    )
+
+
+def _hardware_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]]) -> str:
+    readiness_names = {
+        "runtime_identity",
+        "runtime_profile",
+        "mic_detected",
+        "runtime_env",
+        "service_state",
+        "dac_reference",
+        "wake_legs",
+        "bridge_counters",
+        "measured_drift_delay",
+    }
+    readiness_checks = {
+        name: check for name, check in checks.items() if name in readiness_names
+    }
+    readiness = _readiness_recommendation(status, readiness_checks)
+    if readiness not in {
+        "run_hardware_validation",
+        "chip_aec_validated",
+        "review_audio_validation_warnings",
+    }:
+        return readiness
+    if checks.get("outputd_reference_health", {}).get("status") == "fail":
+        return "fix_outputd_reference_health_before_chip_validation"
+    if checks.get("bridge_counter_window", {}).get("status") == "fail":
+        return "fix_aec_bridge_stability_before_chip_validation"
+    if checks.get("chip_profile_readback", {}).get("status") == "fail":
+        return "rerun_aec_init_or_reconciler_before_chip_validation"
+    if checks.get("outputd_reference_health", {}).get("status") in {"unknown", "not_run", "warn"}:
+        return "review_outputd_reference_health_before_chip_validation"
+    if checks.get("bridge_counter_window", {}).get("status") in {"unknown", "not_run", "warn"}:
+        return "review_aec_bridge_reference_stability"
+    if checks.get("measured_drift_delay", {}).get("status") in {"not_run", "unknown"}:
+        return "run_drift_delay_validation"
+    if checks.get("chip_convergence", {}).get("status") in {
+        "unknown",
+        "not_run",
+        "not_observed",
+        "warn",
+    }:
+        return "review_chip_convergence_or_run_long_window"
+    if status == "pass":
+        return "chip_aec_measured_validated"
+    return "review_audio_validation_warnings"
+
+
 def build_chip_aec_readiness_artifact(
     *,
     now: datetime | None = None,
@@ -982,6 +1448,142 @@ def build_chip_aec_readiness_artifact(
             "No XVF chip settings were written or persisted.",
             "Long-window drift and fixed-delay stability require hardware validation.",
         ),
+    )
+
+
+def build_chip_aec_hardware_validation_artifact(
+    *,
+    now: datetime | None = None,
+    profile: str = CHIP_AEC_PROFILE,
+    system_env: Mapping[str, str] | None = None,
+    mode_env: Mapping[str, str] | None = None,
+    mic_probe: MicProbe | None = None,
+    service_states: Mapping[str, str] | None = None,
+    outputd_status: Mapping[str, Any] | None = None,
+    bridge_stats: Mapping[str, Any] | None = None,
+    voice_wake_legs: set[str] | None = None,
+    bridge_journal_text: str | None = None,
+    outputd_status_samples: list[Mapping[str, Any]] | None = None,
+    bridge_stats_samples: list[Mapping[str, Any]] | None = None,
+    chip_readback: Mapping[str, Any] | None = None,
+    chip_convergence_polls: list[Mapping[str, Any]] | None = None,
+    duration_seconds: float = DEFAULT_HARDWARE_OBSERVE_SECONDS,
+    report_only: bool = False,
+    forced: bool = False,
+    chip_probe_skipped: bool = False,
+    chip_probe_skip_reason: str = "",
+) -> ValidationArtifact:
+    """Build a schema-v1 measured chip-AEC validation artifact.
+
+    The default hardware runner is passive: it samples already-running
+    outputd/bridge state and read-only XVF parameters. It never generates
+    speaker output, opens capture streams, or writes/persists chip settings.
+    """
+
+    now = datetime.now(timezone.utc) if now is None else now
+    mode_env = dict(mode_env) if mode_env is not None else _read_mode_env()
+    system_env = dict(system_env) if system_env is not None else _read_system_env()
+    outputd_status_samples = list(outputd_status_samples or [])
+    bridge_stats_samples = list(bridge_stats_samples or [])
+    if outputd_status is None and outputd_status_samples:
+        outputd_status = outputd_status_samples[0]
+    if bridge_stats is None and bridge_stats_samples:
+        bridge_stats = bridge_stats_samples[0]
+
+    readiness = build_chip_aec_readiness_artifact(
+        now=now,
+        profile=profile,
+        system_env=system_env,
+        mode_env=mode_env,
+        mic_probe=mic_probe,
+        service_states=service_states,
+        outputd_status=outputd_status,
+        bridge_stats=bridge_stats,
+        voice_wake_legs=voice_wake_legs,
+        bridge_journal_text=bridge_journal_text,
+    )
+    checks: dict[str, Mapping[str, Any]] = {
+        key: value
+        for key, value in readiness.checks.items()
+        if isinstance(value, Mapping)
+    }
+    outputd_health = _outputd_reference_health_check(
+        outputd_status_samples,
+        duration_seconds=duration_seconds,
+        report_only=report_only,
+    )
+    bridge_window = _bridge_counter_window_check(
+        bridge_stats_samples,
+        duration_seconds=duration_seconds,
+        report_only=report_only,
+    )
+    checks["outputd_reference_health"] = outputd_health
+    checks["bridge_counter_window"] = bridge_window
+    checks["measured_drift_delay"] = _hardware_drift_delay_check(
+        bridge_window_check=bridge_window,
+        duration_seconds=duration_seconds,
+    )
+    skip_chip = chip_probe_skipped or not (
+        _profile_runtime_ready(checks)
+        and outputd_health.get("status") == "pass"
+    )
+    skip_reason = chip_probe_skip_reason
+    if skip_chip and not skip_reason:
+        skip_reason = (
+            "Chip readback/convergence polling waits for passing runtime "
+            "and outputd reference health."
+        )
+    checks["chip_profile_readback"] = _chip_profile_readback_check(
+        chip_readback,
+        system_env=system_env,
+        skipped=skip_chip,
+        skip_reason=skip_reason,
+    )
+    checks["chip_convergence"] = _chip_convergence_check(
+        list(chip_convergence_polls or []),
+        skipped=skip_chip,
+        skip_reason=skip_reason,
+    )
+    checks["operator_control"] = _check(
+        "pass",
+        required=False,
+        summary="Validation was explicitly operator-invoked and bounded.",
+        observed={
+            "duration_seconds": round(duration_seconds, 3),
+            "report_only": report_only,
+            "forced": forced,
+            "playback_generated": False,
+            "capture_loop_opened": False,
+            "xvf_persistent_writes": False,
+        },
+    )
+    status = _rollup_status(checks)
+    dac = _dac_details(system_env, outputd_status)
+    notes = (
+        f"{HARDWARE_VALIDATION_KIND}: passive operator-controlled hardware evidence",
+        "No playback stimulus was generated.",
+        "No capture loop was opened.",
+        "Only read-only XVF parameters were polled.",
+        "No XVF chip settings were written or persisted.",
+        (
+            "Fixed delay and long-window drift still require an explicit "
+            "playback/capture validation mode."
+        ),
+    )
+    errors: list[str] = []
+    for name, check in checks.items():
+        if check.get("status") == "fail":
+            errors.append(f"{name}: {check.get('summary', 'failed')}")
+    return make_artifact(
+        validated_at=now,
+        mic_id=readiness.mic_id,
+        dac_id=str(dac["id"] or readiness.dac_id or "unknown"),
+        profile=profile,
+        status=status,
+        checks=checks,
+        recommendation=_hardware_recommendation(status, checks),
+        notes=notes,
+        errors=tuple(errors),
     )
 
 
@@ -1151,6 +1753,321 @@ def latest_artifact_summary(
         dac_id=dac_id,
         now=now,
     )
+
+
+def _collect_service_states() -> dict[str, str]:
+    return {
+        unit: _service_state(unit)
+        for unit in (
+            "jasper-outputd.service",
+            "jasper-aec-bridge.service",
+            "jasper-aec-init.service",
+            "jasper-voice.service",
+        )
+    }
+
+
+def _parse_xvf_cli_value(stdout: str, command: str) -> list[int | float | str] | None:
+    pattern = re.compile(rf"^{re.escape(command)}:\s*\[(?P<body>.*)\]\s*$", re.MULTILINE)
+    match = pattern.search(stdout)
+    if not match:
+        return None
+    body = match.group("body").strip()
+    if not body:
+        return []
+    values: list[int | float | str] = []
+    for part in body.split(","):
+        raw = part.strip().strip("'\"")
+        if not raw:
+            continue
+        try:
+            values.append(int(raw, 0))
+            continue
+        except ValueError:
+            pass
+        try:
+            values.append(float(raw))
+            continue
+        except ValueError:
+            values.append(raw)
+    return values
+
+
+def _read_xvf_parameter(command: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "jasper.xvf.xvf_host", command],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug(
+            "event=audio_hw_validation.xvf_read_failed command=%s error=%s",
+            command,
+            e,
+        )
+        return {"error": str(e)}
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return {"error": detail or f"xvf_host exited {result.returncode}"}
+    values = _parse_xvf_cli_value(result.stdout, command)
+    if values is None:
+        return {"error": "xvf_host output did not include a parseable value"}
+    return {command: values}
+
+
+def _read_chip_profile_parameters(*, timeout: float = 5.0) -> dict[str, Any]:
+    readback: dict[str, Any] = {}
+    for command in CHIP_AEC_PROFILE_READBACK_COMMANDS:
+        result = _read_xvf_parameter(command, timeout=timeout)
+        if "error" in result:
+            readback[command] = {"error": result["error"]}
+        else:
+            readback[command] = result.get(command, [])
+    return readback
+
+
+def _poll_chip_convergence(
+    *,
+    duration_seconds: float,
+    interval_seconds: float,
+    timeout: float = 5.0,
+) -> list[Mapping[str, Any]]:
+    polls: list[Mapping[str, Any]] = []
+    deadline = time.monotonic() + max(0.0, duration_seconds)
+    while True:
+        result = _read_xvf_parameter(CHIP_AEC_CONVERGENCE_COMMAND, timeout=timeout)
+        polls.append(result)
+        value = _normalize_xvf_values(result.get(CHIP_AEC_CONVERGENCE_COMMAND))
+        if value and value[0] == 1:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(max(0.1, interval_seconds), remaining))
+    return polls
+
+
+def _duration_limit(duration_seconds: float, *, allow_long: bool) -> float:
+    limit = (
+        MAX_LONG_HARDWARE_OBSERVE_SECONDS
+        if allow_long else MAX_SHORT_HARDWARE_OBSERVE_SECONDS
+    )
+    if duration_seconds < 0:
+        raise ValueError("duration must be non-negative")
+    if duration_seconds > limit:
+        mode = "--allow-long or --long-window" if not allow_long else "a shorter duration"
+        raise ValueError(
+            f"duration {duration_seconds:g}s exceeds the {limit:g}s bound; use {mode}"
+        )
+    return duration_seconds
+
+
+def _chip_runtime_refusal_reason(artifact: ValidationArtifact) -> str:
+    checks = artifact.checks
+    runtime_profile = checks.get("runtime_profile")
+    if isinstance(runtime_profile, Mapping) and runtime_profile.get("status") != "pass":
+        return str(runtime_profile.get("summary") or "Chip-AEC profile is not active.")
+    runtime_env = checks.get("runtime_env")
+    if isinstance(runtime_env, Mapping) and runtime_env.get("status") != "pass":
+        return str(runtime_env.get("summary") or "Chip-AEC runtime env is incomplete.")
+    return ""
+
+
+def run_chip_aec_hardware_validation(
+    *,
+    profile: str = CHIP_AEC_PROFILE,
+    directory: Path | None = None,
+    duration_seconds: float = DEFAULT_HARDWARE_OBSERVE_SECONDS,
+    poll_interval_seconds: float = DEFAULT_CHIP_POLL_INTERVAL_SECONDS,
+    report_only: bool = False,
+    force: bool = False,
+    allow_long: bool = False,
+    stdout: bool = False,
+    now: datetime | None = None,
+) -> HardwareValidationRun:
+    """Run the bounded operator-controlled chip-AEC hardware validator."""
+
+    now = datetime.now(timezone.utc) if now is None else now
+    duration_seconds = _duration_limit(
+        0.0 if report_only else duration_seconds,
+        allow_long=allow_long,
+    )
+    if poll_interval_seconds <= 0:
+        raise ValueError("poll interval must be positive")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logger.info(
+        "event=audio_hw_validation.start profile=%s duration_seconds=%.3f report_only=%s force=%s",
+        profile,
+        duration_seconds,
+        int(report_only),
+        int(force),
+    )
+
+    mode_env = _read_mode_env()
+    system_env = _read_system_env()
+    mic_probe = _probe_xvf_mic()
+    service_states = _collect_service_states()
+    outputd_socket = _outputd_socket_path(system_env)
+    first_outputd = _query_outputd_status(outputd_socket)
+    first_bridge = _read_bridge_stats()
+    voice_wake_legs = _read_voice_wake_legs()
+    bridge_journal_text = _recent_bridge_journal()
+
+    readiness = build_chip_aec_readiness_artifact(
+        now=now,
+        profile=profile,
+        system_env=system_env,
+        mode_env=mode_env,
+        mic_probe=mic_probe,
+        service_states=service_states,
+        outputd_status=first_outputd,
+        bridge_stats=first_bridge,
+        voice_wake_legs=voice_wake_legs,
+        bridge_journal_text=bridge_journal_text,
+    )
+    refusal_reason = _chip_runtime_refusal_reason(readiness)
+    if refusal_reason and not force:
+        logger.warning(
+            "event=audio_hw_validation.refused profile=%s reason=%s",
+            profile,
+            refusal_reason,
+        )
+        return HardwareValidationRun(
+            artifact=None,
+            refused=True,
+            refusal_reason=refusal_reason,
+        )
+
+    outputd_samples: list[Mapping[str, Any]] = []
+    bridge_samples: list[Mapping[str, Any]] = []
+    if isinstance(first_outputd, Mapping):
+        outputd_samples.append(first_outputd)
+    if isinstance(first_bridge, Mapping):
+        bridge_samples.append(first_bridge)
+    preflight_seconds = 0.0
+    remaining_seconds = 0.0
+    if not report_only and duration_seconds > 0:
+        preflight_seconds = min(1.0, duration_seconds)
+        remaining_seconds = max(0.0, duration_seconds - preflight_seconds)
+        time.sleep(preflight_seconds)
+        preflight_outputd = _query_outputd_status(outputd_socket)
+        if isinstance(preflight_outputd, Mapping):
+            outputd_samples.append(preflight_outputd)
+        preflight_bridge = _read_bridge_stats()
+        if isinstance(preflight_bridge, Mapping):
+            bridge_samples.append(preflight_bridge)
+    probe_gate = build_chip_aec_hardware_validation_artifact(
+        now=now,
+        profile=profile,
+        system_env=system_env,
+        mode_env=mode_env,
+        mic_probe=mic_probe,
+        service_states=service_states,
+        outputd_status=first_outputd,
+        bridge_stats=first_bridge,
+        voice_wake_legs=voice_wake_legs,
+        bridge_journal_text=bridge_journal_text,
+        outputd_status_samples=outputd_samples,
+        bridge_stats_samples=bridge_samples,
+        duration_seconds=duration_seconds,
+        report_only=report_only,
+        forced=force,
+        chip_probe_skipped=True,
+        chip_probe_skip_reason="probe gate evaluation",
+    )
+    outputd_health = probe_gate.checks.get("outputd_reference_health")
+    chip_probe_allowed = (
+        not report_only
+        and _profile_runtime_ready(probe_gate.checks)
+        and isinstance(outputd_health, Mapping)
+        and outputd_health.get("status") == "pass"
+    )
+    chip_readback: Mapping[str, Any] | None = None
+    chip_polls: list[Mapping[str, Any]] = []
+    skip_reason = ""
+    if chip_probe_allowed:
+        logger.info("event=audio_hw_validation.chip_probe_start profile=%s", profile)
+        chip_readback = _read_chip_profile_parameters()
+        chip_polls = _poll_chip_convergence(
+            duration_seconds=remaining_seconds,
+            interval_seconds=poll_interval_seconds,
+        )
+        logger.info(
+            "event=audio_hw_validation.chip_probe_complete profile=%s polls=%d",
+            profile,
+            len(chip_polls),
+        )
+    else:
+        skip_reason = (
+            "Chip readback/convergence polling waits for report_only=0, "
+            "passing runtime checks, and passing outputd reference health."
+        )
+        if remaining_seconds > 0:
+            time.sleep(remaining_seconds)
+    if not report_only and duration_seconds > preflight_seconds:
+        final_outputd = _query_outputd_status(outputd_socket)
+        if isinstance(final_outputd, Mapping):
+            outputd_samples.append(final_outputd)
+        final_bridge = _read_bridge_stats()
+        if isinstance(final_bridge, Mapping):
+            bridge_samples.append(final_bridge)
+
+    artifact = build_chip_aec_hardware_validation_artifact(
+        now=now,
+        profile=profile,
+        system_env=system_env,
+        mode_env=mode_env,
+        mic_probe=mic_probe,
+        service_states=service_states,
+        outputd_status=first_outputd,
+        bridge_stats=first_bridge,
+        voice_wake_legs=voice_wake_legs,
+        bridge_journal_text=bridge_journal_text,
+        outputd_status_samples=outputd_samples,
+        bridge_stats_samples=bridge_samples,
+        chip_readback=chip_readback,
+        chip_convergence_polls=chip_polls,
+        duration_seconds=duration_seconds,
+        report_only=report_only,
+        forced=force,
+        chip_probe_skipped=not chip_probe_allowed,
+        chip_probe_skip_reason=skip_reason,
+    )
+    if stdout:
+        json.dump(artifact.to_dict(), sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+    if report_only:
+        logger.info(
+            "event=audio_hw_validation.report profile=%s status=%s recommendation=%s",
+            artifact.profile,
+            artifact.status,
+            artifact.recommendation,
+        )
+        return HardwareValidationRun(artifact=artifact)
+
+    target_dir = directory or artifact_directory()
+    try:
+        path = write_artifact(artifact, directory=target_dir)
+        latest_path = write_latest_pointer(artifact, directory=target_dir)
+    except OSError as e:
+        logger.error(
+            "event=audio_hw_validation.write_failed profile=%s status=%s error=%s",
+            artifact.profile,
+            artifact.status,
+            e,
+        )
+        return HardwareValidationRun(artifact=artifact, refused=True, refusal_reason=str(e))
+    logger.info(
+        "event=audio_hw_validation.write profile=%s status=%s recommendation=%s path=%s latest=%s",
+        artifact.profile,
+        artifact.status,
+        artifact.recommendation,
+        path,
+        latest_path,
+    )
+    return HardwareValidationRun(artifact=artifact, path=path, latest_path=latest_path)
 
 
 def artifact_age(
@@ -1361,6 +2278,97 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(artifact.to_dict(), sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     return 0 if artifact.status != "fail" else 1
+
+
+def hardware_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Run bounded operator-controlled chip-AEC hardware validation.",
+    )
+    parser.add_argument(
+        "--profile",
+        default=CHIP_AEC_PROFILE,
+        choices=(CHIP_AEC_PROFILE,),
+        help="Audio profile to validate.",
+    )
+    parser.add_argument(
+        "--directory",
+        type=Path,
+        default=None,
+        help="Artifact directory (default: /var/lib/jasper/audio-validation).",
+    )
+    parser.add_argument(
+        "--duration-seconds",
+        type=float,
+        default=DEFAULT_HARDWARE_OBSERVE_SECONDS,
+        help=(
+            "Passive outputd/bridge observation duration "
+            f"(default: {DEFAULT_HARDWARE_OBSERVE_SECONDS:g}s; "
+            f"max without --allow-long: {MAX_SHORT_HARDWARE_OBSERVE_SECONDS:g}s)."
+        ),
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=DEFAULT_CHIP_POLL_INTERVAL_SECONDS,
+        help=(
+            "Read-only chip convergence poll interval "
+            f"(default: {DEFAULT_CHIP_POLL_INTERVAL_SECONDS:g}s)."
+        ),
+    )
+    parser.add_argument(
+        "--long-window",
+        action="store_true",
+        help=(
+            "Use the explicit 30-minute passive validation window. "
+            "This does not generate playback."
+        ),
+    )
+    parser.add_argument(
+        "--allow-long",
+        action="store_true",
+        help="Allow --duration-seconds above the default short bound, up to 30 minutes.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        "--report-only",
+        dest="report_only",
+        action="store_true",
+        help="Collect a report without sleeping for the validation window or writing artifacts.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Write/report an artifact even when chip-AEC is not requested and active.",
+    )
+    parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print the full artifact JSON to stdout.",
+    )
+    args = parser.parse_args(argv)
+    duration = (
+        LONG_HARDWARE_OBSERVE_SECONDS
+        if args.long_window else args.duration_seconds
+    )
+    allow_long = args.allow_long or args.long_window
+    try:
+        result = run_chip_aec_hardware_validation(
+            profile=args.profile,
+            directory=args.directory,
+            duration_seconds=duration,
+            poll_interval_seconds=args.poll_interval_seconds,
+            report_only=args.report_only,
+            force=args.force,
+            allow_long=allow_long,
+            stdout=args.stdout or args.report_only,
+        )
+    except ValueError as e:
+        parser.error(str(e))
+    if result.refused:
+        return 2
+    if result.artifact is None:
+        return 2
+    return 0 if result.artifact.status != "fail" else 1
 
 
 if __name__ == "__main__":  # pragma: no cover
