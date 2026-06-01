@@ -296,6 +296,9 @@ def test_aec_full_status_includes_legs_and_threshold(
     assert status["legs"]["chip_aec"]["configured"] is False
     assert status["legs"]["chip_aec"]["available"] is True
     assert status["threshold"] == 0.40
+    assert status["audio_profile"]["requested"] == "xvf_software_aec3"
+    assert status["audio_profile"]["active"] == "xvf_software_aec3"
+    assert status["audio_profile"]["state"] == "active"
     assert status["microphone"]["detected"] is True
     assert status["microphone"]["firmware"]["state"] == "ok"
     assert status["microphone"]["processing_mode"] == "Software AEC3"

@@ -104,6 +104,7 @@ docs = [
   "docs/HANDOFF-voice-music-control.md",
   "docs/HANDOFF-volume.md",
   "docs/HANDOFF-source-capabilities.md",
+  "docs/HANDOFF-audio-capability-platform.md",
   "docs/HANDOFF-airplay.md",
 ]
 requires_docs_when = [
@@ -177,6 +178,7 @@ docs = [
   "docs/HANDOFF-wake-corpus-quality.md",
   "docs/HANDOFF-usb-mic-wake.md",
   "docs/HANDOFF-mic-fusion-architecture.md",
+  "docs/HANDOFF-audio-capability-platform.md",
 ]
 requires_docs_when = [
   "Wake model registry, thresholds, wake-event schema, corpus capture legs, scoring, labeling, or review tooling changes.",
@@ -192,6 +194,7 @@ safety = "audio-input-risk"
 code = [
   "jasper/cli/aec_*.py",
   "jasper/aec_engines/**",
+  "jasper/audio_profile_state.py",
   "jasper/mics/**",
   "jasper/xvf/**",
   "jasper/chip_aec_experiment.py",
@@ -212,6 +215,7 @@ docs = [
   "docs/HANDOFF-mic-fusion-architecture.md",
   "docs/HANDOFF-usb-mic-wake.md",
   "docs/CHIP-AEC-EXPERIMENT.md",
+  "docs/HANDOFF-audio-capability-platform.md",
 ]
 requires_docs_when = [
   "Mic device selection, AEC topology, XVF3800 parameter handling, reconciler behavior, debug captures, or chip-AEC experiment controls change.",
