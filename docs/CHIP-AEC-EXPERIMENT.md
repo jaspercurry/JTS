@@ -68,10 +68,12 @@ sudo jasper-audio-hw-validate --long-window --stdout
 The runner samples already-running outputd chip-reference health and
 AEC bridge counters, then polls read-only XVF chip profile/convergence
 state only after chip-AEC is requested/active and runtime/reference
-health passes. It refuses inactive chip-AEC unless `--force` is passed.
-It writes timestamped schema-v1 artifacts through
-`jasper/audio_validation.py` and updates `latest.json` only as the
-status-surface pointer. It does not generate playback, open capture
+health passes. `--duration-seconds` is the passive outputd/bridge
+observation window, not a hard total wall-clock cap; bounded XVF
+readback/poll subprocesses may add time. It refuses inactive chip-AEC
+unless `--force` is passed. It writes timestamped schema-v1 artifacts
+through `jasper/audio_validation.py` and updates `latest.json` only as
+the status-surface pointer. It does not generate playback, open capture
 loops, or call XVF write/persist commands (`SAVE_CONFIGURATION` and
 `REBOOT` remain forbidden). Fixed-delay and long-window drift evidence
 remain `not_run` until an explicit operator-confirmed playback/capture

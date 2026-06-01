@@ -2301,7 +2301,9 @@ def hardware_main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_HARDWARE_OBSERVE_SECONDS,
         help=(
-            "Passive outputd/bridge observation duration "
+            "Passive outputd/bridge observation window, not a hard total "
+            "wall-clock cap because bounded XVF readback/poll subprocesses "
+            "may add time "
             f"(default: {DEFAULT_HARDWARE_OBSERVE_SECONDS:g}s; "
             f"max without --allow-long: {MAX_SHORT_HARDWARE_OBSERVE_SECONDS:g}s)."
         ),
@@ -2319,14 +2321,17 @@ def hardware_main(argv: list[str] | None = None) -> int:
         "--long-window",
         action="store_true",
         help=(
-            "Use the explicit 30-minute passive validation window. "
+            "Use the explicit 30-minute passive observation window. "
             "This does not generate playback."
         ),
     )
     parser.add_argument(
         "--allow-long",
         action="store_true",
-        help="Allow --duration-seconds above the default short bound, up to 30 minutes.",
+        help=(
+            "Allow the passive observation window above the default short "
+            "bound, up to 30 minutes."
+        ),
     )
     parser.add_argument(
         "--dry-run",

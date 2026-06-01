@@ -1902,10 +1902,14 @@ def _assess_audio_validation_summary(
         )
     if state == "current" and status == "pass":
         return CheckResult("Audio validation", "ok", detail)
+    if recommendation in {"run_hardware_validation", "run_drift_delay_validation"}:
+        command = "sudo jasper-audio-hw-validate --duration-seconds 10 --stdout"
+    else:
+        command = "sudo jasper-audio-validate --stdout"
     return CheckResult(
         "Audio validation",
         "warn",
-        detail + "; run `sudo jasper-audio-validate` after chip-AEC is active",
+        detail + f"; advisory: consider `{command}` after chip-AEC is active",
     )
 
 

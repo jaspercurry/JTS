@@ -282,12 +282,15 @@ sudo jasper-audio-hw-validate --long-window --stdout
 
 `jasper-audio-hw-validate` is explicit and bounded. It never runs from
 doctor, `/aec`, deploy, service startup, or the reconciler. The default
-10-second run samples already-running outputd/bridge state, reads
-schema-v1 runtime facts, and polls XVF read-only convergence/profile
-state only after chip-AEC runtime/reference health is good. It refuses
-when chip-AEC is not requested and active unless `--force` is passed.
+10-second `--duration-seconds` value is the passive outputd/bridge
+observation window, not a hard total wall-clock cap: bounded read-only
+XVF profile/convergence subprocesses may add time. The command samples
+already-running outputd/bridge state, reads schema-v1 runtime facts, and
+polls XVF read-only convergence/profile state only after chip-AEC
+runtime/reference health is good. It refuses when chip-AEC is not
+requested and active unless `--force` is passed.
 `--dry-run`/`--report-only` writes nothing and skips the observation
-sleep. Durations above 120 seconds require `--allow-long` or
+sleep. Observation windows above 120 seconds require `--allow-long` or
 `--long-window`; the long-window preset is 30 minutes. The command does
 not generate audio, does not open capture loops, and does not call
 `SAVE_CONFIGURATION`, `REBOOT`, or any other XVF write path.
