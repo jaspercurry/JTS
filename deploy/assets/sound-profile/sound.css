@@ -317,7 +317,6 @@
   }
   .toggle input:checked + .track { background: var(--primary); }
   .toggle input:checked + .track::before { transform: translateX(20px); }
-  .toggle input:focus-visible + .track { outline: 2px solid var(--primary); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) {
     .toggle .track, .toggle .track::before { transition: none; }
   }

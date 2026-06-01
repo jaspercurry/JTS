@@ -137,6 +137,9 @@ PAGE_STYLE = """
   button.danger { background: #d44; }
   button:hover, a.btn:hover { filter: brightness(1.1); }
   button:disabled { background: #b8b8b8; cursor: not-allowed; filter: none; }
+  a:focus, button:focus, input:focus, select:focus, textarea:focus, [tabindex]:focus {
+    outline: none;
+  }
   .copy-row { display: flex; gap: 0.5em; align-items: stretch; margin: 0.6em 0; }
   .copy-row input { flex: 1; }
   .copy-row button { padding: 0 1em; }
@@ -327,9 +330,6 @@ TOGGLE_CSS = """
   .toggle input:checked + .track { background-color: #1db954; }
   .toggle input:checked + .track::before { transform: translateX(24px); }
   .toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
-  .toggle input:focus-visible + .track {
-    outline: 2px solid #1db954; outline-offset: 2px;
-  }
   @media (prefers-reduced-motion: reduce) {
     .toggle .track,
     .toggle .track::before {

@@ -258,6 +258,13 @@ CPU bars) stay in that page's `page_css`. Status colour is one knob: a
 component sets `--tone: var(--status-ok|warn|danger|idle)` on its root and
 the CSS reads it.
 
+The jts.local management UI intentionally does not show browser focus rings.
+`app.css` and legacy `PAGE_STYLE` suppress native outlines; active/selected
+state must be represented by component state (`.active`, `[aria-pressed]`,
+checked radio/toggle styling), not by `:focus-visible`/`:focus-within` rings.
+Do not add page-level focus outlines or box-shadow rings; the static design
+system tests should fail if those selectors return.
+
 **Page behaviour ships as static ES modules, not inline `<script>`.** A
 migrated page's JavaScript lives in `deploy/assets/<page>/js/*.js` (today:
 `system-status/`, `sound-profile/`), imports its siblings by relative

@@ -18,6 +18,21 @@ APP_CSS = ROOT / "deploy" / "assets" / "app.css"
 LANDING_HTML = ROOT / "deploy" / "index.html"
 
 
+def _without_css_comments(text: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+
+
+def _focus_ring_css_sources() -> list[Path]:
+    paths = [
+        APP_CSS,
+        LANDING_HTML,
+        ROOT / "jasper" / "web" / "_common.py",
+    ]
+    paths.extend(sorted((ROOT / "deploy" / "assets").rglob("*.css")))
+    paths.extend(sorted((ROOT / "deploy").glob("*.html")))
+    return list(dict.fromkeys(paths))
+
+
 def test_app_css_exists():
     assert APP_CSS.is_file(), f"missing shared stylesheet {APP_CSS}"
 
@@ -48,6 +63,45 @@ def test_app_css_does_not_force_global_svg_size():
     m = re.search(r"\bsvg\s*\{([^}]*)\}", APP_CSS.read_text())
     assert m, "expected a base svg rule"
     assert "width" not in m.group(1), "shared svg rule must not force a size"
+
+
+def test_shared_styles_suppress_browser_focus_outlines():
+    css = APP_CSS.read_text()
+    assert ":where(a, button, input, select, textarea, [tabindex]):focus" in css
+    assert "outline: none;" in css
+    assert "[tabindex]:focus" in _common.PAGE_STYLE
+    assert "outline: none;" in _common.PAGE_STYLE
+
+
+def test_web_css_does_not_reintroduce_focus_ring_selectors():
+    offenders: list[str] = []
+    for path in _focus_ring_css_sources():
+        text = _without_css_comments(path.read_text())
+        for selector in (":focus-visible", ":focus-within"):
+            if selector in text:
+                offenders.append(f"{path.relative_to(ROOT)} contains {selector}")
+
+    assert not offenders, (
+        "jts.local pages should not render focus rings; use selected/active "
+        "component state instead:\n" + "\n".join(offenders)
+    )
+
+
+def test_web_css_only_uses_outline_to_suppress_focus_chrome():
+    offenders: list[str] = []
+    for path in _focus_ring_css_sources():
+        text = _without_css_comments(path.read_text())
+        for match in re.finditer(r"\boutline\s*:\s*([^;{}]+);", text):
+            value = match.group(1).strip().lower()
+            if value != "none":
+                offenders.append(
+                    f"{path.relative_to(ROOT)} has outline: {match.group(1).strip()}"
+                )
+
+    assert not offenders, (
+        "CSS outline is reserved for suppressing browser focus chrome:\n"
+        + "\n".join(offenders)
+    )
 
 
 def test_asset_version_is_url_safe_and_failsoft(monkeypatch):

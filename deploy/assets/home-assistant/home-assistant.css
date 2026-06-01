@@ -32,10 +32,7 @@
   transition: border-color 0.15s ease;
 }
 
-.discover-row:hover,
-.discover-row:focus-visible {
-  border-color: var(--accent, #6f8f6a);
-}
+.discover-row:hover { border-color: var(--accent, #6f8f6a); }
 
 .discover-row .row-name {
   display: block;

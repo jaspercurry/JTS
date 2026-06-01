@@ -48,7 +48,6 @@ details.advanced > summary {
 details.advanced > summary:hover {
   background: color-mix(in oklab, var(--foreground) 6%, var(--surface));
 }
-/* Focus ring comes from app.css's global :focus-visible rule. */
 details.advanced[open] > summary { margin-bottom: 0.75rem; }
 
 /* Sit the destructive "Clear" form a little below the save form. */

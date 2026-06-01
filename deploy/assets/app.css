@@ -464,8 +464,7 @@ svg { display: block; }
 }
 /* Themed inputs. Enumerated text-ish types + select + textarea so we don't
    accidentally restyle checkboxes/radios (the `.toggle` checkbox below is
-   visually-hidden and must keep its native box model). Focus ring comes
-   from the shared `:focus-visible` rule near the end of this file. */
+   visually-hidden and must keep its native box model). */
 .field input[type="text"],
 .field input[type="email"],
 .field input[type="password"],
@@ -490,7 +489,7 @@ svg { display: block; }
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
-  outline: none;          /* :focus-visible provides the visible ring */
+  outline: none;
   border-color: var(--primary);
 }
 .field input:disabled,
@@ -563,10 +562,6 @@ svg { display: block; }
 .toggle input:checked + .track { background: var(--primary); }
 .toggle input:checked + .track::before { transform: translateX(20px); }
 .toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
-.toggle input:focus-visible + .track {
-  outline: 3px solid var(--primary-040);
-  outline-offset: 2px;
-}
 @media (prefers-reduced-motion: reduce) {
   .toggle .track,
   .toggle .track::before { transition: none; }
@@ -584,9 +579,10 @@ svg { display: block; }
   white-space: nowrap;
   border: 0;
 }
-:where(a, button, input, select, textarea, [tabindex]):focus-visible {
-  outline: 3px solid var(--primary-040);
-  outline-offset: 2px;
+/* Appliance-style control surfaces on jts.local do not show browser focus
+   rings. Active/selected state is represented by component state instead. */
+:where(a, button, input, select, textarea, [tabindex]):focus {
+  outline: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
