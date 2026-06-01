@@ -523,6 +523,9 @@ if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
 fi
 
 if [[ "$AEC_MODE" == "disabled" ]]; then
+    if [[ -z "$PRESENT_MIC" ]]; then
+        stop_voice
+    fi
     stop_disable_aec
     write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
     restart_outputd_if_needed
@@ -541,7 +544,6 @@ if [[ "$AEC_MODE" == "disabled" ]]; then
         else
             log "AEC disabled and no candidate mic present"
         fi
-        stop_voice
     fi
     exit 0
 fi
@@ -561,6 +563,9 @@ if aec_ready "$AEC_MIC_DEVICE"; then
     exit 0
 fi
 
+if [[ -z "$PRESENT_MIC" ]]; then
+    stop_voice
+fi
 stop_disable_aec
 write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
 restart_outputd_if_needed
@@ -581,4 +586,3 @@ if [[ "$CURRENT_MIC" == udp:* || -z "$CURRENT_MIC" || "$CURRENT_MIC" =~ ^hw:[0-9
 else
     log "no candidate mic present"
 fi
-stop_voice

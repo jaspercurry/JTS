@@ -83,6 +83,10 @@ def test_reconcile_clears_stale_udp_when_array_is_absent(tmp_path: Path) -> None
     assert "disable jasper-aec-bridge.service jasper-aec-init.service" in commands
     assert "stop jasper-voice.service" in commands
     assert "restart jasper-voice.service" not in commands
+    lines = commands.splitlines()
+    assert lines.index("stop jasper-voice.service") < lines.index(
+        "stop jasper-aec-bridge.service jasper-aec-init.service",
+    )
 
 
 def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> None:
