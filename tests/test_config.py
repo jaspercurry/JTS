@@ -75,12 +75,10 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == "/run/jasper-outputd/tts.sock"
     assert cfg.tts_output_rate == 48000
-    # offset 0 (was -8) lets the tracker drive level instead of stacking
-    # conservatism. headroom 5 dB = "voice loudness a touch above the
-    # music RMS": the tracker measures the TTS source RMS directly, so
-    # this is a loudness-domain target (it was 16 in the peak-measured
-    # era; matching peaks left compressed voices like Gemini louder).
-    assert cfg.tts_gain_db == 0.0
+    # headroom 5 dB = "voice loudness a touch above the music RMS":
+    # the tracker measures the TTS source RMS directly, so this is a
+    # loudness-domain target (it was 16 in the peak-measured era;
+    # matching peaks left compressed voices like Gemini louder).
     assert cfg.tts_music_headroom_db == 5.0
     assert cfg.tts_silence_threshold_dbfs == -50.0
     assert cfg.tts_music_window_sec == 8.0
@@ -200,8 +198,6 @@ def test_spotify_enabled_when_client_id_present(monkeypatch):
         ("JASPER_GEMINI_CONTEXT_RESET_SEC", "-1", "JASPER_GEMINI_CONTEXT_RESET_SEC"),
         ("JASPER_GROK_CONTEXT_RESET_SEC", "-1", "JASPER_GROK_CONTEXT_RESET_SEC"),
         ("JASPER_DAILY_SPEND_CAP_USD", "-1", "JASPER_DAILY_SPEND_CAP_USD"),
-        ("JASPER_TTS_GAIN_DB", "8", "JASPER_TTS_GAIN_DB"),
-        ("JASPER_TTS_GAIN_DB", "0.5", "JASPER_TTS_GAIN_DB"),
         ("JASPER_TTS_SILENCE_THRESHOLD_DBFS", "0", "JASPER_TTS_SILENCE_THRESHOLD_DBFS"),
         ("JASPER_TTS_SILENCE_THRESHOLD_DBFS", "5", "JASPER_TTS_SILENCE_THRESHOLD_DBFS"),
         ("JASPER_TTS_MUSIC_WINDOW_SEC", "0", "JASPER_TTS_MUSIC_WINDOW_SEC"),
@@ -217,59 +213,6 @@ def test_invalid_env_values_raise(monkeypatch, name, value, expected):
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv(name, value)
     with pytest.raises(RuntimeError, match=expected):
-        Config.from_env()
-
-
-def test_tts_gain_db_zero_is_allowed(monkeypatch):
-    """The boundary: zero offset is fine (TTS at master level), only
-    positive values risk pushing TTS above the user's master."""
-    monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.setenv("JASPER_TTS_GAIN_DB", "0")
-    cfg = Config.from_env()
-    assert cfg.tts_gain_db == 0.0
-
-
-def test_tts_gain_db_default_is_silent_no_warning(monkeypatch, caplog):
-    """Default 0.0 doesn't fire the deprecation warning — most users
-    are on the default and shouldn't see noise about a knob they're
-    not using."""
-    monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.delenv("JASPER_TTS_GAIN_DB", raising=False)
-    caplog.set_level("WARNING", logger="jasper.config")
-    cfg = Config.from_env()
-    assert cfg.tts_gain_db == 0.0
-    assert not any(
-        "JASPER_TTS_GAIN_DB" in r.message and "DEPRECATED" in r.message
-        for r in caplog.records
-    )
-
-
-def test_tts_gain_db_negative_fires_deprecation_warning(monkeypatch, caplog):
-    """Setting the deprecated env var to a non-default value fires
-    a single startup warning naming the env var, the value, and a
-    pointer to the doc — enough for an operator reading logs to find
-    out the knob is vestigial without a separate ping."""
-    monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.setenv("JASPER_TTS_GAIN_DB", "-8")
-    caplog.set_level("WARNING", logger="jasper.config")
-    cfg = Config.from_env()
-    assert cfg.tts_gain_db == -8.0  # still loaded, still works
-    warnings = [
-        r for r in caplog.records
-        if "JASPER_TTS_GAIN_DB" in r.message and "DEPRECATED" in r.message
-    ]
-    assert len(warnings) == 1, f"expected 1 deprecation warning, got {len(warnings)}"
-    assert "-8" in warnings[0].message  # quotes the value back
-    assert "audio-paths.md" in warnings[0].message  # points to the doc
-
-
-def test_tts_gain_db_positive_still_rejected(monkeypatch):
-    """Hearing-safety check stays — positive values still raise even
-    though the env var is otherwise deprecated. Deprecation softness
-    doesn't extend to safety-relevant misconfigurations."""
-    monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.setenv("JASPER_TTS_GAIN_DB", "3.0")
-    with pytest.raises(RuntimeError, match="must be <= 0"):
         Config.from_env()
 
 

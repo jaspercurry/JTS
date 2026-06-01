@@ -391,9 +391,9 @@ class TtsPlayout:
 
     INPUT_RATE = 24000
 
-    # Absolute ceiling on TTS gain. Even if main_volume + offset would
-    # push higher (positive offset, runaway, etc.), we clamp here. The
-    # whole point: never let TTS get loud enough to hurt.
+    # Absolute ceiling on TTS gain. Even if the tracker's computed gain
+    # would push higher (a runaway or bug), we clamp here. The whole
+    # point: never let TTS get loud enough to hurt.
     MAX_TTS_GAIN_DB = -6.0
     # Floor — below this, TTS is effectively silent. Used when the
     # user mutes, when Camilla is unreachable at startup, or when a

@@ -200,7 +200,6 @@ convergence point here.
 | CamillaDSP `main_volume` (the ducker) | DSP, websocket port 1234 | yes | no |
 | Source slider (iPhone, Spotify Connect, BT phone) | Renderer-side, before Loopback | yes | no |
 | Source amplitude (PCM data) | The WAV / TTS PCM buffer | yes | yes |
-| `JASPER_TTS_GAIN_DB` | OutputdTtsPlayout gain metadata | n/a | yes |
 | `TtsVolumeTracker` (auto) | OutputdTtsPlayout gain metadata | n/a | yes — auto-tracks music |
 | Apple dongle Headphone | Hardware mixer | (pinned 100%) | (pinned 100%) |
 | TPA3255 amp | Physical knob | yes | yes |
@@ -236,8 +235,8 @@ the bypass.
 
 ### Ceiling policy is branch-specific (read before changing the formula)
 
-The tracker's first version (May 2026) treated `main_volume + offset_db`
-as an **absolute** ceiling on TTS gain in every branch — the mental
+The tracker's first version (May 2026) treated `main_volume` plus a
+fixed offset as an **absolute** ceiling on TTS gain in every branch — the mental
 model was "main_volume controls max possible TTS loudness, the
 tracker can only push DOWN from there." That assumption broke once
 source-side sliders (iPhone, Spotify, BT) and external amplifiers
@@ -245,27 +244,24 @@ became the dominant carriers of user loudness intent. At
 `listening_level` below ~90% on loud-source music (e.g. AirPlay at
 70% → `main_volume = -15 dB`), the ceiling actively defeated the
 tracker, leaving TTS several dB *quieter* than music instead of the
-+6 dB above music the headroom formula intended. PR #294
-(2026-05-24) lifted the ceiling off the music-playing branch only:
+headroom above music the formula intended. PR #294 (2026-05-24)
+lifted the ceiling off the music-playing branch only:
 
 - **Music actively playing** (`windowed_rms > silence_threshold`):
-  no `main_volume + offset_db` ceiling. The measured signal IS the
-  answer. Hearing-safety lives in `TtsPlayout.MAX_TTS_GAIN_DB`
-  (-6 dB).
+  no ceiling. The measured signal IS the answer. Hearing-safety
+  lives in `TtsPlayout.MAX_TTS_GAIN_DB` (-6 dB).
 - **Silence with a valid anchor**: ceiling APPLIES. Anchor can be
   stale (loud music yesterday, quiet bedroom today at low
-  `main_volume`), and `main_volume + offset_db` is the right
-  backstop against blasting in that case.
+  `main_volume`), and `main_volume` is the right backstop against
+  blasting in that case.
 - **No anchor ever recorded** (sentinel < -120, effectively
   first-boot only): target IS the ceiling — `main_volume` is the
   only loudness signal we have.
 
-`JASPER_TTS_GAIN_DB` (the `offset_db`) therefore only affects the
-silence branches now and is **deprecated** as of PR #295. Default
-`0` = "TTS in silence sits at `main_volume` exactly." Negative values
-still work but log a one-shot deprecation warning at startup; positive
-values are rejected by config validation. The env var will be removed
-once nobody's using it.
+The silence-branch ceiling is `main_volume` exactly. (An earlier
+`offset` knob — env var `JASPER_TTS_GAIN_DB` — biased that ceiling;
+it was removed in June 2026 once the measured-RMS tracker made it
+redundant, so there is no longer any env var on this path.)
 
 This branch-specific policy is the structural invariant the
 regression tests in `tests/test_tts_volume_tracker.py` lock in
@@ -278,18 +274,19 @@ Every user-perceptible TTS gain change emits a single structured log
 line (PR #295) carrying the full computation context:
 
 ```
-event=tts_gain.compute branch=music windowed_rms=-26.0 anchor_dbfs=-25.9
-  main_volume_db=-15.0 offset_db=0.0 ceiling_db=-15.0 target_db=-7.0
+event=tts_gain.compute branch=music windowed_rms=-26.0 source_rms_dbfs=-3.0
+  anchor_dbfs=-25.9 main_volume_db=-15.0 ceiling_db=-15.0 target_db=-7.0
   final_db=-7.0 max_cap_db=-6.0
 ```
 
 Fields:
 - `branch` — which decision path fired (`music` / `anchor` / `no_anchor`)
 - `windowed_rms` — what `playback_rms` reported, post-windowing
+- `source_rms_dbfs` — measured RMS of the TTS source PCM (the loudness
+  the gain math normalizes against)
 - `anchor_dbfs` — last-known music level (frozen during silence)
 - `main_volume_db` — CamillaDSP's `main_volume` at the moment
-- `offset_db` — the deprecated `JASPER_TTS_GAIN_DB` offset
-- `ceiling_db` — `main_volume + offset` (applied to silence branches only)
+- `ceiling_db` — `main_volume` (applied to silence branches only)
 - `target_db` — what the formula computed before any clamping
 - `final_db` — what the TTS path sends to outputd after `MAX_TTS_GAIN_DB`
 - `max_cap_db` — hearing-safety cap (always `-6 dB`)
