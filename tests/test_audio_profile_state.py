@@ -1,0 +1,95 @@
+from jasper.audio_profile_state import (
+    AecIntent,
+    MicProbe,
+    RuntimeAecEnv,
+    build_audio_profile_status,
+    runtime_env_from_mapping,
+)
+
+
+def test_runtime_env_from_mapping_prefers_fresh_env_file_over_process_env():
+    runtime = runtime_env_from_mapping(
+        {"JASPER_AEC_CHIP_AEC_ENABLED": "1"},
+        process_env={
+            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+            "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
+        },
+    )
+
+    assert runtime.chip_enabled is True
+    assert runtime.chip_aec_150_device == "udp:9887"
+
+
+def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", chip_aec_enabled=True),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            chip_enabled=True,
+            chip_aec_150_device="udp:9887",
+            chip_aec_210_device="udp:9888",
+        ),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert status["audio_profile"] == {
+        "requested": "xvf_chip_aec",
+        "active": "xvf_chip_aec",
+        "state": "active",
+        "reason": "Chip-AEC runtime env is applied.",
+    }
+    assert status["microphone"]["processing_mode"] == "Chip-AEC"
+    assert status["microphone"]["wake_legs"] == [
+        "Primary chip beam",
+        "Chip AEC 150",
+        "Chip AEC 210",
+    ]
+    assert status["microphone"]["warnings"] == []
+
+
+def test_chip_aec_pending_when_runtime_env_not_applied():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", chip_aec_enabled=True),
+        RuntimeAecEnv(primary_device="udp:9876", chip_enabled=False),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec"
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "pending"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
+    assert "not applied" in " ".join(status["microphone"]["warnings"])
+
+
+def test_software_aec3_profile_reports_optional_legs():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", raw_enabled=True, dtln_enabled=True),
+        RuntimeAecEnv(primary_device="udp:9876"),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert status["audio_profile"]["requested"] == "xvf_software_aec3"
+    assert status["audio_profile"]["active"] == "xvf_software_aec3"
+    assert status["microphone"]["wake_legs"] == ["AEC3", "Chip-direct raw", "DTLN"]
+
+
+def test_disabled_mode_reports_direct_mic_profile():
+    status = build_audio_profile_status(
+        AecIntent(mode="disabled"),
+        RuntimeAecEnv(primary_device="USB PnP Sound Device", aec_device="Array"),
+        MicProbe(xvf_present=False, capture_channels=None),
+        bridge_active=False,
+        chip_available=False,
+    )
+
+    assert status["audio_profile"]["requested"] == "direct_mic"
+    assert status["audio_profile"]["active"] == "direct_mic"
+    assert status["audio_profile"]["state"] == "disabled"
+    assert status["microphone"]["detected"] is True
+    assert status["microphone"]["name"] == "Direct mic (USB PnP Sound Device)"

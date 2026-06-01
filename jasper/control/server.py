@@ -56,6 +56,13 @@ from ..volume_diagnostics import (
     build_volume_policy_snapshot,
     read_diagnostics as _read_volume_diagnostics,
 )
+from ..audio_profile_state import (
+    AecIntent,
+    MicProbe,
+    build_audio_profile_status,
+    parse_env_bool as _parse_audio_profile_bool,
+    runtime_env_from_mapping,
+)
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -388,12 +395,7 @@ _TOGGLE_TO_TOKEN = {
 
 def _parse_env_bool(raw: str, default: bool) -> bool:
     """Same normalization the bash reconciler does — accept yes/no/etc."""
-    value = raw.strip().strip("'\"").lower()
-    if value in ("1", "true", "on", "yes", "y", "enabled", "enable"):
-        return True
-    if value in ("0", "false", "off", "no", "n", "disabled", "disable", ""):
-        return False
-    return default
+    return _parse_audio_profile_bool(raw, default)
 
 
 def _read_aec_state() -> dict:
@@ -539,12 +541,6 @@ def _fresh_jasper_env() -> dict[str, str]:
     return parse_env_file(os.environ.get("JASPER_ENV_FILE", _JASPER_ENV_FILE))
 
 
-def _env_value(env: dict[str, str], key: str, default: str = "") -> str:
-    if key in env:
-        return env[key]
-    return os.environ.get(key, default)
-
-
 def _read_wake_word_status() -> dict[str, Any]:
     """Wake model label for the /wake/ status card."""
     from .. import wake_models
@@ -565,12 +561,53 @@ def _read_wake_word_status() -> dict[str, Any]:
     }
 
 
-def _mic_source_label(device: str) -> str:
-    if not device:
-        return "not configured"
-    if device.startswith("udp:"):
-        return f"UDP {device[4:]}"
-    return device
+def _audio_profile_status(
+    state: dict[str, Any],
+    *,
+    bridge_active: bool,
+    chip_available: bool,
+) -> dict[str, Any]:
+    """Read-only mic/profile status for the /wake/ page.
+
+    This is intentionally descriptive and side-effect-free: it reads the
+    reconciler-owned env file plus the XVF profile's firmware helpers,
+    then classifies intent vs observed runtime. It does not probe audio
+    streams or open devices on the hot polling path.
+    """
+    env = _fresh_jasper_env()
+    runtime = runtime_env_from_mapping(env, process_env=os.environ)
+    try:
+        from ..mics import xvf3800
+        xvf_present = xvf3800.is_present()
+        capture_channels = xvf3800.capture_channels()
+        recommended_channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+        display_name = xvf3800.DISPLAY_NAME
+        probe_error = None
+    except Exception:  # noqa: BLE001
+        xvf_present = False
+        capture_channels = None
+        recommended_channels = 6
+        display_name = "Seeed ReSpeaker XVF3800 (USB UA)"
+        probe_error = "firmware probe failed"
+
+    return build_audio_profile_status(
+        AecIntent(
+            mode=state["mode"],
+            raw_enabled=bool(state["leg_raw"]),
+            dtln_enabled=bool(state["leg_dtln"]),
+            chip_aec_enabled=bool(state["leg_chip_aec"]),
+        ),
+        runtime,
+        MicProbe(
+            xvf_present=xvf_present,
+            capture_channels=capture_channels,
+            recommended_channels=recommended_channels,
+            display_name=display_name,
+            probe_error=probe_error,
+        ),
+        bridge_active=bridge_active,
+        chip_available=chip_available,
+    )
 
 
 def _mic_status(
@@ -579,128 +616,12 @@ def _mic_status(
     bridge_active: bool,
     chip_available: bool,
 ) -> dict[str, Any]:
-    """Mic/topology status for the /wake/ page.
-
-    This is intentionally descriptive and side-effect-free: it reads the
-    reconciler-owned env file plus the XVF profile's firmware helpers,
-    then reports what the system is configured to do. It does not probe
-    audio streams or open devices on the hot polling path.
-    """
-    env = _fresh_jasper_env()
-    primary_device = _env_value(env, "JASPER_MIC_DEVICE", "Array")
-    aec_device = _env_value(env, "JASPER_AEC_MIC_DEVICE", "Array")
-    chip_primary = _env_value(env, "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", "chip_aec_150")
-    runtime_chip_enabled = _parse_env_bool(
-        _env_value(env, "JASPER_AEC_CHIP_AEC_ENABLED", "0"),
-        default=False,
-    )
-    runtime_chip_150 = _env_value(env, "JASPER_MIC_DEVICE_CHIP_AEC_150", "")
-    runtime_chip_210 = _env_value(env, "JASPER_MIC_DEVICE_CHIP_AEC_210", "")
-    direct_mic_configured = bool(
-        primary_device
-        and not primary_device.startswith("udp:")
-        and not (primary_device == aec_device == "Array")
-    )
-    try:
-        from ..mics import xvf3800
-        xvf_present = xvf3800.is_present()
-        capture_channels = xvf3800.capture_channels()
-        recommended_channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
-        if xvf_present:
-            mic_name = xvf3800.DISPLAY_NAME
-        elif direct_mic_configured:
-            mic_name = f"Direct mic ({primary_device})"
-        else:
-            mic_name = "No supported mic detected"
-    except Exception:  # noqa: BLE001
-        xvf_present = False
-        capture_channels = None
-        recommended_channels = 6
-        mic_name = (
-            f"Direct mic ({primary_device})"
-            if direct_mic_configured else "Microphone status unavailable"
-        )
-
-    if capture_channels is None:
-        firmware = {
-            "state": "absent",
-            "label": "not detected",
-            "capture_channels": None,
-            "recommended_channels": recommended_channels,
-        }
-    elif capture_channels == recommended_channels:
-        firmware = {
-            "state": "ok",
-            "label": f"{capture_channels}-channel firmware",
-            "capture_channels": capture_channels,
-            "recommended_channels": recommended_channels,
-        }
-    else:
-        firmware = {
-            "state": "warn",
-            "label": f"{capture_channels}-channel firmware",
-            "capture_channels": capture_channels,
-            "recommended_channels": recommended_channels,
-        }
-
-    mode = state["mode"]
-    chip_mode = bool(state["leg_chip_aec"])
-    raw_on = bool(state["leg_raw"])
-    dtln_on = bool(state["leg_dtln"])
-    chip_runtime_active = bool(
-        mode == "auto"
-        and bridge_active
-        and chip_available
-        and runtime_chip_enabled
-        and runtime_chip_150
-        and runtime_chip_210
-    )
-    warnings: list[str] = []
-
-    if mode != "auto":
-        processing_mode = "Direct mic"
-        session_source = _mic_source_label(primary_device)
-        wake_legs = ["Direct mic"]
-    elif chip_mode:
-        processing_mode = "Chip-AEC" if chip_runtime_active else "Chip-AEC pending"
-        if chip_runtime_active:
-            session_source = (
-                "Chip AEC 210 beam via :9876"
-                if chip_primary == "chip_aec_210"
-                else "Chip AEC 150 beam via :9876"
-            )
-        else:
-            session_source = "waiting for AEC bridge"
-        wake_legs = ["Primary chip beam", "Chip AEC 150", "Chip AEC 210"]
-    else:
-        processing_mode = "Software AEC3"
-        session_source = "WebRTC AEC3 via :9876" if bridge_active else "waiting for AEC bridge"
-        wake_legs = ["AEC3"]
-        if raw_on:
-            wake_legs.append("Chip-direct raw")
-        if dtln_on:
-            wake_legs.append("DTLN")
-
-    if mode == "auto" and not bridge_active:
-        warnings.append("AEC bridge is not active yet.")
-    if chip_mode and not chip_available:
-        warnings.append("Chip-AEC needs the XVF3800 6-channel firmware.")
-    if chip_mode and chip_available and bridge_active and not chip_runtime_active:
-        warnings.append("Chip-AEC is selected but the reconciler has not applied it yet.")
-    if not xvf_present and (mode == "auto" or chip_mode):
-        warnings.append("XVF3800 mic is not detected.")
-
-    return {
-        "detected": xvf_present or direct_mic_configured,
-        "name": mic_name,
-        "primary_device": primary_device,
-        "aec_device": aec_device,
-        "firmware": firmware,
-        "processing_mode": processing_mode,
-        "session_source": session_source,
-        "wake_legs": wake_legs,
-        "warnings": warnings,
-    }
+    """Compatibility wrapper for callers that only need mic status."""
+    return _audio_profile_status(
+        state,
+        bridge_active=bridge_active,
+        chip_available=chip_available,
+    )["microphone"]
 
 
 def _aec_full_status() -> dict:
@@ -728,6 +649,11 @@ def _aec_full_status() -> dict:
         chip_available = xvf3800.is_recommended_firmware()
     except Exception:  # noqa: BLE001
         chip_available = False
+    profile_status = _audio_profile_status(
+        state,
+        bridge_active=bridge_active,
+        chip_available=chip_available,
+    )
     return {
         "mode": state["mode"],
         "bridge_active": bridge_active,
@@ -741,11 +667,8 @@ def _aec_full_status() -> dict:
         },
         "threshold": _read_wake_threshold(),
         "wake_word": _read_wake_word_status(),
-        "microphone": _mic_status(
-            state,
-            bridge_active=bridge_active,
-            chip_available=chip_available,
-        ),
+        "audio_profile": profile_status["audio_profile"],
+        "microphone": profile_status["microphone"],
     }
 
 

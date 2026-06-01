@@ -531,6 +531,13 @@ reference. Currently:
   the staged PR plan (Phase 0 → 5). Companion to HANDOFF-mic-quality-v2.md
   (empirical tuning) and HANDOFF-wake-telemetry.md (schema). Read for the
   boundary design + phase sequencing.
+- [`HANDOFF-audio-capability-platform.md`](docs/HANDOFF-audio-capability-platform.md) —
+  Cross-cutting plan for turning the current mic/AEC/DAC work into a
+  hardware-capability platform: detected mic/DAC facts, profile
+  selection, validation artifacts, fallback behavior, dashboard truth,
+  and future onboarding. Read before generalizing chip-AEC to new DACs,
+  adding a second mic family, or moving corpus/onboarding modes into
+  productized hardware setup.
 - [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md) —
   **Current primary workstream (2026-05-26).** The forward-looking
   plan for training a custom `jarvis_jts_*_v1` wake-word model
