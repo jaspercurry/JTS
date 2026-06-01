@@ -4,6 +4,9 @@ import os
 import subprocess
 from pathlib import Path
 
+from jasper.audio_profile_state import expected_runtime_env_for_profile
+from jasper.env_load import parse_env_file
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-aec-reconcile"
@@ -222,6 +225,13 @@ def test_aec_on_triple_stream_writes_all_three(tmp_path: Path) -> None:
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:9878" in body
     assert "JASPER_AEC_DTLN_ENABLED=1" in body
+    env = parse_env_file(str(tmp_path / "jasper.env"))
+    expected = expected_runtime_env_for_profile(
+        "xvf_software_aec3",
+        enabled_optional_tokens=("off", "dtln"),
+    )
+    for key, value in expected.items():
+        assert env.get(key) == value
 
 
 def test_aec_on_single_stream_clears_both_legs(tmp_path: Path) -> None:
@@ -352,6 +362,10 @@ def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
     assert "JASPER_AEC_DTLN_ENABLED=1" not in body
+    env = parse_env_file(str(tmp_path / "jasper.env"))
+    expected = expected_runtime_env_for_profile("xvf_chip_aec")
+    for key, value in expected.items():
+        assert env.get(key) == value
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-outputd.service" in commands
 

@@ -15,6 +15,329 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from . import wake_legs
+
+
+@dataclass(frozen=True)
+class ProfileEnvVar:
+    """One env var in a profile's static reconciler-applied env shape."""
+
+    key: str
+    value: str
+
+
+@dataclass(frozen=True)
+class ProfileLeg:
+    """One wake/corpus leg declared by an audio profile.
+
+    `token` is the frozen wake_legs wire/carrier token. Most profile legs
+    carry the same signal kind as their registry entry; `source_kind`
+    makes the exceptional case explicit when a profile repoints a carrier,
+    such as chip-AEC forwarding its primary beam through the historical
+    `on`/:9876 carrier. `env_key`, when present, names the runtime env var
+    that points a consumer at that leg's UDP device. The value is still
+    written by the reconciler; this object is only the read-only contract.
+    """
+
+    token: str
+    label: str
+    optional: bool = False
+    source_kind: wake_legs.LegKind | None = None
+    env_key: str = ""
+    enabled_env_key: str = ""
+
+    @property
+    def effective_source_kind(self) -> wake_legs.LegKind:
+        """Signal kind carried by this profile leg."""
+
+        return self.source_kind or wake_legs.by_token(self.token).kind
+
+
+@dataclass(frozen=True)
+class AudioProfileDeclaration:
+    """Read-only declaration for the shared audio-profile vocabulary."""
+
+    profile_id: str
+    label: str
+    purpose: str
+    mic_family: str
+    has_static_runtime_env: bool
+    test_only: bool = False
+    requires_bridge: bool = False
+    requires_xvf_6ch: bool = False
+    requires_chip_reference: bool = False
+    wake_legs: tuple[ProfileLeg, ...] = ()
+    corpus_legs: tuple[ProfileLeg, ...] = ()
+    static_env: tuple[ProfileEnvVar, ...] = ()
+    cleared_env_keys: tuple[str, ...] = ()
+    mutually_exclusive_leg_tokens: tuple[str, ...] = ()
+
+
+_BRIDGE_REF_HOST = "127.0.0.1"
+_BRIDGE_REF_PORT = "9891"
+_CHIP_REF_PCM = "plughw:CARD=Array,DEV=0"
+_CHIP_REF_SAMPLE_RATE = "16000"
+_CHIP_REF_PERIOD_FRAMES = "320"
+_CHIP_REF_BUFFER_FRAMES = "1280"
+
+
+_AUDIO_PROFILES: tuple[AudioProfileDeclaration, ...] = (
+    AudioProfileDeclaration(
+        profile_id="direct_mic",
+        label="Direct mic",
+        purpose="Fallback/direct capture when the AEC bridge is disabled.",
+        mic_family="any",
+        has_static_runtime_env=False,
+    ),
+    AudioProfileDeclaration(
+        profile_id="xvf_software_aec3",
+        label="XVF software AEC3",
+        purpose=(
+            "Default safe XVF path: WebRTC AEC3 with optional raw/DTLN "
+            "wake legs."
+        ),
+        mic_family="xvf3800",
+        has_static_runtime_env=True,
+        requires_bridge=True,
+        requires_xvf_6ch=True,
+        wake_legs=(
+            ProfileLeg("on", "AEC3", env_key="JASPER_MIC_DEVICE"),
+            ProfileLeg(
+                "off",
+                "Chip-direct raw",
+                optional=True,
+                env_key="JASPER_MIC_DEVICE_RAW",
+            ),
+            ProfileLeg(
+                "dtln",
+                "DTLN",
+                optional=True,
+                env_key="JASPER_MIC_DEVICE_DTLN",
+                enabled_env_key="JASPER_AEC_DTLN_ENABLED",
+            ),
+        ),
+        static_env=(
+            ProfileEnvVar("JASPER_AEC_CHIP_AEC_ENABLED", "0"),
+            ProfileEnvVar("JASPER_AEC_REF_SOURCE", "alsa"),
+            ProfileEnvVar("JASPER_AEC_OUTPUTD_REF_UDP_HOST", _BRIDGE_REF_HOST),
+            ProfileEnvVar("JASPER_AEC_OUTPUTD_REF_UDP_PORT", _BRIDGE_REF_PORT),
+            ProfileEnvVar(
+                "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE",
+                _CHIP_REF_SAMPLE_RATE,
+            ),
+            ProfileEnvVar(
+                "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
+                _CHIP_REF_PERIOD_FRAMES,
+            ),
+            ProfileEnvVar(
+                "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
+                _CHIP_REF_BUFFER_FRAMES,
+            ),
+        ),
+        cleared_env_keys=(
+            "JASPER_MIC_DEVICE_CHIP_AEC_150",
+            "JASPER_MIC_DEVICE_CHIP_AEC_210",
+            "JASPER_OUTPUTD_CHIP_REF_PCM",
+            "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
+        ),
+    ),
+    AudioProfileDeclaration(
+        profile_id="xvf_chip_aec",
+        label="XVF chip-AEC",
+        purpose=(
+            "Opt-in XVF hardware-AEC path: chip beam carrier on :9876 plus "
+            "fixed 150/210 scoring beams."
+        ),
+        mic_family="xvf3800",
+        has_static_runtime_env=True,
+        requires_bridge=True,
+        requires_xvf_6ch=True,
+        requires_chip_reference=True,
+        wake_legs=(
+            ProfileLeg(
+                "on",
+                "Primary chip beam",
+                source_kind=wake_legs.LegKind.HARDWARE_AEC,
+                env_key="JASPER_MIC_DEVICE",
+            ),
+            ProfileLeg(
+                "chip_aec_150",
+                "Chip AEC 150",
+                env_key="JASPER_MIC_DEVICE_CHIP_AEC_150",
+            ),
+            ProfileLeg(
+                "chip_aec_210",
+                "Chip AEC 210",
+                env_key="JASPER_MIC_DEVICE_CHIP_AEC_210",
+            ),
+        ),
+        static_env=(
+            ProfileEnvVar("JASPER_AEC_CHIP_AEC_ENABLED", "1"),
+            ProfileEnvVar("JASPER_AEC_DTLN_ENABLED", "0"),
+            ProfileEnvVar("JASPER_AEC_REF_SOURCE", "outputd_udp"),
+            ProfileEnvVar("JASPER_AEC_OUTPUTD_REF_UDP_HOST", _BRIDGE_REF_HOST),
+            ProfileEnvVar("JASPER_AEC_OUTPUTD_REF_UDP_PORT", _BRIDGE_REF_PORT),
+            ProfileEnvVar("JASPER_OUTPUTD_CHIP_REF_PCM", _CHIP_REF_PCM),
+            ProfileEnvVar(
+                "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
+                f"{_BRIDGE_REF_HOST}:{_BRIDGE_REF_PORT}",
+            ),
+            ProfileEnvVar(
+                "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE",
+                _CHIP_REF_SAMPLE_RATE,
+            ),
+            ProfileEnvVar(
+                "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
+                _CHIP_REF_PERIOD_FRAMES,
+            ),
+            ProfileEnvVar(
+                "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
+                _CHIP_REF_BUFFER_FRAMES,
+            ),
+        ),
+        cleared_env_keys=(
+            "JASPER_MIC_DEVICE_RAW",
+            "JASPER_MIC_DEVICE_DTLN",
+        ),
+        mutually_exclusive_leg_tokens=("off", "dtln"),
+    ),
+    AudioProfileDeclaration(
+        profile_id="generic_usb_software_aec3",
+        label="Generic USB software AEC3",
+        purpose=(
+            "Future generic mic path: mono USB mic plus playback reference "
+            "into WebRTC AEC3."
+        ),
+        mic_family="generic_usb",
+        has_static_runtime_env=False,
+        requires_bridge=True,
+        wake_legs=(
+            ProfileLeg("on", "AEC3", env_key="JASPER_MIC_DEVICE"),
+            ProfileLeg(
+                "off",
+                "Direct mic",
+                optional=True,
+                env_key="JASPER_MIC_DEVICE_RAW",
+            ),
+            ProfileLeg(
+                "dtln",
+                "DTLN",
+                optional=True,
+                env_key="JASPER_MIC_DEVICE_DTLN",
+                enabled_env_key="JASPER_AEC_DTLN_ENABLED",
+            ),
+        ),
+    ),
+    AudioProfileDeclaration(
+        profile_id="corpus_comparison",
+        label="Corpus comparison",
+        purpose="Test-only same-utterance capture of production and corpus-only legs.",
+        mic_family="mixed",
+        has_static_runtime_env=False,
+        test_only=True,
+        requires_bridge=True,
+        wake_legs=(
+            ProfileLeg("on", "AEC3"),
+            ProfileLeg("off", "Chip-direct raw"),
+            ProfileLeg("dtln", "DTLN", optional=True),
+            ProfileLeg("chip_aec_150", "Chip AEC 150", optional=True),
+            ProfileLeg("chip_aec_210", "Chip AEC 210", optional=True),
+        ),
+        corpus_legs=(
+            ProfileLeg("raw0", "Raw mic 0"),
+            ProfileLeg("ref", "AEC reference"),
+            ProfileLeg("usb_raw", "USB raw"),
+            ProfileLeg("usb_webrtc", "USB WebRTC AEC3"),
+            ProfileLeg("usb_dtln", "USB DTLN", optional=True),
+            ProfileLeg(
+                "xvf_raw0_webrtc_aec3",
+                "XVF raw0 WebRTC AEC3",
+                optional=True,
+            ),
+            ProfileLeg("xvf_raw0_dtln", "XVF raw0 DTLN", optional=True),
+        ),
+    ),
+    AudioProfileDeclaration(
+        profile_id="dac_validation",
+        label="DAC validation",
+        purpose="Test-only drift/delay/reference-health measurement for chip-AEC viability.",
+        mic_family="xvf3800",
+        has_static_runtime_env=False,
+        test_only=True,
+        requires_xvf_6ch=True,
+        requires_chip_reference=True,
+    ),
+)
+
+_PROFILE_BY_ID = {profile.profile_id: profile for profile in _AUDIO_PROFILES}
+
+
+def audio_profile_declarations() -> tuple[AudioProfileDeclaration, ...]:
+    """Return every declared profile in stable display/order."""
+
+    return _AUDIO_PROFILES
+
+
+def profile_by_id(profile_id: str) -> AudioProfileDeclaration:
+    """Look up a profile declaration by id. Raises KeyError on miss."""
+
+    return _PROFILE_BY_ID[profile_id]
+
+
+def _default_udp_device(token: str) -> str:
+    return f"udp:{wake_legs.by_token(token).udp_port}"
+
+
+def profile_wake_leg_labels(
+    profile_id: str,
+    *,
+    enabled_optional_tokens: tuple[str, ...] = (),
+) -> list[str]:
+    """Human labels for the wake legs active under a profile declaration."""
+
+    enabled = set(enabled_optional_tokens)
+    labels: list[str] = []
+    for leg in profile_by_id(profile_id).wake_legs:
+        if leg.optional and leg.token not in enabled:
+            continue
+        labels.append(leg.label)
+    return labels
+
+
+def expected_runtime_env_for_profile(
+    profile_id: str,
+    *,
+    enabled_optional_tokens: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """Static default runtime env shape for a profile that declares one.
+
+    This is deliberately read-only test/support data. It mirrors the
+    existing reconciler-owned env shape for the default UDP ports; it
+    does not write env files, resolve operator port overrides, or prove
+    that a profile is runnable on the current hardware.
+    """
+
+    profile = profile_by_id(profile_id)
+    if not profile.has_static_runtime_env:
+        raise ValueError(f"profile {profile_id!r} has no static runtime env shape")
+
+    enabled = set(enabled_optional_tokens)
+    env = {item.key: item.value for item in profile.static_env}
+    for leg in profile.wake_legs:
+        if not leg.env_key:
+            continue
+        if leg.optional and leg.token not in enabled:
+            env[leg.env_key] = ""
+            if leg.enabled_env_key:
+                env[leg.enabled_env_key] = "0"
+            continue
+        env[leg.env_key] = _default_udp_device(leg.token)
+        if leg.enabled_env_key:
+            env[leg.enabled_env_key] = "1"
+    for key in profile.cleared_env_keys:
+        env.setdefault(key, "")
+    return env
+
 
 @dataclass(frozen=True)
 class AecIntent:
@@ -225,16 +548,20 @@ def build_audio_profile_status(
             profile_state = "pending"
             active_profile = None
             profile_reason = "Chip-AEC selected but runtime env is not applied."
-        wake_legs = ["Primary chip beam", "Chip AEC 150", "Chip AEC 210"]
+        wake_legs = profile_wake_leg_labels("xvf_chip_aec")
         requested_profile = "xvf_chip_aec"
     else:
         processing_mode = "Software AEC3"
         session_source = "WebRTC AEC3 via :9876" if bridge_active else "waiting for AEC bridge"
-        wake_legs = ["AEC3"]
+        optional_tokens: list[str] = []
         if intent.raw_enabled:
-            wake_legs.append("Chip-direct raw")
+            optional_tokens.append("off")
         if intent.dtln_enabled:
-            wake_legs.append("DTLN")
+            optional_tokens.append("dtln")
+        wake_legs = profile_wake_leg_labels(
+            "xvf_software_aec3",
+            enabled_optional_tokens=tuple(optional_tokens),
+        )
         requested_profile = "xvf_software_aec3"
         active_profile = "xvf_software_aec3" if bridge_active else None
         profile_state = "active" if bridge_active else "waiting_bridge"

@@ -277,6 +277,16 @@ that reports:
 That helper can be consumed by `/aec` first, then doctor, then `/wake/`
 and `/state`.
 
+First implementation slice: `jasper/audio_profile_state.py` now owns a
+read-only declaration table for the profile vocabulary above, including
+the current static default env shape for `xvf_software_aec3` and
+`xvf_chip_aec`. The declarations distinguish wake-leg carrier tokens
+from the signal kind a profile places on that carrier, so chip-AEC can
+explicitly mark `on`/:9876 as a hardware-AEC beam without renaming the
+frozen wake token. This is descriptive only: the bash reconciler still
+owns all env-file writes, service restarts, and hardware gating until
+the Phase 3 reconciler work explicitly changes that.
+
 ---
 
 ## Phased Plan
