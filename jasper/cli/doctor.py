@@ -40,7 +40,9 @@ from ..audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
 )
-from ..audio_validation import latest_artifact_summary as _audio_validation_summary
+from ..audio_validation import (
+    validation_summary_for_profile_status as _audio_validation_summary,
+)
 from ..camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ..config import Config
 from ..env_load import load_env_files as _load_env_files
@@ -1916,12 +1918,20 @@ def _assess_audio_validation_summary(
 def check_audio_validation_readiness() -> CheckResult:
     """Report latest schema-v1 validation artifact as advisory readiness."""
 
-    profile_status = _audio_profile_status_for_doctor().get("audio_profile") or {}
+    env = _shared_parse_env_file(
+        os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
+    )
+    status = _audio_profile_status_for_doctor(env=env)
+    profile_status = status.get("audio_profile") or {}
     requested_profile = profile_status.get("requested")
     if requested_profile is not None:
         requested_profile = str(requested_profile)
     return _assess_audio_validation_summary(
-        _audio_validation_summary(requested_profile=requested_profile),
+        _audio_validation_summary(
+            status,
+            system_env=env,
+            process_env=os.environ,
+        ),
         requested_profile=requested_profile,
     )
 

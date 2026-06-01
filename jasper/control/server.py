@@ -63,7 +63,9 @@ from ..audio_profile_state import (
     parse_env_bool as _parse_audio_profile_bool,
     runtime_env_from_mapping,
 )
-from ..audio_validation import latest_artifact_summary as _audio_validation_summary
+from ..audio_validation import (
+    validation_summary_for_profile_status as _audio_validation_summary,
+)
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -567,6 +569,7 @@ def _audio_profile_status(
     *,
     bridge_active: bool,
     chip_available: bool,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Read-only mic/profile status for the /wake/ page.
 
@@ -575,8 +578,9 @@ def _audio_profile_status(
     then classifies intent vs observed runtime. It does not probe audio
     streams or open devices on the hot polling path.
     """
-    env = _fresh_jasper_env()
-    runtime = runtime_env_from_mapping(env, process_env=os.environ)
+    if env is None:
+        env = _fresh_jasper_env()
+    runtime = runtime_env_from_mapping(env)
     try:
         from ..mics import xvf3800
         xvf_present = xvf3800.is_present()
@@ -655,12 +659,13 @@ def _aec_full_status() -> dict:
     # card is absent or on the 2-ch variant; wrap defensively so a probe
     # failure can never 500 a status GET the /wake/ page polls every 3 s.
     chip_available = _chip_aec_available()
+    env = _fresh_jasper_env()
     profile_status = _audio_profile_status(
         state,
         bridge_active=bridge_active,
         chip_available=chip_available,
+        env=env,
     )
-    requested_profile = profile_status["audio_profile"].get("requested")
     return {
         "mode": state["mode"],
         "bridge_active": bridge_active,
@@ -677,7 +682,8 @@ def _aec_full_status() -> dict:
         "audio_profile": profile_status["audio_profile"],
         "microphone": profile_status["microphone"],
         "validation": _audio_validation_summary(
-            requested_profile=requested_profile,
+            profile_status,
+            system_env=env,
         ),
     }
 

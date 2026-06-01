@@ -270,10 +270,12 @@ when the configured AEC mic is present with 6-channel firmware — see
   <previous>` on non-zero exit). WPA-Enterprise deferred — home-network
   case only.
 - ✅ Persistent live session with sustained-speech VAD
-- ✅ Hardware AEC investigation: production approach is still software
-  AEC3, but the 2026-05-29 Option D lab pass proved chip AEC can work
-  with USB-IN reference + direct source fanout. Not productionized yet;
-  current findings live at [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
+- ✅ Hardware AEC investigation: software AEC3 remains the default
+  production path. XVF3800 chip-AEC now has an opt-in production path
+  with USB-IN reference + outputd final-output fanout, but it is
+  default-off and hardware/firmware conditional. Default-on remains
+  gated on wake telemetry plus measured drift/delay validation. Current
+  findings live at [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
 - ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
 - ✅ Rotary dial — volume (with on-screen volume gauge), play/pause
@@ -520,16 +522,19 @@ reference. Currently:
   hub, no SPOF. **Start here for `jasper/peering/`, the wake-handler
   restructure, or anything related to the `/peers/` wizard.**
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
-  investigation (engine: why software AEC, why not chip AEC)
+  investigation: why software AEC3 remains the default, which
+  chip-AEC variants are rejected, and how the opt-in chip-AEC path
+  differs.
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —
-  2026-05-29 chip-AEC lab findings and next-productionization plan.
-  Option D is now a positive lab result, not a closed negative:
-  direct source fanout to the DAC + XVF3800 USB-IN reference made the
-  split-DAC topology clock-stable, and ASR fixed gated `150°/210°`
-  beams were the best tested output. The path is **not productionized**;
-  the checked-in `scripts/chip-aec-*.sh` scripts +
-  `jasper/chip_aec_experiment.py` are lab infrastructure, and
-  `chip-aec-teardown.sh` fully reverts. **Read the doc before running.**
+  2026-05-29 chip-AEC lab findings plus the opt-in production path.
+  Option D is a positive result: outputd final-output fanout to the DAC
+  + XVF3800 USB-IN reference made the split-DAC topology clock-stable,
+  and ASR fixed gated `150°/210°` beams were the best tested output.
+  The production path is default-off, hardware/firmware conditional,
+  and controlled through `/wake/` + the reconciler; the checked-in
+  `scripts/chip-aec-*.sh` scripts + `jasper/chip_aec_experiment.py`
+  remain lab infrastructure. Default-on remains gated on wake telemetry
+  plus measured drift/delay validation. **Read the doc before running.**
 - [`HANDOFF-mic-quality-v2.md`](docs/HANDOFF-mic-quality-v2.md) —
   Active workstream. The sequencing + lever inventory + decision
   history for getting the mic to work reliably across whisper /
@@ -810,30 +815,28 @@ There are three places to address this:
 
 ### What this project does
 
-**Hardware AEC is OFF**, deliberately. We tried it; the
-XVF3800's AEC pipeline was designed assuming the chip drives the
-speaker via its own codec, but our topology routes audio through
-a separate USB DAC (the Apple dongle). The chip's internal AEC
-gain stage auto-mirrors the host's USB-OUT volume control on the
-chip's UAC2 sink, which actively sabotages the reference signal
-in our topology. Measured ≤2 dB attenuation across every
-configuration we tried. See
-[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) for the full
-investigation including the smoking-gun XMOS docs quote.
+**Software AEC3 is the default production path.** The XVF3800's
+original chip-AEC variants were designed around the chip driving the
+speaker through its own codec, while JTS routes audio through a separate
+USB DAC. Those variants measured ≤2 dB attenuation in this topology.
+See [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) for the investigation
+and the XMOS docs quote.
 
-The rejection above was for the variants we tested — none of them fed
-music to the chip's USB-IN as the AEC reference. Option D in
-[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) did that on 2026-05-29 and
-produced a positive lab result: direct source fanout to the external DAC
-and the XVF3800 USB-IN reference was clock-stable, and the chip's ASR
-fixed-beam path produced useful echo reduction. Software AEC3 remains
-the shipped production path until the chip-AEC path has clean source
-fanout, recorder integration, and wake/corpus validation.
+**XVF3800 chip-AEC has an opt-in production path, not a default.**
+Option D in [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) fed the chip's
+USB-IN as the AEC reference and produced a positive result on
+2026-05-29: outputd final-output fanout to the external DAC and XVF3800
+USB-IN reference was clock-stable, and the chip's ASR fixed-beam path
+produced useful echo reduction. The shipped chip-AEC path is
+default-off, hardware/firmware conditional, and enabled through `/wake/`
+and the reconciler. Default-on remains gated on wake telemetry plus
+measured drift/delay validation.
 
-The chip is still useful — its **beamforming, noise suppression,
-and AGC** all run on the ASR beam channel (channel 1 of the
-USB capture endpoint). We use that processed channel; just not
-the chip's on-chip AEC.
+The chip is still useful as a USB mic and firmware-managed capture
+endpoint, but the default software-AEC3 path bypasses the SHF block:
+channel 1 is raw-ish mic audio with chip HPF/preamp, not BF/NS/AGC.
+Those processed ASR beams are part of the opt-in chip-AEC path, where
+the chip also receives the USB-IN reference.
 
 **Software AEC ships ON by default when the chip is on the 6-channel
 firmware variant.** A Python daemon (`jasper-aec-bridge`) runs

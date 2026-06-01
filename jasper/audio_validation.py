@@ -30,6 +30,7 @@ from .audio_profile_state import (
     AecIntent,
     MicProbe,
     build_audio_profile_status,
+    env_value,
     parse_env_bool,
     runtime_env_from_mapping,
 )
@@ -658,6 +659,8 @@ def _rollup_status(checks: Mapping[str, Mapping[str, Any]]) -> str:
 
 def _readiness_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]]) -> str:
     failed = [name for name, check in checks.items() if check.get("status") == "fail"]
+    if "hardware_identity" in failed:
+        return "configure_hardware_identity_before_validation"
     if "mic_detected" in failed:
         return "use_software_aec3_until_xvf_6ch_available"
     if "runtime_profile" in failed or "runtime_env" in failed:
@@ -701,10 +704,10 @@ def _dac_details(
             or os.environ.get("JASPER_OUTPUTD_DAC_PCM")
             or "outputd_dac"
         )
-    dac_id = (
-        system_env.get("JASPER_AUDIO_DAC_ID")
-        or os.environ.get("JASPER_AUDIO_DAC_ID")
-        or dac_pcm
+    dac_id = _current_dac_validation_id(
+        system_env,
+        outputd_status=outputd_status,
+        process_env=os.environ,
     )
     return {
         "id": dac_id,
@@ -717,6 +720,39 @@ def _dac_details(
         ),
         "sample_rate": sample_rate,
     }
+
+
+def _hardware_identity_check(
+    *,
+    mic: Mapping[str, JsonValue],
+    dac: Mapping[str, JsonValue],
+    profile: str,
+) -> dict[str, JsonValue]:
+    observed = {
+        "mic_id": str(mic.get("id") or ""),
+        "dac_id": str(dac.get("id") or ""),
+        "dac_pcm": str(dac.get("pcm") or ""),
+        "profile": profile,
+    }
+    missing = [
+        key for key in ("mic_id", "dac_id", "profile")
+        if not _known_validation_identity(str(observed.get(key) or ""))
+    ]
+    if not missing:
+        return _check(
+            "pass",
+            summary="Validation identity is bound to mic, DAC, and profile.",
+            observed=observed,
+        )
+    return _check(
+        "fail",
+        summary=(
+            "Validation identity is incomplete; configure explicit hardware "
+            "identity before treating artifacts as current."
+        ),
+        observed={**observed, "missing": missing},
+        expected={"mic_id": "known", "dac_id": "known", "profile": "known"},
+    )
 
 
 def _runtime_identity_check(system_env: Mapping[str, str]) -> dict[str, JsonValue]:
@@ -1308,6 +1344,7 @@ def _chip_convergence_check(
 def _hardware_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]]) -> str:
     readiness_names = {
         "runtime_identity",
+        "hardware_identity",
         "runtime_profile",
         "mic_detected",
         "runtime_env",
@@ -1415,6 +1452,11 @@ def build_chip_aec_readiness_artifact(
     dac = _dac_details(system_env, outputd_status)
     checks = {
         "runtime_identity": _runtime_identity_check(system_env),
+        "hardware_identity": _hardware_identity_check(
+            mic=mic,
+            dac=dac,
+            profile=profile,
+        ),
         "runtime_profile": _runtime_profile_check(profile_status, profile),
         "mic_detected": _check(
             "pass" if chip_available else "fail",
@@ -1753,6 +1795,143 @@ def latest_artifact_summary(
         dac_id=dac_id,
         now=now,
     )
+
+
+def validation_summary_for_profile_status(
+    profile_status: Mapping[str, Any],
+    *,
+    path: Path | None = None,
+    system_env: Mapping[str, str] | None = None,
+    outputd_status: Mapping[str, Any] | None = None,
+    process_env: Mapping[str, str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return the current validation artifact for a concrete runtime identity.
+
+    Status surfaces must not accept a profile-only artifact: chip-AEC
+    evidence is current only for the active mic, DAC, and requested
+    profile. When any part of that identity is unavailable, report an
+    advisory unknown instead of accidentally blessing a stale artifact.
+    """
+
+    requested_profile = _profile_status_value(
+        profile_status, "audio_profile", "requested",
+    )
+    mic_id = _profile_status_value(profile_status, "microphone", "validation_id")
+    dac_id = _current_dac_validation_id(
+        system_env or {},
+        outputd_status=outputd_status,
+        process_env=process_env,
+    )
+    missing = [
+        label
+        for label, value in (
+            ("profile", requested_profile),
+            ("mic_id", mic_id),
+            ("dac_id", dac_id),
+        )
+        if not _known_validation_identity(value)
+    ]
+    if missing:
+        return _unknown_identity_summary(
+            path=path,
+            requested_profile=requested_profile,
+            mic_id=mic_id,
+            dac_id=dac_id,
+            missing=missing,
+        )
+
+    summary = latest_artifact_summary(
+        path=path,
+        requested_profile=requested_profile,
+        mic_id=mic_id,
+        dac_id=dac_id,
+        now=now,
+    )
+    if summary.get("state") != "current":
+        artifact_status = summary.get("status")
+        if artifact_status and artifact_status != "unknown":
+            summary["artifact_status"] = artifact_status
+        summary["status"] = "unknown"
+    summary["current_identity"] = {
+        "profile": requested_profile,
+        "mic_id": mic_id,
+        "dac_id": dac_id,
+    }
+    return summary
+
+
+def _profile_status_value(
+    profile_status: Mapping[str, Any],
+    section: str,
+    key: str,
+) -> str:
+    raw_section = profile_status.get(section)
+    if not isinstance(raw_section, Mapping):
+        return ""
+    value = raw_section.get(key)
+    return str(value).strip() if value is not None else ""
+
+
+def _known_validation_identity(value: str | None) -> bool:
+    if value is None:
+        return False
+    normalized = value.strip().strip("'\"").lower()
+    return normalized not in {"", "unknown", "none", "not configured"}
+
+
+def _current_dac_validation_id(
+    system_env: Mapping[str, str],
+    *,
+    outputd_status: Mapping[str, Any] | None,
+    process_env: Mapping[str, str] | None,
+) -> str:
+    explicit = env_value(
+        system_env,
+        "JASPER_AUDIO_DAC_ID",
+        "",
+        process_env=process_env,
+    ).strip()
+    if explicit:
+        return explicit
+
+    outputd_dac = (
+        outputd_status.get("dac") if isinstance(outputd_status, Mapping) else None
+    )
+    if isinstance(outputd_dac, Mapping):
+        value = outputd_dac.get("id")
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _unknown_identity_summary(
+    *,
+    path: Path | None,
+    requested_profile: str,
+    mic_id: str,
+    dac_id: str,
+    missing: list[str],
+) -> dict[str, Any]:
+    artifact_path = path or artifact_directory()
+    missing_text = ", ".join(missing)
+    identity = {
+        "profile": requested_profile or "unknown",
+        "mic_id": mic_id or "unknown",
+        "dac_id": dac_id or "unknown",
+    }
+    return {
+        "available": False,
+        "status": "unknown",
+        "state": "unknown",
+        "artifact_path": str(artifact_path),
+        "reason": (
+            "current audio validation identity unavailable: "
+            f"{missing_text}"
+        ),
+        "recommendation": "establish_hardware_identity",
+        "current_identity": identity,
+    }
 
 
 def _collect_service_states() -> dict[str, str]:

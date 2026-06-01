@@ -487,6 +487,7 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     assert artifact.checks["runtime_identity"]["status"] == "pass"
     assert artifact.checks["runtime_identity"]["required"] is False
     assert "system_hostname" in artifact.checks["runtime_identity"]["observed"]
+    assert artifact.checks["hardware_identity"]["status"] == "pass"
     assert artifact.checks["runtime_profile"]["status"] == "pass"
     assert artifact.checks["dac_reference"]["status"] == "pass"
     assert artifact.checks["wake_legs"]["status"] == "pass"
@@ -512,6 +513,32 @@ def test_chip_aec_readiness_fails_when_outputd_reference_missing():
     assert artifact.status == "fail"
     assert artifact.checks["dac_reference"]["status"] == "fail"
     assert artifact.recommendation == "fix_outputd_chip_reference_before_chip_aec"
+
+
+def test_chip_aec_readiness_fails_without_dac_identity():
+    inputs = _active_chip_inputs()
+    inputs["system_env"].pop("JASPER_AUDIO_DAC_ID")
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.status == "fail"
+    assert artifact.dac_id == "unknown"
+    assert artifact.checks["hardware_identity"]["status"] == "fail"
+    assert (
+        artifact.recommendation
+        == "configure_hardware_identity_before_validation"
+    )
+
+
+def test_chip_aec_readiness_can_use_explicit_outputd_dac_id():
+    inputs = _active_chip_inputs()
+    inputs["system_env"].pop("JASPER_AUDIO_DAC_ID")
+    inputs["outputd_status"]["dac"]["id"] = "apple_usb_c_dongle"
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.dac_id == "apple_usb_c_dongle"
+    assert artifact.checks["hardware_identity"]["status"] == "pass"
 
 
 def test_chip_aec_readiness_unknown_runtime_recommends_observability_fix():
@@ -906,3 +933,153 @@ def test_latest_artifact_summary_marks_stale_and_profile_mismatch(tmp_path):
     assert stale["state"] == "stale"
     assert mismatch["state"] == "mismatch"
     assert mismatch["available"] is True
+
+
+def _chip_profile_status(*, mic_id: str = "xvf3800") -> dict:
+    return {
+        "audio_profile": {
+            "requested": "xvf_chip_aec",
+            "active": "xvf_chip_aec",
+            "state": "active",
+        },
+        "microphone": {
+            "validation_id": mic_id,
+        },
+    }
+
+
+def _write_identity_artifact(
+    directory,
+    *,
+    mic_id: str = "xvf3800",
+    dac_id: str = "apple_usb_c_dongle",
+    status: str = "pass",
+):
+    return write_artifact(
+        make_artifact(
+            validated_at=NOW,
+            mic_id=mic_id,
+            dac_id=dac_id,
+            profile="xvf_chip_aec",
+            status=status,
+            checks={"measured_drift_delay": {"status": "pass"}},
+            recommendation="chip_aec_validated",
+        ),
+        directory=directory,
+    )
+
+
+def test_validation_summary_rejects_same_profile_wrong_dac_id(tmp_path):
+    _write_identity_artifact(tmp_path, dac_id="hifiberry_dac8x")
+
+    summary = audio_validation.validation_summary_for_profile_status(
+        _chip_profile_status(),
+        path=tmp_path,
+        system_env={"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+        now=NOW,
+    )
+
+    assert summary["state"] != "current"
+    assert summary["status"] != "pass"
+    assert "no matching validation artifacts" in summary["reason"]
+
+
+def test_validation_summary_marks_explicit_mismatch_unknown_not_pass(tmp_path):
+    path = _write_identity_artifact(tmp_path, dac_id="hifiberry_dac8x")
+
+    summary = audio_validation.validation_summary_for_profile_status(
+        _chip_profile_status(),
+        path=path,
+        system_env={"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+        now=NOW,
+    )
+
+    assert summary["state"] == "mismatch"
+    assert summary["status"] == "unknown"
+    assert summary["artifact_status"] == "pass"
+    assert "artifact dac_id" in summary["reason"]
+
+
+def test_validation_summary_rejects_same_profile_wrong_mic_id(tmp_path):
+    _write_identity_artifact(tmp_path, mic_id="direct:USB PnP Sound Device")
+
+    summary = audio_validation.validation_summary_for_profile_status(
+        _chip_profile_status(),
+        path=tmp_path,
+        system_env={"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+        now=NOW,
+    )
+
+    assert summary["state"] != "current"
+    assert summary["status"] != "pass"
+    assert "no matching validation artifacts" in summary["reason"]
+
+
+def test_validation_summary_accepts_matching_mic_dac_and_profile(tmp_path):
+    path = _write_identity_artifact(tmp_path)
+
+    summary = audio_validation.validation_summary_for_profile_status(
+        _chip_profile_status(),
+        path=tmp_path,
+        system_env={"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+        now=NOW,
+    )
+
+    assert summary["state"] == "current"
+    assert summary["status"] == "pass"
+    assert summary["artifact_path"] == str(path)
+    assert summary["current_identity"] == {
+        "profile": "xvf_chip_aec",
+        "mic_id": "xvf3800",
+        "dac_id": "apple_usb_c_dongle",
+    }
+
+
+def test_validation_summary_unknown_when_hardware_identity_unavailable(tmp_path):
+    _write_identity_artifact(tmp_path)
+
+    summary = audio_validation.validation_summary_for_profile_status(
+        _chip_profile_status(mic_id=""),
+        path=tmp_path,
+        system_env={},
+        now=NOW,
+    )
+
+    assert summary["available"] is False
+    assert summary["state"] == "unknown"
+    assert summary["status"] == "unknown"
+    assert "mic_id" in summary["reason"]
+    assert "dac_id" in summary["reason"]
+
+
+def test_validation_summary_does_not_treat_outputd_pcm_as_dac_identity(tmp_path):
+    _write_identity_artifact(tmp_path, dac_id="outputd_dac")
+
+    summary = audio_validation.validation_summary_for_profile_status(
+        _chip_profile_status(),
+        path=tmp_path,
+        system_env={},
+        outputd_status={"dac": {"pcm": "outputd_dac"}},
+        now=NOW,
+    )
+
+    assert summary["available"] is False
+    assert summary["state"] == "unknown"
+    assert summary["status"] == "unknown"
+    assert "dac_id" in summary["reason"]
+
+
+def test_validation_summary_accepts_explicit_outputd_dac_id(tmp_path):
+    path = _write_identity_artifact(tmp_path, dac_id="apple_usb_c_dongle")
+
+    summary = audio_validation.validation_summary_for_profile_status(
+        _chip_profile_status(),
+        path=tmp_path,
+        system_env={},
+        outputd_status={"dac": {"id": "apple_usb_c_dongle"}},
+        now=NOW,
+    )
+
+    assert summary["state"] == "current"
+    assert summary["status"] == "pass"
+    assert summary["artifact_path"] == str(path)

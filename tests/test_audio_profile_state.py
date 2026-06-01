@@ -93,3 +93,21 @@ def test_disabled_mode_reports_direct_mic_profile():
     assert status["audio_profile"]["state"] == "disabled"
     assert status["microphone"]["detected"] is True
     assert status["microphone"]["name"] == "Direct mic (USB PnP Sound Device)"
+    assert status["microphone"]["validation_id"] == "direct:USB PnP Sound Device"
+
+
+def test_disabled_mode_without_mic_reports_unavailable():
+    status = build_audio_profile_status(
+        AecIntent(mode="disabled"),
+        RuntimeAecEnv(primary_device="Array", aec_device="Array"),
+        MicProbe(xvf_present=False, capture_channels=None),
+        bridge_active=False,
+        chip_available=False,
+    )
+
+    assert status["audio_profile"]["requested"] == "direct_mic"
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "unavailable"
+    assert status["microphone"]["detected"] is False
+    assert status["microphone"]["validation_id"] == ""
+    assert status["microphone"]["warnings"] == ["No supported mic detected."]

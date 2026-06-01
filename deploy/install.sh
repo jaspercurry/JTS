@@ -138,6 +138,8 @@ Run for real from a Pi-local checkout:
 
 4. Config and migrations
    - Seed /etc/jasper/jasper.env on fresh installs.
+   - Seed JASPER_AUDIO_DAC_ID=apple_usb_c_dongle when the reference
+     Apple USB-C DAC is detected and no operator DAC identity exists.
    - Migrate wizard-owned keys out of /etc/jasper/jasper.env into
      /var/lib/jasper/* env files for voice provider, transit, weather,
      wake detection legs, and WiFi guardian recovery.
@@ -648,6 +650,29 @@ detect_card() {
     else
         echo "$fallback"
     fi
+}
+
+seed_audio_dac_identity() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    [[ -f "${jasper_env}" ]] || return 0
+
+    if grep -qE '^JASPER_AUDIO_DAC_ID=' "${jasper_env}"; then
+        return 0
+    fi
+
+    local apple_card
+    apple_card=$(detect_card aplay 'usb-c to 3.5mm' '')
+    if [[ -z "${apple_card}" ]]; then
+        echo "  audio DAC identity: unknown (set JASPER_AUDIO_DAC_ID in ${jasper_env} before validation)"
+        return 0
+    fi
+
+    {
+        echo
+        echo "# Stable DAC identity for validation artifacts; not an ALSA PCM name."
+        echo "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle"
+    } >> "${jasper_env}"
+    echo "  audio DAC identity: apple_usb_c_dongle (CARD=${apple_card})"
 }
 
 install_alsa() {
@@ -1533,6 +1558,7 @@ PY
         -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
         -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
         "${ENV_DIR}/jasper.env"
+    seed_audio_dac_identity
     if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
         install -d -m 0750 "${STATE_DIR}"
         printf 'JASPER_SPEAKER_NAME="JTS"\n' > "${STATE_DIR}/speaker_name.env"

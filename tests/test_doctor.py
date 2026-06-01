@@ -2569,6 +2569,75 @@ def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendatio
     assert "advisory" in result.detail
 
 
+def test_audio_validation_readiness_uses_runtime_identity(monkeypatch):
+    env = {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"}
+    status = {
+        "audio_profile": {
+            "requested": "xvf_chip_aec",
+            "active": "xvf_chip_aec",
+            "state": "active",
+        },
+        "microphone": {
+            "validation_id": "xvf3800",
+        },
+    }
+    calls = []
+
+    monkeypatch.setattr(doctor, "_shared_parse_env_file", lambda _path: env)
+    monkeypatch.setattr(
+        doctor,
+        "_audio_profile_status_for_doctor",
+        lambda *, env=None: status,
+    )
+
+    def fake_validation_summary(profile_status, **kwargs):
+        calls.append((profile_status, kwargs))
+        return {
+            "state": "current",
+            "status": "pass",
+            "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
+        }
+
+    monkeypatch.setattr(doctor, "_audio_validation_summary", fake_validation_summary)
+
+    result = doctor.check_audio_validation_readiness()
+
+    assert result.status == "ok"
+    assert len(calls) == 1
+    profile_status, kwargs = calls[0]
+    assert profile_status == status
+    assert kwargs["system_env"] == env
+    assert kwargs["process_env"] is doctor.os.environ
+
+
+def test_audio_validation_readiness_warns_when_identity_unavailable(monkeypatch):
+    status = {
+        "audio_profile": {
+            "requested": "xvf_chip_aec",
+            "active": None,
+            "state": "unavailable",
+        },
+        "microphone": {
+            "validation_id": "",
+        },
+    }
+
+    monkeypatch.setattr(doctor, "_shared_parse_env_file", lambda _path: {})
+    monkeypatch.setattr(
+        doctor,
+        "_audio_profile_status_for_doctor",
+        lambda *, env=None: status,
+    )
+
+    result = doctor.check_audio_validation_readiness()
+
+    assert result.status == "warn"
+    assert "current audio validation identity unavailable" in result.detail
+    assert "mic_id" in result.detail
+    assert "dac_id" in result.detail
+    assert "advisory" in result.detail
+
+
 def test_pricing_ok_when_active_model_priced(monkeypatch):
     """The active model (gemini default) is in the bundled rates → ok."""
     cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345")

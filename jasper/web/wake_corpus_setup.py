@@ -608,6 +608,9 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
 
 
 def _validation_artifact_summary(
+    profile_status: Mapping[str, Any],
+    *,
+    system_env: Mapping[str, str],
     path: Path | None = None,
 ) -> dict[str, Any]:
     """Read optional profile-validation output, if present.
@@ -617,7 +620,11 @@ def _validation_artifact_summary(
     unknown/missing shape instead of making session creation depend on it.
     """
     path = path or AUDIO_VALIDATION_ARTIFACT_PATH
-    return audio_validation.latest_artifact_summary(path=path)
+    return audio_validation.validation_summary_for_profile_status(
+        profile_status,
+        path=path,
+        system_env=system_env,
+    )
 
 
 def _int_env(
@@ -687,9 +694,13 @@ def _dac_reference_context(
     env: Mapping[str, str],
     bridge_outputs: dict[str, Any],
     *,
+    profile_status: Mapping[str, Any],
     process_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    validation = _validation_artifact_summary()
+    validation = _validation_artifact_summary(
+        profile_status,
+        system_env=env,
+    )
     return {
         "dac": {
             "pcm": env_value(
@@ -793,7 +804,7 @@ def build_session_audio_context(
         intent = _read_aec_intent()
         system_env = read_env_file(str(SYSTEM_ENV_PATH))
         bridge_env = _read_bridge_env()
-        runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
+        runtime = runtime_env_from_mapping(system_env)
         mic_probe, mic_identity = _mic_probe_and_identity()
         bridge_outputs = bridge_output_status()
         profile_status = build_audio_profile_status(
@@ -847,6 +858,7 @@ def build_session_audio_context(
         "dac_reference": _dac_reference_context(
             {**system_env, **bridge_env},
             bridge_outputs,
+            profile_status=profile_status,
             process_env=os.environ,
         ),
         "bridge_outputs": bridge_outputs,

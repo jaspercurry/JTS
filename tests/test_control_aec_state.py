@@ -286,12 +286,13 @@ def test_aec_full_status_includes_legs_and_threshold(
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
         },
     )
-    validation_profiles = []
+    validation_requests = []
 
-    def fake_validation_summary(*, requested_profile=None):
-        validation_profiles.append(requested_profile)
+    def fake_validation_summary(profile_status, **kwargs):
+        validation_requests.append((profile_status, kwargs))
         return {"state": "current", "status": "pass"}
 
     monkeypatch.setattr(server, "_audio_validation_summary", fake_validation_summary)
@@ -312,7 +313,16 @@ def test_aec_full_status_includes_legs_and_threshold(
     assert status["microphone"]["session_source"] == "WebRTC AEC3 via :9876"
     assert status["microphone"]["wake_legs"] == ["AEC3", "Chip-direct raw", "DTLN"]
     assert status["validation"] == {"state": "current", "status": "pass"}
-    assert validation_profiles == ["xvf_software_aec3"]
+    assert len(validation_requests) == 1
+    validation_profile_status, validation_kwargs = validation_requests[0]
+    assert validation_profile_status["audio_profile"] == status["audio_profile"]
+    assert validation_profile_status["microphone"] == status["microphone"]
+    assert validation_kwargs["system_env"] == {
+        "JASPER_MIC_DEVICE": "udp:9876",
+        "JASPER_AEC_MIC_DEVICE": "Array",
+        "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
+    }
+    assert "process_env" not in validation_kwargs
     assert status["wake_word"]["label"]
 
 

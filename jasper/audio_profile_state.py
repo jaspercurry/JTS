@@ -174,12 +174,16 @@ def build_audio_profile_status(
     direct_mic_configured = _direct_mic_configured(runtime)
     if mic.xvf_present:
         mic_name = mic.display_name
+        mic_validation_id = "xvf3800"
     elif direct_mic_configured:
         mic_name = f"Direct mic ({runtime.primary_device})"
+        mic_validation_id = f"direct:{runtime.primary_device}"
     elif mic.probe_error:
         mic_name = "Microphone status unavailable"
+        mic_validation_id = ""
     else:
         mic_name = "No supported mic detected"
+        mic_validation_id = ""
 
     chip_runtime_active = bool(
         intent.mode == "auto"
@@ -196,9 +200,14 @@ def build_audio_profile_status(
         session_source = mic_source_label(runtime.primary_device)
         wake_legs = ["Direct mic"]
         requested_profile = "direct_mic"
-        active_profile = "direct_mic"
-        profile_state = "disabled"
-        profile_reason = "AEC mode is disabled."
+        if mic.xvf_present or direct_mic_configured:
+            active_profile = "direct_mic"
+            profile_state = "disabled"
+            profile_reason = "AEC mode is disabled."
+        else:
+            active_profile = None
+            profile_state = "unavailable"
+            profile_reason = "AEC is disabled, but no supported mic is detected."
     elif intent.chip_aec_enabled:
         processing_mode = "Chip-AEC" if chip_runtime_active else "Chip-AEC pending"
         if chip_runtime_active:
@@ -256,6 +265,8 @@ def build_audio_profile_status(
         warnings.append("Chip-AEC is selected but the reconciler has not applied it yet.")
     if not mic.xvf_present and (intent.mode == "auto" or intent.chip_aec_enabled):
         warnings.append("XVF3800 mic is not detected.")
+    if intent.mode != "auto" and not (mic.xvf_present or direct_mic_configured):
+        warnings.append("No supported mic detected.")
     if mic.probe_error:
         warnings.append(f"Microphone probe failed: {mic.probe_error}")
 
@@ -269,6 +280,7 @@ def build_audio_profile_status(
         "microphone": {
             "detected": mic.xvf_present or direct_mic_configured,
             "name": mic_name,
+            "validation_id": mic_validation_id,
             "primary_device": runtime.primary_device,
             "aec_device": runtime.aec_device,
             "firmware": _firmware_status(mic),

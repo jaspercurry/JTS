@@ -268,8 +268,18 @@ convenience; the durable record is the timestamped artifact.
 ```
 
 This artifact is cheap to read from `/aec`, corpus metadata, and
-`jasper-doctor`. Missing/stale validation stays advisory unless the
-requested profile depends on chip-AEC.
+`jasper-doctor`. Missing/stale validation stays advisory; when the
+requested profile depends on chip-AEC, status surfaces should warn
+without treating the artifact as a current pass.
+
+DAC identity comes from `JASPER_AUDIO_DAC_ID` in
+`/etc/jasper/jasper.env` (or, in future, an explicit `dac.id` in
+`jasper-outputd` STATUS). It is a stable hardware/profile slug, not the
+ALSA routing PCM (`outputd_dac`). Fresh installs seed
+`apple_usb_c_dongle` for the reference Apple USB-C dongle; if an
+operator swaps the speaker DAC, they must set a new stable id before
+running validation. When the current DAC identity is missing, readers
+return unknown/advisory rather than accepting an artifact.
 
 Operator commands:
 

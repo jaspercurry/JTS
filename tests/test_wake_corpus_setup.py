@@ -412,6 +412,7 @@ def test_metadata_records_audio_context_snapshot(
             "JASPER_AEC_CHIP_AEC_PRIMARY_LEG=chip_aec_210\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888\n"
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
             "JASPER_OUTPUTD_DAC_PCM=envfile_dac\n"
             "JASPER_OUTPUTD_BACKEND=alsa_envfile\n"
             "JASPER_OUTPUTD_CONTROL_SOCKET=/run/envfile-outputd.sock\n"
