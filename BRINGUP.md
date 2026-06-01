@@ -4,6 +4,17 @@ End-to-end steps from "hardware on desk" to "Hey Jarvis, set volume
 to 30." Estimate ~2–3 hours including OS flash, source builds, and
 verification.
 
+This is the long-form **advanced/operator** runbook. It includes
+manual SSH, Pi-local package installs, hardware checks, firmware
+flashing, and calibration steps. If this is your first JTS speaker
+and you want the guided consumer setup, start with
+[QUICKSTART.md](QUICKSTART.md) instead. The normal beginner install
+path runs from your computer:
+
+```sh
+bash scripts/onboard.sh <hostname>.local --adopt
+```
+
 If anything in here is wrong on first contact with hardware, that's
 a bug in this runbook — fix it and update.
 
@@ -42,30 +53,55 @@ Optional (satellite devices — see [docs/satellites.md](docs/satellites.md)):
 1. Download **Raspberry Pi Imager** (<https://www.raspberrypi.com/software/>).
 2. Insert the microSD card.
 3. In Imager:
-   - Operating System → "Raspberry Pi OS (other)" → **Raspberry Pi
-     OS Lite (64-bit, Trixie)**
+   - Device → **Raspberry Pi 5**
+   - Operating System →
+     **Raspberry Pi OS → Raspberry Pi OS (Other) → Raspberry Pi
+     OS Lite (64-bit)**
    - Storage → your SD card
-   - Click the gear icon (OS customisation):
-     - Hostname: `jts` (or whatever)
-     - Enable SSH → "Use public-key authentication only" → paste
-       your laptop's `~/.ssh/id_*.pub`
-     - Set username: `pi` + a strong password (used as fallback;
-       you'll prefer SSH keys)
-     - Wireless LAN: enter your Wi-Fi SSID + password (so first
-       boot comes up on Wi-Fi without Ethernet)
-     - Locale: your timezone
+   - Customisation:
+     - Hostname: `jts` for the first speaker, or another simple
+       name. If you choose `jts3`, use `jts3.local` in later
+       commands and browser URLs.
+     - Localisation: choose your capital city, then confirm the time
+       zone and keyboard layout.
+     - User: username `pi` plus a password.
+     - Wireless LAN: enter the same Wi-Fi network your laptop is on
+       so first boot comes up without Ethernet.
+     - Remote Access / SSH: enable SSH with **password
+       authentication**. Public-key auth is fine for advanced
+       imaging, but the beginner path is password SSH plus
+       `scripts/onboard.sh --adopt`.
+     - Raspberry Pi Connect: leave off; JTS does not use it.
+     - Interfaces & Features: leave defaults unless a later phase
+       explicitly tells you otherwise.
    - Save → Write.
-4. Eject the SD card. Insert into the Pi. Power on (don't connect
-   any USB peripherals yet).
+4. Imager usually auto-ejects the SD card after writing. Physically
+   remove it from the computer and insert it into the Pi. If you need
+   to inspect `bootfs`, physically reinsert the card into the
+   computer first.
+5. Power on (don't connect any USB peripherals yet).
 
 **First-boot wait**: ~60 seconds for the Pi to come up on the
-network. Find it via mDNS:
+network. The examples below assume the hostname `jts`; if you chose
+another hostname, substitute its `.local` address:
 
 ```sh
-ssh pi@jts.local   # password fallback if SSH key didn't take
+ssh pi@jts.local
 ```
 
-Once SSH works:
+If you are following the beginner path, stop here and run the
+laptop-side onboarder from the repo checkout on your computer:
+
+```sh
+bash scripts/onboard.sh <hostname>.local --adopt
+```
+
+The remaining phases are advanced/operator detail. They include
+hardware verification and manual service checks, but the supported
+install path still runs from the laptop unless a section explicitly
+labels a Pi-local developer alternative.
+
+For the manual path, once SSH works:
 
 ```sh
 sudo apt update && sudo apt full-upgrade -y
@@ -117,20 +153,20 @@ and `nqptp` (~1 min) for AirPlay 2 support.
 From your laptop, in a local JTS checkout:
 
 ```sh
-bash scripts/onboard.sh jts.local
+bash scripts/onboard.sh <hostname>.local --adopt
 ```
 
-The onboarder rsyncs this checkout to `/home/pi/jts/`, captures the
+The onboarder rsyncs this checkout to `$HOME/jts`, captures the
 laptop-side git SHA before `.git/` is excluded, passes that build
 metadata into the remote sudo install, and runs `deploy/install.sh`.
 The Pi consumes the staged source tree and pinned/hash-checked source
 archives; it does not need `git` for the normal public install path.
 
 `install.sh` is idempotent — re-running `bash scripts/onboard.sh
-jts.local` or `bash scripts/deploy-to-pi.sh` upgrades the venv and
-re-applies configs. Watch the output for warnings about missing ALSA
-cards (the dongle and mic should be detected; if either is missing,
-fix and re-run).
+<hostname>.local --adopt` or `bash scripts/deploy-to-pi.sh` upgrades
+the venv and re-applies configs. Watch the output for warnings about
+missing ALSA cards (the dongle and mic should be detected; if either
+is missing, fix and re-run).
 
 <details>
 <summary>Advanced/developer Pi-local checkout path</summary>

@@ -19,13 +19,19 @@ roughly $1–3/month at light use on the cheapest provider.
   a JTS speaker"* (or *"set up a Pi"*, *"I just got a new Pi"*,
   whatever feels natural). Claude reads the
   [`/onboard-pi`](.claude/commands/onboard-pi.md) skill and walks you
-  through every step — Pi Imager download, SD card flash, first boot,
-  network discovery (including multi-speaker collision detection), and
-  the install. ~30 minutes total.
+  through every step — Raspberry Pi Imager's nested OS picker,
+  password-based SSH setup, SD card flash, first boot, network
+  discovery (including multi-speaker collision detection), and the
+  install. ~30 minutes total.
 - **Prefer to read the steps yourself?** [QUICKSTART.md](QUICKSTART.md)
   is the same flow as a human-readable walkthrough.
 - **Doing the full long-form bringup** (hardware calibration, XVF
   firmware flashing, satellite devices)? See [BRINGUP.md](BRINGUP.md).
+
+The setup docs default to the hostname `jts`, which becomes
+`jts.local` on your home network. If you choose another hostname in
+Raspberry Pi Imager, such as `jts3`, use `jts3.local` everywhere
+later. Keep the Pi and your computer on the same Wi-Fi during setup.
 
 ---
 
@@ -241,7 +247,8 @@ when the configured AEC mic is present with 6-channel firmware — see
   hooks.
 - ✅ Speaker-name wizard at `http://jts.local/speaker/` — one display
   name for AirPlay, Spotify Connect, Bluetooth, and USB Audio. Defaults
-  to `JTS`; the URL remains `jts.local`.
+  to `JTS`; the URL remains the hostname chosen in Imager
+  (`jts.local`, `jts3.local`, etc.).
 - ✅ **USB Audio Input** (`jasper-usbsink`) — fourth music source.
   Plug a computer into the Pi's USB-C port (via the 8086
   Consultancy USB-C/PWR Splitter) and the host sees the configured
@@ -455,8 +462,8 @@ steps. Apache 2.0 like the rest of the repo.
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |
 | [LICENSE-third-party.md](LICENSE-third-party.md) | Redistributors / maintainers | First-pass third-party software, asset, model, and data attribution inventory |
-| [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Pi Imager → boot → `scripts/onboard.sh` → working speaker in ~30 min. Imager 2.0.6+ required. |
-| [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — XVF firmware, dial, satellites, calibration |
+| [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Raspberry Pi Imager password-SSH flow → boot → `scripts/onboard.sh --adopt` → working speaker in ~30 min. Carries the chosen hostname through every step. |
+| [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — OS flash, XVF firmware, dial, satellites, calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Living top-five OSS-readiness worklist, hotspot register, software-only dev-path notes, and deliberate deferrals |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
@@ -988,9 +995,14 @@ modifying. One-line summaries here:
 
 ## Getting started
 
-If you have a fresh Pi and want to deploy from scratch, follow
-[BRINGUP.md](BRINGUP.md) end-to-end. It walks from "blank SD card"
-through "Hey Jarvis works" in ~3-4 hours.
+If you have a fresh Pi and want to set up a speaker, start with
+[QUICKSTART.md](QUICKSTART.md). It follows the beginner path from
+Raspberry Pi Imager through `scripts/onboard.sh --adopt` and the
+first setup pages in ~30 minutes.
+
+For the long-form operator runbook — hardware calibration, XVF
+firmware, dial, satellites, room correction — use
+[BRINGUP.md](BRINGUP.md).
 
 If the repo is already deployed and you're just pushing changes:
 

@@ -7,146 +7,183 @@ by itself while you do something else.
 > [!TIP]
 > **Using Claude Code?** Skip this doc and just say *"set up a Pi"*
 > (or similar). Claude auto-invokes the [`/onboard-pi`](.claude/commands/onboard-pi.md)
-> skill and walks you through every step interactively — including
-> proactively probing for existing speakers on your network and
-> suggesting a non-colliding hostname before you pick one in Imager.
-> This QUICKSTART is the same flow in human-readable form, for when
-> you want to read it yourself.
+> skill and walks you through every step interactively — Raspberry Pi
+> Imager, SD card flash, first boot, network discovery, install, and
+> the first setup pages. This QUICKSTART is the same flow in
+> human-readable form, for when you want to read it yourself.
 
 This guide assumes you have the hardware from [README.md](README.md#hardware)
-in front of you, a laptop with [Claude Code](https://claude.com/claude-code)
-installed (the rest of the flow works without it — Claude Code just
-makes failures friendlier), and a 2.4 GHz home WiFi network the Pi
-can join.
+in front of you, a laptop or desktop on your home Wi-Fi, and a
+2.4 GHz Wi-Fi network the Pi can join. Put the Pi on the **same
+Wi-Fi network as your computer** during setup; the laptop talks to
+it by local hostname.
 
 ---
 
-## Before you start: tool versions
+## Before you start: two names to remember
 
-> [!IMPORTANT]
-> **Raspberry Pi Imager 2.0.6 or later** is required. Earlier
-> 2.0.x releases have an [open bug ([rpi-imager#1320](https://github.com/raspberrypi/rpi-imager/issues/1320))]
-> where selecting "Use public-key authentication" silently breaks
-> hostname, WiFi, and locale customization on Trixie images — the
-> Pi boots into a graphical first-boot wizard expecting a keyboard
-> and monitor, not an SSH client.
->
-> Download from [raspberrypi.com/software](https://www.raspberrypi.com/software/).
-> Check installed version: `Raspberry Pi Imager → About`.
-
-You also need a local SSH keypair. Check by running:
+The recommended first hostname is `jts`. If you use that, the Pi's
+local network name will be:
 
 ```sh
-ls ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub 2>/dev/null
+jts.local
 ```
 
-If neither file shows, generate one:
+If you choose a different hostname in Raspberry Pi Imager, carry that
+name forward everywhere. For example, if you type `jts3`, then later
+commands and browser URLs use:
 
 ```sh
-ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"
+jts3.local
 ```
+
+The examples below use `jts.local`. Substitute your own
+`<hostname>.local` if you picked something else.
+
+---
+
+## Before you start: Raspberry Pi Imager
+
+Use **Raspberry Pi Imager 2.0.6 or later** from
+[raspberrypi.com/software](https://www.raspberrypi.com/software/).
+Check the installed version from **Raspberry Pi Imager -> About**.
+
+Older 2.0.x releases had a Trixie customization bug when public-key
+SSH was selected. The beginner path below uses password-based SSH
+instead, but installing the current Imager keeps the setup boring in
+the best way.
 
 ---
 
 ## 1. Flash the Pi (5 minutes)
 
-1. Insert a microSD card (16 GB+) into your laptop.
-2. Open Raspberry Pi Imager. **Verify it's 2.0.6 or later** (Imager →
-   About). Earlier 2.0.x releases have an [open bug](https://github.com/raspberrypi/rpi-imager/issues/1320)
-   that silently breaks customization on Trixie.
-3. Step through the wizard:
+1. Insert a microSD card (16 GB+) into your computer.
+2. Open Raspberry Pi Imager and choose:
    - **Device**: Raspberry Pi 5
-   - **OS**: Raspberry Pi OS Lite (64-bit), Trixie
+   - **OS**:
+     **Raspberry Pi OS -> Raspberry Pi OS (Other) -> Raspberry Pi OS Lite (64-bit)**
    - **Storage**: your SD card
-4. Imager asks if you want to customise — say yes. You'll see a
-   multi-step wizard (one screen per step):
-   - **Hostname**: pick a name (`jts` for your first speaker; pick a
-     different name like `jts2`, `kitchen`, `bedroom` for a second
-     speaker — two devices on the same LAN can't share a hostname).
-   - **Localisation**: pick your **Capital city** (this also sets the
-     WiFi country code). **Time zone** and **Keyboard layout** auto-fill
-     from the city — confirm or override.
-   - **User**: username `pi`, any password (fallback only — pubkey is
-     the primary auth), confirm password. **Enable passwordless sudo**
-     if you want unattended deploys; otherwise the deploy script will
-     prompt for this password through SSH when it needs sudo.
-     The beginner/fresh-appliance path assumes username `pi`. Custom
-     users via `--user` / `PI_USER` are an advanced path supported for
-     onboarding and deploy only; some diagnostics and operator scripts
-     may still assume `pi` or `/home/pi`.
-   - **Wi-Fi**: leave "Secure network" selected. SSID (auto-detected
-     from your laptop's current WiFi if available), password, confirm.
-   - **Remote Access (SSH)**: turn SSH on, pick **"Use public key
-     authentication"**, then in the SSH Key Manager paste the contents
-     of `~/.ssh/id_ed25519.pub` or click **Browse** and select the
-     file. Imager 2.0.x doesn't auto-import — you have to add the key
-     explicitly.
-   - **Skip** the Raspberry Pi Connect and Interfaces & Features steps.
-5. **Save → Yes → Yes** to write. ~2 minutes.
+3. Imager asks if you want to customise the OS. Choose **Edit
+   Settings** or **Yes**.
+4. Step through the customization screens:
+   - **Hostname**: type `jts` for your first speaker, or another
+     simple name like `jts3`, `kitchen`, or `bedroom`. If you pick
+     `jts3`, remember that the address later is `jts3.local`.
+   - **Localisation**: pick your **Capital city**, then confirm the
+     **Time zone** and **Keyboard layout** that Imager fills in.
+   - **User**: username `pi`, then choose and confirm a password.
+     Write this password down for the next step. The beginner path
+     assumes username `pi`; custom users via `--user` / `PI_USER` are
+     advanced and currently supported for onboarding/deploy only.
+     Passwordless sudo is optional for unattended deploys; if you leave
+     it off, the deploy script can prompt for the sudo password through
+     SSH when needed.
+   - **Wi-Fi**: select the same Wi-Fi network your computer is on.
+     Enter the Wi-Fi password. Leave hidden-network options alone
+     unless your network is actually hidden.
+   - **Remote Access / SSH**: turn SSH on and choose
+     **password authentication**. Public-key authentication is an
+     advanced option; you do not need it in Imager for the beginner
+     path.
+   - **Raspberry Pi Connect**: leave it off. JTS does not use it.
+   - **Interfaces & Features**: leave the defaults. JTS configures
+     the hardware features it needs during install.
+5. Save the settings and write the card.
+6. When Imager finishes, it usually auto-ejects the SD card. Physically
+   remove it from your computer and put it into the Pi.
+
+If you ever need to inspect the card's `bootfs` partition after Imager
+finishes, physically remove and reinsert the SD card into your computer.
+Auto-eject means the files may not be visible until you do.
 
 ---
 
 ## 2. Boot the Pi (3 minutes)
 
-1. Eject the SD card. Insert it into the Pi.
-2. Connect the Apple USB-C dongle + the ReSpeaker XVF3800 + amp + speakers.
-   (See [BRINGUP.md](BRINGUP.md) Phase 1 for the full hardware connections.)
-3. Power on. The Pi boots, joins WiFi, and starts SSH in 45-90 seconds.
-4. From your laptop, sanity-check that it's reachable:
+1. Insert the SD card into the Pi.
+2. Connect the Apple USB-C dongle, ReSpeaker XVF3800, amp, and
+   speakers. See [BRINGUP.md](BRINGUP.md) Phase 1 for the full
+   hardware connections.
+3. Power on the Pi. It should join Wi-Fi and start SSH in 45-90
+   seconds.
+4. From your computer, check that it is reachable:
 
    ```sh
-   ping jts.local        # or whatever hostname you set
+   ping jts.local
    ```
 
-   You should see a response within 5 seconds. If not, jump to the
+   If you chose `jts3` as the hostname, run `ping jts3.local`
+   instead. If it does not respond, jump to the
    [failure ladder](#failure-ladder).
 
 ---
 
 ## 3. Onboard (15-20 minutes)
 
-Clone the repo and run the onboarder. From a fresh terminal on your laptop:
+Clone the repo and run the onboarder from your computer:
 
 ```sh
 git clone https://github.com/jaspercurry/JTS.git
 cd JTS
-bash scripts/onboard.sh jts.local      # whatever hostname you set
+bash scripts/onboard.sh jts.local --adopt
 ```
 
-That's the whole command. It will:
+Use the hostname you chose in Imager. For example:
 
-1. **probe** — verify SSH reachability and pubkey auth
-2. **persist** — write `~/.ssh/config` alias, `.env.local`,
-   `CLAUDE.local.md` (the last two are gitignored, per-checkout state).
-   If you connect by IP, it records the Pi's hostname separately so the
+```sh
+bash scripts/onboard.sh jts3.local --adopt
+```
+
+`--adopt` is the normal beginner path. It asks for the Pi password
+once, installs your laptop's SSH key for future deploys, writes this
+checkout's local target files, then installs JTS.
+
+If the script says your computer does not have an SSH key yet, run
+the command it prints:
+
+```sh
+ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"
+```
+
+Then rerun the same onboard command with `--adopt`. You do **not**
+need to re-flash the SD card or paste this key into Raspberry Pi
+Imager.
+
+The onboarder will:
+
+1. **probe** — verify the Pi is reachable on the local network
+2. **adopt** — ask for the Pi password once and install your laptop's
+   SSH key
+3. **persist** — write `~/.ssh/config`, `.env.local`, and
+   `CLAUDE.local.md` so this checkout remembers the chosen Pi. If you
+   connect by IP, it records the Pi's hostname separately so the
    speaker identity does not become an IP address.
-3. **install** — rsync the repo to the Pi and run `deploy/install.sh`,
-   with a sudo preflight before upload. Passwordless sudo runs
-   unattended; otherwise an interactive terminal prompts through SSH.
-   which apt-installs deps, source-builds shairport-sync (~12 min,
-   the longest single step), webrtc-audio-processing v2.1, and
-   wires up every systemd unit
-4. **validate** — run `jasper-doctor` and surface the result
+4. **install** — copy the repo to the Pi's `$HOME/jts` staging directory
+   and run `deploy/install.sh`, with a sudo preflight before upload.
+   Passwordless sudo runs unattended; otherwise an interactive terminal
+   prompts through SSH. The Pi consumes the staged source tree and
+   pinned/hash-checked source archives; it does not need `git` for the
+   normal install path.
+5. **validate** — run `jasper-doctor` and show the result
 
-When it finishes you'll see a banner with the next URLs to visit.
+When it finishes, you'll see a banner with the next URLs to visit.
 
 > [!NOTE]
-> If you're using Claude Code, you can also just say *"onboard a
-> new Pi at jts.local"* — there's a `/onboard-pi` slash command
-> that orchestrates this with friendlier failure handling. The
-> shell script is the deterministic primitive; the slash command
-> is a thin wrapper around it.
+> Advanced SSH-key path: if you already know how to put your public
+> key into Raspberry Pi Imager, you can choose public-key SSH there
+> and run `bash scripts/onboard.sh jts.local` without `--adopt`.
+> For first-time setup, password SSH plus `--adopt` is simpler.
 
 ---
 
 ## 4. Configure (10 minutes, one-time)
 
-Visit the wizards. None of these require Claude Code or the
-laptop — anything on your LAN can hit them:
+Visit these pages from any device on the same Wi-Fi. Replace
+`jts.local` with your chosen hostname if needed.
 
-- **`http://jts.local/voice/`** — pick a voice provider (Gemini /
-  OpenAI / Grok) and paste an API key. The speaker won't respond
-  to "Hey Jarvis" until this is done.
+- **`http://jts.local/voice/`** — required. Pick a voice provider
+  (Gemini / OpenAI / Grok) and paste an API key. The speaker will
+  not respond to "Hey Jarvis" until this is done.
 - **`http://jts.local/transit/`** — optional. NYC subway / bus /
   Citi Bike. Geocode your address; pick stops.
 - **`http://jts.local/spotify/`** — optional. Connect a Spotify
@@ -154,7 +191,7 @@ laptop — anything on your LAN can hit them:
 - **`http://jts.local/speaker/`** — optional. Rename the speaker as it
   appears in AirPlay, Spotify Connect, Bluetooth, and USB Audio pickers.
 - **`http://jts.local/system/`** — the dashboard. Status, dial
-  onboarding, mic-mute, software version, WiFi.
+  onboarding, mic-mute, software version, Wi-Fi.
 
 ---
 
@@ -178,18 +215,24 @@ re-onboarding needed.
 When something goes wrong, work down the symptom that matches what
 you actually observed.
 
-### "I can't reach `jts.local`"
+### "I can't reach `<hostname>.local`"
 
-1. **Pi Imager version**. Run **Raspberry Pi Imager → About** —
-   if it's older than 2.0.6, your OS customization may not have
-   applied. Upgrade Imager, re-flash, retry.
-2. **Find the Pi's IP from your router**. Most home routers have an
-   admin page (often `http://192.168.1.1`) that lists DHCP leases.
-   Look for `raspberrypi` or whatever hostname you set. Re-run with
-   the IP:
+1. **Use the hostname you chose.** If you typed `jts3` in Imager,
+   the address is `jts3.local`, not `jts.local`.
+2. **Same Wi-Fi.** Confirm your computer is on the same Wi-Fi network
+   you entered in Imager. Guest networks and phone hotspots often
+   block local-device discovery.
+3. **Wait two minutes.** The first boot can take longer than a normal
+   boot while Raspberry Pi OS expands the filesystem.
+4. **Pi Imager version.** Run **Raspberry Pi Imager -> About**. If it
+   is older than 2.0.6, upgrade Imager, re-flash, and try again.
+5. **Find the Pi's IP from your router.** Most home routers have an
+   admin page (often `http://192.168.1.1`) that lists connected
+   devices. Look for `jts`, `jts3`, or whatever hostname you set.
+   Re-run with the IP:
 
    ```sh
-   bash scripts/onboard.sh 192.168.1.42
+   bash scripts/onboard.sh 192.168.1.42 --adopt
    ```
 
    The script queries the Pi's hostname and records that as
@@ -197,35 +240,41 @@ you actually observed.
    make it explicit:
 
    ```sh
-   bash scripts/onboard.sh 192.168.1.42 --speaker-hostname jts.local
+   bash scripts/onboard.sh 192.168.1.42 --adopt --speaker-hostname jts.local
    ```
 
-3. **ARP scan for Pi MAC OUIs** from your laptop:
+6. **ARP scan for Pi MAC OUIs** from your computer:
 
    ```sh
    arp -a | grep -iE 'b8:27:eb|d8:3a:dd|dc:a6:32|2c:cf:67'
    ```
 
-4. **USB-C gadget rescue** (Pi 5, when WiFi has not come up at all):
+7. **USB-C gadget rescue** (Pi 5, when Wi-Fi has not come up at all):
    - Power the Pi from the **GPIO 5V/GND header**, not the USB-C
-     port (the USB-C port has to be free for the data connection).
-   - Connect a **USB-A → USB-C** cable from your laptop to the Pi's
-     USB-C port. USB-C→USB-C cables hit an open kernel bug
+     port. The USB-C port has to be free for the data connection.
+   - Connect a **USB-A -> USB-C** cable from your computer to the Pi's
+     USB-C port. USB-C to USB-C cables hit an open kernel bug
      ([raspberrypi/linux#6289](https://github.com/raspberrypi/linux/issues/6289))
-     and don't work reliably.
-   - On Apple Silicon Macs there's a known USB-PD interaction
+     and do not work reliably.
+   - On Apple Silicon Macs there is a known USB-PD interaction
      ([raspberrypi/linux#6569](https://github.com/raspberrypi/linux/issues/6569))
      that can break detection; try a Linux laptop if available.
    - Pi appears at `10.12.194.1`:
 
      ```sh
-     bash scripts/onboard.sh 10.12.194.1
+     bash scripts/onboard.sh 10.12.194.1 --adopt
      ```
 
-### "Ping works but SSH fails"
+### "Onboarding says no SSH key was found"
 
-You probably picked password auth in Imager (or you're adopting an
-existing Pi that doesn't have your pubkey). Re-run with `--adopt`:
+The beginner path still creates a laptop SSH key for future deploys;
+it just does that after the Pi is already on the network. Run:
+
+```sh
+ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"
+```
+
+Then rerun:
 
 ```sh
 bash scripts/onboard.sh jts.local --adopt
@@ -236,25 +285,44 @@ uses pubkey auth for everything after. If passwordless sudo is not
 enabled, the later deploy step prompts for the sudo password through
 an interactive SSH session; it is not stored.
 
+Use your chosen hostname in place of `jts.local`.
+
+### "Ping works but SSH or adoption fails"
+
+Check the basics first:
+
+1. The username in Imager should be `pi`.
+2. The password is the one you typed in Imager's User screen.
+3. SSH must be enabled in Imager with password authentication.
+
+Then rerun:
+
+```sh
+bash scripts/onboard.sh jts.local --adopt
+```
+
+If you chose public-key authentication in Imager instead, omit
+`--adopt`:
+
+```sh
+bash scripts/onboard.sh jts.local
+```
+
 ### "Imager said it customized the OS but the Pi acts unconfigured"
 
-This is [rpi-imager#1320](https://github.com/raspberrypi/rpi-imager/issues/1320)
-— an open bug in Pi Imager 2.0.0-2.0.5 where selecting "Use public-key
-authentication" silently disables the rest of OS Customization (hostname,
-WiFi, locale revert to defaults; the Pi boots into the first-boot
-graphical wizard).
+This usually means either the wrong SD card was written, the Pi joined
+a different network, or an older Imager build hit a customization bug.
+Use your router's connected-device list to look for either your chosen
+hostname or `raspberrypi`.
 
-You don't have to re-flash. Find the Pi's IP in your router's admin
-page (it'll be the one with hostname `raspberrypi` since the custom
-hostname didn't apply), then onboard via `--adopt`:
+If you find an IP, onboard with:
 
 ```sh
 bash scripts/onboard.sh 192.168.1.42 --adopt
 ```
 
-`--adopt` uses `ssh-copy-id` over the default `raspberrypi`/`raspberry`
-password, then proceeds normally. Because the hostname is still
-`raspberrypi`, either pass the intended identity during onboarding:
+Because the hostname may still be `raspberrypi`, either pass the
+intended identity during onboarding:
 
 ```sh
 bash scripts/onboard.sh 192.168.1.42 --adopt --speaker-hostname jts.local
@@ -266,9 +334,8 @@ or rename the Pi after onboarding:
 ssh pi@192.168.1.42 'sudo hostnamectl set-hostname jts && sudo reboot'
 ```
 
-After the reboot it's reachable as `jts.local` again.
-
-Long-term fix: upgrade Pi Imager to 2.0.6 or later for future Pis.
+After the reboot, substitute the hostname you chose, such as
+`jts.local` or `jts3.local`.
 
 ### "deploy says non-interactive sudo failed"
 
@@ -294,31 +361,32 @@ ls logs/   # most recent journal is symlinked as *-latest.log
 
 ### "Onboarding succeeded but `jasper-doctor` shows warnings"
 
-Open `http://jts.local/system/` — the dashboard surfaces the same
-checks with more context and remediation links. Common warnings:
+Open `http://jts.local/system/` — or your chosen hostname's `/system/`
+page. The dashboard surfaces the same checks with more context and
+remediation links. Common warnings:
 
 - **XVF firmware is 2-channel** — software AEC stays off until you
   DFU-flash 6-channel firmware. See [BRINGUP.md](BRINGUP.md) Phase 2A.5.
 - **Voice provider not configured** — visit `/voice/` and paste an
   API key.
 - **Apple USB-C dongle not detected** — check that headphones (or
-  the amp's input) are physically connected. The dongle is a
-  smart cable and refuses to enumerate as a USB audio class device
-  unless something is plugged into its analog jack.
+  the amp's input) are physically connected. The dongle is a smart
+  cable and refuses to enumerate as a USB audio class device unless
+  something is plugged into its analog jack.
 
 ---
 
 ## Multi-Pi households
 
-A second speaker is just a second checkout with its own
-`.env.local`. Worktrees work fine too.
+A second speaker is just a second checkout with its own `.env.local`.
+Worktrees work fine too.
 
 ```sh
 # In a fresh terminal:
 cd ~/Code
 git clone https://github.com/jaspercurry/JTS.git JTS-kitchen
 cd JTS-kitchen
-bash scripts/onboard.sh jts2.local
+bash scripts/onboard.sh jts2.local --adopt
 ```
 
 That checkout's `.env.local` will point at `jts2.local`. Switching
@@ -326,8 +394,8 @@ between Pis is `cd` between the two checkouts. The `~/.ssh/config`
 aliases (`ssh jts`, `ssh jts2`) work from anywhere.
 
 If you'd rather keep a single checkout and flip the active target,
-use the `scripts/use` helper (after both Pis have been onboarded
-at least once so the SSH aliases exist):
+use the `scripts/use` helper after both Pis have been onboarded at
+least once:
 
 ```sh
 bash scripts/use jts2.local      # flip this checkout to jts2
@@ -335,10 +403,10 @@ bash scripts/use jts.local       # flip back
 ```
 
 That just rewrites `.env.local` and `CLAUDE.local.md` — no
-re-install, no SSH activity. Like `kubectl config use-context`.
+re-install, no SSH activity.
 
 Inside Claude Code, each checkout gets its own `CLAUDE.local.md`
-loaded into context automatically — so a Claude session in the
+loaded into context automatically, so a Claude session in the
 kitchen checkout knows it targets `jts2.local`, and a session in
 the living-room checkout knows it targets `jts.local`.
 
@@ -346,19 +414,27 @@ the living-room checkout knows it targets `jts.local`.
 
 ## FAQ
 
-**Why pubkey, not password?**
+**Why password SSH in Imager?**
 
-Pi Imager 2.0.6+ supports either — they're a single radio button.
-Pubkey is more secure (no password ever crosses the network), and
-`ssh-copy-id` (used by `--adopt`) is a fallback path for the
-already-flashed-with-password case anyway. The default is pubkey
-because that's what the Imager workflow is best at.
+It matches what a first-time Raspberry Pi Imager user sees: type a
+username, type a password, turn SSH on. The JTS onboarder then uses
+`--adopt` to install your laptop SSH key after the Pi boots. You type
+the password once; future deploys use the key.
+
+Public-key SSH in Imager is still fine for advanced users who already
+know where their public key lives. It is no longer the beginner path.
+
+**What about passwordless sudo?**
+
+Do not worry about it during the beginner Imager flow. Use the normal
+Raspberry Pi OS user setup, keep the password you chose, and let the
+onboarding script tell you if the image needs anything unusual.
 
 **What about a custom JTS-branded OS image?**
 
 Intentionally not shipped. Custom images carry a maintenance tax
 (firmware version drift, kernel security fixes, etc.) and the
-quickstart works just as well from stock Trixie + `install.sh`.
+quickstart works from stock Raspberry Pi OS Lite + `install.sh`.
 
 **Does this work without Claude Code?**
 

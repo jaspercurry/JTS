@@ -49,7 +49,7 @@ avahi-browse -tr _jasper-control._tcp 2>/dev/null
 ls "/Applications/Raspberry Pi Imager.app" 2>/dev/null   # macOS
 which rpi-imager 2>/dev/null                              # Linux
 
-# 3. Does the user have an SSH keypair?
+# 3. Does the user already have a laptop SSH keypair for --adopt?
 ls ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub ~/.ssh/id_ecdsa.pub 2>/dev/null
 
 # 4. Is anything already at the default hostname?
@@ -86,27 +86,19 @@ is missing, don't block — tell them to come back to `/onboard-pi`
 when hardware arrives. Nothing is persisted yet; the skill picks
 up cleanly later.
 
----
-
-## Phase 1.5 — Assembly check
-
-Ask: *"Is everything wired up — Pi powered, amp powered (its own
-32 V supply), speakers connected to the amp, Apple dongle in the
-Pi with its 3.5mm into the amp's RCA input, ReSpeaker plugged into
-the Pi?"*
-
-If yes: proceed.
-If no or unsure: point them at [BRINGUP.md](../../BRINGUP.md) Phase 1 for
-the wiring diagram.
+Before Imager, only confirm that the hardware and SD card are
+available. Do not ask them to wire or power the Pi yet; the SD card
+has not been flashed.
 
 ---
 
 ## Phase 2 — Pi Imager
 
-**Required version: 2.0.6 or later.** Earlier 2.0.x releases have an
-[open bug ([rpi-imager#1320](https://github.com/raspberrypi/rpi-imager/issues/1320))]
-where selecting public-key auth silently breaks all OS customization
-on the Trixie image. Surface this warning before they download.
+**Use Raspberry Pi Imager 2.0.6 or later.** Earlier 2.0.x releases
+had an [open bug ([rpi-imager#1320](https://github.com/raspberrypi/rpi-imager/issues/1320))]
+where selecting public-key auth silently broke OS customization on
+Trixie images. The beginner path below uses password SSH instead,
+but still ask them to install the current Imager before they flash.
 
 If Imager isn't installed (Phase 0 check), tell them to download from
 [raspberrypi.com/software](https://www.raspberrypi.com/software/) and
@@ -118,7 +110,8 @@ multi-step wizard — each customisation step below is its own full
 screen, not a tab.)
 
 1. **Device** → Raspberry Pi 5
-2. **OS** → Raspberry Pi OS Lite (64-bit), Trixie
+2. **OS** →
+   **Raspberry Pi OS → Raspberry Pi OS (Other) → Raspberry Pi OS Lite (64-bit)**
 3. **Storage** → their SD card. Imager prompts about customisation —
    say yes, edit settings.
 4. **Customisation → Hostname**: pick a name (default `jts`).
@@ -126,31 +119,31 @@ screen, not a tab.)
    colliding alternative (`jts2`, `kitchen`, `bedroom`). Don't let
    them pick a name already in use — Avahi will silently
    suffix-resolve to `<name>-2.local` and break URL discovery.
+   Make the carry-forward rule explicit: if they type `jts3`, later
+   commands and pages use `jts3.local`.
 5. **Customisation → Localisation**: three dropdowns —
    **Capital city** (this also sets the WiFi country, so pick one in
    their actual region), **Time zone** (auto-fills from city, confirm
    or override), **Keyboard layout** (auto-fills, confirm).
 6. **Customisation → User**: **Username** `pi` (JTS's beginner path
-   defaults to this), **Password** (any — it's a fallback; SSH uses
-   pubkey), **Confirm password**. Recommend ✅ **"Enable passwordless
-   sudo"** for unattended deploys. If they leave it unchecked, the
-   deploy script can still prompt for the sudo password through an
-   interactive SSH session and will not store it. Do not suggest a
-   custom username to beginners: `--user` / `PI_USER` is advanced and
-   currently supported for onboarding/deploy only; some diagnostics may
-   still assume `pi` or `/home/pi`.
+   defaults to this), **Password**, **Confirm password**. Tell them to
+   save the password somewhere; the onboarder will ask for it once.
+   Passwordless sudo is optional for unattended deploys; if they leave
+   it unchecked, the deploy script can still prompt for the sudo
+   password through an interactive SSH session and will not store it.
+   Do not suggest a custom username to beginners: `--user` / `PI_USER`
+   is advanced and currently supported for onboarding/deploy only;
+   some diagnostics may still assume `pi` or `/home/pi`.
 7. **Customisation → Wi-Fi**: leave "Secure network" selected.
    **SSID** (auto-detected from the laptop's WiFi if available),
-   **Password**, **Confirm**. Leave "Hidden SSID" unchecked.
+   **Password**, **Confirm**. This must be the same Wi-Fi network as
+   the computer running setup. Leave "Hidden SSID" unchecked unless
+   their network is actually hidden.
 8. **Customisation → Remote Access (SSH)**: **Enable SSH** ON,
-   pick **"Use public key authentication"**, then in the SSH Key
-   Manager either paste the contents of `~/.ssh/id_ed25519.pub` or
-   click **Browse** and select the file. Imager 2.0.x does NOT
-   auto-import — keys must be added explicitly. If they don't have
-   a pubkey yet (Phase 0 check), generate one first:
-   `ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"`.
-9. **Skip** Raspberry Pi Connect (next step) — not needed for JTS.
-10. **Skip** Interfaces & Features — JTS configures I2C/SPI itself;
+   pick **password authentication**. Public-key authentication remains
+   an advanced option, but do not steer beginners there.
+9. **Raspberry Pi Connect**: leave it off — not needed for JTS.
+10. **Interfaces & Features**: leave defaults — JTS configures I2C/SPI itself;
     don't enable USB Gadget Mode here (that's a separate rescue
     feature documented elsewhere).
 11. **Save → Yes → Yes**. Confirm when flashing is done.
@@ -161,10 +154,20 @@ screen, not a tab.)
 
 Ask the user, after Imager finishes:
 
-> "Imager done? Please: eject the SD card from your laptop, insert it
-> into the Pi (the slot is on the underside, opposite the USB ports),
-> connect the audio peripherals (Apple dongle, ReSpeaker mic), and
-> power the Pi on. Then let me know — I'll watch for it to come up."
+> "Imager done? It usually auto-ejects the SD card after writing.
+> Please physically remove it from your computer, insert it into the
+> Pi (the slot is on the underside, opposite the USB ports), wire the
+> speaker now — amp powered from its own 32 V supply, speakers connected
+> to the amp, Apple dongle in the Pi with its 3.5mm into the amp input,
+> ReSpeaker plugged into the Pi — and then power the Pi on. Then let me
+> know — I'll watch for it to come up."
+
+If they are unsure about the wiring, point them at
+[BRINGUP.md](../../BRINGUP.md) Phase 1 before they power on.
+
+If they need to inspect `bootfs`, tell them to physically reinsert
+the SD card into the computer first; auto-eject means it may not be
+visible until then.
 
 After they confirm "powered on", **poll for reachability** rather
 than asking again:
@@ -189,15 +192,8 @@ recite all four rungs; check them one at a time.
 
 ## Phase 4 — Onboard
 
-Once the Pi answers ping, run the onboarder:
-
-```sh
-bash scripts/onboard.sh <hostname>.local
-```
-
-If you've already established the user picked password auth in Imager
-(or if they're adopting an existing Pi that doesn't have their key),
-pass `--adopt`:
+Once the Pi answers ping, run the onboarder. For the beginner
+password-SSH path, use `--adopt`:
 
 ```sh
 bash scripts/onboard.sh <hostname>.local --adopt
@@ -212,6 +208,24 @@ bash scripts/onboard.sh <ip-address> --adopt --speaker-hostname <hostname>.local
 Without `--speaker-hostname`, the script queries the Pi's hostname and
 uses that for `JASPER_HOSTNAME`; it must never use the IP address as
 the speaker identity/certificate name.
+
+`--adopt` asks for the Pi password once and installs the laptop's SSH
+key for future deploys. If Phase 0 found no laptop pubkey, generate
+one before running the onboarder:
+
+```sh
+ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"
+```
+
+Then run the same `onboard.sh ... --adopt` command. Do not send them
+back to Imager just to paste a public key.
+
+Advanced-only: if the user deliberately chose public-key auth in
+Imager and knows the key is installed, omit `--adopt`:
+
+```sh
+bash scripts/onboard.sh <hostname>.local
+```
 
 Stream the output. The script emits both `==>` headers (human-readable
 phase milestones) and `event=onboard.<phase> status=<s>` lines
@@ -260,7 +274,7 @@ Surface these at the right phase, before the user can hit them:
 
 - **Imager 2.0.0-2.0.5 + Trixie**: silently breaks customization when
   pubkey is selected ([rpi-imager#1320](https://github.com/raspberrypi/rpi-imager/issues/1320)).
-  Required version is 2.0.6+. Warn before they download.
+  Use Imager 2.0.6+ and keep beginners on password SSH.
 - **Hostname collision**: if Phase 0 found an existing speaker, NEVER
   let the user pick that hostname again. Avahi silently suffix-resolves
   and breaks URL discovery. Suggest `jts2`, `kitchen`, etc.
@@ -268,6 +282,15 @@ Surface these at the right phase, before the user can hit them:
   a pubkey. Passwordless sudo is optional for friendly interactive
   setup; it is required only for unattended deploys. The scripts
   intentionally do not install broad sudoers rules.
+- **Forgetting the chosen hostname**: `jts` becomes `jts.local`;
+  `jts3` becomes `jts3.local`. Carry that exact name through every
+  command and URL.
+- **Public-key auth in Imager**: advanced only. It is fine if the
+  user already understands SSH keys; otherwise use password auth and
+  `--adopt`.
+- **Different Wi-Fi networks**: setup only works if the Pi and the
+  computer are on the same LAN. Guest Wi-Fi and phone hotspots often
+  block mDNS/local discovery.
 - **USB-C → USB-C cables for gadget-mode rescue**: hit kernel bug
   [raspberrypi/linux#6289](https://github.com/raspberrypi/linux/issues/6289).
   Use USB-A → USB-C only. Power the Pi from the GPIO 5V/GND header,
