@@ -4,15 +4,20 @@
 #
 # After sourcing, PI_HOST, PI_USER, optional JASPER_HOSTNAME, and
 # REPO_ROOT are exported and safe to use throughout the script.
+# PI_HOST is the SSH transport target. JASPER_HOSTNAME is the speaker
+# identity/cert hostname; new scripts should not treat it as an SSH
+# target unless deliberately leaning on the compatibility fallback
+# below.
 #
 # Responsibilities:
 #   1. Resolve REPO_ROOT from the script's own location (so scripts
 #      keep working regardless of the caller's cwd).
 #   2. Source .env.local if present — this is where scripts/onboard.sh
 #      persists PI_HOST/PI_USER for a checkout. Gitignored.
-#   3. Apply the documented SSH-target fallback chain — PI_HOST in
-#      .env.local wins; JASPER_HOSTNAME from the calling shell is the
-#      legacy fallback; jts.local is the final default.
+#   3. Apply the SSH-target fallback chain — PI_HOST in .env.local
+#      wins; JASPER_HOSTNAME from the calling shell is kept only as a
+#      compatibility fallback for older operator scripts/docs; jts.local
+#      is the final default.
 #
 # This file is intentionally not executable and has no shebang — it
 # only makes sense when sourced from a bash script that has already
@@ -31,10 +36,12 @@ if [[ -f "${REPO_ROOT}/.env.local" ]]; then
     set +a
 fi
 
-# Documented fallback chain. The legacy form (used by every script in
+# Compatibility fallback chain. The legacy form (used by every script in
 # scripts/ before this lib existed) is:
 #   PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-# This file centralizes it so scripts can stop reinventing the chain.
+# This file centralizes it while the remaining legacy helpers are
+# audited. New laptop-side code should read/set PI_HOST for SSH and
+# reserve JASPER_HOSTNAME for speaker identity/cert URLs.
 export PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 export PI_USER="${PI_USER:-pi}"
 
@@ -104,7 +111,7 @@ ${speaker_line}
 
 Switch this checkout to a different speaker without re-onboarding:
 \`bash scripts/use <hostname>\`. Full re-onboard (rsync + install.sh
-+ jasper-doctor): \`bash scripts/onboard.sh <hostname>\`. See
++ jasper-doctor): \`bash scripts/onboard.sh <hostname> --adopt\`. See
 [AGENTS.md](AGENTS.md) "Laptop-side state" for the full convention.
 EOF
 }

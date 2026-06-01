@@ -180,8 +180,14 @@ ssh pi@jts.local
 sudo apt install -y git
 git clone https://github.com/jaspercurry/JTS.git ~/jts
 cd ~/jts
-sudo bash deploy/install.sh
+sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
 ```
+
+Substitute the Pi's actual speaker hostname. A direct Pi-local
+`install.sh` run reads `JASPER_HOSTNAME` from the process environment;
+it does not source an existing `/etc/jasper/jasper.env` first. The
+normal laptop-side `scripts/deploy-to-pi.sh` path forwards the hostname
+for you.
 
 </details>
 
@@ -759,13 +765,16 @@ page should load without a "Connection is not private" warning, and
 tapping **Start mic capture** should bring up the standard iOS
 microphone permission prompt.
 
-If the cert was reissued after a hostname change (`JASPER_HOSTNAME`
-edited and `install.sh` re-run), only the leaf cert changes — the CA
-on the iPhone keeps working, no re-trust needed. If you ever wipe
-`/var/lib/jasper/ca` and run `install.sh` again, the old CA on the
-iPhone still appears in Certificate Trust Settings but no longer
-matches; remove it (Settings → General → VPN & Device Management →
-JTS Speaker Local CA → Remove Profile) and repeat steps 1-4.
+If the cert was reissued after a hostname change, only the leaf cert
+changes — the CA on the iPhone keeps working, no re-trust needed. For
+Pi-local reruns, pass the hostname explicitly:
+`sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh`. The
+normal laptop-side `scripts/deploy-to-pi.sh` path forwards it
+automatically. If you ever wipe `/var/lib/jasper/ca` and run
+`install.sh` again, the old CA on the iPhone still appears in
+Certificate Trust Settings but no longer matches; remove it (Settings
+→ General → VPN & Device Management → JTS Speaker Local CA → Remove
+Profile) and repeat steps 1-4.
 
 To remove the CA from an iPhone (e.g., decommissioning a speaker):
 **Settings → General → VPN & Device Management → JTS Speaker Local CA

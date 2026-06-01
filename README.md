@@ -425,8 +425,11 @@ The setup flow we landed for JTS is generalizable. Four pieces:
    structured `event=onboard.<phase> status=<s>` lines parallel to
    the Pi-side daemon logging convention.
 3. **`scripts/_lib.sh`** — shared header. Sources `.env.local`,
-   exports `PI_HOST`/`PI_USER` with a documented fallback chain, and
-   records optional `JASPER_HOSTNAME` for speaker identity. Exposes a
+   exports `PI_HOST`/`PI_USER`, keeps the legacy
+   `JASPER_HOSTNAME` → `PI_HOST` SSH fallback for older helpers, and
+   records optional `JASPER_HOSTNAME` for speaker identity. New scripts
+   should set/read `PI_HOST` for SSH transport and reserve
+   `JASPER_HOSTNAME` for identity/cert URLs. Exposes a
    `write_laptop_state` helper so the onboarder and the `use` switcher
    stay in template-sync.
 4. **`CLAUDE.local.md`** (gitignored, written by the onboarder) —
