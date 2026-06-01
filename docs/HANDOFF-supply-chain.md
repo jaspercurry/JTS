@@ -13,9 +13,15 @@ or a model that later runs on the speaker, that input needs an entry in
 
 The manifest is deliberately small and operational:
 
-- Release archives, `.deb` files, and model files record a SHA-256.
-- Git source builds record an immutable commit, even when the operator-
-  friendly version remains a tag name.
+- Release archives, source archives, `.deb` files, and model files
+  record a SHA-256.
+- Source builds consume commit archive URLs where practical. The
+  immutable commit stays recorded even when the operator-friendly
+  version remains a tag name.
+- GitHub/GitLab auto-generated source archives are transitional: they
+  are SHA-256 checked at install time, but the compressed archive bytes
+  are service-generated and should not be the final public-installer
+  reproducibility story.
 - Firmware top-level PlatformIO inputs record exact versions or commits.
 - Known gaps are represented as `[[surface]]` entries instead of being
   hidden in prose.
@@ -67,8 +73,8 @@ fetch-bearing surfaces still have provenance entries:
   `hey_jarvis`, `hey_mycroft`, `hey_rhasspy`, `timer`, `weather`).
 - DTLN-aec ONNX model stages listed in `jasper/aec_engines/dtln_models.py`.
 
-`deploy/install.sh` also verifies checked-out git source trees before
-building:
+`deploy/install.sh` also builds these source inputs from commit archive
+URLs and verifies each archive with `sha256sum -c` before unpacking:
 
 - `nqptp` pinned to commit `c925f27c1fd12e4033ac477e5a405969b0b0260b`.
 - `shairport-sync` tag `4.3.7`, commit
@@ -76,8 +82,17 @@ building:
 - `webrtc-audio-processing` tag `v2.1`, commit
   `846fe90a289f58b7c9303a635142aa2c7caa93e5`.
 
-The Python direct git dependency for `pycamilladsp` is pinned to the
-`v4.0.0` tag commit in `pyproject.toml` rather than the tag name.
+The Python dependency for `pycamilladsp` uses a direct commit archive
+URL in `pyproject.toml` with a `#sha256=` fragment. This keeps the
+base Pi install from needing `git` just so pip can fetch that package.
+
+**TODO before a public installer/release:** mirror the exact source
+archives above as uploaded JTS release assets, update install/provenance
+to consume those stable release-asset URLs, and keep the upstream
+commit/tag archive URLs only as provenance. The current direct upstream
+archives are acceptable for this private/focused slice because hashes
+fail closed, but a public installer should not depend on hosted
+auto-generated archive byte stability.
 
 Python dependency determinism is partially started but not complete.
 Several direct runtime dependencies are exact-pinned in
@@ -123,6 +138,11 @@ These are real and intentionally left for later slices:
 - **PlatformIO transitive/toolchain resolution.** Top-level firmware
   inputs are exact, but PlatformIO still consults its package registry
   for toolchains and metadata.
+- **Transitional source archive hosting.** `nqptp`, `shairport-sync`,
+  `webrtc-audio-processing`, and `pycamilladsp` currently download
+  upstream auto-generated commit archives. They are immutable by source
+  ref and checked by SHA-256, but before a public installer/release the
+  exact bytes should be mirrored as uploaded JTS release assets.
 
 ## Update Workflow
 
@@ -130,8 +150,8 @@ When adding or changing a network fetch:
 
 1. Add or update the entry in `deploy/provenance.toml`.
 2. Prefer immutable URLs and commits. If the upstream only exposes a
-   mutable tag or branch, resolve it to a commit and verify the checkout
-   before build.
+   mutable tag or branch, resolve it to a commit and prefer a commit
+   archive URL with a recorded SHA-256 over a Pi-side checkout.
 3. For binary/model/archive artifacts, compute SHA-256 from the exact
    file the install path downloads:
 
@@ -164,6 +184,12 @@ needs a deliberate design choice: either promote `uv.lock` to the shared
 source of truth or generate hash requirements from it, then update
 install/CI together so there is only one dependency-management story.
 
+The 2026-06-01 install-productization slice removed the base install's
+direct `git` fetches for `nqptp`, `shairport-sync`,
+`webrtc-audio-processing`, and `pycamilladsp`. Optional firmware builds
+may still involve PlatformIO's git-backed library handling, but that
+path remains opt-in behind `JASPER_BUILD_OPTIONAL_FIRMWARE=1`.
+
 For the current private fleet, this slice is intentionally fresh/rebuild
 focused. Existing installed renderer binaries are not fingerprinted and
 forced through reinstall because there are only two known speakers and
@@ -172,4 +198,4 @@ or support third-party speakers, add a migration/check path that records
 or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
 and CamillaGUI bits.
 
-Last verified: 2026-05-28
+Last verified: 2026-06-01

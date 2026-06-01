@@ -57,6 +57,8 @@ def test_binary_artifacts_have_sha256s() -> None:
     checked_kinds = {
         "release-archive",
         "release-deb",
+        "source-archive",
+        "python-source-archive",
         "onnx-model",
         "platformio-platform-archive",
     }
@@ -70,12 +72,18 @@ def test_binary_artifacts_have_sha256s() -> None:
     assert missing == []
 
 
-def test_git_artifacts_have_immutable_commits() -> None:
+def test_source_artifacts_have_immutable_commits() -> None:
     check_provenance = _load_check_module()
     data = check_provenance.load_manifest()
     artifacts = check_provenance.iter_artifacts(data)
 
-    checked_kinds = {"git-source", "python-direct-git", "platformio-git-library"}
+    checked_kinds = {
+        "source-archive",
+        "python-source-archive",
+        "git-source",
+        "python-direct-git",
+        "platformio-git-library",
+    }
     missing = [
         artifact["id"]
         for artifact in artifacts

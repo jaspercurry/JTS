@@ -42,12 +42,15 @@ RASPOTIFY_URL="https://github.com/dtcooper/raspotify/releases/download/${RASPOTI
 RASPOTIFY_SHA256="dc1bc4d209378ef1f8348fd7aa6d1a7865fa83abc30c08990d171012d038a717"
 SHAIRPORT_SYNC_VERSION="4.3.7"
 SHAIRPORT_SYNC_COMMIT="0b1c4391ffd398e7b145eb4b98416261380adeea"
-NQPTP_REPO="https://github.com/mikebrady/nqptp.git"
 NQPTP_COMMIT="c925f27c1fd12e4033ac477e5a405969b0b0260b"
-SHAIRPORT_SYNC_REPO="https://github.com/mikebrady/shairport-sync.git"
+NQPTP_ARCHIVE_URL="https://github.com/mikebrady/nqptp/archive/${NQPTP_COMMIT}.tar.gz"
+NQPTP_SHA256="d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9"
+SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/mikebrady/shairport-sync/archive/${SHAIRPORT_SYNC_COMMIT}.tar.gz"
+SHAIRPORT_SYNC_SHA256="7ef3a6ba1cbd67bb200f018ddcd3e8dbe40da98b3c1776aee6c7b832632c6865"
 WEBRTC_AEC3_VERSION="v2.1"
-WEBRTC_AEC3_REPO="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
 WEBRTC_AEC3_COMMIT="846fe90a289f58b7c9303a635142aa2c7caa93e5"
+WEBRTC_AEC3_ARCHIVE_URL="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/${WEBRTC_AEC3_COMMIT}/webrtc-audio-processing-${WEBRTC_AEC3_COMMIT}.tar.gz"
+WEBRTC_AEC3_SHA256="ddf4e540b9f4291e140cc2ab4560f3eb4fce07ef6212a94d980843bfbf9a4588"
 
 print_install_usage() {
     cat <<'EOF'
@@ -95,12 +98,15 @@ Run for real:
      sha256=${CAMILLA_SHA256}
    - Raspotify/librespot deb: ${RASPOTIFY_URL}
      sha256=${RASPOTIFY_SHA256}
-   - nqptp: ${NQPTP_REPO}
+   - nqptp source archive: ${NQPTP_ARCHIVE_URL}
      commit=${NQPTP_COMMIT}
-   - shairport-sync: ${SHAIRPORT_SYNC_REPO}
+     sha256=${NQPTP_SHA256}
+   - shairport-sync source archive: ${SHAIRPORT_SYNC_ARCHIVE_URL}
      ref=${SHAIRPORT_SYNC_VERSION}, commit=${SHAIRPORT_SYNC_COMMIT}
-   - WebRTC AEC3 v2 static archive: ${WEBRTC_AEC3_REPO}
+     sha256=${SHAIRPORT_SYNC_SHA256}
+   - WebRTC AEC3 v2 source archive: ${WEBRTC_AEC3_ARCHIVE_URL}
      ref=${WEBRTC_AEC3_VERSION}, commit=${WEBRTC_AEC3_COMMIT}
+     sha256=${WEBRTC_AEC3_SHA256}
    - CamillaGUI 4.1.0 bundle selected by uname -m, sha256-checked.
    - openWakeWord ONNX assets, curated wake models, and DTLN AEC models
      from the Python registries, sha256-checked before staging.
@@ -185,18 +191,24 @@ require_root() {
     fi
 }
 
-verify_git_head() {
-    local repo_dir="$1"
-    local expected="$2"
-    local label="$3"
-    local actual
+fetch_verified_source_archive() {
+    local url="$1"
+    local expected_sha="$2"
+    local dest_dir="$3"
+    local label="$4"
+    local tmpdir archive
 
-    actual=$(git -C "${repo_dir}" rev-parse HEAD)
-    if [[ "${actual}" != "${expected}" ]]; then
-        echo "  ERROR: ${label} resolved to ${actual}, expected ${expected}" >&2
-        echo "  Refusing to build a supply-chain input that does not match deploy/provenance.toml." >&2
-        return 1
-    fi
+    tmpdir="$(mktemp -d)"
+    archive="${tmpdir}/source.tar.gz"
+
+    rm -rf "${dest_dir}"
+    mkdir -p "${dest_dir}"
+    echo "    fetching ${label} source archive"
+    echo "    from: ${url}"
+    curl -fsSL -o "${archive}" "${url}"
+    echo "${expected_sha}  ${archive}" | sha256sum -c -
+    tar -xzf "${archive}" -C "${dest_dir}" --strip-components=1
+    rm -rf "${tmpdir}"
 }
 
 install_deps() {
@@ -268,20 +280,13 @@ build_webrtc_v2_for_aec3() {
     local src_dir="${cache_dir}/src"
     local build_dir="${src_dir}/builddir"
     local static_archive="${build_dir}/webrtc/modules/audio_processing/libwebrtc-audio-processing-2.a"
-    local provenance_marker="${cache_dir}/source.commit"
-    local repo_url="${WEBRTC_AEC3_REPO}"
+    local provenance_marker="${cache_dir}/source.archive"
+    local source_id="${WEBRTC_AEC3_COMMIT}:${WEBRTC_AEC3_SHA256}"
     local repo_tag="${WEBRTC_AEC3_VERSION}"
 
     if [[ -f "${static_archive}" ]]; then
         if [[ -f "${provenance_marker}" ]] \
-           && [[ "$(cat "${provenance_marker}")" == "${WEBRTC_AEC3_COMMIT}" ]]; then
-            echo "  webrtc-audio-processing v2.1 already built at ${static_archive}"
-            export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
-            return 0
-        fi
-        if [[ -d "${src_dir}/.git" ]] \
-           && [[ "$(git -C "${src_dir}" rev-parse HEAD)" == "${WEBRTC_AEC3_COMMIT}" ]]; then
-            echo "${WEBRTC_AEC3_COMMIT}" > "${provenance_marker}"
+           && [[ "$(cat "${provenance_marker}")" == "${source_id}" ]]; then
             echo "  webrtc-audio-processing v2.1 already built at ${static_archive}"
             export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
             return 0
@@ -293,13 +298,11 @@ build_webrtc_v2_for_aec3() {
     echo "  building webrtc-audio-processing ${repo_tag} statically (first run, ~3-5 min)..."
     mkdir -p "${cache_dir}"
 
-    if [[ ! -d "${src_dir}/.git" ]]; then
-        echo "    cloning ${repo_url}#${repo_tag} → ${src_dir}"
-        git clone --depth 1 --branch "${repo_tag}" "${repo_url}" "${src_dir}"
-    else
-        echo "    source tree present; reusing"
-    fi
-    verify_git_head "${src_dir}" "${WEBRTC_AEC3_COMMIT}" "webrtc-audio-processing ${repo_tag}"
+    fetch_verified_source_archive \
+        "${WEBRTC_AEC3_ARCHIVE_URL}" \
+        "${WEBRTC_AEC3_SHA256}" \
+        "${src_dir}" \
+        "webrtc-audio-processing ${repo_tag} (${WEBRTC_AEC3_COMMIT})"
 
     if [[ ! -f "${build_dir}/build.ninja" ]]; then
         echo "    meson setup builddir/"
@@ -320,7 +323,7 @@ build_webrtc_v2_for_aec3() {
         return 1
     fi
 
-    echo "${WEBRTC_AEC3_COMMIT}" > "${provenance_marker}"
+    echo "${source_id}" > "${provenance_marker}"
     echo "  → static archive: ${static_archive} ($(du -h "${static_archive}" | cut -f1))"
     export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
 }
@@ -748,11 +751,11 @@ install_renderers() {
         echo "Building nqptp from source..."
         local tmpdir
         tmpdir="$(mktemp -d)"
-        git init "${tmpdir}/nqptp"
-        git -C "${tmpdir}/nqptp" remote add origin "${NQPTP_REPO}"
-        git -C "${tmpdir}/nqptp" fetch --depth 1 origin "${NQPTP_COMMIT}"
-        git -C "${tmpdir}/nqptp" checkout --detach FETCH_HEAD
-        verify_git_head "${tmpdir}/nqptp" "${NQPTP_COMMIT}" "nqptp"
+        fetch_verified_source_archive \
+            "${NQPTP_ARCHIVE_URL}" \
+            "${NQPTP_SHA256}" \
+            "${tmpdir}/nqptp" \
+            "nqptp (${NQPTP_COMMIT})"
         (
             cd "${tmpdir}/nqptp"
             autoreconf -fi
@@ -784,9 +787,11 @@ install_renderers() {
         apt-get remove -y shairport-sync 2>/dev/null || true
         local tmpdir
         tmpdir="$(mktemp -d)"
-        git clone --depth 1 --branch "${SHAIRPORT_SYNC_VERSION}" \
-            "${SHAIRPORT_SYNC_REPO}" "${tmpdir}/sps"
-        verify_git_head "${tmpdir}/sps" "${SHAIRPORT_SYNC_COMMIT}" "shairport-sync ${SHAIRPORT_SYNC_VERSION}"
+        fetch_verified_source_archive \
+            "${SHAIRPORT_SYNC_ARCHIVE_URL}" \
+            "${SHAIRPORT_SYNC_SHA256}" \
+            "${tmpdir}/sps" \
+            "shairport-sync ${SHAIRPORT_SYNC_VERSION} (${SHAIRPORT_SYNC_COMMIT})"
         (
             cd "${tmpdir}/sps"
             autoreconf -fi
@@ -1057,8 +1062,9 @@ install_jasper() {
     #      env vars — set by scripts/deploy-to-pi.sh on the laptop before
     #      sudo-running install.sh. This is the only source that works
     #      when the standard rsync deploy excludes .git/ (which it does).
-    #   2. Local git checkout in REPO_DIR — when install.sh is run
-    #      directly against a fresh `git clone` on the Pi.
+    #   2. Local git checkout in REPO_DIR, if git is installed — this
+    #      is a developer convenience for direct checkout installs, not
+    #      a base appliance dependency.
     #   3. Existing build.txt — preserve a previously-correct SHA when
     #      install.sh is re-run directly (e.g. `sudo bash install.sh`
     #      to regen the TLS cert after a hostname change) without the
@@ -1068,7 +1074,7 @@ install_jasper() {
     local git_sha="${JASPER_DEPLOY_SHA:-unknown}"
     local git_full="${JASPER_DEPLOY_SHA_FULL:-unknown}"
     local git_branch="${JASPER_DEPLOY_BRANCH:-unknown}"
-    if [[ "${git_sha}" == "unknown" ]] && \
+    if [[ "${git_sha}" == "unknown" ]] && command -v git >/dev/null 2>&1 && \
        { [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; }; then
         git_sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
         git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)

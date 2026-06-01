@@ -69,7 +69,7 @@ Once SSH works:
 
 ```sh
 sudo apt update && sudo apt full-upgrade -y
-sudo apt install -y git rsync vim
+sudo apt install -y rsync vim
 sudo reboot
 ```
 
@@ -109,22 +109,45 @@ adjust.
 
 ---
 
-## Phase 2 — Clone the repo and run install.sh (~30–60 min)
+## Phase 2 — Run the laptop-side onboarder (~30–60 min)
 
 The slow part is the source build of `shairport-sync` (~10–15 min)
 and `nqptp` (~1 min) for AirPlay 2 support.
 
+From your laptop, in a local JTS checkout:
+
+```sh
+bash scripts/onboard.sh jts.local
+```
+
+The onboarder rsyncs this checkout to `/home/pi/jts/`, captures the
+laptop-side git SHA before `.git/` is excluded, passes that build
+metadata into the remote sudo install, and runs `deploy/install.sh`.
+The Pi consumes the staged source tree and pinned/hash-checked source
+archives; it does not need `git` for the normal public install path.
+
+`install.sh` is idempotent — re-running `bash scripts/onboard.sh
+jts.local` or `bash scripts/deploy-to-pi.sh` upgrades the venv and
+re-applies configs. Watch the output for warnings about missing ALSA
+cards (the dongle and mic should be detected; if either is missing,
+fix and re-run).
+
+<details>
+<summary>Advanced/developer Pi-local checkout path</summary>
+
+Use this only when intentionally developing directly on the Pi or when
+you cannot rsync from a laptop. It makes the Pi a checkout host and
+therefore requires `git`; it is not the normal public install path.
+
 ```sh
 ssh pi@jts.local
+sudo apt install -y git
 git clone https://github.com/jaspercurry/JTS.git ~/jts
 cd ~/jts
 sudo bash deploy/install.sh
 ```
 
-`install.sh` is idempotent — re-running upgrades the venv and
-re-applies configs. Watch the output for warnings about missing
-ALSA cards (the dongle and mic should be detected; if either is
-missing, fix and re-run).
+</details>
 
 After it finishes:
 

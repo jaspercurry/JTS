@@ -369,10 +369,13 @@ when /sources/ on port 8773 went out without the restart.
   short-SHA and recent install timestamp
 - Or `ssh pi@jts.local 'sudo cat /var/lib/jasper/build.txt'`
 
-The one exception: a **fresh Pi** doing first-time setup runs
-`sudo bash deploy/install.sh` natively after `git clone` on the
-Pi itself (see [BRINGUP.md](BRINGUP.md)). The wrapper isn't
-applicable until there's a laptop checkout.
+A **fresh Pi** doing first-time setup still uses the laptop-side
+onboard/deploy path once the Pi is reachable: clone JTS on the laptop,
+then run `bash scripts/onboard.sh <hostname>` or
+`bash scripts/deploy-to-pi.sh` (see [QUICKSTART.md](QUICKSTART.md) and
+[BRINGUP.md](BRINGUP.md)). A Pi-local `git clone` + native
+`sudo bash deploy/install.sh` is now an advanced/developer fallback
+only, not the normal public install path.
 
 ### Running ad-hoc diagnostics on the Pi
 
