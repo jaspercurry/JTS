@@ -242,6 +242,31 @@ def test_install_dry_run_env_alias_and_plan_flag_match():
     assert by_flag.stdout == by_env.stdout
 
 
+def test_base_source_builds_use_hash_checked_archives():
+    """Base Pi installs should consume pinned archives, not require git
+    just to fetch source-build inputs."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+
+    for expected in [
+        "NQPTP_ARCHIVE_URL",
+        "NQPTP_SHA256",
+        "SHAIRPORT_SYNC_ARCHIVE_URL",
+        "SHAIRPORT_SYNC_SHA256",
+        "WEBRTC_AEC3_ARCHIVE_URL",
+        "WEBRTC_AEC3_SHA256",
+        "fetch_verified_source_archive",
+    ]:
+        assert expected in text
+
+    for forbidden in [
+        "git clone --depth 1",
+        "git init ",
+        "git -C \"${tmpdir}",
+        "verify_git_head",
+    ]:
+        assert forbidden not in text
+
+
 def test_install_help_is_clean_and_non_root():
     """Agentic flows often probe commands with --help; keep it quiet
     and usable without sudo."""

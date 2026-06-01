@@ -3,7 +3,7 @@
 
 This is intentionally lightweight. It does not try to solve SBOMs,
 apt snapshots, or Python hash installs in one jump; it guards the
-surfaces JTS already owns directly: release archives, git clones,
+surfaces JTS already owns directly: release archives, source archives,
 PlatformIO top-level inputs, and curated model downloads.
 """
 from __future__ import annotations
@@ -104,14 +104,26 @@ def validate_artifacts(data: dict[str, Any]) -> list[str]:
         if kind in {
             "release-archive",
             "release-deb",
+            "source-archive",
+            "python-source-archive",
             "onnx-model",
             "platformio-platform-archive",
         } and not sha:
             errors.append(f"{artifact_id}: {kind} requires sha256")
 
-        if kind in {"git-source", "python-direct-git", "platformio-git-library"}:
+        if kind in {
+            "source-archive",
+            "python-source-archive",
+            "git-source",
+            "python-direct-git",
+            "platformio-git-library",
+        }:
             if not commit:
                 errors.append(f"{artifact_id}: {kind} requires commit")
+        if kind in {"source-archive", "python-source-archive"}:
+            if not (artifact.get("url") or artifact.get("direct_url")):
+                errors.append(f"{artifact_id}: {kind} requires url or direct_url")
+        if kind in {"git-source", "python-direct-git", "platformio-git-library"}:
             if not (artifact.get("repository") or artifact.get("direct_url")):
                 errors.append(f"{artifact_id}: {kind} requires repository or direct_url")
     return errors
@@ -271,13 +283,16 @@ def validate_source_consistency(
         "RASPOTIFY_SHA256": ("raspotify-librespot-deb", "sha256"),
         "RASPOTIFY_URL": ("raspotify-librespot-deb", "url"),
         "RASPOTIFY_VERSION": ("raspotify-librespot-deb", "version"),
+        "NQPTP_ARCHIVE_URL": ("nqptp", "url"),
         "NQPTP_COMMIT": ("nqptp", "commit"),
-        "NQPTP_REPO": ("nqptp", "repository"),
+        "NQPTP_SHA256": ("nqptp", "sha256"),
+        "SHAIRPORT_SYNC_ARCHIVE_URL": ("shairport-sync", "url"),
         "SHAIRPORT_SYNC_COMMIT": ("shairport-sync", "commit"),
-        "SHAIRPORT_SYNC_REPO": ("shairport-sync", "repository"),
+        "SHAIRPORT_SYNC_SHA256": ("shairport-sync", "sha256"),
         "SHAIRPORT_SYNC_VERSION": ("shairport-sync", "ref"),
+        "WEBRTC_AEC3_ARCHIVE_URL": ("webrtc-audio-processing-v2", "url"),
         "WEBRTC_AEC3_COMMIT": ("webrtc-audio-processing-v2", "commit"),
-        "WEBRTC_AEC3_REPO": ("webrtc-audio-processing-v2", "repository"),
+        "WEBRTC_AEC3_SHA256": ("webrtc-audio-processing-v2", "sha256"),
         "WEBRTC_AEC3_VERSION": ("webrtc-audio-processing-v2", "ref"),
     }
     for var_name, (artifact_id, field) in install_expectations.items():
@@ -331,6 +346,9 @@ def _validate_pycamilladsp(
     commit = str(artifact.get("commit", ""))
     if commit and commit not in direct_url:
         errors.append("pycamilladsp: commit is not embedded in direct_url")
+    sha = str(artifact.get("sha256", ""))
+    if sha and f"#sha256={sha}" not in direct_url:
+        errors.append("pycamilladsp: sha256 is not embedded in direct_url")
 
 
 def _validate_model_registries(

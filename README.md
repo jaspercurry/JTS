@@ -692,9 +692,9 @@ reference. Currently:
   dmix failure mode.
 - [`HANDOFF-supply-chain.md`](docs/HANDOFF-supply-chain.md) —
   Deploy/build provenance: the canonical manifest, checksum policy,
-  install-time git/source pins, firmware dependency pins, hash-checked
-  model downloads, and accepted gaps for apt, Python, and PlatformIO
-  transitive resolution.
+  install-time source archive pins, firmware dependency pins,
+  hash-checked model downloads, and accepted gaps for apt, Python,
+  and PlatformIO transitive resolution.
 - [`HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md) — Optional USB
   audio-input gadget: ConfigFS setup, host-control preemption,
   source wizard behavior, and how the USB-in lane feeds fan-in.
@@ -1008,13 +1008,26 @@ If you'd rather drive the rsync + install yourself, the equivalent
 raw form is:
 
 ```sh
+PI_HOST="${PI_HOST:-jts.local}"
+PI_USER="${PI_USER:-pi}"
+SHA=$(git rev-parse --short HEAD)
+SHA_FULL=$(git rev-parse HEAD)
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+DIRTY=""
+git diff-index --quiet HEAD -- || DIRTY="-dirty"
+HOSTNAME_FOR_INSTALL="${JASPER_HOSTNAME:-${PI_HOST}}"
+
 rsync -avz --delete \
   --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
   --exclude '.pio' --exclude '.claude/worktrees' \
-  ./ pi@jts.local:/home/pi/jts/
+  ./ "${PI_USER}@${PI_HOST}:/home/pi/jts/"
 
-ssh pi@jts.local 'sudo JASPER_DEPLOY_SHA=$(git -C ~/jts rev-parse --short HEAD) \
-    bash /home/pi/jts/deploy/install.sh'
+ssh "${PI_USER}@${PI_HOST}" \
+  "sudo JASPER_DEPLOY_SHA='${SHA}${DIRTY}' \
+        JASPER_DEPLOY_SHA_FULL='${SHA_FULL}${DIRTY}' \
+        JASPER_DEPLOY_BRANCH='${BRANCH}' \
+        JASPER_HOSTNAME='${HOSTNAME_FOR_INSTALL}' \
+        bash /home/pi/jts/deploy/install.sh"
 ```
 
 The install script is idempotent.

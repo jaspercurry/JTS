@@ -1,9 +1,15 @@
 version = 1
-last_reviewed = "2026-05-27"
+last_reviewed = "2026-06-01"
 
 # Machine-readable provenance for install/build-time network inputs.
 # See docs/HANDOFF-supply-chain.md for policy, update workflow, and
 # explicitly accepted gaps.
+#
+# TODO(public-installer): source-archive artifacts that point at
+# GitHub/GitLab auto-generated commit archives are transitional. They
+# are SHA-256 checked and fail closed today, but before a public installer
+# release, mirror the exact archive bytes as uploaded JTS release assets
+# and keep these upstream commit URLs as provenance.
 
 [[artifact]]
 id = "camilladsp"
@@ -27,31 +33,40 @@ verification = "sha256sum -c in deploy/install.sh"
 
 [[artifact]]
 id = "nqptp"
-kind = "git-source"
+kind = "source-archive"
 consumer = "deploy/install.sh: install_renderers"
 repository = "https://github.com/mikebrady/nqptp.git"
+url = "https://github.com/mikebrady/nqptp/archive/${NQPTP_COMMIT}.tar.gz"
+resolved_url = "https://github.com/mikebrady/nqptp/archive/c925f27c1fd12e4033ac477e5a405969b0b0260b.tar.gz"
 commit = "c925f27c1fd12e4033ac477e5a405969b0b0260b"
-verification = "git rev-parse HEAD in deploy/install.sh"
+sha256 = "d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9"
+verification = "sha256sum -c in deploy/install.sh; archive URL embeds commit"
 
 [[artifact]]
 id = "shairport-sync"
-kind = "git-source"
+kind = "source-archive"
 consumer = "deploy/install.sh: install_renderers"
 repository = "https://github.com/mikebrady/shairport-sync.git"
+url = "https://github.com/mikebrady/shairport-sync/archive/${SHAIRPORT_SYNC_COMMIT}.tar.gz"
+resolved_url = "https://github.com/mikebrady/shairport-sync/archive/0b1c4391ffd398e7b145eb4b98416261380adeea.tar.gz"
 ref = "4.3.7"
 commit = "0b1c4391ffd398e7b145eb4b98416261380adeea"
-verification = "git rev-parse HEAD in deploy/install.sh"
+sha256 = "7ef3a6ba1cbd67bb200f018ddcd3e8dbe40da98b3c1776aee6c7b832632c6865"
+verification = "sha256sum -c in deploy/install.sh; archive URL embeds commit"
 
 [[artifact]]
 id = "webrtc-audio-processing-v2"
-kind = "git-source"
+kind = "source-archive"
 consumer = "deploy/install.sh: build_webrtc_v2_for_aec3"
 repository = "https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
+url = "https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/${WEBRTC_AEC3_COMMIT}/webrtc-audio-processing-${WEBRTC_AEC3_COMMIT}.tar.gz"
+resolved_url = "https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/846fe90a289f58b7c9303a635142aa2c7caa93e5/webrtc-audio-processing-846fe90a289f58b7c9303a635142aa2c7caa93e5.tar.gz"
 ref = "v2.1"
 # Peeled commit for refs/tags/v2.1^{}; refs/tags/v2.1 itself is an
-# annotated tag object and is not what `git rev-parse HEAD` verifies.
+# annotated tag object. The install path fetches the peeled commit archive.
 commit = "846fe90a289f58b7c9303a635142aa2c7caa93e5"
-verification = "git rev-parse HEAD in deploy/install.sh"
+sha256 = "ddf4e540b9f4291e140cc2ab4560f3eb4fce07ef6212a94d980843bfbf9a4588"
+verification = "sha256sum -c in deploy/install.sh; archive URL embeds commit"
 
 [[artifact]]
 id = "camillagui-aarch64"
@@ -86,13 +101,14 @@ verification = "sha256sum -c in deploy/install.sh"
 
 [[artifact]]
 id = "pycamilladsp"
-kind = "python-direct-git"
+kind = "python-source-archive"
 consumer = "pyproject.toml"
 repository = "https://github.com/HEnquist/pycamilladsp"
 ref = "v4.0.0"
 commit = "fdc0d163e02dd73206a493402b43c83502ad83d7"
-direct_url = "git+https://github.com/HEnquist/pycamilladsp@fdc0d163e02dd73206a493402b43c83502ad83d7"
-verification = "pip direct URL pinned to commit"
+direct_url = "https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz#sha256=d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087"
+sha256 = "d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087"
+verification = "pip direct URL embeds commit and sha256 fragment"
 
 [[artifact]]
 id = "pioarduino-espressif32-platform"
@@ -233,6 +249,13 @@ kind = "pypi-resolution"
 consumer = "deploy/install.sh, pyproject.toml, and jasper_aec3/pyproject.toml"
 status = "accepted-gap"
 notes = "Python runtime dependencies and jasper_aec3 build requirements are resolved live during deploy; follow-up work should commit a lock or generated hash requirements and make deploy consume it."
+
+[[surface]]
+id = "source-archive-mirroring"
+kind = "release-asset-mirroring"
+consumer = "deploy/install.sh, pyproject.toml, and deploy/provenance.toml source-archive artifacts"
+status = "todo-before-public-release"
+notes = "nqptp, shairport-sync, webrtc-audio-processing, and pycamilladsp currently use upstream auto-generated commit archives. Hash checks make this fail closed, but a public installer should consume exact mirrored JTS release assets and retain upstream commit URLs as provenance."
 
 [[surface]]
 id = "rust-fanin-crates"
