@@ -87,6 +87,11 @@ The foundation is partly built:
   `jasper-doctor` "Audio profile" check so those status surfaces report
   the same requested/active profile, session source, wake legs, and
   warnings.
+- `/wake-corpus/` has the first additive reuse hook: new session and
+  clip metadata write an `audio_context` snapshot with production
+  profile classification, mic firmware/channel identity, selected leg
+  details from `jasper/wake_legs.py`, DAC/reference env, optional
+  validation-artifact status, and existing per-clip capture health.
 
 The gaps are exactly where future hardware support would hurt:
 
@@ -354,7 +359,9 @@ Goal: make evidence collection match production.
 - Wake-corpus profile selection should be a superset of production
   profiles, not a separate vocabulary.
 - Every corpus clip records the active profile, hardware fingerprint,
-  validation status, and per-leg health.
+  validation status, and per-leg health. First additive implementation:
+  `jasper/web/wake_corpus_setup.py` now writes `audio_context` and
+  `selected_legs` while keeping old sessions loadable.
 - Future guided onboarding can reuse the same primitives:
   - say wake word several times;
   - JTS plays quiet/medium/loud noise or music;
@@ -427,7 +434,9 @@ Every profile transition should emit stable structured logs:
 - `event=audio_validation.stale`
 - `event=audio_profile.apply_failed`
 
-Wake events and corpus metadata should include, once fields exist:
+Wake events and corpus metadata should include, once fields exist.
+Corpus metadata has the first version of this shape as `audio_context`;
+wake-event parity remains future work:
 
 - active audio profile
 - detected mic family / firmware

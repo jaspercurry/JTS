@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import html
 import json
 import logging
 import os
@@ -62,11 +61,20 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
+from jasper import wake_legs
+from jasper.audio_profile_state import (
+    AecIntent,
+    MicProbe,
+    build_audio_profile_status,
+    env_value,
+    parse_env_bool,
+    runtime_env_from_mapping,
+)
 from jasper.wake_conditions import CONDITIONS, DISTANCES
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
@@ -241,6 +249,9 @@ CSRF_HEADER = "X-CSRF-Token"
 SYSTEM_ENV_PATH = Path(os.environ.get(
     "JASPER_SYSTEM_ENV_FILE", "/etc/jasper/jasper.env",
 ))
+AEC_MODE_PATH = Path(os.environ.get(
+    "JASPER_AEC_MODE_FILE", "/var/lib/jasper/aec_mode.env",
+))
 BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
     "/var/lib/jasper/wake_corpus_bridge.env",
@@ -249,6 +260,12 @@ BRIDGE_STATS_PATH = Path(os.environ.get(
     "JASPER_AEC_BRIDGE_STATS_PATH",
     "/run/jasper/aec_bridge_stats.json",
 ))
+AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
+    "JASPER_AUDIO_VALIDATION_ARTIFACT",
+    "/var/lib/jasper/audio_validation/latest.json",
+))
+METADATA_SCHEMA_VERSION = 2
+AUDIO_CONTEXT_SCHEMA_VERSION = 1
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 AEC_INIT_UNIT = "jasper-aec-init.service"
@@ -510,6 +527,366 @@ def usb_mic_status() -> dict[str, Any]:
     status["hardware_agc"]["available"] = enabled is not None
     status["hardware_agc"]["enabled"] = enabled
     return status
+
+
+def _read_aec_intent() -> AecIntent:
+    """Read production wake/audio intent from the wizard-owned state file."""
+    env = read_env_file(str(AEC_MODE_PATH))
+    mode = (env.get("JASPER_AEC_MODE") or "auto").strip().strip("'\"") or "auto"
+    return AecIntent(
+        mode=mode,
+        raw_enabled=parse_env_bool(
+            env.get("JASPER_WAKE_LEG_RAW", "1"), default=True,
+        ),
+        dtln_enabled=parse_env_bool(
+            env.get("JASPER_WAKE_LEG_DTLN", "0"), default=False,
+        ),
+        chip_aec_enabled=parse_env_bool(
+            env.get("JASPER_WAKE_LEG_CHIP_AEC", "0"), default=False,
+        ),
+    )
+
+
+def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
+    """Cheap mic identity snapshot for corpus metadata.
+
+    This mirrors the `/wake/` status probe: no streaming audio, no chip
+    writes, just the XVF USB/card facts already used for profile truth.
+    """
+    try:
+        from jasper.mics import xvf3800
+
+        xvf_present = xvf3800.is_present()
+        capture_channels = xvf3800.capture_channels()
+        recommended_channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+        probe_error = None
+        identity = {
+            "family": (
+                "xvf3800"
+                if xvf_present or capture_channels is not None else "unknown"
+            ),
+            "display_name": xvf3800.DISPLAY_NAME,
+            "usb_vid_pid": xvf3800.USB_VID_PID,
+            "alsa_card": xvf3800.ALSA_CARD_NAME,
+            "observed": {
+                "present": xvf_present,
+                "capture_channels": capture_channels,
+            },
+            "recommended_firmware": {
+                "capture_channels": recommended_channels,
+                "raw_mic_indices": list(
+                    xvf3800.RECOMMENDED_FIRMWARE.raw_mic_indices,
+                ),
+                "known_good_as_of": xvf3800.FIRMWARE_KNOWN_GOOD_AS_OF,
+                "blob": xvf3800.FIRMWARE_BLOB_6CH,
+                "build_repo_hash": xvf3800.FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH,
+            },
+        }
+    except Exception as e:  # noqa: BLE001 - metadata must not block recording
+        xvf_present = False
+        capture_channels = None
+        recommended_channels = 6
+        probe_error = str(e)
+        identity = {
+            "family": "unknown",
+            "observed": {
+                "present": False,
+                "capture_channels": None,
+            },
+            "probe_error": probe_error,
+        }
+    probe = MicProbe(
+        xvf_present=xvf_present,
+        capture_channels=capture_channels,
+        recommended_channels=recommended_channels,
+        display_name=identity.get(
+            "display_name", "Seeed ReSpeaker XVF3800 (USB UA)",
+        ),
+        probe_error=probe_error,
+    )
+    return probe, identity
+
+
+def _validation_artifact_summary(
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Read optional future profile-validation output, if present.
+
+    The validation stream does not exist yet everywhere. Corpus metadata
+    therefore records a stable unknown/missing shape instead of making
+    session creation depend on that stream.
+    """
+    path = path or AUDIO_VALIDATION_ARTIFACT_PATH
+    base: dict[str, Any] = {
+        "available": False,
+        "status": "unknown",
+        "artifact_path": str(path),
+    }
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {**base, "reason": "artifact not found"}
+    except (OSError, json.JSONDecodeError) as e:
+        return {**base, "reason": f"artifact unreadable: {e}"}
+    if not isinstance(data, dict):
+        return {**base, "reason": "artifact is not a JSON object"}
+
+    def first(*keys: str) -> Any:
+        for key in keys:
+            if key in data:
+                return data[key]
+        return None
+
+    summary = {
+        **base,
+        "available": True,
+        "status": str(first("status", "result") or "unknown"),
+        "schema_version": first("schema_version", "version"),
+        "artifact_id": first("artifact_id", "id", "validation_id"),
+        "validated_at": first("validated_at", "timestamp", "created_at"),
+        "profile": first("profile", "audio_profile"),
+        "recommendation": first("recommendation", "recommended_action"),
+    }
+    hardware = data.get("hardware")
+    if isinstance(hardware, dict):
+        summary["hardware"] = hardware
+    checks = data.get("checks")
+    if isinstance(checks, dict):
+        summary["checks"] = checks
+    return summary
+
+
+def _int_env(
+    env: Mapping[str, str],
+    key: str,
+    default: int,
+    *,
+    process_env: Mapping[str, str] | None = None,
+) -> int:
+    try:
+        return int(env_value(env, key, str(default), process_env=process_env))
+    except (TypeError, ValueError):
+        return default
+
+
+def _leg_detail(
+    leg: str,
+    ports: dict[str, int],
+    *,
+    aec3_sweep_source: str,
+) -> dict[str, Any]:
+    label = LEG_LABELS.get(leg, leg)
+    if leg in AEC3_SWEEP_LEGS or leg in LEGACY_AEC3_SWEEP_LEGS:
+        source = (
+            aec3_sweep_source
+            if leg in AEC3_SWEEP_LEGS else "legacy_xvf"
+        )
+        return {
+            "token": leg,
+            "name": leg,
+            "label": label,
+            "kind": wake_legs.LegKind.SOFTWARE_AEC.value,
+            "wake_input": False,
+            "udp_port": ports.get(leg),
+            "source": source,
+            "profile_role": "corpus_only",
+            "health_metadata_key": f"capture_health.legs.{leg}",
+        }
+    try:
+        spec = wake_legs.by_token(leg)
+        return {
+            "token": spec.token,
+            "name": spec.name,
+            "label": label,
+            "kind": spec.kind.value,
+            "wake_input": spec.wake_input,
+            "udp_port": ports.get(leg, spec.udp_port),
+            "profile_role": (
+                "production_wake" if spec.wake_input else "corpus_only"
+            ),
+            "health_metadata_key": f"capture_health.legs.{leg}",
+        }
+    except KeyError:
+        return {
+            "token": leg,
+            "name": leg,
+            "label": label,
+            "kind": "unknown",
+            "wake_input": False,
+            "udp_port": ports.get(leg),
+            "profile_role": "unknown",
+            "health_metadata_key": f"capture_health.legs.{leg}",
+        }
+
+
+def _dac_reference_context(
+    env: Mapping[str, str],
+    bridge_outputs: dict[str, Any],
+    *,
+    process_env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    validation = _validation_artifact_summary()
+    return {
+        "dac": {
+            "pcm": env_value(
+                env,
+                "JASPER_OUTPUTD_DAC_PCM",
+                "outputd_dac",
+                process_env=process_env,
+            ),
+            "backend": env_value(
+                env,
+                "JASPER_OUTPUTD_BACKEND",
+                "alsa",
+                process_env=process_env,
+            ),
+            "control_socket": env_value(
+                env,
+                "JASPER_OUTPUTD_CONTROL_SOCKET",
+                "/run/jasper-outputd/control.sock",
+                process_env=process_env,
+            ),
+        },
+        "reference": {
+            "source": env_value(
+                env,
+                "JASPER_AEC_REF_SOURCE",
+                "alsa",
+                process_env=process_env,
+            ),
+            "outputd_chip_ref_pcm": env_value(
+                env,
+                "JASPER_OUTPUTD_CHIP_REF_PCM",
+                "",
+                process_env=process_env,
+            ),
+            "outputd_reference_udp_target": env_value(
+                env,
+                "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
+                "",
+                process_env=process_env,
+            ),
+            "outputd_chip_ref_sample_rate": _int_env(
+                env,
+                "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE",
+                int(DEFAULT_CHIP_REF_SAMPLE_RATE),
+                process_env=process_env,
+            ),
+            "outputd_chip_ref_period_frames": _int_env(
+                env,
+                "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
+                int(DEFAULT_CHIP_REF_PERIOD_FRAMES),
+                process_env=process_env,
+            ),
+            "outputd_chip_ref_buffer_frames": _int_env(
+                env,
+                "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
+                int(DEFAULT_CHIP_REF_BUFFER_FRAMES),
+                process_env=process_env,
+            ),
+            "bridge_output_enabled": bool(bridge_outputs.get("outputd_ref")),
+        },
+        "validation": validation,
+    }
+
+
+def build_session_audio_context(
+    *,
+    corpus_profile: str,
+    enabled_legs: tuple[str, ...],
+    ports: dict[str, int],
+    include_raw_mic_0: bool,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool,
+    include_aec3_sweep: bool,
+    aec3_sweep_source: str,
+    chip_aec_config: dict[str, object] | None,
+) -> dict[str, Any]:
+    """Snapshot production profile truth beside the corpus leg choice.
+
+    This is metadata only. It does not open capture devices, change env
+    files, or alter production wake detection.
+    """
+    captured_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    fallback = {
+        "schema_version": AUDIO_CONTEXT_SCHEMA_VERSION,
+        "captured_at": captured_at,
+        "status": "unknown",
+        "corpus": {
+            "profile": corpus_profile,
+            "selected_legs": list(enabled_legs),
+            "leg_details": [
+                _leg_detail(
+                    leg, ports, aec3_sweep_source=aec3_sweep_source,
+                )
+                for leg in enabled_legs
+            ],
+        },
+    }
+    try:
+        intent = _read_aec_intent()
+        system_env = read_env_file(str(SYSTEM_ENV_PATH))
+        bridge_env = _read_bridge_env()
+        runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
+        mic_probe, mic_identity = _mic_probe_and_identity()
+        bridge_outputs = bridge_output_status()
+        profile_status = build_audio_profile_status(
+            intent,
+            runtime,
+            mic_probe,
+            bridge_active=aec_bridge_active(),
+            chip_available=(
+                mic_probe.xvf_present
+                and mic_probe.capture_channels == mic_probe.recommended_channels
+            ),
+        )
+    except Exception as e:  # noqa: BLE001 - metadata must not block recording
+        logger.warning("event=wake_corpus.audio_context_snapshot_failed error=%s", e)
+        return {**fallback, "error": str(e)}
+
+    return {
+        "schema_version": AUDIO_CONTEXT_SCHEMA_VERSION,
+        "captured_at": captured_at,
+        "status": "ok",
+        "production_audio_profile": profile_status["audio_profile"],
+        "production_intent": asdict(intent),
+        "runtime_audio_env": asdict(runtime),
+        "microphone": {
+            **profile_status["microphone"],
+            "identity": mic_identity,
+        },
+        "corpus": {
+            "profile": corpus_profile,
+            "profile_kind": (
+                "chip_aec_comparison"
+                if corpus_profile == PROFILE_CHIP_AEC_COMPARISON
+                else "standard"
+            ),
+            "include_raw_mic_0": include_raw_mic_0,
+            "include_dtln": include_dtln,
+            "include_usb_mic": include_usb_mic,
+            "include_usb_dtln": include_usb_dtln,
+            "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
+            "include_aec3_sweep": include_aec3_sweep,
+            "aec3_sweep_source": aec3_sweep_source,
+            "selected_legs": list(enabled_legs),
+            "leg_details": [
+                _leg_detail(
+                    leg, ports, aec3_sweep_source=aec3_sweep_source,
+                )
+                for leg in enabled_legs
+            ],
+            "chip_aec_config": chip_aec_config,
+        },
+        "dac_reference": _dac_reference_context(
+            {**system_env, **bridge_env},
+            bridge_outputs,
+            process_env=os.environ,
+        ),
+        "bridge_outputs": bridge_outputs,
+    }
 
 
 def read_bridge_stats_snapshot() -> dict[str, Any] | None:
@@ -1198,6 +1575,8 @@ class ClipMetadata:
     deleted: bool = False
     auto_stopped: bool = False
     notes: str = ""
+    selected_legs: list[str] = field(default_factory=list)
+    audio_context: dict[str, Any] = field(default_factory=dict)
     capture_health: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
@@ -1418,6 +1797,7 @@ class RecordingBackend:
         self._aec3_sweep_variants: list[dict[str, object]] = []
         self._aec3_sweep_config: dict[str, object] | None = None
         self._enabled_legs: tuple[str, ...] = _default_enabled_legs(self._ports)
+        self._audio_context: dict[str, Any] | None = None
         self._clips: list[ClipMetadata] = []
         self._current: RecordingTask | None = None
         self._current_clip_id: str | None = None
@@ -1557,6 +1937,7 @@ class RecordingBackend:
         self._aec3_sweep_variants = []
         self._aec3_sweep_config = None
         self._enabled_legs = _default_enabled_legs(self._ports)
+        self._audio_context = None
 
     def _find_session_metadata(self, session_id: str) -> Path | None:
         for p in self._metadata_dir.glob("enroll_*.json"):
@@ -1628,6 +2009,9 @@ class RecordingBackend:
                 chip_aec_config_metadata()
                 if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
             )
+        audio_context = data.get("audio_context")
+        if not isinstance(audio_context, dict):
+            audio_context = None
         with self._lock:
             self._session_id = session_id
             self._member = member
@@ -1644,6 +2028,7 @@ class RecordingBackend:
             self._aec3_sweep_variants = saved_variants
             self._aec3_sweep_config = saved_config
             self._enabled_legs = enabled_legs
+            self._audio_context = audio_context
         return {
             "session_id": session_id,
             "member": member,
@@ -1657,6 +2042,7 @@ class RecordingBackend:
             "corpus_profile": corpus_profile,
             "aec3_sweep_source": aec3_sweep_source,
             "enabled_legs": list(enabled_legs),
+            "has_audio_context": audio_context is not None,
         }
 
     def _maybe_load_recent_session(
@@ -1814,7 +2200,12 @@ class RecordingBackend:
                 config_metadata(input_source=sweep_source)
                 if include_aec3_sweep else None
             )
-            self._session_id = f"{ts}-{secrets.token_hex(2)}"
+            session_id = f"{ts}-{secrets.token_hex(2)}"
+            chip_config = (
+                chip_aec_config_metadata()
+                if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
+            )
+            self._session_id = session_id
             self._member = safe_member
             self._clips = []
             self._include_raw_mic_0 = RAW0_LEG in enabled_legs
@@ -1824,18 +2215,32 @@ class RecordingBackend:
             self._include_xvf_raw0_dtln = XVF_RAW0_DTLN_LEG in enabled_legs
             self._include_aec3_sweep = include_aec3_sweep
             self._corpus_profile = corpus_profile
-            self._chip_aec_config = (
-                chip_aec_config_metadata()
-                if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
-            )
+            self._chip_aec_config = chip_config
             self._aec3_sweep_source = sweep_source
             self._aec3_sweep_variants = sweep_variants
             self._aec3_sweep_config = sweep_config
             self._enabled_legs = enabled_legs
+            self._audio_context = None
+        audio_context = build_session_audio_context(
+            corpus_profile=corpus_profile,
+            enabled_legs=enabled_legs,
+            ports=self._ports,
+            include_raw_mic_0=RAW0_LEG in enabled_legs,
+            include_dtln=DTLN_LEG in enabled_legs,
+            include_usb_mic=effective_include_usb_mic,
+            include_usb_dtln=USB_DTLN_LEG in enabled_legs,
+            include_xvf_raw0_dtln=XVF_RAW0_DTLN_LEG in enabled_legs,
+            include_aec3_sweep=include_aec3_sweep,
+            aec3_sweep_source=sweep_source,
+            chip_aec_config=chip_config,
+        )
+        with self._lock:
+            if self._session_id == session_id:
+                self._audio_context = audio_context
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         self._save_metadata()  # write the per-session flag before clips arrive
         self._write_active_session_marker()
-        return self._session_id
+        return session_id
 
     def include_raw_mic_0(self) -> bool:
         """Whether the active session captures the raw-mic-0 leg."""
@@ -1898,6 +2303,11 @@ class RecordingBackend:
         """The active session's leg set, in recording/playback order."""
         with self._lock:
             return self._enabled_legs
+
+    def audio_context(self) -> dict[str, Any] | None:
+        """Production-profile/corpus-context snapshot for the active session."""
+        with self._lock:
+            return dict(self._audio_context) if self._audio_context else None
 
     def start_recording(self, condition: str, distance: str) -> dict[str, str]:
         """Begin recording on the backend loop. Returns {clip_id, start_ts}.
@@ -1992,6 +2402,8 @@ class RecordingBackend:
             meta = self._current_meta
             session_id = self._session_id
             member = self._member
+            selected_legs = list(self._enabled_legs)
+            audio_context = dict(self._audio_context or {})
             # Cancel the auto-stop timer if it hasn't fired yet.
             if self._auto_stop_handle is not None and not auto:
                 self._auto_stop_handle.cancel()
@@ -2049,6 +2461,8 @@ class RecordingBackend:
             files=files,
             deleted=False,
             auto_stopped=auto,
+            selected_legs=selected_legs,
+            audio_context=audio_context,
             capture_health=capture_health,
         )
         with self._lock:
@@ -2121,6 +2535,7 @@ class RecordingBackend:
                 return
             path = self._metadata_path()
             data = {
+                "metadata_schema_version": METADATA_SCHEMA_VERSION,
                 "session_id": self._session_id,
                 "member": self._member,
                 "ports": self._ports,
@@ -2136,6 +2551,7 @@ class RecordingBackend:
                 "aec3_sweep_variants": list(self._aec3_sweep_variants),
                 "aec3_sweep_config": self._aec3_sweep_config,
                 "enabled_legs": list(self._enabled_legs),
+                "audio_context": self._audio_context,
                 "clips": [c.to_json() for c in self._clips],
             }
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -2182,9 +2598,22 @@ class RecordingBackend:
             aec3_sweep_source = _legacy_aec3_sweep_source(
                 str(data.get("aec3_sweep_source") or saved_source or ""),
             )
+            audio_context = data.get("audio_context")
+            if not isinstance(audio_context, dict):
+                audio_context = {}
+            audio_profile = audio_context.get("production_audio_profile")
+            if not isinstance(audio_profile, dict):
+                audio_profile = {}
+            dac_reference = audio_context.get("dac_reference")
+            if not isinstance(dac_reference, dict):
+                dac_reference = {}
+            validation = dac_reference.get("validation")
+            if not isinstance(validation, dict):
+                validation = {}
             out.append({
                 "session_id": data.get("session_id", "?"),
                 "member": data.get("member", "?"),
+                "metadata_schema_version": data.get("metadata_schema_version"),
                 "mtime": p.stat().st_mtime,
                 "clip_count": len(alive),
                 "deleted_count": len(clips) - len(alive),
@@ -2206,6 +2635,11 @@ class RecordingBackend:
                 "corpus_profile": data.get("corpus_profile", PROFILE_STANDARD),
                 "aec3_sweep_source": aec3_sweep_source,
                 "enabled_legs": list(enabled_legs),
+                "has_audio_context": bool(audio_context),
+                "audio_profile_requested": audio_profile.get("requested"),
+                "audio_profile_active": audio_profile.get("active"),
+                "audio_profile_state": audio_profile.get("state"),
+                "audio_validation_status": validation.get("status"),
                 "conditions": conds,
                 "is_active": (
                     self._session_id is not None
@@ -2335,6 +2769,20 @@ def voice_daemon_active() -> bool:
         ["systemctl", "is-active", VOICE_UNIT],
         capture_output=True, text=True,
     )
+    return rc.returncode == 0 and rc.stdout.strip() == "active"
+
+
+def aec_bridge_active() -> bool:
+    """True if jasper-aec-bridge is active, for metadata snapshots only."""
+    try:
+        rc = subprocess.run(
+            ["systemctl", "is-active", BRIDGE_UNIT],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
     return rc.returncode == 0 and rc.stdout.strip() == "active"
 
 
@@ -2492,6 +2940,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
                 "aec3_sweep_config": self.backend.aec3_sweep_config(),
                 "enabled_legs": list(self.backend.enabled_legs()),
+                "audio_context": self.backend.audio_context(),
                 "bridge_outputs": bridge_output_status(),
                 "is_recording": self.backend.is_recording(),
                 "elapsed_sec": self.backend.elapsed_recording_sec(),
@@ -2746,6 +3195,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
                 "aec3_sweep_config": self.backend.aec3_sweep_config(),
                 "enabled_legs": list(self.backend.enabled_legs()),
+                "audio_context": self.backend.audio_context(),
                 "bridge_outputs": bridge_output_status(),
             })
             return

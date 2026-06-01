@@ -796,6 +796,23 @@ whether variant legs inherit XVF mic queue-drop counters or USB mic
 queue-drop counters; all AEC/DTLN variants still inherit reference
 drop/starvation counters.
 
+**Production-profile metadata.** As of 2026-06-01, new wake-corpus
+session sidecars include `metadata_schema_version=2` and an additive
+`audio_context` snapshot. That context records production AEC intent
+from `/var/lib/jasper/aec_mode.env`, reconciler-applied runtime env
+from `/etc/jasper/jasper.env`, the classified production audio profile
+from `jasper/audio_profile_state.py`, XVF3800 mic identity/firmware
+channel facts, selected corpus profile/legs with `jasper/wake_legs.py`
+kind + wake-input semantics, outputd/DAC/reference env, and optional
+validation-artifact status from
+`/var/lib/jasper/audio_validation/latest.json` when a future validation
+stream writes it. Each new clip also stores its session `selected_legs`
+and the same `audio_context` snapshot beside `capture_health`, so a clip
+copied out of band still carries enough profile truth to interpret it.
+Old sessions without these fields remain valid; loaders and the audit
+script treat missing `audio_context` as historical metadata, not a
+failure.
+
 **Reference-quality follow-up.** The current `ref` leg is intentionally
 the exact 16 kHz mono frame the live AEC consumes. A future
 `ref_fullband` archival leg could preserve the original full-band
@@ -1516,7 +1533,10 @@ Session B held-out + hard-negative recording. Cleanup of pre-raw0
 corpus is one-click per old session via the Sessions card.
 Recorder-managed corpus bridge outputs can be enabled/disabled through
 the page's corpus test-mode transition, and per-clip metadata records
-capture-health deltas from the bridge where available.
+capture-health deltas from the bridge where available. New session
+metadata also records `audio_context` so the lab corpus can be grouped
+by production profile, mic firmware/channel state, selected leg kinds,
+and DAC/reference validation status once that validation stream exists.
 
 **Phase 0c (baseline): pending Phase 0a + 0b.**
 
@@ -1524,6 +1544,18 @@ capture-health deltas from the bridge where available.
 
 ## Changelog
 
+- **2026-06-01 (v31):** Corpus / onboarding reuse metadata:
+  - New wake-corpus sidecars write `metadata_schema_version=2` plus
+    `audio_context` with production profile intent/runtime truth,
+    XVF3800 mic identity and firmware channel state, selected-leg
+    details from `jasper/wake_legs.py`, DAC/reference env, and optional
+    validation-artifact status.
+  - New clips carry `selected_legs` and the same `audio_context`
+    snapshot beside existing `capture_health`.
+  - `scripts/audit-wake-corpus.sh` now understands the chip-AEC
+    comparison legs through the shared leg registry and prints profile /
+    mic / validation summaries when present, while accepting older
+    sessions without these fields.
 - **2026-05-29 (v28):** Chip-AEC lab result folded in:
   - Updated the pre-corpus runbook from "partial ch0 positive" to
     "positive lab result, recorder pilot-ready."
@@ -1766,8 +1798,7 @@ capture-health deltas from the bridge where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-31 (v30 — chip-AEC direct-fanout lab result is
-now productionized as default-OFF wake legs; build `c95bfdd` deployed
-with chip-AEC producer path, per-beam wake-event WAVs, and `/wake/` mic
-status visibility. USB mic production support remains a follow-up, not
-part of the immediate corpus blocker.)
+Last verified: 2026-06-01 (v31 — wake-corpus metadata schema and audit
+contract rechecked against `jasper/web/wake_corpus_setup.py`,
+`jasper/wake_legs.py`, and `scripts/_audit_wake_corpus.py`; validation
+artifact production remains a future stream.)

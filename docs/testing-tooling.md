@@ -193,6 +193,9 @@ The audit checks:
 - WAV existence, format (16 kHz mono int16), duration, RMS, and peak
 - Recorder `capture_health` metadata when present: compromised clips
   fail the audit, while warning/unknown clips are surfaced for review
+- Session `audio_context` summary when present: production profile,
+  active mic, firmware/channel state, and validation-artifact status
+- Per-clip `selected_legs` drift against the session's expected legs
 
 This is separate from production wake-event telemetry. It does not
 read `wake-events.sqlite3` and does not score wake-word models; it is

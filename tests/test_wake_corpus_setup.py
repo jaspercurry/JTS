@@ -397,6 +397,125 @@ def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
     assert data["clips"][0]["capture_health"]["legs"]["on"]["packets"] > 0
 
 
+def test_metadata_records_audio_context_snapshot(
+    backend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_path, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env=(
+            "JASPER_MIC_DEVICE=udp:9876\n"
+            "JASPER_AEC_MIC_DEVICE=Array\n"
+            "JASPER_AEC_CHIP_AEC_ENABLED=1\n"
+            "JASPER_AEC_CHIP_AEC_PRIMARY_LEG=chip_aec_210\n"
+            "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887\n"
+            "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888\n"
+            "JASPER_OUTPUTD_DAC_PCM=envfile_dac\n"
+            "JASPER_OUTPUTD_BACKEND=alsa_envfile\n"
+            "JASPER_OUTPUTD_CONTROL_SOCKET=/run/envfile-outputd.sock\n"
+        ),
+        corpus_env=(
+            "JASPER_AEC_REF_SOURCE=outputd_udp\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED=1\n"
+            "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0\n"
+            "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891\n"
+            "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE=16000\n"
+            "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES=320\n"
+            "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES=1280\n"
+        ),
+    )
+    assert system_path.is_file()
+    assert bridge_path.is_file()
+    aec_mode_path = tmp_path / "aec_mode.env"
+    aec_mode_path.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n",
+    )
+    validation_path = tmp_path / "audio_validation.json"
+    validation_path.write_text(json.dumps({
+        "schema_version": 1,
+        "artifact_id": "validation-123",
+        "validated_at": "2026-06-01T12:00:00Z",
+        "profile": "xvf_chip_aec",
+        "status": "pass",
+        "hardware": {"mic": "xvf3800", "dac": "apple_usb_c_dongle"},
+        "checks": {"drift_ppm_30m": 0.9},
+    }))
+    monkeypatch.setattr(wake_corpus_setup, "AEC_MODE_PATH", aec_mode_path)
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "AUDIO_VALIDATION_ARTIFACT_PATH",
+        validation_path,
+    )
+    monkeypatch.setenv("JASPER_OUTPUTD_DAC_PCM", "stale_process_dac")
+    monkeypatch.setenv("JASPER_OUTPUTD_BACKEND", "fake")
+    monkeypatch.setenv(
+        "JASPER_OUTPUTD_CONTROL_SOCKET",
+        "/run/stale-process-outputd.sock",
+    )
+    monkeypatch.setattr(wake_corpus_setup, "aec_bridge_active", lambda: True)
+
+    from jasper.mics import xvf3800
+
+    monkeypatch.setattr(xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(xvf3800, "capture_channels", lambda: 6)
+
+    backend.begin_session(
+        "jasper",
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+    )
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
+    data = json.loads(json_files[0].read_text())
+    assert (
+        data["metadata_schema_version"]
+        == wake_corpus_setup.METADATA_SCHEMA_VERSION
+    )
+    context = data["audio_context"]
+    assert (
+        context["schema_version"]
+        == wake_corpus_setup.AUDIO_CONTEXT_SCHEMA_VERSION
+    )
+    assert context["production_audio_profile"]["requested"] == "xvf_chip_aec"
+    assert context["production_audio_profile"]["active"] == "xvf_chip_aec"
+    assert context["runtime_audio_env"]["chip_primary_leg"] == "chip_aec_210"
+    assert context["microphone"]["firmware"]["capture_channels"] == 6
+    assert context["microphone"]["identity"]["usb_vid_pid"] == "2886:001a"
+    assert context["dac_reference"]["dac"]["pcm"] == "envfile_dac"
+    assert context["dac_reference"]["dac"]["backend"] == "alsa_envfile"
+    assert (
+        context["dac_reference"]["dac"]["control_socket"]
+        == "/run/envfile-outputd.sock"
+    )
+    assert context["dac_reference"]["reference"]["source"] == "outputd_udp"
+    assert context["dac_reference"]["validation"]["status"] == "pass"
+    assert context["dac_reference"]["validation"]["artifact_id"] == "validation-123"
+    details = {
+        item["token"]: item
+        for item in context["corpus"]["leg_details"]
+    }
+    assert details["chip_aec_150"]["kind"] == "hardware_aec"
+    assert details["chip_aec_150"]["wake_input"] is True
+    assert details["raw0"]["profile_role"] == "corpus_only"
+
+    clip = data["clips"][0]
+    assert clip["selected_legs"] == data["enabled_legs"]
+    assert (
+        clip["audio_context"]["production_audio_profile"]["active"]
+        == "xvf_chip_aec"
+    )
+
+
 def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
@@ -2310,6 +2429,37 @@ def test_recovery_handles_pre_raw0_session_metadata(tmp_path: Path) -> None:
     b.start()
     try:
         assert b.include_raw_mic_0() is False
+    finally:
+        b.shutdown()
+
+
+def test_recovery_handles_pre_audio_context_session_metadata(tmp_path: Path) -> None:
+    """Older sidecars do not have audio_context or per-clip selected_legs."""
+    out = tmp_path / "out"
+    md = out / "metadata"
+    md.mkdir(parents=True)
+    (md / "enroll_jasper_old.json").write_text(json.dumps({
+        "session_id": "old", "member": "jasper",
+        "ports": {"on": 9876, "off": 9877, "dtln": 9878},
+        "include_dtln": True,
+        "clips": [
+            {"clip_id": "1", "member": "jasper", "condition": "quiet",
+             "distance": "near", "session_id": "old", "seq": 1,
+             "start_ts": "x", "stop_ts": "y", "duration_sec": 1.0,
+             "files": {}, "deleted": False, "auto_stopped": False, "notes": ""},
+        ],
+    }))
+    (md / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+        "session_id": "old",
+    }))
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        assert b.audio_context() is None
+        clips = b.list_clips(include_deleted=True)
+        assert len(clips) == 1
+        assert clips[0].selected_legs == []
+        assert clips[0].audio_context == {}
     finally:
         b.shutdown()
 

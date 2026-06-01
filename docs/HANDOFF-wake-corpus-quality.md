@@ -1,6 +1,6 @@
 # HANDOFF - Wake-corpus audio quality audit
 
-> **Current operational truth as of 2026-05-27.** This doc is the
+> **Current operational truth as of 2026-06-01.** This doc is the
 > canonical methodology for programmatic quality analysis of deliberate
 > wake-corpus WAVs captured by the browser recorder at
 > `http://jts.local/wake-corpus/`.
@@ -128,6 +128,17 @@ names instead of generic sweep slots for the fixed XVF hardware-AEC
 outputs and raw0-derived software legs. Analyze `chip_aec_150` and
 `chip_aec_210` separately; do not average them away, because orientation
 and room geometry are exactly what this profile is meant to reveal.
+
+As of 2026-06-01, new recorder sidecars add
+`metadata_schema_version=2` plus `audio_context` at session level and
+per clip. Prefer that metadata over filename heuristics when deciding
+what a clip represents. The context includes the production audio
+profile classification, AEC intent/runtime env, XVF3800 mic identity and
+firmware channel state, selected leg details from `jasper/wake_legs.py`,
+outputd/DAC/reference env, and optional validation-artifact status.
+Older sessions without `audio_context` remain valid historical data;
+quality tools should display the absence but not fail the corpus because
+of it.
 
 ---
 
@@ -296,6 +307,9 @@ Cross-leg analysis should be a first-class object in the JSON output.
 Minimum plan:
 
 1. Group files by utterance/session metadata, not filename guessing.
+   Prefer `audio_context.corpus.selected_legs` and
+   `audio_context.corpus.leg_details` when present; fall back to legacy
+   `enabled_legs` / `files` maps for old sessions.
 2. Resample only if needed; the corpus target is 16 kHz mono int16.
 3. Align sibling legs with GCC-PHAT or normalized cross-correlation.
 4. Report lag and alignment confidence per leg pair.
@@ -508,6 +522,10 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-06-01 (v12):** Added the `audio_context` metadata contract:
+  production profile truth, mic firmware/channel state, DAC/reference
+  validation status when available, and selected-leg details should guide
+  corpus grouping; older sessions remain accepted.
 - **2026-05-29 (v10):** Added chip-AEC comparison profile legs
   (`chip_aec_150`, `chip_aec_210`, `xvf_raw0_webrtc_aec3`,
   `xvf_raw0_dtln`) to the leg-aware quality-analysis contract.
@@ -539,5 +557,6 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-31 (v11 - chip-AEC beams promoted to optional
-production wake legs with per-beam wake-event WAV paths)
+Last verified: 2026-06-01 (v12 - corpus metadata contract rechecked
+against the recorder and audit script; audio quality analyzer remains
+offline/future work.)

@@ -29,6 +29,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper import wake_legs
 from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
 
 
@@ -52,12 +53,18 @@ LEGACY_AEC3_SWEEP_LEGS = (
     "aec3_slow_attack",
 )
 KNOWN_LEGS = (
-    BASE_LEGS
-    + (RAW0_LEG,)
-    + USB_CORPUS_LEGS
-    + (USB_DTLN_LEG,)
+    tuple(leg.token for leg in wake_legs.REGISTRY)
     + AEC3_SWEEP_LEGS
     + LEGACY_AEC3_SWEEP_LEGS
+)
+CHIP_AEC_PROFILE_BASE_LEGS = (
+    "chip_aec_150",
+    "chip_aec_210",
+    "raw0",
+    "xvf_raw0_webrtc_aec3",
+    "ref",
+    "usb_raw",
+    "usb_webrtc",
 )
 SILENCE_RMS = 30.0
 MAX_EXPECTED_DURATION_SEC = 30.5
@@ -145,6 +152,12 @@ def _expected_legs(session: dict[str, Any]) -> tuple[str, ...]:
             return legs
 
     ports = session.get("ports") or {}
+    if session.get("corpus_profile") == "chip_aec_comparison_v1":
+        return tuple(
+            leg for leg in CHIP_AEC_PROFILE_BASE_LEGS
+            if not ports or leg in ports
+        )
+
     legs = ["on", "off"]
     # Older metadata may not have a useful ports map. Treat that as the
     # normal 3-leg base recorder shape.
@@ -227,6 +240,7 @@ def audit(
     leg_counts: Counter[str] = Counter()
     health_counts: Counter[str] = Counter()
     session_raw0_count = 0
+    session_audio_context_count = 0
 
     for data in sessions:
         session_id = str(data.get("session_id", "?"))
@@ -239,6 +253,11 @@ def audit(
         all_alive_clips.extend(alive)
         expected_legs = _expected_legs(data)
         ports = data.get("ports") or {}
+        audio_context = data.get("audio_context")
+        if isinstance(audio_context, dict):
+            session_audio_context_count += 1
+        else:
+            audio_context = {}
 
         if include_raw0 and RAW0_LEG not in ports:
             issues.append(
@@ -262,6 +281,30 @@ def audit(
             f"legs={list(expected_legs)} "
             f"conditions={dict(sorted(conds.items()))}"
         )
+        profile = audio_context.get("production_audio_profile")
+        if not isinstance(profile, dict):
+            profile = {}
+        microphone = audio_context.get("microphone")
+        if not isinstance(microphone, dict):
+            microphone = {}
+        dac_reference = audio_context.get("dac_reference")
+        if not isinstance(dac_reference, dict):
+            dac_reference = {}
+        validation = dac_reference.get("validation")
+        if not isinstance(validation, dict):
+            validation = {}
+        if audio_context:
+            firmware = microphone.get("firmware")
+            if not isinstance(firmware, dict):
+                firmware = {}
+            print(
+                "    "
+                f"profile={profile.get('active') or profile.get('requested') or 'unknown'} "
+                f"state={profile.get('state') or 'unknown'} "
+                f"mic={microphone.get('name') or 'unknown'} "
+                f"firmware={firmware.get('label') or 'unknown'} "
+                f"validation={validation.get('status') or 'unknown'}"
+            )
 
         seen_seq: set[int] = set()
         for clip in alive:
@@ -285,6 +328,18 @@ def audit(
                     issues.append(f"{clip_id}: capture health compromised")
                 elif health_status in ("warning", "unknown"):
                     warnings.append(f"{clip_id}: capture health {health_status}")
+            clip_selected_legs = clip.get("selected_legs")
+            if isinstance(clip_selected_legs, list):
+                clip_legs = tuple(
+                    str(leg)
+                    for leg in clip_selected_legs
+                    if str(leg) in KNOWN_LEGS
+                )
+                if clip_legs and clip_legs != expected_legs:
+                    warnings.append(
+                        f"{clip_id}: selected_legs differ from session "
+                        "enabled_legs"
+                    )
 
             files = clip.get("files") or {}
             missing = [leg for leg in expected_legs if leg not in files]
@@ -332,6 +387,10 @@ def audit(
                     )
 
     print(f"  raw0-enabled sessions: {session_raw0_count}/{len(sessions)}")
+    print(
+        "  audio-context sessions: "
+        f"{session_audio_context_count}/{len(sessions)}"
+    )
     print(f"  leg WAV counts: {dict(sorted(leg_counts.items()))}")
     if health_counts:
         print(f"  capture health: {dict(sorted(health_counts.items()))}")

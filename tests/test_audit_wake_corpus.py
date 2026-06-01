@@ -214,6 +214,69 @@ def test_audit_accepts_enabled_legs_for_usb_ref_session(
     assert "'usb_webrtc': 1" in out
 
 
+def test_expected_legs_accepts_chip_aec_profile_tokens() -> None:
+    session = {
+        "corpus_profile": "chip_aec_comparison_v1",
+        "enabled_legs": [
+            "chip_aec_150",
+            "chip_aec_210",
+            "raw0",
+            "xvf_raw0_webrtc_aec3",
+            "ref",
+            "usb_raw",
+            "usb_webrtc",
+        ],
+    }
+
+    assert audit_wake_corpus._expected_legs(session) == (
+        "chip_aec_150",
+        "chip_aec_210",
+        "raw0",
+        "xvf_raw0_webrtc_aec3",
+        "ref",
+        "usb_raw",
+        "usb_webrtc",
+    )
+
+
+def test_audit_prints_audio_context_summary(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "enrollment_positives"
+    files = {
+        "on": str(root / "aec_on_nomusic" / "clip.aec-on.wav"),
+        "off": str(root / "aec_off_nomusic" / "clip.aec-off.wav"),
+        "dtln": str(root / "aec_dtln_nomusic" / "clip.aec-dtln.wav"),
+        "raw0": str(root / "aec_raw0_nomusic" / "clip.aec-raw0.wav"),
+    }
+    for path_str in files.values():
+        _write_wav(Path(path_str))
+    path = _write_session(root, files=files)
+    data = json.loads(path.read_text())
+    data["audio_context"] = {
+        "production_audio_profile": {
+            "requested": "xvf_software_aec3",
+            "active": "xvf_software_aec3",
+            "state": "active",
+        },
+        "microphone": {
+            "name": "Seeed ReSpeaker XVF3800 (USB UA)",
+            "firmware": {"label": "6-channel firmware"},
+        },
+        "dac_reference": {
+            "validation": {"status": "pass"},
+        },
+    }
+    data["clips"][0]["selected_legs"] = ["on", "off", "dtln", "raw0"]
+    path.write_text(json.dumps(data))
+
+    rc = audit_wake_corpus.audit(root)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "audio-context sessions: 1/1" in out
+    assert "profile=xvf_software_aec3 state=active" in out
+    assert "validation=pass" in out
+
+
 def test_audit_accepts_usb_dtln_expected_leg(
     tmp_path: Path,
     capsys,
