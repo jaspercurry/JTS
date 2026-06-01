@@ -6,17 +6,22 @@
 # Prerequisites:
 #   - Raspberry Pi Imager 2.0.6 or later (older 2.0.x have an open
 #     pubkey-breaks-customization bug on Trixie — see QUICKSTART.md)
-#   - Imager's OS Customization sets hostname + WiFi. Pubkey SSH is
-#     preferred; password-only Pis can be adopted with --adopt.
+#   - Imager's OS Customization sets hostname + WiFi + a password.
+#     The beginner/friendly path uses --adopt to install this laptop's
+#     pubkey with ssh-copy-id. Pre-populated pubkey SSH without
+#     --adopt is the advanced/unattended path.
 #   - Pi powered on, joined WiFi, reachable on the LAN
 #   - A local SSH keypair (~/.ssh/id_ed25519.pub or id_rsa.pub)
 #
 # Usage:
+#   # Beginner/friendly path (password SSH once, then pubkey forever):
+#   bash scripts/onboard.sh jts.local --adopt
+#   bash scripts/onboard.sh 192.168.1.55 --adopt --speaker-hostname jts.local
+#
+#   # Advanced/unattended path (Pi already has your pubkey):
 #   bash scripts/onboard.sh jts.local
-#   bash scripts/onboard.sh 192.168.1.55           # if mDNS doesn't resolve
 #   bash scripts/onboard.sh jts2.local             # multi-Pi: same command, new host
-#   bash scripts/onboard.sh jts.local --adopt      # existing Pi w/ password only
-#   bash scripts/onboard.sh 192.168.1.55 --speaker-hostname jts.local
+#
 #   bash scripts/onboard.sh jts.local --user pi    # advanced; see note below
 #   bash scripts/onboard.sh jts.local --no-install # state-only, skip install.sh
 #   bash scripts/onboard.sh --help
@@ -26,13 +31,14 @@
 # and deploy only; some diagnostics/operator scripts still assume `pi`
 # or `/home/pi`.
 #
-# CI / headless mode: for fully unattended re-imaging, pre-populate
-# the Pi's ~/.ssh/authorized_keys via Pi Imager's pubkey field, enable
-# passwordless sudo, and omit --adopt; deploy-to-pi.sh explicitly
-# preflights `sudo -n true` before upload. Friendly mode can adopt a
-# password-only Pi and later prompt for sudo over ssh -tt without
-# storing the password. The structured `event=onboard.<phase>` log
-# lines parse with the same tools that consume the Pi-side daemon logs.
+# Advanced CI / headless mode: for fully unattended re-imaging,
+# pre-populate the Pi's ~/.ssh/authorized_keys via Pi Imager's pubkey
+# field, enable passwordless sudo, and omit --adopt; deploy-to-pi.sh
+# explicitly preflights `sudo -n true` before upload. Friendly mode
+# adopts a password-only Pi and can later prompt for sudo over ssh -tt
+# without storing the password. The structured `event=onboard.<phase>`
+# log lines parse with the same tools that consume the Pi-side daemon
+# logs.
 #
 # What it does, in order:
 #   1. probe        — pings hostname; on failure, prints the four-rung
@@ -119,7 +125,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$HOST" ]]; then
-    echo "onboard: hostname required (try: bash scripts/onboard.sh jts.local)" >&2
+    echo "onboard: hostname required (try: bash scripts/onboard.sh jts.local --adopt)" >&2
     echo "        Run with --help for full usage." >&2
     exit 2
 fi
@@ -178,10 +184,14 @@ No SSH pubkey found at ~/.ssh/id_{ed25519,rsa,ecdsa}.pub.
 Generate one (recommended: ed25519):
     ssh-keygen -t ed25519 -C "\$(whoami)@\$(hostname -s)-jts"
 
-Then either: (a) re-flash with Pi Imager and paste the new pubkey
-into OS Customization → SSH → "Use public-key authentication", OR
-(b) re-run this script with --adopt to install the key over a
-password-authenticated SSH session.
+Then re-run this script with --adopt to install the key over a
+password-authenticated SSH session:
+
+    bash scripts/onboard.sh ${HOST:-jts.local} --adopt
+
+For advanced/unattended rebuilds, you can instead re-flash with Pi
+Imager, pre-populate the pubkey in OS Customization → SSH, enable
+passwordless sudo, and run without --adopt.
 EOF
     exit 1
 fi
@@ -215,7 +225,7 @@ Could not reach ${HOST}. Try (in order):
   2. Find the Pi's IP from your router's admin page (look for a
      hostname like "raspberrypi" or whatever you set in Imager).
      Then re-run with the IP:
-         bash scripts/onboard.sh 192.168.1.X
+         bash scripts/onboard.sh 192.168.1.X --adopt --speaker-hostname jts.local
 
   3. ARP scan for Pi MAC OUIs from your laptop:
          arp -a | grep -iE 'b8:27:eb|d8:3a:dd|dc:a6:32|2c:cf:67'

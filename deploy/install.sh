@@ -62,6 +62,10 @@ Options:
 
 Environment:
   JASPER_INSTALL_DRY_RUN=1   Same as --dry-run.
+  JASPER_HOSTNAME=<name>.local
+                             Speaker identity/cert hostname for direct
+                             Pi-local installs. scripts/deploy-to-pi.sh
+                             forwards this automatically.
 EOF
 }
 
@@ -75,8 +79,8 @@ before the root check, apt, downloads, file writes, systemd, or restarts.
 The real installer remains the source of truth for exact host-specific
 no-op decisions.
 
-Run for real:
-  sudo bash deploy/install.sh
+Run for real from a Pi-local checkout:
+  sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
 
 1. System packages
    - apt-get update.
@@ -337,10 +341,14 @@ build_install_jasper_fanin() {
     # install_systemd_units enables the daemon and install_alsa writes
     # the matching /etc/asound.conf directly.
     #
-    # Build is done as the `pi` user in a persistent cache dir at
-    # /var/cache/jasper-fanin-build so cargo's incremental compilation
-    # keeps re-runs fast (~5 s on no source change, ~20 s incremental,
-    # ~90 s first run). Target/ directory stays in the cache; only
+    # Build is intentionally done as the appliance-standard `pi` user
+    # in a persistent cache dir at /var/cache/jasper-fanin-build so
+    # cargo's incremental compilation keeps re-runs fast (~5 s on no
+    # source change, ~20 s incremental, ~90 s first run). This is not
+    # keyed off the laptop-side PI_USER transport setting: custom
+    # users are supported for onboarding/deploy only until the rest of
+    # the appliance scripts/services have been audited for non-pi
+    # runtime assumptions. Target/ directory stays in the cache; only
     # the release binary is copied to /opt/jasper/bin.
     local src_dir="${REPO_DIR}/rust/jasper-fanin"
     local cache_dir="/var/cache/jasper-fanin-build"
@@ -385,7 +393,10 @@ build_install_jasper_outputd() {
     # /opt/jasper/bin/jasper-outputd. The systemd unit is enabled as
     # the mainline final-output owner. Pre-outputd rollback must stop
     # and disable this persistent unit before returning to the legacy
-    # jasper_out path.
+    # jasper_out path. Build ownership mirrors jasper-fanin above:
+    # the beginner appliance path uses username `pi`, and custom
+    # PI_USER is currently a deploy/onboarding transport option rather
+    # than full appliance-user support.
     local src_dir="${REPO_DIR}/rust/jasper-outputd"
     local cache_dir="/var/cache/jasper-outputd-build"
     local bin_dest="/opt/jasper/bin/jasper-outputd"
@@ -964,7 +975,10 @@ tune_wifi_for_airplay() {
 #
 # Build runs as the pi user when /home/pi/.platformio exists, so the
 # toolchain cache lands in one place and root doesn't end up with a
-# duplicate copy. Otherwise we run as whoever invoked install.sh.
+# duplicate copy. This follows the same user boundary as the Rust
+# daemon builds: the public appliance path is username `pi`; custom
+# PI_USER is currently onboarding/deploy-only. Otherwise we run as
+# whoever invoked install.sh.
 #
 # Soft-fails: a failed build prints a warning and lets install.sh
 # continue. The accessory wizards surface missing/stale bins to the
@@ -1066,7 +1080,8 @@ install_jasper() {
     #      is a developer convenience for direct checkout installs, not
     #      a base appliance dependency.
     #   3. Existing build.txt — preserve a previously-correct SHA when
-    #      install.sh is re-run directly (e.g. `sudo bash install.sh`
+    #      install.sh is re-run directly (e.g.
+    #      `sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh`
     #      to regen the TLS cert after a hostname change) without the
     #      DEPLOY env vars. Otherwise the manifest gets clobbered back
     #      to "unknown" on every such re-run, surprising the dashboard.
@@ -1497,7 +1512,10 @@ PY
         # LAN type jts2.local but Spotify/AirPlay setup URLs advertise
         # the wrong name. Override path stays clean: deploy-to-pi.sh
         # exports JASPER_HOSTNAME explicitly, which wins over the
-        # autodetected fallback.
+        # autodetected fallback. Direct Pi-local install.sh reruns
+        # that need a non-default identity must pass it in the sudo
+        # environment, e.g.:
+        #   sudo JASPER_HOSTNAME=jts2.local bash deploy/install.sh
         local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"
         echo "  hostname: ${hostname_value}"
         sed \

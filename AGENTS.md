@@ -379,11 +379,12 @@ when /sources/ on port 8773 went out without the restart.
 
 A **fresh Pi** doing first-time setup still uses the laptop-side
 onboard/deploy path once the Pi is reachable: clone JTS on the laptop,
-then run `bash scripts/onboard.sh <hostname>` or
+then run `bash scripts/onboard.sh <hostname> --adopt` or
 `bash scripts/deploy-to-pi.sh` (see [QUICKSTART.md](QUICKSTART.md) and
 [BRINGUP.md](BRINGUP.md)). A Pi-local `git clone` + native
-`sudo bash deploy/install.sh` is now an advanced/developer fallback
-only, not the normal public install path.
+`sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh` is now
+an advanced/developer fallback only, not the normal public install
+path.
 
 ### Running ad-hoc diagnostics on the Pi
 
@@ -438,11 +439,12 @@ What derives from it (so you only set it once):
 - Python: `Config.hostname` plus `JASPER_MANAGEMENT_URL` and
   `JASPER_SPOTIFY_SETUP_URL` defaults (`http://${JASPER_HOSTNAME}` and
   `http://${JASPER_HOSTNAME}/spotify` respectively).
-- Bash scripts under `scripts/`: every `PI_HOST` default falls back to
-  `${JASPER_HOSTNAME:-jts.local}`. So if you also export
-  `JASPER_HOSTNAME` in your laptop shell, `fetch-pi-logs.sh`,
-  `tail-pi-logs.sh`, `switch-voice-provider.sh`, etc. all target the
-  right host without per-script overrides.
+- Legacy bash helpers under `scripts/`: `_lib.sh` and several older
+  scripts still let an unset `PI_HOST` fall back to
+  `${JASPER_HOSTNAME:-jts.local}` for compatibility. New scripts and
+  docs should treat `PI_HOST` as the SSH transport target and
+  `JASPER_HOSTNAME` as speaker identity/cert hostname; set both when
+  they differ (for example, SSH by IP but advertise `jts.local`).
 
 What does NOT derive (intentionally):
 - The Pi's actual mDNS hostname (set with `hostnamectl set-hostname`
@@ -478,7 +480,7 @@ connects by IP, the IP is only the SSH target; onboarding records an
 explicit `JASPER_HOSTNAME` by querying the Pi hostname or by accepting
 `--speaker-hostname <name>.local`.
 
-It's auto-written by `bash scripts/onboard.sh <hostname>` (see
+It's auto-written by `bash scripts/onboard.sh <hostname> --adopt` (see
 [QUICKSTART.md](QUICKSTART.md)) and sourced by
 [`scripts/_lib.sh`](scripts/_lib.sh), which every laptop-side script
 should source as its first non-`set` line. New scripts pick up the
@@ -492,9 +494,10 @@ clones work; `onboard.sh` populates it on first run.
 
 **Multi-Pi pattern**: one checkout (or worktree) per Pi. Each has
 its own `.env.local` and `CLAUDE.local.md`. The wrapper scripts
-(`deploy-to-pi.sh`, `fetch-pi-logs.sh`, etc.) all honor `PI_HOST`
-from `.env.local` via `_lib.sh`'s fallback chain, so flipping
-between Pis is just `cd` into the right checkout.
+(`deploy-to-pi.sh`, `fetch-pi-logs.sh`, etc.) honor `PI_HOST`
+from `.env.local`; `_lib.sh` keeps the old `JASPER_HOSTNAME`
+fallback only for compatibility, so flipping between Pis is just `cd`
+into the right checkout.
 
 **Adopting an already-deployed Pi** (password auth only): run
 `bash scripts/onboard.sh <hostname> --adopt`. The `--adopt` flag
