@@ -40,6 +40,7 @@ from ..audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
 )
+from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ..config import Config
 from ..env_load import load_env_files as _load_env_files
@@ -1872,6 +1873,53 @@ def check_audio_profile_runtime() -> CheckResult:
     """Summarise requested vs applied mic/AEC profile runtime truth."""
 
     return _assess_audio_profile(_audio_profile_status_for_doctor())
+
+
+def _assess_audio_validation_summary(
+    summary: dict[str, object],
+    *,
+    requested_profile: str | None,
+) -> CheckResult:
+    state = str(summary.get("state") or "unknown")
+    status = str(summary.get("status") or "unknown")
+    recommendation = str(summary.get("recommendation") or "none")
+    validated_at = str(summary.get("validated_at") or "never")
+    path = str(summary.get("artifact_path") or "unknown")
+    detail = (
+        f"profile={requested_profile or 'unknown'}, validation={state}, "
+        f"status={status}, validated_at={validated_at}, "
+        f"recommendation={recommendation}, path={path}"
+    )
+    reason = summary.get("reason")
+    if reason:
+        detail += f"; {reason}"
+
+    if requested_profile != "xvf_chip_aec":
+        return CheckResult(
+            "Audio validation",
+            "ok",
+            detail + "; advisory because chip-AEC is not the requested profile",
+        )
+    if state == "current" and status == "pass":
+        return CheckResult("Audio validation", "ok", detail)
+    return CheckResult(
+        "Audio validation",
+        "warn",
+        detail + "; run `sudo jasper-audio-validate` after chip-AEC is active",
+    )
+
+
+def check_audio_validation_readiness() -> CheckResult:
+    """Report latest schema-v1 validation artifact as advisory readiness."""
+
+    profile_status = _audio_profile_status_for_doctor().get("audio_profile") or {}
+    requested_profile = profile_status.get("requested")
+    if requested_profile is not None:
+        requested_profile = str(requested_profile)
+    return _assess_audio_validation_summary(
+        _audio_validation_summary(requested_profile=requested_profile),
+        requested_profile=requested_profile,
+    )
 
 
 def check_aec_bridge_running() -> CheckResult:
@@ -4312,6 +4360,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         ("voice model pricing", lambda: check_pricing(cfg)),
         check_aec_bridge_running,
         check_audio_profile_runtime,
+        check_audio_validation_readiness,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_aec_bridge_output_health,
         # Mandatory fan-in daemon (docs/HANDOFF-fan-in-daemon.md).

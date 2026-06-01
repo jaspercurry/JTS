@@ -87,6 +87,20 @@ The foundation is partly built:
   `jasper-doctor` "Audio profile" check so those status surfaces report
   the same requested/active profile, session source, wake legs, and
   warnings.
+- `jasper/audio_validation.py` owns schema-v1 audio-validation
+  artifacts at `/var/lib/jasper/audio-validation/`. Artifacts are
+  immutable timestamped JSON files keyed by mic/DAC/profile/status;
+  `latest.json` is only the cheap status-surface pointer.
+  `jasper-audio-validate` writes the first bounded producer artifact:
+  an on-demand `xvf_chip_aec` readiness snapshot built only from safe
+  runtime facts (env/profile truth, service state, outputd reference
+  outputs, bridge counters, wake-leg state, recent drift-warning
+  evidence if journaled, plus Pi/build identity for attribution). It
+  writes both the timestamped durable record and the latest pointer. It
+  does not play audio, open capture loops, or write XVF chip settings,
+  so clean runtime readiness is still
+  `status=warn` with `recommendation=run_hardware_validation` until
+  measured drift/delay evidence exists.
 - `/wake-corpus/` has the first additive reuse hook: new session and
   clip metadata write an `audio_context` snapshot with production
   profile classification, mic firmware/channel identity, selected leg
@@ -97,18 +111,22 @@ The gaps are exactly where future hardware support would hurt:
 
 - Mic capability facts are not yet rich enough to describe generic
   USB mics, hardware-AEC mics, or "raw only" mics in one place.
-- DAC capability/validation facts do not yet have a first-class home.
-  The Apple dongle and HiFiBerry DAC8x reasoning currently lives in
-  docs and lab scripts rather than a durable runtime artifact.
+- DAC capability/validation facts have only the first durable home: the
+  bounded readiness artifact records the configured DAC/outputd identity
+  and chip-reference runtime state. The decisive drift/delay gate for a
+  new DAC still lives in docs and lab methodology rather than a full
+  hardware-validation runner.
 - "Intent" and "observed runtime truth" are still spread across env
   files, systemd state, chip read-backs, outputd health, bridge logs,
   wake legs, and dashboard cards.
 - Corpus/test modes can enable richer comparison profiles than
   production, but the profile vocabulary is not yet centralized enough
   to guarantee they remain comparable.
-- There is no single readiness report that says "this Pi is in
-  production chip-AEC mode and validated" vs "chip-AEC requested but
-  not safe, falling back to AEC3."
+- There is now a single advisory readiness report for "this Pi is in
+  production chip-AEC runtime state" vs "chip-AEC requested but runtime
+  evidence is incomplete." It is not the final default-on DAC validation
+  gate because long-window drift and fixed-delay stability are still
+  operator-controlled measurements.
 
 ---
 
@@ -208,31 +226,39 @@ Each profile should declare:
 
 ### `ValidationArtifact`
 
-Small JSON written under `/var/lib/jasper/`, probably one file per
-validation type:
+Small JSON written under `/var/lib/jasper/audio-validation/` as
+immutable timestamped files. Status surfaces load the newest matching
+schema-v1 artifact through `latest.json` only when that pointer is
+valid, fresh, and matches the requested profile/hardware filters;
+otherwise they fall back to the timestamped history. The pointer is a
+convenience; the durable record is the timestamped artifact.
 
 ```json
 {
   "schema_version": 1,
-  "validated_at": "2026-06-01T12:00:00-04:00",
+  "validated_at": "2026-06-01T16:00:00Z",
   "hardware": {
-    "mic": "xvf3800",
-    "dac": "apple_usb_c_dongle"
+    "mic_id": "xvf3800",
+    "dac_id": "apple_usb_c_dongle"
   },
   "profile": "xvf_chip_aec",
-  "status": "pass",
+  "status": "warn",
   "checks": {
-    "xvf_profile_readback": "pass",
-    "outputd_chip_ref_health": "pass",
-    "drift_ppm_30m": 0.9,
-    "delay_stability_ms_30m": 0.4
+    "runtime_identity": {"status": "pass", "required": false},
+    "runtime_profile": {"status": "pass"},
+    "mic_detected": {"status": "pass"},
+    "runtime_env": {"status": "pass"},
+    "dac_reference": {"status": "pass"},
+    "wake_legs": {"status": "pass"},
+    "measured_drift_delay": {"status": "not_run"}
   },
-  "recommendation": "chip_aec_viable"
+  "recommendation": "run_hardware_validation"
 }
 ```
 
-This artifact should be cheap to read from `/aec`, `/wake/`, `/state`,
-and `jasper-doctor`.
+This artifact is cheap to read from `/aec`, corpus metadata, and
+`jasper-doctor`. Missing/stale validation stays advisory unless the
+requested profile depends on chip-AEC.
 
 ---
 
@@ -479,16 +505,20 @@ against clear metrics.
 
 ## Immediate Next Sprint
 
-1. **Audit duplicated truth.** Produce a short table of where mic/DAC/AEC
-   facts are currently encoded and which one should own each fact.
-2. **Add a read-only `audio_profile_state` helper.** It should have no
-   side effects and should be cheap enough for `/state`.
-3. **Wire one consumer first.** Prefer `/aec` or doctor, because they
-   already explain AEC state and can expose intent-vs-observed truth.
-4. **Add validation artifact schema only.** Do not build the full
-   validation runner until the state helper has a home.
-5. **Then add the DAC validation command.** Reuse the chip-AEC drift
-   methodology; keep it bounded and Pi-safe.
+1. **Add the full operator-controlled DAC validation runner.** Reuse the
+   chip-AEC drift methodology, keep playback explicit, and persist
+   bounded short/long drift plus delay-stability evidence.
+2. **Promote richer DAC identity.** The readiness snapshot records the
+   configured outputd PCM today; a future DAC capability pass should
+   persist stable USB/ALSA descriptor facts without trusting browser or
+   hotplug labels blindly.
+3. **Teach profile selection to consume validation.** Missing/stale
+   chip-AEC validation remains advisory today. A later profile selector
+   should only recommend chip-AEC by default when the artifact proves the
+   DAC/reference gate, while keeping explicit operator opt-in available.
+4. **Extend wake-event parity.** Corpus metadata now carries validation
+   status; wake-event rows should eventually include the same artifact id
+   or timestamp for production telemetry analysis.
 
 ---
 

@@ -195,6 +195,7 @@ code = [
   "jasper/cli/aec_*.py",
   "jasper/aec_engines/**",
   "jasper/audio_profile_state.py",
+  "jasper/audio_validation.py",
   "jasper/mics/**",
   "jasper/xvf/**",
   "jasper/chip_aec_experiment.py",

@@ -2500,6 +2500,36 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     assert "not applied" in result.detail
 
 
+def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
+    result = doctor._assess_audio_validation_summary(
+        {
+            "state": "missing",
+            "status": "unknown",
+            "artifact_path": "/var/lib/jasper/audio-validation",
+            "reason": "artifact not found",
+        },
+        requested_profile="xvf_software_aec3",
+    )
+
+    assert result.status == "ok"
+    assert "advisory" in result.detail
+
+
+def test_audio_validation_warns_when_chip_aec_requested_and_missing():
+    result = doctor._assess_audio_validation_summary(
+        {
+            "state": "missing",
+            "status": "unknown",
+            "artifact_path": "/var/lib/jasper/audio-validation",
+            "reason": "artifact not found",
+        },
+        requested_profile="xvf_chip_aec",
+    )
+
+    assert result.status == "warn"
+    assert "sudo jasper-audio-validate" in result.detail
+
+
 def test_pricing_ok_when_active_model_priced(monkeypatch):
     """The active model (gemini default) is in the bundled rates → ok."""
     cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345")

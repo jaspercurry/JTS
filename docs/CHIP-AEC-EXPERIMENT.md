@@ -41,12 +41,27 @@ via `/wake/`.
   passing and runtime wake legs armed as `on`, `chip_aec_150`, and
   `chip_aec_210`.
 
+**Code-level readiness surface added 2026-06-01.**
+`jasper-audio-validate` writes a bounded readiness snapshot as an
+immutable timestamped schema-v1 artifact under
+`/var/lib/jasper/audio-validation/` and updates `latest.json` as the
+cheap status-surface pointer. It uses already-exposed runtime state
+(profile/env truth, service state, outputd reference outputs, bridge
+counters, wake legs, recent drift-warning evidence when journaled, and
+Pi/build identity for attribution). It is advisory, reports clean
+runtime readiness as `status=warn` /
+`recommendation=run_hardware_validation`, and does not play calibration
+audio or write/persist XVF chip settings. This is not a substitute for
+the Pi-verified drift/delay and wake-telemetry gate below.
+
 **What remains is validation, not plumbing.** Keep chip-AEC opt-in until
 a fresh telemetry window shows its recall / false-accept contribution:
 record normal use and wake tests with music, fetch the wake-event
 corpus, run `scripts/analyze-three-leg.sh`, and inspect solo saves plus
-false fires for `chip_aec_150` and `chip_aec_210`. A default-ON flip for
-XVF installs is data-gated on that review.
+false fires for `chip_aec_150` and `chip_aec_210`. The readiness
+artifact is the operator-visible runtime snapshot; the default-ON flip
+still requires measured wake telemetry plus long-window DAC drift and
+delay-stability evidence from an explicit validation run.
 
 The topology diagram below still records the original 2026-05-23
 dmix-era experiment shape, not the current 2026-05-26 fan-in /

@@ -288,6 +288,13 @@ def test_aec_full_status_includes_legs_and_threshold(
             "JASPER_AEC_MIC_DEVICE": "Array",
         },
     )
+    validation_profiles = []
+
+    def fake_validation_summary(*, requested_profile=None):
+        validation_profiles.append(requested_profile)
+        return {"state": "current", "status": "pass"}
+
+    monkeypatch.setattr(server, "_audio_validation_summary", fake_validation_summary)
     status = server._aec_full_status()
     assert status["mode"] == "auto"
     assert status["bridge_active"] is True
@@ -304,6 +311,8 @@ def test_aec_full_status_includes_legs_and_threshold(
     assert status["microphone"]["processing_mode"] == "Software AEC3"
     assert status["microphone"]["session_source"] == "WebRTC AEC3 via :9876"
     assert status["microphone"]["wake_legs"] == ["AEC3", "Chip-direct raw", "DTLN"]
+    assert status["validation"] == {"state": "current", "status": "pass"}
+    assert validation_profiles == ["xvf_software_aec3"]
     assert status["wake_word"]["label"]
 
 
