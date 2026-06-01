@@ -388,7 +388,6 @@ Multiple guardrails sit on top:
 - `OutputdTtsPlayout.set_gain_db` and jasper-outputd enforce the
   `MAX_TTS_GAIN_DB = -6 dB` hardware ceiling on the TTS path
   independent of any volume math.
-- `JASPER_TTS_GAIN_DB` is validated `<= 0` at config-load time.
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
   room-correction, and sound-preference configs all cap the main fader
   at full scale.

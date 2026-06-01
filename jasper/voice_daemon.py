@@ -461,10 +461,10 @@ class TtsVolumeTracker:
         track_loudness × airplay_sender_vol × spotify_connect_vol
             × camilla_main_volume × room_correction → DAC
 
-    Adding TTS gain = `main_volume + offset` only matches the LAST
+    Setting TTS gain from `main_volume` alone only matches the LAST
     stage. If the user's iPhone AirPlay slider is at 50%, music plays
-    ~6 dB quieter than `main_volume` implies; TTS at the legacy fixed
-    offset comes out audibly louder than music in that exact scenario.
+    ~6 dB quieter than `main_volume` implies; a main_volume-derived TTS
+    level comes out audibly louder than music in that exact scenario.
 
     What we do. Poll CamillaDSP's `levels.playback_rms()` — the signal
     AFTER every attenuation stage, immediately before the DAC. Maintain
@@ -473,7 +473,7 @@ class TtsVolumeTracker:
     TTS output RMS ends up `music_headroom_db` above the windowed music
     RMS:
 
-        tts_gain_db = (windowed_rms + headroom) - source_rms_dbfs
+        gain_db = (windowed_rms + headroom) - source_rms_dbfs
 
     where `source_rms_dbfs` is the active provider's TTS *loudness*
     (windowed RMS), MEASURED per provider via note_source_chunk() rather
@@ -485,7 +485,7 @@ class TtsVolumeTracker:
     peak match did not.
 
     Ceiling policy is branch-specific. The pre-tracker formula treated
-    `master_volume + offset` as an absolute ceiling in all branches —
+    `main_volume` as an absolute ceiling in all branches —
     the intent was "master_volume controls max possible TTS loudness."
     That assumption was reasonable when main_volume was the single
     canonical loudness knob; it breaks down once source-side sliders
@@ -502,7 +502,7 @@ class TtsVolumeTracker:
         that. Hearing safety is enforced by TtsPlayout's MAX_TTS_GAIN_DB.
       - Silence with a valid anchor: ceiling APPLIES. Anchor can be
         stale (we played loud music yesterday, now it's a quiet bedroom
-        at low main_volume), and master+offset is the right backstop
+        at low main_volume), and main_volume is the right backstop
         against blasting in that case.
       - No anchor ever recorded (first boot, sentinel): ceiling IS
         the target — main_volume is the only loudness signal we have.
@@ -536,7 +536,6 @@ class TtsVolumeTracker:
         self,
         camilla: CamillaController,
         tts: TtsPlayout,
-        offset_db: float,
         music_headroom_db: float,
         silence_threshold_dbfs: float,
         music_window_sec: float,
@@ -545,7 +544,6 @@ class TtsVolumeTracker:
     ) -> None:
         self._camilla = camilla
         self._tts = tts
-        self._offset_db = float(offset_db)
         self._headroom_db = float(music_headroom_db)
         self._silence_threshold_dbfs = float(silence_threshold_dbfs)
         self._window_sec = float(music_window_sec)
@@ -630,11 +628,11 @@ class TtsVolumeTracker:
         Three branches with branch-specific ceiling policy (see class
         docstring for the why):
           1. Music currently playing (windowed_rms above threshold) →
-             match observed loudness directly. No master+offset
+             match observed loudness directly. No main_volume
              ceiling; hearing safety lives in TtsPlayout's MAX cap.
           2. Silence, but we have a loudness anchor (the last-known
              music level, possibly from a previous session) → target
-             that level, CAPPED at master+offset. Anchor can be stale
+             that level, CAPPED at main_volume. Anchor can be stale
              (yesterday's loud party at today's quiet bedroom volume),
              so the cap defends against blasting.
           3. No anchor ever recorded (sentinel < -120) → target IS the
@@ -642,7 +640,7 @@ class TtsVolumeTracker:
              With initial_anchor_dbfs defaulting to DEFAULT_ANCHOR_DBFS
              (-30 dBFS = 40%), branch 3 is rarely hit in practice; it's
              a backstop for genuine first-boot."""
-        ceiling = vol_db + self._offset_db
+        ceiling = vol_db
         if windowed_rms > self._silence_threshold_dbfs:
             target = (
                 windowed_rms + self._headroom_db - source_rms_dbfs
@@ -695,7 +693,7 @@ class TtsVolumeTracker:
         # comparisons + arithmetic on three floats. Mirrors the
         # branching in _compute_gain by design — keep these two
         # in lockstep if you add a fourth branch.
-        ceiling = vol_db + self._offset_db
+        ceiling = vol_db
         if windowed_rms > self._silence_threshold_dbfs:
             branch = "music"
         elif self._anchor_dbfs > -120.0:
@@ -705,10 +703,10 @@ class TtsVolumeTracker:
         logger.info(
             "event=tts_gain.compute branch=%s windowed_rms=%.1f "
             "source_rms_dbfs=%.1f anchor_dbfs=%.1f main_volume_db=%.1f "
-            "offset_db=%.1f ceiling_db=%.1f target_db=%.1f final_db=%.1f "
+            "ceiling_db=%.1f target_db=%.1f final_db=%.1f "
             "max_cap_db=%.1f",
             branch, windowed_rms, source_rms, self._anchor_dbfs, vol_db,
-            self._offset_db, ceiling, target,
+            ceiling, target,
             self._tts.gain_db, TtsPlayout.MAX_TTS_GAIN_DB,
         )
 
@@ -3211,7 +3209,7 @@ class WakeLoop:
         if self._vad_off is not None:
             self._vad_off.reset()
         t_after_state = _time.monotonic()
-        # Pin TTS gain to the user's pre-duck master volume + offset
+        # Pin TTS gain to the user's pre-duck main_volume
         # BEFORE ducking. The duck about to fire will drop main_volume
         # by JASPER_DUCK_DB; if we let the tracker observe that drop,
         # TTS would go quiet for the response we're about to play —
@@ -3991,16 +3989,13 @@ async def run() -> None:
                 # Constructor gain doesn't matter at runtime — TtsPlayout
                 # initializes at its silent floor and the volume tracker's
                 # first-tick read sets the real value before the first
-                # turn can play. We pass cfg.tts_gain_db so a startup
-                # before the tracker first applies (e.g. Camilla down at
-                # boot) still has a sane fallback.
-                gain_db=cfg.tts_gain_db,
+                # turn can play.
+                gain_db=0.0,
                 drain_tail_sec=cfg.tts_drain_tail_sec,
                 outputd_socket=cfg.tts_outputd_socket,
             ))
             tts_volume_tracker = TtsVolumeTracker(
                 camilla, tts,
-                offset_db=cfg.tts_gain_db,
                 music_headroom_db=cfg.tts_music_headroom_db,
                 silence_threshold_dbfs=cfg.tts_silence_threshold_dbfs,
                 music_window_sec=cfg.tts_music_window_sec,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass
 
@@ -9,8 +8,6 @@ from .bus import parse_bus_stops
 from .citibike import parse_saved_stations as _parse_citibike_stations
 from .speaker_name import runtime_name as _speaker_runtime_name
 from .voice.catalog import default_extra_value, default_model_id, default_voice_id
-
-logger = logging.getLogger(__name__)
 
 
 def _env(name: str, default: str | None = None, *, required: bool = False) -> str:
@@ -79,35 +76,6 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WEATHER_LAT must be between -90 and 90")
     if cfg.weather_default_lon is not None and not -180 <= cfg.weather_default_lon <= 180:
         raise RuntimeError("JASPER_WEATHER_LON must be between -180 and 180")
-    # Hearing-safety: TTS gain is now an OFFSET applied on top of
-    # CamillaDSP's main_volume (negative attenuates from master,
-    # zero matches it). A positive value would push TTS above master
-    # and risk loud/clipping output. Refuse at startup rather than
-    # discover the bug at speaker-blasting time.
-    if cfg.tts_gain_db > 0.0:
-        raise RuntimeError(
-            f"JASPER_TTS_GAIN_DB must be <= 0 (got {cfg.tts_gain_db}); "
-            "it is now an offset relative to main_volume — positive "
-            "values would push TTS above the user's master and risk "
-            "blasting the speaker"
-        )
-    # Deprecation warning (PR #295, follow-up to PR #294). After the
-    # master+offset ceiling was lifted off the music-playing branch,
-    # this env var only affects the silence-fallback TTS level — a
-    # rarely-hit branch in practice (DEFAULT_ANCHOR_DBFS keeps real
-    # life out of branch 3 of _compute_gain). Default 0 is correct
-    # for almost all setups. Non-default values still work but flag
-    # one warning at startup so operators reviewing logs after a
-    # surprise know the knob is vestigial and what to read.
-    if cfg.tts_gain_db < 0.0:
-        logger.warning(
-            "JASPER_TTS_GAIN_DB=%s is DEPRECATED. After PR #294 lifted "
-            "the master ceiling off the music-playing branch, this env "
-            "var only affects silence-fallback TTS level — a rarely-hit "
-            "case. Default 0 is correct for almost all setups. See "
-            "docs/audio-paths.md 'Ceiling policy is branch-specific'.",
-            cfg.tts_gain_db,
-        )
     # Silence threshold must sit somewhere in "no music" territory.
     # 0 dBFS or higher is meaningless (nothing is louder than full-scale).
     if cfg.tts_silence_threshold_dbfs >= 0.0:
@@ -177,7 +145,6 @@ class Config:
     tts_transport: str
     tts_outputd_socket: str
     tts_output_rate: int
-    tts_gain_db: float
     tts_music_headroom_db: float
     tts_silence_threshold_dbfs: float
     tts_music_window_sec: float
@@ -557,13 +524,6 @@ class Config:
             # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz
             # before write (factor 2, exact integer ratio).
             tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
-            # DEPRECATED — see warning in validate_config below. After
-            # PR #294 lifted the master ceiling off the music-playing
-            # branch, this only affects silence-fallback (rarely-hit).
-            # Default 0; positive values rejected; negative values log
-            # a one-shot deprecation warning at startup. Will be
-            # removed once unused.
-            tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", 0.0),
             # When music is playing, TtsVolumeTracker sizes TTS to a
             # headroom above the windowed RMS of CamillaDSP's playback
             # signal — so TTS scales with whatever music is actually
@@ -586,8 +546,8 @@ class Config:
                 "JASPER_TTS_MUSIC_HEADROOM_DB", 5.0,
             ),
             # Below this windowed RMS, the tracker treats the room as
-            # silent and falls back to the legacy "main_volume +
-            # tts_gain_db" formula. Camilla reports very negative
+            # silent and falls back to a main_volume ceiling (the
+            # anchor / no-anchor branches). Camilla reports very negative
             # dBFS during silence (we've measured -53 dBFS noise
             # floor); -50 dBFS is comfortably above that and well
             # below any audible music level.
