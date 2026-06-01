@@ -130,11 +130,15 @@ screen, not a tab.)
    **Capital city** (this also sets the WiFi country, so pick one in
    their actual region), **Time zone** (auto-fills from city, confirm
    or override), **Keyboard layout** (auto-fills, confirm).
-6. **Customisation → User**: **Username** `pi` (JTS scripts default
-   to this), **Password** (any — it's a fallback; SSH uses pubkey),
-   **Confirm password**, and ✅ **check "Enable passwordless sudo"**.
-   This is load-bearing: `install.sh` runs `sudo` over SSH and will
-   hang on a password prompt without it.
+6. **Customisation → User**: **Username** `pi` (JTS's beginner path
+   defaults to this), **Password** (any — it's a fallback; SSH uses
+   pubkey), **Confirm password**. Recommend ✅ **"Enable passwordless
+   sudo"** for unattended deploys. If they leave it unchecked, the
+   deploy script can still prompt for the sudo password through an
+   interactive SSH session and will not store it. Do not suggest a
+   custom username to beginners: `--user` / `PI_USER` is advanced and
+   currently supported for onboarding/deploy only; some diagnostics may
+   still assume `pi` or `/home/pi`.
 7. **Customisation → Wi-Fi**: leave "Secure network" selected.
    **SSID** (auto-detected from the laptop's WiFi if available),
    **Password**, **Confirm**. Leave "Hidden SSID" unchecked.
@@ -199,6 +203,16 @@ pass `--adopt`:
 bash scripts/onboard.sh <hostname>.local --adopt
 ```
 
+If you only found the Pi by IP, prefer an explicit speaker identity:
+
+```sh
+bash scripts/onboard.sh <ip-address> --adopt --speaker-hostname <hostname>.local
+```
+
+Without `--speaker-hostname`, the script queries the Pi's hostname and
+uses that for `JASPER_HOSTNAME`; it must never use the IP address as
+the speaker identity/certificate name.
+
 Stream the output. The script emits both `==>` headers (human-readable
 phase milestones) and `event=onboard.<phase> status=<s>` lines
 (parseable; same convention as the Pi-side daemons). Expect 15-20
@@ -250,10 +264,10 @@ Surface these at the right phase, before the user can hit them:
 - **Hostname collision**: if Phase 0 found an existing speaker, NEVER
   let the user pick that hostname again. Avahi silently suffix-resolves
   and breaks URL discovery. Suggest `jts2`, `kitchen`, etc.
-- **Password in Imager**: works but requires `--adopt` later, which
-  exposes the password to `ssh-copy-id`. Pubkey is the canonical
-  path; only fall back to password if the user pushes back on
-  pubkey setup.
+- **Password in Imager**: works, but requires `--adopt` later to install
+  a pubkey. Passwordless sudo is optional for friendly interactive
+  setup; it is required only for unattended deploys. The scripts
+  intentionally do not install broad sudoers rules.
 - **USB-C → USB-C cables for gadget-mode rescue**: hit kernel bug
   [raspberrypi/linux#6289](https://github.com/raspberrypi/linux/issues/6289).
   Use USB-A → USB-C only. Power the Pi from the GPIO 5V/GND header,

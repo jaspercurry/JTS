@@ -6,8 +6,8 @@
 # Prerequisites:
 #   - Raspberry Pi Imager 2.0.6 or later (older 2.0.x have an open
 #     pubkey-breaks-customization bug on Trixie — see QUICKSTART.md)
-#   - Imager's OS Customization sets hostname + WiFi + your SSH
-#     pubkey (Use public-key authentication, NOT password)
+#   - Imager's OS Customization sets hostname + WiFi. Pubkey SSH is
+#     preferred; password-only Pis can be adopted with --adopt.
 #   - Pi powered on, joined WiFi, reachable on the LAN
 #   - A local SSH keypair (~/.ssh/id_ed25519.pub or id_rsa.pub)
 #
@@ -16,16 +16,23 @@
 #   bash scripts/onboard.sh 192.168.1.55           # if mDNS doesn't resolve
 #   bash scripts/onboard.sh jts2.local             # multi-Pi: same command, new host
 #   bash scripts/onboard.sh jts.local --adopt      # existing Pi w/ password only
+#   bash scripts/onboard.sh 192.168.1.55 --speaker-hostname jts.local
+#   bash scripts/onboard.sh jts.local --user pi    # advanced; see note below
 #   bash scripts/onboard.sh jts.local --no-install # state-only, skip install.sh
 #   bash scripts/onboard.sh --help
 #
-# CI / headless mode: this script is already non-interactive after the
-# hostname arg — `--adopt` is the only interactive prompt (password
-# for ssh-copy-id) and is opt-in. For fully unattended re-imaging,
-# pre-populate the Pi's ~/.ssh/authorized_keys via Pi Imager's pubkey
-# field and omit --adopt; the script will run end-to-end without
-# stdin. The structured `event=onboard.<phase>` log lines parse with
-# the same tools that consume the Pi-side daemon logs.
+# User boundary: the beginner/fresh-appliance path is username `pi`.
+# --user / PI_USER is advanced and currently supported for onboarding
+# and deploy only; some diagnostics/operator scripts still assume `pi`
+# or `/home/pi`.
+#
+# CI / headless mode: for fully unattended re-imaging, pre-populate
+# the Pi's ~/.ssh/authorized_keys via Pi Imager's pubkey field, enable
+# passwordless sudo, and omit --adopt; deploy-to-pi.sh explicitly
+# preflights `sudo -n true` before upload. Friendly mode can adopt a
+# password-only Pi and later prompt for sudo over ssh -tt without
+# storing the password. The structured `event=onboard.<phase>` log
+# lines parse with the same tools that consume the Pi-side daemon logs.
 #
 # What it does, in order:
 #   1. probe        — pings hostname; on failure, prints the four-rung
@@ -36,7 +43,10 @@
 #                     only Pis being adopted
 #   3. persist      — appends Host alias to ~/.ssh/config (idempotent),
 #                     writes .env.local and CLAUDE.local.md at the repo
-#                     root (both gitignored)
+#                     root (both gitignored). PI_HOST is the SSH target;
+#                     JASPER_HOSTNAME is the speaker identity. If the
+#                     SSH target is an IP, query the Pi hostname or use
+#                     --speaker-hostname.
 #   4. install      — calls scripts/deploy-to-pi.sh (~15-20 min — the
 #                     time is dominated by shairport-sync source-build)
 #   5. validate     — runs jasper-doctor on the Pi and surfaces verdict
@@ -65,12 +75,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 HOST=""
 USER_ARG=""
+SPEAKER_HOSTNAME_ARG=""
 ADOPT=0
 NO_INSTALL=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --adopt)         ADOPT=1; shift ;;
-        --user)          USER_ARG="$2"; shift 2 ;;
+        --user)
+            if [[ $# -lt 2 ]]; then
+                echo "onboard: --user requires a value" >&2
+                exit 2
+            fi
+            USER_ARG="$2"; shift 2
+            ;;
+        --speaker-hostname)
+            if [[ $# -lt 2 ]]; then
+                echo "onboard: --speaker-hostname requires a value" >&2
+                exit 2
+            fi
+            SPEAKER_HOSTNAME_ARG="$2"; shift 2
+            ;;
         --no-install)    NO_INSTALL=1; shift ;;
         --help|-h)
             # Print the in-source Usage block. ERE for portability —
@@ -109,7 +133,7 @@ fi
 # Alias derivation: hostname.local → hostname. Skip alias for raw
 # IPs (an `ssh 192-168-1-55` alias would be more confusing than
 # helpful — just use the raw IP).
-if [[ "$HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if is_ipv4_host "$HOST"; then
     ALIAS=""
     IS_IP=1
 else
@@ -251,6 +275,56 @@ fi
 echo "    ok"
 log_event auth ok "mode=pubkey"
 
+# ---- phase 2.5: speaker identity --------------------------------------
+
+resolve_speaker_hostname() {
+    local normalized remote_hostname
+    if [[ -n "$SPEAKER_HOSTNAME_ARG" ]]; then
+        if ! normalized="$(normalize_speaker_hostname "$SPEAKER_HOSTNAME_ARG")"; then
+            echo "onboard: --speaker-hostname must be a hostname, not an IP: ${SPEAKER_HOSTNAME_ARG}" >&2
+            exit 2
+        fi
+        printf '%s\n' "$normalized"
+        return 0
+    fi
+
+    if [[ "$IS_IP" == "0" ]]; then
+        normalize_speaker_hostname "$HOST"
+        return 0
+    fi
+
+    echo "==> resolve speaker hostname from ${PI_USER}@${HOST}" >&2
+    if ! remote_hostname="$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+            "${PI_USER}@${HOST}" 'hostname -s 2>/dev/null || hostname' 2>/dev/null)"; then
+        cat <<EOF >&2
+onboard: connected by IP, but could not query the Pi hostname.
+
+Re-run with the speaker's intended mDNS hostname so deploy does not
+use the IP address as the speaker identity/certificate name:
+
+    bash scripts/onboard.sh ${HOST} --speaker-hostname jts.local
+EOF
+        exit 1
+    fi
+    remote_hostname="${remote_hostname%%$'\n'*}"
+    if ! normalized="$(normalize_speaker_hostname "$remote_hostname")"; then
+        cat <<EOF >&2
+onboard: connected by IP, but the Pi reported an unusable hostname:
+    ${remote_hostname}
+
+Re-run with the intended speaker hostname:
+
+    bash scripts/onboard.sh ${HOST} --speaker-hostname jts.local
+EOF
+        exit 1
+    fi
+    echo "    speaker hostname: ${normalized} (from remote hostname '${remote_hostname}')" >&2
+    printf '%s\n' "$normalized"
+}
+
+SPEAKER_HOSTNAME="$(resolve_speaker_hostname)"
+log_event identity ok "ssh_target=${HOST} speaker_hostname=${SPEAKER_HOSTNAME}"
+
 # ---- phase 3: persist state -------------------------------------------
 
 echo "==> persist laptop state"
@@ -286,7 +360,7 @@ fi
 # this script and scripts/use stay in sync.
 echo "    ${REPO_ROOT}/.env.local"
 echo "    ${REPO_ROOT}/CLAUDE.local.md"
-write_laptop_state "$HOST" "$PI_USER" "$ALIAS"
+write_laptop_state "$HOST" "$PI_USER" "$ALIAS" "$SPEAKER_HOSTNAME"
 log_event persist ok "files=ssh_config,env.local,CLAUDE.local.md"
 
 # ---- phase 4: install --------------------------------------------------
@@ -309,7 +383,7 @@ echo
 # Export PI_HOST/PI_USER for deploy-to-pi.sh. The two scripts share
 # the same env-var contract; this is just being explicit so a future
 # refactor of _lib.sh doesn't surprise either side.
-if ! PI_HOST="$HOST" PI_USER="$PI_USER" bash "${SCRIPT_DIR}/deploy-to-pi.sh"; then
+if ! PI_HOST="$HOST" PI_USER="$PI_USER" JASPER_HOSTNAME="$SPEAKER_HOSTNAME" bash "${SCRIPT_DIR}/deploy-to-pi.sh"; then
     echo
     echo "onboard: deploy-to-pi.sh exited non-zero — see output above" >&2
     echo "         re-run after fixing; install.sh is idempotent" >&2
@@ -325,7 +399,21 @@ echo "==> validate with jasper-doctor"
 # Soft-fail: a warn from doctor (e.g. 2-ch firmware, no API key
 # configured yet) shouldn't fail onboarding. The user sees the output
 # and can decide what to address next.
-if ssh "${PI_USER}@${HOST}" 'sudo /opt/jasper/.venv/bin/jasper-doctor'; then
+DOCTOR_CMD="sudo -n /opt/jasper/.venv/bin/jasper-doctor"
+if ssh -o BatchMode=yes "${PI_USER}@${HOST}" 'sudo -n true' >/dev/null 2>&1; then
+    DOCTOR_SSH=(ssh "${PI_USER}@${HOST}")
+elif [[ -t 0 ]]; then
+    DOCTOR_CMD="sudo /opt/jasper/.venv/bin/jasper-doctor"
+    DOCTOR_SSH=(ssh -tt "${PI_USER}@${HOST}")
+else
+    DOCTOR_SSH=()
+fi
+
+if [[ "${#DOCTOR_SSH[@]}" -eq 0 ]]; then
+    echo
+    echo "    (skipping doctor: sudo needs a password and this is not an interactive terminal)"
+    log_event validate warn "reason=sudo_requires_tty"
+elif "${DOCTOR_SSH[@]}" "$DOCTOR_CMD"; then
     log_event validate ok
 else
     echo
@@ -341,6 +429,12 @@ if [[ "$IS_IP" == "0" ]]; then
 else
     SSH_HOWTO="ssh ${PI_USER}@${HOST}"
 fi
+if [[ "$HOST" == "$SPEAKER_HOSTNAME" ]]; then
+    URL_HOST="$HOST"
+else
+    URL_HOST="$HOST"
+    ALT_URL_NOTE="  Speaker hostname: ${SPEAKER_HOSTNAME} (identity/cert; use http://${SPEAKER_HOSTNAME}/ once mDNS resolves)"
+fi
 
 cat <<EOF
 
@@ -348,13 +442,14 @@ cat <<EOF
 JTS onboarding complete: ${HOST}
 
   SSH:               ${SSH_HOWTO}
+${ALT_URL_NOTE:-}
   Build manifest:    ${SSH_HOWTO} 'sudo cat /var/lib/jasper/build.txt'
 
 Next steps (visit from any device on the LAN):
-  http://${HOST}/voice/      pick a voice provider + paste API key
-  http://${HOST}/transit/    NYC subway / bus / Citi Bike (optional)
-  http://${HOST}/spotify/    connect a Spotify account (optional)
-  http://${HOST}/system/     dashboard, dial onboarding, status
+  http://${URL_HOST}/voice/      pick a voice provider + paste API key
+  http://${URL_HOST}/transit/    NYC subway / bus / Citi Bike (optional)
+  http://${URL_HOST}/spotify/    connect a Spotify account (optional)
+  http://${URL_HOST}/system/     dashboard, dial onboarding, status
 
 Future Claude Code sessions in this checkout will read
 CLAUDE.local.md automatically and know that ${HOST} is the
