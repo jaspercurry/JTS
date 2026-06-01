@@ -805,8 +805,12 @@ from `jasper/audio_profile_state.py`, XVF3800 mic identity/firmware
 channel facts, selected corpus profile/legs with `jasper/wake_legs.py`
 kind + wake-input semantics, outputd/DAC/reference env, and optional
 validation-artifact status from
-`/var/lib/jasper/audio_validation/latest.json` when a future validation
-stream writes it. Each new clip also stores its session `selected_legs`
+`/var/lib/jasper/audio-validation/latest.json` when that pointer is
+valid/current/matching, with a fallback to the newest matching
+timestamped schema-v1 artifact in that directory, after the bounded
+readiness producer (`jasper-audio-validate`) or a future full
+hardware-validation runner writes it. Each new clip also stores its
+session `selected_legs`
 and the same `audio_context` snapshot beside `capture_health`, so a clip
 copied out of band still carries enough profile truth to interpret it.
 Old sessions without these fields remain valid; loaders and the audit
@@ -1801,4 +1805,5 @@ and DAC/reference validation status once that validation stream exists.
 Last verified: 2026-06-01 (v31 — wake-corpus metadata schema and audit
 contract rechecked against `jasper/web/wake_corpus_setup.py`,
 `jasper/wake_legs.py`, and `scripts/_audit_wake_corpus.py`; validation
-artifact production remains a future stream.)
+artifact summaries now read the bounded `jasper/audio_validation.py`
+readiness stream.)

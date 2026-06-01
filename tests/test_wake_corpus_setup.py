@@ -441,12 +441,15 @@ def test_metadata_records_audio_context_snapshot(
     validation_path = tmp_path / "audio_validation.json"
     validation_path.write_text(json.dumps({
         "schema_version": 1,
-        "artifact_id": "validation-123",
         "validated_at": "2026-06-01T12:00:00Z",
         "profile": "xvf_chip_aec",
         "status": "pass",
-        "hardware": {"mic": "xvf3800", "dac": "apple_usb_c_dongle"},
-        "checks": {"drift_ppm_30m": 0.9},
+        "hardware": {
+            "mic_id": "xvf3800",
+            "dac_id": "apple_usb_c_dongle",
+        },
+        "checks": {"measured_drift_delay": {"status": "pass"}},
+        "recommendation": "chip_aec_validated",
     }))
     monkeypatch.setattr(wake_corpus_setup, "AEC_MODE_PATH", aec_mode_path)
     monkeypatch.setattr(
@@ -499,7 +502,9 @@ def test_metadata_records_audio_context_snapshot(
     )
     assert context["dac_reference"]["reference"]["source"] == "outputd_udp"
     assert context["dac_reference"]["validation"]["status"] == "pass"
-    assert context["dac_reference"]["validation"]["artifact_id"] == "validation-123"
+    assert context["dac_reference"]["validation"]["hardware"]["dac_id"] == (
+        "apple_usb_c_dongle"
+    )
     details = {
         item["token"]: item
         for item in context["corpus"]["leg_details"]

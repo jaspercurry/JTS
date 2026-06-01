@@ -63,6 +63,7 @@ from ..audio_profile_state import (
     parse_env_bool as _parse_audio_profile_bool,
     runtime_env_from_mapping,
 )
+from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -659,6 +660,7 @@ def _aec_full_status() -> dict:
         bridge_active=bridge_active,
         chip_available=chip_available,
     )
+    requested_profile = profile_status["audio_profile"].get("requested")
     return {
         "mode": state["mode"],
         "bridge_active": bridge_active,
@@ -674,6 +676,9 @@ def _aec_full_status() -> dict:
         "wake_word": _read_wake_word_status(),
         "audio_profile": profile_status["audio_profile"],
         "microphone": profile_status["microphone"],
+        "validation": _audio_validation_summary(
+            requested_profile=requested_profile,
+        ),
     }
 
 

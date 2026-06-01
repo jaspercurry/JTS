@@ -41,12 +41,56 @@ via `/wake/`.
   passing and runtime wake legs armed as `on`, `chip_aec_150`, and
   `chip_aec_210`.
 
+**Code-level readiness surface added 2026-06-01.**
+`jasper-audio-validate` writes a bounded readiness snapshot as an
+immutable timestamped schema-v1 artifact under
+`/var/lib/jasper/audio-validation/` and updates `latest.json` as the
+cheap status-surface pointer. It uses already-exposed runtime state
+(profile/env truth, service state, outputd reference outputs, bridge
+counters, wake legs, recent drift-warning evidence when journaled, and
+Pi/build identity for attribution). It is advisory, reports clean
+runtime readiness as `status=warn` /
+`recommendation=run_hardware_validation`, and does not play calibration
+audio or write/persist XVF chip settings. This is not a substitute for
+the Pi-verified drift/delay and wake-telemetry gate below.
+
+**Operator hardware-validation surface added 2026-06-01.**
+`jasper-audio-hw-validate` is the bounded production validation runner
+for this path. It is never launched automatically by doctor, `/aec`,
+deploy, startup, or the reconciler. Run it explicitly:
+
+```sh
+jasper-audio-hw-validate --dry-run
+sudo jasper-audio-hw-validate --duration-seconds 10 --stdout
+sudo jasper-audio-hw-validate --long-window --stdout
+```
+
+The runner samples already-running outputd chip-reference health and
+AEC bridge counters, then polls read-only XVF chip profile/convergence
+state only after chip-AEC is requested/active and runtime/reference
+health passes. `--duration-seconds` is the passive outputd/bridge
+observation window, not a hard total wall-clock cap; bounded XVF
+readback/poll subprocesses may add time. It refuses inactive chip-AEC
+unless `--force` is passed. It writes timestamped schema-v1 artifacts
+through `jasper/audio_validation.py` and updates `latest.json` only as
+the status-surface pointer. It does not generate playback, open capture
+loops, or call XVF write/persist commands (`SAVE_CONFIGURATION` and
+`REBOOT` remain forbidden). Fixed-delay and long-window drift evidence
+remain `not_run` until an explicit operator-confirmed playback/capture
+probe lands, so clean passive evidence still produces a partial
+`status=warn` artifact with `recommendation=run_drift_delay_validation`.
+Passive `AEC_AECCONVERGED=0` is reported as `not_observed`, not failure,
+because the runner may not have observed meaningful far-end audio.
+
 **What remains is validation, not plumbing.** Keep chip-AEC opt-in until
 a fresh telemetry window shows its recall / false-accept contribution:
 record normal use and wake tests with music, fetch the wake-event
 corpus, run `scripts/analyze-three-leg.sh`, and inspect solo saves plus
-false fires for `chip_aec_150` and `chip_aec_210`. A default-ON flip for
-XVF installs is data-gated on that review.
+false fires for `chip_aec_150` and `chip_aec_210`. The readiness
+and hardware-validation artifacts are the operator-visible product
+state; the default-ON flip still requires measured wake telemetry plus
+long-window DAC drift and delay-stability evidence from an explicit
+playback/capture validation run.
 
 The topology diagram below still records the original 2026-05-23
 dmix-era experiment shape, not the current 2026-05-26 fan-in /

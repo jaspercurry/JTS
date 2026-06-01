@@ -66,7 +66,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from jasper import wake_legs
+from jasper import audio_validation, wake_legs
 from jasper.audio_profile_state import (
     AecIntent,
     MicProbe,
@@ -262,7 +262,7 @@ BRIDGE_STATS_PATH = Path(os.environ.get(
 ))
 AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
     "JASPER_AUDIO_VALIDATION_ARTIFACT",
-    "/var/lib/jasper/audio_validation/latest.json",
+    str(audio_validation.DEFAULT_ARTIFACT_DIR),
 ))
 METADATA_SCHEMA_VERSION = 2
 AUDIO_CONTEXT_SCHEMA_VERSION = 1
@@ -610,50 +610,14 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
 def _validation_artifact_summary(
     path: Path | None = None,
 ) -> dict[str, Any]:
-    """Read optional future profile-validation output, if present.
+    """Read optional profile-validation output, if present.
 
-    The validation stream does not exist yet everywhere. Corpus metadata
-    therefore records a stable unknown/missing shape instead of making
-    session creation depend on that stream.
+    The validation stream does not exist yet everywhere, and readiness
+    snapshots are advisory. Corpus metadata therefore records a stable
+    unknown/missing shape instead of making session creation depend on it.
     """
     path = path or AUDIO_VALIDATION_ARTIFACT_PATH
-    base: dict[str, Any] = {
-        "available": False,
-        "status": "unknown",
-        "artifact_path": str(path),
-    }
-    try:
-        data = json.loads(path.read_text())
-    except FileNotFoundError:
-        return {**base, "reason": "artifact not found"}
-    except (OSError, json.JSONDecodeError) as e:
-        return {**base, "reason": f"artifact unreadable: {e}"}
-    if not isinstance(data, dict):
-        return {**base, "reason": "artifact is not a JSON object"}
-
-    def first(*keys: str) -> Any:
-        for key in keys:
-            if key in data:
-                return data[key]
-        return None
-
-    summary = {
-        **base,
-        "available": True,
-        "status": str(first("status", "result") or "unknown"),
-        "schema_version": first("schema_version", "version"),
-        "artifact_id": first("artifact_id", "id", "validation_id"),
-        "validated_at": first("validated_at", "timestamp", "created_at"),
-        "profile": first("profile", "audio_profile"),
-        "recommendation": first("recommendation", "recommended_action"),
-    }
-    hardware = data.get("hardware")
-    if isinstance(hardware, dict):
-        summary["hardware"] = hardware
-    checks = data.get("checks")
-    if isinstance(checks, dict):
-        summary["checks"] = checks
-    return summary
+    return audio_validation.latest_artifact_summary(path=path)
 
 
 def _int_env(
