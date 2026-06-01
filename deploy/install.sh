@@ -1043,6 +1043,9 @@ install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     install -d -m 0750 "${STATE_DIR}"
     install -d -m 0750 "${ENV_DIR}"
+    # Non-secret, manually inspectable validation reports for mic/DAC/profile
+    # readiness. Writers use atomic timestamped JSON files.
+    install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
 
     # Build manifest — captures the git SHA + install timestamp at the
     # moment install.sh ran. The /system dashboard reads this to show

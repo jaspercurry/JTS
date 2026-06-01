@@ -79,6 +79,13 @@ The foundation is partly built:
   chip-AEC beam forwarding, UDP leg emission, and corpus-only streams.
 - `jasper-outputd` owns final DAC playback and, in chip-AEC mode,
   fans the final speaker buffer to the XVF3800 USB-IN reference path.
+- `jasper/audio_profile_state.py` is the first read-only profile
+  classifier. It turns already-observed facts into shared status
+  vocabulary without opening devices, calling systemd, or writing files.
+- `jasper/audio_validation.py` owns the first validation artifact
+  schema and helpers: schema-v1 parsing, atomic timestamped JSON writes,
+  latest-artifact lookup, and freshness/staleness checks. It does not
+  run drift/delay validation.
 - `/wake/`, `/aec`, `jasper-doctor`, wake telemetry, and the corpus UI
   expose pieces of this state.
 
@@ -86,9 +93,11 @@ The gaps are exactly where future hardware support would hurt:
 
 - Mic capability facts are not yet rich enough to describe generic
   USB mics, hardware-AEC mics, or "raw only" mics in one place.
-- DAC capability/validation facts do not yet have a first-class home.
-  The Apple dongle and HiFiBerry DAC8x reasoning currently lives in
-  docs and lab scripts rather than a durable runtime artifact.
+- DAC capability/validation facts now have a durable artifact home, but
+  the measured validator that writes real pass/fail drift and delay
+  reports is still pending. The Apple dongle and HiFiBerry DAC8x
+  reasoning currently lives in docs and lab scripts until that runner
+  exists.
 - "Intent" and "observed runtime truth" are still spread across env
   files, systemd state, chip read-backs, outputd health, bridge logs,
   wake legs, and dashboard cards.
@@ -197,16 +206,21 @@ Each profile should declare:
 
 ### `ValidationArtifact`
 
-Small JSON written under `/var/lib/jasper/`, probably one file per
-validation type:
+Implemented foundation: small timestamped JSON files under
+`/var/lib/jasper/audio-validation/`, created by
+`jasper/audio_validation.py::write_artifact`. `deploy/install.sh`
+creates the directory as `root:root` mode `0755`; the files are
+non-secret, manually inspectable JSON for operators with root/sudo
+access, since the parent `/var/lib/jasper` remains mode `0750`. Tests
+must pass a tmp directory and must not write live `/var/lib/jasper`.
 
 ```json
 {
   "schema_version": 1,
-  "validated_at": "2026-06-01T12:00:00-04:00",
+  "validated_at": "2026-06-01T16:00:00Z",
   "hardware": {
-    "mic": "xvf3800",
-    "dac": "apple_usb_c_dongle"
+    "mic_id": "xvf3800",
+    "dac_id": "apple_usb_c_dongle"
   },
   "profile": "xvf_chip_aec",
   "status": "pass",
@@ -216,12 +230,29 @@ validation type:
     "drift_ppm_30m": 0.9,
     "delay_stability_ms_30m": 0.4
   },
-  "recommendation": "chip_aec_viable"
+  "recommendation": "chip_aec_viable",
+  "notes": [
+    "direct source fanout lab pass"
+  ]
 }
 ```
 
-This artifact should be cheap to read from `/aec`, `/wake/`, `/state`,
-and `jasper-doctor`.
+Required fields are `schema_version`, `validated_at`, `hardware.mic_id`,
+`hardware.dac_id`, `profile`, `status`, `checks`, and `recommendation`.
+`status` is one of `pass`, `warn`, `fail`, or `unknown`. `checks` is an
+open JSON object so the future DAC drift/delay runner can store measured
+numbers such as `drift_ppm_30m` without revising the schema. `notes` and
+`errors` are optional string lists.
+
+Readers should use `load_artifact` or `load_latest_artifact`; both return
+a non-throwing `ArtifactLoadResult` for missing, malformed, future-dated,
+loaded, and stale artifacts. The default staleness window is 30 days,
+with a 5-minute future-skew allowance for clock jitter; consumers that
+gate a specific profile can pass tighter or looser thresholds. Treat
+`ArtifactLoadResult.ok` as "loaded and fresh" only; use `has_artifact`
+when stale/future artifacts should still be displayed for diagnosis.
+This artifact is designed to be cheap to read from `/aec`, `/wake/`,
+`/state`, and `jasper-doctor`, but those consumers are not wired yet.
 
 ---
 
@@ -314,6 +345,9 @@ Goal: expose a single "what is true right now" view.
 
 Goal: turn lab checks into durable product state.
 
+- Schema-v1 read/write/parse/freshness helpers exist in
+  `jasper/audio_validation.py`; they are hardware-free and do not mutate
+  audio services.
 - Add a DAC validation command/report for chip-AEC viability:
   - play controlled source through outputd fanout;
   - measure ref→air→mic drift over short and long windows;
@@ -325,7 +359,8 @@ Goal: turn lab checks into durable product state.
   - RMS not silent;
   - clipping/AGC suspicion;
   - software AEC3 baseline if applicable.
-- Store timestamped JSON artifacts under `/var/lib/jasper/`.
+- Store measured reports as timestamped JSON artifacts under
+  `/var/lib/jasper/audio-validation/`.
 - Doctor warns on missing/stale/failed validation only when the user has
   requested a profile that depends on it.
 
@@ -461,18 +496,25 @@ against clear metrics.
 
 ---
 
-## Immediate Next Sprint
+## Immediate Next Slices
 
-1. **Audit duplicated truth.** Produce a short table of where mic/DAC/AEC
-   facts are currently encoded and which one should own each fact.
-2. **Add a read-only `audio_profile_state` helper.** It should have no
-   side effects and should be cheap enough for `/state`.
-3. **Wire one consumer first.** Prefer `/aec` or doctor, because they
-   already explain AEC state and can expose intent-vs-observed truth.
-4. **Add validation artifact schema only.** Do not build the full
-   validation runner until the state helper has a home.
-5. **Then add the DAC validation command.** Reuse the chip-AEC drift
-   methodology; keep it bounded and Pi-safe.
+Completed foundation slices:
+
+1. **Audit duplicated truth.** The Phase 0 inventory table above captures
+   the current duplication seams and desired owners.
+2. **Add a read-only `audio_profile_state` helper.** The helper exists and
+   is side-effect-free.
+3. **Add validation artifact schema only.** The schema and Python helpers
+   exist in `jasper/audio_validation.py`; no drift/delay runner was added.
+
+Next implementation slices:
+
+1. Feed the latest validation artifact into the read-only runtime state
+   builder.
+2. Wire one consumer first. Prefer `/aec` or doctor, because they already
+   explain AEC state and can expose intent-vs-observed truth.
+3. Add the DAC validation command. Reuse the chip-AEC drift methodology;
+   keep it bounded and Pi-safe.
 
 ---
 
