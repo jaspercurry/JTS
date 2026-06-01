@@ -645,6 +645,9 @@ fine, surface the exact fix when not):
 - **XVF mixer state** — kernel ALSA mixer can have ch2-5 muted
   even when firmware is 6-ch (a trap on chips flashed 2-ch → 6-ch
   mid-bringup). Reconciler self-heals; doctor flags drift.
+- **Audio profile** — read-only intent-vs-runtime truth from the same
+  classifier as `/aec` and `/state.aec`: requested profile, active
+  profile, session source, wake legs, and any pending/unavailable warning.
 - **AEC bridge service** — software AEC is the *desired* state, so:
   - `ok (running)` — bridge active, AEC on
   - `ok (disabled JASPER_AEC_MODE=disabled)` — explicit operator opt-out
@@ -922,9 +925,10 @@ see "The reconciler step matters" below).
 sudo systemctl start jasper-aec-reconcile
 
 # Confirm everything's healthy:
-sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(AEC bridge|XVF)'
-# Expect three "✓" lines:
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(Audio profile|AEC bridge|XVF)'
+# Expect four "✓" lines:
 #   AEC bridge service       running (software AEC enabled)
+#   Audio profile            requested=xvf_software_aec3, active=xvf_software_aec3, ...
 #   XVF firmware 6-ch        capture is 6-channel
 #   XVF mixer state          all 6 capture channels open
 ```

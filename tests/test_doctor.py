@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from jasper.audio_profile_state import MicProbe
 from jasper.cli import doctor
 from jasper.config import Config
 from jasper.correction import bundles
@@ -2380,6 +2381,82 @@ def test_assess_wake_legs_chip_aec_intent_when_daemon_unreachable():
     assert "chip_aec_150" in r.detail
     # raw is on but mutual exclusion means it isn't part of the chip config.
     assert "raw" not in r.detail
+
+
+# ---------------------------------------------------------------------------
+# Audio profile runtime truth — shared classifier used by /aec and doctor
+# ---------------------------------------------------------------------------
+
+
+def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
+    monkeypatch.setattr(doctor, "_aec_mode_setting", lambda: "auto")
+    settings = {
+        "JASPER_WAKE_LEG_RAW": True,
+        "JASPER_WAKE_LEG_DTLN": False,
+        "JASPER_WAKE_LEG_CHIP_AEC": True,
+    }
+    monkeypatch.setattr(
+        doctor,
+        "_wake_leg_setting",
+        lambda key, default: settings.get(key, default),
+    )
+
+    status = doctor._audio_profile_status_for_doctor(
+        bridge_active=True,
+        env={
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
+            "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
+        },
+        mic_probe=MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+        ),
+    )
+    result = doctor._assess_audio_profile(status)
+
+    assert result.status == "ok"
+    assert "requested=xvf_chip_aec" in result.detail
+    assert "active=xvf_chip_aec" in result.detail
+    assert "Chip AEC 150 beam via :9876" in result.detail
+
+
+def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
+    monkeypatch.setattr(doctor, "_aec_mode_setting", lambda: "auto")
+    settings = {
+        "JASPER_WAKE_LEG_RAW": True,
+        "JASPER_WAKE_LEG_DTLN": False,
+        "JASPER_WAKE_LEG_CHIP_AEC": True,
+    }
+    monkeypatch.setattr(
+        doctor,
+        "_wake_leg_setting",
+        lambda key, default: settings.get(key, default),
+    )
+
+    status = doctor._audio_profile_status_for_doctor(
+        bridge_active=True,
+        env={
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+            "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
+            "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
+        },
+        mic_probe=MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+        ),
+    )
+    result = doctor._assess_audio_profile(status)
+
+    assert result.status == "warn"
+    assert "active=none" in result.detail
+    assert "not applied" in result.detail
 
 
 def test_pricing_ok_when_active_model_priced(monkeypatch):

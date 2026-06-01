@@ -610,6 +610,15 @@ def _audio_profile_status(
     )
 
 
+def _chip_aec_available() -> bool:
+    """True when the XVF3800 exposes the chip-AEC beam firmware shape."""
+    try:
+        from ..mics import xvf3800
+        return xvf3800.is_recommended_firmware()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _mic_status(
     state: dict[str, Any],
     *,
@@ -644,11 +653,7 @@ def _aec_full_status() -> dict:
     # is_recommended_firmware() reads /proc/asound and returns False when the
     # card is absent or on the 2-ch variant; wrap defensively so a probe
     # failure can never 500 a status GET the /wake/ page polls every 3 s.
-    try:
-        from ..mics import xvf3800
-        chip_available = xvf3800.is_recommended_firmware()
-    except Exception:  # noqa: BLE001
-        chip_available = False
+    chip_available = _chip_aec_available()
     profile_status = _audio_profile_status(
         state,
         bridge_active=bridge_active,
@@ -1233,6 +1238,14 @@ async def _get_state(
         ):
             return None
 
+    async def _aec_status() -> dict | None:
+        """Additive mirror of GET /aec for one-shot /state consumers."""
+        try:
+            return await asyncio.to_thread(_aec_full_status)
+        except Exception:  # noqa: BLE001
+            logger.exception("AEC/profile state probe failed")
+            return None
+
     (
         camilla_st,
         airplay,
@@ -1242,6 +1255,7 @@ async def _get_state(
         fanin_st,
         outputd_st,
         mux_st,
+        aec_status,
     ) = await asyncio.gather(
         _camilla_status(),
         _airplay_playing(),
@@ -1251,6 +1265,7 @@ async def _get_state(
         _fanin_status(),
         _outputd_status(),
         _mux_status(),
+        _aec_status(),
     )
 
     spotify_blob = librespot_state.read(
@@ -1402,6 +1417,10 @@ async def _get_state(
         # Final-output owner on current main. null when the daemon/socket
         # is unavailable; jasper-doctor owns the actionable failure.
         "outputd": outputd_st,
+        # Additive mirror of GET /aec so one-shot /state consumers can see
+        # requested intent vs observed mic/profile runtime truth without a
+        # second control-plane request. null only when the probe itself fails.
+        "aec": aec_status,
         "source_selection": mux_st,
         "satellites": {
             "dial": dial,

@@ -81,6 +81,12 @@ The foundation is partly built:
   fans the final speaker buffer to the XVF3800 USB-IN reference path.
 - `/wake/`, `/aec`, `jasper-doctor`, wake telemetry, and the corpus UI
   expose pieces of this state.
+- `jasper/audio_profile_state.py` is the first shared read-only
+  classifier for intent vs observed runtime truth. It now feeds `/aec`,
+  `/state.aec`, `/wake/` via the existing `/aec` proxy, and the
+  `jasper-doctor` "Audio profile" check so those status surfaces report
+  the same requested/active profile, session source, wake legs, and
+  warnings.
 
 The gaps are exactly where future hardware support would hurt:
 
@@ -259,6 +265,7 @@ code pass:
 | Outputd chip-reference PCM / UDP reference env | `deploy/bin/jasper-aec-reconcile`; `rust/jasper-outputd/src/config.rs`; `/wake-corpus/` env writer | Audio profile should declare desired reference outputs; outputd config remains execution detail. |
 | Outputd reference health counters | `rust/jasper-outputd/src/main.rs` logs; `rust/jasper-outputd/src/state.rs` state JSON | Outputd remains owner; state helper/doctor should classify health rather than scraping logs first. |
 | `/aec` / `/wake/` displayed mic state | `jasper-control` server helpers; tests in `tests/test_control_aec_state.py` and `tests/test_web_wake_setup.py` | First read-only consumer of `audio_profile_state`; UI should stop reconstructing profile semantics independently. |
+| `/state.aec` audio-profile snapshot | Additive mirror of `/aec` inside `jasper-control`'s one-shot state payload | Same `audio_profile_state` payload as `/aec`, for dashboard/doctor/CLI consumers that need one request. |
 | Doctor wake/AEC checks | `jasper/cli/doctor.py` functions around AEC mode, wake legs, bridge, XVF firmware, DTLN | Doctor should consume the same read-only profile state and add validation-artifact checks. |
 | Corpus comparison profile | `jasper/web/wake_corpus_setup.py`; bridge corpus flags; tests in `tests/test_wake_corpus_setup.py` | Corpus profile should be a test-only `AudioProfile` superset, not a separate flag vocabulary. |
 
