@@ -411,13 +411,17 @@ The setup flow we landed for JTS is generalizable. Four pieces:
    avoidance before the user picks a hostname.
 2. **`scripts/onboard.sh`** — the deterministic shell side. Idempotent.
    Probes reachability, persists state, calls into the existing
-   `deploy-to-pi.sh`, validates with `jasper-doctor`. Emits
+   `deploy-to-pi.sh`, validates with `jasper-doctor`. It treats
+   `PI_HOST` as the SSH target and `JASPER_HOSTNAME` as the speaker
+   identity, so IP-based adoption doesn't leak into cert/URL state.
+   Emits
    structured `event=onboard.<phase> status=<s>` lines parallel to
    the Pi-side daemon logging convention.
 3. **`scripts/_lib.sh`** — shared header. Sources `.env.local`,
-   exports `PI_HOST`/`PI_USER` with a documented fallback chain,
-   exposes a `write_laptop_state` helper so the onboarder and the
-   `use` switcher stay in template-sync.
+   exports `PI_HOST`/`PI_USER` with a documented fallback chain, and
+   records optional `JASPER_HOSTNAME` for speaker identity. Exposes a
+   `write_laptop_state` helper so the onboarder and the `use` switcher
+   stay in template-sync.
 4. **`CLAUDE.local.md`** (gitignored, written by the onboarder) —
    loaded via `CLAUDE.md`'s `@`-import so every Claude Code session
    in the checkout automatically knows which Pi is active. Includes
@@ -993,42 +997,19 @@ If the repo is already deployed and you're just pushing changes:
 ```sh
 # from your laptop:
 bash scripts/deploy-to-pi.sh
-# or with a non-default host:
-PI_HOST=192.168.1.42 bash scripts/deploy-to-pi.sh
+# or with a non-default SSH target:
+PI_HOST=192.168.1.42 JASPER_HOSTNAME=jts.local bash scripts/deploy-to-pi.sh
 ```
 
 This is a thin wrapper that captures the current git SHA + branch
-(via `git rev-parse`), rsyncs to `/home/pi/jts/`, then runs install.sh
-under sudo with `JASPER_DEPLOY_SHA` / `JASPER_DEPLOY_BRANCH` env vars
-set. install.sh writes those into `/var/lib/jasper/build.txt` so the
+(via `git rev-parse`), preflights sudo before upload, rsyncs to the
+remote user's `${HOME}/jts/`, then runs install.sh under sudo with
+`JASPER_DEPLOY_SHA` / `JASPER_DEPLOY_BRANCH` env vars set. Passwordless
+sudo is required for unattended deploys; an interactive terminal can
+prompt through `ssh -tt` without storing the password. install.sh
+writes the deploy metadata into `/var/lib/jasper/build.txt` so the
 /system dashboard's "Software" card shows the real deployed version
-instead of "unknown" (.git/ is excluded from the rsync for speed).
-
-If you'd rather drive the rsync + install yourself, the equivalent
-raw form is:
-
-```sh
-PI_HOST="${PI_HOST:-jts.local}"
-PI_USER="${PI_USER:-pi}"
-SHA=$(git rev-parse --short HEAD)
-SHA_FULL=$(git rev-parse HEAD)
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-DIRTY=""
-git diff-index --quiet HEAD -- || DIRTY="-dirty"
-HOSTNAME_FOR_INSTALL="${JASPER_HOSTNAME:-${PI_HOST}}"
-
-rsync -avz --delete \
-  --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
-  --exclude '.pio' --exclude '.claude/worktrees' \
-  ./ "${PI_USER}@${PI_HOST}:/home/pi/jts/"
-
-ssh "${PI_USER}@${PI_HOST}" \
-  "sudo JASPER_DEPLOY_SHA='${SHA}${DIRTY}' \
-        JASPER_DEPLOY_SHA_FULL='${SHA_FULL}${DIRTY}' \
-        JASPER_DEPLOY_BRANCH='${BRANCH}' \
-        JASPER_HOSTNAME='${HOSTNAME_FOR_INSTALL}' \
-        bash /home/pi/jts/deploy/install.sh"
-```
+instead of "unknown" (`.git/` is excluded from the rsync for speed).
 
 The install script is idempotent.
 

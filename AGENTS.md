@@ -320,16 +320,22 @@ This is the **only** supported deploy path. It does, in order:
 
 1. `git rev-parse` → captures local SHA + branch (writes `-dirty`
    suffix if working tree has uncommitted changes)
-2. `rsync` to `pi@jts.local:/home/pi/jts/` (excludes `.git/`,
+2. Preflight SSH + sudo before upload. Pubkey SSH is required.
+   Passwordless sudo (`sudo -n true`) is the unattended path; if the
+   deploy is attached to an interactive terminal, it can fall back to
+   `ssh -tt ... sudo` prompts without storing the password. Do not add
+   broad sudoers rules from the installer.
+3. `rsync` to the remote user's `${HOME}/jts/` (for the default
+   beginner path this is `pi@jts.local:/home/pi/jts/`; excludes `.git/`,
    `.venv/`, `captures/`, `wake-events/`, `*.egg-info`, etc.)
-3. `ssh ... sudo bash install.sh` with `JASPER_DEPLOY_SHA*` env vars
-   set — rsyncs the Python source from `/home/pi/jts/` into
+4. `ssh ... sudo bash install.sh` with `JASPER_DEPLOY_SHA*` env vars
+   set — rsyncs the Python source from the remote checkout into
    `/opt/jasper/`, then `pip install -e`'s `/opt/jasper` into
    `/opt/jasper/.venv` (the runtime). Also writes
    `/var/lib/jasper/build.txt`, migrates units to socket
    activation, conditionally enables AEC on 6-ch firmware. See
    "Runtime Python lives in /opt/jasper" below.
-4. `systemctl restart jasper-control` + `systemctl start
+5. `systemctl restart jasper-control` + `systemctl start
    jasper-aec-reconcile` — picks up Python control code and lets the
    mic/AEC reconciler restart or park `jasper-voice` according to the
    hardware actually present. `jasper-camilla` is the Rust camilladsp
@@ -347,7 +353,9 @@ That flow exists historically but misses:
 `SKIP_RESTART=1` (install but don't restart/reconcile),
 `JASPER_BUILD_OPTIONAL_FIRMWARE=1` (explicitly rebuild optional
 ESP32 dial/satellite firmware during install), `PI_HOST=...`,
-`PI_USER=...`.
+`PI_USER=...`, `JASPER_HOSTNAME=...` (speaker identity/cert hostname
+when the SSH target is an IP), `REMOTE_REPO_DIR=...` (rare override
+for nonstandard remote homes).
 
 **Previewing install blast radius:** `bash deploy/install.sh --dry-run`
 prints the apt package groups, downloads/source builds, runtime file
@@ -396,15 +404,15 @@ Those commands can starve the 1 GB Pi. The bounded runner gives the
 kernel an obvious diagnostic process to kill before it kills product
 daemons.
 
-### Runtime Python lives in `/opt/jasper`, not `/home/pi/jts`
+### Runtime Python lives in `/opt/jasper`, not the rsync checkout
 
 `install.sh` **copies** Python source into
 `/opt/jasper/jasper/...` (it doesn't `pip install -e` from
-`/home/pi/jts`). `/home/pi/jts` is the source tree that
-`deploy-to-pi.sh` rsyncs into; `/opt/jasper/.venv` is the runtime
-the daemons actually execute. Edits to `/home/pi/jts/` don't go
-live until install.sh re-copies — so a full deploy is the
-canonical path.
+the rsync checkout). The checkout lives at `${HOME}/jts` for the
+SSH user (`/home/pi/jts` on the beginner `pi` path) unless
+`REMOTE_REPO_DIR` overrides it; `/opt/jasper/.venv` is the runtime the
+daemons actually execute. Edits to the rsync checkout don't go live
+until install.sh re-copies — so a full deploy is the canonical path.
 
 For one-off hot-patch testing without a full deploy:
 
@@ -456,13 +464,19 @@ What does NOT derive (intentionally):
 
 The Pi-side single-source-of-truth above is `JASPER_HOSTNAME`. The
 laptop-side single source of truth for "which Pi does this checkout
-talk to?" is **`.env.local`** at the repo root. Gitignored. Two
-recognized keys:
+talk to?" is **`.env.local`** at the repo root. Gitignored. Recognized
+keys:
 
 ```sh
-PI_HOST=jts.local
+PI_HOST=jts.local       # SSH target; may be an IP
 PI_USER=pi
+JASPER_HOSTNAME=jts.local  # speaker hostname/cert identity
 ```
+
+Keep `PI_HOST` and `JASPER_HOSTNAME` conceptually separate. If a user
+connects by IP, the IP is only the SSH target; onboarding records an
+explicit `JASPER_HOSTNAME` by querying the Pi hostname or by accepting
+`--speaker-hostname <name>.local`.
 
 It's auto-written by `bash scripts/onboard.sh <hostname>` (see
 [QUICKSTART.md](QUICKSTART.md)) and sourced by
@@ -484,10 +498,19 @@ between Pis is just `cd` into the right checkout.
 
 **Adopting an already-deployed Pi** (password auth only): run
 `bash scripts/onboard.sh <hostname> --adopt`. The `--adopt` flag
-runs `ssh-copy-id` first so subsequent commands use pubkey auth.
+runs `ssh-copy-id` first so subsequent commands use pubkey auth. It
+does not change sudoers; deploy preflights sudo separately and prompts
+interactively when possible.
+
+**Custom user boundary:** the beginner/fresh-appliance path uses
+username `pi`. `--user` / `PI_USER` is advanced and currently supported
+for onboarding/deploy only; some diagnostics and operator scripts still
+assume `pi` or `/home/pi`. Do not imply full custom-user coverage unless
+those scripts have been audited.
 
 **Switching active target without re-onboarding**: `bash scripts/use
-<hostname>`. Rewrites `.env.local` + `CLAUDE.local.md` in one shot;
+<hostname> [user] [speaker-hostname]`. Rewrites `.env.local` +
+`CLAUDE.local.md` in one shot;
 no ssh, no install. Use this to flip a checkout between Pis that
 have both already been onboarded (the SSH alias from a prior
 `onboard.sh` run persists in `~/.ssh/config` so `ssh jts` /

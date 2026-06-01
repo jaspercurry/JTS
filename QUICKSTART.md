@@ -67,9 +67,13 @@ ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"
      WiFi country code). **Time zone** and **Keyboard layout** auto-fill
      from the city — confirm or override.
    - **User**: username `pi`, any password (fallback only — pubkey is
-     the primary auth), confirm password, and **check "Enable
-     passwordless sudo"**. This is important: `install.sh` runs `sudo`
-     over SSH and will hang on a password prompt without it.
+     the primary auth), confirm password. **Enable passwordless sudo**
+     if you want unattended deploys; otherwise the deploy script will
+     prompt for this password through SSH when it needs sudo.
+     The beginner/fresh-appliance path assumes username `pi`. Custom
+     users via `--user` / `PI_USER` are an advanced path supported for
+     onboarding and deploy only; some diagnostics and operator scripts
+     may still assume `pi` or `/home/pi`.
    - **Wi-Fi**: leave "Secure network" selected. SSID (auto-detected
      from your laptop's current WiFi if available), password, confirm.
    - **Remote Access (SSH)**: turn SSH on, pick **"Use public key
@@ -113,8 +117,12 @@ That's the whole command. It will:
 
 1. **probe** — verify SSH reachability and pubkey auth
 2. **persist** — write `~/.ssh/config` alias, `.env.local`,
-   `CLAUDE.local.md` (the last two are gitignored, per-checkout state)
+   `CLAUDE.local.md` (the last two are gitignored, per-checkout state).
+   If you connect by IP, it records the Pi's hostname separately so the
+   speaker identity does not become an IP address.
 3. **install** — rsync the repo to the Pi and run `deploy/install.sh`,
+   with a sudo preflight before upload. Passwordless sudo runs
+   unattended; otherwise an interactive terminal prompts through SSH.
    which apt-installs deps, source-builds shairport-sync (~12 min,
    the longest single step), webrtc-audio-processing v2.1, and
    wires up every systemd unit
@@ -184,6 +192,14 @@ you actually observed.
    bash scripts/onboard.sh 192.168.1.42
    ```
 
+   The script queries the Pi's hostname and records that as
+   `JASPER_HOSTNAME`. If you already know the intended speaker name,
+   make it explicit:
+
+   ```sh
+   bash scripts/onboard.sh 192.168.1.42 --speaker-hostname jts.local
+   ```
+
 3. **ARP scan for Pi MAC OUIs** from your laptop:
 
    ```sh
@@ -216,7 +232,9 @@ bash scripts/onboard.sh jts.local --adopt
 ```
 
 That runs `ssh-copy-id` once (you'll type the password) and then
-uses pubkey auth for everything after.
+uses pubkey auth for everything after. If passwordless sudo is not
+enabled, the later deploy step prompts for the sudo password through
+an interactive SSH session; it is not stored.
 
 ### "Imager said it customized the OS but the Pi acts unconfigured"
 
@@ -235,8 +253,14 @@ bash scripts/onboard.sh 192.168.1.42 --adopt
 ```
 
 `--adopt` uses `ssh-copy-id` over the default `raspberrypi`/`raspberry`
-password, then proceeds normally. After onboarding, you can rename
-the Pi:
+password, then proceeds normally. Because the hostname is still
+`raspberrypi`, either pass the intended identity during onboarding:
+
+```sh
+bash scripts/onboard.sh 192.168.1.42 --adopt --speaker-hostname jts.local
+```
+
+or rename the Pi after onboarding:
 
 ```sh
 ssh pi@192.168.1.42 'sudo hostnamectl set-hostname jts && sudo reboot'
@@ -245,6 +269,15 @@ ssh pi@192.168.1.42 'sudo hostnamectl set-hostname jts && sudo reboot'
 After the reboot it's reachable as `jts.local` again.
 
 Long-term fix: upgrade Pi Imager to 2.0.6 or later for future Pis.
+
+### "deploy says non-interactive sudo failed"
+
+SSH worked, but the Pi user needs a password for sudo and the deploy
+is not attached to an interactive terminal. Nothing was rsynced yet.
+
+Run the same command from a terminal so it can prompt through SSH, or
+enable passwordless sudo deliberately for that user and rerun. JTS does
+not install broad sudoers rules for you.
 
 ### "install.sh failed partway through"
 
@@ -344,7 +377,9 @@ hostname am I" is `JASPER_HOSTNAME`. See
 **Where does laptop-side state live?**
 
 `.env.local` and `CLAUDE.local.md` in each repo checkout, both
-gitignored, both written by `scripts/onboard.sh`. See
+gitignored, both written by `scripts/onboard.sh`. `.env.local` records
+`PI_HOST` as the SSH target and `JASPER_HOSTNAME` as the speaker's
+hostname/cert identity, which may differ when you connect by IP. See
 [AGENTS.md](AGENTS.md#laptop-side-state--envlocal-and-claudelocalmd).
 
 ---
