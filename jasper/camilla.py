@@ -110,7 +110,7 @@ class CamillaController:
                 # call sites log their own warning at the action level
                 # ("set_volume_db skipped", etc). Without this demote,
                 # a sustained camilla-down window floods the journal at
-                # ~4 Hz from the TtsVolumeTracker poll alone.
+                # ~4 Hz from old voice-side polling alone.
                 logger.debug(
                     "camilla first attempt failed; retrying: %s", e,
                 )

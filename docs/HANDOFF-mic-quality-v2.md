@@ -843,7 +843,7 @@ Per the old `/root/.asoundrc` inspection:
 
 | | Effort | Risk | Notes |
 |---|---|---|---|
-| A. Route TTS through CamillaDSP + snd-aloop | medium | medium — TtsVolumeTracker math assumes post-Camilla; ducking changes | Cleanest data flow; biggest behavioral change |
+| A. Route TTS through CamillaDSP + snd-aloop | medium | medium — assistant loudness matching assumes TTS bypasses CamillaDSP; ducking changes | Cleanest data flow; biggest behavioral change |
 | B. Bridge accepts two reference streams (music + TTS), mixes before AEC3 | high | medium — AEC3 takes single mono ref; sample-rate alignment | Most flexible long-term |
 | **C. ALSA `multi` plugin: TTS forks to dongle AND loopback** | medium | low — TTS audio path unchanged at speaker | Recommended starting point; zero Python changes |
 
@@ -1110,7 +1110,7 @@ doesn't waste a round arguing about them:
 3. **Should the third leg (DTLN) be the session audio source?** Today
    the primary AEC ON leg feeds the LLM session. If DTLN ends up
    sounding cleaner, switching the session source matters. But this
-   has knock-on effects (TTS volume tracker math, etc.) — flag for
+   has knock-on effects (assistant loudness matching, etc.) — flag for
    user decision.
 4. **Tier 2 cloud retrain — Modal vs RTX 4090 Community?** Cost vs
    convenience. The report frames it as "we'll decide later" but it
@@ -1226,4 +1226,4 @@ distribute JTS to other operators (different rooms, mics, voices)
 and want to automate the per-environment configuration that we're
 doing manually here.
 
-Last verified: 2026-05-31
+Last verified: 2026-06-01

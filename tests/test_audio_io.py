@@ -3,8 +3,8 @@ primitive.
 
 The hard MIN/MAX clamp on TtsPlayout.set_gain_db is the load-bearing
 defense against accidentally playing TTS at ear-damaging levels. These
-tests pin that contract: even if the volume tracker, env config, or
-Camilla websocket all misbehave, no caller can push gain above
+tests pin that contract: even if env config, outputd metadata, or
+Camilla websocket calls misbehave, no caller can push gain above
 MAX_TTS_GAIN_DB.
 
 The drain primitive (``expected_drain_at`` / ``wait_drained``) is the
@@ -19,7 +19,6 @@ outside the stream lifecycle. Where the drain tests need to drive
 """
 from __future__ import annotations
 
-import asyncio
 import math
 import socket
 import threading
@@ -29,6 +28,7 @@ import numpy as np
 import pytest
 
 import jasper.audio_io as audio_io_mod
+from jasper.assistant_loudness import AssistantLoudnessProfile
 from jasper.audio_io import OutputdTtsPlayout, TtsPlayout, make_tts_playout
 
 
@@ -58,18 +58,30 @@ class _CaptureOutputdStream:
     def __init__(self) -> None:
         self.gains: list[float] = []
         self.writes: list[bytes] = []
-        self.segments_started: list[tuple[str, str | None]] = []
+        self.segments_started: list[tuple[str, str | None, object | None]] = []
+        self._active_segment: tuple[str, str | None, object | None] | None = None
         self.segments_ended = 0
         self.flush_acks: list[dict] = []
 
     def set_gain_db(self, db: float) -> None:
         self.gains.append(db)
 
-    def start_segment(self, *, kind: str, provider_item_id: str | None) -> None:
-        self.segments_started.append((kind, provider_item_id))
+    def start_segment(
+        self,
+        *,
+        kind: str,
+        provider_item_id: str | None,
+        profile=None,
+    ) -> None:
+        segment = (kind, provider_item_id, profile)
+        if self._active_segment == segment:
+            return
+        self._active_segment = segment
+        self.segments_started.append(segment)
 
     def end_segment(self) -> None:
         self.segments_ended += 1
+        self._active_segment = None
 
     def write(self, data: bytes) -> None:
         self.writes.append(data)
@@ -309,17 +321,15 @@ async def test_drain_unchanged_after_empty_write():
     assert p.expected_drain_at() == 0.0
 
 
-def test_make_tts_playout_defaults_to_sounddevice_transport():
-    p = make_tts_playout(
-        transport="sounddevice",
-        device="dummy",
-        output_rate=48000,
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-    )
-    assert isinstance(p, TtsPlayout)
-    assert not isinstance(p, OutputdTtsPlayout)
-    assert p._device == "dummy"
+def test_make_tts_playout_rejects_sounddevice_runtime_transport():
+    with pytest.raises(RuntimeError, match="pre-outputd revision"):
+        make_tts_playout(
+            transport="sounddevice",
+            device="dummy",
+            output_rate=48000,
+            gain_db=-8.0,
+            drain_tail_sec=0.0,
+        )
 
 
 def test_make_tts_playout_can_select_outputd_transport():
@@ -377,7 +387,7 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
     await p.write(mono.tobytes())
 
     assert stream.gains == [OutputdTtsPlayout.MIN_TTS_GAIN_DB]
-    assert stream.segments_started == [("assistant", None)]
+    assert stream.segments_started == [("assistant", None, None)]
     assert stream.writes == [
         np.array([10000, 10000, -10000, -10000], dtype=np.int16).tobytes()
     ]
@@ -435,8 +445,55 @@ async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
     )
     await p.end_segment()
 
-    assert stream.segments_started == [("assistant", "msg_abc123")]
+    assert stream.segments_started == [("assistant", "msg_abc123", None)]
     assert stream.segments_ended == 1
+
+
+async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypatch):
+    import scipy.signal
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    profile = AssistantLoudnessProfile(
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="verse",
+        source_lufs=-18.0,
+        source_peak_dbfs=-2.0,
+        confidence=0.75,
+        updated_at="2026-06-01T00:00:00Z",
+        method="seed_tts",
+    )
+    calls = 0
+
+    def fake_profile(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return profile
+
+    monkeypatch.setattr(audio_io_mod, "profile_for_outputd", fake_profile)
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="verse",
+        profile_path="/tmp/profiles.json",
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+
+    mono = np.array([1, 2], dtype=np.int16)
+    await p.write_segment(mono.tobytes(), segment_kind="assistant")
+    await p.write_segment(mono.tobytes(), segment_kind="assistant")
+
+    assert calls == 1
+    assert stream.segments_started == [("assistant", None, profile)]
 
 
 async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
@@ -465,6 +522,58 @@ async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
     assert ack == stream.flush_acks[0]
     assert ack["max_audio_played_ms"] == 125
     assert p.expected_drain_at() == 0.0
+
+
+async def test_outputd_flush_silences_before_saving_profile(monkeypatch):
+    events: list[str] = []
+
+    class _OrderingStream(_CaptureOutputdStream):
+        def flush_sync(self) -> dict:
+            events.append("flush")
+            return super().flush_sync()
+
+    async def fake_save_profile() -> None:
+        events.append("save")
+
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    p._stream = _OrderingStream()  # type: ignore[assignment]
+    monkeypatch.setattr(p, "_save_assistant_source_profile", fake_save_profile)
+
+    await p.flush()
+
+    assert events == ["flush", "save"]
+
+
+async def test_outputd_end_segment_marks_ended_before_saving_profile(monkeypatch):
+    events: list[str] = []
+
+    class _OrderingStream(_CaptureOutputdStream):
+        def end_segment(self) -> None:
+            events.append("end")
+            super().end_segment()
+
+    async def fake_save_profile() -> None:
+        events.append("save")
+
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    stream = _OrderingStream()
+    stream.start_segment(kind="assistant", provider_item_id=None, profile=None)
+    p._stream = stream  # type: ignore[assignment]
+    monkeypatch.setattr(p, "_save_assistant_source_profile", fake_save_profile)
+
+    await p.end_segment()
+
+    assert events == ["end", "save"]
 
 
 def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
@@ -514,6 +623,48 @@ def test_outputd_stream_adapter_flush_sync_timeout_is_bounded(monkeypatch):
         child.close()
 
 
+def test_outputd_stream_adapter_sends_loudness_control_protocol():
+    parent, child = socket.socketpair()
+    adapter = audio_io_mod._OutputdStreamAdapter(parent)
+    profile = AssistantLoudnessProfile(
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="verse",
+        source_lufs=-18.25,
+        source_peak_dbfs=-2.5,
+        confidence=0.8,
+        updated_at="2026-06-01T00:00:00Z",
+        method="passive_live",
+    )
+    try:
+        adapter.prepare_assistant(
+            provider="openai",
+            model="gpt-realtime-2",
+            voice="verse",
+            silence_target_lufs=-42.34,
+        )
+        assert (
+            child.recv(128)
+            == b"PREPARE_ASSISTANT openai gpt-realtime-2 verse -42.34\n"
+        )
+        adapter.pause_content_meter()
+        assert child.recv(128) == b"CONTENT_METER_PAUSE\n"
+        adapter.resume_content_meter()
+        assert child.recv(128) == b"CONTENT_METER_RESUME\n"
+        adapter.start_segment(
+            kind="assistant",
+            provider_item_id="msg_abc123",
+            profile=profile,
+        )
+        assert child.recv(256) == (
+            b"SEGMENT_START assistant msg_abc123 openai gpt-realtime-2 "
+            b"verse -18.25 -2.50 0.80\n"
+        )
+    finally:
+        adapter.close()
+        child.close()
+
+
 async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
     import scipy.signal
 
@@ -550,5 +701,5 @@ async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
 
     assert p._stream is replacement
     assert replacement.gains == [-8.0]
-    assert replacement.segments_started == [("assistant", "msg_abc123")]
+    assert replacement.segments_started == [("assistant", "msg_abc123", None)]
     assert replacement.writes

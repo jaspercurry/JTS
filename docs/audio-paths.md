@@ -2,8 +2,8 @@
 
 Two paths to the final output owner, processed differently. Knowing
 which is which matters when you're testing volume-controlled output and
-when you're trying to understand the loudness-tracking compensation in
-`jasper-voice`.
+when you're trying to understand assistant loudness matching in
+`jasper-outputd`.
 
 ## How we got here
 
@@ -21,7 +21,8 @@ pre-mixing them upstream (which would mean ducking music ducks TTS
 too — wrong) or the fragile ALSA `multi` plugin (xrun storms with
 bursty writers). So we route TTS around CamillaDSP into
 `jasper-outputd`, the final output owner, and compensate for the DSP
-bypass in software (see "TtsVolumeTracker" below).
+bypass at that same final mix boundary (see "Assistant loudness
+matching" below).
 
 ## The two paths
 
@@ -200,7 +201,7 @@ convergence point here.
 | CamillaDSP `main_volume` (the ducker) | DSP, websocket port 1234 | yes | no |
 | Source slider (iPhone, Spotify Connect, BT phone) | Renderer-side, before Loopback | yes | no |
 | Source amplitude (PCM data) | The WAV / TTS PCM buffer | yes | yes |
-| `TtsVolumeTracker` (auto) | OutputdTtsPlayout gain metadata | n/a | yes — auto-tracks music |
+| Assistant loudness matcher (auto) | jasper-outputd + provider profiles | n/a | yes — auto-tracks content |
 | Apple dongle Headphone | Hardware mixer | (pinned 100%) | (pinned 100%) |
 | TPA3255 amp | Physical knob | yes | yes |
 
@@ -215,87 +216,84 @@ Two notes:
   `main_volume` stays pinned at 0 dB and the source slider carries
   `listening_level`.
 
-## Why TTS still tracks user volume changes
+## Assistant Loudness Matching
 
-Since TTS bypasses CamillaDSP, naively it would always play at fixed
-amplitude regardless of how the user set volume. To preserve the
-property "however the user adjusted volume — iPhone slider, AirPlay,
-Spotify, the dial, the external amp — TTS matches the music level the
-user is actually hearing," `TtsVolumeTracker` in
-[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) measures
-CamillaDSP's `playback_rms` (post-DSP content level, after every
-upstream attenuator) and scales TTS to sit a configurable
-headroom above it. A "loudness anchor" persists across boots so a
-quiet bedroom from yesterday is still quiet today until someone
-changes it.
+Since assistant audio bypasses CamillaDSP, a fixed provider PCM level
+would ignore how the user currently listens to music. Current main keeps
+that compensation inside `jasper-outputd`, the final output owner:
 
-This compensation is load-bearing — it's what makes the CamillaDSP
-bypass invisible to the user. Don't remove it without first removing
-the bypass.
+1. `jasper-outputd` continuously measures content/music with a bounded
+   K-weighted loudness window.
+2. At wake turn start, `jasper-voice` sends `PREPARE_ASSISTANT` with
+   the active provider/model/voice and a conservative silence target
+   derived from `listening_level`.
+3. `jasper-outputd` snapshots the current content loudness before
+   ducking, then ignores content-meter updates while the voice turn or
+   correction measurement window is active.
+4. For each assistant/cue segment, `OutputdTtsPlayout` sends un-gained
+   48 kHz stereo PCM plus optional source-loudness profile metadata.
+5. `jasper-outputd` chooses final gain at the mix boundary:
+   `target_lufs = content_baseline_lufs + assistant_offset_lu`.
+   The default offset is `+1.5 LU`.
+6. Hearing safety is peak-aware and enforced in outputd: the requested
+   loudness gain is capped so the profiled source peak stays below the
+   configured assistant peak ceiling (default `-3 dBFS`), then clamped
+   through the global TTS gain floor/ceiling.
 
-### Ceiling policy is branch-specific (read before changing the formula)
+Python owns only provider source profiles:
 
-The tracker's first version (May 2026) treated `main_volume` plus a
-fixed offset as an **absolute** ceiling on TTS gain in every branch — the mental
-model was "main_volume controls max possible TTS loudness, the
-tracker can only push DOWN from there." That assumption broke once
-source-side sliders (iPhone, Spotify, BT) and external amplifiers
-became the dominant carriers of user loudness intent. At
-`listening_level` below ~90% on loud-source music (e.g. AirPlay at
-70% → `main_volume = -15 dB`), the ceiling actively defeated the
-tracker, leaving TTS several dB *quieter* than music instead of the
-headroom above music the formula intended. PR #294 (2026-05-24)
-lifted the ceiling off the music-playing branch only:
+- The persisted profile store is
+  `/var/lib/jasper/assistant_loudness_profiles.json`, overridable with
+  `JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH`.
+- The `/voice/` wizard's **Save and Test** button synthesizes
+  `"This is me talking normally."` with the active provider's TTS API,
+  measures it silently, and stores the profile before restarting
+  `jasper-voice`. The handler caps this explicit test at one provider
+  attempt. Daemon-start seeding remains opt-in
+  (`JASPER_ASSISTANT_LOUDNESS_AUTO_SEED=1`) so ordinary restarts do not
+  spend provider calls implicitly.
+- Live assistant PCM is measured passively after real replies and
+  merged back into the same provider/model/voice profile. Cues and
+  chirps never train the profile.
+- Profiles are advisory. If a profile is missing or malformed, outputd
+  uses conservative built-in fallback source loudness/peak values and
+  still clamps the final gain.
 
-- **Music actively playing** (`windowed_rms > silence_threshold`):
-  no ceiling. The measured signal IS the answer. Hearing-safety
-  lives in `TtsPlayout.MAX_TTS_GAIN_DB` (-6 dB).
-- **Silence with a valid anchor**: ceiling APPLIES. Anchor can be
-  stale (loud music yesterday, quiet bedroom today at low
-  `main_volume`), and `main_volume` is the right backstop against
-  blasting in that case.
-- **No anchor ever recorded** (sentinel < -120, effectively
-  first-boot only): target IS the ceiling — `main_volume` is the
-  only loudness signal we have.
-
-The silence-branch ceiling is `main_volume` exactly. (An earlier
-`offset` knob — env var `JASPER_TTS_GAIN_DB` — biased that ceiling;
-it was removed in June 2026 once the measured-RMS tracker made it
-redundant, so there is no longer any env var on this path.)
-
-This branch-specific policy is the structural invariant the
-regression tests in `tests/test_tts_volume_tracker.py` lock in
-(`test_music_branch_ignores_master_volume_entirely` in particular).
-Re-introducing an unmeasured cap on the music branch will fail it.
-
-### Debugging TTS gain — structured telemetry
-
-Every user-perceptible TTS gain change emits a single structured log
-line (PR #295) carrying the full computation context:
+Operator retunes live in `/var/lib/jasper/outputd.env`:
 
 ```
-event=tts_gain.compute branch=music windowed_rms=-26.0 source_rms_dbfs=-3.0
-  anchor_dbfs=-25.9 main_volume_db=-15.0 ceiling_db=-15.0 target_db=-7.0
-  final_db=-7.0 max_cap_db=-6.0
+JASPER_OUTPUTD_ASSISTANT_OFFSET_LU=1.5
+JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS=-3.0
+JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS=-24.0
+JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS=-6.0
+JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS=-41.0
+JASPER_OUTPUTD_CONTENT_SILENCE_LUFS=-60.0
 ```
 
-Fields:
-- `branch` — which decision path fired (`music` / `anchor` / `no_anchor`)
-- `windowed_rms` — what `playback_rms` reported, post-windowing
-- `source_rms_dbfs` — measured RMS of the TTS source PCM (the loudness
-  the gain math normalizes against)
-- `anchor_dbfs` — last-known music level (frozen during silence)
-- `main_volume_db` — CamillaDSP's `main_volume` at the moment
-- `ceiling_db` — `main_volume` (applied to silence branches only)
-- `target_db` — what the formula computed before any clamping
-- `final_db` — what the TTS path sends to outputd after `MAX_TTS_GAIN_DB`
-- `max_cap_db` — hearing-safety cap (always `-6 dB`)
+When a cue/assistant segment arrives without a prepared wake-turn
+context and without measurable content, outputd uses
+`JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS` as the baseline
+instead of a fixed fallback gain. This keeps no-context cues on the same
+profile/peak-cap path as live assistant speech.
 
-Fires only on actual changes to `final_db` (no log spam). The existing
-`tts gain set: X dB` short line still fires alongside it for grep-
-friendly summaries. Together, the two lines let you reconstruct any
-TTS gain choice from logs alone — no need to correlate across separate
-`event=duck`, `volume persistence`, and `tts gain set` lines.
+### Debugging Assistant Gain
+
+Every outputd assistant gain decision emits one structured journal line:
+
+```
+event=outputd.assistant_loudness kind=assistant provider=openai
+  model=gpt-realtime-2 voice=verse calibrated=true confidence=0.82
+  baseline_lufs=-29.4 target_lufs=-27.9 source_lufs=-18.2
+  source_peak_dbfs=-2.5 requested_gain_db=-9.7 peak_cap_gain_db=-0.5
+  final_gain_db=-9.7 reason=target
+```
+
+`jasper-outputd` also exposes the latest content and assistant decision
+through `/run/jasper-outputd/control.sock` (`STATUS\n`) under
+`assistant_loudness`. `jasper-doctor` warns if this telemetry is
+missing or malformed. Use those two surfaces first when debugging a
+provider loudness report; they show whether the system used a calibrated
+profile, what content baseline it matched, and which clamp won.
 
 ## End-of-turn drain — when is the speaker actually silent?
 
@@ -430,4 +428,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-31 (source handoff guard, future-source checklist, source-capabilities plan link, outputd topology, TTS drain/flush boundary, and chip-AEC outputd reference exception rechecked)
+Last verified: 2026-06-01 (assistant loudness matching moved to outputd; provider-profile seed/learn path, STATUS telemetry, and outputd topology rechecked)

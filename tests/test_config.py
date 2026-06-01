@@ -75,13 +75,10 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == "/run/jasper-outputd/tts.sock"
     assert cfg.tts_output_rate == 48000
-    # headroom 5 dB = "voice loudness a touch above the music RMS":
-    # the tracker measures the TTS source RMS directly, so this is a
-    # loudness-domain target (it was 16 in the peak-measured era;
-    # matching peaks left compressed voices like Gemini louder).
-    assert cfg.tts_music_headroom_db == 5.0
-    assert cfg.tts_silence_threshold_dbfs == -50.0
-    assert cfg.tts_music_window_sec == 8.0
+    assert cfg.assistant_loudness_profile_path == (
+        "/var/lib/jasper/assistant_loudness_profiles.json"
+    )
+    assert cfg.assistant_loudness_auto_seed is False
     assert cfg.volume_state_path == "/var/lib/jasper/speaker_volume.json"
     assert cfg.volume_regress_after_sec == 1800.0
     assert cfg.volume_regress_safe_low_pct == 20
@@ -105,6 +102,20 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.bus_stops == ()
     assert cfg.bus_enabled is False
     assert cfg.spotify_enabled is False
+
+
+def test_assistant_loudness_profile_path_override(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH",
+        "/tmp/jasper-loudness.json",
+    )
+    monkeypatch.setenv("JASPER_ASSISTANT_LOUDNESS_AUTO_SEED", "1")
+
+    cfg = Config.from_env()
+
+    assert cfg.assistant_loudness_profile_path == "/tmp/jasper-loudness.json"
+    assert cfg.assistant_loudness_auto_seed is True
 
 
 def test_weather_default_coordinates_from_weather_env(monkeypatch):
@@ -198,11 +209,8 @@ def test_spotify_enabled_when_client_id_present(monkeypatch):
         ("JASPER_GEMINI_CONTEXT_RESET_SEC", "-1", "JASPER_GEMINI_CONTEXT_RESET_SEC"),
         ("JASPER_GROK_CONTEXT_RESET_SEC", "-1", "JASPER_GROK_CONTEXT_RESET_SEC"),
         ("JASPER_DAILY_SPEND_CAP_USD", "-1", "JASPER_DAILY_SPEND_CAP_USD"),
-        ("JASPER_TTS_SILENCE_THRESHOLD_DBFS", "0", "JASPER_TTS_SILENCE_THRESHOLD_DBFS"),
-        ("JASPER_TTS_SILENCE_THRESHOLD_DBFS", "5", "JASPER_TTS_SILENCE_THRESHOLD_DBFS"),
-        ("JASPER_TTS_MUSIC_WINDOW_SEC", "0", "JASPER_TTS_MUSIC_WINDOW_SEC"),
-        ("JASPER_TTS_MUSIC_WINDOW_SEC", "-5", "JASPER_TTS_MUSIC_WINDOW_SEC"),
         ("JASPER_TTS_TRANSPORT", "pipewire", "JASPER_TTS_TRANSPORT"),
+        ("JASPER_TTS_TRANSPORT", "sounddevice", "pre-outputd revision"),
         ("JASPER_VOLUME_REGRESS_AFTER_SEC", "0", "JASPER_VOLUME_REGRESS_AFTER_SEC"),
         ("JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", "150", "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT"),
         ("JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", "-1", "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT"),

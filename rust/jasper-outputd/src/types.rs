@@ -58,6 +58,16 @@ impl SegmentKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssistantProfile {
+    pub provider: String,
+    pub model: String,
+    pub voice: String,
+    pub source_lufs: Option<f32>,
+    pub source_peak_dbfs: Option<f32>,
+    pub confidence: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferencePacket {
     pub stream_id: u64,

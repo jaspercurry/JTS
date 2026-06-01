@@ -1048,7 +1048,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["voice"]["model"] == "gpt-realtime-2"
     assert body["voice"]["reachable"] is False
     assert body["voice"]["session_active"] is False
-    assert "tts_source_rms_dbfs" in body["voice"]  # measured TTS loudness on /state
+    assert "music_dbfs" in body["voice"]
     # /state.voice is hand-curated, NOT a session_status pass-through, so a
     # new session_status field is silently dropped if it isn't pulled
     # through in _get_state. wake_legs (jasper-doctor's runtime cross-check
@@ -1107,7 +1107,7 @@ def test_state_voice_wake_legs_flows_from_session_status(
         return {
             "state": "WAKE", "input_ended": False, "spend_allowed": True,
             "connection_paused": False, "mic_muted": False,
-            "duck_active": False, "tts_source_rms_dbfs": -20.0,
+            "duck_active": False, "music_dbfs": -32.0,
             "wake_legs": ["on", "off", "dtln"],
         }
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)

@@ -11,6 +11,7 @@ pub mod config;
 pub mod core;
 pub mod fake;
 pub mod ledger;
+pub mod loudness;
 pub mod mixer;
 pub mod protocol;
 pub mod reference;

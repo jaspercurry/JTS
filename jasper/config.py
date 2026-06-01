@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from . import home_assistant as _ha_env
 from .bus import parse_bus_stops
 from .citibike import parse_saved_stations as _parse_citibike_stations
+from .assistant_loudness import (
+    DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
+)
 from .speaker_name import runtime_name as _speaker_runtime_name
 from .voice.catalog import default_extra_value, default_model_id, default_voice_id
 
@@ -35,6 +38,13 @@ def _env_optional_float(name: str) -> float | None:
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     return int(raw) if raw else default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
 def _validate(cfg: "Config") -> "Config":
@@ -76,17 +86,15 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WEATHER_LAT must be between -90 and 90")
     if cfg.weather_default_lon is not None and not -180 <= cfg.weather_default_lon <= 180:
         raise RuntimeError("JASPER_WEATHER_LON must be between -180 and 180")
-    # Silence threshold must sit somewhere in "no music" territory.
-    # 0 dBFS or higher is meaningless (nothing is louder than full-scale).
-    if cfg.tts_silence_threshold_dbfs >= 0.0:
+    if cfg.tts_transport == "sounddevice":
         raise RuntimeError(
-            "JASPER_TTS_SILENCE_THRESHOLD_DBFS must be < 0 dBFS"
+            "JASPER_TTS_TRANSPORT=sounddevice is not supported in this "
+            "outputd-loudness tree. Use JASPER_TTS_TRANSPORT=outputd, or "
+            "deploy a pre-outputd revision for rollback."
         )
-    if cfg.tts_music_window_sec <= 0:
-        raise RuntimeError("JASPER_TTS_MUSIC_WINDOW_SEC must be > 0")
-    if cfg.tts_transport not in {"sounddevice", "outputd"}:
+    if cfg.tts_transport != "outputd":
         raise RuntimeError(
-            "JASPER_TTS_TRANSPORT must be one of: sounddevice, outputd"
+            "JASPER_TTS_TRANSPORT must be outputd"
         )
     if cfg.volume_regress_after_sec <= 0:
         raise RuntimeError("JASPER_VOLUME_REGRESS_AFTER_SEC must be > 0")
@@ -145,9 +153,8 @@ class Config:
     tts_transport: str
     tts_outputd_socket: str
     tts_output_rate: int
-    tts_music_headroom_db: float
-    tts_silence_threshold_dbfs: float
-    tts_music_window_sec: float
+    assistant_loudness_profile_path: str
+    assistant_loudness_auto_seed: bool
     tts_drain_tail_sec: float
     vad_barge_in_threshold: float
 
@@ -513,56 +520,33 @@ class Config:
             # before the speaker.
             tts_device=_env("JASPER_TTS_DEVICE", "jasper_out"),
             # Output-owner transport. Current main sends assistant audio
-            # to jasper-outputd's local socket; sounddevice -> jasper_out
-            # remains the pre-outputd rollback path.
+            # to jasper-outputd's local socket. The old sounddevice ->
+            # jasper_out path requires deploying a pre-outputd revision;
+            # this tree rejects it at validation time.
             tts_transport=_env("JASPER_TTS_TRANSPORT", "outputd"),
             tts_outputd_socket=_env(
                 "JASPER_TTS_OUTPUTD_SOCKET", "/run/jasper-outputd/tts.sock",
             ),
             # Top-level pcm.jasper_out runs at 48 kHz (matches the
             # dongle's native rate and CamillaDSP's chunk rate).
-            # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz
-            # before write (factor 2, exact integer ratio).
+            # TtsPlayout polyphase-upsamples provider 24 kHz PCM → 48
+            # kHz before write (factor 2, exact integer ratio).
             tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
-            # When music is playing, TtsVolumeTracker sizes TTS to a
-            # headroom above the windowed RMS of CamillaDSP's playback
-            # signal — so TTS scales with whatever music is actually
-            # coming out of the speaker, accounting for renderer-side
-            # volume sliders (AirPlay sender, Spotify Connect, etc.)
-            # that don't touch CamillaDSP's main_volume.
-            # The tracker measures the TTS source RMS directly and targets
-            # `music_rms + headroom` in the RMS (loudness) domain, so
-            # headroom is "how many dB louder than the music should the
-            # voice's loudness be." 5 dB ≈ a touch above the music — clear
-            # voice over song without shouting. (This was 16 when the
-            # source was measured by PEAK; matching peaks left a compressed
-            # provider like Gemini perceptibly louder, so we switched to
-            # RMS and dropped the number to the loudness-domain equivalent
-            # ~4-7 dB the old design intended.) With music ducking ~25 dB
-            # during TTS the voice sits well above the ducked bed
-            # regardless. Higher → more dominance; clamped to -6 dB max
-            # gain by audio_io's hearing-safety cap.
-            tts_music_headroom_db=_env_float(
-                "JASPER_TTS_MUSIC_HEADROOM_DB", 5.0,
+            # Provider/model/voice source-loudness profiles. Python
+            # can seed/learn these from silent calibration and live
+            # assistant PCM; outputd consumes them when choosing final
+            # assistant gain.
+            assistant_loudness_profile_path=_env(
+                "JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH",
+                DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
             ),
-            # Below this windowed RMS, the tracker treats the room as
-            # silent and falls back to a main_volume ceiling (the
-            # anchor / no-anchor branches). Camilla reports very negative
-            # dBFS during silence (we've measured -53 dBFS noise
-            # floor); -50 dBFS is comfortably above that and well
-            # below any audible music level.
-            tts_silence_threshold_dbfs=_env_float(
-                "JASPER_TTS_SILENCE_THRESHOLD_DBFS", -50.0,
-            ),
-            # Seconds of playback RMS to keep in the windowed-peak
-            # buffer. Long enough to ride through quiet passages
-            # and inter-track silences without flapping back to
-            # the silence-fallback (a typical pop song has 2-3 s
-            # quiet intros / outros); short enough that pause →
-            # ask Jarvis a question feels responsive and TTS
-            # actually gets quieter.
-            tts_music_window_sec=_env_float(
-                "JASPER_TTS_MUSIC_WINDOW_SEC", 8.0,
+            # Paid/provider TTS calibration is explicit opt-in. Passive
+            # live-response measurement still learns profiles after real
+            # replies; automatic seed calls should only run when an
+            # operator or the /voice/ "Save and Test" flow intentionally asks.
+            assistant_loudness_auto_seed=_env_bool(
+                "JASPER_ASSISTANT_LOUDNESS_AUTO_SEED",
+                False,
             ),
             # End-of-stream drain tail. After the last sample is queued
             # to PortAudio's ring, the dmix layer + DAC still take a

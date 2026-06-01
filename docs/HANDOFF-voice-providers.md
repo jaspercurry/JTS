@@ -88,10 +88,22 @@ The next page render reads that local cache and appends
 provider-discovered model IDs that are not in the curated catalog as
 `experimental; discovered` dropdown options.
 
+The same explicit-action rule applies to assistant loudness seeding:
+the wizard's **Save and Test** button writes
+`/var/lib/jasper/voice_provider.env`, then makes one bounded provider
+TTS request for `"This is me talking normally."`, measures it silently,
+stores the provider/model/voice loudness profile, and restarts
+`jasper-voice`. Plain **Save and restart voice** never calls a provider
+TTS API. Daemon-start seeding is off by default and only runs when an
+operator opts into `JASPER_ASSISTANT_LOUDNESS_AUTO_SEED=1`.
+
 Important invariants:
 
 - No page-load provider calls. The wizard stays fast and usable when
   the Pi is offline or the provider is down.
+- No implicit paid calibration calls. Model refresh and voice-level
+  testing are operator-triggered buttons, and Save-and-Test is capped at
+  one provider synthesis attempt.
 - No auto-promotion. Catalog entries stay first; discovered models are
   hints, not proof they are production-good on this speaker.
 - No surprise migration. Refresh never changes
@@ -233,7 +245,7 @@ Mode in the consumer apps and dictation in Claude Code.
   `speech_started` / `speech_stopped` / `committed` events, and fires
   `response.create` from the `_server_vad_response_trigger` background
   task. Manual VAD is restored on turn release. The switching is also
-  gated on `TtsVolumeTracker.music_is_playing()`. Production defaults
+  gated on the voice daemon's cheap content-activity observer. Production defaults
   to local Silero (`JASPER_SERVER_VAD_ENABLED=0`) because the May 2026
   A/B matrix found server VAD cut off real utterances and was prone to
   wake-word interference; see `HANDOFF-vad-experiments.md`. Config:
@@ -374,4 +386,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-05-30 (spend/usage accounting reworked: per-turn Gemini delta, Grok uptime meter, SpendCap safety multiplier, pricing override file — all against current jasper/usage.py)
+Last verified: 2026-06-01 (server-VAD gating now references the content-activity observer; spend/usage accounting still matches current jasper/usage.py)

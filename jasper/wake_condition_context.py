@@ -3,10 +3,10 @@
 Turns the two cheap runtime signals the daemon already has at a wake fire
 into one :data:`jasper.wake_conditions.CONDITIONS` label:
 
-  * **music** — from the playback-chain loudness (the ``TtsVolumeTracker``
-    anchor the daemon reads on the wake hot path). Music is the dominant
-    false-fire driver and the most reliable signal (we know what we play),
-    so it wins first.
+  * **music** — from cheap playback-chain loudness telemetry refreshed by
+    the daemon before the wake turn. Music is the dominant false-fire
+    driver and the most reliable signal (we know what we play), so it wins
+    first.
   * **quiet vs ambient** — from the mic-capture noise floor (a low percentile
     of the pre-fire capture ring's per-frame RMS; see
     ``jasper.voice_daemon._ring_noise_floor_dbfs``).
@@ -17,7 +17,7 @@ with the same inputs to pick per-condition thresholds. Phase 1.1 records its
 result as ``wake_events.condition_class``.
 
 The boundaries below are tunable knobs, not laws. ``MUSIC_FLOOR_DBFS``
-matches the daemon's existing ``music_active_proxy`` (anchor > -60 dBFS).
+matches the daemon's existing ``music_active_proxy`` threshold.
 ``AMBIENT_FLOOR_DBFS`` is a **placeholder** on a different signal (the mic
 noise floor) — the quiet/ambient split is the soft boundary to tune against
 the corpus; until then it only affects an observability label, never a wake

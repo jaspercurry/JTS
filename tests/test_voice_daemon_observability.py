@@ -19,7 +19,7 @@ def test_tts_ready_detail_reports_outputd_socket() -> None:
     assert "jasper_out" not in detail
 
 
-def test_tts_ready_detail_reports_sounddevice_device() -> None:
+def test_tts_ready_detail_marks_non_outputd_transport_unsupported() -> None:
     cfg = SimpleNamespace(
         tts_transport="sounddevice",
         tts_outputd_socket="/run/jasper-outputd/tts.sock",
@@ -28,4 +28,4 @@ def test_tts_ready_detail_reports_sounddevice_device() -> None:
 
     detail = _tts_ready_detail(cfg)
 
-    assert detail == "tts_transport=sounddevice tts_device=jasper_out"
+    assert detail == "tts_transport=sounddevice unsupported=true"

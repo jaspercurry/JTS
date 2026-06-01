@@ -133,15 +133,15 @@ port 1234.
 > CamillaDSP but no longer writes around the final output owner; it
 > enters `jasper-outputd`, which mixes it with post-DSP content and
 > owns the DAC timing loop. `main_volume` only attenuates music — TTS
-> keeps up via a separate tracker (`TtsVolumeTracker`) that measures
-> the actual music level downstream (`playback_rms`) and scales TTS to
-> sit a configurable headroom above it. Works the same whether the user
-> is turning the iPhone slider, the Spotify slider, the dial, the
+> keeps up because `jasper-outputd` measures content loudness before
+> ducking and applies provider/model/voice source-loudness profiles at
+> the final mix boundary. Works the same whether the user is turning
+> the iPhone slider, the Spotify slider, the dial, the
 > `listening_level` wizard, or an external amp downstream of the
 > dongle. To test the chain at a controlled volume, play to
 > `correction_substream`; the legacy `jasper_out` dmix remains only as
-> the pre-outputd rollback path. Why the split and what the tracker
-> does:
+> the pre-outputd rollback path. Why the split and how assistant
+> loudness matching works:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
 `jasper-mux` arbitrates between the renderers. In auto mode, when a new

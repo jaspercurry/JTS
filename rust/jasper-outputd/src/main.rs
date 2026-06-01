@@ -48,6 +48,7 @@ fn main() -> Result<()> {
     flag::register(SIGINT, Arc::clone(&shutdown)).context("registering SIGINT handler")?;
 
     let mut core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
+    core.set_assistant_loudness_config(config.assistant_loudness);
     let reference_consumer =
         if config.chip_ref_pcm.is_some() || config.reference_udp_target.is_some() {
             Some(core.add_reference_consumer("external-aec", 128))
@@ -140,6 +141,11 @@ fn run_fake(
             report.clipped_samples,
             tts_metrics,
         );
+        state.mark_loudness(
+            core.content_short_lufs(),
+            core.content_anchor_lufs(),
+            core.last_assistant_loudness_decision(),
+        );
         if once {
             log_once(report);
             return Ok(());
@@ -217,6 +223,11 @@ fn run_alsa(
             report.reference_sequence,
             report.clipped_samples,
             tts_metrics,
+        );
+        state.mark_loudness(
+            core.content_short_lufs(),
+            core.content_anchor_lufs(),
+            core.last_assistant_loudness_decision(),
         );
         if once {
             log_once(report);
@@ -573,15 +584,34 @@ fn drain_tts_commands(
             TtsCommand::GainDb(db) => {
                 *current_gain_db = db;
             }
+            TtsCommand::PrepareAssistant {
+                provider,
+                model,
+                voice,
+                silence_target_lufs,
+            } => {
+                core.prepare_assistant_context(provider, model, voice, silence_target_lufs);
+            }
+            TtsCommand::ContentMeterPause => {
+                core.pause_content_meter();
+            }
+            TtsCommand::ContentMeterResume => {
+                core.resume_content_meter();
+            }
             TtsCommand::SegmentStart {
                 kind,
                 provider_item_id,
+                profile,
             } => {
                 if let Some(id) = active_segment.take() {
                     core.end_assistant_segment(id);
                 }
-                *active_segment =
-                    Some(core.start_assistant_segment(provider_item_id, kind, *current_gain_db));
+                *active_segment = Some(core.start_assistant_segment_with_profile(
+                    provider_item_id,
+                    kind,
+                    *current_gain_db,
+                    profile,
+                ));
             }
             TtsCommand::Audio(samples) => {
                 if samples.is_empty() {
@@ -598,7 +628,7 @@ fn drain_tts_commands(
                     *active_segment = Some(id);
                     id
                 };
-                core.append_assistant_audio(id, *current_gain_db, samples);
+                core.append_assistant_audio_with_segment_gain(id, samples);
             }
             TtsCommand::SegmentEnd => {
                 if let Some(id) = active_segment.take() {
@@ -971,12 +1001,29 @@ fn try_enqueue_tts_command(
     queued: QueuedTtsCommand,
     state: &OutputdState,
 ) -> bool {
+    if !matches!(queued.command, TtsCommand::Audio(_)) {
+        return enqueue_reliable_tts_command(tx, queued);
+    }
     match tx.try_send(queued) {
         Ok(()) => true,
         Err(TrySendError::Full(queued)) => {
             state.mark_tts_command_dropped(dropped_audio_frames(&queued));
             log_dropped_tts_command(&queued);
             true
+        }
+        Err(TrySendError::Disconnected(_)) => false,
+    }
+}
+
+fn enqueue_reliable_tts_command(
+    tx: &SyncSender<QueuedTtsCommand>,
+    queued: QueuedTtsCommand,
+) -> bool {
+    match tx.try_send(queued) {
+        Ok(()) => true,
+        Err(TrySendError::Full(queued)) => {
+            log_tts_command_backpressure(&queued);
+            tx.send(queued).is_ok()
         }
         Err(TrySendError::Disconnected(_)) => false,
     }
@@ -998,26 +1045,32 @@ fn log_dropped_tts_command(queued: &QueuedTtsCommand) {
                 queued.epoch, frames
             );
         }
-        TtsCommand::GainDb(_) => {
+        _ => {
             eprintln!(
-                "event=outputd.tts_command_dropped reason=queue_full command=gain epoch={}",
+                "event=outputd.tts_command_dropped_unexpected reason=queue_full epoch={}",
                 queued.epoch
             );
         }
-        TtsCommand::SegmentStart { .. } => {
-            eprintln!(
-                "event=outputd.tts_command_dropped reason=queue_full command=segment_start epoch={}",
-                queued.epoch
-            );
-        }
-        TtsCommand::SegmentEnd => {
-            eprintln!(
-                "event=outputd.tts_command_dropped reason=queue_full command=segment_end epoch={}",
-                queued.epoch
-            );
-        }
-        TtsCommand::Flush | TtsCommand::FlushSync | TtsCommand::Close => {}
     }
+}
+
+fn log_tts_command_backpressure(queued: &QueuedTtsCommand) {
+    let command = match &queued.command {
+        TtsCommand::Audio(_) => "audio",
+        TtsCommand::GainDb(_) => "gain",
+        TtsCommand::SegmentStart { .. } => "segment_start",
+        TtsCommand::ContentMeterPause => "content_meter_pause",
+        TtsCommand::ContentMeterResume => "content_meter_resume",
+        TtsCommand::PrepareAssistant { .. } => "prepare_assistant",
+        TtsCommand::SegmentEnd => "segment_end",
+        TtsCommand::Flush => "flush",
+        TtsCommand::FlushSync => "flush_sync",
+        TtsCommand::Close => "close",
+    };
+    eprintln!(
+        "event=outputd.tts_command_backpressure reason=queue_full command={} epoch={}",
+        command, queued.epoch
+    );
 }
 
 fn lock_memory() {
@@ -1148,6 +1201,7 @@ fn _period_samples(period_frames: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jasper_outputd::loudness::AssistantLoudnessConfig;
     use std::os::fd::FromRawFd;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1386,6 +1440,7 @@ mod tests {
             command: TtsCommand::SegmentStart {
                 kind: SegmentKind::Assistant,
                 provider_item_id: Some("msg_abc123".to_string()),
+                profile: None,
             },
         })
         .unwrap();
@@ -1447,6 +1502,49 @@ mod tests {
         assert!(snapshot.contains(r#""dropped_audio_frames":2"#));
     }
 
+    #[test]
+    fn tts_state_enqueue_waits_instead_of_dropping_when_queue_is_full() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let state = Arc::new(test_state());
+
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
+        })
+        .unwrap();
+
+        let tx2 = tx.clone();
+        let state2 = state.clone();
+        let handle = thread::spawn(move || {
+            try_enqueue_tts_command(
+                &tx2,
+                QueuedTtsCommand {
+                    epoch: 0,
+                    command: TtsCommand::PrepareAssistant {
+                        provider: "openai".to_string(),
+                        model: "gpt-realtime-2".to_string(),
+                        voice: "marin".to_string(),
+                        silence_target_lufs: -41.0,
+                    },
+                },
+                &state2,
+            )
+        });
+
+        let first = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(first.command, TtsCommand::Audio(_)));
+        assert!(handle.join().unwrap());
+
+        let second = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            second.command,
+            TtsCommand::PrepareAssistant { .. }
+        ));
+        let snapshot = state.snapshot_json();
+        assert!(snapshot.contains(r#""dropped_commands":0"#));
+        assert!(snapshot.contains(r#""dropped_audio_frames":0"#));
+    }
+
     fn test_state() -> OutputdState {
         OutputdState::new(&Config {
             backend: BackendMode::Fake,
@@ -1464,6 +1562,7 @@ mod tests {
             stream_id: 99,
             tts_socket_path: None,
             control_socket_path: None,
+            assistant_loudness: AssistantLoudnessConfig::default(),
         })
     }
 

@@ -8,7 +8,7 @@ restate it.
 
 > **Status: current-state reference + approved design.** The
 > "Current state" section is operational truth (verified
-> 2026-05-30). The "Plan" section is approved-but-not-yet-built:
+> 2026-06-01). The "Plan" section is approved-but-not-yet-built:
 > Tier A + B next, C + D later. When Tier B/C ship, move their
 > rows from "Plan" to "Current state" and bump the footer.
 
@@ -31,9 +31,9 @@ daemon restart (or, for `control`, in-process).
 **The spine is the structured `event=` line.** Cross-daemon state
 changes emit `event=<name> key=val …` lines (`event=shairport.wedge_detected`,
 `event=system_supervisor.userspace_wedge`, `event=wifi_guardian.recreate_ok`,
-`event=duck`, `event=tts_gain.compute`, …). `scripts/jasper-trace.sh`
-keys off them. They are the cheap, high-signal, always-on
-observability floor — keep them.
+`event=duck`, `event=outputd.assistant_loudness`, …).
+`scripts/jasper-trace.sh` keys off them. They are the cheap,
+high-signal, always-on observability floor — keep them.
 
 **Persistent journald is deliberate, not an oversight.**
 `deploy/journald/50-jts-persistent-storage.conf` sets
@@ -63,20 +63,21 @@ clean split a debug toggle can rely on:
   breadcrumb, the bridge `BridgeStalled` warning. You get **one
   shot** at these when a rare failure fires. Never suppress.
 - **Heartbeat / chatty — safe to quiet:** a small set of always-on
-  INFO emitters. There are essentially three (below).
+  INFO emitters. The known hotspots are below.
 
-**The three steady-state verbosity hotspots** (from real Pi logs,
+**Steady-state verbosity hotspots** (from real Pi logs,
 music playing, ~110 lines/min combined):
 
 | Source | Volume | Control point | Note |
 |---|---|---|---|
 | shairport PTP anchors | ~40/min (55% of shairport output) | `log_verbosity = 2` in `deploy/shairport-sync.conf.template` | **Intentional** — open AP2 "Pattern E" hunt ([HANDOFF-airplay.md](HANDOFF-airplay.md)). Do **not** lower until that bug closes. |
 | AEC bridge `rms over` line | 1 / 5 s, always-on | the hardcoded `now - last_log > 5.0` gate in `aec_bridge.py`'s AEC loop | **Load-bearing** — `jasper-doctor`'s `_assess_aec_bridge_output` parses it from the journal, so demoting it blinds the AEC health check. Manage via Tier C, not demotion. |
-| voice `event=tts_gain.compute` | ~9/min while music plays | INFO in `_apply_gain` (`voice_daemon.py`) | **Load-bearing** — deliberate reconstruction record for the 2026-05-24 ducking bug. Keep at INFO until Tier C can hold it in RAM. |
-| voice `tts gain set` echo | mirrors the line above | INFO→DEBUG in `TtsPlayout.set_gain_db` (`audio_io.py`) | Redundant with `final_db=` above. **Demoted (Tier A, 2026-05-30).** |
 
-(The `gemini_session` "live connection:" lines are
-bursty-per-reconnect, not continuous — lower priority.)
+The old voice-side `event=tts_gain.compute` hotspot is retired. Current
+assistant loudness observability is one `event=outputd.assistant_loudness`
+line per assistant/cue segment plus outputd STATUS telemetry, so it is
+load-bearing without being steady-state journal spam. The low-level
+`tts gain set` echo in `audio_io.py` remains DEBUG.
 
 **Resilience state is observable without logs:**
 `curl -s http://jts.local:8780/state | jq .resilience` (`shairport`,
@@ -97,19 +98,15 @@ the resilience layer depends on. There is no "quiet mode" that can
 silence WARN+. Same spine as the "no silent failure paths" rule in
 [AGENTS.md](../AGENTS.md).
 
-**Tier A — done (2026-05-30).** Code review found only *one* of the
-three "hotspots" safe to demote: the redundant `tts gain set` echo
-in `audio_io.py` (`TtsPlayout.set_gain_db`) → DEBUG, since during
-music it merely echoes `final_db=` from the richer
-`event=tts_gain.compute` line. Also added a drop-to-`1` earmark
-comment to shairport `log_verbosity = 2`. The other two were found
-**load-bearing** on code review and deliberately left at INFO: the
-AEC `rms over` line is parsed by `jasper-doctor`
-(`_assess_aec_bridge_output`), and `event=tts_gain.compute` is the
-deliberate reconstruction record for the 2026-05-24 ducking bug.
-Both are the proper targets for the flight recorder (Tier C) —
-high-volume but load-bearing, so manage them by holding verbose
-detail in RAM and dumping on anomaly, not by demotion.
+**Tier A — done (2026-05-30; rechecked 2026-06-01).** Code review
+found the redundant `tts gain set` echo in `audio_io.py`
+(`TtsPlayout.set_gain_db`) safe to demote to DEBUG. The AEC
+`rms over` line remains INFO because `jasper-doctor`
+(`_assess_aec_bridge_output`) parses it continuously. The old
+voice-side `event=tts_gain.compute` line was removed when assistant
+loudness ownership moved into outputd; its replacement,
+`event=outputd.assistant_loudness`, is lower-volume structured
+decision telemetry and remains INFO.
 
 **Tier B — done (2026-05-30; pending on-device verification).** A
 collapsed **Debug logging** card on `/system` expands to one
@@ -221,11 +218,11 @@ by the recorder for the ring); same toggle behaviour, and the
 committed Tier-B tests still pass.
 
 *The payoff (closes the Tier-A loop).* With the ring in place,
-**`event=tts_gain.compute` can finally move to DEBUG** — quiet in
-the journal during music, but still captured in RAM and dumped
-around any related anomaly, preserving the after-the-fact
-reconstruction it exists for. Same for any future verbose
-instrumentation: RAM-only, persisted only when something breaks.
+future verbose instrumentation can live at DEBUG — quiet in the
+journal during healthy playback, but still captured in RAM and dumped
+around related anomalies. Keep low-volume, reconstructive
+`event=` decisions such as `event=outputd.assistant_loudness` at INFO
+unless they become steady-state spam.
 (The AEC `rms over` line still stays INFO — `jasper-doctor` reads it
 *continuously*, which a dump-on-anomaly model can't serve.)
 
@@ -332,4 +329,4 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-06-01

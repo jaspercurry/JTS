@@ -2,9 +2,10 @@
 
 use crate::fake::{FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentWrite};
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
+use crate::loudness::{AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig};
 use crate::mixer::{clamp_tts_gain_db, gain_db_to_linear, mix_i16_saturating};
 use crate::reference::{ConsumerId, ReferenceFanout};
-use crate::types::{AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
+use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodReport {
@@ -21,12 +22,14 @@ pub struct OutputCore {
     dac: FakeDacSink,
     reference: ReferenceFanout,
     ledger: PlayoutLedger,
+    loudness: AssistantLoudness,
     content_buf: Vec<i16>,
     assistant_buf: Vec<i16>,
     output_buf: Vec<i16>,
     segment_writes: Vec<SegmentWrite>,
     pending_clipped_samples: u32,
     prepared_period_ready: bool,
+    content_meter_paused: bool,
     frames_written: u64,
     monotonic_ns: u64,
 }
@@ -52,12 +55,14 @@ impl OutputCore {
             dac,
             reference: ReferenceFanout::new(stream_id, format, period_frames),
             ledger: PlayoutLedger::new(SAMPLE_RATE),
+            loudness: AssistantLoudness::new(AssistantLoudnessConfig::default()),
             content_buf: vec![0; period_samples],
             assistant_buf: vec![0; period_samples],
             output_buf: vec![0; period_samples],
             segment_writes: Vec::with_capacity(4),
             pending_clipped_samples: 0,
             prepared_period_ready: false,
+            content_meter_paused: false,
             frames_written: 0,
             monotonic_ns: 0,
         }
@@ -95,7 +100,19 @@ impl OutputCore {
         kind: SegmentKind,
         gain: f32,
     ) -> SegmentId {
-        let clamped_gain = clamp_tts_gain_db(gain);
+        self.start_assistant_segment_with_profile(provider_item_id, kind, gain, None)
+    }
+
+    pub fn start_assistant_segment_with_profile(
+        &mut self,
+        provider_item_id: Option<String>,
+        kind: SegmentKind,
+        fallback_gain: f32,
+        profile: Option<AssistantProfile>,
+    ) -> SegmentId {
+        let decision = self.loudness.decide_gain(kind, fallback_gain, profile);
+        log_assistant_loudness_decision(kind, &decision);
+        let clamped_gain = decision.final_gain_db;
         self.ledger
             .start_segment(provider_item_id, kind, clamped_gain, self.monotonic_ns)
     }
@@ -110,6 +127,11 @@ impl OutputCore {
         self.ledger.queue_frames(id, frames);
         self.assistant
             .enqueue_segment(id, samples, gain_db_to_linear(clamped_gain));
+    }
+
+    pub fn append_assistant_audio_with_segment_gain(&mut self, id: SegmentId, samples: Vec<i16>) {
+        let gain = self.ledger.segment(id).gain;
+        self.append_assistant_audio(id, gain, samples);
     }
 
     pub fn end_assistant_segment(&mut self, id: SegmentId) {
@@ -147,6 +169,9 @@ impl OutputCore {
     }
 
     fn prepare_from_buffered_content(&mut self) -> u32 {
+        if !self.content_meter_paused {
+            self.loudness.observe_content_period(&self.content_buf);
+        }
         self.assistant
             .read_period_into(&mut self.assistant_buf, &mut self.segment_writes);
 
@@ -244,6 +269,62 @@ impl OutputCore {
     pub fn ledger(&self) -> &PlayoutLedger {
         &self.ledger
     }
+
+    pub fn set_assistant_loudness_config(&mut self, config: AssistantLoudnessConfig) {
+        self.loudness = AssistantLoudness::new(config);
+    }
+
+    pub fn prepare_assistant_context(
+        &mut self,
+        provider: String,
+        model: String,
+        voice: String,
+        silence_target_lufs: f32,
+    ) {
+        self.loudness
+            .prepare_context(provider, model, voice, silence_target_lufs);
+    }
+
+    pub fn pause_content_meter(&mut self) {
+        self.content_meter_paused = true;
+    }
+
+    pub fn resume_content_meter(&mut self) {
+        self.content_meter_paused = false;
+        self.loudness.clear_context();
+    }
+
+    pub fn content_short_lufs(&self) -> Option<f32> {
+        self.loudness.content_short_lufs()
+    }
+
+    pub fn content_anchor_lufs(&self) -> Option<f32> {
+        self.loudness.content_anchor_lufs()
+    }
+
+    pub fn last_assistant_loudness_decision(&self) -> Option<&AssistantGainDecision> {
+        self.loudness.last_decision()
+    }
+}
+
+fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDecision) {
+    eprintln!(
+        "event=outputd.assistant_loudness kind={} provider={} model={} voice={} calibrated={} confidence={:.2} baseline_lufs={:.1} target_lufs={:.1} source_lufs={:.1} source_peak_dbfs={:.1} requested_gain_db={:.1} peak_cap_gain_db={:.1} final_gain_db={:.1} reason={}",
+        kind.as_str(),
+        decision.provider.as_deref().unwrap_or("-"),
+        decision.model.as_deref().unwrap_or("-"),
+        decision.voice.as_deref().unwrap_or("-"),
+        decision.calibrated,
+        decision.profile_confidence,
+        decision.baseline_lufs,
+        decision.target_lufs,
+        decision.source_lufs,
+        decision.source_peak_dbfs,
+        decision.requested_gain_db,
+        decision.peak_cap_gain_db,
+        decision.final_gain_db,
+        decision.clamp_reason,
+    );
 }
 
 #[cfg(test)]
@@ -413,6 +494,34 @@ mod tests {
         core.step();
 
         assert!(core.dac().periods.is_empty());
+    }
+
+    #[test]
+    fn resuming_content_meter_clears_prepared_loudness_context() {
+        let mut core = OutputCore::new(2, 99);
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "gpt-realtime-2".to_string(),
+            "marin".to_string(),
+            -20.0,
+        );
+        core.resume_content_meter();
+
+        let segment = core.start_assistant_segment_with_profile(
+            None,
+            SegmentKind::Assistant,
+            -12.0,
+            Some(AssistantProfile {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                source_lufs: Some(-30.0),
+                source_peak_dbfs: Some(-18.0),
+                confidence: 1.0,
+            }),
+        );
+
+        assert_eq!(core.ledger().segment(segment).gain, -12.0);
     }
 
     #[test]

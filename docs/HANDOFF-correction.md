@@ -532,8 +532,9 @@ in feedback (2026-05-09).
 ([jasper/voice_daemon.py](../jasper/voice_daemon.py)):
 - `MEASURE_PAUSE` → set in-process `_measurement_active` event;
   pause `WakeLoop` (block on the event before pulling the next
-  audio chunk); pause `TtsVolumeTracker` (skip the `playback_rms`
-  poll); cancel any active `Ducker.duck()` and skip future ones;
+  audio chunk); pause outputd's content loudness meter so sweeps do
+  not become assistant loudness baselines; cancel any active
+  `Ducker.duck()` and skip future ones;
   return JSON `{"result": "ok"}`.
 - `MEASURE_RESUME` → clear the event, restart trackers, return JSON.
 
@@ -734,7 +735,7 @@ jasper/
 │
 ├── voice_daemon.py                      MEASURE_PAUSE / MEASURE_RESUME
 │                                        UDS commands; gate WakeLoop +
-│                                        TtsVolumeTracker on _measurement_active
+│                                        outputd content meter on _measurement_active
 │
 └── camilla.py                           CamillaController config-path switch +
                                          reload helpers used by /correction/
@@ -824,9 +825,8 @@ Concrete changes:
 - `jasper/voice_daemon.py`: handle `MEASURE_PAUSE` / `MEASURE_RESUME`
   in `_handle_command()`. Set `self._measurement_active = asyncio.Event()`.
   WakeLoop's main loop awaits `not self._measurement_active.is_set()`
-  before pulling each audio chunk. TtsVolumeTracker checks the
-  event before each `playback_rms` poll. Ducker.duck() is a no-op
-  when set.
+  before pulling each audio chunk. Outputd's content meter is paused
+  via the TTS control socket, and `Ducker.duck()` is a no-op when set.
 - `jasper/correction/sweep.py`: in-house NumPy/SciPy synchronized
   swept-sine, 10 s, 20 Hz - 20 kHz, -12 dBFS, S16_LE WAV output.
   Cache on disk — it's deterministic.
@@ -1528,8 +1528,6 @@ Internal:
 
 ---
 
-Last verified: 2026-05-31 (Phase 2.20 advisor model-call adapter +
-reversible sound-audition executor documented; Decision 1 / Decision 3:
-the 443 block now also serves `/assets/` statically so the migrated
-measurement UI's canonical CSS/JS aren't mixed-content-blocked — full
-rationale in HANDOFF-management-ui.md. Prior pass 2026-05-30.)
+Last verified: 2026-06-01 (MEASURE_PAUSE now pauses outputd content
+loudness metering instead of the retired TTS RMS tracker; prior 2026-05-31
+advisor/model-call and HTTPS asset notes still apply.)

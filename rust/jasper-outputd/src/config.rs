@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 
+use crate::loudness::AssistantLoudnessConfig;
 use crate::types::SAMPLE_RATE;
 
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
@@ -49,6 +50,7 @@ pub struct Config {
     pub stream_id: u64,
     pub tts_socket_path: Option<String>,
     pub control_socket_path: Option<String>,
+    pub assistant_loudness: AssistantLoudnessConfig,
 }
 
 impl Config {
@@ -139,6 +141,32 @@ impl Config {
             stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
             tts_socket_path: env_optional("JASPER_OUTPUTD_TTS_SOCKET"),
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
+            assistant_loudness: AssistantLoudnessConfig {
+                assistant_offset_lu: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
+                    AssistantLoudnessConfig::default().assistant_offset_lu,
+                )?,
+                max_peak_dbfs: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS",
+                    AssistantLoudnessConfig::default().max_peak_dbfs,
+                )?,
+                fallback_source_lufs: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS",
+                    AssistantLoudnessConfig::default().fallback_source_lufs,
+                )?,
+                fallback_source_peak_dbfs: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
+                    AssistantLoudnessConfig::default().fallback_source_peak_dbfs,
+                )?,
+                default_silence_target_lufs: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    AssistantLoudnessConfig::default().default_silence_target_lufs,
+                )?,
+                content_silence_lufs: env_f32(
+                    "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
+                    AssistantLoudnessConfig::default().content_silence_lufs,
+                )?,
+            },
         })
     }
 }
@@ -199,6 +227,22 @@ fn env_u64(name: &str, default: u64) -> Result<u64> {
     }
 }
 
+fn env_f32(name: &str, default: f32) -> Result<f32> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => {
+            let parsed = s
+                .trim()
+                .parse::<f32>()
+                .with_context(|| format!("{} must be a number; got {:?}", name, s))?;
+            if !parsed.is_finite() {
+                anyhow::bail!("{} must be finite", name);
+            }
+            Ok(parsed)
+        }
+        _ => Ok(default),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +296,12 @@ mod tests {
             assert!(cfg.reference_udp_target.is_none());
             assert!(cfg.tts_socket_path.is_none());
             assert!(cfg.control_socket_path.is_none());
+            assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
+            assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
+            assert_eq!(
+                cfg.assistant_loudness.default_silence_target_lufs,
+                -41.0
+            );
         });
     }
 

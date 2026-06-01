@@ -89,6 +89,16 @@ def test_voice_page_renders_all_provider_cards_and_radios():
         assert f'name="active" value="{p.id}"' in out
 
 
+def test_voice_page_has_save_and_test_and_first_time_key_metadata():
+    out = _render()
+    assert "Save and Test" in out
+    assert 'formaction="save-test"' in out
+    for p in PROVIDERS:
+        assert f'data-provider-radio="{p.id}"' in out
+        assert f'data-provider-key="{p.id}"' in out
+        assert f'data-provider-radio-row="{p.id}"' in out
+
+
 def test_voice_page_loads_es_module_not_inline_script():
     out = _render()
     assert '<script type="module" src="/assets/voice/js/main.js">' in out
@@ -186,6 +196,8 @@ def _handler_cls(tmp_path):
         "discovery_cache_path": str(tmp_path / "discovery.json"),
         "discovery_http_client": None,
         "pricing_path": str(tmp_path / "pricing.json"),
+        "assistant_loudness_profile_path": str(tmp_path / "loudness.json"),
+        "loudness_seed_fn": voice_setup.ensure_seed_profile,
     })
 
 

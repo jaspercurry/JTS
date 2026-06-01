@@ -30,8 +30,11 @@ presentation changed.
 URL surface (after nginx strips the /voice/ prefix):
   GET  /                          page render
   POST /save                      save credentials + active provider, restart
+  POST /save-test                 save, run one silent voice-level test, restart
   POST /clear-credentials         clear one provider's key/model/voice
   POST /refresh-models            refresh one provider's cached model list
+  POST /pricing                   save one provider's pricing overrides
+  POST /pricing-import            import pricing overrides from pasted JSON
 """
 from __future__ import annotations
 
@@ -45,8 +48,13 @@ import urllib.parse
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import Any
 
+from jasper.assistant_loudness import (
+    DEFAULT_PROFILE_PATH as DEFAULT_LOUDNESS_PROFILE_PATH,
+    ensure_seed_profile,
+)
 from jasper.voice.catalog import (
     PROVIDERS,
     VALID_PROVIDER_IDS,
@@ -172,6 +180,49 @@ def _active_provider_id(state: dict[str, str]) -> str:
     return resolve_active_provider({"JASPER_VOICE_PROVIDER": active})
 
 
+def _provider_label(provider_id: str) -> str:
+    return next((p.label for p in PROVIDERS if p.id == provider_id), provider_id)
+
+
+def _seed_config_from_state(state: dict[str, str]) -> SimpleNamespace:
+    """Build the tiny Config-shaped object assistant_loudness needs.
+
+    The wizard owns the env file, not the running jasper-voice process, so
+    Save and Test uses this local view of the just-saved state.
+    """
+    values: dict[str, str] = {
+        "voice_provider": _active_provider_id(state),
+        "gemini_tts_model": os.environ.get("JASPER_GEMINI_TTS_MODEL", ""),
+    }
+    for provider in PROVIDERS:
+        prefix = provider.id
+        values[f"{prefix}_api_key"] = _value_for(state, provider.key_env)
+        values[f"{prefix}_model"] = _value_for(
+            state,
+            provider.model_env,
+            default_model_id(provider.id),
+        )
+        values[f"{prefix}_voice"] = _value_for(
+            state,
+            provider.voice_env,
+            default_voice_id(provider.id),
+        )
+    return SimpleNamespace(**values)
+
+
+def _redact_provider_error(exc: Exception, state: dict[str, str]) -> str:
+    """Return a flash-safe error string without raw provider secrets."""
+    msg = str(exc) or exc.__class__.__name__
+    for provider in PROVIDERS:
+        secret = _value_for(state, provider.key_env)
+        if secret:
+            msg = msg.replace(secret, mask_secret(secret))
+    msg = " ".join(msg.split())
+    if len(msg) > 220:
+        msg = msg[:217] + "..."
+    return msg
+
+
 # ----------------------------------------------------------------------
 # HTML rendering (canonical design system).
 # ----------------------------------------------------------------------
@@ -188,7 +239,12 @@ def _active_radio_html(state: dict[str, str]) -> str:
     for p in PROVIDERS:
         configured = _provider_is_configured(state, p)
         is_active = active == p.id
-        radio_attrs = ["type=\"radio\"", "name=\"active\"", f"value=\"{p.id}\""]
+        radio_attrs = [
+            "type=\"radio\"",
+            "name=\"active\"",
+            f"value=\"{p.id}\"",
+            f'data-provider-radio="{p.id}"',
+        ]
         if is_active:
             radio_attrs.append("checked")
         if not configured:
@@ -196,23 +252,27 @@ def _active_radio_html(state: dict[str, str]) -> str:
         radio_input = f"<input {' '.join(radio_attrs)}>"
         cls = "provider-radio is-disabled" if not configured else "provider-radio"
         aria_disabled = ' aria-disabled="true"' if not configured else ""
+        originally_disabled = (
+            ' data-provider-radio-originally-disabled="1"'
+            if not configured else ""
+        )
         status = (
             "configured" if configured
             else f"no {p.key_env} yet — paste below first"
         )
         rows.append(f"""
-        <label class="{cls}"{aria_disabled}>
+        <label class="{cls}" data-provider-radio-row="{p.id}"{originally_disabled}{aria_disabled}>
           {radio_input}
           <span class="provider-radio__name">{html.escape(p.label)}</span>
           <span class="provider-radio__price">{html.escape(p.cost_hint)}</span>
-          <span class="provider-radio__status">{html.escape(status)}</span>
+          <span class="provider-radio__status" data-provider-radio-status="{p.id}">{html.escape(status)}</span>
         </label>""")
     return f"""
     <div class="info-card active-group">
       <p class="eyebrow">Use this provider for voice</p>
       <p class="info-card__hint">Pick which real-time backend the wake-word
       loop talks to. Only providers with a saved API key can be selected.
-      Press <strong>Save</strong> at the bottom of the page to apply.</p>
+      Paste a key below to enable a provider before saving.</p>
       {''.join(rows)}
     </div>"""
 
@@ -628,6 +688,7 @@ def _provider_card_html(
         <input id="{provider.id}_key" name="{provider.id}_key" form="save-form"
                type="password" autocomplete="off" autocapitalize="off"
                autocorrect="off" spellcheck="false"
+               data-provider-key="{provider.id}"
                placeholder="{html.escape(placeholder, quote=True)}">
         {f'<p class="form-hint">Currently saved: <code>{html.escape(masked)}</code></p>' if masked else ''}
         {key_source}
@@ -719,6 +780,7 @@ def _index_html(
 
   <div class="form-actions">
     <button type="submit" form="save-form" class="btn btn--primary">Save and restart voice</button>
+    <button type="submit" form="save-form" formaction="save-test" class="btn btn--default">Save and Test</button>
   </div>
 
   {_pricing_refresh_html(discovery, csrf_token)}
@@ -976,8 +1038,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path not in (
-                "/save", "/clear-credentials", "/refresh-models", "/pricing",
-                "/pricing-import",
+                "/save", "/save-test", "/clear-credentials",
+                "/refresh-models", "/pricing", "/pricing-import",
             ):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -987,6 +1049,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/save":
                 self._handle_save(form)
+                return
+            if path == "/save-test":
+                self._handle_save_test(form)
                 return
             if path == "/clear-credentials":
                 self._handle_clear(form)
@@ -1003,12 +1068,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         # --- route bodies ---
 
-        def _handle_save(self, form: dict[str, str]) -> None:
+        def _save_provider_state(
+            self,
+            form: dict[str, str],
+        ) -> tuple[dict[str, str] | None, str | None]:
             current = _load_state(cfg["state_path"])
             new, err = _apply_save(form, current)
             if err is not None:
-                send_see_other(self, "./", flash=err)
-                return
+                return None, err
             try:
                 if new:
                     write_env_file(cfg["state_path"], new)
@@ -1016,17 +1083,77 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     delete_env_file(cfg["state_path"])
             except OSError as e:
                 logger.exception("could not write voice provider env file")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
+                return None, f"Could not save: {e}"
+            return new, None
+
+        def _handle_save(self, form: dict[str, str]) -> None:
+            new, err = self._save_provider_state(form)
+            if err is not None or new is None:
+                send_see_other(self, "./", flash=err or "Could not save.")
                 return
             restart_voice_daemon()
             active = new.get("JASPER_VOICE_PROVIDER", "")
-            label = next(
-                (p.label for p in PROVIDERS if p.id == active),
-                active,
-            )
             send_see_other(
                 self, "./",
-                flash=f"Saved. Voice daemon restarting on {label}.",
+                flash=f"Saved. Voice daemon restarting on {_provider_label(active)}.",
+            )
+
+        def _handle_save_test(self, form: dict[str, str]) -> None:
+            new, err = self._save_provider_state(form)
+            if err is not None or new is None:
+                send_see_other(self, "./", flash=err or "Could not save.")
+                return
+            active = new.get("JASPER_VOICE_PROVIDER", "")
+            label = _provider_label(active)
+            profile = None
+            seed_error = ""
+            try:
+                profile = cfg["loudness_seed_fn"](
+                    _seed_config_from_state(new),
+                    path=cfg["assistant_loudness_profile_path"],
+                    force=True,
+                    max_attempts=1,
+                    retry_backoff_sec=0.0,
+                )
+            except Exception as e:  # noqa: BLE001
+                seed_error = _redact_provider_error(e, new)
+                logger.warning(
+                    "event=voice_loudness_seed provider=%s result=error error=%s",
+                    active, e.__class__.__name__,
+                )
+            else:
+                if profile is not None:
+                    logger.info(
+                        "event=voice_loudness_seed provider=%s result=ok "
+                        "source_lufs=%.1f confidence=%.2f",
+                        active, profile.source_lufs, profile.confidence,
+                    )
+                else:
+                    seed_error = "provider key, model, or voice is incomplete."
+                    logger.warning(
+                        "event=voice_loudness_seed provider=%s result=skipped",
+                        active,
+                    )
+            restart_voice_daemon()
+            if seed_error:
+                send_see_other(
+                    self,
+                    "./",
+                    flash=(
+                        f"Saved, but {label} voice test failed: "
+                        f"{seed_error} Voice daemon restarting."
+                    ),
+                )
+                return
+            assert profile is not None
+            send_see_other(
+                self,
+                "./",
+                flash=(
+                    f"Saved and tested {label}. "
+                    f"Measured voice at {profile.source_lufs:.1f} LUFS; "
+                    "voice daemon restarting."
+                ),
             )
 
         def _handle_clear(self, form: dict[str, str]) -> None:
@@ -1204,6 +1331,8 @@ def make_server(
     discovery_cache_path: str = DISCOVERY_CACHE_FILE,
     discovery_http_client: Any | None = None,
     pricing_path: str | None = None,
+    assistant_loudness_profile_path: str | None = None,
+    loudness_seed_fn: Any | None = None,
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is one of:
       - `socket.socket` — pre-bound listener handed off by systemd
@@ -1220,6 +1349,14 @@ def make_server(
         "pricing_path": pricing_path or os.environ.get(
             "JASPER_PRICING_FILE", DEFAULT_PRICING_FILE,
         ),
+        "assistant_loudness_profile_path": (
+            assistant_loudness_profile_path
+            or os.environ.get(
+                "JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH",
+                DEFAULT_LOUDNESS_PROFILE_PATH,
+            )
+        ),
+        "loudness_seed_fn": loudness_seed_fn or ensure_seed_profile,
     }
     return _systemd.make_http_server(target, _make_handler(cfg))
 

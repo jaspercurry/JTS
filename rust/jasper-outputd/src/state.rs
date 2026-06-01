@@ -8,7 +8,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 
 use crate::alsa_backend::{IoCounters, NegotiatedPcm};
 use crate::config::Config;
+use crate::loudness::AssistantGainDecision;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -68,6 +69,18 @@ pub struct OutputdState {
     tts_over_budget_streak_ms: AtomicU64,
     tts_dropped_commands: AtomicU64,
     tts_dropped_audio_frames: AtomicU64,
+    content_short_lufs_x10: AtomicI64,
+    content_anchor_lufs_x10: AtomicI64,
+    assistant_baseline_lufs_x10: AtomicI64,
+    assistant_target_lufs_x10: AtomicI64,
+    assistant_source_lufs_x10: AtomicI64,
+    assistant_source_peak_dbfs_x10: AtomicI64,
+    assistant_requested_gain_db_x10: AtomicI64,
+    assistant_peak_cap_gain_db_x10: AtomicI64,
+    assistant_final_gain_db_x10: AtomicI64,
+    assistant_profile_confidence_x100: AtomicU64,
+    assistant_calibrated: AtomicBool,
+    assistant_decision_seen: AtomicBool,
     last_progress_ms: AtomicU64,
     watchdog_pings_sent: AtomicU64,
 }
@@ -110,6 +123,18 @@ impl OutputdState {
             tts_over_budget_streak_ms: AtomicU64::new(0),
             tts_dropped_commands: AtomicU64::new(0),
             tts_dropped_audio_frames: AtomicU64::new(0),
+            content_short_lufs_x10: AtomicI64::new(pack_optional_db(None)),
+            content_anchor_lufs_x10: AtomicI64::new(pack_optional_db(None)),
+            assistant_baseline_lufs_x10: AtomicI64::new(pack_optional_db(None)),
+            assistant_target_lufs_x10: AtomicI64::new(pack_optional_db(None)),
+            assistant_source_lufs_x10: AtomicI64::new(pack_optional_db(None)),
+            assistant_source_peak_dbfs_x10: AtomicI64::new(pack_optional_db(None)),
+            assistant_requested_gain_db_x10: AtomicI64::new(pack_optional_db(None)),
+            assistant_peak_cap_gain_db_x10: AtomicI64::new(pack_optional_db(None)),
+            assistant_final_gain_db_x10: AtomicI64::new(pack_optional_db(None)),
+            assistant_profile_confidence_x100: AtomicU64::new(0),
+            assistant_calibrated: AtomicBool::new(false),
+            assistant_decision_seen: AtomicBool::new(false),
             last_progress_ms: AtomicU64::new(0),
             watchdog_pings_sent: AtomicU64::new(0),
         }
@@ -191,6 +216,47 @@ impl OutputdState {
         if audio_frames > 0 {
             self.tts_dropped_audio_frames
                 .fetch_add(audio_frames, Ordering::Relaxed);
+        }
+    }
+
+    pub fn mark_loudness(
+        &self,
+        content_short_lufs: Option<f32>,
+        content_anchor_lufs: Option<f32>,
+        decision: Option<&AssistantGainDecision>,
+    ) {
+        self.content_short_lufs_x10
+            .store(pack_optional_db(content_short_lufs), Ordering::Relaxed);
+        self.content_anchor_lufs_x10
+            .store(pack_optional_db(content_anchor_lufs), Ordering::Relaxed);
+        if let Some(decision) = decision {
+            self.assistant_decision_seen.store(true, Ordering::Relaxed);
+            self.assistant_baseline_lufs_x10
+                .store(pack_optional_db(Some(decision.baseline_lufs)), Ordering::Relaxed);
+            self.assistant_target_lufs_x10
+                .store(pack_optional_db(Some(decision.target_lufs)), Ordering::Relaxed);
+            self.assistant_source_lufs_x10
+                .store(pack_optional_db(Some(decision.source_lufs)), Ordering::Relaxed);
+            self.assistant_source_peak_dbfs_x10.store(
+                pack_optional_db(Some(decision.source_peak_dbfs)),
+                Ordering::Relaxed,
+            );
+            self.assistant_requested_gain_db_x10.store(
+                pack_optional_db(Some(decision.requested_gain_db)),
+                Ordering::Relaxed,
+            );
+            self.assistant_peak_cap_gain_db_x10.store(
+                pack_optional_db(Some(decision.peak_cap_gain_db)),
+                Ordering::Relaxed,
+            );
+            self.assistant_final_gain_db_x10
+                .store(pack_optional_db(Some(decision.final_gain_db)), Ordering::Relaxed);
+            self.assistant_profile_confidence_x100.store(
+                (decision.profile_confidence.clamp(0.0, 1.0) * 100.0).round() as u64,
+                Ordering::Relaxed,
+            );
+            self.assistant_calibrated
+                .store(decision.calibrated, Ordering::Relaxed);
         }
     }
 
@@ -408,6 +474,116 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
+        buf.push_str(r#""assistant_loudness":{"#);
+        push_kv_f64_opt(
+            &mut buf,
+            "content_short_lufs",
+            unpack_optional_db(self.content_short_lufs_x10.load(Ordering::Relaxed)),
+            1,
+        );
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "content_anchor_lufs",
+            unpack_optional_db(self.content_anchor_lufs_x10.load(Ordering::Relaxed)),
+            1,
+        );
+        buf.push(',');
+        let seen = self.assistant_decision_seen.load(Ordering::Relaxed);
+        push_kv_bool(&mut buf, "decision_seen", seen);
+        buf.push(',');
+        push_kv_bool(
+            &mut buf,
+            "calibrated",
+            self.assistant_calibrated.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_f64(
+            &mut buf,
+            "profile_confidence",
+            (self.assistant_profile_confidence_x100.load(Ordering::Relaxed) as f64) / 100.0,
+            2,
+        );
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "baseline_lufs",
+            if seen {
+                unpack_optional_db(self.assistant_baseline_lufs_x10.load(Ordering::Relaxed))
+            } else {
+                None
+            },
+            1,
+        );
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "target_lufs",
+            if seen {
+                unpack_optional_db(self.assistant_target_lufs_x10.load(Ordering::Relaxed))
+            } else {
+                None
+            },
+            1,
+        );
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "source_lufs",
+            if seen {
+                unpack_optional_db(self.assistant_source_lufs_x10.load(Ordering::Relaxed))
+            } else {
+                None
+            },
+            1,
+        );
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "source_peak_dbfs",
+            if seen {
+                unpack_optional_db(self.assistant_source_peak_dbfs_x10.load(Ordering::Relaxed))
+            } else {
+                None
+            },
+            1,
+        );
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "requested_gain_db",
+            if seen {
+                unpack_optional_db(self.assistant_requested_gain_db_x10.load(Ordering::Relaxed))
+            } else {
+                None
+            },
+            1,
+        );
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "peak_cap_gain_db",
+            if seen {
+                unpack_optional_db(self.assistant_peak_cap_gain_db_x10.load(Ordering::Relaxed))
+            } else {
+                None
+            },
+            1,
+        );
+        buf.push(',');
+        push_kv_f64_opt(
+            &mut buf,
+            "final_gain_db",
+            if seen {
+                unpack_optional_db(self.assistant_final_gain_db_x10.load(Ordering::Relaxed))
+            } else {
+                None
+            },
+            1,
+        );
+        buf.push('}');
+        buf.push(',');
+
         buf.push_str(r#""watchdog":{"#);
         let last_progress_ms = self.last_progress_ms.load(Ordering::Relaxed);
         let age_ms = uptime_ms.saturating_sub(last_progress_ms);
@@ -562,6 +738,35 @@ fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
     buf.push_str(&format!("{:.*}", decimals, value));
 }
 
+fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    match value {
+        Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
+        None => buf.push_str("null"),
+    }
+}
+
+const PACKED_DB_NONE: i64 = i64::MIN;
+
+fn pack_optional_db(value: Option<f32>) -> i64 {
+    let Some(value) = value else {
+        return PACKED_DB_NONE;
+    };
+    if !value.is_finite() {
+        return PACKED_DB_NONE;
+    }
+    (value * 10.0).round() as i64
+}
+
+fn unpack_optional_db(value: i64) -> Option<f64> {
+    if value == PACKED_DB_NONE {
+        return None;
+    }
+    Some(value as f64 / 10.0)
+}
+
 fn event_age_ms(uptime_ms: u64, event_ms: u64) -> Option<u64> {
     if event_ms == NEVER_MS {
         None
@@ -599,6 +804,7 @@ fn escape_json(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{BackendMode, Config};
+    use crate::loudness::AssistantLoudnessConfig;
 
     fn test_config() -> Config {
         Config {
@@ -617,6 +823,7 @@ mod tests {
             stream_id: 1,
             tts_socket_path: None,
             control_socket_path: None,
+            assistant_loudness: AssistantLoudnessConfig::default(),
         }
     }
 
@@ -666,6 +873,61 @@ mod tests {
             r#""reference_outputs":{"chip_ref_pcm":null,"chip_ref_sample_rate":16000,"chip_ref_period_frames":320,"chip_ref_buffer_frames":4096,"udp_target":null}"#,
             r#""tts":{"pending_frames":512,"budget_frames":96000,"max_pending_frames":120000,"over_budget":true,"over_budget_periods":7,"over_budget_ms":149,"over_budget_streak_ms":64,"dropped_commands":0,"dropped_audio_frames":0}"#,
             r#""watchdog""#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+    }
+
+    #[test]
+    fn snapshot_json_contains_assistant_loudness_fields() {
+        let state = OutputdState::new(&test_config());
+
+        let initial = state.snapshot_json();
+        for needle in [
+            r#""assistant_loudness":{"content_short_lufs":null"#,
+            r#""content_anchor_lufs":null"#,
+            r#""decision_seen":false"#,
+            r#""calibrated":false"#,
+            r#""profile_confidence":0.00"#,
+            r#""final_gain_db":null"#,
+        ] {
+            assert!(initial.contains(needle), "missing {needle} in {initial}");
+        }
+
+        state.mark_loudness(
+            Some(-31.24),
+            Some(-30.75),
+            Some(&AssistantGainDecision {
+                provider: Some("openai".to_string()),
+                model: Some("gpt-realtime-2".to_string()),
+                voice: Some("verse".to_string()),
+                calibrated: true,
+                profile_confidence: 0.83,
+                baseline_lufs: -31.2,
+                target_lufs: -29.7,
+                source_lufs: -18.2,
+                source_peak_dbfs: -2.5,
+                requested_gain_db: -11.5,
+                peak_cap_gain_db: -0.5,
+                final_gain_db: -11.5,
+                clamp_reason: "target",
+            }),
+        );
+
+        let j = state.snapshot_json();
+        for needle in [
+            r#""content_short_lufs":-31.2"#,
+            r#""content_anchor_lufs":-30.8"#,
+            r#""decision_seen":true"#,
+            r#""calibrated":true"#,
+            r#""profile_confidence":0.83"#,
+            r#""baseline_lufs":-31.2"#,
+            r#""target_lufs":-29.7"#,
+            r#""source_lufs":-18.2"#,
+            r#""source_peak_dbfs":-2.5"#,
+            r#""requested_gain_db":-11.5"#,
+            r#""peak_cap_gain_db":-0.5"#,
+            r#""final_gain_db":-11.5"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }

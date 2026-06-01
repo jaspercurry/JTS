@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -385,8 +386,11 @@ def test_index_disables_radio_for_unconfigured_provider(monkeypatch):
     page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     # The grok radio input carries the `disabled` attribute, and its row is
     # marked is-disabled (canonical dimmed/dashed styling) + aria-disabled.
-    assert 'name="active" value="grok" disabled' in page
     idx = page.index('name="active" value="grok"')
+    tag_start = page.rfind("<input", 0, idx)
+    tag_end = page.index(">", idx)
+    tag = page[tag_start: tag_end + 1]
+    assert "disabled" in tag
     row_start = page.rfind("<label", 0, idx)
     assert "provider-radio is-disabled" in page[row_start:idx]
 
@@ -491,6 +495,18 @@ def test_index_save_button_associates_with_save_form_via_attribute():
     )
 
 
+def test_index_save_and_test_button_posts_to_bounded_test_route():
+    """The explicit provider-call path must be an operator action, not a
+    page-load side effect or an implicit normal save."""
+    page = voice_setup._index_html({}, "csrf-token-for-test-" + "x" * 32).decode()
+    idx = page.index("Save and Test")
+    btn_start = page.rfind("<button", 0, idx)
+    btn_end = page.index(">", btn_start)
+    btn_tag = page[btn_start: btn_end + 1]
+    assert 'form="save-form"' in btn_tag
+    assert 'formaction="save-test"' in btn_tag
+
+
 def test_index_unconfigured_card_shows_paste_field(monkeypatch):
     """A card with no saved key still renders its paste field directly (the
     canonical cards are always-open flat .info-cards), so the user doesn't
@@ -538,6 +554,7 @@ def _start_server(
     tmp_path: Path,
     *,
     discovery_http_client=None,
+    loudness_seed_fn=None,
 ) -> tuple[ThreadingHTTPServer, str, threading.Thread]:
     state_path = str(tmp_path / "voice_provider.env")
     server = voice_setup.make_server(
@@ -546,6 +563,10 @@ def _start_server(
         discovery_cache_path=str(tmp_path / "voice_model_discovery.json"),
         discovery_http_client=discovery_http_client,
         pricing_path=str(tmp_path / "pricing.json"),
+        assistant_loudness_profile_path=str(
+            tmp_path / "assistant_loudness_profiles.json",
+        ),
+        loudness_seed_fn=loudness_seed_fn,
     )
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -710,6 +731,114 @@ def test_e2e_refresh_models_writes_cache_without_restarting_voice(
         assert "gpt-realtime-new-live (experimental; discovered)" in body
     finally:
         http.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_save_and_test_runs_one_bounded_loudness_seed(
+    tmp_path: Path, monkeypatch,
+):
+    events = []
+    monkeypatch.setattr(
+        voice_setup,
+        "restart_voice_daemon",
+        lambda: events.append(("restart",)),
+    )
+
+    def seed_fn(cfg, *, path, force, max_attempts, retry_backoff_sec):
+        events.append((
+            "seed",
+            cfg.voice_provider,
+            cfg.openai_api_key,
+            path,
+            force,
+            max_attempts,
+            retry_backoff_sec,
+        ))
+        return SimpleNamespace(source_lufs=-18.7, confidence=0.65)
+
+    server, base, _ = _start_server(tmp_path, loudness_seed_fn=seed_fn)
+    try:
+        form = _form_for(active="openai", openai_key="sk-fresh")
+        status, location, _ = _post(f"{base}/save-test", form)
+        assert status == 303
+        assert "Saved and tested OpenAI" in urllib.parse.unquote(location)
+        assert "sk-fresh" not in urllib.parse.unquote(location)
+
+        state = voice_setup._load_state(str(tmp_path / "voice_provider.env"))
+        assert state["OPENAI_API_KEY"] == "sk-fresh"
+        assert state["JASPER_VOICE_PROVIDER"] == "openai"
+        assert events == [
+            (
+                "seed",
+                "openai",
+                "sk-fresh",
+                str(tmp_path / "assistant_loudness_profiles.json"),
+                True,
+                1,
+                0.0,
+            ),
+            ("restart",),
+        ]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_save_and_test_redacts_provider_error_and_still_saves(
+    tmp_path: Path, monkeypatch,
+):
+    restarted = []
+    monkeypatch.setattr(
+        voice_setup,
+        "restart_voice_daemon",
+        lambda: restarted.append(True),
+    )
+
+    def seed_fn(cfg, **_kwargs):
+        raise RuntimeError(f"provider rejected API key {cfg.openai_api_key}")
+
+    server, base, _ = _start_server(tmp_path, loudness_seed_fn=seed_fn)
+    try:
+        form = _form_for(active="openai", openai_key="sk-secret-tail9999")
+        status, location, _ = _post(f"{base}/save-test", form)
+        flash = urllib.parse.unquote(location)
+        assert status == 303
+        assert "Saved, but OpenAI Realtime voice test failed" in flash
+        assert "sk-secret-tail9999" not in flash
+        assert "sk-s" in flash and "9999" in flash
+
+        state = voice_setup._load_state(str(tmp_path / "voice_provider.env"))
+        assert state["OPENAI_API_KEY"] == "sk-secret-tail9999"
+        assert restarted == [True]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_save_and_test_handles_seed_skip_and_restarts(
+    tmp_path: Path, monkeypatch,
+):
+    restarted = []
+    monkeypatch.setattr(
+        voice_setup,
+        "restart_voice_daemon",
+        lambda: restarted.append(True),
+    )
+
+    server, base, _ = _start_server(tmp_path, loudness_seed_fn=lambda *a, **k: None)
+    try:
+        form = _form_for(active="openai", openai_key="sk-fresh")
+        status, location, _ = _post(f"{base}/save-test", form)
+        flash = urllib.parse.unquote(location)
+        assert status == 303
+        assert "Saved, but OpenAI Realtime voice test failed" in flash
+        assert "incomplete" in flash
+        assert voice_setup._load_state(
+            str(tmp_path / "voice_provider.env"),
+        )["JASPER_VOICE_PROVIDER"] == "openai"
+        assert restarted == [True]
+    finally:
         server.shutdown()
         server.server_close()
 

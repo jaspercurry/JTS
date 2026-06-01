@@ -82,9 +82,9 @@ typical levels. The whole defense is that 0.06 gap.
    stand out further from the noise. Anecdotally, raised-voice
    barge-in still works; conversational-voice barge-in becomes
    unreliable.
-2. **TTS amplitude isn't fixed.** [`TtsVolumeTracker`](../jasper/voice_daemon.py)
-   boosts TTS gain when music is loud (it sits a configurable
-   headroom above the music RMS). Louder TTS → more bleed in
+2. **TTS amplitude isn't fixed.** `jasper-outputd` boosts assistant
+   gain when content is loud, based on measured content loudness and
+   provider source-loudness profiles. Louder TTS → more bleed in
    the mic → bleed score creeps toward 0.15.
 3. **Server-side auto VAD is structurally off.** All three
    voice providers (Gemini Live, OpenAI Realtime, Grok) run with
@@ -245,10 +245,10 @@ a reference that doesn't exactly match what was played.**
 
 Each fails in a slightly different way:
 
-- **(A)** breaks `TtsVolumeTracker`'s load-bearing assumption
-  ("TTS bypasses CamillaDSP" — see
-  [audio-paths.md](audio-paths.md) "Why TTS still tracks user
-  volume changes"); subjects TTS to music ducking; requires
+- **(A)** breaks the assistant loudness matcher's load-bearing
+  assumption ("assistant audio bypasses CamillaDSP" — see
+  [audio-paths.md](audio-paths.md) "Assistant Loudness Matching");
+  subjects TTS to music ducking; requires
   either a second CamillaDSP instance or invasive CamillaDSP
   topology surgery (CamillaDSP supports only one capture per
   process).
@@ -365,12 +365,10 @@ down the chain** — converging music + TTS *after* CamillaDSP.
 
 ### What it preserves
 
-- `TtsVolumeTracker` continues to work — TTS still bypasses
-  CamillaDSP (it joins at `jasper_premix`, not inside
-  CamillaDSP), so the "TTS doesn't get ducked" property
-  survives, and `TtsVolumeTracker`'s `playback_rms` observation
-  source (CamillaDSP's `levels.playback_rms()`) is still valid
-  for matching TTS gain to music loudness.
+- Assistant loudness matching continues to work — TTS still bypasses
+  CamillaDSP, so the "TTS doesn't get ducked" property survives, and
+  outputd remains the final mix point where content loudness and
+  provider source profiles can be compared.
 - Pure ALSA stack — no new audio server, no PipeWire migration.
 - Stays inside the architectural framework `HANDOFF-resilience.md`
   established (sd_notify watchdog, fault-isolated daemons,
@@ -803,8 +801,8 @@ External sources surveyed for this doc:
 Internal cross-references (for the next reader):
 
 - [audio-paths.md](audio-paths.md) — current routing topology,
-  why TTS bypasses CamillaDSP, what `TtsVolumeTracker` compensates
-  for.
+  why TTS bypasses CamillaDSP, and how outputd matches assistant
+  loudness.
 - [HANDOFF-aec.md](HANDOFF-aec.md) — AEC engine choice, the
   chip-AEC-disabled investigation, current software AEC tuning.
 - [HANDOFF-resilience.md](HANDOFF-resilience.md) — the resilience
@@ -824,4 +822,4 @@ Internal cross-references (for the next reader):
 
 ---
 
-Last verified: 2026-05-31
+Last verified: 2026-06-01

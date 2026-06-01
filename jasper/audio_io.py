@@ -8,8 +8,17 @@ import socket
 import subprocess
 import threading
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+from .assistant_loudness import (
+    AssistantSourceMeter,
+    DEFAULT_PROFILE_PATH as ASSISTANT_LOUDNESS_PROFILE_PATH,
+    confidence_for_measurement,
+    profile_for_outputd,
+    update_profile_from_measurement,
+)
 
 # `sounddevice` is a Pi-side audio I/O dep (PortAudio bindings). It's not
 # installed in the local dev venv and isn't needed by the pure-Python
@@ -23,6 +32,9 @@ import numpy as np
 # makes those strings — never evaluated.
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    import sounddevice as sd
 
 
 def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
@@ -369,7 +381,7 @@ def make_mic_capture(
 
 
 class TtsPlayout:
-    """Plays Gemini's 24 kHz int16 mono PCM stream out to an ALSA device.
+    """Plays provider 24 kHz int16 mono PCM stream out to an ALSA device.
 
     The output device may not natively support 24 kHz mono — `jasper_dongle`
     (the shared dmix wrapping the Apple USB-C dongle) is fixed at 48 kHz
@@ -380,13 +392,11 @@ class TtsPlayout:
     Hearing-safety bounds on gain. TTS bypasses CamillaDSP entirely
     (writes to the dongle's dmix alongside CamillaDSP's output — see
     docs/audio-paths.md), so its level is set by us alone. A bug,
-    malformed env value, or stale volume reading from TtsVolumeTracker
-    must NEVER be allowed to play TTS at a level that could damage
-    hearing. `set_gain_db` clamps every input to [MIN_TTS_GAIN_DB,
-    MAX_TTS_GAIN_DB]; the cap exists even if every other check
-    upstream fails. -6 dB ceiling means TTS peaks max out around
-    -9 dBFS at the dongle (Gemini's source peaks ~-3 dBFS), well
-    below the dongle's reference output level.
+    malformed env value, or bad upstream loudness decision must NEVER
+    be allowed to play TTS at a level that could damage hearing.
+    `set_gain_db` clamps every input to [MIN_TTS_GAIN_DB,
+    MAX_TTS_GAIN_DB]; outputd also applies its own peak-aware ceiling
+    when it is the active transport.
     """
 
     INPUT_RATE = 24000
@@ -421,12 +431,11 @@ class TtsPlayout:
         self._output_rate = output_rate
         self._upsample = output_rate // self.INPUT_RATE
         # Linear gain factor applied before resample/write. Updated at
-        # runtime via set_gain_db so TTS tracks Camilla's main_volume.
+        # runtime via set_gain_db when a caller explicitly changes it.
         # Initial value is the floor (effectively silent) so the daemon
         # cannot accidentally play TTS loud during the brief window
-        # between TtsPlayout construction and the first volume read.
-        # The volume tracker's first tick sets a real value; until then
-        # we'd rather have inaudible TTS than blast.
+        # between TtsPlayout construction and the first configured
+        # gain. Until then we'd rather have inaudible TTS than blast.
         self._gain_linear = float(10 ** (self.MIN_TTS_GAIN_DB / 20.0))
         self._gain_db = self.MIN_TTS_GAIN_DB
         self._stream: sd.RawOutputStream | None = None
@@ -444,8 +453,7 @@ class TtsPlayout:
         self._ring_end_monotonic: float | None = None
         # Apply the constructor's gain_db through the same clamp +
         # validation path as runtime updates. If a caller passes the
-        # legacy "-8.0 fixed gain" value, this becomes the active
-        # level. Live tracking will overwrite it on the first tick.
+        # legacy "-8.0 fixed gain" value, this becomes the active level.
         self.set_gain_db(gain_db)
 
     def set_gain_db(self, db: float) -> None:
@@ -468,12 +476,8 @@ class TtsPlayout:
         # per change, not per write.
         self._gain_linear = float(10 ** (clamped / 20.0))
         self._gain_db = clamped
-        # DEBUG (not INFO): during music this echoes the richer
-        # `event=tts_gain.compute` line (which carries final_db=) on
-        # every perceptible gain change — the redundant half of the
-        # music-time gain chatter. Demoted to cut volume without
-        # losing reconstruction (the event= line stays at INFO).
-        # See docs/HANDOFF-observability.md (Tier A log demotions).
+        # DEBUG (not INFO): outputd owns the richer assistant loudness
+        # decision telemetry, and this low-level clamp log is noisy.
         if clamped != db:
             logger.debug(
                 "tts gain set: requested %.1f dB → clamped to %.1f dB",
@@ -559,9 +563,36 @@ class TtsPlayout:
         """
         return None
 
+    async def prepare_assistant_context(
+        self,
+        *,
+        provider: str,
+        model: str,
+        voice: str,
+        silence_target_lufs: float,
+    ) -> None:
+        """Freeze final-output loudness context before a turn starts.
+
+        No-op for the legacy sounddevice path. Outputd overrides this
+        because it owns content metering and final assistant gain.
+        """
+        _ = (provider, model, voice, silence_target_lufs)
+        return None
+
+    async def pause_content_meter(self) -> None:
+        """Tell the final-output owner to ignore temporary measurement/ducking.
+
+        No-op for sounddevice.
+        """
+        return None
+
+    async def resume_content_meter(self) -> None:
+        """Resume content metering after a paused section."""
+        return None
+
     async def write(self, pcm: bytes) -> None:
-        """Input is MONO int16 PCM at INPUT_RATE (24kHz) — same shape
-        Gemini Live emits and what cue WAVs are stored at. Internally
+        """Input is MONO int16 PCM at INPUT_RATE (24 kHz) — same shape
+        live providers emit and what cue WAVs are stored at. Internally
         we apply gain + upsample + mono→stereo duplication, then
         hand off to the (stereo) sounddevice stream."""
         if self._stream is None:
@@ -707,12 +738,34 @@ def _outputd_segment_kind(kind: str) -> str:
 def _outputd_provider_token(provider_item_id: str | None) -> str:
     if provider_item_id is None:
         return "-"
-    if provider_item_id and provider_item_id.isascii() and not any(
-        ch.isspace() for ch in provider_item_id
-    ):
+    if _outputd_token_ok(provider_item_id):
         return provider_item_id
     logger.warning("outputd TTS provider item id rejected: %r", provider_item_id)
     return "-"
+
+
+def _outputd_token_ok(value: str) -> bool:
+    return bool(value) and value.isascii() and not any(ch.isspace() for ch in value)
+
+
+def _outputd_profile_tokens(profile) -> list[str] | None:
+    if profile is None:
+        return None
+    for field in (profile.provider, profile.model, profile.voice):
+        if not _outputd_token_ok(field):
+            logger.warning(
+                "outputd TTS profile token rejected: provider=%r model=%r voice=%r",
+                profile.provider, profile.model, profile.voice,
+            )
+            return None
+    return [
+        profile.provider,
+        profile.model,
+        profile.voice,
+        f"{profile.source_lufs:.2f}",
+        f"{profile.source_peak_dbfs:.2f}",
+        f"{profile.confidence:.2f}",
+    ]
 
 
 class _OutputdStreamAdapter:
@@ -728,7 +781,7 @@ class _OutputdStreamAdapter:
         self._sock = sock
         self._recv_buffer = bytearray()
         self._lock = threading.Lock()
-        self._active_segment: tuple[str, str] | None = None
+        self._active_segment: tuple[str, str, tuple[str, ...] | None] | None = None
         self._closed = False
 
     @property
@@ -775,19 +828,63 @@ class _OutputdStreamAdapter:
         with self._lock:
             self._sock.sendall(f"GAIN {db:.3f}\n".encode("ascii"))
 
-    def start_segment(self, *, kind: str, provider_item_id: str | None) -> None:
+    def prepare_assistant(
+        self,
+        *,
+        provider: str,
+        model: str,
+        voice: str,
+        silence_target_lufs: float,
+    ) -> None:
+        if not (
+            _outputd_token_ok(provider)
+            and _outputd_token_ok(model)
+            and _outputd_token_ok(voice)
+        ):
+            logger.warning(
+                "outputd TTS prepare rejected invalid profile identity: "
+                "provider=%r model=%r voice=%r",
+                provider, model, voice,
+            )
+            return
+        with self._lock:
+            self._sock.sendall(
+                (
+                    f"PREPARE_ASSISTANT {provider} {model} {voice} "
+                    f"{float(silence_target_lufs):.2f}\n"
+                ).encode("ascii")
+            )
+
+    def pause_content_meter(self) -> None:
+        with self._lock:
+            self._sock.sendall(b"CONTENT_METER_PAUSE\n")
+
+    def resume_content_meter(self) -> None:
+        with self._lock:
+            self._sock.sendall(b"CONTENT_METER_RESUME\n")
+
+    def start_segment(
+        self,
+        *,
+        kind: str,
+        provider_item_id: str | None,
+        profile=None,
+    ) -> None:
+        profile_tokens = _outputd_profile_tokens(profile)
         segment = (
             _outputd_segment_kind(kind),
             _outputd_provider_token(provider_item_id),
+            tuple(profile_tokens) if profile_tokens is not None else None,
         )
         with self._lock:
             if self._active_segment == segment:
                 return
             if self._active_segment is not None:
                 self._sock.sendall(b"SEGMENT_END\n")
-            self._sock.sendall(
-                f"SEGMENT_START {segment[0]} {segment[1]}\n".encode("ascii")
-            )
+            parts = ["SEGMENT_START", segment[0], segment[1]]
+            if profile_tokens is not None:
+                parts.extend(profile_tokens)
+            self._sock.sendall((" ".join(parts) + "\n").encode("ascii"))
             self._active_segment = segment
 
     def end_segment(self) -> None:
@@ -863,6 +960,10 @@ class OutputdTtsPlayout(TtsPlayout):
         gain_db: float = 0.0,
         *,
         drain_tail_sec: float = 0.085,
+        provider: str = "",
+        model: str = "",
+        voice: str = "",
+        profile_path: str = ASSISTANT_LOUDNESS_PROFILE_PATH,
     ) -> None:
         if output_rate != _OUTPUTD_SAMPLE_RATE:
             raise RuntimeError(
@@ -876,6 +977,13 @@ class OutputdTtsPlayout(TtsPlayout):
             drain_tail_sec=drain_tail_sec,
         )
         self._socket_path = socket_path
+        self._provider = provider
+        self._model = model
+        self._voice = voice
+        self._profile_path = profile_path
+        self._assistant_meter: AssistantSourceMeter | None = None
+        self._profile_cache_key: tuple[str, str, str, str] | None = None
+        self._profile_cache = None
 
     async def _connect_stream_adapter(self) -> _OutputdStreamAdapter:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -914,6 +1022,52 @@ class OutputdTtsPlayout(TtsPlayout):
             except OSError as e:
                 logger.warning("outputd TTS gain update failed: %s", e)
 
+    async def prepare_assistant_context(
+        self,
+        *,
+        provider: str,
+        model: str,
+        voice: str,
+        silence_target_lufs: float,
+    ) -> None:
+        self._provider = provider
+        self._model = model
+        self._voice = voice
+        stream = self._stream
+        if stream is None:
+            return
+        prepare = getattr(stream, "prepare_assistant", None)
+        if prepare is None:
+            return
+        try:
+            await asyncio.to_thread(
+                prepare,
+                provider=provider,
+                model=model,
+                voice=voice,
+                silence_target_lufs=silence_target_lufs,
+            )
+        except OSError as e:
+            logger.warning("outputd TTS prepare assistant failed: %s", e)
+
+    async def pause_content_meter(self) -> None:
+        await self._send_meter_control("pause_content_meter")
+
+    async def resume_content_meter(self) -> None:
+        await self._send_meter_control("resume_content_meter")
+
+    async def _send_meter_control(self, method: str) -> None:
+        stream = self._stream
+        if stream is None:
+            return
+        fn = getattr(stream, method, None)
+        if fn is None:
+            return
+        try:
+            await asyncio.to_thread(fn)
+        except OSError as e:
+            logger.warning("outputd TTS %s failed: %s", method, e)
+
     async def write(self, pcm: bytes) -> None:
         await self.write_segment(pcm)
 
@@ -951,6 +1105,10 @@ class OutputdTtsPlayout(TtsPlayout):
             self._stream = await self._connect_stream_adapter()  # type: ignore[assignment]
 
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+        if segment_kind == "assistant" and self._provider and self._model and self._voice:
+            if self._assistant_meter is None:
+                self._assistant_meter = AssistantSourceMeter()
+            self._assistant_meter.observe_pcm_24k(pcm)
         if self._upsample > 1:
             from scipy.signal import resample_poly
             arr = resample_poly(arr, up=self._upsample, down=1)
@@ -963,10 +1121,12 @@ class OutputdTtsPlayout(TtsPlayout):
         if hasattr(stream, "set_gain_db"):
             await asyncio.to_thread(stream.set_gain_db, self.gain_db)
         if hasattr(stream, "start_segment"):
+            profile = self._profile_for_segment(segment_kind)
             await asyncio.to_thread(
                 stream.start_segment,
                 kind=segment_kind,
                 provider_item_id=provider_item_id,
+                profile=profile,
             )
         for chunk in _outputd_audio_chunks(stereo_i16.tobytes()):
             await asyncio.to_thread(stream.write, chunk)
@@ -984,11 +1144,27 @@ class OutputdTtsPlayout(TtsPlayout):
                 write_ms, chunk_ms, len(mono_i16), self._output_rate,
             )
 
+    def _profile_for_segment(self, segment_kind: str):
+        if segment_kind == "chirp" or not (self._provider and self._model and self._voice):
+            return None
+        key = (self._provider, self._model, self._voice, self._profile_path)
+        if self._profile_cache_key != key:
+            self._profile_cache_key = key
+            self._profile_cache = profile_for_outputd(
+                self._provider,
+                self._model,
+                self._voice,
+                path=self._profile_path,
+            )
+        return self._profile_cache
+
     async def end_segment(self) -> None:
         stream = self._stream
         if stream is None:
+            await self._save_assistant_source_profile()
             return
         if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
+            await self._save_assistant_source_profile()
             return
         end = getattr(stream, "end_segment", None)
         if end is not None:
@@ -996,10 +1172,38 @@ class OutputdTtsPlayout(TtsPlayout):
                 await asyncio.to_thread(end)
             except OSError as e:
                 logger.warning("outputd TTS segment end failed: %s", e)
+        await self._save_assistant_source_profile()
+
+    async def _save_assistant_source_profile(self) -> None:
+        meter = self._assistant_meter
+        self._assistant_meter = None
+        if meter is None or not (self._provider and self._model and self._voice):
+            return
+        measurement = meter.finish()
+        if measurement is None:
+            return
+        confidence = confidence_for_measurement(measurement)
+        try:
+            await asyncio.to_thread(
+                update_profile_from_measurement,
+                self._provider,
+                self._model,
+                self._voice,
+                measurement,
+                path=self._profile_path,
+                method="passive_live",
+                confidence=confidence,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("assistant loudness profile save failed: %s", e)
+        else:
+            self._profile_cache_key = None
+            self._profile_cache = None
 
     async def flush(self) -> dict | None:
         stream = self._stream
         if stream is None:
+            await self._save_assistant_source_profile()
             return None
         ack: dict | None = None
         try:
@@ -1021,6 +1225,7 @@ class OutputdTtsPlayout(TtsPlayout):
                 ack.get("flushed_frames"),
                 ack.get("max_audio_played_ms"),
             )
+        await self._save_assistant_source_profile()
         return ack
 
     async def __aexit__(self, *exc) -> None:
@@ -1040,19 +1245,23 @@ def make_tts_playout(
     gain_db: float,
     drain_tail_sec: float,
     outputd_socket: str = "/run/jasper-outputd/tts.sock",
+    provider: str = "",
+    model: str = "",
+    voice: str = "",
+    assistant_loudness_profile_path: str = ASSISTANT_LOUDNESS_PROFILE_PATH,
 ) -> TtsPlayout:
     """Construct the selected TTS playout transport.
 
-    ``outputd`` is the mainline default. ``sounddevice`` remains the
-    pre-outputd rollback transport. This factory intentionally preserves
-    TtsPlayout's public methods.
+    ``outputd`` is the supported runtime path. The old ``sounddevice``
+    playout class remains for direct unit tests and pre-outputd archaeology,
+    but this outputd-loudness tree must not silently route runtime voice audio
+    through a fixed-gain PortAudio path.
     """
     if transport == "sounddevice":
-        return TtsPlayout(
-            device,
-            output_rate=output_rate,
-            gain_db=gain_db,
-            drain_tail_sec=drain_tail_sec,
+        raise RuntimeError(
+            "JASPER_TTS_TRANSPORT=sounddevice is not supported in this "
+            "outputd-loudness tree; deploy a pre-outputd revision for "
+            "that rollback path."
         )
     if transport == "outputd":
         return OutputdTtsPlayout(
@@ -1060,5 +1269,9 @@ def make_tts_playout(
             output_rate=output_rate,
             gain_db=gain_db,
             drain_tail_sec=drain_tail_sec,
+            provider=provider,
+            model=model,
+            voice=voice,
+            profile_path=assistant_loudness_profile_path,
         )
     raise ValueError(f"unknown TTS transport: {transport!r}")

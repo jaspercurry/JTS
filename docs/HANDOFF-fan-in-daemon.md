@@ -149,8 +149,9 @@ CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongl
   current main it enters `jasper-outputd` instead of
   writing directly to the legacy `jasper_out` dmix. Music still goes
   through CamillaDSP first; the ducker's `main_volume` still attenuates
-  only music. `TtsVolumeTracker` continues to observe `playback_rms` to
-  scale TTS.
+  only music. `jasper-outputd` now measures content loudness and applies
+  provider source-loudness profiles to scale assistant audio at the
+  final mix boundary.
 - **AEC reference tap shape.** Unchanged at the consumer end —
   `pcm.jasper_ref` is still a plug-wrapped dsnoop; the AEC bridge code
   doesn't change at all. Only the underlying substream-pair shifts from
@@ -893,4 +894,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-05-30 (outputd topology rechecked).
+Last verified: 2026-06-01 (outputd topology and assistant loudness ownership rechecked).

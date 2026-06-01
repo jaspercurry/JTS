@@ -14,12 +14,12 @@ What gets paused (and why):
   - Music source daemons via `systemctl stop`. We need silence on the
     fan-in music chain so the sweep is the only signal hitting the
     loopback.
-  - voice_daemon's WakeLoop + TtsVolumeTracker via the
+  - voice_daemon's WakeLoop + outputd content meter via the
     `MEASURE_PAUSE` UDS command (see jasper/voice_daemon.py). The
     WakeLoop drops mic frames during the window — no wake events
-    fire, no Ducker calls happen, no TTS plays. The TtsVolumeTracker
-    stops polling playback_rms (which would otherwise pick up the
-    sweep as "loud music" and skew the loudness anchor).
+    fire, no Ducker calls happen, no TTS plays. The outputd content
+    meter is paused so the sweep does not become the next assistant
+    loudness baseline.
 
 What does NOT get paused:
 

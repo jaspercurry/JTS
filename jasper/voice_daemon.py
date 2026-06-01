@@ -3,13 +3,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import math
 import os
 import signal
 import sys
 import time
 from collections import deque
-from collections.abc import Callable
 from enum import Enum
 
 from .accounts import Registry, maybe_migrate_legacy
@@ -22,6 +20,11 @@ from .audio_io import (
     TtsPlayout,
     make_mic_capture,
     make_tts_playout,
+)
+from .assistant_loudness import (
+    active_voice_identity,
+    ensure_seed_profile,
+    silence_target_lufs_for_level,
 )
 from .wake_events import (
     WakeEventStore,
@@ -71,10 +74,7 @@ from .voice.session import AudioOutChunk, LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
 from .volume_observers import VolumeObserver
 from .mic_mute_persistence import read_mic_muted, write_mic_muted
-from .volume_persistence import (
-    DEFAULT_ANCHOR_DBFS,
-    VolumePersistence,
-)
+from .volume_persistence import VolumePersistence
 from .wake import WakeWordDetector
 from .weather import WeatherClient
 
@@ -423,155 +423,38 @@ class State(Enum):
     SESSION = "session"
 
 
-# Full-scale square for int16 (32768²) — converts linear power to dBFS.
-_FULL_SCALE_SQ = 32768.0 ** 2
+CONTENT_ACTIVITY_POLL_SEC = 1.0
+CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 
 
-def _pcm_mean_square(pcm: bytes) -> float | None:
-    """Mean square (linear power, int16² units) of a mono int16 PCM chunk,
-    or None if empty/unreadable — the building block for RMS loudness.
-    Fail-soft by contract: a measurement error must never break playback."""
-    try:
-        import numpy as _np  # local — keep module import cheap
-        arr = _np.frombuffer(pcm, dtype=_np.int16)
-        if arr.size == 0:
-            return None
-        x = arr.astype(_np.float64)
-        return float(_np.mean(x * x))
-    except Exception:  # noqa: BLE001
-        return None
+class ContentActivityTracker:
+    """Cheap observer for music/activity telemetry and server-VAD gating.
 
-
-def _power_to_dbfs(mean_square: float) -> float:
-    """Linear mean-square (int16² units) → dBFS RMS, with a -120 dBFS floor
-    for digital silence."""
-    if mean_square <= 0.0:
-        return -120.0
-    return 10.0 * math.log10(mean_square / _FULL_SCALE_SQ)
-
-
-class TtsVolumeTracker:
-    """Keeps TtsPlayout's gain matched to the actual loudness of music
-    playing through the speaker, regardless of where the music's
-    attenuation came from.
-
-    Why measure rather than guess. There are several volume stages on
-    the music chain that TTS bypasses:
-
-        track_loudness × airplay_sender_vol × spotify_connect_vol
-            × camilla_main_volume × room_correction → DAC
-
-    Setting TTS gain from `main_volume` alone only matches the LAST
-    stage. If the user's iPhone AirPlay slider is at 50%, music plays
-    ~6 dB quieter than `main_volume` implies; a main_volume-derived TTS
-    level comes out audibly louder than music in that exact scenario.
-
-    What we do. Poll CamillaDSP's `levels.playback_rms()` — the signal
-    AFTER every attenuation stage, immediately before the DAC. Maintain
-    a windowed peak (max RMS over MUSIC_WINDOW_SEC) so quick quiet
-    passages don't let TTS climb between phrases. Set TTS gain so the
-    TTS output RMS ends up `music_headroom_db` above the windowed music
-    RMS:
-
-        gain_db = (windowed_rms + headroom) - source_rms_dbfs
-
-    where `source_rms_dbfs` is the active provider's TTS *loudness*
-    (windowed RMS), MEASURED per provider via note_source_chunk() rather
-    than assumed. RMS — not peak — because loudness is what the ear (and
-    the user) registers: two voices normalized to the same PEAK still
-    sound unequal when one is more compressed (denser) than the other.
-    Gemini's TTS is hot/compressed (peaks near full-scale) while OpenAI's
-    is more dynamic; matching their RMS makes them equally loud, which a
-    peak match did not.
-
-    Ceiling policy is branch-specific. The pre-tracker formula treated
-    `main_volume` as an absolute ceiling in all branches —
-    the intent was "master_volume controls max possible TTS loudness."
-    That assumption was reasonable when main_volume was the single
-    canonical loudness knob; it breaks down once source-side sliders
-    (iPhone, Spotify, BT) and external amplifiers carry user intent
-    instead. At non-max listening_level on a loud-source music chain
-    (e.g. AirPlay with main_volume = -15 dB) the ceiling actively
-    defeated the tracker, leaving TTS several dB QUIETER than music
-    instead of the +6 dB above music the headroom formula targets.
-
-    So:
-      - Music actively playing: NO master ceiling. The whole point of
-        measuring playback_rms is to compute the right TTS level from
-        the actual signal; layering an unmeasured cap on top defeats
-        that. Hearing safety is enforced by TtsPlayout's MAX_TTS_GAIN_DB.
-      - Silence with a valid anchor: ceiling APPLIES. Anchor can be
-        stale (we played loud music yesterday, now it's a quiet bedroom
-        at low main_volume), and main_volume is the right backstop
-        against blasting in that case.
-      - No anchor ever recorded (first boot, sentinel): ceiling IS
-        the target — main_volume is the only loudness signal we have.
-
-    Hearing-safety belt is in TtsPlayout.set_gain_db (MIN/MAX clamp).
-    This class is defense-in-depth on top of that.
-
-    Pause/resume around voice sessions so duck-induced volume changes
-    don't pull TTS down DURING the very turn TTS is playing.
+    It never sets TTS gain. Outputd owns the final assistant loudness
+    decision; this tracker only keeps a recent best-effort playback RMS
+    value for wake telemetry and the "music is playing, use server VAD"
+    branch.
     """
-
-    POLL_INTERVAL_SEC = 0.25
-    # Cold-start seed for the per-provider source-loudness estimate (dBFS
-    # RMS), used until note_source_chunk() has observed real audio. A
-    # typical speech RMS sits ~-20 dBFS; the first turn's audio replaces
-    # this within ~a second, so it only governs the very first reply after
-    # a (re)start.
-    SOURCE_RMS_SEED_DBFS = -20.0
-    # Source loudness is the windowed MEAN POWER (true RMS) of recent
-    # voiced chunks — averaged in the POWER domain, the perceptual
-    # loudness, not a peak and not a dB-average. Count-based (not
-    # wall-clock) so it survives the silent gaps between turns; ~256
-    # voiced chunks is several seconds of speech.
-    _SOURCE_RMS_WINDOW = 256
-    # Only fold in voiced chunks. Inter-word/sentence gaps are near
-    # silence and aren't part of the speech loudness; anything quieter
-    # than this RMS is treated as a gap.
-    _SOURCE_VOICED_FLOOR_DBFS = -50.0
 
     def __init__(
         self,
         camilla: CamillaController,
-        tts: TtsPlayout,
-        music_headroom_db: float,
-        silence_threshold_dbfs: float,
-        music_window_sec: float,
-        volume_persistence: VolumePersistence | None = None,
-        initial_anchor_dbfs: float = DEFAULT_ANCHOR_DBFS,
+        *,
+        threshold_dbfs: float = CONTENT_ACTIVITY_THRESHOLD_DBFS,
     ) -> None:
         self._camilla = camilla
-        self._tts = tts
-        self._headroom_db = float(music_headroom_db)
-        self._silence_threshold_dbfs = float(silence_threshold_dbfs)
-        self._window_sec = float(music_window_sec)
-        # (monotonic_time, max(L_rms, R_rms)) entries, oldest first.
-        self._peak_buffer: deque[tuple[float, float]] = deque()
+        self._threshold_dbfs = float(threshold_dbfs)
+        self._last_dbfs: float | None = None
         self._paused = False
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
-        # Optional disk persistence: every poll reads main_volume; we
-        # opportunistically debounce-write it so external changes (mpc,
-        # hardware knob, anything that bypasses our voice tools) get
-        # captured. The same path also persists the loudness anchor as
-        # it updates.
-        self._volume_persistence = volume_persistence
-        # Loudness anchor: the last observed playback RMS while music
-        # was actually playing, used as TTS's reference during silence
-        # so TTS doesn't get loud just because main_volume is high
-        # while iPhone (or whatever upstream attenuator) is low.
-        # Initialized from disk at boot, or DEFAULT_ANCHOR_DBFS for
-        # first-boot. Updated continuously while music plays. Never
-        # expires — the Pi doesn't move, the room context is stable.
-        self._anchor_dbfs: float = float(initial_anchor_dbfs)
-        # Live per-provider source-loudness estimate: a window of recent
-        # voiced-chunk POWERS (linear int16² mean-squares); source_rms_dbfs
-        # is their power-mean → dBFS. Seeded until note_source_chunk() has
-        # observed real audio. Persists across turns for the process
-        # lifetime; a provider switch restarts jasper-voice, re-seeding it.
-        self._source_powers: deque[float] = deque(maxlen=self._SOURCE_RMS_WINDOW)
+
+    @property
+    def music_dbfs(self) -> float | None:
+        return self._last_dbfs
+
+    def music_is_playing(self) -> bool:
+        return self._last_dbfs is not None and self._last_dbfs > self._threshold_dbfs
 
     def pause(self) -> None:
         self._paused = True
@@ -579,158 +462,17 @@ class TtsVolumeTracker:
     def resume(self) -> None:
         self._paused = False
 
-    def music_is_playing(self) -> bool:
-        """True when the music chain has audible signal — used by the
-        server_vad switching logic to decide whether to delegate
-        end-of-utterance detection to the provider."""
-        return self._anchor_dbfs > self._silence_threshold_dbfs
-
-    @property
-    def source_rms_dbfs(self) -> float:
-        """Current estimate of the active provider's TTS source loudness:
-        the windowed RMS (power-mean of recent voiced chunks → dBFS), or
-        the seed until audio has been observed. The gain formula uses this
-        so every provider's TTS lands at the same LOUDNESS relative to
-        music regardless of its native level or compression."""
-        if not self._source_powers:
-            return self.SOURCE_RMS_SEED_DBFS
-        return _power_to_dbfs(sum(self._source_powers) / len(self._source_powers))
-
-    def note_source_chunk(self, pcm: bytes) -> None:
-        """Fold one provider TTS chunk's loudness into the source-RMS
-        window. Called for every assistant chunk as it is dequeued for
-        playback (see _play_responses), independent of pause state —
-        measurement never stops, only gain *recompute* pauses during a
-        turn, so a turn's audio refines the estimate the next turn uses.
-        Fail-soft: a measurement error must never disrupt playback."""
-        mean_square = _pcm_mean_square(pcm)
-        if mean_square is None or mean_square <= 0.0:
-            return
-        if _power_to_dbfs(mean_square) < self._SOURCE_VOICED_FLOOR_DBFS:
-            return
-        self._source_powers.append(mean_square)
-
-    def _record_rms(self, rms_dbfs: float) -> float:
-        """Append latest RMS reading and return windowed peak."""
-        now = asyncio.get_event_loop().time()
-        self._peak_buffer.append((now, rms_dbfs))
-        cutoff = now - self._window_sec
-        while self._peak_buffer and self._peak_buffer[0][0] < cutoff:
-            self._peak_buffer.popleft()
-        return max(p for _, p in self._peak_buffer)
-
-    def _compute_gain(
-        self, vol_db: float, windowed_rms: float, source_rms_dbfs: float,
-    ) -> float:
-        """Pure: given current main_volume, the windowed music RMS peak,
-        and the measured TTS source RMS, return target gain.
-
-        Three branches with branch-specific ceiling policy (see class
-        docstring for the why):
-          1. Music currently playing (windowed_rms above threshold) →
-             match observed loudness directly. No main_volume
-             ceiling; hearing safety lives in TtsPlayout's MAX cap.
-          2. Silence, but we have a loudness anchor (the last-known
-             music level, possibly from a previous session) → target
-             that level, CAPPED at main_volume. Anchor can be stale
-             (yesterday's loud party at today's quiet bedroom volume),
-             so the cap defends against blasting.
-          3. No anchor ever recorded (sentinel < -120) → target IS the
-             ceiling. main_volume is the only loudness signal we have.
-             With initial_anchor_dbfs defaulting to DEFAULT_ANCHOR_DBFS
-             (-30 dBFS = 40%), branch 3 is rarely hit in practice; it's
-             a backstop for genuine first-boot."""
-        ceiling = vol_db
-        if windowed_rms > self._silence_threshold_dbfs:
-            target = (
-                windowed_rms + self._headroom_db - source_rms_dbfs
-            )
-            # No ceiling clamp on the music-playing branch — the
-            # measured signal IS the answer. MAX_TTS_GAIN_DB in
-            # TtsPlayout handles hearing safety.
-        elif self._anchor_dbfs > -120.0:
-            target = min(
-                self._anchor_dbfs + self._headroom_db
-                - source_rms_dbfs,
-                ceiling,
-            )
-        else:
-            target = ceiling
-        # Quantize to 1 dB to avoid log spam and rapid micro-adjustments
-        # below human-perceivable change (~3 dB JND for loudness).
-        return round(target)
-
-    def _maybe_update_anchor(self, windowed_rms: float) -> None:
-        """If music is currently playing (above silence threshold),
-        update the in-memory anchor and opportunistically persist it.
-        During silence, the anchor stays frozen at the last recorded
-        music level — that's the whole point."""
-        if windowed_rms <= self._silence_threshold_dbfs:
-            return
-        self._anchor_dbfs = windowed_rms
-        if self._volume_persistence is not None:
-            self._volume_persistence.maybe_save_anchor(windowed_rms)
-
-    def _apply_gain(self, vol_db: float, windowed_rms: float) -> None:
-        """Compute target → apply via set_gain_db → emit structured event
-        on user-perceptible change. Centralizes the pattern shared by
-        apply_now and _loop.
-
-        The structured `event=tts_gain.compute` line fires only when
-        `tts.gain_db` actually moves (set_gain_db is a no-op on equal
-        values), so log volume stays proportional to perceptible change.
-        Carries every input the formula consumed plus the branch and
-        all clamping stages — enough to reconstruct any gain choice
-        from logs alone, without correlating across the three separate
-        log lines that used to be required."""
-        source_rms = self.source_rms_dbfs
-        target = self._compute_gain(vol_db, windowed_rms, source_rms)
-        old_gain = self._tts.gain_db
-        self._tts.set_gain_db(target)
-        if self._tts.gain_db == old_gain:
-            return
-        # Reconstruct branch for the structured event. Cheap: just
-        # comparisons + arithmetic on three floats. Mirrors the
-        # branching in _compute_gain by design — keep these two
-        # in lockstep if you add a fourth branch.
-        ceiling = vol_db
-        if windowed_rms > self._silence_threshold_dbfs:
-            branch = "music"
-        elif self._anchor_dbfs > -120.0:
-            branch = "anchor"
-        else:
-            branch = "no_anchor"
-        logger.info(
-            "event=tts_gain.compute branch=%s windowed_rms=%.1f "
-            "source_rms_dbfs=%.1f anchor_dbfs=%.1f main_volume_db=%.1f "
-            "ceiling_db=%.1f target_db=%.1f final_db=%.1f "
-            "max_cap_db=%.1f",
-            branch, windowed_rms, source_rms, self._anchor_dbfs, vol_db,
-            ceiling, target,
-            self._tts.gain_db, TtsPlayout.MAX_TTS_GAIN_DB,
-        )
-
-    async def apply_now(self) -> None:
-        result = await self._camilla.get_volume_and_mute(best_effort=True)
-        if result is None:
-            logger.warning(
-                "tts volume tracker: camilla unavailable; "
-                "falling to silent gain",
-            )
-            self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
-            return
-        vol_db, muted = result
-        if muted:
-            self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
-            return
+    async def refresh_now(self) -> float | None:
+        if self._paused:
+            return self._last_dbfs
         rms_pair = await self._camilla.get_playback_rms(best_effort=True)
-        rms = max(rms_pair) if rms_pair is not None else float("-inf")
-        windowed = self._record_rms(rms)
-        self._maybe_update_anchor(windowed)
-        self._apply_gain(vol_db, windowed)
+        if rms_pair is None:
+            return self._last_dbfs
+        self._last_dbfs = max(rms_pair)
+        return self._last_dbfs
 
     async def start(self) -> None:
-        await self.apply_now()
+        await self.refresh_now()
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
@@ -746,33 +488,12 @@ class TtsVolumeTracker:
     async def _loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                await asyncio.sleep(self.POLL_INTERVAL_SEC)
+                await asyncio.sleep(CONTENT_ACTIVITY_POLL_SEC)
             except asyncio.CancelledError:
                 return
             if self._paused:
                 continue
-            result = await self._camilla.get_volume_and_mute(best_effort=True)
-            if result is None:
-                # Camilla restart blip — hold last gain rather than
-                # blasting at TTS_FULL. This poll runs at ~1 Hz; we'll
-                # pick up the new state on the next iteration.
-                continue
-            vol_db, muted = result
-            if muted:
-                self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
-                continue
-            # Debounced persistence catches external main_volume changes
-            # (mpc, hardware knob, anything that bypasses our voice
-            # tools). Voice-tool-driven changes already persist
-            # immediately via tools/audio.py; this is the catch-all.
-            if self._volume_persistence is not None:
-                self._volume_persistence.maybe_save(vol_db)
-            rms_pair = await self._camilla.get_playback_rms(best_effort=True)
-            rms = max(rms_pair) if rms_pair is not None else float("-inf")
-            windowed = self._record_rms(rms)
-            self._maybe_update_anchor(windowed)
-            self._apply_gain(vol_db, windowed)
-
+            await self.refresh_now()
 
 def _build_system_instruction(
     location: str = "",
@@ -938,14 +659,17 @@ def _active_model(cfg: Config) -> str:
     return cfg.active_voice_model or f"<unknown:{cfg.voice_provider}>"
 
 
+def _active_voice(cfg: Config) -> str:
+    """Return the voice id for the currently selected provider."""
+    provider, _model, voice = active_voice_identity(cfg)
+    return voice or f"<unknown:{provider}>"
+
+
 def _tts_ready_detail(cfg: Config) -> str:
     """Return the startup-log fields for the selected TTS transport."""
     if cfg.tts_transport == "outputd":
         return f"tts_transport=outputd tts_socket={cfg.tts_outputd_socket}"
-    return (
-        f"tts_transport={cfg.tts_transport} "
-        f"tts_device={cfg.tts_device}"
-    )
+    return f"tts_transport={cfg.tts_transport} unsupported=true"
 
 
 def _make_connection(cfg: Config) -> LiveConnection:
@@ -1043,6 +767,38 @@ def _schedule_cue_regen(manager: AudioCueManager) -> None:
             logger.info("cue regen: all cues already cached")
 
     asyncio.create_task(_run(), name="jasper-cues-regen")
+
+
+def _schedule_assistant_loudness_seed(cfg: Config) -> None:
+    """Opt-in background silent provider test that seeds the loudness profile.
+
+    This can spend a small provider TTS request, so it never runs by
+    default. Passive live-response measurement still refines the profile
+    after real replies without extra API calls.
+    """
+    if not cfg.assistant_loudness_auto_seed:
+        return
+
+    async def _run() -> None:
+        await asyncio.sleep(2.0)
+        try:
+            profile = await asyncio.to_thread(
+                ensure_seed_profile,
+                cfg,
+                path=cfg.assistant_loudness_profile_path,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("assistant loudness seed failed: %s", e)
+            return
+        if profile is not None:
+            logger.info(
+                "assistant loudness seed ready: provider=%s model=%s "
+                "voice=%s source_lufs=%.1f confidence=%.2f",
+                profile.provider, profile.model, profile.voice,
+                profile.source_lufs, profile.confidence,
+            )
+
+    asyncio.create_task(_run(), name="assistant-loudness-seed")
 
 
 def _build_router(cfg: Config) -> Router | None:
@@ -1187,8 +943,6 @@ async def _turn_audio_chunks(turn: LiveTurn):
 async def _play_responses(
     turn: LiveTurn,
     tts: TtsPlayout,
-    *,
-    on_source_pcm: Callable[[bytes], None] | None = None,
 ) -> None:
     """Drain turn.audio_out() to the speaker. Barge-in handling: race
     each write against an interrupt signal so a user-interrupted-the-model
@@ -1209,11 +963,6 @@ async def _play_responses(
     write_task: asyncio.Task | None = None
     try:
         async for chunk in _turn_audio_chunks(turn):
-            # Tee the raw provider PCM to the loudness meter before the
-            # write race so the per-provider source estimate stays fresh
-            # even for chunks a barge-in later flushes.
-            if on_source_pcm is not None:
-                on_source_pcm(chunk.pcm)
             if interrupt_task is None or interrupt_task.done():
                 interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
             write_task = asyncio.create_task(
@@ -1497,7 +1246,7 @@ class WakeLoop:
         tts: TtsPlayout,
         connection: LiveConnection,
         ducker: Ducker,
-        tts_volume_tracker: TtsVolumeTracker,
+        content_activity: ContentActivityTracker,
         usage_store: UsageStore,
         spend_cap: SpendCap,
         stop_event: asyncio.Event,
@@ -1575,7 +1324,7 @@ class WakeLoop:
         # tests / out-of-tree callers; without it, dynamic-text cues
         # play unducked rather than crashing.
         self._camilla = camilla
-        self._tts_volume_tracker = tts_volume_tracker
+        self._content_activity = content_activity
         self._usage_store = usage_store
         self._spend_cap = spend_cap
         self._stop_event = stop_event
@@ -1609,11 +1358,11 @@ class WakeLoop:
 
         # Room-correction measurement window. When set, the WakeLoop
         # drops mic frames (no wake-word feed, no session forward) and
-        # the TtsVolumeTracker is paused so it doesn't read the sweep
-        # as "loud music" and skew the loudness anchor. Set / cleared
-        # via the MEASURE_PAUSE / MEASURE_RESUME UDS commands; the
-        # `_measurement_safety_task` auto-clears the event after 2 min
-        # so a coordinator crash can't strand the speaker silent.
+        # asks outputd to ignore content-meter samples so sweeps don't
+        # become the next assistant-loudness baseline. Set / cleared via
+        # MEASURE_PAUSE / MEASURE_RESUME; the safety task auto-clears
+        # after 2 min so a coordinator crash can't strand the speaker
+        # silent.
         self._measurement_active: asyncio.Event = asyncio.Event()
         self._measurement_safety_task: asyncio.Task | None = None
 
@@ -1645,7 +1394,7 @@ class WakeLoop:
 
         # Monotonic wallclock at the moment wake fires. Used by
         # _begin_turn to break the wake→activity_start latency into
-        # named segments (state reset, tts-tracker apply, duck,
+        # named segments (state reset, loudness prepare, duck,
         # acquire_turn) so a slow turn-acquire can be localized.
         # 0.0 means "no wake yet this session"; replaced on every fire.
         self._wake_event_at_monotonic: float = 0.0
@@ -1729,11 +1478,7 @@ class WakeLoop:
         """Public wrapper for `_play_cue`, callable via the control
         socket so external clients (jasper-control HTTP, the
         `jasper-cues play` CLI) can play cues through the daemon's
-        already-correctly-gained TtsPlayout.
-
-        Standalone clients can't easily replicate the daemon's
-        TtsVolumeTracker math; routing through here means they
-        don't have to."""
+        outputd-backed TtsPlayout."""
         if not slug:
             return "missing_slug"
         if self._cues is None:
@@ -1984,9 +1729,8 @@ class WakeLoop:
                 await self._shadow_vad_score_raw(frame)
 
     async def measurement_pause(self) -> str:
-        """Open a measurement window. Set the gate event, pause the
-        TTS volume tracker, and arm a 2-minute auto-clear safety
-        timer.
+        """Open a measurement window. Set the gate event, pause content
+        activity observation, and arm a 2-minute auto-clear safety timer.
 
         Refuses with `BUSY` when a voice session is currently active
         — yanking the session would orphan the user's turn. The
@@ -2000,7 +1744,8 @@ class WakeLoop:
         if self._state is State.SESSION:
             return "BUSY"
         self._measurement_active.set()
-        self._tts_volume_tracker.pause()
+        self._content_activity.pause()
+        await self._tts.pause_content_meter()
 
         # Cancel any prior safety timer (idempotent re-pause path).
         prev = self._measurement_safety_task
@@ -2025,7 +1770,8 @@ class WakeLoop:
                     "MEASURE_RESUME"
                 )
                 self._measurement_active.clear()
-                self._tts_volume_tracker.resume()
+                self._content_activity.resume()
+                await self._tts.resume_content_meter()
 
         # Note: this is a fire-once-and-exit task that we deliberately
         # do NOT add to self._bg_tasks — the WakeLoop run loop's
@@ -2068,7 +1814,10 @@ class WakeLoop:
         """Best-effort. If the TTS stream isn't open or write fails,
         the visual feedback on the web UI is enough — never raise."""
         try:
-            await self._tts.write(self._generate_mute_click(going_on=going_on))
+            await self._tts.write_segment(
+                self._generate_mute_click(going_on=going_on),
+                segment_kind="chirp",
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning("mic mute click failed: %s", e)
 
@@ -2127,7 +1876,7 @@ class WakeLoop:
         in __init__ to keep this off the wake hot path."""
         try:
             pcm = self._chirp_on_pcm if going_on else self._chirp_off_pcm
-            await self._tts.write(pcm)
+            await self._tts.write_segment(pcm, segment_kind="chirp")
         except Exception as e:  # noqa: BLE001
             logger.warning("listening chirp failed: %s", e)
 
@@ -2163,14 +1912,15 @@ class WakeLoop:
         return "ok"
 
     async def measurement_resume(self) -> str:
-        """Close a measurement window: clear the gate, resume the
-        tracker, cancel the safety timer.
+        """Close a measurement window: clear the gate, resume content
+        observation, cancel the safety timer.
 
         Idempotent — calling twice (or before any PAUSE) is harmless.
         Always returns "ok".
         """
         self._measurement_active.clear()
-        self._tts_volume_tracker.resume()
+        self._content_activity.resume()
+        await self._tts.resume_content_meter()
         if self._measurement_safety_task is not None:
             if not self._measurement_safety_task.done():
                 self._measurement_safety_task.cancel()
@@ -2178,16 +1928,11 @@ class WakeLoop:
         return "ok"
 
     def _read_music_dbfs(self) -> float | None:
-        """Most-recent music-chain loudness (the TtsVolumeTracker anchor) in
-        dBFS, or None when unavailable. Cheap — a cached number, no async
-        I/O — so it is safe to call on the per-frame wake path."""
-        tracker = getattr(self, "_tts_volume_tracker", None)
-        if tracker is None:
-            return None
-        anchor = getattr(tracker, "_anchor_dbfs", None)
-        if anchor is None or anchor <= -120.0:
-            return None
-        return float(anchor)
+        """Most-recent playback RMS in dBFS, or None when unavailable.
+
+        Cheap cached read, no async I/O, so it is safe on the wake hot path.
+        """
+        return self._content_activity.music_dbfs
 
     def _maybe_refresh_condition(self, now_loop: float) -> None:
         """Refresh `_current_condition` (the acoustic condition the fuser
@@ -2438,16 +2183,14 @@ class WakeLoop:
                 "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"),
                 "chip_hpf_hz": os.environ.get("JASPER_AEC_CHIP_HPF_HZ", "125"),
             }
-            # Music context — best-effort from the TtsVolumeTracker's
-            # cached anchor (the loudness it last observed on the
-            # music chain via the 1-Hz `_anchor` poll). That value is
-            # already maintained without async I/O, so reading it on
-            # the wake hot path is free. Not a renderer probe (would
-            # add ~50 ms of async work); the anchor is a recent-ish
-            # cached number, accurate to within ~1 s.
+            # Music context — best-effort from ContentActivityTracker's
+            # cached playback RMS. That value is already maintained
+            # without async I/O, so reading it on the wake hot path is
+            # free. Not a renderer probe (would add ~50 ms of async
+            # work); the value is recent-ish, accurate to within ~1 s.
             # Proxy: louder than -60 dBFS = "music probably playing."
             # Imperfect (TTS uses the same playback chain) but useful for FP
-            # correlation. Same cached anchor the live-condition refresh reads.
+            # correlation. Same cached value the live-condition refresh reads.
             music_volume_db = self._read_music_dbfs()
             music_active_proxy = (
                 music_volume_db is not None and music_volume_db > -60.0
@@ -3137,10 +2880,9 @@ class WakeLoop:
             "connection_paused": self._connection.is_paused(),
             "mic_muted": self._mic_muted,
             "duck_active": self._ducker.is_ducked,
-            # Measured per-provider TTS source loudness (dBFS RMS) so the
-            # learned level is observable on /state without log-grepping.
-            "tts_source_rms_dbfs": round(
-                self._tts_volume_tracker.source_rms_dbfs, 1,
+            "music_dbfs": (
+                round(self._content_activity.music_dbfs, 1)
+                if self._content_activity.music_dbfs is not None else None
             ),
             # Actually-armed wake legs (runtime truth, by jasper.wake_legs
             # token order). /aec reports configured *intent* from
@@ -3209,20 +2951,24 @@ class WakeLoop:
         if self._vad_off is not None:
             self._vad_off.reset()
         t_after_state = _time.monotonic()
-        # Pin TTS gain to the user's pre-duck main_volume
-        # BEFORE ducking. The duck about to fire will drop main_volume
-        # by JASPER_DUCK_DB; if we let the tracker observe that drop,
-        # TTS would go quiet for the response we're about to play —
-        # exactly backward (we duck music so the user can hear TTS).
-        # Pause the tracker for the lifetime of the turn so it doesn't
-        # re-read main_volume mid-turn.
-        await self._tts_volume_tracker.apply_now()
-        self._tts_volume_tracker.pause()
+        await self._content_activity.refresh_now()
+        provider, model, voice = active_voice_identity(self._cfg)
+        silence_target = silence_target_lufs_for_level(
+            self._volume_coordinator.get_listening_level(),
+        )
+        await self._tts.prepare_assistant_context(
+            provider=provider,
+            model=model,
+            voice=voice,
+            silence_target_lufs=silence_target,
+        )
+        await self._tts.pause_content_meter()
+        self._content_activity.pause()
         # Tell the volume coordinator a session is active so its
         # source-transition handler doesn't fight the ducker's
         # additive math on camilla.
         self._volume_coordinator.note_voice_session(True)
-        t_after_tts_apply = _time.monotonic()
+        t_after_loudness_prepare = _time.monotonic()
         await self._ducker.duck()
         t_after_duck = _time.monotonic()
         self._session_id = self._usage_store.open_session(
@@ -3235,7 +2981,7 @@ class WakeLoop:
         if (
             self._cfg.server_vad_enabled
             and self._connection.supports_server_vad()
-            and self._tts_volume_tracker.music_is_playing()
+            and self._content_activity.music_is_playing()
         ):
             set_td = getattr(self._connection, "set_turn_detection", None)
             if set_td is not None and callable(set_td):
@@ -3253,8 +2999,8 @@ class WakeLoop:
                     if callable(mark):
                         mark()
                     logger.info(
-                        "event=server_vad.enabled music_anchor_dbfs=%.1f",
-                        self._tts_volume_tracker._anchor_dbfs,
+                        "event=server_vad.enabled music_dbfs=%.1f",
+                        self._content_activity.music_dbfs or float("-inf"),
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
@@ -3264,13 +3010,13 @@ class WakeLoop:
 
         logger.info(
             "turn acquire done in %.0fms "
-            "(sched_lag=%.0f state=%.0f tts_apply=%.0f duck=%.0f acquire=%.0f) "
+            "(sched_lag=%.0f state=%.0f loudness_prepare=%.0f duck=%.0f acquire=%.0f) "
             "(wake→activity_start%s)",
             (_time.monotonic() - t_wake) * 1000,
             (t_begin - t_wake) * 1000,
             (t_after_state - t_begin) * 1000,
-            (t_after_tts_apply - t_after_state) * 1000,
-            (t_after_duck - t_after_tts_apply) * 1000,
+            (t_after_loudness_prepare - t_after_state) * 1000,
+            (t_after_duck - t_after_loudness_prepare) * 1000,
             (t_after_acquire - t_after_duck) * 1000,
             ", server_vad" if self._server_vad_this_turn else "",
         )
@@ -3293,10 +3039,7 @@ class WakeLoop:
                 len(pre_roll_frames), len(pre_roll_frames) * 80.0,
             )
         playback = asyncio.create_task(
-            _play_responses(
-                self._turn, self._tts,
-                on_source_pcm=self._tts_volume_tracker.note_source_chunk,
-            )
+            _play_responses(self._turn, self._tts)
         )
         idle = asyncio.create_task(
             _idle_watchdog(self._turn, self._tts, self._cfg.idle_timeout_sec)
@@ -3317,7 +3060,8 @@ class WakeLoop:
                 pass
         await self._ducker.restore()
         self._volume_coordinator.note_voice_session(False)
-        self._tts_volume_tracker.resume()
+        self._content_activity.resume()
+        await self._tts.resume_content_meter()
         if self._session_id is not None:
             self._usage_store.close_session(self._session_id, 0, 0)
         self._turn = None
@@ -3369,8 +3113,8 @@ class WakeLoop:
                     silero_aec_armed_at_ms=self._silero_aec_armed_at_ms,
                     silero_raw_armed_at_ms=self._silero_raw_armed_at_ms,
                     endpointer=endpointer_label,
-                    music_playing_at_turn=self._tts_volume_tracker.music_is_playing(),
-                    music_db_at_turn=self._tts_volume_tracker._anchor_dbfs,
+                    music_playing_at_turn=self._content_activity.music_is_playing(),
+                    music_db_at_turn=self._content_activity.music_dbfs,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("wake_events: session VAD telemetry failed: %s", e)
@@ -3479,10 +3223,8 @@ class WakeLoop:
 
         await self._ducker.restore()
         self._volume_coordinator.note_voice_session(False)
-        # Resume the TTS volume tracker AFTER the duck has been
-        # restored, so the next poll reads the user's actual master
-        # volume, not the still-ducked one.
-        self._tts_volume_tracker.resume()
+        self._content_activity.resume()
+        await self._tts.resume_content_meter()
         self._turn = None
         self._session_id = None
         self._state = State.WAKE
@@ -3511,14 +3253,12 @@ async def _start_control_socket(
         END                 → manual_session_end    (long-press release)
         STATUS              → session_status        (diagnostic snapshot)
         CUE_PLAY <slug>     → play a registered audio cue through the
-                              daemon's TtsPlayout (which has the
-                              tracker-set gain). Routed here so a
-                              standalone CLI doesn't have to recreate
-                              the volume math — and can't accidentally
-                              blast at -6 dB when the daemon's at -27.
+                              daemon's outputd-backed TtsPlayout. Routed
+                              here so a standalone CLI doesn't have to
+                              recreate the output path or gain policy.
         MEASURE_PAUSE       → open a room-correction measurement
                               window. Drops mic frames, pauses the
-                              TTS volume tracker. Refuses (BUSY) if a
+                              outputd content meter. Refuses (BUSY) if a
                               session is active. Auto-clears in 2 min
                               if RESUME is never sent.
         MEASURE_RESUME      → close the measurement window.
@@ -3743,21 +3483,6 @@ async def run() -> None:
         camilla, cfg.duck_db,
         target_db_provider=volume_coordinator.get_camilla_target_db,
     )
-    record = volume_persistence.load()
-    # Loudness anchor: never expires. If the file has one, use it
-    # exactly. Otherwise fall to DEFAULT_ANCHOR_DBFS (-30 dBFS = 40%
-    # equivalent), which gives a conservative conversational-level TTS
-    # output — neither blasting nor inaudible.
-    if record is not None and record.loudness_anchor_dbfs is not None:
-        initial_anchor = record.loudness_anchor_dbfs
-        anchor_reason = "restored from disk"
-    else:
-        initial_anchor = DEFAULT_ANCHOR_DBFS
-        anchor_reason = "first-boot default"
-    logger.info(
-        "tts loudness anchor: %s = %.1f dBFS",
-        anchor_reason, initial_anchor,
-    )
     try:
         target_level, restore_reason = await volume_coordinator.initialize(
             stale_after_sec=cfg.volume_regress_after_sec,
@@ -3892,7 +3617,7 @@ async def run() -> None:
                 "connection uptime meter: enabled for %s at $%.2f/hour",
                 cfg.voice_provider, pricing.flat_per_hour_usd,
             )
-    tts_volume_tracker: TtsVolumeTracker | None = None
+    content_activity: ContentActivityTracker | None = None
     try:
         # Capture the linked-Google-accounts list at startup so the
         # system instruction tells the model which `account` values
@@ -3986,23 +3711,20 @@ async def run() -> None:
                 transport=cfg.tts_transport,
                 device=cfg.tts_device,
                 output_rate=cfg.tts_output_rate,
-                # Constructor gain doesn't matter at runtime — TtsPlayout
-                # initializes at its silent floor and the volume tracker's
-                # first-tick read sets the real value before the first
-                # turn can play.
+                # outputd owns the final gain decision. This fallback is
+                # used only by chirps/legacy sounddevice paths.
                 gain_db=0.0,
                 drain_tail_sec=cfg.tts_drain_tail_sec,
                 outputd_socket=cfg.tts_outputd_socket,
+                provider=cfg.voice_provider,
+                model=_active_model(cfg),
+                voice=_active_voice(cfg),
+                assistant_loudness_profile_path=(
+                    cfg.assistant_loudness_profile_path
+                ),
             ))
-            tts_volume_tracker = TtsVolumeTracker(
-                camilla, tts,
-                music_headroom_db=cfg.tts_music_headroom_db,
-                silence_threshold_dbfs=cfg.tts_silence_threshold_dbfs,
-                music_window_sec=cfg.tts_music_window_sec,
-                volume_persistence=volume_persistence,
-                initial_anchor_dbfs=initial_anchor,
-            )
-            await tts_volume_tracker.start()
+            content_activity = ContentActivityTracker(camilla)
+            await content_activity.start()
 
             # Wire the playout into the cue manager that was already
             # constructed up top so timer tools could register with a
@@ -4014,6 +3736,7 @@ async def run() -> None:
             # internet / bad API key), cues silently won't play; the
             # daemon's other voice paths still work.
             _schedule_cue_regen(cues_manager)
+            _schedule_assistant_loudness_seed(cfg)
 
             # Tier 1 of the resilience ladder. Bumped on every mic
             # frame inside WakeLoop.run; pairs with `Type=notify` +
@@ -4029,7 +3752,7 @@ async def run() -> None:
             # timing rationale. We just hand it to WakeLoop here.
             wake_loop = WakeLoop(
                 cfg, tts, connection, ducker,
-                tts_volume_tracker, usage_store, spend_cap, stop_event,
+                content_activity, usage_store, spend_cap, stop_event,
                 volume_coordinator=volume_coordinator,
                 legs=legs,
                 cues=cues_manager,
@@ -4080,8 +3803,8 @@ async def run() -> None:
                 wake_event_store.close()
             except Exception as e:  # noqa: BLE001
                 logger.warning("wake_events store close: %s", e)
-        if tts_volume_tracker is not None:
-            await tts_volume_tracker.stop()
+        if content_activity is not None:
+            await content_activity.stop()
         if volume_observer is not None:
             await volume_observer.stop()
         await volume_coordinator.aclose()

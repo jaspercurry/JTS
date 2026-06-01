@@ -32,7 +32,7 @@ All recent work is on that branch (latest commit: `6a60b08`). `main` is stale. P
 - **Wake word**: openWakeWord + Silero VAD running locally on Pi, listens for "Hey Jarvis".
 - **Audio I/O plumbing**: `jasper.audio_io.MicCapture` (16 kHz mono int16 frames from XVF3800) and `TtsPlayout` (24 kHz mono PCM from Gemini → 48 kHz dmix on dongle) both fully tested.
 - **Tool calls**: weather, subway, time, audio control (volume/duck/etc), Spotify, source-aware transport — all work when Gemini actually responds.
-- **TTS gain**: `JASPER_TTS_GAIN_DB=-8` attenuates Gemini's PCM peaks so voice doesn't dominate music. (Historical snapshot from this handoff. Today there is no such env var: a `TtsVolumeTracker` auto-matches TTS to the measured music level, with `main_volume` as the ceiling only during silence-fallback. See [audio-paths.md](audio-paths.md) "Why TTS still tracks user volume changes".)
+- **TTS gain**: `JASPER_TTS_GAIN_DB=-8` attenuates Gemini's PCM peaks so voice doesn't dominate music. (Historical snapshot from this handoff. Today there is no such env var: `jasper-outputd` matches assistant loudness to measured content using provider/model/voice profiles. See [audio-paths.md](audio-paths.md) "Assistant Loudness Matching".)
 - **Voice pinning**: Aoede prebuilt voice via `speech_config` so style is consistent across sessions.
 - **Time injection**: current local time is added to system instruction at session start.
 - **Logging**: per-session timing (`session connect done in Xms`, `first audio chunk from Gemini in Yms`, tool-call elapsed, payload preview truncated to 240 chars), bytes-sent / chunks-received counters, structured `SILENT FAILURE` warning when sent>0 and received==0.
@@ -253,5 +253,5 @@ bash scripts/deploy-to-pi.sh
 
 Don't break the working hardware bring-up while doing this. Don't change ALSA or CamillaDSP configs. Don't switch models. Don't pivot to a different LLM provider.
 
-Last verified: 2026-05-27 (historical status tag and current-truth
+Last verified: 2026-06-01 (historical status tag and current-truth
 pointers checked; snapshot body intentionally not revalidated)

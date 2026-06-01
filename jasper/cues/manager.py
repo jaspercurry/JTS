@@ -189,7 +189,11 @@ class AudioCueManager:
             return False
 
         try:
-            await self._tts.write(pcm)
+            write_segment = getattr(self._tts, "write_segment", None)
+            if callable(write_segment):
+                await write_segment(pcm, segment_kind="cue")
+            else:
+                await self._tts.write(pcm)
         except Exception as e:  # noqa: BLE001
             logger.warning("cue play: TtsPlayout.write failed (slug=%s): %s", slug, e)
             return False
@@ -270,7 +274,11 @@ class AudioCueManager:
             return False
 
         try:
-            await self._tts.write(pcm)
+            write_segment = getattr(self._tts, "write_segment", None)
+            if callable(write_segment):
+                await write_segment(pcm, segment_kind="cue")
+            else:
+                await self._tts.write(pcm)
         except Exception as e:  # noqa: BLE001
             logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
             return False

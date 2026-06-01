@@ -2709,6 +2709,40 @@ def check_outputd_service() -> CheckResult:
     tts_dropped_audio_frames = int(
         tts.get("dropped_audio_frames", 0) or 0
     )
+    loudness = data.get("assistant_loudness")
+    loudness_detail = "assistant_loudness=missing"
+    if not isinstance(loudness, dict):
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            "active but STATUS is missing assistant_loudness telemetry; "
+            "deploy current jasper-outputd before evaluating provider "
+            "loudness matching.",
+        )
+    decision_seen = bool(loudness.get("decision_seen", False))
+    calibrated = bool(loudness.get("calibrated", False))
+    final_gain = loudness.get("final_gain_db")
+    content_anchor = loudness.get("content_anchor_lufs")
+    if decision_seen and not isinstance(final_gain, (int, float)):
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            "active but assistant_loudness.decision_seen=true without "
+            "numeric final_gain_db.",
+        )
+    if isinstance(final_gain, (int, float)) and not -60.0 <= float(final_gain) <= 0.0:
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            f"active but assistant_loudness.final_gain_db={final_gain!r}; "
+            "expected clamped [-60, 0] dB.",
+        )
+    loudness_detail = (
+        f"assistant_loudness_decision={decision_seen}, "
+        f"assistant_loudness_calibrated={calibrated}, "
+        f"assistant_final_gain_db={final_gain}, "
+        f"content_anchor_lufs={content_anchor}"
+    )
     if progress_age > 1000:
         return CheckResult(
             "jasper-outputd",
@@ -2738,6 +2772,7 @@ def check_outputd_service() -> CheckResult:
         f"tts_over_budget_ms={tts_over_budget_ms}, "
         f"tts_dropped_commands={tts_dropped_commands}, "
         f"tts_dropped_audio_frames={tts_dropped_audio_frames}, "
+        f"{loudness_detail}, "
         f"progress_age_ms={progress_age}",
     )
 

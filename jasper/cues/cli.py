@@ -148,13 +148,12 @@ def _cmd_play(args) -> int:
     jasper-voice daemon's control socket (via jasper-control's
     /cue/play HTTP endpoint).
 
-    Why we don't play locally: the daemon's TtsPlayout has its gain
-    set dynamically by TtsVolumeTracker to match current music
-    level. A standalone CLI process can't easily replicate that math
-    and would either play too loud (early version: ~20 dB hot) or
-    fight the daemon's audio path on the same dmix. Routing through
-    the daemon means the cue plays through the same audio chain,
-    same gain, same ducking that real failure-triggered cues use."""
+    Why we don't play locally: the daemon owns the live TTS/outputd
+    routing and marks cues separately from assistant speech. A
+    standalone CLI process can't replicate that chain safely and would
+    either play at the wrong level or fight the daemon's dmix path.
+    Routing through the daemon means the cue plays through the same
+    audio chain and ducking that real failure-triggered cues use."""
     cue = find_cue(args.slug)
     if cue is None:
         print(f"error: unknown cue slug: {args.slug!r}", file=sys.stderr)

@@ -85,14 +85,19 @@ actual post-mix speaker reference.
 TTS is already a core realtime-voice component:
 
 - `OutputdTtsPlayout` preserves the `TtsPlayout` contract: it resamples
-  provider audio to 48 kHz stereo, sends un-gained PCM plus gain
-  metadata to outputd, tracks expected drain, and supports `flush()`
-  for interruption.
-- `TtsVolumeTracker` matches assistant loudness to measured music
-  level via CamillaDSP `playback_rms`, then freezes during a voice
-  turn so ducking does not make the assistant go quiet.
-- Cues route through the same `TtsPlayout` object so they inherit gain
-  and drain behavior.
+  provider audio to 48 kHz stereo, sends un-gained PCM plus
+  provider/model/voice profile metadata to outputd, tracks expected
+  drain, and supports `flush()` for interruption.
+- `jasper-outputd` owns assistant gain. It measures content loudness
+  before ducking, applies provider source-loudness profiles, and emits
+  `event=outputd.assistant_loudness` plus STATUS telemetry for the
+  latest decision. Python seeds and learns profiles but does not set
+  final gain.
+- Cues route through the same `TtsPlayout` object so they inherit
+  outputd routing, drain behavior, and profile/peak-capped gain policy
+  without training live assistant profiles. If a cue arrives with no
+  wake-turn context and no measured content baseline, outputd uses the
+  configured default silence target rather than a fixed legacy gain.
 
 That is good groundwork, but it is not a complete "what did the user
 hear?" ledger. Robust barge-in needs both a true AEC reference and
@@ -100,7 +105,7 @@ precise playout accounting.
 
 ## Codebase Validation
 
-Rechecked against the current tree on 2026-05-28:
+Rechecked against the current tree on 2026-06-01:
 
 - `jasper/audio_io.py` + `TtsPlayout` is the migration boundary for
   assistant audio. The voice daemon expects a small operation set to keep
@@ -167,6 +172,10 @@ What exists:
   provider item id over the same IPC protocol; OpenAI wires
   `response.output_item.added.item.id` into that field today, while
   providers without item ids leave it empty.
+- Runtime `JASPER_TTS_TRANSPORT=sounddevice` is intentionally rejected
+  in this outputd-loudness tree. That older PortAudio path no longer has
+  the dynamic content/profile matching policy; rollback means deploying a
+  pre-outputd revision, not flipping the env var in current main.
 - TTS interruption: outputd flushes are epoch-based. A flush advances
   the TTS epoch, clears the already-enqueued assistant buffer, and
   ignores any pre-flush audio commands that had been accepted onto the
@@ -612,8 +621,6 @@ datum: how much assistant audio was actually heard.
 - Should `speaker_reference_out` publish post-limiter stereo, mono
   summed AEC-ready frames, or both? AEC wants mono 16 kHz; corpus and
   debugging often want higher-fidelity stereo provenance.
-- How much of TTS gain policy moves into `jasper-outputd` versus
-  staying in the voice daemon?
 - What is the exact DAC target: direct hardware PCM, `plughw`, or a
   very small ALSA wrapper? The goal is to avoid using `dmix` as the
   main architecture boundary while preserving stable device setup.
@@ -650,5 +657,9 @@ datum: how much assistant audio was actually heard.
   playout-ledger contract polish: provider item identity on TTS
   segments, synchronous `FLUSH_SYNC` acknowledgements with
   `audio_played_ms`, and DAC-delay-based drained-frame estimation.
+- 2026-06-01: Move assistant loudness policy fully into outputd. Python
+  now owns only provider profile seeding/learning; outputd owns content
+  loudness measurement, peak-aware gain decisions, STATUS telemetry,
+  and correction-window meter pause/resume.
 
-Last verified: 2026-05-31
+Last verified: 2026-06-01

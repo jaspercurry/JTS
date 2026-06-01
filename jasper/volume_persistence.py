@@ -4,7 +4,7 @@ The Pi is stationary. Speaker volume should not reset on every reboot.
 We write the user-perceived listening level to disk whenever it changes,
 and restore it at daemon boot.
 
-Two related fields are tracked:
+Core fields tracked:
 
 - `listening_level` (0-100): the canonical user-facing volume. With
   source-aware coordination (volume_coordinator.py), this is the
@@ -13,15 +13,10 @@ Two related fields are tracked:
   AirPlay and idle map the level to CamillaDSP main_volume.
 
 - `main_volume_db`: the underlying CamillaDSP setting. Still tracked
-  because (a) it's what TtsVolumeTracker reads as its ceiling, and
-  (b) we need it captured for the boot-restore path. With the
-  coordinator running, main_volume is pinned at 0 dB during Spotify/BT
-  push-mode playback (so we don't double-attenuate) and tracks
-  listening_level during idle and AirPlay.
-
-- `loudness_anchor_dbfs`: last observed playback RMS while music was
-  actually playing. TTS uses this during silence so it doesn't get
-  loud just because main_volume is high.
+  because we need it captured for boot restore and legacy readers. With
+  the coordinator running, main_volume is pinned at 0 dB during
+  Spotify/BT push-mode playback (so we don't double-attenuate) and
+  tracks listening_level during idle and AirPlay.
 
 Soft regression at boot. If the saved listening_level is from "long
 enough ago" (default 30 min), we clamp into a safe range [20%, 70%]
@@ -36,7 +31,6 @@ File format (JSON, atomic write via tmp+rename, v2):
         "listening_level": 70,
         "last_used_at": "2026-05-07T15:30:00Z",
         "main_volume_db": 0.0,
-        "loudness_anchor_dbfs": -28.0,
         "updated_at": "2026-05-07T15:30:00Z"
     }
 
@@ -78,25 +72,10 @@ def percent_to_db(percent: float) -> float:
     return VOLUME_MIN_DB + span * p / 100.0
 
 
-# Default loudness anchor when no record exists yet (first boot, file
-# deleted, etc). -30 dBFS RMS maps to 40% on the linear dB scale —
-# combined with the headroom formula in TtsVolumeTracker, gives an
-# effective TTS output around -18 dBFS, a normal conversational level.
-# Conservative on purpose: blasting on first boot is the bad failure
-# mode, so the default sits comfortably below "loud."
-DEFAULT_ANCHOR_DBFS = -30.0
-
-
 @dataclass(frozen=True)
 class VolumeRecord:
     main_volume_db: float
     updated_at: datetime
-    # Last observed playback RMS while music was playing. None means
-    # "never recorded" → callers fall back to DEFAULT_ANCHOR_DBFS.
-    # Persists WITHOUT expiry; the Pi doesn't move and the room
-    # context is stable.
-    loudness_anchor_dbfs: float | None = None
-    anchor_updated_at: datetime | None = None
     # Canonical user-facing volume 0-100 (added in schema v2). When
     # loading a v1 file, this is derived from main_volume_db percent
     # by load(). Once the coordinator runs, listening_level is the
@@ -118,10 +97,10 @@ class VolumeRecord:
 class VolumePersistence:
     """Atomic on-disk persistence of speaker volume.
 
-    Writes are debounced: the volume tracker can call `maybe_save` on
-    every poll (4 Hz) and we'll only actually hit the SD card on real
-    changes that haven't been written recently. Explicit user-initiated
-    changes (set_volume voice tool) bypass debounce via `save_now`.
+    Writes are debounced: callers may report observed volume frequently
+    and we'll only actually hit the SD card on real changes that haven't
+    been written recently. Explicit user-initiated changes (set_volume
+    voice tool) bypass debounce via `save_now`.
     """
 
     DEFAULT_PATH = "/var/lib/jasper/speaker_volume.json"
@@ -137,16 +116,10 @@ class VolumePersistence:
         self._path = Path(path or self.DEFAULT_PATH)
         self._last_written_db: float | None = None
         self._last_written_at_mono: float = 0.0
-        # Mirror state for the anchor field — independent debounce
-        # so a busy music session doesn't trigger flash writes for
-        # every tiny RMS fluctuation.
-        self._last_written_anchor: float | None = None
-        self._last_written_anchor_at_mono: float = 0.0
         # In-memory copy of all persisted fields, so we can write the
         # full record whenever any single field changes (avoids losing
         # one field when only another updates).
         self._current_main_volume_db: float | None = None
-        self._current_anchor_dbfs: float | None = None
         self._current_listening_level: int | None = None
         self._current_last_used_at: datetime | None = None
         self._current_pre_mute_level: int | None = None
@@ -159,10 +132,7 @@ class VolumePersistence:
         """Read the persisted record. Returns None on missing /
         corrupt / out-of-range main_volume (caller decides default).
 
-        The loudness_anchor field is optional — older files written
-        before the anchor feature have no anchor field; we tolerate
-        that and return None for the anchor so the caller can apply
-        the conservative default."""
+        Legacy fields that no longer have runtime meaning are ignored."""
         try:
             raw = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -189,35 +159,6 @@ class VolumePersistence:
                 db,
             )
             return None
-        # Optional anchor fields. Tolerant of missing / malformed:
-        # if anything looks off, treat as "no anchor recorded" and let
-        # the caller fall back to DEFAULT_ANCHOR_DBFS.
-        anchor: float | None = None
-        anchor_ts: datetime | None = None
-        try:
-            raw_anchor = data.get("loudness_anchor_dbfs")
-            if raw_anchor is not None:
-                a = float(raw_anchor)
-                # Sanity bound: -120 dBFS to 0 dBFS. Anything outside
-                # this is a malformed write or an attacker editing the
-                # file; either way we don't trust it.
-                if -120.0 <= a <= 0.0:
-                    anchor = a
-                else:
-                    logger.warning(
-                        "volume persistence: stored anchor=%.1f dBFS out of range; ignoring",
-                        a,
-                    )
-        except (TypeError, ValueError):
-            anchor = None
-        try:
-            raw_anchor_ts = data.get("loudness_anchor_updated_at")
-            if raw_anchor_ts is not None:
-                anchor_ts = datetime.fromisoformat(
-                    raw_anchor_ts.replace("Z", "+00:00")
-                )
-        except (TypeError, ValueError, AttributeError):
-            anchor_ts = None
         # listening_level + last_used_at — schema v2. v1 files lack
         # both; migrate by deriving listening_level from main_volume_db.
         # That value was the user's last commanded volume under the
@@ -274,15 +215,12 @@ class VolumePersistence:
         # Cache loaded values so subsequent partial-update writes don't
         # lose any field.
         self._current_main_volume_db = db
-        self._current_anchor_dbfs = anchor
         self._current_listening_level = listening_level
         self._current_last_used_at = last_used_at
         self._current_pre_mute_level = pre_mute_level
         return VolumeRecord(
             main_volume_db=db,
             updated_at=updated_at,
-            loudness_anchor_dbfs=anchor,
-            anchor_updated_at=anchor_ts,
             listening_level=listening_level,
             last_used_at=last_used_at,
             pre_mute_level=pre_mute_level,
@@ -291,8 +229,7 @@ class VolumePersistence:
     def save_now(self, main_volume_db: float) -> None:
         """Force-write main_volume to disk immediately. Used for
         explicit user actions (set_volume voice tool, mute) where we
-        want the new level captured before any restart could lose it.
-        Anchor (if any) is preserved as-is from in-memory state."""
+        want the new level captured before any restart could lose it."""
         self._current_main_volume_db = float(main_volume_db)
         self._write_full()
         self._last_written_db = self._current_main_volume_db
@@ -361,8 +298,8 @@ class VolumePersistence:
     ) -> None:
         """Force-write the canonical listening_level (0-100) to disk.
         Not debounced: listening_level changes are infrequent compared
-        to anchor updates, and we want every change durable so a
-        crash doesn't lose the user's last command.
+        with poll-driven main-volume observations, and we want every
+        change durable so a crash doesn't lose the user's last command.
 
         `mark_user_change` controls whether last_used_at is bumped to
         now. Set False for boot-time restore writes — otherwise every
@@ -381,34 +318,10 @@ class VolumePersistence:
             self._current_main_volume_db = percent_to_db(clamped)
         self._write_full()
 
-    def maybe_save_anchor(self, anchor_dbfs: float) -> bool:
-        """Debounced anchor write. The anchor moves continuously while
-        music plays; we don't want to write to flash on every poll.
-        Returns True if we wrote.
-
-        Refreshes from disk before writing — same multi-process safety
-        as maybe_save. Anchor is owned by this writer (TtsVolumeTracker)
-        but listening_level / main_volume_db may have changed
-        externally."""
-        a = float(anchor_dbfs)
-        now = time.monotonic()
-        last_a = self._last_written_anchor
-        if last_a is not None:
-            if abs(a - last_a) < self.MIN_DELTA_DB:
-                return False
-            if now - self._last_written_anchor_at_mono < self.DEBOUNCE_SEC:
-                return False
-        self.load()
-        self._current_anchor_dbfs = a
-        self._write_full()
-        self._last_written_anchor = a
-        self._last_written_anchor_at_mono = now
-        return True
-
     def _write_full(self) -> None:
         """Write the current in-memory state to disk atomically.
-        Always writes both main_volume and anchor if known, so a
-        partial update doesn't lose the other field."""
+        Always writes known independent state fields so a partial update
+        doesn't lose the others."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -419,7 +332,7 @@ class VolumePersistence:
             return
         if self._current_main_volume_db is None:
             # Shouldn't happen — caller should always set main_volume
-            # before any anchor-only save. Defensive: skip.
+            # before writing. Defensive: skip.
             logger.debug(
                 "volume persistence: skipping write (no main_volume in memory)",
             )
@@ -432,11 +345,6 @@ class VolumePersistence:
             "main_volume_db": round(self._current_main_volume_db, 2),
             "updated_at": now_iso,
         }
-        if self._current_anchor_dbfs is not None:
-            payload["loudness_anchor_dbfs"] = round(
-                self._current_anchor_dbfs, 2,
-            )
-            payload["loudness_anchor_updated_at"] = now_iso
         if self._current_listening_level is not None:
             payload["listening_level"] = int(self._current_listening_level)
         if self._current_last_used_at is not None:
@@ -478,8 +386,6 @@ class VolumePersistence:
         ]
         if self._current_listening_level is not None:
             parts.append(f"listening_level={self._current_listening_level}%")
-        if self._current_anchor_dbfs is not None:
-            parts.append(f"anchor={self._current_anchor_dbfs:.1f} dBFS")
         logger.info("volume persistence: saved %s", ", ".join(parts))
 
 

@@ -156,7 +156,15 @@ class GeminiTTSGenerator:
     for opt-in compatibility but no longer the default.
     """
 
-    def __init__(self, api_key: str, voice: str, model: str = GEMINI_TTS_MODEL):
+    def __init__(
+        self,
+        api_key: str,
+        voice: str,
+        model: str = GEMINI_TTS_MODEL,
+        *,
+        max_attempts: int = TTS_MAX_ATTEMPTS,
+        retry_backoff_sec: float = TTS_RETRY_BACKOFF_SEC,
+    ):
         if not api_key:
             raise ValueError("GeminiTTSGenerator requires an api_key")
         if not voice:
@@ -164,6 +172,8 @@ class GeminiTTSGenerator:
         self._api_key = api_key
         self._voice = voice
         self._model = model
+        self._max_attempts = max(1, int(max_attempts))
+        self._retry_backoff_sec = max(0.0, float(retry_backoff_sec))
 
     @property
     def model(self) -> str:
@@ -171,18 +181,20 @@ class GeminiTTSGenerator:
 
     def synthesise(self, text: str) -> TTSResult:
         last_status: str | None = None
-        for attempt in range(TTS_MAX_ATTEMPTS):
+        for attempt in range(self._max_attempts):
             status, result = self._attempt(text)
             if result is not None:
                 return result
             last_status = status
+            if attempt + 1 >= self._max_attempts:
+                break
             logger.warning(
                 "Gemini TTS empty response on attempt %d/%d (%s); retrying",
-                attempt + 1, TTS_MAX_ATTEMPTS, status,
+                attempt + 1, self._max_attempts, status,
             )
-            time.sleep(TTS_RETRY_BACKOFF_SEC * (attempt + 1))
+            time.sleep(self._retry_backoff_sec * (attempt + 1))
         raise RuntimeError(
-            f"Gemini TTS returned no audio after {TTS_MAX_ATTEMPTS} "
+            f"Gemini TTS returned no audio after {self._max_attempts} "
             f"attempts (last status={last_status!r}, text={text!r})"
         )
 
@@ -246,6 +258,8 @@ class OpenAITTSGenerator:
         voice: str,
         model: str = OPENAI_TTS_MODEL,
         base_url: str | None = None,
+        max_attempts: int = TTS_MAX_ATTEMPTS,
+        retry_backoff_sec: float = TTS_RETRY_BACKOFF_SEC,
     ):
         if not api_key:
             raise ValueError("OpenAITTSGenerator requires an api_key")
@@ -255,6 +269,8 @@ class OpenAITTSGenerator:
         self._voice = voice
         self._model = model
         self._base_url = base_url
+        self._max_attempts = max(1, int(max_attempts))
+        self._retry_backoff_sec = max(0.0, float(retry_backoff_sec))
 
     @property
     def model(self) -> str:
@@ -262,18 +278,20 @@ class OpenAITTSGenerator:
 
     def synthesise(self, text: str) -> TTSResult:
         last_err: Exception | None = None
-        for attempt in range(TTS_MAX_ATTEMPTS):
+        for attempt in range(self._max_attempts):
             try:
                 return self._attempt(text)
             except _RetryableTTSError as e:
                 last_err = e
+                if attempt + 1 >= self._max_attempts:
+                    break
                 logger.warning(
                     "OpenAI TTS empty response on attempt %d/%d (%s); "
-                    "retrying", attempt + 1, TTS_MAX_ATTEMPTS, e,
+                    "retrying", attempt + 1, self._max_attempts, e,
                 )
-                time.sleep(TTS_RETRY_BACKOFF_SEC * (attempt + 1))
+                time.sleep(self._retry_backoff_sec * (attempt + 1))
         raise RuntimeError(
-            f"OpenAI TTS returned no audio after {TTS_MAX_ATTEMPTS} "
+            f"OpenAI TTS returned no audio after {self._max_attempts} "
             f"attempts (last err={last_err!r}, text={text!r})"
         )
 
@@ -316,6 +334,8 @@ class GrokTTSGenerator:
         model: str = GROK_TTS_MODEL,
         endpoint: str = DEFAULT_ENDPOINT,
         language: str = "auto",
+        max_attempts: int = TTS_MAX_ATTEMPTS,
+        retry_backoff_sec: float = TTS_RETRY_BACKOFF_SEC,
     ):
         if not api_key:
             raise ValueError("GrokTTSGenerator requires an api_key")
@@ -326,6 +346,8 @@ class GrokTTSGenerator:
         self._model = model
         self._endpoint = endpoint
         self._language = language
+        self._max_attempts = max(1, int(max_attempts))
+        self._retry_backoff_sec = max(0.0, float(retry_backoff_sec))
 
     @property
     def model(self) -> str:
@@ -342,7 +364,7 @@ class GrokTTSGenerator:
             "output_format": {"codec": "pcm", "sample_rate": WAV_RATE},
         }).encode()
         last_err: Exception | None = None
-        for attempt in range(TTS_MAX_ATTEMPTS):
+        for attempt in range(self._max_attempts):
             req = urllib.request.Request(
                 self._endpoint,
                 data=body,
@@ -371,13 +393,15 @@ class GrokTTSGenerator:
                 if data:
                     return TTSResult(pcm_24k=data)
                 last_err = RuntimeError("grok_empty_pcm")
+            if attempt + 1 >= self._max_attempts:
+                break
             logger.warning(
                 "Grok TTS empty/failed on attempt %d/%d (%s); retrying",
-                attempt + 1, TTS_MAX_ATTEMPTS, last_err,
+                attempt + 1, self._max_attempts, last_err,
             )
-            time.sleep(TTS_RETRY_BACKOFF_SEC * (attempt + 1))
+            time.sleep(self._retry_backoff_sec * (attempt + 1))
         raise RuntimeError(
-            f"Grok TTS failed after {TTS_MAX_ATTEMPTS} attempts "
+            f"Grok TTS failed after {self._max_attempts} attempts "
             f"(last err={last_err!r}, text={text!r})"
         )
 

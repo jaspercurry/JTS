@@ -67,8 +67,9 @@ AirPlay / Spotify Connect / Bluetooth
 TTS is separate: `jasper-voice` writes directly to `pcm.jasper_out`, so
 music goes through CamillaDSP while TTS bypasses it. This is why
 `main_volume` has two jobs today: user-facing music attenuation for some
-sources, and voice-session ducking. `TtsVolumeTracker` compensates by
-tracking actual playback loudness downstream rather than assuming one
+sources, and voice-session ducking. On current main, TTS enters
+`jasper-outputd`; outputd compensates by matching assistant loudness to
+measured content at the final mix boundary rather than assuming one
 volume knob explains everything.
 
 ### File map
@@ -462,5 +463,6 @@ cleanup pass in the same PR or immediately after:
 - Keep the mapping simple first. Tune perceptual curves only after the
   architecture is correct.
 
-Last verified: 2026-05-27 (superseded status and canonical volume link
-checked; redesign body intentionally not revalidated)
+Last verified: 2026-06-01 (superseded status, canonical volume link, and
+current outputd assistant-loudness note checked; redesign body otherwise
+intentionally not revalidated)

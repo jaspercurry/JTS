@@ -1092,6 +1092,20 @@ def _outputd_status_payload(
             "dropped_commands": 0,
             "dropped_audio_frames": 0,
         },
+        "assistant_loudness": {
+            "content_short_lufs": -31.2,
+            "content_anchor_lufs": -30.8,
+            "decision_seen": False,
+            "calibrated": False,
+            "profile_confidence": 0.0,
+            "baseline_lufs": None,
+            "target_lufs": None,
+            "source_lufs": None,
+            "source_peak_dbfs": None,
+            "requested_gain_db": None,
+            "peak_cap_gain_db": None,
+            "final_gain_db": None,
+        },
         "watchdog": {"last_progress_age_ms": progress_age_ms},
     }).encode()
 
@@ -1173,6 +1187,8 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "tts_max_pending_frames=4096" in r.detail
     assert "tts_dropped_commands=0" in r.detail
     assert "tts_dropped_audio_frames=0" in r.detail
+    assert "assistant_loudness_decision=False" in r.detail
+    assert "content_anchor_lufs=-30.8" in r.detail
 
 
 def test_outputd_service_fails_on_fake_backend(monkeypatch):
@@ -1210,6 +1226,31 @@ def test_outputd_service_warns_on_stuck_tts_queue(monkeypatch):
     assert r.status == "warn"
     assert "tts.pending_frames=120000" in r.detail
     assert "over_budget_streak_ms=128" in r.detail
+
+
+def test_outputd_service_warns_when_loudness_telemetry_missing(monkeypatch):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload.pop("assistant_loudness")
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "warn"
+    assert "missing assistant_loudness telemetry" in r.detail
+
+
+def test_outputd_service_warns_when_loudness_decision_has_no_gain(monkeypatch):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload["assistant_loudness"]["decision_seen"] = True
+    payload["assistant_loudness"]["final_gain_db"] = None
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "warn"
+    assert "decision_seen=true without numeric final_gain_db" in r.detail
 
 
 def test_audio_path_no_swap_includes_fanin_and_outputd():

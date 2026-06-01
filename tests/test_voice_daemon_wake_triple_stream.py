@@ -104,8 +104,8 @@ def _make_wake_loop_triple(
     wl._capture_ring_on = None
     wl._capture_ring_off = None
     wl._capture_ring_dtln = None
-    # TtsVolumeTracker stub — used to read the music anchor for context.
-    wl._tts_volume_tracker = None
+    wl._content_activity = MagicMock()
+    wl._content_activity.music_dbfs = None
     # Mocked telemetry store. begin_event is an AsyncMock so the
     # `await store.begin_event(...)` call resolves without real DB I/O.
     store = MagicMock()
@@ -515,11 +515,8 @@ def _prep_session_status(wl) -> None:
     wl._input_ended = False
     wl._ducker = MagicMock()
     wl._ducker.is_ducked = False
-    # session_status also reports the volume tracker's measured source
-    # loudness (the per-provider TTS-loudness telemetry); the real daemon
-    # always has a tracker, so give the __new__-built loop a stub one.
-    wl._tts_volume_tracker = MagicMock()
-    wl._tts_volume_tracker.source_rms_dbfs = -20.0
+    wl._content_activity = MagicMock()
+    wl._content_activity.music_dbfs = -32.0
 
 
 def test_session_status_reports_armed_legs_triple():
@@ -570,9 +567,9 @@ def test_ring_noise_floor_tracks_quiet_background_not_utterance():
 # --- Phase 1.3a: live-condition refresh (WakeLoop._read_music_dbfs +
 # _maybe_refresh_condition) ---
 
-def _wakeloop_for_condition(anchor_dbfs=-30.0):
+def _wakeloop_for_condition(music_dbfs=-30.0):
     """A bare WakeLoop with only the attributes the condition-refresh path
-    touches. anchor_dbfs=-30 reads as music (> -60 dBFS); the empty capture
+    touches. music_dbfs=-30 reads as music (> -60 dBFS); the empty capture
     ring makes the noise floor None."""
     from collections import deque
 
@@ -580,36 +577,30 @@ def _wakeloop_for_condition(anchor_dbfs=-30.0):
     wl._condition_refreshed_at = 0.0
     wl._current_condition = "quiet"
     wl._capture_ring_on = deque(maxlen=8)
-    tracker = MagicMock()
-    tracker._anchor_dbfs = anchor_dbfs
-    wl._tts_volume_tracker = tracker
+    wl._content_activity = MagicMock()
+    wl._content_activity.music_dbfs = music_dbfs
     return wl
 
 
-def test_read_music_dbfs_reads_anchor():
-    assert _wakeloop_for_condition(anchor_dbfs=-30.0)._read_music_dbfs() == -30.0
+def test_read_music_dbfs_reads_content_activity():
+    assert _wakeloop_for_condition(music_dbfs=-30.0)._read_music_dbfs() == -30.0
 
 
-def test_read_music_dbfs_none_below_sentinel_floor():
-    # <= -120 dBFS is the "no real music observed yet" band -> no signal.
-    assert _wakeloop_for_condition(anchor_dbfs=-130.0)._read_music_dbfs() is None
-
-
-def test_read_music_dbfs_none_without_tracker():
+def test_read_music_dbfs_none_when_unavailable():
     wl = _wakeloop_for_condition()
-    wl._tts_volume_tracker = None
+    wl._content_activity.music_dbfs = None
     assert wl._read_music_dbfs() is None
 
 
 def test_maybe_refresh_condition_recomputes_when_elapsed():
-    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)  # > -60 dBFS -> music
+    wl = _wakeloop_for_condition(music_dbfs=-30.0)  # > -60 dBFS -> music
     wl._maybe_refresh_condition(now_loop=5.0)
     assert wl._current_condition == "music"
     assert wl._condition_refreshed_at == 5.0
 
 
 def test_maybe_refresh_condition_skips_within_window():
-    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)
+    wl = _wakeloop_for_condition(music_dbfs=-30.0)
     wl._condition_refreshed_at = 4.5
     wl._current_condition = "quiet"
     wl._maybe_refresh_condition(now_loop=5.0)  # 0.5 s < CONDITION_REFRESH_SEC
@@ -621,7 +612,7 @@ def test_maybe_refresh_condition_fail_soft_on_classify_error(monkeypatch):
     # The wake path must never break because ancillary condition estimation
     # raised. On error: keep the last good condition, advance the timer (so a
     # persistent failure retries at ~1 Hz, not every frame), do not propagate.
-    wl = _wakeloop_for_condition(anchor_dbfs=-30.0)
+    wl = _wakeloop_for_condition(music_dbfs=-30.0)
     wl._current_condition = "ambient"  # last good
 
     def _boom(*_a, **_k):
