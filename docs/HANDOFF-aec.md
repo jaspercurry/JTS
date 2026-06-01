@@ -1220,31 +1220,36 @@ topology XMOS designed the chip for.
 > only because every endpoint rides the one USB SOF.
 >
 > **Swapping the speaker DAC changes only the echo clock — so the whole
-> question is "does the new DAC's D/A run in the mic's USB-SOF domain?"**
+> question is "does the new DAC's D/A run in the mic's clock domain?"**
 > Don't shortcut it from the board's marketing tier. The HiFiBerry
-> DAC8x is **not** a self-clocked master (an earlier version of this
-> note said so — wrong): the kernel overlay proves it's a *Pi-clocked
-> I2S slave*, PCM5102A-class, no crystal. **But it still breaks
-> chip-AEC**, because on Pi 5 the Pi's I2S clock (`pll_audio`) and the
-> USB-SOF the mic rides are *separate RP1 PLLs* that drift tens of ppm —
-> "Pi-clocked" is not "coherent with a USB mic." Past the chip's fixed
-> `AUDIO_MGR_SYS_DELAY` + 192 ms tail (no resampler), that drift
-> de-converges the AEC, and `jasper-outputd`'s chip-ref queue starts
-> dropping periods. Software AEC3 (the production default) is unaffected
-> — its reference is the digital `pcm.jasper_capture` tap and AEC3 is
-> built for independent render/capture clocks; a DAC8x on AEC3 is a
-> routing + re-tune, not a break.
+> DAC8x is **not** a self-clocked master (an early draft said so —
+> wrong): the kernel overlay proves it's a *Pi-clocked I2S slave*,
+> PCM5102A-class, no crystal. On Pi 5 its I2S clock (`pll_audio`) and
+> the USB-SOF the mic rides are *different RP1 PLLs* — **but both
+> descend from the one 50 MHz crystal, so they're frequency-coherent**
+> (common-mode crystal error cancels in the ratio; a second draft's
+> "separate PLLs → drift tens of ppm" claim was also wrong). So the
+> DAC8x is **uncertain, lean coherent — not a confirmed break.** The
+> residual risks are narrower than drift: a non-rational SOF divisor, or
+> a ref→air *delay* that wanders over time past the chip's fixed bulk
+> delay (0–500 ms) + 192 ms tail. Only measurement settles it. Software
+> AEC3 (the production default) sidesteps the whole question — its
+> reference is the digital `pcm.jasper_capture` tap and AEC3 handles
+> render/capture clock mismatch in software; a DAC8x on AEC3 is a
+> routing + re-tune at low/negligible risk, **recommended for
+> production**.
 >
 > **The full decision procedure for evaluating any candidate DAC**
-> (transport/clock-role classification, the "same SoC ≠ same domain"
-> trap, the empirical drift gate, and the escape hatches — software SRO
-> compensation, XVF-master I2S, synchronous-USB-only) lives in
-> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) "DAC clock-domain
-> dependency — a methodology for evaluating any speaker DAC." Before
-> committing a DAC for a chip-AEC build, run the gate there: measure
-> ref→air→mic drift and watch
-> `event=outputd.chip_ref.{queue_full,xrun}` — ~1 ppm clean ⇒ viable,
-> tens of ppm + drops ⇒ needs compensation.
+> (transport/clock-role classification, why "different PLL off the same
+> crystal" is still coherent, the empirical gate, and the escape hatches
+> — software SRO compensation, XVF-master I2S, synchronous-USB-only)
+> lives in [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) "DAC
+> clock-domain dependency — a methodology for evaluating any speaker
+> DAC." Before committing a DAC for a chip-AEC build, run the gate
+> there: measure ref→air→mic drift (and watch ref→air delay stability)
+> via `event=outputd.chip_ref.{queue_full,xrun}` — ≤~1 ppm clean ⇒
+> viable (the expected outcome given the shared crystal), tens of ppm or
+> a wandering delay ⇒ needs compensation.
 
 (USB-IN endpoint advertises 16 kHz S16_LE 2-channel only — verified
 empirically on 2026-05-21 against firmware `ua-io16-6ch-sqr` v2.0.8,

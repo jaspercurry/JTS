@@ -635,21 +635,43 @@ against XMOS docs + `docs/HANDOFF-xvf3800.md`:
 > first real candidate, but the *method* is the point — apply it to
 > the next DAC too.
 >
-> History note: an earlier version of this section asserted the DAC8x
-> "is a self-clocked I2S master with its own crystal." That was
-> **wrong** (the kernel proves it's a Pi-clocked I2S *slave* — see
-> Step 2). The *conclusion* — DAC8x breaks chip-AEC unless you
-> compensate — survived, but for a different reason (Step 3). The
-> rewrite below fixes the mechanism so the methodology is trustworthy.
+> History note: this section has been wrong in two different ways and
+> corrected both times — read the corrections as a caution about
+> reasoning from architecture instead of measurement. (1) An early
+> draft asserted the DAC8x "is a self-clocked I2S master with its own
+> crystal." Wrong — the kernel proves it's a Pi-clocked I2S *slave*
+> (Step 1b). (2) The next draft kept the "DAC8x breaks chip-AEC"
+> verdict but justified it with "two independent PLLs off one crystal
+> drift tens of ppm." Also wrong, and more subtly so: PLLs that share
+> one crystal are **frequency-coherent** (common-mode crystal error
+> cancels — Step 2), so the likely drift is near-zero, not tens of ppm.
+> The honest verdict is therefore **not** "broken" but "**uncertain,
+> lean coherent, measure it**" (Step 3). Step 4's mitigations still
+> apply *if* measurement shows real slip.
 
 ### Step 0 — The invariant chip-AEC depends on
 
-The XVF3800's on-chip AEC has **no asynchronous sample-rate converter**
-on its reference path (XMOS confirms this; when they want a
-cross-clock-domain reference they ship a *different* part, the
-XVF3610 "Stereo + ASRC"). Its only alignment tools are a fixed bulk
-delay (`AUDIO_MGR_SYS_DELAY`, ~±16 ms) and a 192 ms adaptive tail.
-Both absorb *static delay*, not continuous *sample-rate drift*.
+The XVF3800's on-chip AEC has **no asynchronous sample-rate converter
+(ASRC)** on its reference path. What it *does* have: a Software PLL
+that synchronises the mic clock to the reference received over I2S or
+USB, and — because the audio pipeline runs at 16 kHz — a **synchronous,
+fixed-ratio 48→16 kHz (3:1) sample-rate converter** set at firmware
+build time. A fixed-ratio SRC is not a drift-compensating ASRC: it
+assumes its input and output clocks are already locked. Its only
+*alignment* tools are a configurable **reference delay (0–500 ms,
+fixed)** plus a **192 ms adaptive tail**; the tuning guide requires the
+bulk delay to *remain constant while running* ("any inconsistency …
+will result in severely degraded algorithmic performance"). Both
+absorb *static delay* and *reverb tail*, not continuous *sample-rate
+drift*.
+
+> *(Correction: an earlier draft "proved" the no-ASRC point by claiming
+> XMOS ships the XVF3610 as a "Stereo + ASRC" part. That was a
+> fabrication — the XVF3610's actual differentiators are stereo AEC
+> (225 ms tail) and an ADEC automatic-delay-estimation block for
+> unknown output latency, and its reference is still a clock-synchronised
+> I2S slave. Neither chip has an ASRC on the reference path; the
+> XVF3610 does not prove it, so don't cite it as evidence.)*
 
 So chip-AEC stays converged only if **three clocks are frequency-locked
 into one domain**:
@@ -665,10 +687,16 @@ change when you swap DACs.** The entire question of "will this DAC work
 with chip-AEC" reduces to: *does this DAC's D/A run in the same
 frequency-locked domain as the USB-SOF mic clock?*
 
-Why the production rig satisfies it today: the Apple USB-C dongle is a
-**synchronous/adaptive UAC DAC** — its D/A is slaved to the same Pi USB
-SOF the mic rides. All three clocks are literally the one USB-SOF
-timebase. This is also why `jasper-outputd` can get away with **no
+Why the production rig satisfies it today: the Apple USB-C dongle is
+(almost certainly) a **synchronous/adaptive UAC DAC** — its D/A is
+slaved to the same Pi USB SOF the mic rides, so all three clocks are
+literally the one USB-SOF timebase. *Caveat: this is an inference, not
+a verified teardown — no USB-descriptor capture confirming the dongle's
+clocking mode was found, and there are regional hardware variants. It's
+the most likely explanation, and the fact that chip-AEC works today is
+strong circumstantial support; confirm with `/proc/asound/.../stream0`
+(Step 1a) if it ever matters.* This is also why `jasper-outputd` can
+get away with **no
 drift compensation anywhere**: it paces its loop on the blocking
 `outputd_dac` write, fans the *same* mixed period to the chip USB-IN
 via an **integer** 48 k→16 k decimator (`ChipRefDownsampler` in
@@ -687,7 +715,8 @@ second is the actual verdict.
 
 **(a) USB DAC?** Then ask **synchronous/adaptive vs asynchronous**:
 - *Synchronous / adaptive* → D/A is slaved to USB SOF → **same domain
-  as the mic. Preserves chip-AEC.** (The Apple dongle is this.)
+  as the mic. Preserves chip-AEC.** (The Apple dongle is inferred to be
+  this — verify via the `stream0` readout below rather than assuming.)
 - *Asynchronous* → D/A runs off the DAC's **own crystal**, with a USB
   feedback endpoint → **independent domain. Breaks chip-AEC.** Most
   "audiophile" USB DACs are async — that's the premium feature, and
@@ -721,58 +750,86 @@ slave (Pi-clocked)** — but note the twist in Step 2:
   `i2s_clk_producer` + `snd-soc-dummy` with **no oscillator node**, and
   `rpi-simple-soundcard.c` sets `SND_SOC_DAIFMT_CBS_CFS`. So the DAC8x
   (and Studio DAC8x — same overlay) is unambiguously a **Pi-clocked I2S
-  slave with no crystal**. This is the fact the earlier draft got
+  slave with no crystal**. This is the fact the earliest draft got
   backwards.
 
-### Step 2 — The subtlety: "Pi-clocked" ≠ "coherent with the USB mic"
+**(c) Secondary checks regardless of transport.** Two more factors that
+don't change the clock-domain verdict but can independently break a
+build: (i) the XVF3800 AEC reference is **mono** (left channel; right
+ignored, and the chip plays left on both outputs) — a multichannel DAC
+must still present a coherent mono reference; (ii) confirm a working Pi
+5 / RP1 overlay exists and its clock producer/consumer role matches the
+intended topology (RP1 changed the master/slave model vs older Pis).
 
-This is the trap, and it's the whole reason the DAC8x still doesn't
-work for chip-AEC despite *not* having its own crystal.
+### Step 2 — The subtlety: different *peripheral* clock domains, but probably *frequency-coherent*
+
+Here's where a Pi-clocked I2S DAC differs from the USB-SOF mic — and
+where it's easy to over-claim the consequence.
 
 On the **Raspberry Pi 5 / RP1**, the USB-SOF clock and the I2S clock
-are **two independent PLLs** off the one 50 MHz crystal:
+are generated by **two different PLLs**, but **both descend from the
+single 50 MHz RP1 crystal**:
 - the **mic** (XVF, USB-SOF) rides the USB controller's **dedicated
-  USB PHY PLL** (system/`pll_sys` domain — the SOF/microframe
-  generator);
+  USB PHY PLL** (the SOF/microframe generator);
 - an **I2S HAT DAC** rides RP1's **`pll_audio`** (1.536 GHz VCO →
   12.288 MHz I2S).
+(Primary sources: RP1 Peripherals Datasheet §2.5; `drivers/clk/clk-rp1.c`
+— separate `CLK_USBH*_MICROFRAME` vs `clk_i2s`←`pll_audio` parentage,
+both off `clk_xosc`.)
 
-Two PLLs off one crystal are frequency-*related at the crystal* but
-**not frequency-locked** at their realized output rates (one integer
-multiply, one fractional-N, separate loops). Net: a Pi-I2S DAC and a
-USB-SOF mic drift **tens of ppm** — the same regime that breaks a
-no-ASRC AEC. (Primary sources: RP1 Peripherals Datasheet §2.5;
-`drivers/clk/clk-rp1.c` — separate `CLK_USBH*_MICROFRAME` vs
-`clk_i2s`←`pll_audio` parentage.)
+**Different PLLs off one crystal does NOT imply sample-rate drift.**
+This is the trap an earlier draft fell into ("separate PLLs → tens of
+ppm"). Each PLL output is `crystal × ratio`; if the crystal is off by
+δ ppm, *both* outputs shift by δ ppm, so the **ratio between them is
+exact and crystal-independent** — the tolerance is common-mode and
+cancels. For AEC what matters is *accumulating sample-rate offset*
+(frequency coherence), not phase noise or jitter. A fractional-N audio
+PLL adds bounded jitter around an exact long-term average, not
+accumulating drift. So two clocks derived from one crystal are
+**frequency-coherent**; the regime that genuinely drifts tens of ppm is
+*separate oscillators* (an async USB DAC with its own crystal), which
+is a different case. The likely DAC8x outcome is therefore **near-zero
+relative drift**, not the "tens of ppm" the prior draft asserted.
 
-**The lesson worth carrying forward:** the Apple dongle is coherent not
-because it's "on the Pi" but because it's a *synchronous USB* device
-that lands in the **mic's own USB-SOF domain**. A Pi-clocked I2S HAT is
-on a *different RP1 PLL*, so it does **not** inherit that coherence.
-"Same SoC" is not "same clock domain."
+**What's left as a real risk (narrower than drift):**
+1. **Non-rational SOF division** — if the USB host's SOF cadence isn't
+   an exact rational divisor of `pll_audio`, a small residual
+   frequency offset could remain. Unproven either way from the
+   datasheets.
+2. **Variable end-to-end delay** — even with frequency-coherent clocks,
+   two independent ALSA/buffering paths (the chip USB-IN reference vs
+   the I2S playback) can let the reference-to-air *delay* wander over
+   time. That violates the chip's "bulk delay must remain constant"
+   requirement and degrades AEC — a *delay-stability* problem, not a
+   sample-rate-drift problem, and the one most worth watching.
 
-This drift hits `jasper-outputd` at the exact spot Step 0 flagged:
-with the HAT as `outputd_dac`, the loop is paced by `pll_audio` while
-the `outputd-chip-ref` writer still feeds the chip USB-IN at USB-SOF
-rate → the bounded queue steadily drops periods / underruns, *and* the
-airborne echo itself drifts vs the mic. Two failure surfaces, neither
-of which the code compensates.
+**The lesson worth carrying forward:** the Apple dongle's coherence
+comes from being a *synchronous USB* device in the **mic's own USB-SOF
+domain** — but "same crystal, different PLL" (the I2S HAT case) is also
+frequency-coherent, just not delay-stability-guaranteed. "Different
+peripheral clock domain" is the right description; "independent
+oscillators that drift" is not. Which is exactly why Step 3 is the
+decider, not this argument.
 
-### Step 3 — The empirical gate (run this; don't conclude from theory)
+### Step 3 — The empirical gate (this decides it — the theory only sets a prior)
 
-The clock-tree argument predicts the answer, but **measure before you
-trust it** — the magnitude (and whether some future DAC happens to be
-coherent) is a hardware fact, not a doc claim. Wire the candidate DAC
-as `outputd_dac`, keep the chip USB-IN reference fanout on, play music,
-and measure ref→air→mic drift with the same direct-fanout harness that
-produced the ~1 ppm Apple-DAC figure. Watch:
+The clock-tree argument sets a prior (**lean coherent**, per Step 2),
+but it cannot prove the magnitude — that's a hardware fact of the
+specific board/OS/scheduler. **Measure before trusting either way.**
+Wire the candidate DAC as `outputd_dac`, keep the chip USB-IN reference
+fanout on, play wideband content for ≥30 min, and measure ref→air→mic
+drift with the same direct-fanout harness that produced the ~1 ppm
+Apple-DAC figure. Also watch for the *delay-stability* failure mode
+(Step 2.2), not just rate:
 ```sh
 journalctl -u jasper-outputd | grep -E 'chip_ref.(queue_full|xrun|write_failed)'
 ```
-- **~1 ppm + clean chip-ref log** ⇒ the DAC is effectively coherent;
-  chip-AEC is viable as-is.
-- **tens of ppm + steady drops/underruns** ⇒ independent domains;
-  chip-AEC needs compensation (Step 4) or a different DAC.
+- **≤~1 ppm + clean chip-ref log** ⇒ the domains are effectively
+  coherent; chip-AEC is viable as-is. (Given the shared crystal, this
+  is the *expected* outcome — but confirm it.)
+- **tens of ppm, or steady drops/underruns, or a slowly-wandering
+  ref→air delay** ⇒ residual offset or delay instability; chip-AEC
+  needs compensation (Step 4) or a different DAC/topology.
 
 A clean cross-domain readout, independently, is the PipeWire/JACK
 steady-state resampler ratio between the USB-mic node and the I2S-DAC
@@ -782,12 +839,17 @@ node — its deviation from 1.0 is the drift.
 
 In rough order of effort/risk:
 
-1. **Use software AEC3 instead (the production default — always safe).**
+1. **Use software AEC3 instead (the production default — lowest risk).**
    AEC3's reference is the digital `pcm.jasper_capture` tap, and WebRTC
-   AEC3 is *built* for independent render/capture clocks. Any DAC
-   (DAC8x included) on AEC3 is a routing + delay/level re-tune, **not**
-   an architecture break. If you don't specifically need chip-AEC, stop
-   here.
+   AEC3 explicitly handles render/capture clock mismatch (it resamples
+   and flags `clock_drift` in the delay controller). Any DAC (DAC8x
+   included) on AEC3 is a routing + delay/level re-tune, **not** an
+   architecture break. It's **low/negligible risk and DAC-agnostic** —
+   not literally "zero risk": AEC3 tolerates drift *within bounds*, and
+   very large drift or a delay-estimator lock-on error can still drop
+   ERLE (the "echo breakthrough" mode). If AEC3 ERLE sits below ~10 dB,
+   check the delay estimator + render/capture buffer alignment before
+   blaming the DAC. If you don't specifically need chip-AEC, stop here.
 2. **Software SRO compensation of the chip reference feed (keeps
    chip-AEC, DAC-agnostic).** Estimate the DAC-vs-mic sample-rate
    offset and asynchronously *pre-warp* the reference fanned to the
@@ -819,16 +881,24 @@ In rough order of effort/risk:
 
 ### Worked verdict — HiFiBerry DAC8x / Studio DAC8x
 
-Pi-clocked I2S slave, PCM5102A-class, **no onboard crystal**
-(kernel-confirmed, Step 1b) — so the earlier "self-clocked master"
-framing was wrong. **But** on Pi 5 its `pll_audio` I2S clock is a
-*different RP1 PLL* from the USB-SOF the chip mic rides (Step 2), so
-the echo still drifts tens of ppm vs the mic. **Conclusion holds: not
-viable for chip-AEC as a drop-in.** Either run it on software AEC3
-(Step 4.1 — recommended, and it gets you the balanced outputs + better
-DAC with zero AEC risk) or add SRO compensation (Step 4.2) if chip-AEC
-on the DAC8x is specifically wanted. Confirm with the Step 3 gate
-before committing either way.
+Pi-clocked I2S slave, four PCM5102A-class Burr-Brown DACs, **no onboard
+crystal** (kernel-confirmed, Step 1b). On Pi 5 its `pll_audio` I2S clock
+is a *different RP1 PLL* from the USB-SOF the chip mic rides (Step 2) —
+but both descend from the one 50 MHz crystal, so they're **frequency-
+coherent** and the likely relative drift is near-zero. **Verdict:
+uncertain, lean coherent — not "broken," but not a blind drop-in
+either.** The deciding factors are residual non-rational SOF offset and
+ref→air *delay stability* (Step 2), which only the Step 3 gate settles.
+
+Practical path for JTS:
+- **Production: run the DAC8x on software AEC3 (Step 4.1).** You get the
+  balanced outputs + better DAC at low/negligible AEC risk, with no
+  dependence on how the Step 3 measurement turns out. Recommended
+  default.
+- **If chip-AEC on the DAC8x is specifically wanted, run the Step 3
+  gate first** (don't assume it's broken — given the shared crystal it
+  may well pass). If it shows real slip, add SRO compensation
+  (Step 4.2) or move to an XVF-master topology (Step 4.3).
 
 See [HANDOFF-aec.md](HANDOFF-aec.md) "DAC clock-domain dependency" for
 the condensed version.
