@@ -34,6 +34,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from ..audio_profile_state import (
+    AecIntent,
+    MicProbe,
+    build_audio_profile_status,
+    runtime_env_from_mapping,
+)
 from ..camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ..config import Config
 from ..env_load import load_env_files as _load_env_files
@@ -1768,6 +1774,104 @@ def check_wake_legs_configured() -> CheckResult:
     return _assess_wake_legs(
         aec_mode, raw, dtln, armed_runtime, chip_aec=chip_aec,
     )
+
+
+def _audio_profile_status_for_doctor(
+    *,
+    bridge_active: bool | None = None,
+    env: dict[str, str] | None = None,
+    mic_probe: MicProbe | None = None,
+) -> dict:
+    """Build the same read-only audio-profile status used by /aec.
+
+    The doctor is a one-shot CLI, but it still reads the reconciler-owned
+    env file fresh so it reports the applied runtime env rather than only
+    whatever the calling shell inherited.
+    """
+
+    if bridge_active is None:
+        bridge_active = (
+            _run(["systemctl", "is-active", "jasper-aec-bridge.service"])
+            .stdout.strip() == "active"
+        )
+    if env is None:
+        env = _shared_parse_env_file(
+            os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
+        )
+    runtime = runtime_env_from_mapping(env, process_env=os.environ)
+
+    if mic_probe is None:
+        try:
+            from ..mics import xvf3800
+            capture_channels = xvf3800.capture_channels()
+            mic_probe = MicProbe(
+                xvf_present=xvf3800.is_present(),
+                capture_channels=capture_channels,
+                recommended_channels=(
+                    xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+                ),
+                display_name=xvf3800.DISPLAY_NAME,
+            )
+        except Exception:  # noqa: BLE001
+            mic_probe = MicProbe(
+                xvf_present=False,
+                capture_channels=None,
+                probe_error="firmware probe failed",
+            )
+
+    chip_available = (
+        mic_probe.xvf_present
+        and mic_probe.capture_channels == mic_probe.recommended_channels
+    )
+    return build_audio_profile_status(
+        AecIntent(
+            mode=_aec_mode_setting(),
+            raw_enabled=_wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
+            dtln_enabled=_wake_leg_setting("JASPER_WAKE_LEG_DTLN", False),
+            chip_aec_enabled=_wake_leg_setting(
+                "JASPER_WAKE_LEG_CHIP_AEC", False,
+            ),
+        ),
+        runtime,
+        mic_probe,
+        bridge_active=bridge_active,
+        chip_available=chip_available,
+    )
+
+
+def _assess_audio_profile(status: dict) -> CheckResult:
+    profile = status.get("audio_profile") or {}
+    mic = status.get("microphone") or {}
+    raw_warnings = mic.get("warnings")
+    warnings = raw_warnings if isinstance(raw_warnings, list) else []
+    state = str(profile.get("state") or "unknown")
+    active = profile.get("active") or "none"
+    legs = mic.get("wake_legs")
+    if isinstance(legs, list) and legs:
+        legs_text = ", ".join(str(leg) for leg in legs)
+    else:
+        legs_text = "none"
+    detail = (
+        f"requested={profile.get('requested') or 'unknown'}, "
+        f"active={active}, state={state}; "
+        f"mode={mic.get('processing_mode') or 'unknown'}, "
+        f"session={mic.get('session_source') or 'unknown'}, "
+        f"legs={legs_text}"
+    )
+    if warnings:
+        detail += "; " + " ".join(str(w) for w in warnings)
+
+    if state in {"active", "disabled"} and not warnings:
+        result = "ok"
+    else:
+        result = "warn"
+    return CheckResult("Audio profile", result, detail)
+
+
+def check_audio_profile_runtime() -> CheckResult:
+    """Summarise requested vs applied mic/AEC profile runtime truth."""
+
+    return _assess_audio_profile(_audio_profile_status_for_doctor())
 
 
 def check_aec_bridge_running() -> CheckResult:
@@ -4172,6 +4276,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         ("daily spend cap", lambda: check_spend_cap(cfg)),
         ("voice model pricing", lambda: check_pricing(cfg)),
         check_aec_bridge_running,
+        check_audio_profile_runtime,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_aec_bridge_output_health,
         # Mandatory fan-in daemon (docs/HANDOFF-fan-in-daemon.md).

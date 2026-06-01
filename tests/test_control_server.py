@@ -990,6 +990,29 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     section comes back as null/None — but the response is still 200
     with a stable top-level shape."""
     base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {
+            "mode": "auto",
+            "bridge_active": True,
+            "audio_profile": {
+                "requested": "xvf_software_aec3",
+                "active": "xvf_software_aec3",
+                "state": "active",
+                "reason": "Software AEC3 bridge is active.",
+            },
+            "microphone": {
+                "detected": True,
+                "processing_mode": "Software AEC3",
+                "session_source": "WebRTC AEC3 via :9876",
+                "wake_legs": ["AEC3", "Chip-direct raw"],
+                "warnings": [],
+            },
+        },
+    )
     state_path = tmp_path / "speaker_volume.json"
     state_path.write_text('{"listening_level": 73}')
     dsp_apply = tmp_path / "dsp_apply_state.json"
@@ -1044,8 +1067,28 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["audio"]["camilla_active_config_path"] is None
     assert body["renderers"]["spotify"]["playing"] is False
     assert body["outputd"] is None
+    assert body["aec"]["audio_profile"]["active"] == "xvf_software_aec3"
+    assert body["aec"]["microphone"]["processing_mode"] == "Software AEC3"
     assert body["active_source"] in {"idle", "airplay"}
     assert body["satellites"]["dial"]["online"] is False
+
+
+def test_state_aec_probe_failure_is_fail_soft(
+    server_with_coordinator, monkeypatch,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    def boom():
+        raise RuntimeError("aec probe exploded")
+
+    monkeypatch.setattr(srv_mod, "_aec_full_status", boom)
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["aec"] is None
+    assert body["voice"]["reachable"] is False
 
 
 def test_state_voice_wake_legs_flows_from_session_status(
