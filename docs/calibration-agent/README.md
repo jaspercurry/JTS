@@ -176,8 +176,9 @@ Every concept file should have:
 - 2026-05-31: first opt-in model adapter + reversible sound audition
   executor added. `jasper.calibration_agent.model_client` calls OpenAI's
   Responses API only when an operator passes `--call-advisor`, sends the
-  redacted advisor prompt package with `store: false`, and returns a
-  candidate JSON response that still goes through local validation.
+  redacted advisor prompt package with `store: false`, records elapsed
+  time, and returns a candidate JSON response that still goes through
+  local validation.
   `jasper.calibration_agent.sound_actions` can wire validated
   preference-EQ audition proposals into `/sound/audition` when
   `--audition-sound` is explicitly passed. No model output can control

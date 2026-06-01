@@ -292,7 +292,7 @@
   adds an opt-in, stdlib OpenAI Responses adapter behind
   `jasper-calibration-agent --call-advisor`. It sends only the redacted
   advisor prompt package, requests structured JSON, sets `store: false`,
-  logs only provider/model/status metadata, and still treats local
+  logs only provider/model/status/elapsed-time metadata, and still treats local
   `response.validate_advisor_response` as the safety gate. No model call
   happens unless the operator explicitly passes `--call-advisor`, and
   the model id remains explicit (`--advisor-model` or
@@ -1310,7 +1310,7 @@ Current versions:
 | `jasper.correction.evidence` packet | `artifact_schema_version` | `2` | Read-only review envelope for humans and future LLMs; no side effects and no raw audio. v2 adds `capability_permissions` and `missing_evidence`. |
 | `jasper.calibration_agent.advisor_context` packet | `artifact_schema_version` | `1` | Redacted LLM-ready context envelope derived from the evidence packet. Excludes raw audio, absolute paths, raw serials, untrusted browser labels, and user-entered profile names; carries read-only-first bounded-action permissions/prohibitions. |
 | `jasper.calibration_agent.prompt` package | `artifact_schema_version` | `1` | Provider-neutral prompt package for a future model call. Contains system instructions, response contract, and redacted advisor context; no model call and no side effects. |
-| `jasper.calibration_agent.model_client` call | `artifact_schema_version` | `1` | Opt-in provider-call envelope for a candidate advisor response. Contains provider/model/status/usage and parsed advisor JSON only; no raw provider text, no secrets, and no DSP side effects. |
+| `jasper.calibration_agent.model_client` call | `artifact_schema_version` | `1` | Opt-in provider-call envelope for a candidate advisor response. Contains provider/model/status/elapsed-time/usage and parsed advisor JSON only; no raw provider text, no secrets, and no DSP side effects. |
 | `jasper.calibration_agent.response` validation | `artifact_schema_version` | `1` | Deterministic validation envelope for future advisor JSON. Produces a safe action plan or rejects unsafe fields/actions; persistence remains user-confirmation-gated and model profile payloads are DSP-shape-only. |
 | `jasper.calibration_agent.actions` run | `artifact_schema_version` | `1` | Deterministic run envelope for a validated advisor plan. Presentation actions can complete immediately; audition/commit actions require caller-owned executors and keep subjective listener judgment explicit. |
 

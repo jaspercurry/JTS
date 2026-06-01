@@ -107,11 +107,36 @@ def test_call_advisor_posts_to_responses_and_extracts_output_text():
     assert result["provider"] == "openai"
     assert result["model"] == "test-model"
     assert result["response_id"] == "resp_123"
+    assert isinstance(result["elapsed_ms"], int)
+    assert result["elapsed_ms"] >= 0
     assert result["advisor_response"]["kind"] == "jts_advisor_response"
     assert result["usage"] == {"input_tokens": 10, "output_tokens": 20}
     assert calls[0]["url"] == "https://example.test/v1/responses"
     assert calls[0]["headers"]["Authorization"] == "Bearer sk-test"
     assert calls[0]["body"]["store"] is False
+
+
+def test_advisor_schema_reuses_deterministic_contract_limits():
+    schema = model_client._advisor_response_schema()
+    action_plan = schema["properties"]["action_plan"]
+    action = action_plan["items"]
+    profile = action["properties"]["profile"]
+
+    assert schema["properties"]["artifact_schema_version"]["enum"] == [
+        response.RESPONSE_SCHEMA_VERSION
+    ]
+    assert action_plan["maxItems"] == response.MAX_ACTION_PLAN_ITEMS
+    assert set(action["properties"]["type"]["enum"]) == response.ALLOWED_ACTIONS
+    assert (
+        action["properties"]["profile_name"]["maxLength"]
+        == model_client.MAX_PROFILE_NAME_CHARS
+    )
+    assert profile["properties"]["parametric_bands"]["maxItems"] == (
+        model_client.MAX_PARAMETRIC_BANDS
+    )
+    assert profile["properties"]["simple_eq"]["required"] == list(
+        model_client.SIMPLE_EQ_FIELDS
+    )
 
 
 def test_call_advisor_rejects_bad_provider_response():

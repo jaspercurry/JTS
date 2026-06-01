@@ -10,11 +10,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from jasper.calibration_agent import response as advisor_contract
+from jasper.sound.profile import (
+    MAX_PARAMETRIC_BANDS,
+    MAX_PROFILE_NAME_CHARS,
+    SIMPLE_EQ_FIELDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,13 +154,16 @@ def call_advisor(
         settings.provider,
         settings.model,
     )
+    started_at = time.monotonic()
     status, raw_body = (transport or _post_json)(url, headers, body, settings.timeout_sec)
+    elapsed_ms = _elapsed_ms(started_at)
     if status < 200 or status >= 300:
         logger.warning(
-            "event=calibration_agent.model_call provider=%s model=%s status=http_error http_status=%d",
+            "event=calibration_agent.model_call provider=%s model=%s status=http_error http_status=%d elapsed_ms=%d",
             settings.provider,
             settings.model,
             status,
+            elapsed_ms,
         )
         raise AdvisorModelError(f"advisor provider returned HTTP {status}")
 
@@ -174,15 +185,17 @@ def call_advisor(
         "model": settings.model,
         "response_id": provider_response.get("id"),
         "provider_status": provider_status or "unknown",
+        "elapsed_ms": elapsed_ms,
         "advisor_response": advisor_response,
         "usage": _usage_summary(provider_response.get("usage")),
         "side_effects": ["provider_api_call"],
     }
     logger.info(
-        "event=calibration_agent.model_call provider=%s model=%s status=completed response_id=%s",
+        "event=calibration_agent.model_call provider=%s model=%s status=completed response_id=%s elapsed_ms=%d",
         settings.provider,
         settings.model,
         result["response_id"] or "-",
+        elapsed_ms,
     )
     return result
 
@@ -243,23 +256,11 @@ def _first_message(messages: list[Any], role: str) -> str | None:
 
 
 def _advisor_response_schema() -> dict[str, Any]:
-    text = {"type": "string", "maxLength": 1200}
+    text = {"type": "string", "maxLength": advisor_contract.TEXT_LIMIT_CHARS}
     simple_eq = {
         "type": "object",
-        "properties": {
-            "sub_bass_db": {"type": "number"},
-            "bass_db": {"type": "number"},
-            "mid_db": {"type": "number"},
-            "presence_db": {"type": "number"},
-            "treble_db": {"type": "number"},
-        },
-        "required": [
-            "sub_bass_db",
-            "bass_db",
-            "mid_db",
-            "presence_db",
-            "treble_db",
-        ],
+        "properties": {field: {"type": "number"} for field in SIMPLE_EQ_FIELDS},
+        "required": list(SIMPLE_EQ_FIELDS),
         "additionalProperties": False,
     }
     band = {
@@ -283,7 +284,7 @@ def _advisor_response_schema() -> dict[str, Any]:
             "parametric_bands": {
                 "type": "array",
                 "items": band,
-                "maxItems": 8,
+                "maxItems": MAX_PARAMETRIC_BANDS,
             },
         },
         "required": ["enabled", "curve_id", "simple_eq", "parametric_bands"],
@@ -292,12 +293,15 @@ def _advisor_response_schema() -> dict[str, Any]:
     action = {
         "type": "object",
         "properties": {
-            "type": {"type": "string"},
+            "type": {"type": "string", "enum": sorted(advisor_contract.ALLOWED_ACTIONS)},
             "message": text,
             "reason": text,
             "position_hint": text,
             "rationale": text,
-            "profile_name": {"type": "string", "maxLength": 64},
+            "profile_name": {
+                "type": "string",
+                "maxLength": MAX_PROFILE_NAME_CHARS,
+            },
             "profile": profile,
         },
         "required": [
@@ -314,14 +318,17 @@ def _advisor_response_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
-            "artifact_schema_version": {"type": "integer"},
-            "kind": {"type": "string"},
+            "artifact_schema_version": {
+                "type": "integer",
+                "enum": [advisor_contract.RESPONSE_SCHEMA_VERSION],
+            },
+            "kind": {"type": "string", "enum": ["jts_advisor_response"]},
             "summary": text,
             "recommended_next_action": text,
             "action_plan": {
                 "type": "array",
                 "items": action,
-                "maxItems": 6,
+                "maxItems": advisor_contract.MAX_ACTION_PLAN_ITEMS,
             },
         },
         "required": [
@@ -333,6 +340,10 @@ def _advisor_response_schema() -> dict[str, Any]:
         ],
         "additionalProperties": False,
     }
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int(round((time.monotonic() - started_at) * 1000)))
 
 
 def _post_json(

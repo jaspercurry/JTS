@@ -30,6 +30,8 @@ from jasper.sound.profile import (
 
 RESPONSE_SCHEMA_VERSION = 1
 VALIDATION_SCHEMA_VERSION = 1
+MAX_ACTION_PLAN_ITEMS = 6
+TEXT_LIMIT_CHARS = 1_200
 
 ACTION_EXPLAIN = "explain"
 ACTION_REMEASURE = "recommend_remeasure"
@@ -71,7 +73,6 @@ _PROHIBITED_KEYS = {
     "volume_db",
     "yaml",
 }
-_TEXT_LIMIT_CHARS = 1_200
 
 
 def response_contract() -> dict[str, Any]:
@@ -185,14 +186,14 @@ def validate_advisor_response(
     if not isinstance(action_plan, list):
         issues.append(_issue("fail", "action_plan_not_list", "action_plan must be a list"))
         action_plan = []
-    if len(action_plan) > 6:
+    if len(action_plan) > MAX_ACTION_PLAN_ITEMS:
         issues.append(_issue(
             "fail",
             "too_many_actions",
-            "action_plan is limited to 6 actions",
+            f"action_plan is limited to {MAX_ACTION_PLAN_ITEMS} actions",
             count=len(action_plan),
         ))
-        action_plan = action_plan[:6]
+        action_plan = action_plan[:MAX_ACTION_PLAN_ITEMS]
 
     for index, action in enumerate(action_plan):
         action_issues, normalized = _validate_action(
@@ -212,11 +213,11 @@ def validate_advisor_response(
                 f"{field}_not_string",
                 f"{field} must be a string when present",
             ))
-        elif isinstance(raw.get(field), str) and len(raw[field]) > _TEXT_LIMIT_CHARS:
+        elif isinstance(raw.get(field), str) and len(raw[field]) > TEXT_LIMIT_CHARS:
             issues.append(_issue(
                 "fail",
                 f"{field}_too_long",
-                f"{field} must be <= {_TEXT_LIMIT_CHARS} characters",
+                f"{field} must be <= {TEXT_LIMIT_CHARS} characters",
             ))
 
     return _validation_result(
@@ -401,11 +402,11 @@ def _bounded_text(
         ))
         return ""
     text = " ".join(value.split())
-    if len(text) > _TEXT_LIMIT_CHARS:
+    if len(text) > TEXT_LIMIT_CHARS:
         issues.append(_issue(
             "fail",
             f"{field}_too_long",
-            f"{field} must be <= {_TEXT_LIMIT_CHARS} characters",
+            f"{field} must be <= {TEXT_LIMIT_CHARS} characters",
             index=index,
         ))
         return ""
@@ -427,11 +428,11 @@ def _optional_bounded_text(
         ))
         return None
     text = " ".join(value.split())
-    if len(text) > _TEXT_LIMIT_CHARS:
+    if len(text) > TEXT_LIMIT_CHARS:
         issues.append(_issue(
             "fail",
             f"{field}_too_long",
-            f"{field} must be <= {_TEXT_LIMIT_CHARS} characters",
+            f"{field} must be <= {TEXT_LIMIT_CHARS} characters",
         ))
         return None
     return text

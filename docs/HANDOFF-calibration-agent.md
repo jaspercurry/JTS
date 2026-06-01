@@ -925,8 +925,9 @@ Current distilled corpus files:
   `--call-advisor` to make an explicit OpenAI Responses API request
   using the redacted advisor prompt package. The adapter uses stdlib
   HTTP only, requests structured JSON, sets provider `store: false`,
-  redacts secrets from logs/output, and returns a candidate advisor
-  response that still must pass the local validator. The model id is
+  redacts secrets from logs/output, records elapsed time for
+  observability, and returns a candidate advisor response that still
+  must pass the local validator. The model id is
   intentionally operator-supplied (`--advisor-model` or
   `JASPER_CALIBRATION_ADVISOR_MODEL`) so the code does not bake in a
   stale preference. Passing `--audition-sound` wires validated
