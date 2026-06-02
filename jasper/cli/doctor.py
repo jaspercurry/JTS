@@ -46,6 +46,11 @@ from ..camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ..config import Config
 from ..env_load import load_env_files as _load_env_files
 from ..env_load import parse_env_file as _shared_parse_env_file
+from ..voice.catalog import (
+    PROVIDER_IDS_MANIFEST_FILE,
+    provider_by_id,
+    provider_ids_manifest_text,
+)
 
 
 GREEN = "\033[32m"
@@ -176,15 +181,8 @@ def check_speaker_name() -> CheckResult:
     )
 
 
-# Per-provider expected key prefix and human-readable label. The prefix
-# is a soft signal — providers occasionally rotate the format, so a
-# mismatch is a warn, not a fail. Source: each provider's API docs as
-# of 2026-05-09.
-_PROVIDER_KEY_INFO = {
-    "gemini": ("GEMINI_API_KEY", "AIza", "gemini_api_key"),
-    "openai": ("OPENAI_API_KEY", "sk-", "openai_api_key"),
-    "grok": ("XAI_API_KEY", "xai-", "grok_api_key"),
-}
+def _provider_api_key_attr(provider_id: str) -> str:
+    return f"{provider_id.replace('-', '_')}_api_key"
 
 
 def check_provider_key(cfg: Config) -> CheckResult:
@@ -192,13 +190,15 @@ def check_provider_key(cfg: Config) -> CheckResult:
     expected prefix. Other providers' keys are intentionally not
     checked — they may be set (so the wizard can switch without a
     re-paste) or not, and either is fine."""
-    info = _PROVIDER_KEY_INFO.get(cfg.voice_provider)
-    if info is None:
+    provider = provider_by_id(cfg.voice_provider)
+    if provider is None:
         return CheckResult(
             "voice provider key", "fail",
             f"unsupported JASPER_VOICE_PROVIDER={cfg.voice_provider!r}",
         )
-    env_name, prefix, attr = info
+    env_name = provider.key_env
+    prefix = provider.key_prefix_hint.rstrip(".")
+    attr = _provider_api_key_attr(provider.id)
     key = getattr(cfg, attr, "")
     if not key:
         return CheckResult(
@@ -213,6 +213,46 @@ def check_provider_key(cfg: Config) -> CheckResult:
             f"doesn't start with '{prefix}' — may be a stale or wrong key",
         )
     return CheckResult(env_name, "ok", f"{key[:8]}...")
+
+
+def _voice_provider_ids_manifest_path() -> Path:
+    return Path(
+        os.environ.get(
+            "JASPER_VOICE_PROVIDER_IDS_FILE",
+            PROVIDER_IDS_MANIFEST_FILE,
+        ),
+    )
+
+
+def check_voice_provider_ids_manifest() -> CheckResult:
+    """Verify the shell-readable provider-id projection is in sync."""
+    path = _voice_provider_ids_manifest_path()
+    expected = provider_ids_manifest_text().splitlines()
+    if not path.exists():
+        return CheckResult(
+            "voice provider ids",
+            "fail",
+            f"{path} missing — re-run install.sh to regenerate the catalog projection",
+        )
+    actual = path.read_text().splitlines()
+    if actual == expected:
+        return CheckResult(
+            "voice provider ids",
+            "ok",
+            f"{path} matches catalog ({', '.join(expected)})",
+        )
+    if sorted(actual) == expected and len(actual) == len(expected):
+        return CheckResult(
+            "voice provider ids",
+            "warn",
+            f"{path} has the right ids but non-canonical order/format; re-run install.sh",
+        )
+    return CheckResult(
+        "voice provider ids",
+        "fail",
+        f"{path} stale; expected {', '.join(expected)}, "
+        f"got {', '.join(actual) or '<empty>'}",
+    )
 
 
 def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
@@ -4470,6 +4510,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_env_file,
         check_speaker_name,
         ("provider key", lambda: check_provider_key(cfg)),
+        check_voice_provider_ids_manifest,
         ("mic ALSA card", lambda: check_mic_card_matches_config(cfg)),
         check_loopback,
         ("mic capture", lambda: check_mic_capture(cfg)),

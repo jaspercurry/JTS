@@ -139,6 +139,14 @@ def test_catalog_defaults_are_listed_and_marked_tested():
         assert voice.id == voice_default
 
 
+def test_provider_ids_manifest_is_shell_readable_catalog_projection():
+    lines = catalog.provider_ids_manifest_text().splitlines()
+
+    assert lines == sorted(catalog.VALID_PROVIDER_IDS)
+    assert "" not in lines
+    assert all("=" not in line and line.strip() == line for line in lines)
+
+
 def test_index_model_options_show_catalog_statuses():
     page = voice_setup._index_html(
         {},

@@ -16,3 +16,14 @@ def test_switch_voice_provider_writes_wizard_owned_env():
     assert 'env="/var/lib/jasper/voice_provider.env"' in text
     assert "sed -i 's|^JASPER_VOICE_PROVIDER=" not in text
     assert "JASPER_VOICE_PROVIDER=${PROVIDER}' /etc/jasper/jasper.env" not in text
+
+
+def test_switch_voice_provider_reads_installed_catalog():
+    text = SCRIPT.read_text()
+
+    assert "/opt/jasper/.venv/bin/python" in text
+    assert "from jasper.voice.catalog import PROVIDERS" in text
+    assert "gemini|openai|grok" not in text
+    assert "gemini) KEY_VAR=GEMINI_API_KEY" not in text
+    assert "openai) KEY_VAR=OPENAI_API_KEY" not in text
+    assert "grok)   KEY_VAR=XAI_API_KEY" not in text

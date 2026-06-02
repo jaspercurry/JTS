@@ -11,6 +11,7 @@ set -euo pipefail
 ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 MODE_FILE="${JASPER_AEC_MODE_FILE:-/var/lib/jasper/aec_mode.env}"
 VOICE_PROVIDER_FILE="${JASPER_VOICE_PROVIDER_FILE:-/var/lib/jasper/voice_provider.env}"
+VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice_provider_ids}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 REASON="manual"
@@ -471,13 +472,12 @@ voice_provider_configured() {
 }
 
 valid_voice_provider() {
-    # Boot-safety mirror of jasper.voice.catalog.VALID_PROVIDER_IDS.
-    # Adding a provider means updating both the daemon catalog and this
-    # pre-daemon reconciler gate.
-    case "$1" in
-        gemini|openai|grok) return 0 ;;
-        *) return 1 ;;
-    esac
+    local provider="$1"
+    # Install-time artifact generated from jasper.voice.catalog.
+    # Keep this boot/hotplug safety gate shell-only: if the manifest is
+    # missing or the provider is not an exact line, jasper-voice stays parked.
+    [[ -n "$provider" && -r "$VOICE_PROVIDER_IDS_FILE" ]] || return 1
+    grep -Fxq -- "$provider" "$VOICE_PROVIDER_IDS_FILE"
 }
 
 restart_outputd_if_needed() {

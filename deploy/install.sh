@@ -131,6 +131,9 @@ Run for real from a Pi-local checkout:
      /usr/share/jasper-web, and feature-specific state directories.
    - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata
      when available.
+   - Write /var/lib/jasper/voice_provider_ids from the Python voice
+     catalog so boot/hotplug shell can validate providers without
+     importing Python.
    - Copy Python source, jasper_aec3, pyproject.toml, firmware sources,
      landing pages, nginx config, Avahi service templates, systemd
      units, udev rules, ALSA templates, and helper binaries.
@@ -1572,10 +1575,34 @@ PY
         echo "  speaker name: JTS"
     fi
     migrate_voice_provider
+    render_voice_provider_ids_manifest
     migrate_transit_config
     migrate_weather_config
     migrate_wifi_guardian
     migrate_wake_legs_config
+}
+
+render_voice_provider_ids_manifest() {
+    local provider_ids_file="${STATE_DIR}/voice_provider_ids"
+    local python_bin="${JASPER_INSTALL_PYTHON:-${INSTALL_DIR}/.venv/bin/python}"
+    local tmp
+
+    install -d -m 0750 "${STATE_DIR}"
+    tmp="$(mktemp "${STATE_DIR}/.voice_provider_ids.XXXXXX")"
+    if ! "${python_bin}" - <<'PY' > "${tmp}"
+from jasper.voice.catalog import provider_ids_manifest_text
+
+print(provider_ids_manifest_text(), end="")
+PY
+    then
+        rm -f "${tmp}" "${provider_ids_file}"
+        echo "  warning: could not generate ${provider_ids_file}"
+        echo "  jasper-voice will remain parked until a successful install regenerates it"
+        return 0
+    fi
+    chmod 0644 "${tmp}"
+    mv "${tmp}" "${provider_ids_file}"
+    echo "  voice provider id manifest: ${provider_ids_file}"
 }
 
 # Migrate hand-set wake-detection leg env vars from

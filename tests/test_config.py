@@ -112,6 +112,18 @@ def test_missing_voice_provider_raises_setup_exception(monkeypatch):
         Config.from_env()
 
 
+@pytest.mark.parametrize("provider_id", sorted(catalog.VALID_PROVIDER_IDS))
+def test_config_accepts_catalog_provider_ids(provider_id, monkeypatch):
+    provider = catalog.provider_by_id(provider_id)
+    assert provider is not None
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", provider_id)
+    monkeypatch.setenv(provider.key_env, "test-key")
+
+    cfg = Config.from_env()
+
+    assert cfg.voice_provider == provider_id
+
+
 def test_assistant_loudness_profile_path_override(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv(

@@ -42,6 +42,25 @@ consuming the service crash budget: `Config.from_env` raises
 `Restart=on-failure` and the existing `StartLimitAction=reboot`
 resilience path.
 
+The pre-daemon AEC reconciler has one extra boot-safety contract:
+[`deploy/install.sh`](../deploy/install.sh) renders
+`/var/lib/jasper/voice_provider_ids` from
+`jasper.voice.catalog.provider_ids_manifest_text()` after the runtime
+venv is installed. [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile)
+then accepts `JASPER_VOICE_PROVIDER` only when it is an exact line in
+that shell-readable file. If the file is missing or stale, the
+reconciler parks `jasper-voice`; it never starts voice on an
+unconfigured or unrecognized provider. This file is only the provider
+ID allow-list projection — the active provider itself still lives only
+in `/var/lib/jasper/voice_provider.env`.
+
+Operator and diagnostic surfaces also consume the catalog rather than
+mirroring provider IDs in parallel: `scripts/switch-voice-provider.sh`
+reads the installed Pi runtime catalog for provider IDs, key env vars,
+and model env vars; `jasper-doctor` derives the active provider key
+check from the same catalog and verifies the generated
+`voice_provider_ids` file is present and in sync.
+
 Display/aggregation surfaces that are not `jasper-voice` (e.g.
 `jasper-control`'s `/state` and the `/system/` dashboard) read the
 active provider through
@@ -282,12 +301,20 @@ should be:
 4. New provider entry in `jasper/voice/catalog.py`, including model
    status labels (`tested` / `fallback` / `experimental`) and voice
    choices for the `/voice/` wizard.
-5. New branch in `_make_connection(cfg)` in `voice_daemon.py`.
-6. New contract test in `tests/test_<provider>_session.py` modeled on
+5. No reconciler shell allow-list edit: `install.sh` emits
+   `/var/lib/jasper/voice_provider_ids` from the catalog, and
+   `jasper-aec-reconcile` reads that generated file. Keep the
+   fail-closed parking tests green so an unset, invalid, or missing-
+   manifest provider never starts voice.
+6. New branch in `_make_connection(cfg)` in `voice_daemon.py`.
+7. New contract test in `tests/test_<provider>_session.py` modeled on
    `tests/test_openai_session.py`. Pin: connect → tool round-trip →
    reconnect → manual-VAD payload shape → tool round advances the
    turn's idle anchor (see "Idle anchor + tool rounds" below).
-7. New row in this doc's tradeoff table.
+8. No provider-list edit in `scripts/switch-voice-provider.sh`: it
+   reads provider IDs, key env vars, and model env vars from the
+   installed runtime catalog on the Pi.
+9. New row in this doc's tradeoff table.
 
 If the wire format is OpenAI-Realtime-compatible (Grok pattern), most
 of step 1 is "subclass `OpenAIRealtimeConnection` and override
@@ -393,4 +420,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-06-02 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`)
+Last verified: 2026-06-02 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`)
