@@ -4,6 +4,7 @@ Keep this module import-cheap. Socket-activated web surfaces use these
 defaults to build and inspect CamillaDSP YAML without pulling NumPy/SciPy
 into the combined ``jasper-web`` process.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -102,12 +103,22 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
                 continue
             continue
 
-        if (
-            nested in {"capture", "playback"}
-            and indent > nested_indent
-            and key == "device"
-        ):
-            result[f"{nested}_device"] = value
+        if key == "volume_limit":
+            try:
+                result[key] = float(value)
+            except ValueError:
+                continue
+            continue
+
+        if nested in {"capture", "playback"} and indent > nested_indent:
+            if key == "device":
+                result[f"{nested}_device"] = value
+                continue
+            if key == "channels":
+                try:
+                    result[f"{nested}_channels"] = int(value)
+                except ValueError:
+                    continue
 
     return result
 

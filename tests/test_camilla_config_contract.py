@@ -14,9 +14,11 @@ def test_parse_camilla_devices_config_extracts_clock_and_outputd_lanes() -> None
           volume_limit: 0.0
           capture:
             type: Alsa
+            channels: 2
             device: "plug:jasper_capture"
           playback:
             type: Alsa
+            channels: 2
             device: "outputd_content_playback"
         filters:
           flat:
@@ -28,6 +30,9 @@ def test_parse_camilla_devices_config_extracts_clock_and_outputd_lanes() -> None
         "samplerate": 48000,
         "chunksize": 1024,
         "target_level": 2048,
+        "volume_limit": 0.0,
+        "capture_channels": 2,
         "capture_device": "plug:jasper_capture",
+        "playback_channels": 2,
         "playback_device": "outputd_content_playback",
     }

@@ -13,6 +13,7 @@ from jasper.active_speaker.path_safety import (
     evaluate_path_safety_evidence,
     requirements_payload,
 )
+from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.dsp_apply import validate_camilla_config
 
 
@@ -53,19 +54,57 @@ def _print_requirements(payload: dict[str, Any]) -> None:
 def _print_path_audit_summary(payload: dict[str, Any]) -> None:
     print(f"Path safety: {payload['status']}")
     print(f"Evidence source: {payload['evidence_source']}")
-    print(f"Hardware probe backed: {'yes' if payload['hardware_probe_backed'] else 'no'}")
+    print(
+        f"Hardware probe backed: {'yes' if payload['hardware_probe_backed'] else 'no'}"
+    )
     print(f"Load gate: {payload['load_gate']}")
-    print(f"OK to load active config: {'yes' if payload['ok_to_load_active_config'] else 'no'}")
+    print(
+        f"OK to load active config: {'yes' if payload['ok_to_load_active_config'] else 'no'}"
+    )
     print(f"Blockers: {payload['blocker_count']}")
     for path in payload["paths"]:
         print(f"- {path['id']}: {path['status']}")
     if payload["issues"]:
         print("Issues:")
         for issue in payload["issues"]:
-            print(
-                f"  [{issue['severity']}] "
-                f"{issue['path_id']}: {issue['message']}"
-            )
+            print(f"  [{issue['severity']}] {issue['path_id']}: {issue['message']}")
+
+
+def _print_environment_summary(payload: dict[str, Any]) -> None:
+    config = payload["camilla_config"]
+    alsa = payload["alsa"]
+    path_safety = payload["path_safety"]
+    validation = payload["camilla_validation"]
+    print(f"Active speaker environment: {payload['status']}")
+    print(f"Load gate: {payload['load_gate']}")
+    print(
+        f"OK to load active config: {'yes' if payload['ok_to_load_active_config'] else 'no'}"
+    )
+    print(
+        f"Camilla config: {config['classification']} ({config.get('path') or 'none'})"
+    )
+    print(f"  {config['label']}")
+    print(
+        "  playback: "
+        f"{config.get('playback_device') or 'unknown'} "
+        f"channels={config.get('playback_channels') or 'unknown'} "
+        f"volume_limit={config.get('volume_limit_db')!r}"
+    )
+    print(f"Camilla validation: {validation.get('status', 'unknown')}")
+    print(
+        "ALSA playback devices: "
+        f"{len(alsa.get('devices', []))} "
+        f"({'available' if alsa.get('available') else 'unavailable'})"
+    )
+    print(
+        "Path safety: "
+        f"{path_safety.get('status', 'unknown')} "
+        f"gate={path_safety.get('load_gate', 'unknown')}"
+    )
+    if payload["issues"]:
+        print("Issues:")
+        for issue in payload["issues"]:
+            print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
 
 
 def _cmd_startup_template(args: argparse.Namespace) -> int:
@@ -111,7 +150,9 @@ def _cmd_path_audit(args: argparse.Namespace) -> int:
             _print_requirements(payload)
         return 0
     if not args.evidence:
-        raise ActiveSpeakerConfigError("path-audit requires evidence JSON or --requirements")
+        raise ActiveSpeakerConfigError(
+            "path-audit requires evidence JSON or --requirements"
+        )
 
     payload = evaluate_path_safety_evidence(
         _load_json_object(Path(args.evidence), label="path-safety evidence")
@@ -121,6 +162,20 @@ def _cmd_path_audit(args: argparse.Namespace) -> int:
     else:
         _print_path_audit_summary(payload)
     return 0 if payload["requirements_met"] else 1
+
+
+def _cmd_environment_probe(args: argparse.Namespace) -> int:
+    payload = probe_active_speaker_environment(
+        config_path=args.config,
+        statefile_path=args.statefile,
+        path_safety_evidence_path=args.path_safety_evidence,
+        run_config_check=args.check_config,
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        _print_environment_summary(payload)
+    return 0 if payload["ok_to_load_active_config"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -182,6 +237,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     path_audit.add_argument("--json", action="store_true")
     path_audit.set_defaults(func=_cmd_path_audit)
+
+    environment = sub.add_parser(
+        "environment-probe",
+        help="read active-speaker environment evidence without playback or reloads",
+    )
+    environment.add_argument(
+        "--config",
+        help=(
+            "CamillaDSP config to inspect; when omitted, read config_path from "
+            "the CamillaDSP statefile"
+        ),
+    )
+    environment.add_argument(
+        "--statefile",
+        help=(
+            "CamillaDSP statefile to read when --config is omitted "
+            "(default: JASPER_CAMILLA_STATEFILE or outputd-statefile.yml)"
+        ),
+    )
+    environment.add_argument(
+        "--path-safety-evidence",
+        help="optional active-speaker path-safety evidence JSON",
+    )
+    environment.add_argument(
+        "--check-config",
+        dest="check_config",
+        action="store_true",
+        default=True,
+        help="run camilladsp --check on the inspected config when available (default)",
+    )
+    environment.add_argument(
+        "--no-check-config",
+        dest="check_config",
+        action="store_false",
+        help="skip CamillaDSP config validation; load gate will remain blocked",
+    )
+    environment.add_argument("--json", action="store_true")
+    environment.set_defaults(func=_cmd_environment_probe)
     return parser
 
 

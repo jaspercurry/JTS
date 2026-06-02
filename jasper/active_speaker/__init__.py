@@ -35,11 +35,19 @@ from .path_safety import (
     evaluate_path_safety_evidence,
     requirements_payload,
 )
+from .environment import (
+    ENVIRONMENT_REPORT_KIND,
+    classify_camilla_config_text,
+    parse_aplay_playback_devices,
+    parse_camilla_statefile_config_path,
+    probe_active_speaker_environment,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
     "ACTIVE_BASELINE_KIND",
     "ACTIVE_PRESET_KIND",
+    "ENVIRONMENT_REPORT_KIND",
     "HARDWARE_PROBE_EVIDENCE_SOURCE",
     "OPERATOR_EVIDENCE_SOURCE",
     "PATH_SAFETY_EVIDENCE_KIND",
@@ -57,8 +65,12 @@ __all__ = [
     "PathSafetyRequirement",
     "SafetyEnvelope",
     "SpeakerBaselineProfile",
+    "classify_camilla_config_text",
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",
+    "parse_aplay_playback_devices",
+    "parse_camilla_statefile_config_path",
+    "probe_active_speaker_environment",
     "required_driver_roles",
     "requirements_payload",
 ]

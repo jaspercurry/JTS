@@ -235,3 +235,36 @@ def test_path_audit_cli_requires_evidence_or_requirements():
         assert e.code == 2
     else:  # pragma: no cover - defensive assertion style
         raise AssertionError("expected parser exit without evidence")
+
+
+def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker.probe_active_speaker_environment",
+        lambda **kwargs: {
+            "status": "blocked",
+            "load_gate": "path_safety_evidence_missing",
+            "ok_to_load_active_config": False,
+            "camilla_config": {
+                "classification": "jts_outputd_stereo",
+                "path": "/etc/camilladsp/outputd-cutover.yml",
+                "label": "JTS outputd stereo config",
+                "playback_device": "outputd_content_playback",
+                "playback_channels": 2,
+                "volume_limit_db": 0.0,
+            },
+            "camilla_validation": {"status": "valid"},
+            "alsa": {"available": True, "devices": [1]},
+            "path_safety": {
+                "status": "missing",
+                "load_gate": "evidence_missing",
+            },
+            "issues": [],
+        },
+    )
+
+    code = main(["environment-probe", "--json"])
+
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "blocked"
+    assert payload["camilla_config"]["classification"] == "jts_outputd_stereo"
