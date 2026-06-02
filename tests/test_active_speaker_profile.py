@@ -139,6 +139,20 @@ def test_two_way_active_speaker_preset_round_trips():
     assert ActiveSpeakerPreset.from_mapping(preset.to_dict()) == preset
 
 
+def test_active_speaker_preset_requires_versioned_artifact_metadata():
+    raw = _two_way_preset()
+    del raw["artifact_schema_version"]
+
+    with pytest.raises(ActiveSpeakerConfigError, match="schema version"):
+        ActiveSpeakerPreset.from_mapping(raw)
+
+    raw = _two_way_preset()
+    del raw["kind"]
+
+    with pytest.raises(ActiveSpeakerConfigError, match="preset kind"):
+        ActiveSpeakerPreset.from_mapping(raw)
+
+
 def test_stereo_channel_map_requires_each_driver_on_each_side():
     raw = _two_way_preset(layout="stereo")
     raw["channel_map"]["outputs"] = raw["channel_map"]["outputs"][:-1]
@@ -216,6 +230,27 @@ def test_baseline_verification_rejects_malformed_section():
         SpeakerBaselineProfile.from_mapping(raw)
 
 
+def test_baseline_profile_requires_versioned_artifact_metadata():
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+    raw = SpeakerBaselineProfile.from_preset(
+        preset,
+        baseline_id="baseline-test",
+    ).to_dict()
+    del raw["artifact_schema_version"]
+
+    with pytest.raises(ActiveSpeakerConfigError, match="schema version"):
+        SpeakerBaselineProfile.from_mapping(raw)
+
+    raw = SpeakerBaselineProfile.from_preset(
+        preset,
+        baseline_id="baseline-test",
+    ).to_dict()
+    del raw["kind"]
+
+    with pytest.raises(ActiveSpeakerConfigError, match="baseline kind"):
+        SpeakerBaselineProfile.from_mapping(raw)
+
+
 def test_commissioned_baseline_requires_measurement_evidence():
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
 
@@ -250,6 +285,17 @@ def test_active_startup_config_requires_explicit_active_playback_device():
             preset,
             playback_device="outputd_content_playback",
         )
+
+
+def test_active_startup_config_rejects_outputd_playback_aliases():
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+
+    for playback_device in ("plug:outputd_content_playback", "plug:jasper_out"):
+        with pytest.raises(ActiveSpeakerConfigError, match="existing .* lane"):
+            emit_active_speaker_startup_config(
+                preset,
+                playback_device=playback_device,
+            )
 
 
 def test_active_startup_config_rejects_positive_volume_limit():

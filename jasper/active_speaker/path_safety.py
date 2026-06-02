@@ -16,6 +16,12 @@ from .profile import ActiveSpeakerConfigError
 
 SCHEMA_VERSION = 1
 PATH_SAFETY_EVIDENCE_KIND = "jts_active_speaker_path_safety_evidence"
+OPERATOR_EVIDENCE_SOURCE = "operator"
+HARDWARE_PROBE_EVIDENCE_SOURCE = "hardware_probe"
+SUPPORTED_EVIDENCE_SOURCES = {
+    OPERATOR_EVIDENCE_SOURCE,
+    HARDWARE_PROBE_EVIDENCE_SOURCE,
+}
 
 
 @dataclass(frozen=True)
@@ -126,6 +132,11 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
         raise ActiveSpeakerConfigError("unsupported path safety evidence schema version")
     if raw.get("kind") != PATH_SAFETY_EVIDENCE_KIND:
         raise ActiveSpeakerConfigError("unsupported path safety evidence kind")
+    evidence_source = raw.get("evidence_source")
+    if evidence_source is None:
+        raise ActiveSpeakerConfigError("path safety evidence source is required")
+    if evidence_source not in SUPPORTED_EVIDENCE_SOURCES:
+        raise ActiveSpeakerConfigError("unsupported path safety evidence source")
     paths = raw.get("paths")
     if not isinstance(paths, dict):
         raise ActiveSpeakerConfigError("paths must be an object")
@@ -192,11 +203,27 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
         })
 
     blocker_count = sum(1 for issue in issues if issue["severity"] == "blocker")
+    requirements_met = blocker_count == 0
+    hardware_probe_backed = evidence_source == HARDWARE_PROBE_EVIDENCE_SOURCE
+    ok_to_load = requirements_met and hardware_probe_backed
+    load_gate = (
+        "ready"
+        if ok_to_load
+        else (
+            "hardware_probe_required"
+            if requirements_met
+            else "requirements_blocked"
+        )
+    )
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": "jts_active_speaker_path_safety_report",
-        "status": "pass" if blocker_count == 0 else "blocked",
-        "ok_to_load_active_config": blocker_count == 0,
+        "status": "pass" if requirements_met else "blocked",
+        "requirements_met": requirements_met,
+        "evidence_source": evidence_source,
+        "hardware_probe_backed": hardware_probe_backed,
+        "ok_to_load_active_config": ok_to_load,
+        "load_gate": load_gate,
         "blocker_count": blocker_count,
         "issue_count": len(issues),
         "paths": path_results,

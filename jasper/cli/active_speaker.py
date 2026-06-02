@@ -52,6 +52,9 @@ def _print_requirements(payload: dict[str, Any]) -> None:
 
 def _print_path_audit_summary(payload: dict[str, Any]) -> None:
     print(f"Path safety: {payload['status']}")
+    print(f"Evidence source: {payload['evidence_source']}")
+    print(f"Hardware probe backed: {'yes' if payload['hardware_probe_backed'] else 'no'}")
+    print(f"Load gate: {payload['load_gate']}")
     print(f"OK to load active config: {'yes' if payload['ok_to_load_active_config'] else 'no'}")
     print(f"Blockers: {payload['blocker_count']}")
     for path in payload["paths"]:
@@ -117,7 +120,7 @@ def _cmd_path_audit(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         _print_path_audit_summary(payload)
-    return 0 if payload["ok_to_load_active_config"] else 1
+    return 0 if payload["requirements_met"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:

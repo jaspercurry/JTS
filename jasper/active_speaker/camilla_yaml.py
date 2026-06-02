@@ -41,6 +41,10 @@ STARTUP_HEADROOM_DB = 40.0
 STARTUP_MUTE_GAIN_DB = -120.0
 STARTUP_LIMITER_CLIP_LIMIT_DB = -12.0
 PROTECTIVE_TWEETER_HP_MULTIPLIER = 2.0
+FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
+    DEFAULT_PLAYBACK_DEVICE,
+    "jasper_out",
+)
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 
@@ -61,6 +65,14 @@ def _yaml_string(value: str, field_name: str) -> str:
     if any(ch in out for ch in ('"', "\n", "\r")):
         raise ActiveSpeakerConfigError(f"{field_name} contains unsafe YAML characters")
     return out
+
+
+def _forbidden_playback_token(playback_device: str) -> str | None:
+    lowered = playback_device.lower()
+    for token in FORBIDDEN_ACTIVE_PLAYBACK_TOKENS:
+        if token.lower() in lowered:
+            return token
+    return None
 
 
 def _finite_float(value: float, field_name: str) -> float:
@@ -373,9 +385,11 @@ def emit_active_speaker_startup_config(
 
     preset.validate()
     playback_device = _yaml_string(playback_device, "playback_device")
-    if playback_device == DEFAULT_PLAYBACK_DEVICE:
+    forbidden_token = _forbidden_playback_token(playback_device)
+    if forbidden_token:
         raise ActiveSpeakerConfigError(
-            "active-speaker templates require an explicit active playback device"
+            "active-speaker templates require an explicit active playback "
+            f"device, not the existing {forbidden_token} lane"
         )
     capture_device = _yaml_string(capture_device, "capture_device")
     capture_format = _yaml_string(capture_format, "capture_format")
@@ -481,11 +495,3 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def active_speaker_startup_config_path(config_dir: str | Path) -> Path:
     return Path(config_dir) / ACTIVE_STARTUP_CONFIG_NAME
-
-
-def validate_camilla_config(path: str | Path) -> bool:
-    """Compatibility wrapper for later active-speaker apply paths."""
-
-    from jasper.dsp_apply import validate_camilla_config as _validate
-
-    return _validate(path).ok_to_apply

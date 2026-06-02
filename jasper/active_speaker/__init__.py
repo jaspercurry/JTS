@@ -1,7 +1,8 @@
 """Active-speaker crossover commissioning substrate.
 
 This package is intentionally pure Python and import-cheap. It models the
-speaker-baseline layer only; it does not generate or load CamillaDSP configs.
+speaker-baseline layer and can emit no-apply startup templates; it does not
+load CamillaDSP configs or touch hardware.
 """
 
 from .profile import (
@@ -26,6 +27,8 @@ from .camilla_yaml import (
     emit_active_speaker_startup_config,
 )
 from .path_safety import (
+    HARDWARE_PROBE_EVIDENCE_SOURCE,
+    OPERATOR_EVIDENCE_SOURCE,
     PATH_SAFETY_EVIDENCE_KIND,
     REQUIRED_PATHS,
     PathSafetyRequirement,
@@ -37,6 +40,8 @@ __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
     "ACTIVE_BASELINE_KIND",
     "ACTIVE_PRESET_KIND",
+    "HARDWARE_PROBE_EVIDENCE_SOURCE",
+    "OPERATOR_EVIDENCE_SOURCE",
     "PATH_SAFETY_EVIDENCE_KIND",
     "REQUIRED_PATHS",
     "SCHEMA_VERSION",

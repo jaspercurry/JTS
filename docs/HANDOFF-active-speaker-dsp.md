@@ -28,7 +28,10 @@
 > `jasper/active_speaker/presets/bc_de250_dayton_e150he44_v1.json`.
 > `jasper-active-speaker path-audit` now exposes the deterministic
 > audible-path safety checklist and can evaluate operator evidence,
-> but it does not probe ALSA/systemd/CamillaDSP yet.
+> but it does not probe ALSA/systemd/CamillaDSP yet. Operator evidence
+> can satisfy the checklist but is not enough to permit active config
+> loading; `ok_to_load_active_config` is true only for future
+> hardware-probe-backed evidence.
 
 ## Current Operational Truth
 
@@ -378,9 +381,14 @@ jasper-active-speaker path-audit ./path_safety_evidence.json
 ```
 
 The evidence form must pass before a future loader is allowed to
-touch active hardware. This is currently an operator/harness evidence
-shape only; future slices can populate the evidence from real ALSA,
-systemd, CamillaDSP, and source-routing probes.
+touch active hardware, but a passing operator checklist is not itself
+permission to load an active config. `path-audit` reports both
+`requirements_met` and `ok_to_load_active_config`; the latter is true
+only when evidence is marked as hardware-probe-backed. Evidence must
+declare `"evidence_source": "operator"` or `"hardware_probe"` so future
+loaders never infer trust level from a missing field. This is currently
+an operator/harness evidence shape only; future slices can populate the
+evidence from real ALSA, systemd, CamillaDSP, and source-routing probes.
 
 ## Deterministic Tooling Roadmap
 
@@ -446,7 +454,9 @@ Updated execution plan:
    baseline and cannot bypass tweeter protection. Started 2026-06-01
    with `jasper.active_speaker.path_safety` and `jasper-active-speaker
    path-audit`, which encode and evaluate the required evidence but
-   do not probe hardware yet.
+   do not probe hardware yet. Manual/operator evidence can pass the
+   checklist, but future loading remains blocked until hardware-probe
+   evidence exists.
 5. **Consumer W0 slice**: prototype phone-as-mic raw PCM WebSocket
    capture, calibration blocking, browser processing sanity checks,
    and resumable server-side session state.

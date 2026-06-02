@@ -484,9 +484,9 @@ class ActiveSpeakerPreset:
     def from_mapping(cls, raw: Any) -> "ActiveSpeakerPreset":
         if not isinstance(raw, dict):
             raise ActiveSpeakerConfigError("preset must be an object")
-        if raw.get("artifact_schema_version", SCHEMA_VERSION) != SCHEMA_VERSION:
+        if raw.get("artifact_schema_version") != SCHEMA_VERSION:
             raise ActiveSpeakerConfigError("unsupported active-speaker schema version")
-        if raw.get("kind", ACTIVE_PRESET_KIND) != ACTIVE_PRESET_KIND:
+        if raw.get("kind") != ACTIVE_PRESET_KIND:
             raise ActiveSpeakerConfigError("unsupported active-speaker preset kind")
         way_count = _integer(raw.get("way_count"), "way_count")
         roles = required_driver_roles(way_count)
@@ -657,9 +657,9 @@ class SpeakerBaselineProfile:
     def from_mapping(cls, raw: Any) -> "SpeakerBaselineProfile":
         if not isinstance(raw, dict):
             raise ActiveSpeakerConfigError("baseline must be an object")
-        if raw.get("artifact_schema_version", SCHEMA_VERSION) != SCHEMA_VERSION:
+        if raw.get("artifact_schema_version") != SCHEMA_VERSION:
             raise ActiveSpeakerConfigError("unsupported baseline schema version")
-        if raw.get("kind", ACTIVE_BASELINE_KIND) != ACTIVE_BASELINE_KIND:
+        if raw.get("kind") != ACTIVE_BASELINE_KIND:
             raise ActiveSpeakerConfigError("unsupported baseline kind")
         profile = cls(
             baseline_id=_require_id(raw.get("baseline_id"), "baseline_id"),

@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jasper.active_speaker import PATH_SAFETY_EVIDENCE_KIND, requirements_payload
+from jasper.active_speaker import (
+    OPERATOR_EVIDENCE_SOURCE,
+    PATH_SAFETY_EVIDENCE_KIND,
+    requirements_payload,
+)
 from jasper.cli.active_speaker import main
 
 
@@ -71,6 +75,7 @@ def _passing_path_evidence() -> dict:
     return {
         "artifact_schema_version": 1,
         "kind": PATH_SAFETY_EVIDENCE_KIND,
+        "evidence_source": OPERATOR_EVIDENCE_SOURCE,
         "paths": paths,
     }
 
@@ -218,7 +223,9 @@ def test_path_audit_cli_json_passes_complete_evidence(tmp_path: Path, capsys):
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "pass"
-    assert payload["ok_to_load_active_config"] is True
+    assert payload["requirements_met"] is True
+    assert payload["ok_to_load_active_config"] is False
+    assert payload["load_gate"] == "hardware_probe_required"
 
 
 def test_path_audit_cli_requires_evidence_or_requirements():
