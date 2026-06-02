@@ -1081,6 +1081,27 @@ def _outputd_status_payload(
             "xrun_count": 0,
         },
         "mix": {"reference_sequence": 1, "clipped_samples": 0},
+        "content_bridge": {
+            "mode": "direct",
+            "enabled": False,
+            "locked": False,
+            "ring_frames": 16384,
+            "target_fill_frames": 4096,
+            "fill_frames": 0,
+            "min_fill_frames": 0,
+            "max_fill_frames": 0,
+            "ratio_ppm": 0.0,
+            "input_frames": 0,
+            "output_frames": 0,
+            "silence_frames": 0,
+            "underrun_frames": 0,
+            "overrun_frames": 0,
+            "resync_count": 0,
+            "reset_count": 0,
+            "ratio_clamp_count": 0,
+            "lock_count": 0,
+            "unlock_count": 0,
+        },
         "tts": {
             "pending_frames": 0,
             "budget_frames": 96000,
@@ -1187,6 +1208,7 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "tts_max_pending_frames=4096" in r.detail
     assert "tts_dropped_commands=0" in r.detail
     assert "tts_dropped_audio_frames=0" in r.detail
+    assert "content_bridge=direct" in r.detail
     assert "assistant_loudness_decision=False" in r.detail
     assert "content_anchor_lufs=-30.8" in r.detail
 
@@ -1226,6 +1248,30 @@ def test_outputd_service_warns_on_stuck_tts_queue(monkeypatch):
     assert r.status == "warn"
     assert "tts.pending_frames=120000" in r.detail
     assert "over_budget_streak_ms=128" in r.detail
+
+
+def test_outputd_service_warns_on_content_bridge_anomalies(monkeypatch):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload["content_bridge"].update({
+        "mode": "rate_match",
+        "enabled": True,
+        "locked": True,
+        "fill_frames": 4096,
+        "underrun_frames": 1024,
+        "overrun_frames": 0,
+        "resync_count": 1,
+        "ratio_clamp_count": 0,
+    })
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "warn"
+    assert "rate-match content bridge reported anomalies" in r.detail
+    assert "underrun_frames=1024" in r.detail
+    assert "resync_count=1" in r.detail
+    assert "bridge_fill_frames=4096" in r.detail
 
 
 def test_outputd_service_warns_when_loudness_telemetry_missing(monkeypatch):

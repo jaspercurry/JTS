@@ -8,6 +8,7 @@
 
 pub mod alsa_backend;
 pub mod config;
+pub mod content_bridge;
 pub mod core;
 pub mod fake;
 pub mod ledger;

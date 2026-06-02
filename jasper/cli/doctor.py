@@ -2749,6 +2749,49 @@ def check_outputd_service() -> CheckResult:
     content_partial = int(content.get("partial_periods", 0) or 0)
     content_eagain = int(content.get("eagain_count", 0) or 0)
     frames = int(dac.get("frames_written", 0) or 0)
+    bridge = data.get("content_bridge")
+    bridge_detail = "content_bridge=missing"
+    bridge_warning: str | None = None
+    if isinstance(bridge, dict):
+        bridge_enabled = bool(bridge.get("enabled", False))
+        bridge_locked = bool(bridge.get("locked", False))
+        bridge_fill = int(bridge.get("fill_frames", 0) or 0)
+        bridge_target = int(bridge.get("target_fill_frames", 0) or 0)
+        bridge_ratio = bridge.get("ratio_ppm")
+        bridge_silence = int(bridge.get("silence_frames", 0) or 0)
+        bridge_underrun = int(bridge.get("underrun_frames", 0) or 0)
+        bridge_overrun = int(bridge.get("overrun_frames", 0) or 0)
+        bridge_resync = int(bridge.get("resync_count", 0) or 0)
+        bridge_reset = int(bridge.get("reset_count", 0) or 0)
+        bridge_clamp = int(bridge.get("ratio_clamp_count", 0) or 0)
+        if bridge_enabled:
+            bridge_detail = (
+                f"content_bridge=rate_match, bridge_locked={bridge_locked}, "
+                f"bridge_fill_frames={bridge_fill}, "
+                f"bridge_target_fill_frames={bridge_target}, "
+                f"bridge_ratio_ppm={bridge_ratio}, "
+                f"bridge_silence_frames={bridge_silence}, "
+                f"bridge_underrun_frames={bridge_underrun}, "
+                f"bridge_overrun_frames={bridge_overrun}, "
+                f"bridge_resync_count={bridge_resync}, "
+                f"bridge_reset_count={bridge_reset}, "
+                f"bridge_ratio_clamp_count={bridge_clamp}"
+            )
+            anomalies = []
+            if bridge_underrun:
+                anomalies.append(f"underrun_frames={bridge_underrun}")
+            if bridge_overrun:
+                anomalies.append(f"overrun_frames={bridge_overrun}")
+            if bridge_resync:
+                anomalies.append(f"resync_count={bridge_resync}")
+            if bridge_reset:
+                anomalies.append(f"reset_count={bridge_reset}")
+            if bridge_clamp:
+                anomalies.append(f"ratio_clamp_count={bridge_clamp}")
+            if anomalies:
+                bridge_warning = ", ".join(anomalies)
+        else:
+            bridge_detail = "content_bridge=direct"
     tts = data.get("tts", {})
     tts_pending = int(tts.get("pending_frames", 0) or 0)
     tts_over_budget = bool(tts.get("over_budget", False))
@@ -2802,6 +2845,13 @@ def check_outputd_service() -> CheckResult:
             f"active but last_progress_age_ms={progress_age} "
             "(work loop may be wedged; watchdog should fire soon)",
         )
+    if bridge_warning is not None:
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            "active but rate-match content bridge reported anomalies: "
+            f"{bridge_warning}. {bridge_detail}",
+        )
     if tts_over_budget or tts_pending > 48000 * 2:
         return CheckResult(
             "jasper-outputd",
@@ -2824,6 +2874,7 @@ def check_outputd_service() -> CheckResult:
         f"tts_over_budget_ms={tts_over_budget_ms}, "
         f"tts_dropped_commands={tts_dropped_commands}, "
         f"tts_dropped_audio_frames={tts_dropped_audio_frames}, "
+        f"{bridge_detail}, "
         f"{loudness_detail}, "
         f"progress_age_ms={progress_age}",
     )

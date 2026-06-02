@@ -24,12 +24,13 @@ dongle with:
   WiFi-burst delivery;
 - Shairport's derived `audio_backend_latency_offset_in_seconds` to
   keep AirPlay video/multi-room timing honest after CamillaDSP's
-  target buffer, jasper-fanin's output buffer, and jasper-outputd's
-  direct-DAC buffer.
+  target buffer, jasper-fanin's output buffer, jasper-outputd's
+  optional content bridge, and jasper-outputd's direct-DAC buffer.
 
 With the current outputd values, the rendered offset is
 `-0.149333` (CamillaDSP buffer + fan-in output buffer + outputd DAC
-buffer only; no renderer-side dmix because fanin replaces it).
+buffer only; no renderer-side dmix because fanin replaces it; no
+content-bridge term because packaged outputd defaults to direct mode).
 
 Mux preemption now uses shairport-sync's MPRIS `Stop` when AirPlay
 loses the audible lane to Spotify, Bluetooth, or USB sink. Voice
@@ -449,7 +450,7 @@ Pair that buffer change with the rendered shairport latency offset:
 
 ```libconfig
 general = {
-    audio_backend_latency_offset_in_seconds = -0.170667;
+    audio_backend_latency_offset_in_seconds = -0.149333;
 };
 ```
 
@@ -460,13 +461,16 @@ leaving the speaker lands at the AirPlay-scheduled time.
 Do not hard-code this value by hand in the template. The template contains
 `__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__`; `jasper-apply-airplay-mode`
 derives it as
-`-((target_level - chunksize + fanin_output_buffer + outputd_dac_buffer) / samplerate)`,
+`-((target_level - chunksize + fanin_output_buffer + outputd_content_bridge + outputd_dac_buffer) / samplerate)`,
 where `target_level` and `chunksize` come from the active CamillaDSP
 config, `fanin_output_buffer` comes from `JASPER_FANIN_OUTPUT_BUFFER_FRAMES`,
-and the outputd DAC buffer comes from `JASPER_OUTPUTD_DAC_BUFFER_FRAMES`.
-If any of those change, the next shairport render/restart follows
-automatically. The old output dmix term was added 2026-05-25; the
-2026-05-28 outputd topology replaces it with outputd's direct-DAC queue.
+`outputd_content_bridge` is `0` in outputd's packaged `direct` mode
+or the configured target fill in opt-in `rate_match` lab mode, and
+the outputd DAC buffer comes from `JASPER_OUTPUTD_DAC_BUFFER_FRAMES`.
+If any of those change in their owning env files, the next shairport
+render/restart follows automatically. The old output dmix term was
+added 2026-05-25; the 2026-05-28 outputd topology replaces it with
+outputd's direct-DAC queue.
 
 Required places:
 - `deploy/camilladsp/outputd-cutover.yml`
@@ -693,7 +697,8 @@ sudo journalctl -u jasper-fanin --since '5 minutes ago' | grep "label=airplay" |
 
 # 4. Rendered shairport latency offset (correct for video sync — different concern from drops)
 grep audio_backend_latency_offset /etc/shairport-sync.conf
-#   Expected on fanin (no renderer dmix): -0.170667
+#   Expected on fanin/outputd direct mode: -0.149333
+#   Expected on fanin/outputd rate_match with 4096-frame bridge target: -0.234667
 #   Expected on dmix (legacy): -0.192000
 ```
 
@@ -1119,7 +1124,7 @@ CamillaDSP (Rust, enable_rate_adjust=true, target_level=2048, NO resampler)
 jasper-outputd → outputd_dac
         │
         ▼
-Apple USB-C → 3.5mm dongle (USB 1.1, 12 Mbit/s, async UAC2)
+selected final-output DAC (Apple USB-C dongle by default; DAC8x on jts3 lab)
         │
         ▼
 TPA3255 class-D amp + speakers
@@ -1133,10 +1138,10 @@ is a dsnoop reader on `hw:Loopback,1,7`; it lets multiple readers
 reference. The summing point for music + TTS is downstream at
 `jasper-outputd`, which owns direct DAC playback.
 
-The Apple dongle's actual card name is detected at install time by
-`detect_card aplay 'usb-c to 3.5mm'` in install.sh, falling back to
-`"A"` if not found. `outputd_dac` in `/etc/asound.conf` is substituted
-accordingly.
+The final-output card is detected at install time in `install.sh`.
+DAC8x lab systems prefer the enumerated `snd_rpi_hifiberry_dac8x`
+card; otherwise `outputd_dac` falls back to the detected Apple dongle
+card (`detect_card aplay 'usb-c to 3.5mm'`, then `"A"`).
 
 ### The four clocks at play
 
@@ -1162,7 +1167,7 @@ real audio clock.
 | `deploy/shairport-sync.conf.template` | `resync_threshold_in_seconds = 0.2` | THE fix — keeps shairport in continuous path |
 | `deploy/shairport-sync.conf.template` | `drift_tolerance_in_seconds = 0.1` | Gates the continuous path; lets ±1-sample stuffing work |
 | `deploy/shairport-sync.conf.template` | `audio_backend_buffer_desired_length_in_seconds = 0.5` | Steady-state buffer level |
-| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize + fanin_output_buffer + outputd_dac_buffer) / samplerate)` | Compensates the fixed downstream-delay invisible to shairport's `snd_pcm_delay()`. With current outputd values this renders as `-0.149333` (CamillaDSP + fan-in output + outputd DAC). Compensation is for video/multi-room sync correctness — Pattern A3 drops require the fan-in topology. |
+| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize + fanin_output_buffer + outputd_content_bridge + outputd_dac_buffer) / samplerate)` | Compensates the fixed downstream-delay invisible to shairport's `snd_pcm_delay()`. With current outputd defaults the bridge term is `0` (`JASPER_OUTPUTD_CONTENT_BRIDGE=direct`) and this renders as `-0.149333` (CamillaDSP + fan-in output + outputd DAC). If lab mode enables `rate_match`, the bridge target fill is included. Compensation is for video/multi-room sync correctness — Pattern A3 drops require the fan-in topology. |
 | `deploy/shairport-sync.conf.template` | `interpolation = "auto"` | soxr when CPU has slack, basic when buffer shallow |
 | `deploy/systemd/shairport-sync.service` | `Nice=-10, IOSchedulingClass=realtime` | Matches CamillaDSP priority — shairport doesn't lose scheduler races |
 | `deploy/camilladsp/outputd-cutover.yml` | `enable_rate_adjust=true`, no resampler block | Canonical 1:1 config — no double-correction oscillation |
@@ -1236,7 +1241,8 @@ The 2026-05-14 fix introduced the CamillaDSP target-level delay; the
 Pattern A3 proved it was the drop mechanism. The offset now includes
 only fixed downstream delay that still exists after shairport's private
 fan-in lane: CamillaDSP's target buffer above the implicit one-chunk
-baseline, jasper-fanin's output buffer, and outputd's direct-DAC buffer.
+baseline, jasper-fanin's output buffer, outputd's optional content
+bridge, and outputd's direct-DAC buffer.
 
 The worked-example math with the current production values:
 
@@ -1244,12 +1250,14 @@ The worked-example math with the current production values:
 chunksize                  = 1024 samples (CamillaDSP's implicit baseline)
 target_level               = 2048 samples (2026-05-25 trim from 4096)
 fanin output buffer        = 3072 samples (bounded queue to CamillaDSP/AEC)
+outputd content bridge     = 0 samples (direct mode; rate_match adds target_fill)
 outputd DAC buffer         = 3072 samples (direct-DAC outputd queue)
 extra delay (camilla)      = (2048 - 1024) / 48000 = 0.021333 s
 extra delay (fanin output) =          3072 / 48000 = 0.064000 s
+extra delay (bridge)       =             0 / 48000 = 0.000000 s
 extra delay (outputd DAC)  =          3072 / 48000 = 0.064000 s
 combined extra delay       =                         0.149333 s
-offset                     = -0.170667
+offset                     = -0.149333
 ```
 
 The negative sign is intentional. Upstream's own example says a backend
@@ -1483,4 +1491,4 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-06-01

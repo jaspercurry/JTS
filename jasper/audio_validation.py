@@ -44,6 +44,11 @@ DEFAULT_STALE_AFTER = timedelta(days=30)
 DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 ALLOWED_STATUSES = frozenset({"pass", "warn", "fail", "unknown"})
 CHIP_AEC_PROFILE = "xvf_chip_aec"
+DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
+HARDWARE_VALIDATION_PROFILES = (
+    CHIP_AEC_PROFILE,
+    DAC8X_OUTPUTD_STABILITY_PROFILE,
+)
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
 DEFAULT_HARDWARE_OBSERVE_SECONDS = 10.0
@@ -802,6 +807,67 @@ def _service_state_check(service_states: Mapping[str, str]) -> dict[str, JsonVal
     )
 
 
+def _outputd_pipeline_service_state_check(service_states: Mapping[str, str]) -> dict[str, JsonValue]:
+    required_units = (
+        "jasper-outputd.service",
+        "jasper-camilla.service",
+        "jasper-fanin.service",
+    )
+    missing = {
+        unit: service_states.get(unit, "unknown")
+        for unit in required_units
+        if service_states.get(unit) != "active"
+    }
+    if not missing:
+        return _check(
+            "pass",
+            summary="Required outputd/content-pipeline services are active.",
+            observed=dict(service_states),
+        )
+    return _check(
+        "fail",
+        summary="One or more outputd/content-pipeline services are not active.",
+        observed=dict(service_states),
+        expected={unit: "active" for unit in required_units},
+    )
+
+
+def _outputd_dac_status_check(outputd_status: Mapping[str, Any] | None) -> dict[str, JsonValue]:
+    if not isinstance(outputd_status, Mapping):
+        return _check(
+            "unknown",
+            summary="outputd STATUS was unavailable; DAC state could not be read.",
+        )
+    dac = outputd_status.get("dac")
+    if not isinstance(dac, Mapping):
+        return _check(
+            "unknown",
+            summary="outputd STATUS does not expose DAC state.",
+        )
+    raw_sample_rate = dac.get("sample_rate")
+    sample_rate = _as_int(raw_sample_rate)
+    observed = {
+        "pcm": dac.get("pcm"),
+        "sample_rate": sample_rate if sample_rate is not None else raw_sample_rate,
+        "period_frames": dac.get("period_frames"),
+        "buffer_frames": dac.get("buffer_frames"),
+        "frames_written": dac.get("frames_written"),
+        "xrun_count": dac.get("xrun_count"),
+    }
+    if observed["pcm"] and sample_rate == 48000:
+        return _check(
+            "pass",
+            summary="outputd exposes active 48 kHz DAC state.",
+            observed=observed,
+        )
+    return _check(
+        "fail",
+        summary="outputd DAC state is incomplete or not at the expected rate.",
+        observed=observed,
+        expected={"pcm": "non-empty", "sample_rate": 48000},
+    )
+
+
 def _dac_reference_check(outputd_status: Mapping[str, Any] | None) -> dict[str, JsonValue]:
     if not isinstance(outputd_status, Mapping):
         return _check(
@@ -1351,6 +1417,27 @@ def _hardware_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]
     return "review_audio_validation_warnings"
 
 
+def _outputd_stability_recommendation(
+    status: str,
+    checks: Mapping[str, Mapping[str, Any]],
+) -> str:
+    if checks.get("service_state", {}).get("status") == "fail":
+        return "fix_outputd_pipeline_services_before_validation"
+    if checks.get("dac_output", {}).get("status") in {"fail", "unknown", "not_run"}:
+        return "fix_outputd_runtime_observability_before_validation"
+    if checks.get("outputd_reference_health", {}).get("status") == "fail":
+        return "fix_outputd_stability_before_dac_validation"
+    if checks.get("outputd_reference_health", {}).get("status") in {
+        "unknown",
+        "not_run",
+        "warn",
+    }:
+        return "review_outputd_reference_health_before_dac_validation"
+    if status == "pass":
+        return "outputd_dac_stability_validated"
+    return "review_audio_validation_warnings"
+
+
 def build_chip_aec_readiness_artifact(
     *,
     now: datetime | None = None,
@@ -1451,6 +1538,93 @@ def build_chip_aec_readiness_artifact(
     )
 
 
+def build_outputd_stability_hardware_validation_artifact(
+    *,
+    now: datetime | None = None,
+    profile: str = DAC8X_OUTPUTD_STABILITY_PROFILE,
+    system_env: Mapping[str, str] | None = None,
+    service_states: Mapping[str, str] | None = None,
+    outputd_status: Mapping[str, Any] | None = None,
+    outputd_status_samples: list[Mapping[str, Any]] | None = None,
+    duration_seconds: float = DEFAULT_HARDWARE_OBSERVE_SECONDS,
+    report_only: bool = False,
+    forced: bool = False,
+) -> ValidationArtifact:
+    """Build a measured outputd/DAC stability artifact.
+
+    This profile intentionally excludes chip-AEC and voice prerequisites so
+    DAC/content-loop stability can be validated while chip-AEC is disabled or
+    the voice daemon is parked for first-time provider setup.
+    """
+
+    now = datetime.now(timezone.utc) if now is None else now
+    system_env = dict(system_env) if system_env is not None else _read_system_env()
+    service_states = (
+        dict(service_states)
+        if service_states is not None
+        else {
+            unit: _service_state(unit)
+            for unit in (
+                "jasper-outputd.service",
+                "jasper-camilla.service",
+                "jasper-fanin.service",
+            )
+        }
+    )
+    outputd_status_samples = list(outputd_status_samples or [])
+    if outputd_status is None and outputd_status_samples:
+        outputd_status = outputd_status_samples[0]
+    if outputd_status is None:
+        outputd_status = _query_outputd_status(_outputd_socket_path(system_env))
+
+    checks: dict[str, Mapping[str, Any]] = {
+        "runtime_identity": _runtime_identity_check(system_env),
+        "service_state": _outputd_pipeline_service_state_check(service_states),
+        "dac_output": _outputd_dac_status_check(outputd_status),
+        "outputd_reference_health": _outputd_reference_health_check(
+            outputd_status_samples,
+            duration_seconds=duration_seconds,
+            report_only=report_only,
+        ),
+        "operator_control": _check(
+            "pass",
+            required=False,
+            summary="Validation was explicitly operator-invoked and bounded.",
+            observed={
+                "duration_seconds": round(duration_seconds, 3),
+                "report_only": report_only,
+                "forced": forced,
+                "playback_generated": False,
+                "capture_loop_opened": False,
+                "xvf_reads": False,
+                "xvf_persistent_writes": False,
+            },
+        ),
+    }
+    status = _rollup_status(checks)
+    dac = _dac_details(system_env, outputd_status)
+    errors: list[str] = []
+    for name, check in checks.items():
+        if check.get("status") == "fail":
+            errors.append(f"{name}: {check.get('summary', 'failed')}")
+    return make_artifact(
+        validated_at=now,
+        mic_id="not_applicable",
+        dac_id=str(dac["id"] or "unknown"),
+        profile=profile,
+        status=status,
+        checks=checks,
+        recommendation=_outputd_stability_recommendation(status, checks),
+        notes=(
+            f"{HARDWARE_VALIDATION_KIND}: passive outputd/DAC stability evidence",
+            "No playback stimulus was generated.",
+            "No capture loop was opened.",
+            "Chip-AEC, AEC bridge, XVF readback, and jasper-voice state are not prerequisites for this profile.",
+        ),
+        errors=tuple(errors),
+    )
+
+
 def build_chip_aec_hardware_validation_artifact(
     *,
     now: datetime | None = None,
@@ -1479,6 +1653,19 @@ def build_chip_aec_hardware_validation_artifact(
     outputd/bridge state and read-only XVF parameters. It never generates
     speaker output, opens capture streams, or writes/persists chip settings.
     """
+
+    if profile == DAC8X_OUTPUTD_STABILITY_PROFILE:
+        return build_outputd_stability_hardware_validation_artifact(
+            now=now,
+            profile=profile,
+            system_env=system_env,
+            service_states=service_states,
+            outputd_status=outputd_status,
+            outputd_status_samples=outputd_status_samples,
+            duration_seconds=duration_seconds,
+            report_only=report_only,
+            forced=forced,
+        )
 
     now = datetime.now(timezone.utc) if now is None else now
     mode_env = dict(mode_env) if mode_env is not None else _read_mode_env()
@@ -1760,6 +1947,8 @@ def _collect_service_states() -> dict[str, str]:
         unit: _service_state(unit)
         for unit in (
             "jasper-outputd.service",
+            "jasper-camilla.service",
+            "jasper-fanin.service",
             "jasper-aec-bridge.service",
             "jasper-aec-init.service",
             "jasper-voice.service",
@@ -1875,6 +2064,48 @@ def _chip_runtime_refusal_reason(artifact: ValidationArtifact) -> str:
     return ""
 
 
+def _complete_hardware_validation_result(
+    artifact: ValidationArtifact,
+    *,
+    directory: Path | None,
+    report_only: bool,
+    stdout: bool,
+) -> HardwareValidationRun:
+    if stdout:
+        json.dump(artifact.to_dict(), sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+    if report_only:
+        logger.info(
+            "event=audio_hw_validation.report profile=%s status=%s recommendation=%s",
+            artifact.profile,
+            artifact.status,
+            artifact.recommendation,
+        )
+        return HardwareValidationRun(artifact=artifact)
+
+    target_dir = directory or artifact_directory()
+    try:
+        path = write_artifact(artifact, directory=target_dir)
+        latest_path = write_latest_pointer(artifact, directory=target_dir)
+    except OSError as e:
+        logger.error(
+            "event=audio_hw_validation.write_failed profile=%s status=%s error=%s",
+            artifact.profile,
+            artifact.status,
+            e,
+        )
+        return HardwareValidationRun(artifact=artifact, refused=True, refusal_reason=str(e))
+    logger.info(
+        "event=audio_hw_validation.write profile=%s status=%s recommendation=%s path=%s latest=%s",
+        artifact.profile,
+        artifact.status,
+        artifact.recommendation,
+        path,
+        latest_path,
+    )
+    return HardwareValidationRun(artifact=artifact, path=path, latest_path=latest_path)
+
+
 def run_chip_aec_hardware_validation(
     *,
     profile: str = CHIP_AEC_PROFILE,
@@ -1905,8 +2136,38 @@ def run_chip_aec_hardware_validation(
         int(force),
     )
 
-    mode_env = _read_mode_env()
     system_env = _read_system_env()
+    if profile == DAC8X_OUTPUTD_STABILITY_PROFILE:
+        service_states = _collect_service_states()
+        outputd_socket = _outputd_socket_path(system_env)
+        first_outputd = _query_outputd_status(outputd_socket)
+        outputd_samples: list[Mapping[str, Any]] = []
+        if isinstance(first_outputd, Mapping):
+            outputd_samples.append(first_outputd)
+        if not report_only and duration_seconds > 0:
+            time.sleep(duration_seconds)
+            final_outputd = _query_outputd_status(outputd_socket)
+            if isinstance(final_outputd, Mapping):
+                outputd_samples.append(final_outputd)
+        artifact = build_outputd_stability_hardware_validation_artifact(
+            now=now,
+            profile=profile,
+            system_env=system_env,
+            service_states=service_states,
+            outputd_status=first_outputd,
+            outputd_status_samples=outputd_samples,
+            duration_seconds=duration_seconds,
+            report_only=report_only,
+            forced=force,
+        )
+        return _complete_hardware_validation_result(
+            artifact,
+            directory=directory,
+            report_only=report_only,
+            stdout=stdout,
+        )
+
+    mode_env = _read_mode_env()
     mic_probe = _probe_xvf_mic()
     service_states = _collect_service_states()
     outputd_socket = _outputd_socket_path(system_env)
@@ -2035,39 +2296,12 @@ def run_chip_aec_hardware_validation(
         chip_probe_skipped=not chip_probe_allowed,
         chip_probe_skip_reason=skip_reason,
     )
-    if stdout:
-        json.dump(artifact.to_dict(), sys.stdout, indent=2, sort_keys=True)
-        sys.stdout.write("\n")
-    if report_only:
-        logger.info(
-            "event=audio_hw_validation.report profile=%s status=%s recommendation=%s",
-            artifact.profile,
-            artifact.status,
-            artifact.recommendation,
-        )
-        return HardwareValidationRun(artifact=artifact)
-
-    target_dir = directory or artifact_directory()
-    try:
-        path = write_artifact(artifact, directory=target_dir)
-        latest_path = write_latest_pointer(artifact, directory=target_dir)
-    except OSError as e:
-        logger.error(
-            "event=audio_hw_validation.write_failed profile=%s status=%s error=%s",
-            artifact.profile,
-            artifact.status,
-            e,
-        )
-        return HardwareValidationRun(artifact=artifact, refused=True, refusal_reason=str(e))
-    logger.info(
-        "event=audio_hw_validation.write profile=%s status=%s recommendation=%s path=%s latest=%s",
-        artifact.profile,
-        artifact.status,
-        artifact.recommendation,
-        path,
-        latest_path,
+    return _complete_hardware_validation_result(
+        artifact,
+        directory=directory,
+        report_only=report_only,
+        stdout=stdout,
     )
-    return HardwareValidationRun(artifact=artifact, path=path, latest_path=latest_path)
 
 
 def artifact_age(
@@ -2282,12 +2516,12 @@ def main(argv: list[str] | None = None) -> int:
 
 def hardware_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run bounded operator-controlled chip-AEC hardware validation.",
+        description="Run bounded operator-controlled audio hardware validation.",
     )
     parser.add_argument(
         "--profile",
         default=CHIP_AEC_PROFILE,
-        choices=(CHIP_AEC_PROFILE,),
+        choices=HARDWARE_VALIDATION_PROFILES,
         help="Audio profile to validate.",
     )
     parser.add_argument(
@@ -2301,9 +2535,9 @@ def hardware_main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_HARDWARE_OBSERVE_SECONDS,
         help=(
-            "Passive outputd/bridge observation window, not a hard total "
-            "wall-clock cap because bounded XVF readback/poll subprocesses "
-            "may add time "
+            "Passive outputd observation window (plus bridge counters for "
+            "chip-AEC), not a hard total wall-clock cap because bounded "
+            "XVF readback/poll subprocesses may add time for chip-AEC "
             f"(default: {DEFAULT_HARDWARE_OBSERVE_SECONDS:g}s; "
             f"max without --allow-long: {MAX_SHORT_HARDWARE_OBSERVE_SECONDS:g}s)."
         ),
@@ -2343,7 +2577,7 @@ def hardware_main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Write/report an artifact even when chip-AEC is not requested and active.",
+        help="For chip-AEC, write/report an artifact even when chip-AEC is not requested and active.",
     )
     parser.add_argument(
         "--stdout",

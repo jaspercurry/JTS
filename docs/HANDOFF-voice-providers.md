@@ -34,6 +34,13 @@ the variable unset and `jasper-voice` refuses to start until the
 wizard writes one. Same pattern as `/spotify/` writes
 `spotify_credentials.env`. Implementation:
 [`jasper/web/voice_setup.py`](../jasper/web/voice_setup.py).
+As of 2026-06-02, the unconfigured state parks cleanly instead of
+consuming the service crash budget: `Config.from_env` raises
+`VoiceProviderNotConfigured`, `jasper-voice` exits with EX_CONFIG
+(`78`), and `jasper-voice.service` declares `SuccessExitStatus=78` +
+`RestartPreventExitStatus=78`. Real runtime crashes still use
+`Restart=on-failure` and the existing `StartLimitAction=reboot`
+resilience path.
 
 Display/aggregation surfaces that are not `jasper-voice` (e.g.
 `jasper-control`'s `/state` and the `/system/` dashboard) read the
@@ -386,4 +393,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-06-01 (server-VAD gating now references the content-activity observer; spend/usage accounting still matches current jasper/usage.py)
+Last verified: 2026-06-02 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`)

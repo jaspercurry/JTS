@@ -17,7 +17,9 @@
 defaults.pcm.rate_converter "__RATE_CONVERTER__"
 
 # /etc/asound.conf — installed by deploy/install.sh with
-# __DONGLE_CARD__ substituted by the detected USB-C dongle name.
+# __OUTPUT_DAC_CARD__ substituted by the selected final-output card
+# and __DONGLE_CARD__ substituted by the detected USB-C dongle name
+# for legacy rollback / mixer-control paths.
 #
 # Location: /etc/asound.conf (NOT /root/.asoundrc). The system-wide
 # location is required so non-root renderer users (shairport-sync as
@@ -79,7 +81,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #                                                           outputd_dac
 #                                                               │
 #                                                               ▼
-#                                            Apple USB-C dongle → speakers
+#                                            selected DAC → speakers
 #
 # The pre-2026-05-26 renderer-side dmix topology was retired after
 # measurements showed it caused periodic AirPlay drops via a WiFi
@@ -220,13 +222,13 @@ ctl.outputd_content_capture {
 # boundary.
 pcm.outputd_dac {
     type hw
-    card __DONGLE_CARD__
+    card __OUTPUT_DAC_CARD__
     device 0
 }
 
 ctl.outputd_dac {
     type hw
-    card __DONGLE_CARD__
+    card __OUTPUT_DAC_CARD__
 }
 
 pcm.jasper_capture {

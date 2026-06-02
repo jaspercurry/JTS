@@ -102,11 +102,17 @@ The foundation is partly built:
   `status=warn` with `recommendation=run_hardware_validation` until
   measured drift/delay evidence exists.
   `jasper-audio-hw-validate` is the explicit operator-controlled next
-  step: it passively observes outputd reference health and bridge
-  counters across a bounded window, then polls read-only XVF chip
-  profile/convergence state only after runtime/reference health passes.
-  It writes through the same schema-v1 helper and still does not
-  generate playback, open capture loops, or persist chip settings.
+  step. For the default `xvf_chip_aec` profile, it passively observes
+  outputd reference health and bridge counters across a bounded window,
+  then polls read-only XVF chip profile/convergence state only after
+  runtime/reference health passes. For the DAC8x/outputd stability
+  profile (`--profile hifiberry_dac8x_outputd_stability`), it validates
+  the outputd/content pipeline independently of chip-AEC and
+  `jasper-voice`: required checks are fan-in/Camilla/outputd service
+  state, outputd DAC STATUS, and outputd xrun/clipping/progress counters
+  across the bounded window. It writes through the same schema-v1 helper
+  and still does not generate playback, open capture loops, or persist
+  chip settings.
 - `/wake-corpus/` has the first additive reuse hook: new session and
   clip metadata write an `audio_context` snapshot with production
   profile classification, mic firmware/channel identity, selected leg
@@ -278,6 +284,7 @@ jasper-audio-validate --stdout
 jasper-audio-hw-validate --dry-run
 sudo jasper-audio-hw-validate --duration-seconds 10 --stdout
 sudo jasper-audio-hw-validate --long-window --stdout
+sudo jasper-audio-hw-validate --profile hifiberry_dac8x_outputd_stability --long-window --stdout
 ```
 
 `jasper-audio-hw-validate` is explicit and bounded. It never runs from
@@ -289,6 +296,11 @@ already-running outputd/bridge state, reads schema-v1 runtime facts, and
 polls XVF read-only convergence/profile state only after chip-AEC
 runtime/reference health is good. It refuses when chip-AEC is not
 requested and active unless `--force` is passed.
+The `hifiberry_dac8x_outputd_stability` profile is the narrower DAC8x
+content-pipeline soak: it does not require chip-AEC, bridge stats, XVF
+readback, wake legs, or an active voice provider, so a parked
+`jasper-voice` cannot turn an outputd stability result into a chip-AEC
+failure.
 `--dry-run`/`--report-only` writes nothing and skips the observation
 sleep. Observation windows above 120 seconds require `--allow-long` or
 `--long-window`; the long-window preset is 30 minutes. The command does
@@ -548,9 +560,11 @@ against clear metrics.
 
 ## Immediate Next Sprint
 
-1. **Add the full operator-controlled DAC validation runner.** Reuse the
-   chip-AEC drift methodology, keep playback explicit, and persist
-   bounded short/long drift plus delay-stability evidence.
+1. **Extend the DAC validation runner beyond passive outputd health.**
+   The `hifiberry_dac8x_outputd_stability` profile now isolates outputd
+   xrun/clipping/progress health; future work should keep playback
+   explicit and add bounded short/long drift plus delay-stability
+   evidence when the operator approves hardware-coupled probes.
 2. **Promote richer DAC identity.** The readiness snapshot records the
    configured outputd PCM today; a future DAC capability pass should
    persist stable USB/ALSA descriptor facts without trusting browser or
@@ -577,4 +591,4 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-06-01
+Last verified: 2026-06-02

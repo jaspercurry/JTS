@@ -39,7 +39,7 @@ from .wake_condition_context import classify_condition
 from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
-from .config import Config
+from .config import Config, VoiceProviderNotConfigured
 from .watchdog import Heartbeat
 from .google_creds import GoogleClients, build_google_clients
 from .home_assistant import HAClient, build_ha_client
@@ -79,6 +79,7 @@ from .wake import WakeWordDetector
 from .weather import WeatherClient
 
 logger = logging.getLogger(__name__)
+VOICE_PROVIDER_NOT_CONFIGURED_EXIT = 78
 
 # Canonical playbook for editing this constant (and any tool
 # description in jasper/tools/) lives at docs/HANDOFF-prompting.md
@@ -3826,6 +3827,14 @@ async def run() -> None:
 def main() -> None:
     try:
         asyncio.run(run())
+    except VoiceProviderNotConfigured as e:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+        logger.warning("event=voice.unconfigured reason=%s", e)
+        print(str(e), file=sys.stderr)
+        sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)
     except KeyboardInterrupt:
         sys.exit(0)
 

@@ -39,8 +39,44 @@ def test_asoundrc_declares_outputd_direct_dac_alias():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     dac = _pcm_block(rc, "outputd_dac")
     assert "type hw" in dac
-    assert "card __DONGLE_CARD__" in dac
+    assert "card __OUTPUT_DAC_CARD__" in dac
     assert "device 0" in dac
+
+
+def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
+    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    assert "find_card()" in install_sh
+    assert "OUTPUT_DAC_CARD=$(detect_card aplay" in install_sh
+    assert "OUTPUT_DAC_ID=$(audio_dac_id_for_card" in install_sh
+    assert "snd_rpi_hifiberry_dac8x" in install_sh
+    assert "hifiberry_dac8x" in install_sh
+    assert 'echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"' in install_sh
+    assert 'echo "  Output DAC id: ${OUTPUT_DAC_ID}"' in install_sh
+    assert 's/__OUTPUT_DAC_CARD__/${OUTPUT_DAC_CARD}/g' in install_sh
+    assert "JASPER_AUDIO_DAC_ID" in install_sh
+    assert "APPLE_DONGLE_PRESENT=1" in install_sh
+    assert "APPLE_DONGLE_PRESENT=0" in install_sh
+
+
+def test_apple_dongle_mixer_services_are_gated_by_detected_dongle():
+    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    gated = install_sh.split(
+        'if [[ "${APPLE_DONGLE_PRESENT:-0}" == "1" ]]; then',
+        1,
+    )[1].split("systemctl stop jasper-voice.service", 1)[0]
+    assert "systemctl enable jasper-dac-init.service jasper-headphone-monitor.service" in gated
+    assert "systemctl start jasper-dac-init.service" in gated
+    assert "systemctl restart jasper-headphone-monitor.service" in gated
+    assert "systemctl disable --now jasper-dac-init.service jasper-headphone-monitor.service" in gated
+    assert "systemctl reset-failed jasper-dac-init.service jasper-headphone-monitor.service" in gated
+
+
+def test_headphone_monitor_uses_detected_dongle_card_template():
+    unit = (REPO / "deploy" / "systemd" / "jasper-headphone-monitor.service").read_text()
+    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    assert "ExecStart=/usr/local/bin/jasper-headphone-monitor __DONGLE_CARD__ Headphone" in unit
+    monitor_install = install_sh.split("deploy/systemd/jasper-headphone-monitor.service", 1)[0]
+    assert 's/__DONGLE_CARD__/${DONGLE_CARD}/g' in monitor_install
 
 
 def test_camilla_outputd_config_is_not_legacy_v1():

@@ -473,6 +473,25 @@ def _chip_readback(sys_delay: int = 12) -> dict:
     }
 
 
+def _outputd_stability_inputs() -> dict:
+    return {
+        "now": NOW,
+        "system_env": {
+            "JASPER_OUTPUTD_BACKEND": "alsa",
+            "JASPER_OUTPUTD_DAC_PCM": "outputd_dac",
+            "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+        },
+        "service_states": {
+            "jasper-outputd.service": "active",
+            "jasper-camilla.service": "active",
+            "jasper-fanin.service": "active",
+            "jasper-aec-bridge.service": "inactive",
+            "jasper-aec-init.service": "inactive",
+            "jasper-voice.service": "inactive",
+        },
+    }
+
+
 def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     artifact = audio_validation.build_chip_aec_readiness_artifact(
         **_active_chip_inputs(),
@@ -557,6 +576,30 @@ def test_chip_aec_hardware_validation_passive_evidence_warns_until_drift_probe()
     assert artifact.recommendation == "run_drift_delay_validation"
     assert "No playback stimulus was generated." in artifact.notes
     assert "No XVF chip settings were written or persisted." in artifact.notes
+
+
+def test_outputd_stability_profile_passes_without_chip_aec_or_voice():
+    inputs = _outputd_stability_inputs()
+    artifact = audio_validation.build_outputd_stability_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            _outputd_sample(reference_sequence=10, dac_frames_written=1000),
+            _outputd_sample(reference_sequence=16, dac_frames_written=7000),
+        ],
+        duration_seconds=10,
+    )
+
+    assert artifact.profile == audio_validation.DAC8X_OUTPUTD_STABILITY_PROFILE
+    assert artifact.status == "pass"
+    assert artifact.mic_id == "not_applicable"
+    assert artifact.dac_id == "hifiberry_dac8x"
+    assert artifact.checks["service_state"]["status"] == "pass"
+    assert artifact.checks["dac_output"]["status"] == "pass"
+    assert artifact.checks["outputd_reference_health"]["status"] == "pass"
+    assert "runtime_profile" not in artifact.checks
+    assert "bridge_counter_window" not in artifact.checks
+    assert "chip_profile_readback" not in artifact.checks
+    assert artifact.recommendation == "outputd_dac_stability_validated"
 
 
 def test_chip_aec_hardware_validation_zero_convergence_is_not_observed():
@@ -777,6 +820,55 @@ def test_run_chip_aec_hardware_validation_uses_one_bounded_window(
     assert chip_poll_durations == [9.0]
     assert result.artifact is not None
     assert result.artifact.checks["outputd_reference_health"]["status"] == "pass"
+
+
+def test_run_outputd_stability_profile_does_not_probe_chip_or_voice(
+    monkeypatch,
+    tmp_path,
+):
+    inputs = _outputd_stability_inputs()
+    outputd_samples = iter([
+        _outputd_sample(reference_sequence=10, dac_frames_written=1000),
+        _outputd_sample(reference_sequence=17, dac_frames_written=8000),
+    ])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(audio_validation, "_read_system_env", lambda: inputs["system_env"])
+    monkeypatch.setattr(
+        audio_validation,
+        "_collect_service_states",
+        lambda: inputs["service_states"],
+    )
+    monkeypatch.setattr(
+        audio_validation,
+        "_query_outputd_status",
+        lambda _socket: next(outputd_samples),
+    )
+    monkeypatch.setattr(audio_validation.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("chip-AEC probe path should not run for outputd stability")
+
+    monkeypatch.setattr(audio_validation, "_read_mode_env", forbidden)
+    monkeypatch.setattr(audio_validation, "_probe_xvf_mic", forbidden)
+    monkeypatch.setattr(audio_validation, "_read_bridge_stats", forbidden)
+    monkeypatch.setattr(audio_validation, "_read_voice_wake_legs", forbidden)
+    monkeypatch.setattr(audio_validation, "_read_chip_profile_parameters", forbidden)
+    monkeypatch.setattr(audio_validation, "_poll_chip_convergence", forbidden)
+
+    result = audio_validation.run_chip_aec_hardware_validation(
+        profile=audio_validation.DAC8X_OUTPUTD_STABILITY_PROFILE,
+        directory=tmp_path,
+        duration_seconds=10,
+        now=NOW,
+    )
+
+    assert result.refused is False
+    assert result.path is not None
+    assert sleeps == [10]
+    assert result.artifact is not None
+    assert result.artifact.status == "pass"
+    assert result.artifact.profile == audio_validation.DAC8X_OUTPUTD_STABILITY_PROFILE
 
 
 def test_latest_artifact_summary_reads_timestamped_artifacts(tmp_path):

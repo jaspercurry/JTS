@@ -33,6 +33,13 @@ pub struct IoCounters {
     pub dac_xrun_count: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentRead {
+    Frames(usize),
+    NoData,
+    XrunRecovered,
+}
+
 pub struct AlsaBackend {
     content: PCM,
     dac: PCM,
@@ -114,6 +121,23 @@ impl AlsaBackend {
 
     pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
         let requested_frames = out.len() / (CHANNELS as usize);
+        match self.read_content_available(out)? {
+            ContentRead::Frames(frames) => {
+                if frames < requested_frames {
+                    let active = frames * (CHANNELS as usize);
+                    out[active..].fill(0);
+                }
+                Ok(frames)
+            }
+            ContentRead::NoData | ContentRead::XrunRecovered => {
+                out.fill(0);
+                Ok(0)
+            }
+        }
+    }
+
+    pub fn read_content_available(&mut self, out: &mut [i16]) -> Result<ContentRead> {
+        let requested_frames = out.len() / (CHANNELS as usize);
         let io = self
             .content
             .io_i16()
@@ -123,21 +147,20 @@ impl AlsaBackend {
                 self.counters.content_frames_read += frames as u64;
                 if frames == 0 {
                     self.counters.content_empty_period_count += 1;
-                    out.fill(0);
+                    Ok(ContentRead::NoData)
                 } else if frames < requested_frames {
                     self.counters.content_partial_period_count += 1;
-                    let active = frames * (CHANNELS as usize);
-                    out[active..].fill(0);
+                    Ok(ContentRead::Frames(frames))
+                } else {
+                    Ok(ContentRead::Frames(frames))
                 }
-                Ok(frames)
             }
             Err(e) => {
                 let errno = e.errno();
                 if errno == libc::EAGAIN {
                     self.counters.content_eagain_count += 1;
                     self.counters.content_empty_period_count += 1;
-                    out.fill(0);
-                    Ok(0)
+                    Ok(ContentRead::NoData)
                 } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
                     self.counters.content_xrun_count += 1;
                     self.counters.content_empty_period_count += 1;
@@ -157,8 +180,7 @@ impl AlsaBackend {
                     self.content
                         .try_recover(e, true)
                         .context("recovering outputd content xrun")?;
-                    out.fill(0);
-                    Ok(0)
+                    Ok(ContentRead::XrunRecovered)
                 } else {
                     Err(e).context(format!("reading outputd content PCM {}", self.content_pcm))
                 }

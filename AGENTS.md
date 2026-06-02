@@ -2290,7 +2290,8 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
 - `logs/combined-latest.log` — interleaved timeline
 - `logs/alsa-devices-latest.txt` — `aplay -L` / `arecord -L`
   output. Always sanity-check actual ALSA card names against
-  what the configs expect (`A` for Apple dongle, `Array` for
+  what the configs expect (`A` for Apple dongle standard builds,
+  `sndrpihifiberry`/DAC8x on the JTS3 lab path, `Array` for
   ReSpeaker, `Loopback` for snd-aloop). The AEC bridge no longer
   has an ALSA output — it sends UDP to `127.0.0.1:9876` since
   May 2026; see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)

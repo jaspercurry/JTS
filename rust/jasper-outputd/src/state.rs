@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 
 use crate::alsa_backend::{IoCounters, NegotiatedPcm};
 use crate::config::Config;
+use crate::content_bridge::ContentBridgeMetrics;
 use crate::loudness::AssistantGainDecision;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
@@ -45,6 +46,24 @@ pub struct OutputdState {
     dac_period_frames: AtomicU64,
     content_buffer_frames: AtomicU64,
     dac_buffer_frames: AtomicU64,
+    content_bridge_mode: String,
+    content_bridge_ring_frames: AtomicU64,
+    content_bridge_target_fill_frames: AtomicU64,
+    content_bridge_locked: AtomicBool,
+    content_bridge_fill_frames: AtomicU64,
+    content_bridge_min_fill_frames: AtomicU64,
+    content_bridge_max_fill_frames: AtomicU64,
+    content_bridge_ratio_ppm_x100: AtomicI64,
+    content_bridge_input_frames: AtomicU64,
+    content_bridge_output_frames: AtomicU64,
+    content_bridge_silence_frames: AtomicU64,
+    content_bridge_underrun_frames: AtomicU64,
+    content_bridge_overrun_frames: AtomicU64,
+    content_bridge_resync_count: AtomicU64,
+    content_bridge_reset_count: AtomicU64,
+    content_bridge_ratio_clamp_count: AtomicU64,
+    content_bridge_lock_count: AtomicU64,
+    content_bridge_unlock_count: AtomicU64,
     chip_ref_sample_rate: AtomicU64,
     chip_ref_period_frames: AtomicU64,
     chip_ref_buffer_frames: AtomicU64,
@@ -99,6 +118,26 @@ impl OutputdState {
             dac_period_frames: AtomicU64::new(config.period_frames as u64),
             content_buffer_frames: AtomicU64::new(config.content_buffer_frames as u64),
             dac_buffer_frames: AtomicU64::new(config.dac_buffer_frames as u64),
+            content_bridge_mode: config.content_bridge_mode.as_str().to_string(),
+            content_bridge_ring_frames: AtomicU64::new(config.content_bridge.ring_frames as u64),
+            content_bridge_target_fill_frames: AtomicU64::new(
+                config.content_bridge.target_fill_frames as u64,
+            ),
+            content_bridge_locked: AtomicBool::new(false),
+            content_bridge_fill_frames: AtomicU64::new(0),
+            content_bridge_min_fill_frames: AtomicU64::new(0),
+            content_bridge_max_fill_frames: AtomicU64::new(0),
+            content_bridge_ratio_ppm_x100: AtomicI64::new(0),
+            content_bridge_input_frames: AtomicU64::new(0),
+            content_bridge_output_frames: AtomicU64::new(0),
+            content_bridge_silence_frames: AtomicU64::new(0),
+            content_bridge_underrun_frames: AtomicU64::new(0),
+            content_bridge_overrun_frames: AtomicU64::new(0),
+            content_bridge_resync_count: AtomicU64::new(0),
+            content_bridge_reset_count: AtomicU64::new(0),
+            content_bridge_ratio_clamp_count: AtomicU64::new(0),
+            content_bridge_lock_count: AtomicU64::new(0),
+            content_bridge_unlock_count: AtomicU64::new(0),
             chip_ref_sample_rate: AtomicU64::new(config.chip_ref_sample_rate as u64),
             chip_ref_period_frames: AtomicU64::new(config.chip_ref_period_frames as u64),
             chip_ref_buffer_frames: AtomicU64::new(config.chip_ref_buffer_frames as u64),
@@ -209,6 +248,45 @@ impl OutputdState {
 
     pub fn mark_watchdog_ping(&self) {
         self.watchdog_pings_sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_content_bridge(&self, metrics: ContentBridgeMetrics) {
+        self.content_bridge_locked
+            .store(metrics.locked, Ordering::Relaxed);
+        self.content_bridge_ring_frames
+            .store(metrics.ring_capacity_frames, Ordering::Relaxed);
+        self.content_bridge_target_fill_frames
+            .store(metrics.target_fill_frames, Ordering::Relaxed);
+        self.content_bridge_fill_frames
+            .store(metrics.fill_frames, Ordering::Relaxed);
+        self.content_bridge_min_fill_frames
+            .store(metrics.min_fill_frames, Ordering::Relaxed);
+        self.content_bridge_max_fill_frames
+            .store(metrics.max_fill_frames, Ordering::Relaxed);
+        self.content_bridge_ratio_ppm_x100.store(
+            (metrics.ratio_ppm.clamp(-50_000.0, 50_000.0) * 100.0).round() as i64,
+            Ordering::Relaxed,
+        );
+        self.content_bridge_input_frames
+            .store(metrics.input_frames, Ordering::Relaxed);
+        self.content_bridge_output_frames
+            .store(metrics.output_frames, Ordering::Relaxed);
+        self.content_bridge_silence_frames
+            .store(metrics.silence_frames, Ordering::Relaxed);
+        self.content_bridge_underrun_frames
+            .store(metrics.underrun_frames, Ordering::Relaxed);
+        self.content_bridge_overrun_frames
+            .store(metrics.overrun_frames, Ordering::Relaxed);
+        self.content_bridge_resync_count
+            .store(metrics.resync_count, Ordering::Relaxed);
+        self.content_bridge_reset_count
+            .store(metrics.reset_count, Ordering::Relaxed);
+        self.content_bridge_ratio_clamp_count
+            .store(metrics.ratio_clamp_count, Ordering::Relaxed);
+        self.content_bridge_lock_count
+            .store(metrics.lock_count, Ordering::Relaxed);
+        self.content_bridge_unlock_count
+            .store(metrics.unlock_count, Ordering::Relaxed);
     }
 
     pub fn mark_tts_command_dropped(&self, audio_frames: u64) {
@@ -323,6 +401,122 @@ impl OutputdState {
             "xrun_rate_per_hour",
             rate_per_hour(content_xrun_count, uptime_ms),
             3,
+        );
+        buf.push('}');
+        buf.push(',');
+
+        buf.push_str(r#""content_bridge":{"#);
+        push_kv_str(&mut buf, "mode", &self.content_bridge_mode);
+        buf.push(',');
+        push_kv_bool(
+            &mut buf,
+            "enabled",
+            self.content_bridge_mode == "rate_match",
+        );
+        buf.push(',');
+        push_kv_bool(
+            &mut buf,
+            "locked",
+            self.content_bridge_locked.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "ring_frames",
+            self.content_bridge_ring_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "target_fill_frames",
+            self.content_bridge_target_fill_frames
+                .load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "fill_frames",
+            self.content_bridge_fill_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "min_fill_frames",
+            self.content_bridge_min_fill_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "max_fill_frames",
+            self.content_bridge_max_fill_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_f64(
+            &mut buf,
+            "ratio_ppm",
+            (self.content_bridge_ratio_ppm_x100.load(Ordering::Relaxed) as f64) / 100.0,
+            2,
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "input_frames",
+            self.content_bridge_input_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "output_frames",
+            self.content_bridge_output_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "silence_frames",
+            self.content_bridge_silence_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "underrun_frames",
+            self.content_bridge_underrun_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "overrun_frames",
+            self.content_bridge_overrun_frames.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "resync_count",
+            self.content_bridge_resync_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "reset_count",
+            self.content_bridge_reset_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "ratio_clamp_count",
+            self.content_bridge_ratio_clamp_count
+                .load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "lock_count",
+            self.content_bridge_lock_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "unlock_count",
+            self.content_bridge_unlock_count.load(Ordering::Relaxed),
         );
         buf.push('}');
         buf.push(',');
@@ -803,7 +997,11 @@ fn escape_json(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BackendMode, Config};
+    use crate::config::{
+        BackendMode, Config, ContentBridgeConfig, ContentBridgeMode,
+        DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM, DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
+        DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
+    };
     use crate::loudness::AssistantLoudnessConfig;
 
     fn test_config() -> Config {
@@ -815,6 +1013,12 @@ mod tests {
             period_frames: 1024,
             content_buffer_frames: 4096,
             dac_buffer_frames: 3072,
+            content_bridge_mode: ContentBridgeMode::Direct,
+            content_bridge: ContentBridgeConfig {
+                ring_frames: DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
+                target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
+                max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
+            },
             chip_ref_pcm: None,
             chip_ref_sample_rate: 16_000,
             chip_ref_period_frames: 320,
@@ -857,6 +1061,7 @@ mod tests {
         for needle in [
             r#""backend":"alsa""#,
             r#""content":{"pcm":"outputd_content_capture""#,
+            r#""content_bridge":{"mode":"direct""#,
             r#""dac":{"pcm":"outputd_dac""#,
             r#""sample_rate":48000"#,
             r#""period_frames":1024"#,

@@ -97,10 +97,10 @@ Phone (AirPlay / Spotify Connect / BT)
                     - publishes runtime health / xrun counters
                               │
                               ▼
-                    outputd_dac (Apple dongle hw)
+                    outputd_dac (selected final-output DAC)
                               │
                               ▼
-                    Apple USB-C dongle → amp → speakers
+                    Apple USB-C dongle or DAC8x → amp → speakers
 
 
   XVF3800 4-mic array  ── USB UAC2 ──  hw:CARD=Array,DEV=0

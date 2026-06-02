@@ -334,7 +334,11 @@ thinks the system is healthy.
   — clean shutdown is essential on a 1 GB Pi to flush zram dirty
   pages. Catches the "one critical daemon is sick" shape, but NOT
   the "userspace is dead while jasper-* daemons happen to be alive"
-  shape. `jasper-doctor`'s `check_start_limit_action` surfaces
+  shape. Since 2026-06-02, `jasper-voice`'s first-time unconfigured
+  provider exit is explicitly excluded from this budget via
+  `SuccessExitStatus=78` + `RestartPreventExitStatus=78`; actual
+  voice crashes still flow through T5.1. `jasper-doctor`'s
+  `check_start_limit_action` surfaces
   drift if a Debian/RPi-OS update removes the directive.
 - **T5.2** ✅ **shipped**: new `SystemSupervisor` in
   [`jasper/control/system_supervisor.py`](../jasper/control/system_supervisor.py)
@@ -1121,4 +1125,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-06-02

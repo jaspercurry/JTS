@@ -114,6 +114,12 @@ WorkingDirectory=/opt/jasper
 # exhaustion so systemd's outer loop (this `Restart=on-failure` +
 # the StartLimitBurst above) grants another full budget.
 Restart=on-failure
+# Missing JASPER_VOICE_PROVIDER is first-time setup state, not a crash.
+# jasper-voice exits EX_CONFIG (78) with an operator message; systemd
+# should park it cleanly so it cannot consume the StartLimitAction=reboot
+# budget before the /voice wizard is configured.
+SuccessExitStatus=78
+RestartPreventExitStatus=78
 # 5 s backoff (was 2 s). Audio-device transients (dongle enumerate
 # blip, ALSA card reorder) typically settle within a few seconds; a
 # longer backoff means fewer wasted restart cycles before the device
