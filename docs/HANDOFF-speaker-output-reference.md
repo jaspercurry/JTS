@@ -173,12 +173,13 @@ What exists:
   PCM name.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
-  dongle `Headphone` control. They stay enabled across Apple and DAC8x
-  installs, but their helpers are runtime-safe: `jasper-dac-init`
-  exits cleanly when no Apple dongle is detected, and
-  `jasper-headphone-monitor` waits quietly in auto-detect mode. This
-  avoids deploy-time hardware presence becoming persistent service
-  state while still preventing DAC8x mixer-control failures.
+  dongle `Headphone` control. `install.sh` enables them only when the
+  selected final-output DAC is the recognized Apple dongle. DAC8x and
+  unknown-output installs disable/reset those units so irrelevant
+  Apple-specific code does not run. The helpers are still runtime-safe
+  if an operator starts them manually: `jasper-dac-init` exits cleanly
+  when no Apple dongle is detected, and `jasper-headphone-monitor`
+  waits quietly in auto-detect mode.
 - Camilla outputd config: `/etc/camilladsp/outputd-cutover.yml` after
   install, copied from `deploy/camilladsp/outputd-cutover.yml`.
 - Camilla rollback preservation: the outputd `jasper-camilla.service`
@@ -709,9 +710,10 @@ datum: how much assistant audio was actually heard.
   bridge is a lab-gated pipeline fix for snd-aloop content-lane drift.
 - 2026-06-02: Split final-output DAC role from Apple mixer ownership.
   `outputd_dac` may target the Apple USB-C dongle or the JTS3 DAC8x;
-  `jasper-dac-init`/`jasper-headphone-monitor` now run as
-  runtime-safe Apple helpers instead of deploy-time-gated units. Added
-  the outputd-only DAC8x validation profile
+  `jasper-dac-init`/`jasper-headphone-monitor` are now enabled only
+  for the recognized Apple final-output role, with runtime-safe helper
+  scripts for manual/operator starts. Added the outputd-only DAC8x
+  validation profile
   `hifiberry_dac8x_outputd_stability` for content-pipeline soaks that
   should not fail just because chip-AEC/voice is parked.
 

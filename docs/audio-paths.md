@@ -395,11 +395,13 @@ CamillaDSP and outputd. `main_volume` does nothing to the TTS path.
 
 On Apple-dongle installs, the dongle `Headphone` control is pinned at
 100% by `jasper-dac-init`, watched by `jasper-headphone-monitor`, and
-checked by `jasper-doctor`. Those services are Apple-specific but
-runtime-safe: on DAC8x or when the Apple dongle is absent, init exits
-cleanly and the monitor waits quietly. `outputd_dac` still points at
-the detected final-output card. Software never touches downstream amp
-gain. The amp gain is a physical knob set at install time.
+checked by `jasper-doctor`. Those services are enabled only when
+`install.sh` recognizes the selected final-output DAC as the Apple
+USB-C dongle; DAC8x and unknown-output installs disable the
+Apple-specific units. The helper scripts remain runtime-safe for
+manual/operator starts. `outputd_dac` still points at the detected
+final-output card. Software never touches downstream amp gain. The amp
+gain is a physical knob set at install time.
 
 ## AEC bridge implications
 

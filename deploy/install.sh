@@ -2596,16 +2596,20 @@ install_systemd_units() {
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
-    systemctl enable jasper-dac-init.service jasper-headphone-monitor.service
-    # Apply the Apple dongle Headphone-max pin immediately when present.
-    # The helper exits 0 if no Apple dongle is detected, so DAC8x installs
-    # keep the service enabled without carrying a failed unit.
-    systemctl start jasper-dac-init.service || \
-        echo "  WARN: jasper-dac-init failed (dongle not ready?). \
+    if [[ "${OUTPUT_DAC_ID:-}" == "apple_usb_c_dongle" && "${APPLE_DONGLE_PRESENT:-0}" == "1" ]]; then
+        systemctl enable jasper-dac-init.service jasper-headphone-monitor.service
+        # Apply the Apple dongle Headphone-max pin immediately so a fresh
+        # install gets the full analog ceiling without waiting for reboot.
+        systemctl start jasper-dac-init.service || \
+            echo "  WARN: jasper-dac-init failed (dongle not ready?). \
 Will retry on next boot."
-    # Restart the headphone monitor so it picks up post-init state. In
-    # auto mode it waits quietly while the Apple dongle is absent.
-    systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
+        # Restart the headphone monitor so it picks up post-init state.
+        systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
+    else
+        systemctl disable --now jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
+        systemctl reset-failed jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
+        echo "  Apple dongle mixer services disabled (output_dac_id=${OUTPUT_DAC_ID:-unknown})."
+    fi
 
     # Stop the currently-running voice daemon before outputd claims the
     # direct DAC. On outputd deploys, the old voice process may still

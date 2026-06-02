@@ -61,17 +61,18 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     assert 'APPLE_DONGLE_SERVICE_CARD="auto"' in install_sh
 
 
-def test_apple_dongle_mixer_services_are_runtime_safe_not_deploy_time_disabled():
+def test_apple_dongle_mixer_services_are_enabled_only_for_apple_output_role():
     install_sh = (REPO / "deploy" / "install.sh").read_text()
-    enable_block = install_sh.split(
-        "systemctl enable jasper-camilla.service jasper-fanin.service",
+    gated = install_sh.split(
+        'if [[ "${OUTPUT_DAC_ID:-}" == "apple_usb_c_dongle" && "${APPLE_DONGLE_PRESENT:-0}" == "1" ]]; then',
         1,
     )[1].split("systemctl stop jasper-voice.service", 1)[0]
-    assert "systemctl enable jasper-dac-init.service jasper-headphone-monitor.service" in enable_block
-    assert "systemctl start jasper-dac-init.service" in enable_block
-    assert "systemctl restart jasper-headphone-monitor.service" in enable_block
-    assert "systemctl disable --now jasper-dac-init.service jasper-headphone-monitor.service" not in install_sh
-    assert "systemctl reset-failed jasper-dac-init.service jasper-headphone-monitor.service" not in install_sh
+    assert "systemctl enable jasper-dac-init.service jasper-headphone-monitor.service" in gated
+    assert "systemctl start jasper-dac-init.service" in gated
+    assert "systemctl restart jasper-headphone-monitor.service" in gated
+    assert "systemctl disable --now jasper-dac-init.service jasper-headphone-monitor.service" in gated
+    assert "systemctl reset-failed jasper-dac-init.service jasper-headphone-monitor.service" in gated
+    assert "output_dac_id=${OUTPUT_DAC_ID:-unknown}" in gated
 
 
 def test_apple_dongle_helpers_use_runtime_safe_card_template():
