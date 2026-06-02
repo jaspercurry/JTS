@@ -26,6 +26,9 @@
 > channel test, CamillaDSP reload/apply path, or hardware loading
 > exists yet. The first packaged worked-example preset is
 > `jasper/active_speaker/presets/bc_de250_dayton_e150he44_v1.json`.
+> `jasper-active-speaker path-audit` now exposes the deterministic
+> audible-path safety checklist and can evaluate operator evidence,
+> but it does not probe ALSA/systemd/CamillaDSP yet.
 
 ## Current Operational Truth
 
@@ -367,6 +370,18 @@ This command writes a candidate YAML file and runs `camilladsp
 --check` if the binary is installed. A missing validator is reported
 as `Validation: missing` and does not load or apply anything.
 
+Current no-hardware path safety command:
+
+```sh
+jasper-active-speaker path-audit --requirements
+jasper-active-speaker path-audit ./path_safety_evidence.json
+```
+
+The evidence form must pass before a future loader is allowed to
+touch active hardware. This is currently an operator/harness evidence
+shape only; future slices can populate the evidence from real ALSA,
+systemd, CamillaDSP, and source-routing probes.
+
 ## Deterministic Tooling Roadmap
 
 Code should eventually own:
@@ -428,7 +443,10 @@ Updated execution plan:
    expected envelopes, and limiter thresholds are still future work.
 4. **Channel and path safety slice**: prove every audible source
    path, including TTS/cues and test tones, flows through the active
-   baseline and cannot bypass tweeter protection.
+   baseline and cannot bypass tweeter protection. Started 2026-06-01
+   with `jasper.active_speaker.path_safety` and `jasper-active-speaker
+   path-audit`, which encode and evaluate the required evidence but
+   do not probe hardware yet.
 5. **Consumer W0 slice**: prototype phone-as-mic raw PCM WebSocket
    capture, calibration blocking, browser processing sanity checks,
    and resumable server-side session state.

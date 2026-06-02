@@ -278,6 +278,7 @@ Live Pi state without modifying anything:
 | `jasper-correction-bundle inspect <session> --recompute` | Validate a copied room-correction bundle, summarize confidence/runtime evidence, and replay raw captures into derived curves |
 | `jasper-correction-bundle export <session> --output <dir>` | Write REW-friendly `.frd` / `.txt` curves and impulse-response WAVs from a room-correction bundle |
 | `jasper-active-speaker startup-template <preset.json> --playback-device <device> --output <file.yml>` | Write a muted/protected active-speaker startup template and run `camilladsp --check` when available. It does not load or apply the config. |
+| `jasper-active-speaker path-audit --requirements` / `path-audit <evidence.json>` | List or evaluate the no-hardware active-speaker audible-path safety checklist. A blocked report means active config loading must remain disabled. |
 
 See [CLAUDE.md](../CLAUDE.md) "Debugging — fetch evidence before
 guessing" for the canonical recipes.

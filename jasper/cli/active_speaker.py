@@ -9,18 +9,22 @@ from typing import Any
 
 from jasper.active_speaker import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_startup_config
+from jasper.active_speaker.path_safety import (
+    evaluate_path_safety_evidence,
+    requirements_payload,
+)
 from jasper.dsp_apply import validate_camilla_config
 
 
-def _load_json_object(path: Path) -> dict[str, Any]:
+def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except OSError as e:
-        raise ActiveSpeakerConfigError(f"could not read preset: {e}") from e
+        raise ActiveSpeakerConfigError(f"could not read {label}: {e}") from e
     except json.JSONDecodeError as e:
-        raise ActiveSpeakerConfigError(f"preset is not valid JSON: {e}") from e
+        raise ActiveSpeakerConfigError(f"{label} is not valid JSON: {e}") from e
     if not isinstance(payload, dict):
-        raise ActiveSpeakerConfigError("preset JSON must be an object")
+        raise ActiveSpeakerConfigError(f"{label} JSON must be an object")
     return payload
 
 
@@ -38,8 +42,33 @@ def _print_template_summary(payload: dict[str, Any]) -> None:
         print(f"  stderr: {validation['stderr_tail']}")
 
 
+def _print_requirements(payload: dict[str, Any]) -> None:
+    print("Active speaker path-safety requirements:")
+    for requirement in payload["requirements"]:
+        print(f"- {requirement['id']}: {requirement['label']}")
+        print(f"  checks: {', '.join(requirement['checks'])}")
+        print(f"  why: {requirement['why']}")
+
+
+def _print_path_audit_summary(payload: dict[str, Any]) -> None:
+    print(f"Path safety: {payload['status']}")
+    print(f"OK to load active config: {'yes' if payload['ok_to_load_active_config'] else 'no'}")
+    print(f"Blockers: {payload['blocker_count']}")
+    for path in payload["paths"]:
+        print(f"- {path['id']}: {path['status']}")
+    if payload["issues"]:
+        print("Issues:")
+        for issue in payload["issues"]:
+            print(
+                f"  [{issue['severity']}] "
+                f"{issue['path_id']}: {issue['message']}"
+            )
+
+
 def _cmd_startup_template(args: argparse.Namespace) -> int:
-    preset = ActiveSpeakerPreset.from_mapping(_load_json_object(Path(args.preset)))
+    preset = ActiveSpeakerPreset.from_mapping(
+        _load_json_object(Path(args.preset), label="preset")
+    )
     output = Path(args.output)
     emit_active_speaker_startup_config(
         preset,
@@ -68,6 +97,27 @@ def _cmd_startup_template(args: argparse.Namespace) -> int:
 
     status = payload["validation"].get("status")
     return 1 if status in {"invalid_config", "runner_error", "timeout"} else 0
+
+
+def _cmd_path_audit(args: argparse.Namespace) -> int:
+    if args.requirements:
+        payload = requirements_payload()
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            _print_requirements(payload)
+        return 0
+    if not args.evidence:
+        raise ActiveSpeakerConfigError("path-audit requires evidence JSON or --requirements")
+
+    payload = evaluate_path_safety_evidence(
+        _load_json_object(Path(args.evidence), label="path-safety evidence")
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        _print_path_audit_summary(payload)
+    return 0 if payload["ok_to_load_active_config"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,6 +162,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     template.add_argument("--json", action="store_true")
     template.set_defaults(func=_cmd_startup_template)
+
+    path_audit = sub.add_parser(
+        "path-audit",
+        help="evaluate or list active-speaker audible-path safety gates",
+    )
+    path_audit.add_argument(
+        "evidence",
+        nargs="?",
+        help="path to path-safety evidence JSON",
+    )
+    path_audit.add_argument(
+        "--requirements",
+        action="store_true",
+        help="print the required audible-path evidence checklist",
+    )
+    path_audit.add_argument("--json", action="store_true")
+    path_audit.set_defaults(func=_cmd_path_audit)
     return parser
 
 

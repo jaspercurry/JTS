@@ -198,7 +198,7 @@ the room-correction main lane:
 | A0 | Preset/schema substrate | Started 2026-06-01 in `jasper.active_speaker`: driver-set preset schema, active channel map, baseline profile schema, and validation, with no hardware loading. |
 | A1 | Safe CamillaDSP templates | Started 2026-06-01 as a no-apply startup-template emitter with muted/protected 2-way/3-way output chains, explicit mixer output labels, and CLI `camilladsp --check` when available. Still needs rollback statefile handling and hardware loading gates. |
 | A2 | Engineering preset interop | Started 2026-06-01 with a data-only DE250 + E150HE-44 worked-example preset. Still needs REW/VituixCAD artifact references, expected envelopes, safe sweep ranges, trims, limiters, and BSC. |
-| A3 | Channel/path safety | Prove every audible path flows through the protected active baseline; verify physical outputs before drivers are connected. |
+| A3 | Channel/path safety | Started 2026-06-01 with `jasper.active_speaker.path_safety` and `jasper-active-speaker path-audit`: deterministic requirements/evidence evaluation only. Still needs real ALSA/systemd/CamillaDSP/source-routing probes and physical output verification before drivers are connected. |
 | A4 | Phone-as-mic W0 | Raw PCM WebSocket ingest, calibration blocking, browser processing sanity checks, and resumable server-side session state. |
 | A5 | Per-driver near-field | Measure woofer/mid/tweeter in isolation against preset envelopes with protective filters and level gates. |
 | A6 | Null-depth alignment | Walk delay and polarity per crossover region; require strong inverted-polarity null before accepting the baseline. |

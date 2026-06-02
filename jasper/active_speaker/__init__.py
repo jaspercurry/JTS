@@ -25,11 +25,20 @@ from .camilla_yaml import (
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     emit_active_speaker_startup_config,
 )
+from .path_safety import (
+    PATH_SAFETY_EVIDENCE_KIND,
+    REQUIRED_PATHS,
+    PathSafetyRequirement,
+    evaluate_path_safety_evidence,
+    requirements_payload,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
     "ACTIVE_BASELINE_KIND",
     "ACTIVE_PRESET_KIND",
+    "PATH_SAFETY_EVIDENCE_KIND",
+    "REQUIRED_PATHS",
     "SCHEMA_VERSION",
     "STARTUP_HEADROOM_DB",
     "STARTUP_LIMITER_CLIP_LIMIT_DB",
@@ -40,8 +49,11 @@ __all__ = [
     "CrossoverRegion",
     "DriverSpec",
     "OutputChannel",
+    "PathSafetyRequirement",
     "SafetyEnvelope",
     "SpeakerBaselineProfile",
     "emit_active_speaker_startup_config",
+    "evaluate_path_safety_evidence",
     "required_driver_roles",
+    "requirements_payload",
 ]
