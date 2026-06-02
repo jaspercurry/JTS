@@ -54,6 +54,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
+  var activeSpeaker = {loading: false, payload: null, error: ''};
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
@@ -477,19 +478,74 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     '</section>';
   }
   function renderActiveSpeakerSetup() {
+    var body = renderActiveSpeakerStatus();
+    var open = activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.error;
     return '<section class="active-speaker-setup">' +
-      '<details class="advanced">' +
+      '<details class="advanced"' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
         '<div class="setting-row setting-row--stack">' +
           '<div class="setting-row__text">' +
             '<p class="setting-row__title">Active crossover commissioning</p>' +
             '<p class="setting-row__hint">For speakers with separate woofer, mid, or tweeter amplifier channels. ' +
-              'The current implementation is schema and startup-template only; it will not play tones or load active crossover configs.</p>' +
+              'This status check is read-only; it will not play tones, reload CamillaDSP, or load active crossover configs.</p>' +
           '</div>' +
-          '<div class="status-pill status-pill--planned">Safety-first planning</div>' +
+          '<div class="active-speaker-status">' + body + '</div>' +
         '</div>' +
       '</details>' +
     '</section>';
+  }
+  function renderActiveSpeakerStatus() {
+    if (activeSpeaker.loading) {
+      return '<div class="row-between active-speaker-status__head">' +
+        '<span class="status-pill">Checking environment</span>' +
+        '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker" disabled>Refresh</button>' +
+      '</div>';
+    }
+    if (activeSpeaker.error) {
+      return '<div class="active-speaker-status__stack">' +
+        '<div class="row-between active-speaker-status__head">' +
+          '<span class="status-pill status-pill--blocked">Probe failed</span>' +
+          '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker">Retry</button>' +
+        '</div>' +
+        '<p class="setting-row__hint">' + escapeHtml(activeSpeaker.error) + '</p>' +
+      '</div>';
+    }
+    if (!activeSpeaker.payload) {
+      return '<div class="row-between active-speaker-status__head">' +
+        '<span class="status-pill status-pill--planned">Not checked</span>' +
+        '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker">Check environment</button>' +
+      '</div>';
+    }
+    var p = activeSpeaker.payload || {};
+    var cfg = p.camilla_config || {};
+    var alsa = p.alsa || {};
+    var validation = p.camilla_validation || {};
+    var safe = p.safe_playback || {};
+    var ok = !!p.ok_to_load_active_config;
+    var devices = Array.isArray(alsa.devices) ? alsa.devices.length : 0;
+    var rows = [
+      ['Camilla config', cfg.label || cfg.classification || 'Unknown'],
+      ['Playback lane', (cfg.playback_device || 'Unknown') + (cfg.playback_channels ? ' · ' + cfg.playback_channels + ' ch' : '')],
+      ['Volume ceiling', cfg.volume_limit_db == null ? 'Missing' : fmtDb(cfg.volume_limit_db) + ' dB'],
+      ['ALSA playback devices', String(devices)],
+      ['Config validation', validation.status || 'unknown'],
+      ['Safe playback', safe.playback_allowed ? 'Allowed' : 'Not allowed yet']
+    ];
+    var issues = Array.isArray(p.issues) ? p.issues.slice(0, 4) : [];
+    return '<div class="active-speaker-status__stack">' +
+      '<div class="row-between active-speaker-status__head">' +
+        '<span class="status-pill ' + (ok ? 'status-pill--ready' : 'status-pill--blocked') + '">' +
+          escapeHtml(ok ? 'Load gate ready' : 'Load gate blocked') + '</span>' +
+        '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker">Refresh</button>' +
+      '</div>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
+        return '<li>' + escapeHtml(issue.code || 'issue') + '</li>';
+      }).join('') + '</ul>' : '<p class="setting-row__hint">No active load blockers in the read-only environment report.</p>') +
+      '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'Playback remains disabled until the safe tone path is implemented.') + '</p>' +
+    '</div>';
   }
 
   function rangeRow(label, value, min, max, opts) {
@@ -864,6 +920,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     else if (act === 'finalize-name') { finalizeName(); }
     else if (act === 'overwrite') { overwrite(); }
     else if (act === 'reset-draft') { resetDraft(); }
+    else if (act === 'refresh-active-speaker') { refreshActiveSpeakerStatus(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -1038,6 +1095,18 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         render();
       }
     }
+  }
+  async function refreshActiveSpeakerStatus() {
+    activeSpeaker = {loading: true, payload: activeSpeaker.payload, error: ''};
+    render();
+    try {
+      var resp = await fetch('./active-speaker/environment', {cache: 'no-store'});
+      if (!resp.ok) throw new Error('environment probe failed');
+      activeSpeaker = {loading: false, payload: await resp.json(), error: ''};
+    } catch (e) {
+      activeSpeaker = {loading: false, payload: null, error: e.message};
+    }
+    render();
   }
 
   async function loadState() {

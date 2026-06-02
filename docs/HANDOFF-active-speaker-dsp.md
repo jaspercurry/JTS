@@ -19,7 +19,9 @@
 > active-hardware playback device input, `volume_limit: 0.0`, startup
 > headroom, tweeter protective HP, per-driver mute, and per-driver
 > limiter chains. `/sound/` has a read-only Advanced speaker setup
-> entry point that labels this as schema plus startup-template only.
+> entry point; its **Check environment** action calls
+> `/sound/active-speaker/environment` and displays the read-only
+> environment report without touching live audio.
 > `jasper-active-speaker startup-template` can write one of these
 > candidate templates from a preset JSON file and run
 > `camilladsp --check` when the binary is available. No tone playback,
@@ -33,10 +35,14 @@
 > environment evidence pass: it inspects ALSA playback devices, the
 > current CamillaDSP statefile/config shape, `devices.volume_limit`,
 > output channel count, optional `camilladsp --check`, and optional
-> path-safety evidence. It never plays audio, reloads CamillaDSP, or
-> mutates state. `ok_to_load_active_config` can be true only when an
-> active startup candidate, valid CamillaDSP preflight, and
-> hardware-probe-backed path-safety evidence all pass.
+> path-safety evidence. It now also reports a `safe_playback` block
+> whose `playback_allowed` value is always `false` in the current
+> implementation. It never plays audio, reloads CamillaDSP, or mutates
+> state. `ok_to_load_active_config` can be true only when an active
+> startup candidate, valid CamillaDSP preflight, and hardware-probe-backed
+> path-safety evidence all pass; even that does **not** authorize tone
+> playback until physical channel identity and a level-limited tone
+> generator with emergency stop exist.
 
 ## Current Operational Truth
 
@@ -399,8 +405,13 @@ loaders never infer trust level from a missing field. This is currently
 an operator/harness evidence shape only; future slices can populate the
 evidence from real ALSA, systemd, CamillaDSP, and source-routing probes.
 `environment-probe` adds real read-only ALSA and CamillaDSP config/statefile
-inspection, but it still does not perform physical channel verification or
-generate hardware-probe-backed path-safety evidence by itself.
+inspection plus a `safe_playback` readiness block. `safe_playback` is not a
+permission grant: current builds always return `playback_allowed: false`.
+The next sound-emitting slice must add physical channel identification,
+explicit low-level/band-limited tone generation, and a user-visible emergency
+stop before any driver-connected playback path exists. The probe still does
+not perform physical channel verification or generate hardware-probe-backed
+path-safety evidence by itself.
 
 ## Deterministic Tooling Roadmap
 

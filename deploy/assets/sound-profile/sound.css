@@ -311,6 +311,41 @@
     background: color-mix(in oklch, var(--status-warn) 14%, transparent);
     color: var(--status-warn);
   }
+  .status-pill--ready {
+    background: color-mix(in oklch, var(--status-ok) 14%, transparent);
+    color: var(--status-ok);
+  }
+  .status-pill--blocked {
+    background: color-mix(in oklch, var(--status-danger) 14%, transparent);
+    color: var(--status-danger);
+  }
+  .active-speaker-status__stack { display: flex; flex-direction: column; gap: 10px; }
+  .active-speaker-status__head { gap: 12px; align-items: center; }
+  .active-speaker-facts {
+    display: grid; grid-template-columns: 1fr; gap: 1px;
+    overflow: hidden; border-radius: var(--radius-md);
+    background: var(--border);
+  }
+  .active-speaker-facts > div {
+    display: grid; grid-template-columns: minmax(7rem, 0.9fr) 1.2fr; gap: 10px;
+    padding: 9px 10px; background: var(--background);
+  }
+  .active-speaker-facts dt {
+    font-size: 11px; color: var(--muted-foreground); font-weight: 600;
+  }
+  .active-speaker-facts dd {
+    min-width: 0; overflow-wrap: anywhere;
+    font-size: 12px; color: var(--foreground);
+  }
+  .active-speaker-issues {
+    margin: 0; padding-left: 18px;
+    font-size: 12px; color: var(--status-danger);
+  }
+  .active-speaker-issues li + li { margin-top: 4px; }
+  @media (max-width: 420px) {
+    .active-speaker-status__head { align-items: stretch; flex-direction: column; }
+    .active-speaker-facts > div { grid-template-columns: 1fr; gap: 2px; }
+  }
   /* Canonical checkbox toggle (sage). Checkbox-based per web conventions. */
   .toggle { position: relative; display: inline-block; flex-shrink: 0; width: 48px; height: 28px; }
   .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }

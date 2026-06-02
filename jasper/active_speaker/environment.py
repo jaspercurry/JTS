@@ -28,6 +28,7 @@ from .profile import ActiveSpeakerConfigError
 
 SCHEMA_VERSION = 1
 ENVIRONMENT_REPORT_KIND = "jts_active_speaker_environment_report"
+SAFE_PLAYBACK_SCHEMA_VERSION = 1
 DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
 ALSA_PROBE_TIMEOUT_SEC = 3.0
 
@@ -530,6 +531,65 @@ def _combine_issues(*sections: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+def _safe_playback_payload(
+    *,
+    ok_to_load_active_config: bool,
+    load_gate: str,
+    camilla_config: dict[str, Any],
+    path_safety: dict[str, Any],
+) -> dict[str, Any]:
+    """Describe the current sound-emitting boundary without authorizing audio.
+
+    This report is intentionally conservative. It gives the UI and future
+    harness code a stable place to attach the safe-playback path while keeping
+    today's environment probe read-only.
+    """
+
+    required_gates = [
+        {
+            "id": "active_startup_candidate",
+            "passed": camilla_config.get("classification")
+            == "active_startup_candidate",
+            "label": "CamillaDSP config is a JTS active-speaker startup candidate",
+        },
+        {
+            "id": "validated_config",
+            "passed": ok_to_load_active_config,
+            "label": "Config, ALSA, and path-safety load gate are ready",
+        },
+        {
+            "id": "hardware_probe_path_safety",
+            "passed": bool(path_safety.get("ok_to_load_active_config")),
+            "label": "Path-safety evidence is hardware-probe-backed",
+        },
+        {
+            "id": "physical_channel_identity",
+            "passed": False,
+            "label": "Physical output channels have been identified before drivers are connected",
+        },
+        {
+            "id": "level_limited_tone_generator",
+            "passed": False,
+            "label": "Level-limited, band-limited tone generator with emergency stop is implemented",
+        },
+    ]
+    return {
+        "artifact_schema_version": SAFE_PLAYBACK_SCHEMA_VERSION,
+        "status": "not_implemented",
+        "playback_allowed": False,
+        "load_gate": load_gate,
+        "required_gates": required_gates,
+        "next_step": (
+            "Build physical channel identification and level-limited "
+            "test-tone playback only after the active config load gate is ready."
+        ),
+        "warning": (
+            "This probe does not play tones, reload CamillaDSP, or authorize "
+            "active-speaker audio output."
+        ),
+    }
+
+
 def probe_active_speaker_environment(
     *,
     config_path: str | Path | None = None,
@@ -604,6 +664,12 @@ def probe_active_speaker_environment(
         load_gate = str(path_safety.get("load_gate") or "path_safety_blocked")
     else:
         load_gate = "environment_blocked"
+    safe_playback = _safe_playback_payload(
+        ok_to_load_active_config=ok_to_load,
+        load_gate=load_gate,
+        camilla_config=camilla_config,
+        path_safety=path_safety,
+    )
 
     return {
         "artifact_schema_version": SCHEMA_VERSION,
@@ -617,5 +683,6 @@ def probe_active_speaker_environment(
         "camilla_config": camilla_config,
         "camilla_validation": validation,
         "path_safety": path_safety,
+        "safe_playback": safe_playback,
         "issues": load_blockers,
     }

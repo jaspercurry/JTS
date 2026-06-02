@@ -138,8 +138,55 @@ def test_sound_module_preserves_editor_behaviour():
     assert "jsonHeaders()" in js
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
     assert "Active crossover commissioning" in js
-    assert "startup-template only" in js
+    assert "./active-speaker/environment" in js
+    assert "Check environment" in js
+    assert "safe_playback" in js
+    assert "it will not play tones, reload CamillaDSP, or load active crossover configs" in js
     assert "window.prompt" not in js
+
+
+def test_sound_module_active_speaker_status_is_explicit_read_only():
+    js = _SOUND_MODULE.read_text()
+
+    assert "function refreshActiveSpeakerStatus()" in js
+    assert "fetch('./active-speaker/environment'" in js
+    assert "data-act=\"refresh-active-speaker\"" in js
+    assert "activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.error" in js
+    assert "'<details class=\"advanced\"' + (open ? ' open' : '')" in js
+    assert "safe.playback_allowed ? 'Allowed' : 'Not allowed yet'" in js
+    assert "reload CamillaDSP" in js
+    assert "play tones" in js
+
+
+def test_active_speaker_environment_payload_uses_configured_evidence_path(
+    monkeypatch,
+):
+    calls = {}
+
+    def fake_probe(**kwargs):
+        calls.update(kwargs)
+        return {
+            "status": "blocked",
+            "load_gate": "path_safety_evidence_missing",
+            "blocker_count": 2,
+            "safe_playback": {"playback_allowed": False},
+        }
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
+        "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.environment.probe_active_speaker_environment",
+        fake_probe,
+    )
+
+    payload = sound_setup._active_speaker_environment_payload()
+
+    assert payload["status"] == "blocked"
+    assert calls == {
+        "path_safety_evidence_path": "/tmp/path-safety.json",
+    }
 
 
 def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():

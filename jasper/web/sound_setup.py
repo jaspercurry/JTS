@@ -627,6 +627,26 @@ def _index_html(csrf_token: str = "") -> bytes:
     )
 
 
+def _active_speaker_environment_payload() -> dict[str, Any]:
+    """Return read-only active-speaker readiness for the /sound/ advanced card."""
+
+    from jasper.active_speaker.environment import probe_active_speaker_environment
+
+    evidence_path = os.environ.get("JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE")
+    report = probe_active_speaker_environment(
+        path_safety_evidence_path=evidence_path or None,
+    )
+    logger.info(
+        "event=sound.active_speaker_environment status=%s load_gate=%s "
+        "blockers=%d safe_playback=%s",
+        report.get("status"),
+        report.get("load_gate"),
+        int(report.get("blocker_count") or 0),
+        bool(report.get("safe_playback", {}).get("playback_allowed")),
+    )
+    return report
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -672,6 +692,15 @@ def _make_handler(
                         include_library=True,
                     )
                 )
+                return
+            if path == "/active-speaker/environment":
+                try:
+                    self._send_json(_active_speaker_environment_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_environment result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 

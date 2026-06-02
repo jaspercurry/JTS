@@ -151,11 +151,15 @@ rather than exposing raw filesystem paths.
 
 ### Advanced speaker setup entry point
 
-As of 2026-06-01, `/sound/` also shows a collapsed **Advanced speaker
+As of 2026-06-02, `/sound/` also shows a collapsed **Advanced speaker
 setup** card for active crossover commissioning. It is intentionally
-read-only: it labels active speaker setup as schema plus startup-template
-only and does not play tones, start sweeps, load active crossover configs,
-or touch CamillaDSP. The actual substrate starts in `jasper.active_speaker`
+read-only: a user can click **Check environment** to fetch
+`/sound/active-speaker/environment`, which runs the read-only
+`jasper.active_speaker.environment` probe and reports ALSA playback-device
+count, current CamillaDSP config classification, validation status,
+load-gate status, and why safe playback is still blocked. It does not play
+tones, start sweeps, reload CamillaDSP, load active crossover configs, or
+touch live audio. The actual substrate starts in `jasper.active_speaker`
 and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 
@@ -163,8 +167,9 @@ and the canonical safety/design plan lives in
 
 - `jasper/active_speaker/` — import-cheap active-speaker preset,
   channel-map, safety-envelope, baseline-profile schemas, and
-  muted/protected startup-template YAML emission. Current scope is
-  validation/template generation only; no hardware loading.
+  muted/protected startup-template YAML emission plus read-only
+  environment reporting. Current scope is validation/template generation
+  and status only; no hardware loading or playback.
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
   preview response, expanded-band overlays, the peak-boost `estimate_headroom_db`

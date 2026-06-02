@@ -194,6 +194,8 @@ def test_probe_blocks_current_outputd_config_without_path_safety(
     assert report["status"] == "blocked"
     assert report["camilla_config"]["classification"] == "jts_outputd_stereo"
     assert report["ok_to_load_active_config"] is False
+    assert report["safe_playback"]["playback_allowed"] is False
+    assert report["safe_playback"]["status"] == "not_implemented"
     assert {issue["code"] for issue in report["issues"]} >= {
         "path_safety_evidence_missing",
         "active_startup_candidate_required",
@@ -240,6 +242,18 @@ def test_probe_can_pass_when_active_config_and_hardware_evidence_are_valid(
     assert report["load_gate"] == "ready"
     assert report["ok_to_load_active_config"] is True
     assert report["blocker_count"] == 0
+    assert report["safe_playback"]["playback_allowed"] is False
+    assert report["safe_playback"]["load_gate"] == "ready"
+    assert {
+        gate["id"]: gate["passed"]
+        for gate in report["safe_playback"]["required_gates"]
+    } == {
+        "active_startup_candidate": True,
+        "validated_config": True,
+        "hardware_probe_path_safety": True,
+        "physical_channel_identity": False,
+        "level_limited_tone_generator": False,
+    }
 
 
 def test_probe_custom_config_blocks_guided_active_flow(tmp_path: Path) -> None:
