@@ -6,7 +6,8 @@
 #     /var/lib/jasper/speaker_name.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
 #     CamillaDSP config's samplerate/chunksize/target_level, the
-#     fan-in output buffer, plus jasper-outputd's DAC buffer
+#     fan-in output buffer, jasper-outputd's optional content bridge,
+#     plus jasper-outputd's DAC buffer
 #   - output_device fixed to `shairport_substream`, AirPlay's private
 #     fan-in lane
 #
@@ -28,8 +29,15 @@
 #   JASPER_FANIN_ENV_FILE       — optional fan-in env file used to
 #                                 source JASPER_FANIN_OUTPUT_BUFFER_FRAMES.
 #                                 Default: /var/lib/jasper/fanin.env.
-#   JASPER_OUTPUTD_ENV_FILE     — optional outputd env file used to
-#                                 source JASPER_OUTPUTD_DAC_BUFFER_FRAMES.
+#   JASPER_OUTPUTD_ENV_FILE     — optional outputd retune file used to
+#                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES
+#                                 and content-bridge latency knobs. The
+#                                 renderer intentionally ignores
+#                                 outputd knobs from /etc/jasper/jasper.env
+#                                 and the process environment because the
+#                                 outputd unit overrides those with
+#                                 packaged defaults before loading this
+#                                 retune file.
 #                                 Default: /var/lib/jasper/outputd.env.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
@@ -48,6 +56,7 @@ CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/outputd
 FANIN_ENV_FILE="${JASPER_FANIN_ENV_FILE:-/var/lib/jasper/fanin.env}"
 OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
+DEFAULT_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES=4096
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
@@ -159,11 +168,48 @@ positive_int_or_default() {
 }
 
 outputd_dac_buffer_frames() {
-    local value="${JASPER_OUTPUTD_DAC_BUFFER_FRAMES:-}"
-    if [[ -z "$value" ]]; then
-        value="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)"
-    fi
+    local value
+    value="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)"
     positive_int_or_default "$value" "$DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES"
+}
+
+outputd_content_bridge_mode() {
+    local raw
+    local value
+    raw="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_CONTENT_BRIDGE || true)"
+    value="$raw"
+    value="${value//[[:space:]]/}"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+    case "$value" in
+        ""|direct|off|disabled)
+            printf 'direct\n'
+            ;;
+        rate_match|ratematch|rate-matched|rate_matched)
+            printf 'rate_match\n'
+            ;;
+        *)
+            echo "jasper-apply-airplay-mode: invalid JASPER_OUTPUTD_CONTENT_BRIDGE='$raw'; using direct latency term" >&2
+            printf 'direct\n'
+            ;;
+    esac
+}
+
+outputd_content_bridge_target_frames() {
+    local value
+    value="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES || true)"
+    positive_int_or_default "$value" "$DEFAULT_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES"
+}
+
+outputd_content_bridge_latency_frames() {
+    if [[ "$(outputd_content_bridge_mode)" == "rate_match" ]]; then
+        outputd_content_bridge_target_frames
+    else
+        printf '0\n'
+    fi
 }
 
 derive_audio_backend_latency_offset() {
@@ -172,6 +218,7 @@ derive_audio_backend_latency_offset() {
     local chunksize
     local target_level
     local fanin_output_buffer
+    local outputd_content_bridge
     local outputd_dac_buffer
 
     config="$(camilla_config_path)"
@@ -203,6 +250,12 @@ derive_audio_backend_latency_offset() {
     # also invisible to shairport's snd_pcm_delay().
     fanin_output_buffer="$(fanin_output_buffer_frames)"
 
+    # outputd's optional content bridge intentionally holds post-Camilla
+    # content at a target fill before the DAC-paced final mix. This is
+    # invisible to shairport's private lane and must be compensated when
+    # lab mode enables the bridge.
+    outputd_content_bridge="$(outputd_content_bridge_latency_frames)"
+
     # outputd's DAC buffer is downstream of shairport's private lane
     # and of CamillaDSP. shairport cannot observe it via
     # snd_pcm_delay(), so account for the branch-owned output owner
@@ -213,6 +266,7 @@ derive_audio_backend_latency_offset() {
         -v chunksize="$chunksize" \
         -v target_level="$target_level" \
         -v fanin_output_buffer="$fanin_output_buffer" \
+        -v outputd_content_bridge="$outputd_content_bridge" \
         -v outputd_dac_buffer="$outputd_dac_buffer" '
         BEGIN {
             if (sample_rate <= 0) {
@@ -226,6 +280,8 @@ derive_audio_backend_latency_offset() {
             #   + fanin_output_buffer        ← jasper-fanin output queue
             #                                   between the private AirPlay
             #                                   lane and CamillaDSP/AEC.
+            #   + outputd_content_bridge     ← optional jasper-outputd
+            #                                   content bridge target fill.
             #   + outputd_dac_buffer         ← jasper-outputd direct-DAC
             #                                   playback queue.
             #
@@ -234,7 +290,7 @@ derive_audio_backend_latency_offset() {
             # the script — bash 2026-05-25 lesson, do not paraphrase.
             # shairport feeds this many frames early so audio still emerges
             # from the speaker at the AirPlay-scheduled time.
-            invisible_frames = (target_level - chunksize) + fanin_output_buffer + outputd_dac_buffer
+            invisible_frames = (target_level - chunksize) + fanin_output_buffer + outputd_content_bridge + outputd_dac_buffer
             offset = -(invisible_frames / sample_rate)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Pin the Apple USB-C dongle Headphone mixer control to 100%.
+#
+# Usage: jasper-dac-init [card|auto] [control]
+#
+# The service may be enabled on non-Apple-DAC systems. In auto mode it
+# detects the Apple dongle at runtime and exits cleanly when absent.
+
+set -uo pipefail
+
+CONFIGURED_CARD="${1:-auto}"
+CONTROL="${2:-Headphone}"
+APPLE_DONGLE_REGEX="usb-c to 3.5mm"
+
+detect_apple_card() {
+    aplay -L 2>/dev/null \
+        | grep -B1 -iE "$APPLE_DONGLE_REGEX" \
+        | grep -oE 'CARD=[^,]+' \
+        | head -1 \
+        | sed 's/CARD=//' \
+        || true
+}
+
+resolve_card() {
+    if [[ -n "$CONFIGURED_CARD" && "$CONFIGURED_CARD" != "auto" ]]; then
+        printf '%s\n' "$CONFIGURED_CARD"
+        return 0
+    fi
+    detect_apple_card
+}
+
+CARD="$(resolve_card)"
+if [[ -z "$CARD" ]]; then
+    echo "event=apple_dongle.dac_init.skip reason=not_detected configured_card=${CONFIGURED_CARD} control=${CONTROL}"
+    exit 0
+fi
+
+if amixer -c "$CARD" -- sset "$CONTROL" 100% unmute >/dev/null 2>&1; then
+    echo "event=apple_dongle.dac_init.pinned card=${CARD} control=${CONTROL} value=100"
+    exit 0
+fi
+
+echo "event=apple_dongle.dac_init.failed card=${CARD} control=${CONTROL} reason=amixer_nonzero" >&2
+exit 1

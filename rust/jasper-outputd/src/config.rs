@@ -13,6 +13,11 @@ use crate::types::SAMPLE_RATE;
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
 pub const DEFAULT_CONTENT_BUFFER_FRAMES: u32 = 4096;
 pub const DEFAULT_DAC_BUFFER_FRAMES: u32 = 3072;
+pub const DEFAULT_CONTENT_BRIDGE_RING_FRAMES: u32 = 16_384;
+pub const DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES: u32 = 4096;
+pub const DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM: u32 = 500;
+pub const MAX_CONTENT_BRIDGE_RING_FRAMES: u32 = 262_144;
+pub const MAX_CONTENT_BRIDGE_TARGET_FRAMES: u32 = 65_536;
 pub const DEFAULT_CHIP_REF_SAMPLE_RATE: u32 = 16_000;
 pub const DEFAULT_CHIP_REF_PERIOD_FRAMES: u32 = 320;
 pub const DEFAULT_CHIP_REF_BUFFER_FRAMES: u32 = 1280;
@@ -33,6 +38,28 @@ impl BackendMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentBridgeMode {
+    Direct,
+    RateMatch,
+}
+
+impl ContentBridgeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::RateMatch => "rate_match",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentBridgeConfig {
+    pub ring_frames: u32,
+    pub target_fill_frames: u32,
+    pub max_adjust_ppm: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub backend: BackendMode,
@@ -42,6 +69,8 @@ pub struct Config {
     pub period_frames: u32,
     pub content_buffer_frames: u32,
     pub dac_buffer_frames: u32,
+    pub content_bridge_mode: ContentBridgeMode,
+    pub content_bridge: ContentBridgeConfig,
     pub chip_ref_pcm: Option<String>,
     pub chip_ref_sample_rate: u32,
     pub chip_ref_period_frames: u32,
@@ -87,6 +116,43 @@ impl Config {
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             DEFAULT_DAC_BUFFER_FRAMES,
         )?;
+        let content_bridge_mode = match env_str("JASPER_OUTPUTD_CONTENT_BRIDGE", "direct")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "direct" | "off" | "disabled" => ContentBridgeMode::Direct,
+            "rate_match" | "ratematch" | "rate-matched" | "rate_matched" => {
+                ContentBridgeMode::RateMatch
+            }
+            other => {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_CONTENT_BRIDGE must be one of direct, rate_match; got {:?}",
+                    other
+                )
+            }
+        };
+        let content_bridge = match content_bridge_mode {
+            ContentBridgeMode::Direct => default_content_bridge_config(),
+            ContentBridgeMode::RateMatch => {
+                let bridge = ContentBridgeConfig {
+                    ring_frames: env_u32(
+                        "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES",
+                        DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
+                    )?,
+                    target_fill_frames: env_u32(
+                        "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES",
+                        DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
+                    )?,
+                    max_adjust_ppm: env_u32(
+                        "JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM",
+                        DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
+                    )?,
+                };
+                validate_content_bridge(bridge, period_frames)?;
+                bridge
+            }
+        };
         let chip_ref_buffer_frames = env_u32(
             "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
             DEFAULT_CHIP_REF_BUFFER_FRAMES,
@@ -133,6 +199,8 @@ impl Config {
             period_frames,
             content_buffer_frames,
             dac_buffer_frames,
+            content_bridge_mode,
+            content_bridge,
             chip_ref_pcm: env_optional("JASPER_OUTPUTD_CHIP_REF_PCM"),
             chip_ref_sample_rate,
             chip_ref_period_frames,
@@ -169,6 +237,55 @@ impl Config {
             },
         })
     }
+}
+
+fn default_content_bridge_config() -> ContentBridgeConfig {
+    ContentBridgeConfig {
+        ring_frames: DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
+        target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
+        max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
+    }
+}
+
+fn validate_content_bridge(config: ContentBridgeConfig, period_frames: u32) -> Result<()> {
+    if config.target_fill_frames < period_frames.saturating_mul(2) {
+        anyhow::bail!(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES={} must be >= 2 x JASPER_OUTPUTD_PERIOD_FRAMES={} (rate matcher startup headroom)",
+            config.target_fill_frames,
+            period_frames
+        );
+    }
+    if config.target_fill_frames > MAX_CONTENT_BRIDGE_TARGET_FRAMES {
+        anyhow::bail!(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES={} must be <= {}",
+            config.target_fill_frames,
+            MAX_CONTENT_BRIDGE_TARGET_FRAMES
+        );
+    }
+    let min_ring_frames = config
+        .target_fill_frames
+        .saturating_add(period_frames.saturating_mul(4));
+    if config.ring_frames < min_ring_frames {
+        anyhow::bail!(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES={} must be >= target + 4 periods ({} frames)",
+            config.ring_frames,
+            min_ring_frames
+        );
+    }
+    if config.ring_frames > MAX_CONTENT_BRIDGE_RING_FRAMES {
+        anyhow::bail!(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES={} must be <= {}",
+            config.ring_frames,
+            MAX_CONTENT_BRIDGE_RING_FRAMES
+        );
+    }
+    if config.max_adjust_ppm == 0 || config.max_adjust_ppm > 5000 {
+        anyhow::bail!(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM={} must be between 1 and 5000",
+            config.max_adjust_ppm
+        );
+    }
+    Ok(())
 }
 
 fn validate_buffer(
@@ -289,6 +406,15 @@ mod tests {
             assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
             assert_eq!(cfg.content_buffer_frames, DEFAULT_CONTENT_BUFFER_FRAMES);
             assert_eq!(cfg.dac_buffer_frames, DEFAULT_DAC_BUFFER_FRAMES);
+            assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+            assert_eq!(
+                cfg.content_bridge,
+                ContentBridgeConfig {
+                    ring_frames: DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
+                    target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
+                    max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
+                }
+            );
             assert_eq!(cfg.chip_ref_sample_rate, DEFAULT_CHIP_REF_SAMPLE_RATE);
             assert_eq!(cfg.chip_ref_period_frames, DEFAULT_CHIP_REF_PERIOD_FRAMES);
             assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
@@ -370,6 +496,94 @@ mod tests {
             let err = Config::from_env().unwrap_err();
             assert!(err.to_string().contains("JASPER_OUTPUTD_BACKEND"));
         });
+    }
+
+    #[test]
+    fn parses_rate_match_content_bridge() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES", Some("12288")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("4096")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM", Some("750")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::RateMatch);
+                assert_eq!(cfg.content_bridge.ring_frames, 12_288);
+                assert_eq!(cfg.content_bridge.target_fill_frames, 4096);
+                assert_eq!(cfg.content_bridge.max_adjust_ppm, 750);
+            },
+        );
+    }
+
+    #[test]
+    fn rejects_tiny_content_bridge_ring() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES", Some("4096")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("4096")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err
+                    .to_string()
+                    .contains("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES"));
+            },
+        );
+    }
+
+    #[test]
+    fn direct_content_bridge_ignores_stale_invalid_bridge_tuning() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES", Some("not-a-number")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("1")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM", Some("0")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+                assert_eq!(cfg.content_bridge, default_content_bridge_config());
+            },
+        );
+    }
+
+    #[test]
+    fn rejects_huge_content_bridge_allocations() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                (
+                    "JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES",
+                    Some("262145"),
+                ),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES", Some("4096")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err
+                    .to_string()
+                    .contains("JASPER_OUTPUTD_CONTENT_BRIDGE_RING_FRAMES"));
+            },
+        );
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+                (
+                    "JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES",
+                    Some("65537"),
+                ),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err
+                    .to_string()
+                    .contains("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES"));
+            },
+        );
     }
 
     #[test]

@@ -231,7 +231,7 @@ function summarizeAnomalies(s) {
 
 function outputdLine(o, services) {
   if (!o) return "unavailable";
-  const content = o.content || {}, dac = o.dac || {}, mix = o.mix || {}, tts = o.tts || {};
+  const content = o.content || {}, bridge = o.content_bridge || {}, dac = o.dac || {}, mix = o.mix || {}, tts = o.tts || {};
   const parts = [
     o.backend || "unknown",
     "content/DAC buffer " + (content.buffer_frames || "—") + "/" + (dac.buffer_frames || "—"),
@@ -240,6 +240,20 @@ function outputdLine(o, services) {
     "content EAGAIN " + (content.eagain_count || 0),
     "tts " + (tts.pending_frames || 0) + "f",
   ];
+  if (bridge.enabled) {
+    parts.push(
+      "bridge " + (bridge.locked ? "locked" : "unlocked") +
+      " fill " + (bridge.fill_frames ?? "—") + "/" + (bridge.target_fill_frames ?? "—") + "f"
+    );
+    if (bridge.ratio_ppm != null) parts.push("bridge ratio " + Number(bridge.ratio_ppm).toFixed(2) + " ppm");
+    const bridgeIssues = [];
+    if (bridge.underrun_frames) bridgeIssues.push("underrun " + bridge.underrun_frames + "f");
+    if (bridge.overrun_frames) bridgeIssues.push("overrun " + bridge.overrun_frames + "f");
+    if (bridge.resync_count) bridgeIssues.push("resync " + bridge.resync_count);
+    if (bridge.reset_count) bridgeIssues.push("reset " + bridge.reset_count);
+    if (bridge.ratio_clamp_count) bridgeIssues.push("clamp " + bridge.ratio_clamp_count);
+    if (bridgeIssues.length) parts.push("bridge " + bridgeIssues.join("/"));
+  }
   if ((content.xrun_count || 0) > 0) {
     parts.push("last content xrun " + fmtMsAge(content.last_xrun_age_ms));
     if (content.xrun_rate_per_hour != null) parts.push("content xrun rate " + fmtRatePerHour(content.xrun_rate_per_hour));

@@ -22,8 +22,9 @@ use std::time::{Duration, Instant};
 
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
-use jasper_outputd::alsa_backend::{open_playback_pcm, AlsaBackend, IoCounters};
-use jasper_outputd::config::{BackendMode, Config};
+use jasper_outputd::alsa_backend::{open_playback_pcm, AlsaBackend, ContentRead, IoCounters};
+use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode};
+use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::ledger::{PlayoutEvent, SegmentId, SegmentStatus};
 use jasper_outputd::mixer::MAX_TTS_GAIN_DB;
@@ -36,6 +37,7 @@ use signal_hook::flag;
 
 const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
+const MAX_CONTENT_BRIDGE_DRAIN_READS: usize = 8;
 const MAX_PENDING_ASSISTANT_FRAMES: u64 = SAMPLE_RATE as u64 * 2;
 const TTS_QUEUE_LOG_STREAK_MS: u64 = 500;
 const TTS_QUEUE_LOG_MARGIN_FRAMES: u64 = SAMPLE_RATE as u64 / 2;
@@ -174,6 +176,23 @@ fn run_alsa(
     let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
     state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
     let mut content_buf = vec![0i16; core.period_samples()];
+    let mut content_read_buf = vec![0i16; core.period_samples()];
+    let mut content_bridge = match config.content_bridge_mode {
+        ContentBridgeMode::Direct => None,
+        ContentBridgeMode::RateMatch => {
+            eprintln!(
+                "event=outputd.content_bridge.enabled mode=rate_match ring_frames={} target_fill_frames={} max_adjust_ppm={}",
+                config.content_bridge.ring_frames,
+                config.content_bridge.target_fill_frames,
+                config.content_bridge.max_adjust_ppm,
+            );
+            Some(ContentBridge::new(
+                config.content_bridge,
+                config.period_frames,
+                CHANNELS as usize,
+            )?)
+        }
+    };
     let zero_period = vec![0i16; core.period_samples()];
     backend
         .write_dac_period(&zero_period)
@@ -198,7 +217,17 @@ fn run_alsa(
             &mut active_tts_epoch,
             &mut active_tts_segment,
         );
-        let _frames_read = backend.read_content_period(&mut content_buf)?;
+        if let Some(bridge) = content_bridge.as_mut() {
+            read_content_bridge_period(
+                &mut backend,
+                bridge,
+                &mut content_read_buf,
+                &mut content_buf,
+            )?;
+            state.mark_content_bridge(bridge.metrics());
+        } else {
+            let _frames_read = backend.read_content_period(&mut content_buf)?;
+        }
         core.prepare_period_with_content(&content_buf);
         backend.write_dac_period(core.output_period())?;
         let dac_delay_frames = match backend.dac_delay_frames() {
@@ -239,6 +268,32 @@ fn run_alsa(
             last_watchdog = Instant::now();
         }
     }
+    Ok(())
+}
+
+fn read_content_bridge_period(
+    backend: &mut AlsaBackend,
+    bridge: &mut ContentBridge,
+    read_buf: &mut [i16],
+    out: &mut [i16],
+) -> Result<()> {
+    for _ in 0..MAX_CONTENT_BRIDGE_DRAIN_READS {
+        match backend.read_content_available(read_buf)? {
+            ContentRead::Frames(frames) => {
+                if frames == 0 {
+                    break;
+                }
+                let samples = frames * (CHANNELS as usize);
+                bridge.push_input(&read_buf[..samples]);
+            }
+            ContentRead::NoData => break,
+            ContentRead::XrunRecovered => {
+                bridge.reset_after_discontinuity("content_xrun");
+                break;
+            }
+        }
+    }
+    bridge.render_period(out);
     Ok(())
 }
 
@@ -1201,6 +1256,10 @@ fn _period_samples(period_frames: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jasper_outputd::config::{
+        ContentBridgeConfig, DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
+        DEFAULT_CONTENT_BRIDGE_RING_FRAMES, DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
+    };
     use jasper_outputd::loudness::AssistantLoudnessConfig;
     use std::os::fd::FromRawFd;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1554,6 +1613,12 @@ mod tests {
             period_frames: 1024,
             content_buffer_frames: 4096,
             dac_buffer_frames: 3072,
+            content_bridge_mode: ContentBridgeMode::Direct,
+            content_bridge: ContentBridgeConfig {
+                ring_frames: DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
+                target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
+                max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
+            },
             chip_ref_pcm: None,
             chip_ref_sample_rate: 16_000,
             chip_ref_period_frames: 320,

@@ -13,6 +13,10 @@ from .speaker_name import runtime_name as _speaker_runtime_name
 from .voice.catalog import default_extra_value, default_model_id, default_voice_id
 
 
+class VoiceProviderNotConfigured(RuntimeError):
+    """Raised when first-time setup has not selected a voice provider."""
+
+
 def _env(name: str, default: str | None = None, *, required: bool = False) -> str:
     val = os.environ.get(name, default)
     if required and not val:
@@ -344,7 +348,7 @@ class Config:
         # canonical source of truth for this variable.
         provider = _env("JASPER_VOICE_PROVIDER", "")
         if not provider:
-            raise RuntimeError(
+            raise VoiceProviderNotConfigured(
                 "JASPER_VOICE_PROVIDER is not set — visit "
                 "http://jts.local/voice (or your speaker's hostname) "
                 "and pick a provider. The wizard will write "

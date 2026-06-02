@@ -8,6 +8,7 @@ REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-outputd.service"
 VOICE_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-voice.service"
 ROLLBACK_SCRIPT_PATH = REPO / "scripts" / "disable-outputd-cutover.sh"
+VOICE_DAEMON_PATH = REPO / "jasper" / "voice_daemon.py"
 
 
 def _read_unit() -> str:
@@ -69,6 +70,7 @@ def test_outputd_unit_runtime_and_exec_paths():
         'Environment="JASPER_OUTPUTD_PERIOD_FRAMES=1024"',
         'Environment="JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=4096"',
         'Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"',
+        'Environment="JASPER_OUTPUTD_CONTENT_BRIDGE=direct"',
         'Environment="JASPER_OUTPUTD_CONTROL_SOCKET=/run/jasper-outputd/control.sock"',
     ]:
         assert expected in unit
@@ -98,8 +100,9 @@ def test_install_builds_installs_and_enables_outputd():
     enable_block = install_sh.split(
         "systemctl enable jasper-camilla.service jasper-fanin.service",
         1,
-    )[1].split("systemctl start jasper-dac-init.service", 1)[0]
+    )[1].split("systemctl stop jasper-voice.service", 1)[0]
     assert "jasper-outputd.service" in enable_block
+    assert "jasper-audio-hardware-reconcile.service" in enable_block
     assert "systemctl restart jasper-outputd.service" in install_sh
     assert "require_outputd_ready" in install_sh
     assert "jasper-outputd STATUS probe failed" in install_sh
@@ -107,6 +110,10 @@ def test_install_builds_installs_and_enables_outputd():
     restart_block = install_sh.split(
         "systemctl stop jasper-voice.service", 1,
     )[1].split("systemctl enable jasper-wifi-guardian.service", 1)[0]
+    assert (
+        restart_block.index("jasper-audio-hardware-reconcile --reason install")
+        < restart_block.index("require_outputd_ready")
+    )
     assert (
         restart_block.index("require_outputd_ready")
         < restart_block.index("reconcile_aec_state")
@@ -122,6 +129,21 @@ def test_voice_unit_routes_tts_to_outputd_on_mainline():
         'Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock"'
         in unit
     )
+
+
+def test_voice_unit_parks_cleanly_when_provider_is_unconfigured():
+    unit = VOICE_UNIT_PATH.read_text()
+    assert _value_for(unit, "StartLimitAction") == "reboot"
+    assert _value_for(unit, "SuccessExitStatus") == "78"
+    assert _value_for(unit, "RestartPreventExitStatus") == "78"
+
+
+def test_voice_daemon_maps_unconfigured_provider_to_ex_config():
+    source = VOICE_DAEMON_PATH.read_text()
+    assert "VOICE_PROVIDER_NOT_CONFIGURED_EXIT = 78" in source
+    assert "except VoiceProviderNotConfigured as e:" in source
+    assert "event=voice.unconfigured" in source
+    assert "sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)" in source
 
 
 def test_cutover_rollback_helper_disables_persistent_outputd_unit():

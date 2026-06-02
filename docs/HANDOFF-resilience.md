@@ -334,7 +334,11 @@ thinks the system is healthy.
   — clean shutdown is essential on a 1 GB Pi to flush zram dirty
   pages. Catches the "one critical daemon is sick" shape, but NOT
   the "userspace is dead while jasper-* daemons happen to be alive"
-  shape. `jasper-doctor`'s `check_start_limit_action` surfaces
+  shape. Since 2026-06-02, `jasper-voice`'s first-time unconfigured
+  provider exit is explicitly excluded from this budget via
+  `SuccessExitStatus=78` + `RestartPreventExitStatus=78`; actual
+  voice crashes still flow through T5.1. `jasper-doctor`'s
+  `check_start_limit_action` surfaces
   drift if a Debian/RPi-OS update removes the directive.
 - **T5.2** ✅ **shipped**: new `SystemSupervisor` in
   [`jasper/control/system_supervisor.py`](../jasper/control/system_supervisor.py)
@@ -991,6 +995,16 @@ For anyone touching the resilience code:
 - `deploy/udev/99-jasper-aec-reconcile.rules` — generic ALSA
   `controlC*` add/remove trigger for the reconciler. The service itself
   is what stays conservative about which mic config it owns.
+- `deploy/bin/jasper-audio-hardware-reconcile` +
+  `deploy/systemd/jasper-audio-hardware-reconcile.service` +
+  `deploy/udev/99-jasper-audio-hardware-reconcile.rules` — the same
+  event-driven shape for output DAC roles. The oneshot classifies the
+  selected final-output DAC, updates JTS-owned DAC identity/asound
+  state for recognized roles, and enables Apple mixer helpers only for
+  the Apple output role. If no recognized output DAC is present, it
+  parks `jasper-voice` and `jasper-outputd` instead of leaving stale
+  direct-DAC state active; recognized DAC arrival restarts outputd so
+  hotplug recovery does not require a full deploy.
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, starts jasper-camilla,
   then runs the reconciler so mic/AEC/voice state matches present
@@ -1121,4 +1135,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-06-02

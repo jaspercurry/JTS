@@ -78,7 +78,22 @@ loops, or call XVF write/persist commands (`SAVE_CONFIGURATION` and
 `REBOOT` remain forbidden). Fixed-delay and long-window drift evidence
 remain `not_run` until an explicit operator-confirmed playback/capture
 probe lands, so clean passive evidence still produces a partial
-`status=warn` artifact with `recommendation=run_drift_delay_validation`.
+validation result rather than default-on chip-AEC approval: a
+`status=warn` artifact with
+`recommendation=run_drift_delay_validation`.
+
+For the DAC8x/outputd xrun workstream, use the separate outputd-only
+profile:
+
+```sh
+sudo jasper-audio-hw-validate --profile hifiberry_dac8x_outputd_stability --long-window --stdout
+```
+
+That profile records outputd/content-pipeline service state, outputd DAC
+STATUS, and outputd xrun/clipping/progress counters. It intentionally
+does **not** require chip-AEC runtime env, XVF readback, bridge counters,
+wake legs, or an active `jasper-voice`; it is evidence for DAC8x/outputd
+stability, not chip-AEC viability.
 Passive `AEC_AECCONVERGED=0` is reported as `not_observed`, not failure,
 because the runner may not have observed meaningful far-end audio.
 

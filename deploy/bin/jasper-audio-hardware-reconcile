@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# Reconcile JTS output-DAC role with the ALSA hardware currently present.
+#
+# This is the output-hardware counterpart to jasper-aec-reconcile:
+# run once at install/boot, and run again from udev on sound-card
+# add/remove/change. It is intentionally small and idempotent.
+
+set -euo pipefail
+
+ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
+ASOUND_SOURCE_TEMPLATE="${JASPER_ASOUND_SOURCE_TEMPLATE:-/etc/jasper/asoundrc.jasper.source}"
+ASOUND_TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}"
+RENDER_ASOUND_CONF="${JASPER_RENDER_ASOUND_CONF:-/usr/local/sbin/jasper-render-asound-conf}"
+SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
+APLAY="${JASPER_APLAY:-aplay}"
+REASON="manual"
+PRINT_ENV=0
+NO_RESTART=0
+
+usage() {
+    cat <<'EOF'
+Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env] [--no-restart]
+
+Detect the current final-output DAC role and reconcile owned JTS state:
+  - DAC8x present -> outputd_dac targets DAC8x; Apple mixer helpers disabled
+  - Apple USB-C dongle present -> outputd_dac targets Apple; Apple helpers enabled
+  - no recognized output DAC -> Apple helpers disabled; unknown/fallback id recorded
+
+--print-env prints shell-quoted role variables for install.sh and performs no mutations.
+--no-restart updates files/service enablement but does not restart outputd/voice.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason)
+            REASON="${2:-manual}"
+            shift 2
+            ;;
+        --print-env)
+            PRINT_ENV=1
+            shift
+            ;;
+        --no-restart)
+            NO_RESTART=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+log_event() {
+    local name="$1"
+    shift
+    echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
+}
+
+quote_env_value() {
+    printf '%q' "$1"
+}
+
+find_card() {
+    local regex="$1"
+    "$APLAY" -L 2>/dev/null \
+        | grep -B1 -iE "$regex" \
+        | grep -oE 'CARD=[^,]+' \
+        | head -1 \
+        | sed 's/CARD=//' \
+        || true
+}
+
+env_file_value() {
+    local key="$1"
+    if [[ ! -f "$ENV_FILE" ]]; then
+        return 0
+    fi
+    sed -n -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$ENV_FILE" \
+        | tail -n 1 \
+        | sed -E 's/^["'\'']?(.*?)["'\'']?$/\1/'
+}
+
+set_env_var() {
+    local key="$1" value="$2"
+    local dir tmp quoted
+
+    dir="$(dirname "$ENV_FILE")"
+    install -d -m 0750 "$dir"
+    tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
+    quoted="$(quote_env_value "$value")"
+
+    if [[ -f "$ENV_FILE" ]]; then
+        awk -v key="$key" -v line="${key}=${quoted}" '
+            $0 ~ "^[[:space:]]*" key "=" {
+                if (!done) {
+                    print line
+                    done = 1
+                }
+                next
+            }
+            { print }
+            END {
+                if (!done) {
+                    print line
+                }
+            }
+        ' "$ENV_FILE" > "$tmp"
+    else
+        printf '%s=%s\n' "$key" "$quoted" > "$tmp"
+    fi
+
+    chmod 0640 "$tmp"
+    mv "$tmp" "$ENV_FILE"
+}
+
+set_env_var_if_changed() {
+    local key="$1" value="$2"
+    local current
+    current="$(env_file_value "$key")"
+    if [[ "$current" == "$value" ]]; then
+        return 1
+    fi
+    set_env_var "$key" "$value"
+    return 0
+}
+
+APPLE_DONGLE_CARD=""
+APPLE_DONGLE_PRESENT=0
+APPLE_DONGLE_SERVICE_CARD="auto"
+DAC8X_OUTPUT_CARD=""
+DONGLE_CARD="A"
+OUTPUT_DAC_CARD="A"
+OUTPUT_DAC_ID="A"
+OUTPUT_DAC_RECOGNIZED=0
+
+detect_roles() {
+    APPLE_DONGLE_CARD="$(find_card 'usb-c to 3.5mm')"
+    if [[ -n "$APPLE_DONGLE_CARD" ]]; then
+        DONGLE_CARD="$APPLE_DONGLE_CARD"
+        APPLE_DONGLE_PRESENT=1
+        APPLE_DONGLE_SERVICE_CARD="$APPLE_DONGLE_CARD"
+    fi
+
+    DAC8X_OUTPUT_CARD="$(find_card 'snd_rpi_hifiberry_dac8x|hifiberry.*dac8x|dac8x')"
+    if [[ -n "$DAC8X_OUTPUT_CARD" ]]; then
+        OUTPUT_DAC_CARD="$DAC8X_OUTPUT_CARD"
+        OUTPUT_DAC_ID="hifiberry_dac8x"
+        OUTPUT_DAC_RECOGNIZED=1
+    elif [[ "$APPLE_DONGLE_PRESENT" == "1" ]]; then
+        OUTPUT_DAC_CARD="$APPLE_DONGLE_CARD"
+        OUTPUT_DAC_ID="apple_usb_c_dongle"
+        OUTPUT_DAC_RECOGNIZED=1
+    fi
+}
+
+print_env() {
+    printf 'DONGLE_CARD=%s\n' "$(quote_env_value "$DONGLE_CARD")"
+    printf 'APPLE_DONGLE_PRESENT=%s\n' "$(quote_env_value "$APPLE_DONGLE_PRESENT")"
+    printf 'APPLE_DONGLE_SERVICE_CARD=%s\n' "$(quote_env_value "$APPLE_DONGLE_SERVICE_CARD")"
+    printf 'OUTPUT_DAC_CARD=%s\n' "$(quote_env_value "$OUTPUT_DAC_CARD")"
+    printf 'OUTPUT_DAC_ID=%s\n' "$(quote_env_value "$OUTPUT_DAC_ID")"
+    printf 'OUTPUT_DAC_RECOGNIZED=%s\n' "$(quote_env_value "$OUTPUT_DAC_RECOGNIZED")"
+}
+
+render_asound_if_needed() {
+    local tmp changed=1
+
+    if [[ "$OUTPUT_DAC_RECOGNIZED" != "1" ]]; then
+        log_event "asound_skip" "output_dac_id=${OUTPUT_DAC_ID} recognized=0"
+        return 1
+    fi
+    if [[ ! -f "$ASOUND_SOURCE_TEMPLATE" ]]; then
+        log_event "asound_skip" "source_template=${ASOUND_SOURCE_TEMPLATE} missing=1"
+        return 1
+    fi
+
+    install -d -m 0755 "$(dirname "$ASOUND_TEMPLATE")"
+    tmp="$(mktemp "${ASOUND_TEMPLATE}.XXXXXX")"
+    sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
+        -e "s/__OUTPUT_DAC_CARD__/${OUTPUT_DAC_CARD}/g" \
+        "$ASOUND_SOURCE_TEMPLATE" > "$tmp"
+    chmod 0644 "$tmp"
+
+    if [[ -f "$ASOUND_TEMPLATE" ]] && cmp -s "$tmp" "$ASOUND_TEMPLATE"; then
+        changed=0
+        rm -f "$tmp"
+    else
+        mv "$tmp" "$ASOUND_TEMPLATE"
+        changed=1
+    fi
+
+    if [[ "$changed" == "1" ]]; then
+        "$RENDER_ASOUND_CONF"
+        log_event "asound_rendered" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
+        return 0
+    fi
+    return 1
+}
+
+gate_role_services() {
+    if [[ "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
+        "$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service
+        "$SYSTEMCTL" start jasper-dac-init.service || true
+        "$SYSTEMCTL" restart jasper-headphone-monitor.service || true
+        log_event "apple_services" "state=enabled output_dac_id=${OUTPUT_DAC_ID}"
+    else
+        "$SYSTEMCTL" disable --now jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
+        "$SYSTEMCTL" reset-failed jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
+        log_event "apple_services" "state=disabled output_dac_id=${OUTPUT_DAC_ID}"
+    fi
+}
+
+park_output_audio() {
+    if [[ "$NO_RESTART" == "1" ]]; then
+        log_event "output_park_skip" "output_dac_id=${OUTPUT_DAC_ID} recognized=0 no_restart=1"
+        return
+    fi
+    "$SYSTEMCTL" --no-block stop jasper-voice.service jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" reset-failed jasper-voice.service jasper-outputd.service 2>/dev/null || true
+    log_event "output_parked" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=0"
+}
+
+restart_audio_if_needed() {
+    local restart_needed="$1"
+    if [[ "$restart_needed" != "1" || "$NO_RESTART" == "1" ]]; then
+        return
+    fi
+    "$SYSTEMCTL" stop jasper-voice.service 2>/dev/null || true
+    "$SYSTEMCTL" reset-failed jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block restart jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block restart jasper-aec-reconcile.service 2>/dev/null || true
+    log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
+}
+
+detect_roles
+if [[ "$PRINT_ENV" == "1" ]]; then
+    print_env
+    exit 0
+fi
+
+env_changed=0
+set_env_var_if_changed "JASPER_AUDIO_DAC_ID" "$OUTPUT_DAC_ID" && env_changed=1
+set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && env_changed=1
+
+render_changed=0
+render_asound_if_needed && render_changed=1
+gate_role_services
+if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+    restart_needed=0
+    if [[ "$render_changed" == "1" || "$env_changed" == "1" ]]; then
+        restart_needed=1
+    fi
+    restart_audio_if_needed "$restart_needed"
+else
+    park_output_audio
+fi
+
+log_event "complete" \
+    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed}"

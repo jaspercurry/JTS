@@ -150,8 +150,43 @@ What exists:
 - Real backend: systemd sets `JASPER_OUTPUTD_BACKEND=alsa`.
 - Content input: `outputd_content_capture`, backed by snd-aloop
   substream 6 (`hw:Loopback,1,6`).
-- DAC output: `outputd_dac`, a direct hardware alias for the Apple
-  dongle.
+- Content bridge: packaged default is
+  `JASPER_OUTPUTD_CONTENT_BRIDGE=direct`. The opt-in lab mode
+  `rate_match` keeps the DAC as timing owner, drains
+  `outputd_content_capture` into an explicit bounded ring, and renders
+  DAC-sized periods through a ppm-clamped windowed-sinc rate matcher.
+  Use this for DAC/content-lane clock-slip validation only until it has
+  passed long jts3 soaks; it is not a broad DAC abstraction.
+  Default lab settings add 4096 frames of content latency (~85 ms at
+  48 kHz) while leaving direct TTS/cue playout on the normal outputd
+  path. The sinc table is precomputed at startup; steady state should
+  be multiply/add work only, but Pi 5 CPU and xrun behavior still need
+  hardware soak before enabling it outside the lab.
+- DAC output: `outputd_dac`, a direct hardware alias for the selected
+  final-output card. Public/default installs use the Apple USB-C
+  dongle; DAC8x lab installs use the enumerated
+  `snd_rpi_hifiberry_dac8x` card. `jasper-audio-hardware-reconcile`
+  runs at install/boot and from udev `controlC*` add/remove/change
+  events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,
+  `hifiberry_dac8x`, or the raw fallback card token when no known role
+  is detected) plus `JASPER_AUDIO_DAC_CARD` into
+  `/etc/jasper/jasper.env` so validation artifacts and status surfaces
+  have stable hardware identity instead of only the generic
+  `outputd_dac` PCM name. A recognized role renders the ALSA template
+  and restarts `jasper-outputd` so hotplug arrival recovers from a
+  previously parked state. An unknown/no-output role does **not** render
+  `outputd_dac` to a guessed card; it stops `jasper-voice` and
+  `jasper-outputd` so stale direct-DAC ownership cannot keep running
+  against removed hardware or burn the outputd reboot escalation budget.
+- Apple-only analog mixer services: `jasper-dac-init.service` and
+  `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
+  dongle `Headphone` control. The audio-hardware reconciler enables
+  them only when the selected final-output DAC is the recognized Apple
+  dongle. DAC8x and unknown-output states disable/reset those units so
+  irrelevant Apple-specific code does not run. The helpers are still
+  runtime-safe if an operator starts them manually: `jasper-dac-init`
+  exits cleanly when no Apple dongle is detected, and
+  `jasper-headphone-monitor` waits quietly in auto-detect mode.
 - Camilla outputd config: `/etc/camilladsp/outputd-cutover.yml` after
   install, copied from `deploy/camilladsp/outputd-cutover.yml`.
 - Camilla rollback preservation: the outputd `jasper-camilla.service`
@@ -218,6 +253,15 @@ What exists:
   journal spam. The dashboard labels the two xrun
   counters as content/DAC, since a content-capture recovery is a
   different risk from a physical-output recovery.
+  When the opt-in content bridge is enabled, STATUS also reports
+  bridge mode, lock state, ring fill/min/max, target fill, ppm ratio,
+  input/output/silence frames, underrun/overrun frames, resyncs,
+  resets, and ratio-clamp count. Bridge lock/unlock/resync/reset and
+  rate-limited overrun/clamp transitions also emit structured
+  `event=outputd.content_bridge.*` journal lines. `jasper-doctor` and
+  the `/system` Outputd row summarize the same bridge state when the
+  opt-in mode is enabled, and doctor warns on concrete anomaly counters
+  such as underrun, overrun, resync, reset, or ratio clamp.
 
 What is still intentionally not done:
 
@@ -345,6 +389,12 @@ The useful lessons are smaller and specific:
   than hidden buffering. PipeWire's `spa_ringbuffer` is only two
   atomic indices over caller-owned memory, and its read/write helpers
   explicitly report underrun/overrun conditions.
+- **Rate matching at clock boundaries.** A loopback capture clock and
+  a physical DAC clock can both be nominally 48 kHz while drifting by
+  tens of ppm. The production shape is not "make the ALSA buffer huge";
+  it is an explicit bridge with a target fill, a low-bandwidth
+  controller, a high-quality variable-rate resampler, and counters for
+  clamp/underrun/overrun/resync behavior.
 - **Four-stream AEC shape.** Echo cancellation is easiest to reason
   about when playback/reference and capture/cleaned-mic streams are
   explicit surfaces, not incidental taps.
@@ -661,5 +711,18 @@ datum: how much assistant audio was actually heard.
   now owns only provider profile seeding/learning; outputd owns content
   loudness measurement, peak-aware gain decisions, STATUS telemetry,
   and correction-window meter pause/resume.
+- 2026-06-01: Add the disabled-by-default outputd content bridge
+  (`JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match`) for DAC-paced
+  rate-matching validation. Packaged production remains `direct`; the
+  bridge is a lab-gated pipeline fix for snd-aloop content-lane drift.
+- 2026-06-02: Split final-output DAC role from Apple mixer ownership.
+  `outputd_dac` may target the Apple USB-C dongle or the JTS3 DAC8x;
+  `jasper-audio-hardware-reconcile` now owns install/boot/udev-triggered
+  DAC role convergence, and `jasper-dac-init`/
+  `jasper-headphone-monitor` are enabled only for the recognized Apple
+  final-output role, with runtime-safe helper scripts for
+  manual/operator starts. Added the outputd-only DAC8x validation profile
+  `hifiberry_dac8x_outputd_stability` for content-pipeline soaks that
+  should not fail just because chip-AEC/voice is parked.
 
-Last verified: 2026-06-01
+Last verified: 2026-06-02

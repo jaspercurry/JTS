@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.config import Config
+from jasper.config import Config, VoiceProviderNotConfigured
 from jasper.voice import catalog
 
 
@@ -102,6 +102,14 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.bus_stops == ()
     assert cfg.bus_enabled is False
     assert cfg.spotify_enabled is False
+
+
+def test_missing_voice_provider_raises_setup_exception(monkeypatch):
+    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    with pytest.raises(VoiceProviderNotConfigured, match="JASPER_VOICE_PROVIDER"):
+        Config.from_env()
 
 
 def test_assistant_loudness_profile_path_override(monkeypatch):

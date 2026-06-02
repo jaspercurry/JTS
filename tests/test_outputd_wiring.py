@@ -39,8 +39,72 @@ def test_asoundrc_declares_outputd_direct_dac_alias():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     dac = _pcm_block(rc, "outputd_dac")
     assert "type hw" in dac
-    assert "card __DONGLE_CARD__" in dac
+    assert "card __OUTPUT_DAC_CARD__" in dac
     assert "device 0" in dac
+
+
+def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
+    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    assert "select_audio_hardware_roles()" in install_sh
+    assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
+    assert "DAC8X_OUTPUT_CARD=" in reconcile
+    assert 'OUTPUT_DAC_ID="hifiberry_dac8x"' in reconcile
+    assert 'OUTPUT_DAC_ID="apple_usb_c_dongle"' in reconcile
+    assert "snd_rpi_hifiberry_dac8x" in reconcile
+    assert "hifiberry_dac8x" in reconcile
+    assert 'echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"' in install_sh
+    assert 'echo "  Output DAC id: ${OUTPUT_DAC_ID}"' in install_sh
+    assert 's/__OUTPUT_DAC_CARD__/${OUTPUT_DAC_CARD}/g' in install_sh
+    assert "asoundrc.jasper.source" in install_sh
+    assert "JASPER_AUDIO_DAC_ID" in install_sh
+    assert "JASPER_AUDIO_DAC_CARD" in reconcile
+    assert "APPLE_DONGLE_PRESENT=1" in reconcile
+    assert "APPLE_DONGLE_PRESENT=0" in reconcile
+    assert 'APPLE_DONGLE_SERVICE_CARD="auto"' in reconcile
+
+
+def test_apple_dongle_mixer_services_are_enabled_only_for_apple_output_role():
+    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    gated = reconcile.split(
+        'if [[ "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" && "$APPLE_DONGLE_PRESENT" == "1" ]]; then',
+        1,
+    )[1].split("restart_audio_if_needed()", 1)[0]
+    assert '"$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service' in gated
+    assert '"$SYSTEMCTL" start jasper-dac-init.service' in gated
+    assert '"$SYSTEMCTL" restart jasper-headphone-monitor.service' in gated
+    assert '"$SYSTEMCTL" disable --now jasper-dac-init.service jasper-headphone-monitor.service' in gated
+    assert '"$SYSTEMCTL" reset-failed jasper-dac-init.service jasper-headphone-monitor.service' in gated
+    assert "output_dac_id=${OUTPUT_DAC_ID}" in gated
+
+
+def test_apple_dongle_helpers_use_runtime_safe_card_template():
+    init_unit = (REPO / "deploy" / "systemd" / "jasper-dac-init.service").read_text()
+    unit = (REPO / "deploy" / "systemd" / "jasper-headphone-monitor.service").read_text()
+    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    init_script = (REPO / "deploy" / "bin" / "jasper-dac-init").read_text()
+    monitor_script = (REPO / "deploy" / "bin" / "jasper-headphone-monitor").read_text()
+    assert "ExecStart=/usr/local/bin/jasper-dac-init __APPLE_DONGLE_CARD__ Headphone" in init_unit
+    assert "ExecStart=/usr/local/bin/jasper-headphone-monitor __APPLE_DONGLE_CARD__ Headphone" in unit
+    assert 's/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g' in install_sh
+    assert 'CONFIGURED_CARD="${1:-auto}"' in init_script
+    assert 'CONFIGURED_CARD="${1:-auto}"' in monitor_script
+    assert "event=apple_dongle.dac_init.skip" in init_script
+    assert "event=apple_dongle.headphone_monitor.absent" in monitor_script
+
+
+def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
+    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
+    rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
+    assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
+    assert "deploy/bin/jasper-audio-hardware-reconcile" in install_sh
+    assert "99-jasper-audio-hardware-reconcile.rules" in install_sh
+    assert "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile --reason systemd" in unit
+    assert "Before=jasper-outputd.service" in unit
+    assert 'ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*"' in rule
+    assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
+    assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
 
 
 def test_camilla_outputd_config_is_not_legacy_v1():

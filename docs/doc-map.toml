@@ -547,6 +547,7 @@ code = [
   "deploy/systemd/jasper-camilla.service",
   "deploy/systemd/jasper-control.service",
   "deploy/systemd/jasper-dac-init.service",
+  "deploy/systemd/jasper-audio-hardware-reconcile.service",
   "deploy/systemd/jasper-dongle-recover.service",
   "deploy/systemd/jasper-headphone-monitor.service",
   "deploy/systemd/jasper-input.service",
@@ -554,6 +555,10 @@ code = [
   "deploy/systemd/jts-mic.slice",
   "deploy/jasper-system-web.*",
   "deploy/bin/jasper-apply-airplay-mode",
+  "deploy/bin/jasper-audio-hardware-reconcile",
+  "deploy/bin/jasper-dac-init",
+  "deploy/bin/jasper-headphone-monitor",
+  "deploy/udev/99-jasper-audio-hardware-reconcile.rules",
 ]
 docs = [
   "docs/HANDOFF-resilience.md",

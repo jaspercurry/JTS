@@ -43,6 +43,14 @@ TTS / TEST-TONE chain (BYPASSES CamillaDSP)
                                    → amp → speakers
 ```
 
+`jasper-outputd` normally reads the content capture lane directly. For
+lab validation, `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match` inserts an
+outputd-owned bounded ring plus ppm-clamped rate matcher at this final
+content/DAC clock boundary while leaving the DAC write loop as timing
+owner. The default bridge target is 4096 frames (~85 ms at 48 kHz);
+AirPlay latency rendering accounts for that target only when the bridge
+is explicitly enabled.
+
 Each renderer has its own snd-aloop lane, and room-correction/test
 playback has a dedicated `correction_substream` lane. `jasper-fanin`
 sums those lanes into substream 7, which CamillaDSP and the AEC bridge
@@ -385,10 +393,17 @@ outputd client, not `aplay -D plug:jasper_out`. Direct `jasper_out`
 playback exercises only the pre-outputd rollback dmix and bypasses both
 CamillaDSP and outputd. `main_volume` does nothing to the TTS path.
 
-The Apple dongle Headphone is pinned at 100% by `jasper-dac-init`,
-watched by `jasper-headphone-monitor`, checked by `jasper-doctor`.
-Software never touches it. The amp gain is a physical knob set at
-install time.
+On Apple-dongle installs, the dongle `Headphone` control is pinned at
+100% by `jasper-dac-init`, watched by `jasper-headphone-monitor`, and
+checked by `jasper-doctor`. Those services are enabled only when
+`jasper-audio-hardware-reconcile` recognizes the selected final-output
+DAC as the Apple USB-C dongle; DAC8x and unknown-output states disable
+the Apple-specific units. The reconciler runs at install/boot and from
+udev `controlC*` add/remove/change events, so USB DAC changes converge
+without a deploy-only scan. The helper scripts remain runtime-safe for
+manual/operator starts. `outputd_dac` still points at the detected
+final-output card. Software never touches downstream amp gain. The amp
+gain is a physical knob set at install time.
 
 ## AEC bridge implications
 

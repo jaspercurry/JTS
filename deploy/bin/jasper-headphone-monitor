@@ -2,7 +2,7 @@
 # Watch the Apple dongle's Headphone mixer control and ACTIVELY
 # self-heal it back to 100% when something drives it down.
 #
-# Usage: jasper-headphone-monitor <card> <control>
+# Usage: jasper-headphone-monitor [card|auto] [control]
 #
 # Why this exists. The dongle's UAC firmware reports a hardware
 # default of -20 dB (80/120 = 67%) on every USB (re-)enumeration,
@@ -22,15 +22,38 @@
 
 set -uo pipefail
 
-CARD="${1:-A}"
+CONFIGURED_CARD="${1:-auto}"
 CONTROL="${2:-Headphone}"
+APPLE_DONGLE_REGEX="usb-c to 3.5mm"
+
+detect_apple_card() {
+    aplay -L 2>/dev/null \
+        | grep -B1 -iE "$APPLE_DONGLE_REGEX" \
+        | grep -oE 'CARD=[^,]+' \
+        | head -1 \
+        | sed 's/CARD=//' \
+        || true
+}
+
+resolve_card() {
+    if [[ -n "$CONFIGURED_CARD" && "$CONFIGURED_CARD" != "auto" ]]; then
+        printf '%s\n' "$CONFIGURED_CARD"
+        return 0
+    fi
+    detect_apple_card
+}
+
+event_state() {
+    printf '%s' "$1" | tr ' ' '_'
+}
 
 read_state() {
+    local card="$1"
     # Output line like:  [100%] [0.00dB] [on]
     # Grabs the first channel only — both channels of a stereo pair
     # are slaved to the same setting on this hardware, so reporting
     # one is enough.
-    amixer -c "$CARD" sget "$CONTROL" 2>/dev/null \
+    amixer -c "$card" sget "$CONTROL" 2>/dev/null \
         | grep -oE '\[[-0-9.]+%\] \[[-0-9.]+dB\] \[(on|off)\]' \
         | head -1
 }
@@ -40,28 +63,62 @@ read_state() {
 # running — a transient amixer error isn't worth crashing the
 # watcher.
 maybe_reset() {
-    local state="$1"
+    local card="$1" state="$2"
     if [[ "$state" != *"[100%]"* ]]; then
-        echo "headphone monitor: drift to $state — resetting to 100%"
-        if ! amixer -c "$CARD" sset "$CONTROL" 100% unmute >/dev/null 2>&1; then
-            echo "headphone monitor: reset FAILED (amixer non-zero exit)"
+        echo "event=apple_dongle.headphone_monitor.drift card=${card} control=${CONTROL} state=$(event_state "$state") action=reset_to_100"
+        if ! amixer -c "$card" sset "$CONTROL" 100% unmute >/dev/null 2>&1; then
+            echo "event=apple_dongle.headphone_monitor.reset_failed card=${card} control=${CONTROL} reason=amixer_nonzero"
         fi
     fi
 }
 
-echo "headphone monitor starting: card=$CARD control=$CONTROL"
+echo "event=apple_dongle.headphone_monitor.start configured_card=${CONFIGURED_CARD} control=${CONTROL}"
 last=""
+last_card=""
+absent_logged=0
+unreadable_logged=0
 while true; do
-    cur=$(read_state)
+    card="$(resolve_card)"
+    if [[ -z "$card" ]]; then
+        if [[ "$absent_logged" != "1" ]]; then
+            echo "event=apple_dongle.headphone_monitor.absent configured_card=${CONFIGURED_CARD} control=${CONTROL}"
+            absent_logged=1
+        fi
+        last=""
+        last_card=""
+        unreadable_logged=0
+        sleep 5
+        continue
+    fi
+
+    absent_logged=0
+    if [[ "$card" != "$last_card" ]]; then
+        echo "event=apple_dongle.headphone_monitor.detected card=${card} control=${CONTROL}"
+        last=""
+        last_card="$card"
+        unreadable_logged=0
+    fi
+
+    cur=$(read_state "$card")
+    if [[ -z "$cur" ]]; then
+        if [[ "$unreadable_logged" != "1" ]]; then
+            echo "event=apple_dongle.headphone_monitor.unreadable card=${card} control=${CONTROL}"
+            unreadable_logged=1
+        fi
+        last=""
+        sleep 5
+        continue
+    fi
+    unreadable_logged=0
     if [[ -n "$cur" && "$cur" != "$last" ]]; then
         if [[ -z "$last" ]]; then
-            echo "headphone state: $cur (initial)"
+            echo "event=apple_dongle.headphone_monitor.state card=${card} control=${CONTROL} state=$(event_state "$cur") initial=1"
             # If we start up to a non-100% state (daemon restart
             # while drift was already in effect), self-heal too.
-            maybe_reset "$cur"
+            maybe_reset "$card" "$cur"
         else
-            echo "headphone CHANGE: $last -> $cur"
-            maybe_reset "$cur"
+            echo "event=apple_dongle.headphone_monitor.change card=${card} control=${CONTROL} from=$(event_state "$last") to=$(event_state "$cur")"
+            maybe_reset "$card" "$cur"
         fi
         last="$cur"
     fi

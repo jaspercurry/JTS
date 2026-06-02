@@ -153,8 +153,9 @@ Run for real from a Pi-local checkout:
    - Enable socket-activated setup wizards and always-on audio/control
      services.
    - Enable/start or restart renderer services, jasper-fanin,
-     jasper-outputd, DAC init, headphone monitor, nginx, Avahi,
-     CamillaGUI socket, and the WiFi guardian.
+     jasper-outputd, audio-hardware reconciliation, DAC init,
+     headphone monitor, nginx, Avahi, CamillaGUI socket, and the WiFi
+     guardian.
    - Require jasper-outputd to be active and answering STATUS before
      voice is reconciled onto the outputd TTS socket.
    - Seed or validate the outputd Camilla statefile while preserving
@@ -634,20 +635,47 @@ EOF
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
 }
 
-detect_card() {
-    # detect_card "<aplay|arecord>" "<grep regex>" "<fallback>"
-    local tool="$1" regex="$2" fallback="$3"
+find_card() {
+    # find_card "<aplay|arecord>" "<grep regex>"
+    local tool="$1" regex="$2"
     local card
     card=$("$tool" -L 2>/dev/null \
         | grep -B1 -iE "$regex" \
         | grep -oE 'CARD=[^,]+' \
         | head -1 \
-        | sed 's/CARD=//')
+        | sed 's/CARD=//' \
+        || true)
+    if [[ -n "$card" ]]; then
+        echo "$card"
+    fi
+}
+
+detect_card() {
+    # detect_card "<aplay|arecord>" "<grep regex>" "<fallback>"
+    local tool="$1" regex="$2" fallback="$3"
+    local card
+    card=$(find_card "$tool" "$regex" || true)
     if [[ -n "$card" ]]; then
         echo "$card"
     else
         echo "$fallback"
     fi
+}
+
+select_audio_hardware_roles() {
+    # Hardware roles are intentionally separate. The reconciler owns
+    # detection so install, boot, and udev-triggered changes share one
+    # policy surface.
+    eval "$(bash "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" --print-env)"
+    if [[ "${APPLE_DONGLE_PRESENT}" == "1" ]]; then
+        echo "  Apple dongle: CARD=${DONGLE_CARD}"
+    else
+        echo "  Apple dongle: not detected (fallback CARD=${DONGLE_CARD} for legacy templates)"
+    fi
+    echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"
+    echo "  Output DAC id: ${OUTPUT_DAC_ID}"
+    export DONGLE_CARD APPLE_DONGLE_PRESENT APPLE_DONGLE_SERVICE_CARD
+    export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
 install_alsa() {
@@ -662,14 +690,7 @@ install_alsa() {
     rmmod snd_aloop 2>/dev/null || true
     modprobe snd-aloop || true
 
-    # Detect Apple USB-C dongle card name. Falls back to "A" (the
-    # literal default on PiOS Trixie). If the dongle isn't plugged
-    # in at install time, the fallback is fine — jasper-doctor will
-    # catch a real mismatch. Exported so install_camilladsp can pick
-    # it up for __DONGLE_CARD__ substitution.
-    DONGLE_CARD=$(detect_card aplay 'usb-c to 3.5mm' 'A')
-    echo "  Apple dongle: CARD=${DONGLE_CARD}"
-    export DONGLE_CARD
+    select_audio_hardware_roles
 
     # /etc/asound.conf provides the system-wide ALSA PCM definitions
     # (per-renderer fan-in lanes, jasper_capture, outputd lanes,
@@ -710,6 +731,7 @@ install_alsa() {
     fi
     install -d -m 0755 "${ENV_DIR}" "${STATE_DIR}"
     sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
+        -e "s/__OUTPUT_DAC_CARD__/${OUTPUT_DAC_CARD}/g" \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
         > "${ENV_DIR}/asoundrc.jasper.template"
     chmod 0644 "${ENV_DIR}/asoundrc.jasper.template"
@@ -723,6 +745,9 @@ install_alsa() {
         echo "  /var/lib/jasper/audio_quality.env defaulted to samplerate_medium."
     fi
     install -d -m 0755 /var/lib/jasper-asound
+    install -m 0644 \
+        "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
+        "${ENV_DIR}/asoundrc.jasper.source"
     /usr/local/sbin/jasper-render-asound-conf
     ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf
     chmod 0644 /var/lib/jasper-asound/asound.conf
@@ -1533,6 +1558,13 @@ PY
         -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
         -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
         "${ENV_DIR}/jasper.env"
+    if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
+        sed -i.bak '/^JASPER_AUDIO_DAC_ID=/d' "${ENV_DIR}/jasper.env"
+        rm -f "${ENV_DIR}/jasper.env.bak"
+        printf 'JASPER_AUDIO_DAC_ID=%s\n' "${OUTPUT_DAC_ID}" >> "${ENV_DIR}/jasper.env"
+        chmod 0640 "${ENV_DIR}/jasper.env"
+        echo "  audio DAC id: ${OUTPUT_DAC_ID}"
+    fi
     if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
         install -d -m 0750 "${STATE_DIR}"
         printf 'JASPER_SPEAKER_NAME="JTS"\n' > "${STATE_DIR}/speaker_name.env"
@@ -2311,6 +2343,12 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
+        /usr/local/sbin/jasper-audio-hardware-reconcile
 
     # jasper-fanin: per-renderer snd-aloop substream fan-in daemon.
     # **Production default** as of 2026-05-26 — replaces the
@@ -2372,8 +2410,13 @@ install_systemd_units() {
     # Pin the Apple dongle's analog Headphone control to 100% at every
     # boot — the dynamic volume control happens in CamillaDSP (or the
     # source's own slider) and the dongle should never be limiting us.
-    # DONGLE_CARD was set above by install_alsa.
-    sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-dac-init" \
+        /usr/local/bin/jasper-dac-init
+    # DONGLE_CARD was set above by install_alsa. Apple-only mixer helpers
+    # receive APPLE_DONGLE_SERVICE_CARD, which is either the detected Apple
+    # card or "auto" so they can no-op/wait safely when absent.
+    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
         > "${SYSTEMD_DIR}/jasper-dac-init.service"
     chmod 0644 "${SYSTEMD_DIR}/jasper-dac-init.service"
@@ -2384,9 +2427,10 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-headphone-monitor" \
         /usr/local/bin/jasper-headphone-monitor
-    install -m 0644 \
+    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
-        "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+        > "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+    chmod 0644 "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
     # Custom udev rule: re-pins the dongle's Headphone control to 100%
     # on every USB (re-)enumeration AND disables autosuspend on the
     # device. Compensates for two upstream issues:
@@ -2410,6 +2454,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-aec-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-aec-reconcile.rules
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
+        /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
     udevadm control --reload-rules
     # Trigger the rule once for the currently-attached dongle so we
     # don't have to wait for the next replug. ATTR{} match is
@@ -2530,18 +2577,10 @@ install_systemd_units() {
 
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service \
+        jasper-audio-hardware-reconcile.service \
         jasper-voice.service \
         jasper-control.service \
-        jasper-dac-init.service jasper-headphone-monitor.service \
         jasper-input.service
-    # Apply the dongle Headphone-max pin immediately so a fresh
-    # install gets the full analog ceiling without waiting for
-    # next reboot.
-    systemctl start jasper-dac-init.service || \
-        echo "  WARN: jasper-dac-init failed (dongle not enumerated?). \
-Will retry on next boot."
-    # Restart the headphone monitor so it picks up post-init state.
-    systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
 
     # Stop the currently-running voice daemon before outputd claims the
     # direct DAC. On outputd deploys, the old voice process may still
@@ -2551,6 +2590,8 @@ Will retry on next boot."
     # coherent.
     systemctl stop jasper-voice.service 2>/dev/null || true
     systemctl reset-failed jasper-voice.service 2>/dev/null || true
+    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
+        echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
 
     systemctl restart jasper-fanin.service 2>/dev/null || true
     # CamillaDSP captures the fan-in output (`pcm.jasper_capture`).
