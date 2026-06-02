@@ -409,9 +409,13 @@ DAC8x hardware and uses 1-indexed physical output numbers. It takes
 effect when deploy, boot/udev reconcile, or a manual
 `jasper-audio-hardware-reconcile` run re-renders `/etc/asound.conf`.
 This is a small final-output alias route for single-amp/commissioning
-cases, not an active-speaker crossover map. Software never touches
-downstream amp gain. The amp gain is a physical knob set at install
-time.
+cases, not an active-speaker crossover map. The product speaker-output
+topology contract lives at `/var/lib/jasper/output_topology.json` and is
+served by `/sound/output-topology`; it records physical DAC lanes,
+speaker groups, passive/active modes, subwoofers, and safety evidence
+without rewriting ALSA, loading CamillaDSP, or emitting audio. Software
+never touches downstream amp gain. The amp gain is a physical knob set
+at install time.
 
 ## AEC bridge implications
 
@@ -451,4 +455,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-02 (DAC8x output route knob added; assistant loudness matching, STATUS telemetry, and outputd topology rechecked)
+Last verified: 2026-06-02 (speaker output topology contract, DAC8x output route knob, assistant loudness matching, STATUS telemetry, and outputd topology rechecked)

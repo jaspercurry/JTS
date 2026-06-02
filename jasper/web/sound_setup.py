@@ -3,6 +3,7 @@
 URL surface (after nginx strips /sound/):
   GET  /         page render
   GET  /state    persisted profile + preview + stock curve metadata
+  GET  /output-topology              speaker/DAC topology draft + safety evidence
   GET  /active-speaker/environment     read-only active-speaker readiness
   GET  /active-speaker/safe-playback   no-audio safety session state
   GET  /active-speaker/tone-targets    preset-derived channel-test targets
@@ -13,6 +14,7 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/stop      stop the no-audio active-speaker session
   POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
   POST /active-speaker/play-tone render a bounded no-audio tone artifact
+  POST /output-topology save a complete speaker/DAC topology draft
   POST /profiles/save save or update a named custom profile
   POST /profiles/rename rename a named custom profile
   POST /profiles/delete delete a named custom profile
@@ -41,6 +43,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.output_topology import (
+    OutputTopology,
+    load_output_topology,
+    save_output_topology,
+)
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
     MAX_FREQ_HZ,
@@ -143,6 +150,30 @@ def _state_payload(
             load_profile_library(library_path)
         )
     return payload
+
+
+def _output_topology_payload() -> dict[str, Any]:
+    topology = load_output_topology()
+    return {"output_topology": topology.to_dict(include_evaluation=True)}
+
+
+def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    raw_topology = raw.get("output_topology", raw)
+    topology = OutputTopology.from_mapping(raw_topology)
+    save_output_topology(topology)
+    evaluation = topology.evaluation()
+    logger.info(
+        "event=sound.output_topology_save topology_id=%s status=%s "
+        "device_id=%s groups=%d assigned_outputs=%d blockers=%d warnings=%d",
+        topology.topology_id,
+        evaluation["status"],
+        topology.hardware.device_id,
+        len(topology.speaker_groups),
+        evaluation["assigned_output_count"],
+        len(evaluation["blockers"]),
+        len(evaluation["warnings"]),
+    )
+    return {"output_topology": topology.to_dict(include_evaluation=True)}
 
 
 def _log_live_draft_unavailable(
@@ -832,6 +863,13 @@ def _make_handler(
                     )
                 )
                 return
+            if path == "/output-topology":
+                try:
+                    self._send_json(_output_topology_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("event=sound.output_topology result=error")
+                    self._send_json({"error": str(e)}, status=502)
+                return
             if path == "/active-speaker/environment":
                 try:
                     self._send_json(_active_speaker_environment_payload())
@@ -873,6 +911,7 @@ def _make_handler(
                 "/active-speaker/stop",
                 "/active-speaker/tone-plan",
                 "/active-speaker/play-tone",
+                "/output-topology",
                 "/profiles/save",
                 "/profiles/rename",
                 "/profiles/delete",
@@ -895,6 +934,17 @@ def _make_handler(
                     return
                 if path == "/active-speaker/play-tone":
                     self._send_json(_active_speaker_tone_playback_payload(raw))
+                    return
+                if path == "/output-topology":
+                    try:
+                        self._send_json(_save_output_topology_payload(raw))
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.output_topology_save result=error "
+                            "error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/settings":
                     settings = SoundSettings.from_mapping(raw)

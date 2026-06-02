@@ -182,11 +182,21 @@ reload CamillaDSP, or change volume. The dry backend enforces its own writer
 caps (48 kHz max, 16 channels max, 100-500 ms, -80..-45 dBFS) and prunes old
 generated tone artifacts, keeping the newest 24 sets by default. Physical DAC
 lane assignment, speaker grouping, left/right swaps, active driver roles,
-passive speakers, and subwoofer outputs remain future setup work rather than
-hidden assumptions in the current `/sound/` card.
-The actual
-substrate starts in
-`jasper.active_speaker` and the canonical safety/design plan lives in
+passive speakers, and subwoofer outputs now have a no-audio backend contract:
+`/sound/output-topology` reads/saves the complete
+`jasper.output_topology` JSON model at
+`/var/lib/jasper/output_topology.json`. That model evaluates identity and
+tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
+tones, or authorizes playback; the audible safe-session path remains separate.
+The same `/sound/` card renders a lightweight **Output setup** surface over
+that endpoint: it shows detected hardware, a top-down speaker sketch, assigned
+and unassigned physical outputs, backend safety evidence, and no-audio starter
+maps for stereo passive and stereo active 2-way wiring. Saving a starter map is
+a complete topology JSON replacement and only runs backend validation; it does
+not play sound or change the live DSP graph.
+The active-speaker runtime substrate starts in
+`jasper.active_speaker`, the physical topology substrate starts in
+`jasper.output_topology`, and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 
 ## Files
@@ -199,6 +209,11 @@ substrate starts in
   calibration-level contract plus dry tone-artifact rendering. Current scope is
   validation/template generation and status/session/plan/artifact bookkeeping
   only; no hardware loading or sound-emitting playback.
+- `jasper/output_topology.py` — import-cheap physical-output topology
+  contract for DAC lanes, speaker groups, passive/active modes, subwoofers,
+  identity verification, and tweeter-protection evidence. Current scope is
+  JSON load/save/evaluate plus the `/sound/` Output setup UI; it has no audio
+  side effects, hardware loading, or sound-emitting playback.
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
   preview response, expanded-band overlays, the peak-boost `estimate_headroom_db`

@@ -22,6 +22,12 @@
 > entry point; its **Check environment** action calls
 > `/sound/active-speaker/environment` and displays the read-only
 > environment report without touching live audio.
+> The same card now includes a lightweight Output setup UI over
+> `/sound/output-topology`; it can render detected physical outputs,
+> speaker groups, assigned/unassigned lanes, safety evidence, and
+> no-audio starter maps for stereo passive or stereo active 2-way
+> wiring. Saving that map only persists the output topology JSON and
+> runs backend validation; it does not load CamillaDSP or emit sound.
 > The card can also arm and stop a no-audio safe-playback session
 > through `jasper.active_speaker.safe_playback`; arming only persists
 > safety state after the environment load gate passes, and Stop is
@@ -114,6 +120,15 @@ The existing deployed audio topology is not yet active 2-way ready:
   3-way, and identify subwoofer outputs. Do not bake HiFiBerry DAC-X8,
   Apple dongle, or any other DAC-specific physical assumption into
   `tone_plan` or the dry playback artifact backend.
+- That future setup surface now has a backend substrate:
+  `jasper.output_topology` and `/sound/output-topology` persist a
+  versioned, complete-replacement topology draft at
+  `/var/lib/jasper/output_topology.json`. It can describe physical DAC
+  lanes, speaker groups, passive/active modes, up-to-3-way driver
+  roles, subwoofers, approximate placement, identity verification, and
+  tweeter protection status. It deliberately has no audio side effects;
+  active-speaker tone playback and active CamillaDSP loading must still
+  pass through their own safety gates.
 - Before tweeter hardware is connected, all audible paths must be
   proven to pass through the same protected crossover path. A TTS
   bypass into a raw active amp channel is a driver-damage hazard.
@@ -171,6 +186,9 @@ It keeps ordinary stereo output audible on explicit DAC8x physical
 channels. A loaded active-speaker baseline instead owns a zero-indexed
 CamillaDSP channel map, per-driver filters, limiters, startup mutes,
 and the safety gates that must protect direct-connected drivers.
+The persisted output topology sits between those two layers: it names
+which physical DAC lane belongs to which speaker/driver role, but it is
+not itself a CamillaDSP config and cannot authorize playback.
 
 ## Hard Safety Rules
 
