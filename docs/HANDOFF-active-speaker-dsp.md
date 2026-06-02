@@ -20,8 +20,11 @@
 > headroom, tweeter protective HP, per-driver mute, and per-driver
 > limiter chains. `/sound/` has a read-only Advanced speaker setup
 > entry point that labels this as schema plus startup-template only.
-> No tone playback, channel test, CamillaDSP reload/apply path, or
-> hardware loading exists yet.
+> `jasper-active-speaker startup-template` can write one of these
+> candidate templates from a preset JSON file and run
+> `camilladsp --check` when the binary is available. No tone playback,
+> channel test, CamillaDSP reload/apply path, or hardware loading
+> exists yet.
 
 ## Current Operational Truth
 
@@ -349,6 +352,18 @@ Important implementation implications:
   correction profiles under `/var/lib/jasper`, with its own bundle
   metadata and accepted/rejected state.
 
+Current no-apply template command:
+
+```sh
+jasper-active-speaker startup-template ./preset.json \
+  --playback-device hw:MultiChannelDAC \
+  --output ./active_speaker_startup.yml
+```
+
+This command writes a candidate YAML file and runs `camilladsp
+--check` if the binary is installed. A missing validator is reported
+as `Validation: missing` and does not load or apply anything.
+
 ## Deterministic Tooling Roadmap
 
 Code should eventually own:
@@ -398,8 +413,11 @@ Updated execution plan:
 2. **Safe config slice**: generate 2-way and 3-way CamillaDSP
    templates with explicit muted/protected startup state, validate
    them, and make rollback mechanical. Started 2026-06-01 as a
-   no-apply startup-template emitter; `camilladsp --check`, rollback
-   statefile handling, and hardware loading are still future work.
+   no-apply startup-template emitter and `jasper-active-speaker
+   startup-template` CLI. The CLI writes candidate YAML from preset
+   JSON and runs `camilladsp --check` when available. Rollback
+   statefile handling and hardware loading gates are still future
+   work.
 3. **Engineering interop slice**: import REW/VituixCAD measurement
    artifacts and freeze the first named preset before attempting an
    end-user wizard.
