@@ -217,13 +217,25 @@ gate_role_services() {
     fi
 }
 
+park_output_audio() {
+    if [[ "$NO_RESTART" == "1" ]]; then
+        log_event "output_park_skip" "output_dac_id=${OUTPUT_DAC_ID} recognized=0 no_restart=1"
+        return
+    fi
+    "$SYSTEMCTL" stop jasper-voice.service 2>/dev/null || true
+    "$SYSTEMCTL" stop jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" reset-failed jasper-voice.service jasper-outputd.service 2>/dev/null || true
+    log_event "output_parked" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=0"
+}
+
 restart_audio_if_needed() {
     local restart_needed="$1"
     if [[ "$restart_needed" != "1" || "$NO_RESTART" == "1" ]]; then
         return
     fi
     "$SYSTEMCTL" stop jasper-voice.service 2>/dev/null || true
-    "$SYSTEMCTL" try-restart jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" reset-failed jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" restart jasper-outputd.service 2>/dev/null || true
     "$SYSTEMCTL" restart jasper-aec-reconcile.service 2>/dev/null || true
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
 }
@@ -241,7 +253,15 @@ set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && env_changed
 render_changed=0
 render_asound_if_needed && render_changed=1
 gate_role_services
-restart_audio_if_needed "$render_changed"
+if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+    restart_needed=0
+    if [[ "$render_changed" == "1" || "$env_changed" == "1" ]]; then
+        restart_needed=1
+    fi
+    restart_audio_if_needed "$restart_needed"
+else
+    park_output_audio
+fi
 
 log_event "complete" \
     "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed}"

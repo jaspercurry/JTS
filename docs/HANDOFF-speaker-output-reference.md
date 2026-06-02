@@ -172,7 +172,12 @@ What exists:
   is detected) plus `JASPER_AUDIO_DAC_CARD` into
   `/etc/jasper/jasper.env` so validation artifacts and status surfaces
   have stable hardware identity instead of only the generic
-  `outputd_dac` PCM name.
+  `outputd_dac` PCM name. A recognized role renders the ALSA template
+  and restarts `jasper-outputd` so hotplug arrival recovers from a
+  previously parked state. An unknown/no-output role does **not** render
+  `outputd_dac` to a guessed card; it stops `jasper-voice` and
+  `jasper-outputd` so stale direct-DAC ownership cannot keep running
+  against removed hardware or burn the outputd reboot escalation budget.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
   dongle `Headphone` control. The audio-hardware reconciler enables

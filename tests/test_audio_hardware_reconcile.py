@@ -51,6 +51,8 @@ def _run_reconcile(
     tmp_path: Path,
     listing: str,
     *args: str,
+    initial_env: str | None = None,
+    initial_template: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
@@ -67,6 +69,13 @@ def _run_reconcile(
         "JASPER_ALSA_RATE_CONVERTER=samplerate_medium\n",
         encoding="utf-8",
     )
+    if initial_env is not None:
+        (tmp_path / "jasper.env").write_text(initial_env, encoding="utf-8")
+    if initial_template is not None:
+        (tmp_path / "asoundrc.jasper.template").write_text(
+            initial_template,
+            encoding="utf-8",
+        )
 
     env = os.environ.copy()
     env.update(
@@ -150,7 +159,8 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "start jasper-dac-init.service" in commands
     assert "restart jasper-headphone-monitor.service" in commands
     assert "stop jasper-voice.service" in commands
-    assert "try-restart jasper-outputd.service" in commands
+    assert "reset-failed jasper-outputd.service" in commands
+    assert "restart jasper-outputd.service" in commands
     assert "restart jasper-aec-reconcile.service" in commands
 
 
@@ -168,9 +178,12 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "disable --now jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "reset-failed jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "enable jasper-dac-init.service" not in commands
+    assert "stop jasper-voice.service" in commands
+    assert "restart jasper-outputd.service" in commands
+    assert "restart jasper-aec-reconcile.service" in commands
 
 
-def test_reconcile_unknown_role_disables_apple_helpers_without_rerender(tmp_path: Path):
+def test_reconcile_unknown_role_parks_output_without_rerender(tmp_path: Path):
     result = _run_reconcile(tmp_path, "", "--reason", "test")
 
     assert result.returncode == 0, result.stderr
@@ -181,4 +194,37 @@ def test_reconcile_unknown_role_disables_apple_helpers_without_rerender(tmp_path
     assert _render_log(tmp_path) == ""
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-dac-init.service jasper-headphone-monitor.service" in commands
-    assert "try-restart jasper-outputd.service" not in commands
+    assert "stop jasper-voice.service" in commands
+    assert "stop jasper-outputd.service" in commands
+    assert "reset-failed jasper-voice.service jasper-outputd.service" in commands
+    assert "restart jasper-outputd.service" not in commands
+    assert "restart jasper-aec-reconcile.service" not in commands
+    assert "event=audio_hardware_reconcile.output_parked" in result.stderr
+
+
+def test_reconcile_recognized_role_restarts_outputd_after_unknown_state(
+    tmp_path: Path,
+):
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_AUDIO_DAC_ID=A\nJASPER_AUDIO_DAC_CARD=A\n",
+        initial_template=(
+            "pcm.outputd_dac { card sndrpihifiberry }\n"
+            "pcm.jasper_out { card A }\n"
+            "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _render_log(tmp_path) == ""
+    env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
+    assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x" in env_text
+    assert "JASPER_AUDIO_DAC_CARD=sndrpihifiberry" in env_text
+    commands = _systemctl_log(tmp_path)
+    assert "stop jasper-voice.service" in commands
+    assert "reset-failed jasper-outputd.service" in commands
+    assert "restart jasper-outputd.service" in commands
+    assert "restart jasper-aec-reconcile.service" in commands

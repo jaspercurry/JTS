@@ -1001,7 +1001,10 @@ For anyone touching the resilience code:
   event-driven shape for output DAC roles. The oneshot classifies the
   selected final-output DAC, updates JTS-owned DAC identity/asound
   state for recognized roles, and enables Apple mixer helpers only for
-  the Apple output role.
+  the Apple output role. If no recognized output DAC is present, it
+  parks `jasper-voice` and `jasper-outputd` instead of leaving stale
+  direct-DAC state active; recognized DAC arrival restarts outputd so
+  hotplug recovery does not require a full deploy.
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, starts jasper-camilla,
   then runs the reconciler so mic/AEC/voice state matches present

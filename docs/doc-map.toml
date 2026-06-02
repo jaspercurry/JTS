@@ -556,6 +556,8 @@ code = [
   "deploy/jasper-system-web.*",
   "deploy/bin/jasper-apply-airplay-mode",
   "deploy/bin/jasper-audio-hardware-reconcile",
+  "deploy/bin/jasper-dac-init",
+  "deploy/bin/jasper-headphone-monitor",
   "deploy/udev/99-jasper-audio-hardware-reconcile.rules",
 ]
 docs = [
