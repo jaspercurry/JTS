@@ -661,20 +661,49 @@ detect_card() {
     fi
 }
 
-audio_dac_id_for_card() {
-    # Keep validation artifact identity narrow and stable. This is not
-    # a generic DAC registry; it distinguishes the shipped Apple path
-    # from the DAC8x lab path this workstream validates.
-    local card="$1"
-    local lowered
-    lowered=$(printf '%s' "$card" | tr '[:upper:]' '[:lower:]')
-    if [[ "$lowered" == *dac8x* || "$lowered" == *hifiberry* || "$lowered" == *sndrpihifiberry* ]]; then
-        echo "hifiberry_dac8x"
-    elif [[ "${APPLE_DONGLE_PRESENT:-0}" == "1" && "$card" == "${DONGLE_CARD:-}" ]]; then
-        echo "apple_usb_c_dongle"
+detect_apple_dongle_card() {
+    find_card aplay 'usb-c to 3.5mm' || true
+}
+
+detect_dac8x_output_card() {
+    find_card aplay 'snd_rpi_hifiberry_dac8x|hifiberry.*dac8x|dac8x' || true
+}
+
+select_audio_hardware_roles() {
+    # Hardware roles are intentionally separate:
+    #   - APPLE_DONGLE_CARD is the Apple-only analog mixer control card.
+    #   - OUTPUT_DAC_CARD is the final speaker-output card outputd opens.
+    #   - OUTPUT_DAC_ID is a stable validation/reporting identity for the
+    #     role that was positively detected, not a broad DAC registry.
+    APPLE_DONGLE_CARD=$(detect_apple_dongle_card)
+    if [[ -n "${APPLE_DONGLE_CARD}" ]]; then
+        DONGLE_CARD="${APPLE_DONGLE_CARD}"
+        APPLE_DONGLE_PRESENT=1
+        APPLE_DONGLE_SERVICE_CARD="${APPLE_DONGLE_CARD}"
+        echo "  Apple dongle: CARD=${DONGLE_CARD}"
     else
-        echo "$card"
+        DONGLE_CARD="A"
+        APPLE_DONGLE_PRESENT=0
+        APPLE_DONGLE_SERVICE_CARD="auto"
+        echo "  Apple dongle: not detected (fallback CARD=${DONGLE_CARD} for legacy templates)"
     fi
+
+    DAC8X_OUTPUT_CARD=$(detect_dac8x_output_card)
+    if [[ -n "${DAC8X_OUTPUT_CARD}" ]]; then
+        OUTPUT_DAC_CARD="${DAC8X_OUTPUT_CARD}"
+        OUTPUT_DAC_ID="hifiberry_dac8x"
+    elif [[ "${APPLE_DONGLE_PRESENT}" == "1" ]]; then
+        OUTPUT_DAC_CARD="${APPLE_DONGLE_CARD}"
+        OUTPUT_DAC_ID="apple_usb_c_dongle"
+    else
+        OUTPUT_DAC_CARD="${DONGLE_CARD}"
+        OUTPUT_DAC_ID="${OUTPUT_DAC_CARD}"
+    fi
+
+    echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"
+    echo "  Output DAC id: ${OUTPUT_DAC_ID}"
+    export DONGLE_CARD APPLE_DONGLE_PRESENT APPLE_DONGLE_SERVICE_CARD
+    export OUTPUT_DAC_CARD OUTPUT_DAC_ID
 }
 
 install_alsa() {
@@ -689,31 +718,7 @@ install_alsa() {
     rmmod snd_aloop 2>/dev/null || true
     modprobe snd-aloop || true
 
-    # Detect Apple USB-C dongle card name separately from the final
-    # output role. Apple mixer pinning must only run when this card is
-    # physically present; DAC8x lab installs have no Headphone control
-    # and should not run the Apple-only init/monitor services.
-    APPLE_DONGLE_CARD=$(find_card aplay 'usb-c to 3.5mm' || true)
-    if [[ -n "${APPLE_DONGLE_CARD}" ]]; then
-        DONGLE_CARD="${APPLE_DONGLE_CARD}"
-        APPLE_DONGLE_PRESENT=1
-        echo "  Apple dongle: CARD=${DONGLE_CARD}"
-    else
-        DONGLE_CARD="A"
-        APPLE_DONGLE_PRESENT=0
-        echo "  Apple dongle: not detected (fallback CARD=${DONGLE_CARD} for legacy templates)"
-    fi
-    export DONGLE_CARD APPLE_DONGLE_PRESENT
-
-    # Final-output card for outputd. DAC8x lab systems do not have the
-    # Apple USB-C dongle, and falling back to CARD=A makes outputd fail
-    # before validation can start. Keep Apple as the public/default path,
-    # but prefer the HiFiBerry DAC8x card when it is enumerated.
-    OUTPUT_DAC_CARD=$(detect_card aplay 'snd_rpi_hifiberry_dac8x|hifiberry.*dac8x|dac8x' "${DONGLE_CARD}")
-    OUTPUT_DAC_ID=$(audio_dac_id_for_card "${OUTPUT_DAC_CARD}")
-    echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"
-    echo "  Output DAC id: ${OUTPUT_DAC_ID}"
-    export OUTPUT_DAC_CARD OUTPUT_DAC_ID
+    select_audio_hardware_roles
 
     # /etc/asound.conf provides the system-wide ALSA PCM definitions
     # (per-renderer fan-in lanes, jasper_capture, outputd lanes,
@@ -2424,8 +2429,13 @@ install_systemd_units() {
     # Pin the Apple dongle's analog Headphone control to 100% at every
     # boot — the dynamic volume control happens in CamillaDSP (or the
     # source's own slider) and the dongle should never be limiting us.
-    # DONGLE_CARD was set above by install_alsa.
-    sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-dac-init" \
+        /usr/local/bin/jasper-dac-init
+    # DONGLE_CARD was set above by install_alsa. Apple-only mixer helpers
+    # receive APPLE_DONGLE_SERVICE_CARD, which is either the detected Apple
+    # card or "auto" so they can no-op/wait safely when absent.
+    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
         > "${SYSTEMD_DIR}/jasper-dac-init.service"
     chmod 0644 "${SYSTEMD_DIR}/jasper-dac-init.service"
@@ -2436,7 +2446,7 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-headphone-monitor" \
         /usr/local/bin/jasper-headphone-monitor
-    sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
+    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
         > "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
     chmod 0644 "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
@@ -2586,21 +2596,16 @@ install_systemd_units() {
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
-    if [[ "${APPLE_DONGLE_PRESENT:-0}" == "1" ]]; then
-        systemctl enable jasper-dac-init.service jasper-headphone-monitor.service
-        # Apply the dongle Headphone-max pin immediately so a fresh
-        # install gets the full analog ceiling without waiting for
-        # next reboot.
-        systemctl start jasper-dac-init.service || \
-            echo "  WARN: jasper-dac-init failed (dongle not ready?). \
+    systemctl enable jasper-dac-init.service jasper-headphone-monitor.service
+    # Apply the Apple dongle Headphone-max pin immediately when present.
+    # The helper exits 0 if no Apple dongle is detected, so DAC8x installs
+    # keep the service enabled without carrying a failed unit.
+    systemctl start jasper-dac-init.service || \
+        echo "  WARN: jasper-dac-init failed (dongle not ready?). \
 Will retry on next boot."
-        # Restart the headphone monitor so it picks up post-init state.
-        systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
-    else
-        systemctl disable --now jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
-        systemctl reset-failed jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
-        echo "  Apple dongle mixer services disabled (dongle not detected)."
-    fi
+    # Restart the headphone monitor so it picks up post-init state. In
+    # auto mode it waits quietly while the Apple dongle is absent.
+    systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
 
     # Stop the currently-running voice daemon before outputd claims the
     # direct DAC. On outputd deploys, the old voice process may still

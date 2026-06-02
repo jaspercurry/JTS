@@ -166,16 +166,19 @@ What exists:
   final-output card. Public/default installs use the Apple USB-C
   dongle; DAC8x lab installs use the enumerated
   `snd_rpi_hifiberry_dac8x` card. `install.sh` also writes
-  `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle` or `hifiberry_dac8x`)
-  into `/etc/jasper/jasper.env` so validation artifacts and status
-  surfaces have a stable hardware id instead of only the generic
-  `outputd_dac` PCM name.
+  `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`, `hifiberry_dac8x`, or
+  the raw fallback card token when no known role is detected) into
+  `/etc/jasper/jasper.env` so validation artifacts and status surfaces
+  have a stable hardware id instead of only the generic `outputd_dac`
+  PCM name.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
-  dongle `Headphone` control. They are enabled and started only when
-  the Apple dongle is detected at install time. DAC8x installs render
-  the templates for idempotence but disable/reset those units because
-  DAC8x has no Apple `Headphone` mixer control.
+  dongle `Headphone` control. They stay enabled across Apple and DAC8x
+  installs, but their helpers are runtime-safe: `jasper-dac-init`
+  exits cleanly when no Apple dongle is detected, and
+  `jasper-headphone-monitor` waits quietly in auto-detect mode. This
+  avoids deploy-time hardware presence becoming persistent service
+  state while still preventing DAC8x mixer-control failures.
 - Camilla outputd config: `/etc/camilladsp/outputd-cutover.yml` after
   install, copied from `deploy/camilladsp/outputd-cutover.yml`.
 - Camilla rollback preservation: the outputd `jasper-camilla.service`
@@ -706,8 +709,9 @@ datum: how much assistant audio was actually heard.
   bridge is a lab-gated pipeline fix for snd-aloop content-lane drift.
 - 2026-06-02: Split final-output DAC role from Apple mixer ownership.
   `outputd_dac` may target the Apple USB-C dongle or the JTS3 DAC8x;
-  `jasper-dac-init`/`jasper-headphone-monitor` now run only on Apple
-  dongle installs. Added the outputd-only DAC8x validation profile
+  `jasper-dac-init`/`jasper-headphone-monitor` now run as
+  runtime-safe Apple helpers instead of deploy-time-gated units. Added
+  the outputd-only DAC8x validation profile
   `hifiberry_dac8x_outputd_stability` for content-pipeline soaks that
   should not fail just because chip-AEC/voice is parked.
 

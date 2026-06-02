@@ -985,6 +985,17 @@ def _as_int(value: Any) -> int | None:
             return int(value)
         except (OverflowError, ValueError):
             return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            try:
+                return int(float(stripped))
+            except (OverflowError, ValueError):
+                return None
     return None
 
 
@@ -2106,7 +2117,7 @@ def _complete_hardware_validation_result(
     return HardwareValidationRun(artifact=artifact, path=path, latest_path=latest_path)
 
 
-def run_chip_aec_hardware_validation(
+def run_audio_hardware_validation(
     *,
     profile: str = CHIP_AEC_PROFILE,
     directory: Path | None = None,
@@ -2118,7 +2129,7 @@ def run_chip_aec_hardware_validation(
     stdout: bool = False,
     now: datetime | None = None,
 ) -> HardwareValidationRun:
-    """Run the bounded operator-controlled chip-AEC hardware validator."""
+    """Run a bounded operator-controlled audio hardware validator."""
 
     now = datetime.now(timezone.utc) if now is None else now
     duration_seconds = _duration_limit(
@@ -2301,6 +2312,33 @@ def run_chip_aec_hardware_validation(
         directory=directory,
         report_only=report_only,
         stdout=stdout,
+    )
+
+
+def run_chip_aec_hardware_validation(
+    *,
+    profile: str = CHIP_AEC_PROFILE,
+    directory: Path | None = None,
+    duration_seconds: float = DEFAULT_HARDWARE_OBSERVE_SECONDS,
+    poll_interval_seconds: float = DEFAULT_CHIP_POLL_INTERVAL_SECONDS,
+    report_only: bool = False,
+    force: bool = False,
+    allow_long: bool = False,
+    stdout: bool = False,
+    now: datetime | None = None,
+) -> HardwareValidationRun:
+    """Compatibility wrapper for the original chip-AEC validation API."""
+
+    return run_audio_hardware_validation(
+        profile=profile,
+        directory=directory,
+        duration_seconds=duration_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        report_only=report_only,
+        force=force,
+        allow_long=allow_long,
+        stdout=stdout,
+        now=now,
     )
 
 
@@ -2591,7 +2629,7 @@ def hardware_main(argv: list[str] | None = None) -> int:
     )
     allow_long = args.allow_long or args.long_window
     try:
-        result = run_chip_aec_hardware_validation(
+        result = run_audio_hardware_validation(
             profile=args.profile,
             directory=args.directory,
             duration_seconds=duration,

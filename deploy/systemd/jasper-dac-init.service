@@ -9,7 +9,8 @@ Description=Pin Apple USB-C dongle Headphone control to max (fixed analog ceilin
 #
 # Runs once at boot, BEFORE jasper-camilla so the speaker output
 # path is at full hardware gain by the time camilla opens it.
-# Idempotent — safe to re-run.
+# Idempotent and runtime-gated: on non-Apple-DAC systems, or when
+# the dongle is temporarily absent, the helper exits cleanly.
 After=sound.target
 Before=jasper-camilla.service shairport-sync.service librespot.service
 Requires=sound.target
@@ -17,12 +18,7 @@ Requires=sound.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# `--` so amixer's getopt doesn't choke on a leading "-" if the
-# card name ever gets passed via env (it'd start with "-" if so).
-# `unmute` is belt-and-suspenders — Headphone Playback Switch is
-# a separate amixer control and shouldn't be muted, but we make
-# it explicit.
-ExecStart=/usr/bin/amixer -c __DONGLE_CARD__ -- sset Headphone 100% unmute
+ExecStart=/usr/local/bin/jasper-dac-init __APPLE_DONGLE_CARD__ Headphone
 StandardOutput=journal
 StandardError=journal
 

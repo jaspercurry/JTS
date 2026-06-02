@@ -602,6 +602,24 @@ def test_outputd_stability_profile_passes_without_chip_aec_or_voice():
     assert artifact.recommendation == "outputd_dac_stability_validated"
 
 
+def test_outputd_stability_profile_accepts_string_sample_rate_from_status():
+    inputs = _outputd_stability_inputs()
+    artifact = audio_validation.build_outputd_stability_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            {
+                **_outputd_sample(reference_sequence=10, dac_frames_written=1000),
+                "dac": {"pcm": "outputd_dac", "sample_rate": "48000"},
+            },
+            _outputd_sample(reference_sequence=16, dac_frames_written=7000),
+        ],
+        duration_seconds=10,
+    )
+
+    assert artifact.checks["dac_output"]["status"] == "pass"
+    assert artifact.checks["dac_output"]["observed"]["sample_rate"] == 48000
+
+
 def test_chip_aec_hardware_validation_zero_convergence_is_not_observed():
     inputs = _active_chip_inputs()
     artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
@@ -856,7 +874,7 @@ def test_run_outputd_stability_profile_does_not_probe_chip_or_voice(
     monkeypatch.setattr(audio_validation, "_read_chip_profile_parameters", forbidden)
     monkeypatch.setattr(audio_validation, "_poll_chip_convergence", forbidden)
 
-    result = audio_validation.run_chip_aec_hardware_validation(
+    result = audio_validation.run_audio_hardware_validation(
         profile=audio_validation.DAC8X_OUTPUTD_STABILITY_PROFILE,
         directory=tmp_path,
         duration_seconds=10,
@@ -869,6 +887,43 @@ def test_run_outputd_stability_profile_does_not_probe_chip_or_voice(
     assert result.artifact is not None
     assert result.artifact.status == "pass"
     assert result.artifact.profile == audio_validation.DAC8X_OUTPUTD_STABILITY_PROFILE
+
+
+def test_chip_aec_runner_name_remains_compatibility_wrapper(monkeypatch):
+    calls = []
+
+    def fake_run_audio_hardware_validation(**kwargs):
+        calls.append(kwargs)
+        return audio_validation.HardwareValidationRun(
+            artifact=None,
+            refused=True,
+            refusal_reason="test",
+        )
+
+    monkeypatch.setattr(
+        audio_validation,
+        "run_audio_hardware_validation",
+        fake_run_audio_hardware_validation,
+    )
+
+    result = audio_validation.run_chip_aec_hardware_validation(
+        profile=audio_validation.CHIP_AEC_PROFILE,
+        duration_seconds=3,
+        force=True,
+    )
+
+    assert result.refused is True
+    assert calls == [{
+        "profile": audio_validation.CHIP_AEC_PROFILE,
+        "directory": None,
+        "duration_seconds": 3,
+        "poll_interval_seconds": audio_validation.DEFAULT_CHIP_POLL_INTERVAL_SECONDS,
+        "report_only": False,
+        "force": True,
+        "allow_long": False,
+        "stdout": False,
+        "now": None,
+    }]
 
 
 def test_latest_artifact_summary_reads_timestamped_artifacts(tmp_path):
