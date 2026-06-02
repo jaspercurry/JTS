@@ -7,6 +7,7 @@
 #   bash scripts/analyze-three-leg.sh                          # analyzes wake-events/latest
 #   bash scripts/analyze-three-leg.sh wake-events/20260523T125330Z
 #   bash scripts/analyze-three-leg.sh --top 10                 # 10 events per category
+#   bash scripts/analyze-three-leg.sh --since 2026-06-01       # current validation window
 #
 # Run after `bash scripts/fetch-wake-events.sh` (which lands the
 # corpus under wake-events/<UTC-timestamp>/ + updates the
@@ -27,7 +28,11 @@ CORPUS=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --top) ARGS+=("$1" "$2"); shift 2 ;;
+        --since) ARGS+=("$1" "$2"); shift 2 ;;
+        --until) ARGS+=("$1" "$2"); shift 2 ;;
         --top=*) ARGS+=("$1"); shift ;;
+        --since=*) ARGS+=("$1"); shift ;;
+        --until=*) ARGS+=("$1"); shift ;;
         -*) ARGS+=("$1"); shift ;;
         *) CORPUS="$1"; shift ;;
     esac

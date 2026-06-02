@@ -734,6 +734,31 @@ def _dac_details(
     }
 
 
+def current_artifact_filter_kwargs(
+    *,
+    requested_profile: str | None = None,
+    system_env: Mapping[str, str] | None = None,
+    mic_probe: MicProbe | None = None,
+    outputd_status: Mapping[str, Any] | None = None,
+) -> dict[str, str | None]:
+    """Build hardware-bound filters for status-surface artifact reads.
+
+    Always include mic/dac identity, even when detection is unavailable.
+    Passing ``unknown`` is intentional: it prevents a previous pass from a
+    real mic/DAC from being accepted when the current hardware identity
+    cannot be established.
+    """
+
+    env = dict(system_env) if system_env is not None else _read_system_env()
+    mic = _mic_details(mic_probe if mic_probe is not None else _probe_xvf_mic())
+    dac = _dac_details(env, outputd_status)
+    return {
+        "requested_profile": requested_profile,
+        "mic_id": str(mic.get("id") or "unknown"),
+        "dac_id": str(dac.get("id") or "unknown"),
+    }
+
+
 def _runtime_identity_check(system_env: Mapping[str, str]) -> dict[str, JsonValue]:
     build_env = parse_env_file(
         str(_env_path("JASPER_BUILD_MANIFEST", DEFAULT_BUILD_MANIFEST_PATH)),

@@ -253,5 +253,5 @@ plus `deploy/assets/shared/js/http.js`.
 
 ---
 
-_Last verified: 2026-05-31 (against worktree `gallant-cerf-a77c86`,
-pre-rebase, pre-commit)._
+Last verified: 2026-06-02 (historical snapshot only; current
+operational truth lives in `docs/HANDOFF-management-ui.md`).

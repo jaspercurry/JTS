@@ -46,6 +46,16 @@ def _run(corpus: Path) -> str:
     return res.stdout
 
 
+def _run_args(corpus: Path, *args: str) -> str:
+    res = subprocess.run(
+        [sys.executable, str(SCRIPT), *args, str(corpus)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return res.stdout
+
+
 def _create_db(corpus: Path, *, include_chip: bool) -> sqlite3.Connection:
     corpus.mkdir()
     conn = sqlite3.connect(str(corpus / "wake-events.sqlite3"))
@@ -137,3 +147,42 @@ def test_analyze_script_includes_chip_aec_legs(tmp_path: Path) -> None:
     assert "Only Chip AEC 150 fired" in out
     assert "chip_aec_150,on" in out
     assert f"afplay {corpus}/evt-chip.aec-chip-aec-150.wav" in out
+
+
+def test_analyze_script_filters_to_validation_window(tmp_path: Path) -> None:
+    corpus = tmp_path / "filtered"
+    conn = _create_db(corpus, include_chip=True)
+    conn.executemany(
+        """
+        INSERT INTO wake_events (
+            event_id, ts_utc, trigger_kind, fired_legs,
+            peak_score_aec_on, peak_score_aec_off, peak_score_dtln_aec,
+            audio_on_path, audio_off_path, audio_dtln_path,
+            outcome, music_active, peak_score_chip_aec_150,
+            peak_score_chip_aec_210, audio_chip_aec_150_path,
+            audio_chip_aec_210_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "old", "2026-05-31T23:59:59Z", "fire_aec_on", "on",
+                0.91, 0.01, 0.01, "old.aec-on.wav", "", "",
+                "completed", 1, 0.0, 0.0, "", "",
+            ),
+            (
+                "new", "2026-06-01T12:00:00+00:00", "fire_chip_aec_150",
+                "chip_aec_150", 0.01, 0.0, 0.0, "new.aec-on.wav", "", "",
+                "completed", 1, 0.88, 0.02,
+                "new.aec-chip-aec-150.wav", "new.aec-chip-aec-210.wav",
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    out = _run_args(corpus, "--top", "2", "--since", "2026-06-01")
+
+    assert "Source events:     2" in out
+    assert "Total events:        1" in out
+    assert "Only Chip AEC 150 fired" in out
+    assert "Only AEC3 fired:    0 events" in out

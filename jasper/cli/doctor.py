@@ -41,6 +41,9 @@ from ..audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
 )
+from ..audio_validation import (
+    current_artifact_filter_kwargs as _audio_validation_filter_kwargs,
+)
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ..config import Config
@@ -2032,8 +2035,14 @@ def check_audio_validation_readiness() -> CheckResult:
     requested_profile = profile_status.get("requested")
     if requested_profile is not None:
         requested_profile = str(requested_profile)
+    validation_filters = _audio_validation_filter_kwargs(
+        requested_profile=requested_profile,
+        system_env=_shared_parse_env_file(
+            os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
+        ),
+    )
     return _assess_audio_validation_summary(
-        _audio_validation_summary(requested_profile=requested_profile),
+        _audio_validation_summary(**validation_filters),
         requested_profile=requested_profile,
     )
 

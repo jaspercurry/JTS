@@ -54,12 +54,13 @@ fanout to the XVF USB-IN reference, the volatile 150°/210° ASR beam
 profile, and the bridge's `:9876` chip-beam repoint plus
 `:9887`/`:9888` scoring legs.
 
-As of the 2026-05-28 outputd mainline topology, `jasper-outputd` owns the
-physical DAC, but the AEC bridge still consumes the old content-only
-`pcm.jasper_ref` tap. TTS/cues are still absent from the AEC reference.
-The planned clean upgrade is to consume outputd's eventual speaker
-reference fanout, not to route TTS through CamillaDSP or add another
-ad-hoc ALSA tap.
+In the default software-AEC3 path, the bridge still consumes the
+content/reference path used by the software canceller, and TTS/cues are
+not part of that AEC reference. The opt-in chip-AEC path is the shipped
+exception: `jasper-outputd` fans out the final speaker buffer to the
+XVF USB-IN reference while it writes the physical DAC, so the chip sees
+the same source timeline as the speaker output. Do not route TTS through
+CamillaDSP or add another ad-hoc ALSA tap to solve reference alignment.
 
 To turn the bridge OFF (or back to chip-direct mic for A/B testing),
 set the state file to disabled and run the reconciler:
@@ -2580,4 +2581,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-05-31.
+Last verified: 2026-06-02.

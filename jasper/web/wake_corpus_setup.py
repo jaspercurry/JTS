@@ -609,6 +609,10 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
 
 def _validation_artifact_summary(
     path: Path | None = None,
+    *,
+    requested_profile: str | None = None,
+    mic_probe: MicProbe | None = None,
+    system_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Read optional profile-validation output, if present.
 
@@ -617,7 +621,12 @@ def _validation_artifact_summary(
     unknown/missing shape instead of making session creation depend on it.
     """
     path = path or AUDIO_VALIDATION_ARTIFACT_PATH
-    return audio_validation.latest_artifact_summary(path=path)
+    filters = audio_validation.current_artifact_filter_kwargs(
+        requested_profile=requested_profile,
+        system_env=system_env,
+        mic_probe=mic_probe,
+    )
+    return audio_validation.latest_artifact_summary(path=path, **filters)
 
 
 def _int_env(
@@ -688,8 +697,9 @@ def _dac_reference_context(
     bridge_outputs: dict[str, Any],
     *,
     process_env: Mapping[str, str] | None = None,
+    validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    validation = _validation_artifact_summary()
+    validation = validation or _validation_artifact_summary(system_env=env)
     return {
         "dac": {
             "pcm": env_value(
@@ -810,6 +820,12 @@ def build_session_audio_context(
         logger.warning("event=wake_corpus.audio_context_snapshot_failed error=%s", e)
         return {**fallback, "error": str(e)}
 
+    merged_env = {**system_env, **bridge_env}
+    validation = _validation_artifact_summary(
+        requested_profile=profile_status["audio_profile"].get("requested"),
+        mic_probe=mic_probe,
+        system_env=merged_env,
+    )
     return {
         "schema_version": AUDIO_CONTEXT_SCHEMA_VERSION,
         "captured_at": captured_at,
@@ -845,9 +861,10 @@ def build_session_audio_context(
             "chip_aec_config": chip_aec_config,
         },
         "dac_reference": _dac_reference_context(
-            {**system_env, **bridge_env},
+            merged_env,
             bridge_outputs,
             process_env=os.environ,
+            validation=validation,
         ),
         "bridge_outputs": bridge_outputs,
     }

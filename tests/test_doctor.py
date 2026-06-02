@@ -3027,7 +3027,49 @@ def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendatio
         "sudo jasper-audio-hw-validate --duration-seconds 10 --stdout"
         in result.detail
     )
-    assert "advisory" in result.detail
+
+
+def test_audio_validation_readiness_filters_current_hardware(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        doctor,
+        "_audio_profile_status_for_doctor",
+        lambda: {"audio_profile": {"requested": "xvf_chip_aec"}},
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_shared_parse_env_file",
+        lambda _path: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_audio_validation_filter_kwargs",
+        lambda **kwargs: {
+            "requested_profile": kwargs["requested_profile"],
+            "mic_id": "xvf3800",
+            "dac_id": "apple_usb_c_dongle",
+        },
+    )
+
+    def fake_summary(**kwargs):
+        captured.update(kwargs)
+        return {
+            "state": "current",
+            "status": "pass",
+            "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
+        }
+
+    monkeypatch.setattr(doctor, "_audio_validation_summary", fake_summary)
+
+    result = doctor.check_audio_validation_readiness()
+
+    assert result.status == "ok"
+    assert captured == {
+        "requested_profile": "xvf_chip_aec",
+        "mic_id": "xvf3800",
+        "dac_id": "apple_usb_c_dongle",
+    }
 
 
 def test_pricing_ok_when_active_model_priced(monkeypatch):

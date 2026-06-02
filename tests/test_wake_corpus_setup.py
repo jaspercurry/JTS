@@ -412,6 +412,7 @@ def test_metadata_records_audio_context_snapshot(
             "JASPER_AEC_CHIP_AEC_PRIMARY_LEG=chip_aec_210\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887\n"
             "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888\n"
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
             "JASPER_OUTPUTD_DAC_PCM=envfile_dac\n"
             "JASPER_OUTPUTD_BACKEND=alsa_envfile\n"
             "JASPER_OUTPUTD_CONTROL_SOCKET=/run/envfile-outputd.sock\n"
@@ -519,6 +520,37 @@ def test_metadata_records_audio_context_snapshot(
         clip["audio_context"]["production_audio_profile"]["active"]
         == "xvf_chip_aec"
     )
+
+
+def test_validation_artifact_summary_rejects_wrong_current_dac(
+    tmp_path: Path,
+) -> None:
+    validation_path = tmp_path / "audio_validation.json"
+    validation_path.write_text(json.dumps({
+        "schema_version": 1,
+        "validated_at": "2026-06-01T12:00:00Z",
+        "profile": "xvf_chip_aec",
+        "status": "pass",
+        "hardware": {
+            "mic_id": "xvf3800",
+            "dac_id": "apple_usb_c_dongle",
+        },
+        "checks": {"measured_drift_delay": {"status": "pass"}},
+        "recommendation": "chip_aec_validated",
+    }))
+
+    summary = wake_corpus_setup._validation_artifact_summary(
+        validation_path,
+        requested_profile="xvf_chip_aec",
+        mic_probe=wake_corpus_setup.MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+        ),
+        system_env={"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"},
+    )
+
+    assert summary["state"] == "mismatch"
+    assert "dac_id" in summary["reason"]
 
 
 def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ Output:
 Usage:
   python _analyze_three_leg.py wake-events/latest
   python _analyze_three_leg.py --top 10 wake-events/20260523T125330Z
+  python _analyze_three_leg.py --since 2026-06-01 wake-events/latest
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ import sqlite3
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -101,6 +103,20 @@ def main() -> int:
                     help="wake-events corpus dir (e.g. wake-events/latest)")
     ap.add_argument("--top", type=int, default=5,
                     help="how many events to list per interesting category (default: 5)")
+    ap.add_argument(
+        "--since",
+        help=(
+            "only include events at/after this UTC date or timestamp "
+            "(YYYY-MM-DD or ISO-8601)"
+        ),
+    )
+    ap.add_argument(
+        "--until",
+        help=(
+            "only include events before this UTC date or timestamp "
+            "(YYYY-MM-DD or ISO-8601)"
+        ),
+    )
     args = ap.parse_args()
 
     corpus = args.corpus
@@ -133,11 +149,21 @@ def main() -> int:
         select_cols.append(spec.score_col)
         if spec.audio_col in cols:
             select_cols.append(spec.audio_col)
-    rows = list(conn.execute(
+    rows_all = list(conn.execute(
         f"SELECT {', '.join(select_cols)} FROM wake_events ORDER BY ts_utc"
     ))
+    try:
+        since = _parse_time_arg(args.since, field="--since")
+        until = _parse_time_arg(args.until, field="--until")
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    rows = [
+        row for row in rows_all
+        if _row_in_window(row, since=since, until=until)
+    ]
     if not rows:
-        print(f"  (empty DB at {db_path})")
+        print(f"  (no events in {db_path}{_window_label(since=since, until=until)})")
         return 0
 
     triple = [r for r in rows if r["fired_legs"] is not None]
@@ -148,6 +174,9 @@ def main() -> int:
     print(f"Multi-leg wake-event analysis: {corpus}")
     print("=" * 72)
     print(f"  Time range: {rows[0]['ts_utc']} ... {rows[-1]['ts_utc']}")
+    if since or until:
+        print(f"  Filter:            {_window_label(since=since, until=until).strip()}")
+        print(f"  Source events:     {len(rows_all)}")
     print(f"  Total events:        {len(rows)}")
     print(f"  Multi-leg events:    {len(triple)} (with fired_legs)")
     print(f"  Legacy events:       {len(legacy)} (pre-migration)")
@@ -155,6 +184,27 @@ def main() -> int:
     if not triple:
         print("\n  No multi-leg events yet. Use the speaker, then re-fetch.")
         return 0
+
+    # ---------- [0] Audio capture coverage ----------
+    print()
+    print("[0] Audio capture coverage for analyzed rows")
+    print("    (missing paths can be normal for legs that were disabled;")
+    print("     missing files for populated paths are data-integrity problems)")
+    print()
+    label_width = max(12, max(len(spec.label) for spec in legs))
+    print(f"  {'Leg':<{label_width}} {'paths':>7} {'files':>7} {'missing':>8}")
+    print(f"  {'-'*label_width} {'-'*7} {'-'*7} {'-'*8}")
+    for spec in legs:
+        if spec.audio_col not in cols:
+            print(f"  {spec.label:<{label_width}} {'n/a':>7} {'n/a':>7} {'n/a':>8}")
+            continue
+        populated = [str(row[spec.audio_col]) for row in triple if row[spec.audio_col]]
+        existing = sum(1 for rel in populated if (corpus / rel).exists())
+        missing = len(populated) - existing
+        print(
+            f"  {spec.label:<{label_width}} {len(populated):>7} "
+            f"{existing:>7} {missing:>8}"
+        )
 
     pattern_count = Counter(r["fired_legs"] for r in triple)
 
@@ -206,7 +256,6 @@ def main() -> int:
     print("    (the distribution shows what each leg 'sees', "
           "fired-or-not — useful for spotting a leg that's silently dead)")
     print()
-    label_width = max(12, max(len(spec.label) for spec in legs))
     print(f"  {'Leg':<{label_width}} {'P10':>7} {'P50':>7} {'P90':>7} {'Max':>7}   {'n_nonnull':>10}")
     print(f"  {'-'*label_width} {'-'*7} {'-'*7} {'-'*7} {'-'*7}   {'-'*10}")
     for spec in legs:
@@ -331,6 +380,72 @@ def _score(row: sqlite3.Row, leg: str) -> float | None:
     """Look up a row's peak_score for a leg by canonical leg name."""
     val = row[SCORE_COLS[leg]]
     return float(val) if val is not None else None
+
+
+def _parse_time_arg(raw: str | None, *, field: str) -> datetime | None:
+    """Parse a UTC date/timestamp argument for filtering fetched corpora."""
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        text = f"{text}T00:00:00+00:00"
+    elif text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as e:
+        raise ValueError(
+            f"{field} must be YYYY-MM-DD or ISO-8601, got {raw!r}"
+        ) from e
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_row_time(raw: str) -> datetime | None:
+    text = raw.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _row_in_window(
+    row: sqlite3.Row,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+) -> bool:
+    ts = _parse_row_time(str(row["ts_utc"]))
+    if ts is None:
+        return False
+    if since is not None and ts < since:
+        return False
+    if until is not None and ts >= until:
+        return False
+    return True
+
+
+def _window_label(
+    *,
+    since: datetime | None,
+    until: datetime | None,
+) -> str:
+    parts = []
+    if since is not None:
+        parts.append(f"since {since.isoformat().replace('+00:00', 'Z')}")
+    if until is not None:
+        parts.append(f"until {until.isoformat().replace('+00:00', 'Z')}")
+    return "" if not parts else " (" + ", ".join(parts) + ")"
 
 
 def _pattern(tokens: tuple[str, ...] | list[str]) -> str:
