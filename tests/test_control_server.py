@@ -300,6 +300,36 @@ def test_cross_site_get_rejects_diagnostics_before_subprocess(
     assert calls == []
 
 
+def test_diagnostics_uses_fresh_env_for_doctor(
+    server_with_coordinator, monkeypatch,
+):
+    import jasper.control.server as srv_mod
+
+    seen_envs: list[dict] = []
+
+    def fake_env():
+        return {"PATH": "/bin", "JASPER_VOICE_PROVIDER": "openai"}
+
+    class FakeProc:
+        returncode = 0
+        stdout = '{"fails":0,"results":[],"warns":0}'
+        stderr = ""
+
+    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        seen_envs.append(kwargs["env"])
+        return FakeProc()
+
+    monkeypatch.setattr(srv_mod, "subprocess_env_with_fresh_files", fake_env)
+    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/diagnostics")
+
+    assert status == 200
+    assert body["fails"] == 0
+    assert seen_envs == [{"PATH": "/bin", "JASPER_VOICE_PROVIDER": "openai"}]
+
+
 def test_system_audio_quality_applies_and_try_restarts_renderers(
     monkeypatch,
     server_with_coordinator,

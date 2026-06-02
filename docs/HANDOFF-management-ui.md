@@ -386,7 +386,9 @@ reordering better than the prior flat enumeration):
 - Network (RX / TX bytes since boot, throttle bits)
 - Actions (Restart voice / Restart audio / Reboot speaker / Power off)
 - Diagnostics (collapsible — runs `jasper-doctor`)
-- Per-service usage (cgroup CPU + memory for JTS/audio/system support units)
+- Per-service usage (cgroup CPU + memory plus cached systemd
+  `ActiveState` / `SubState` / `NRestarts`; failed or repeatedly
+  restarted units surface even if their cgroup has disappeared)
 
 ### 3.3 Web surfaces under `jasper/web/`
 
@@ -1349,7 +1351,9 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-05-31 (all 16 remaining wizard surfaces now landed on the
+Last verified: 2026-06-02 (`/system/` per-service table now surfaces cached
+systemd service lifecycle state/restarts alongside cgroup CPU/memory; prior
+pass 2026-05-31: all 16 remaining wizard surfaces landed on the
 canonical design system; correction plain-HTTP preflight migrated to the
 canonical look; `/assets` static-asset routing mirrored into the HTTPS (443)
 server block to fix the correction UI's mixed-content asset blocking; the

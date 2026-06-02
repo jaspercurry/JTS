@@ -140,10 +140,9 @@ def test_install_disabled_falls_back_to_plain_toggle(
 def test_install_disabled_still_installs_sigusr1_handler(
     logging_sandbox, monkeypatch, tmp_path
 ):
-    """SIGUSR1 defaults to *terminate*, and jasper-doctor signals the daemons
-    on a failing run — so the handler must be installed even when the recorder
-    is off (dump() is then a safe no-op). Without it, a doctor run would kill
-    voice / aec / control."""
+    """SIGUSR1 defaults to *terminate*, and an operator can force a dump
+    with `systemctl kill -s USR1`. The handler must be installed even
+    when the recorder is off so that path is a safe no-op."""
     import signal
     import threading
     if threading.current_thread() is not threading.main_thread():

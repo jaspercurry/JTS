@@ -3,9 +3,15 @@
 URL surface (after nginx strips /sound/):
   GET  /         page render
   GET  /state    persisted profile + preview + stock curve metadata
+  GET  /active-speaker/environment     read-only active-speaker readiness
+  GET  /active-speaker/safe-playback   no-audio safety session state
+  GET  /active-speaker/tone-targets    preset-derived channel-test targets
   POST /preview  preview a draft profile without touching live audio
   POST /live-draft apply a draft to live audio without persisting
   POST /audition validate and load a draft/bypass config without persisting
+  POST /active-speaker/arm       arm a no-audio active-speaker safety session
+  POST /active-speaker/stop      stop the no-audio active-speaker session
+  POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
   POST /profiles/save save or update a named custom profile
   POST /profiles/rename rename a named custom profile
   POST /profiles/delete delete a named custom profile
@@ -688,6 +694,58 @@ def _active_speaker_stop_payload() -> dict[str, Any]:
     return state
 
 
+def _active_speaker_preset():
+    from jasper.active_speaker.tone_plan import load_active_speaker_preset
+
+    return load_active_speaker_preset(
+        os.environ.get("JASPER_ACTIVE_SPEAKER_PRESET") or None
+    )
+
+
+def _active_speaker_tone_targets_payload() -> dict[str, Any]:
+    """Return preset-derived no-audio tone targets for /sound/."""
+
+    from jasper.active_speaker.tone_plan import tone_targets_payload
+
+    return tone_targets_payload(_active_speaker_preset())
+
+
+def _active_speaker_tone_plan_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return a bounded no-audio tone plan for the requested target."""
+
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+    from jasper.active_speaker.tone_plan import build_safe_tone_plan
+
+    target = raw.get("target") if isinstance(raw.get("target"), dict) else {}
+    preset = _active_speaker_preset()
+    environment_report = _active_speaker_environment_payload()
+    safe_session = load_safe_playback_state()
+    plan = build_safe_tone_plan(
+        preset,
+        safe_session=safe_session,
+        environment_report=environment_report,
+        side=raw.get("side") or target.get("side"),
+        driver_role=raw.get("driver_role") or target.get("driver_role"),
+        requested_level_dbfs=raw.get("level_dbfs"),
+        requested_duration_ms=raw.get("duration_ms"),
+    )
+    logger.info(
+        "event=sound.active_speaker_tone_plan status=%s preset_id=%s "
+        "side=%s driver_role=%s output_index=%s level_dbfs=%s "
+        "duration_ms=%s blockers=%d would_play=%s",
+        plan.get("status"),
+        plan.get("preset_id"),
+        plan.get("target", {}).get("side"),
+        plan.get("target", {}).get("driver_role"),
+        plan.get("target", {}).get("output_index"),
+        plan.get("tone", {}).get("level_dbfs"),
+        plan.get("tone", {}).get("duration_ms"),
+        len(plan.get("issues") or []),
+        bool(plan.get("would_play")),
+    )
+    return plan
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -752,6 +810,15 @@ def _make_handler(
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
+            if path == "/active-speaker/tone-targets":
+                try:
+                    self._send_json(_active_speaker_tone_targets_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_tone_targets result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -764,6 +831,7 @@ def _make_handler(
                 "/settings",
                 "/active-speaker/arm",
                 "/active-speaker/stop",
+                "/active-speaker/tone-plan",
                 "/profiles/save",
                 "/profiles/rename",
                 "/profiles/delete",
@@ -780,6 +848,9 @@ def _make_handler(
                     return
                 if path == "/active-speaker/stop":
                     self._send_json(_active_speaker_stop_payload())
+                    return
+                if path == "/active-speaker/tone-plan":
+                    self._send_json(_active_speaker_tone_plan_payload(raw))
                     return
                 if path == "/settings":
                     settings = SoundSettings.from_mapping(raw)

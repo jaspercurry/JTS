@@ -28,6 +28,7 @@
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
+| Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Preview what install.sh would mutate | [Install dry-run plan](#install-dry-run-plan) |
@@ -272,6 +273,7 @@ Live Pi state without modifying anything:
 | `curl -s http://jts.local:8780/state \| jq` | Cross-daemon JSON snapshot (voice / audio / AEC runtime profile / renderers / satellites). Fail-soft per section. |
 | [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + previous-boot OOM/watchdog/reboot forensics + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks. |
 | [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with memory/runtime bounds and a positive `OOMScoreAdjust`. |
+| [`scripts/pi-system-soak.sh`](../scripts/pi-system-soak.sh) | Convenience wrapper for a bounded `jasper-system-soak` run on the active Pi; writes a versioned JSON resource artifact. |
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
 | [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, dial routing, wake/turn boundaries) |
 | `ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh` | One-shot full diagnostic dump as a tarball |
@@ -280,10 +282,52 @@ Live Pi state without modifying anything:
 | `jasper-active-speaker startup-template <preset.json> --playback-device <device> --output <file.yml>` | Write a muted/protected active-speaker startup template and run `camilladsp --check` when available. It does not load or apply the config. |
 | `jasper-active-speaker path-audit --requirements` / `path-audit <evidence.json>` | List or evaluate the active-speaker audible-path safety checklist. Operator evidence can satisfy requirements but does not permit active config loading; `ok_to_load_active_config` stays false until future hardware-probe-backed evidence passes. |
 | `jasper-active-speaker environment-probe [--config <file.yml>] [--json]` | Read ALSA playback devices and the current/provided CamillaDSP config/statefile shape without playback, reloads, or mutation. Blocks the load gate unless the config is an active startup candidate, `camilladsp --check` passes, and hardware-probe-backed path-safety evidence is provided. Also reports `safe_playback.playback_allowed: false` until a future level-limited tone path and physical channel-identity flow exist. |
-| `/sound/active-speaker/{environment,safe-playback,arm,stop}` | Web no-audio active-speaker status/session surface. `environment` and `safe-playback` are read-only GETs; `arm` and `stop` are CSRF-protected POSTs from `/sound/`. Arm only records a no-audio safety session when the environment load gate passes; Stop is idempotent. No endpoint plays tones, reloads CamillaDSP, or changes volume. |
+| `/sound/active-speaker/{environment,safe-playback,tone-targets,arm,stop,tone-plan}` | Web no-audio active-speaker status/session/plan surface. `environment`, `safe-playback`, and `tone-targets` are read-only GETs; `arm`, `stop`, and `tone-plan` are CSRF-protected POSTs from `/sound/`. Arm only records a no-audio safety session when the environment load gate passes; Stop is idempotent; tone-plan prepares a clamped preset-derived channel-test intent with `would_play: false`. No endpoint plays tones, reloads CamillaDSP, or changes volume. |
 
 See [CLAUDE.md](../CLAUDE.md) "Debugging — fetch evidence before
 guessing" for the canonical recipes.
+
+---
+
+## System soak artifacts
+
+Use `jasper-system-soak` when the question is whole-system resource
+behavior over time: idle memory growth, CPU hot spots, service restart
+changes, outputd/fanin/voice STATUS drift, or journal volume. It is a
+diagnostic artifact generator, not a daemon and not part of normal
+production polling.
+
+From the laptop, prefer the bounded wrapper:
+
+```sh
+bash scripts/pi-system-soak.sh --duration 30m --profile idle
+bash scripts/pi-system-soak.sh --duration 30m --profile realistic --include-pss
+```
+
+The wrapper runs `/opt/jasper/.venv/bin/jasper-system-soak` through
+[`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh), so
+systemd applies the usual diagnostic bounds (`MemoryHigh`,
+`MemoryMax`, `MemorySwapMax=0`, `RuntimeMaxSec`, positive
+`OOMScoreAdjust`). The command writes JSON under
+`/var/lib/jasper/diagnostics/system-soak/` by default and prints the
+artifact path.
+
+Artifact contract, schema v1:
+
+- `samples[]`: timestamped rows with tracked unit systemd state
+  (`ActiveState`, `SubState`, `NRestarts`, `MainPID`, tasks,
+  `MemoryCurrent`, `CPUUsageNSec` delta-derived CPU%), cgroup
+  `cpu.stat`, `memory.events`, PSI when available, and outputd/fanin/
+  mux/voice STATUS snapshots.
+- `journal`: count/byte summary by unit and priority for the soak
+  window. It intentionally does **not** store raw message text, which
+  keeps routine resource artifacts out of the log-redaction business.
+- `--include-pss`: optional sparse `/proc/<pid>/smaps_rollup` sums for
+  better memory attribution. Use it for leak suspicion; leave it off
+  for long baseline runs unless you need PSS.
+
+Do not turn soak sampling into `/state` or `/system/snapshot`. The
+dashboard gets cheap service truth; soak gets lab-grade history.
 
 ---
 

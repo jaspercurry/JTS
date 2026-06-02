@@ -1631,6 +1631,87 @@ def check_start_limit_action() -> CheckResult:
     )
 
 
+_RUNTIME_STATE_UNITS = (
+    "jasper-outputd.service",
+    "jasper-fanin.service",
+    "jasper-camilla.service",
+    "jasper-voice.service",
+    "jasper-aec-bridge.service",
+    "jasper-control.service",
+    "jasper-mux.service",
+    "shairport-sync.service",
+    "librespot.service",
+    "bluealsa-aplay.service",
+)
+
+
+def _service_runtime_states() -> dict[str, dict[str, object]] | None:
+    try:
+        proc = _run(
+            [
+                "systemctl", "show", "--no-page",
+                "--property=Id",
+                "--property=LoadState",
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--property=NRestarts",
+            ] + list(_RUNTIME_STATE_UNITS),
+            timeout=10.0,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    from ..control.system_metrics import SystemSampler
+
+    return SystemSampler._parse_systemctl_show_units(proc.stdout)
+
+
+def check_service_runtime_state() -> CheckResult:
+    """Surface failed units and restart-count changes in one-shot doctor.
+
+    The dashboard shows the same fields continuously, but doctor needs
+    to catch the production risk too: a unit can be start-limited or
+    repeatedly restarting with no live cgroup left for the resource
+    sampler to display."""
+    states = _service_runtime_states()
+    if states is None:
+        return CheckResult(
+            "service runtime state", "ok",
+            "systemctl unavailable — skipped (not Linux?)",
+        )
+    failed: list[str] = []
+    restarted: list[str] = []
+    for unit in _RUNTIME_STATE_UNITS:
+        state = states.get(unit) or {}
+        active = str(state.get("active_state") or "")
+        sub = str(state.get("sub_state") or "")
+        result = str(state.get("result") or "")
+        try:
+            n_restarts = int(state.get("n_restarts") or 0)
+        except (TypeError, ValueError):
+            n_restarts = 0
+        if active == "failed":
+            failed.append(f"{unit} state=failed/{sub or '?'} result={result or '?'}")
+        elif active in {"activating", "deactivating"}:
+            failed.append(f"{unit} state={active}/{sub or '?'}")
+        if n_restarts > 0:
+            restarted.append(f"{unit} NRestarts={n_restarts}")
+    if failed:
+        detail = "failed or unstable units: " + ", ".join(failed)
+        if restarted:
+            detail += "; restarts: " + ", ".join(restarted)
+        return CheckResult("service runtime state", "fail", detail)
+    if restarted:
+        return CheckResult(
+            "service runtime state", "warn",
+            "restart counts non-zero: " + ", ".join(restarted),
+        )
+    return CheckResult(
+        "service runtime state", "ok",
+        f"{len(_RUNTIME_STATE_UNITS)} tracked units have no failed state or restarts",
+    )
+
+
 # --- Stage 2 audio-protection checks (shipped 2026-05-24) ---
 #
 # These verify that the audio-path daemons' pages won't be swapped to
@@ -4583,6 +4664,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # still configured on the critical daemons. See
         # docs/HANDOFF-tier5-watchdog-liveness.md.
         check_start_limit_action,
+        check_service_runtime_state,
         # Stage 2 audio-protection (shipped 2026-05-24 in response to
         # the stress test showing aec-bridge's 42 MB VmSwap caused
         # audible music degradation). Verifies cgroup memory is

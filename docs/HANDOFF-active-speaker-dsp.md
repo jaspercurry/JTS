@@ -25,7 +25,10 @@
 > The card can also arm and stop a no-audio safe-playback session
 > through `jasper.active_speaker.safe_playback`; arming only persists
 > safety state after the environment load gate passes, and Stop is
-> idempotent. It still does not emit sound.
+> idempotent. `jasper.active_speaker.tone_plan` can now prepare a
+> bounded channel-test intent from the preset, armed session, and
+> current environment report, but the returned plan still says
+> `would_play: false` and cannot emit sound.
 > `jasper-active-speaker startup-template` can write one of these
 > candidate templates from a preset JSON file and run
 > `camilladsp --check` when the binary is available. No tone playback,
@@ -427,6 +430,16 @@ only creates an armed session when `ok_to_load_active_config` is true;
 plays tones, reloads CamillaDSP, or changes volume. The persisted environment
 summary stores config classification and filename only, not full local paths.
 
+`jasper.active_speaker.tone_plan` is the first deterministic channel-test
+intent contract. `/sound/active-speaker/tone-targets` lists preset-derived
+output targets; `/sound/active-speaker/tone-plan` takes a target and returns a
+bounded sine-tone plan only when the safe session is armed and the current
+environment load gate is ready. It clamps level and duration, derives
+role-appropriate band limits from the preset crossover regions, and always
+returns `would_play: false`, `playback_allowed: false`, and
+`tone_playback_implemented: false` in this build. It is a contract for future
+playback code, not a sound-emitting backend.
+
 ## Deterministic Tooling Roadmap
 
 Code should eventually own:
@@ -500,6 +513,8 @@ Updated execution plan:
    exists and the active startup candidate validates. Expanded again with
    `jasper.active_speaker.safe_playback`, which provides no-audio arm/stop
    session bookkeeping for the future tone path without authorizing playback.
+   Expanded with `jasper.active_speaker.tone_plan`, which prepares
+   preset-derived, clamped channel-test plans while still forbidding playback.
 5. **Consumer W0 slice**: prototype phone-as-mic raw PCM WebSocket
    capture, calibration blocking, browser processing sanity checks,
    and resumable server-side session state.

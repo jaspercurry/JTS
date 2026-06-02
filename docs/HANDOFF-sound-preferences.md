@@ -164,7 +164,11 @@ no-audio safety session through `/sound/active-speaker/arm` and
 `/sound/active-speaker/stop`; arming only persists the current safety state
 when the environment load gate passes, and Stop is a normal-sized,
 idempotent control that records the session as stopped. It still does not
-emit tones or authorize playback. The actual substrate starts in
+emit tones or authorize playback. When armed, the card can also prepare a
+bounded no-audio channel-test plan through `/sound/active-speaker/tone-plan`.
+That plan shows the target output, frequency, level, and duration, but it
+still returns `would_play: false` and does not authorize playback. The actual
+substrate starts in
 `jasper.active_speaker` and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 
@@ -173,9 +177,10 @@ emit tones or authorize playback. The actual substrate starts in
 - `jasper/active_speaker/` — import-cheap active-speaker preset,
   channel-map, safety-envelope, baseline-profile schemas, and
   muted/protected startup-template YAML emission plus read-only
-  environment reporting plus no-audio safe-playback session state. Current
-  scope is validation/template generation and status/session bookkeeping
-  only; no hardware loading or playback.
+  environment reporting, no-audio safe-playback session state, and
+  preset-derived no-audio tone-plan preparation. Current scope is
+  validation/template generation and status/session/plan bookkeeping only;
+  no hardware loading or playback.
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
   preview response, expanded-band overlays, the peak-boost `estimate_headroom_db`
@@ -480,4 +485,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-01
+Last verified: 2026-06-02

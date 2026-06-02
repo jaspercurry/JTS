@@ -3,9 +3,9 @@
 Keeps the last N DEBUG+ log records per daemon in a bounded in-RAM ring
 and dumps them to the journal (tagged ``event=flightrec.dump``) only
 when an anomaly fires — a WARNING/ERROR record (automatic), or an
-explicit :func:`dump`: the "flag that" voice tool, a failing
-``jasper-doctor`` run (via SIGUSR1), or an operator
-``systemctl kill -s USR1 jasper-voice``.
+explicit :func:`dump`: the "flag that" voice tool or an operator
+``systemctl kill -s USR1 jasper-voice``. A doctor-fail auto-trigger
+was considered and dropped; see ``docs/HANDOFF-observability.md``.
 
 *Why.* The intermittent bugs that matter most already happened before
 anyone could flip the Tier-B debug toggle. The ring captures the
@@ -109,8 +109,8 @@ def _disabled() -> bool:
 
 
 def _install_sigusr1() -> None:
-    # SIGUSR1 -> dump. Lets jasper-doctor / an operator force a dump without
-    # a code path of their own. signal.signal only works on the main thread;
+    # SIGUSR1 -> dump. Lets an operator force a dump without a code path of
+    # their own. signal.signal only works on the main thread;
     # a daemon installing from a worker thread silently skips it.
     try:
         signal.signal(signal.SIGUSR1, lambda *_: dump("signal"))

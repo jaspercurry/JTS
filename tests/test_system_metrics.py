@@ -10,12 +10,9 @@ from __future__ import annotations
 import json
 import os
 import platform
-import socket
-import sys
 import threading
 import time
 import urllib.request
-from array import array
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
@@ -540,6 +537,99 @@ def test_tick_services_partial_read_skipped(tmp_path) -> None:
     names = [s["name"] for s in out]
     assert "jasper-empty" not in names
     assert "jasper-partial" in names
+
+
+def test_parse_systemctl_show_units_tracks_restart_and_failed_state() -> None:
+    text = (
+        "Id=librespot.service\n"
+        "LoadState=loaded\n"
+        "ActiveState=failed\n"
+        "SubState=failed\n"
+        "Result=exit-code\n"
+        "NRestarts=5\n"
+        "MainPID=0\n"
+        "TasksCurrent=[not set]\n"
+        "MemoryCurrent=[not set]\n"
+        "CPUUsageNSec=18446744073709551615\n"
+        "ControlGroup=\n"
+        "\n"
+        "Id=jasper-outputd.service\n"
+        "LoadState=loaded\n"
+        "ActiveState=active\n"
+        "SubState=running\n"
+        "Result=success\n"
+        "NRestarts=0\n"
+        "MainPID=123\n"
+        "TasksCurrent=4\n"
+        "MemoryCurrent=10485760\n"
+        "CPUUsageNSec=5000000000\n"
+        "ControlGroup=/jts.slice/jts-audio.slice/jasper-outputd.service\n"
+    )
+
+    states = SystemSampler._parse_systemctl_show_units(text)
+
+    failed = states["librespot.service"]
+    assert failed["active_state"] == "failed"
+    assert failed["result"] == "exit-code"
+    assert failed["n_restarts"] == 5
+    assert failed["memory_current_bytes"] is None
+    assert failed["cpu_usage_nsec"] is None
+
+    outputd = states["jasper-outputd.service"]
+    assert outputd["active_state"] == "active"
+    assert outputd["main_pid"] == 123
+    assert outputd["tasks_current"] == 4
+    assert outputd["memory_current_bytes"] == 10485760
+
+
+def test_tick_services_surfaces_failed_unit_without_cgroup(tmp_path) -> None:
+    s = SystemSampler()
+    out = s._tick_services(
+        str(tmp_path / "no-cgroups"),
+        service_states={
+            "librespot.service": {
+                "active_state": "failed",
+                "sub_state": "failed",
+                "result": "exit-code",
+                "n_restarts": 5,
+                "main_pid": 0,
+                "tasks_current": None,
+                "control_group": "",
+            },
+        },
+    )
+
+    assert out == [{
+        "name": "librespot",
+        "unit": "librespot.service",
+        "group": "Audio",
+        "cgroup": "",
+        "cpu_pct": None,
+        "memory_mb": None,
+        "active_state": "failed",
+        "sub_state": "failed",
+        "load_state": None,
+        "result": "exit-code",
+        "n_restarts": 5,
+        "main_pid": 0,
+        "tasks_current": None,
+    }]
+
+
+def test_tick_services_hides_inactive_zero_restart_unit(tmp_path) -> None:
+    s = SystemSampler()
+    out = s._tick_services(
+        str(tmp_path / "no-cgroups"),
+        service_states={
+            "librespot.service": {
+                "active_state": "inactive",
+                "sub_state": "dead",
+                "result": "success",
+                "n_restarts": 0,
+            },
+        },
+    )
+    assert out == []
 
 
 # ---------- per-core CPU sampler ----------------------------------------

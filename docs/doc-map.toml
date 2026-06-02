@@ -365,6 +365,7 @@ safety = "safe-ci"
 code = [
   "docs/testing-tooling.md",
   "jasper/cli/doctor.py",
+  "jasper/cli/system_soak.py",
   "jasper/tools/diagnostic.py",
   "scripts/fetch-pi-logs.sh",
   "scripts/tail-pi-logs.sh",
@@ -374,9 +375,11 @@ code = [
   "scripts/*audit*",
   "scripts/*probe*",
   "scripts/*score*",
+  "scripts/*soak*",
 ]
 docs = [
   "docs/testing-tooling.md",
+  "docs/HANDOFF-observability.md",
   "BRINGUP.md",
 ]
 requires_docs_when = [

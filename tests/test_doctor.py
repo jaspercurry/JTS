@@ -89,6 +89,67 @@ def test_load_env_files_shell_wins_over_files(monkeypatch, tmp_path: Path):
     assert os_environ_get("JASPER_VOICE_PROVIDER") == "openai"
 
 
+def test_check_service_runtime_state_fails_on_failed_unit(monkeypatch):
+    class FakeRun:
+        stdout = (
+            "Id=librespot.service\n"
+            "LoadState=loaded\n"
+            "ActiveState=failed\n"
+            "SubState=failed\n"
+            "Result=exit-code\n"
+            "NRestarts=5\n"
+        )
+
+    monkeypatch.setattr(doctor, "_run", lambda *a, **kw: FakeRun())
+
+    r = doctor.check_service_runtime_state()
+
+    assert r.status == "fail"
+    assert "librespot.service state=failed/failed" in r.detail
+    assert "NRestarts=5" in r.detail
+
+
+def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
+    class FakeRun:
+        stdout = (
+            "Id=jasper-voice.service\n"
+            "LoadState=loaded\n"
+            "ActiveState=active\n"
+            "SubState=running\n"
+            "Result=success\n"
+            "NRestarts=2\n"
+        )
+
+    monkeypatch.setattr(doctor, "_run", lambda *a, **kw: FakeRun())
+
+    r = doctor.check_service_runtime_state()
+
+    assert r.status == "warn"
+    assert "jasper-voice.service NRestarts=2" in r.detail
+
+
+def test_subprocess_env_with_fresh_files_overrides_stale_daemon_env(tmp_path: Path):
+    """Long-lived daemons launching subprocesses need fresh wizard-file
+    truth, not the process env captured when the daemon started."""
+    from jasper.env_load import subprocess_env_with_fresh_files
+    operator = tmp_path / "jasper.env"
+    operator.write_text("JASPER_VOICE_PROVIDER=gemini\n")
+    wizard = tmp_path / "voice_provider.env"
+    wizard.write_text(
+        "JASPER_VOICE_PROVIDER=openai\n"
+        "OPENAI_API_KEY=sk-fresh\n"
+    )
+
+    env = subprocess_env_with_fresh_files(
+        base={"PATH": "/bin", "JASPER_VOICE_PROVIDER": "gemini"},
+        paths=(str(operator), str(wizard)),
+    )
+
+    assert env["PATH"] == "/bin"
+    assert env["JASPER_VOICE_PROVIDER"] == "openai"
+    assert env["OPENAI_API_KEY"] == "sk-fresh"
+
+
 def os_environ_get(name: str) -> str | None:
     import os
     return os.environ.get(name)

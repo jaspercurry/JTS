@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # and throttled bits don't move fast enough to need 5 s resolution.
 SAMPLE_INTERVAL_SEC = 5.0
 VCGENCMD_INTERVAL_SEC = 30.0
+SERVICE_STATE_INTERVAL_SEC = 30.0
 HISTORY_POINTS = 720  # 60 min @ 5 s
 
 # Subprocess timeout for vcgencmd — if the GPU firmware is wedged
@@ -120,10 +121,12 @@ class SystemSampler:
         self,
         sample_interval_sec: float = SAMPLE_INTERVAL_SEC,
         vcgencmd_interval_sec: float = VCGENCMD_INTERVAL_SEC,
+        service_state_interval_sec: float = SERVICE_STATE_INTERVAL_SEC,
         history_points: int = HISTORY_POINTS,
     ) -> None:
         self._sample_interval = sample_interval_sec
         self._vcgencmd_interval = vcgencmd_interval_sec
+        self._service_state_interval = service_state_interval_sec
         self._history_points = history_points
         vcgencmd_interval = max(vcgencmd_interval_sec, 0.001)
         self._temp_history_points = max(
@@ -162,6 +165,8 @@ class SystemSampler:
         #   _services_snapshot — public: list of dicts for snapshot().
         self._service_samples: dict[str, tuple[int, float]] = {}
         self._services_snapshot: list[dict[str, Any]] = []
+        self._service_state_snapshot: dict[str, dict[str, Any]] = {}
+        self._last_service_state_at = 0.0
         # Per-core CPU state. Same delta pattern as per-service: first
         # tick yields [] because we have no baseline.
         #   _per_core_prev — internal: list of (active_jiffies, total_jiffies)
@@ -282,7 +287,13 @@ class SystemSampler:
         # _read_fan returns None when no pwm-fan hwmon device exists
         # (dev machines, Pi without an Active Cooler attached).
         fan = self._read_fan()
-        services = self._tick_services()
+        now_mono = time.monotonic()
+        if now_mono - self._last_service_state_at >= self._service_state_interval:
+            self._service_state_snapshot = self._read_service_states()
+            self._last_service_state_at = now_mono
+        services = self._tick_services(
+            service_states=self._service_state_snapshot,
+        )
         per_core = self._tick_per_core()
         memory_cgroup = self._read_memory_cgroup_enabled()
         with self._lock:
@@ -444,7 +455,10 @@ class SystemSampler:
             return 0.0
 
     def _tick_services(
-        self, root_dir: str = CGROUP_ROOT,
+        self,
+        root_dir: str = CGROUP_ROOT,
+        *,
+        service_states: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Sample per-service CPU + memory from cgroup-v2.
 
@@ -452,6 +466,11 @@ class SystemSampler:
         the previous tick and this one. Per-core convention — 100% is
         one fully-saturated core, 400% the full Pi 5. New services
         yield cpu_pct=None on the first sample (no baseline).
+
+        ``service_states`` is the cached, lower-cadence systemd unit
+        state. It lets the dashboard show failed/start-limited units
+        whose cgroup has already disappeared, without running
+        ``systemctl`` on every 5-second cgroup tick.
 
         Services that disappeared since the last tick (one-shot
         finished, manual stop) fall out automatically — cgroup walk gives
@@ -462,10 +481,13 @@ class SystemSampler:
         prev = self._service_samples
         new_samples: dict[str, tuple[int, float]] = {}
         out: list[dict[str, Any]] = []
+        states = service_states or {}
+        seen_units: set[str] = set()
         for service in services:
             unit = service["unit"]
             path = service["path"]
             sample_key = service["cgroup"]
+            seen_units.add(unit)
             usec = self._read_cgroup_cpu_usec_path(path)
             memory_bytes = self._read_cgroup_memory_bytes_path(path)
             if usec is None and memory_bytes is None:
@@ -488,16 +510,162 @@ class SystemSampler:
                     cpu_pct = round(max(0.0, pct), 1)
             if usec is not None:
                 new_samples[sample_key] = (usec, now_mono)
-            out.append({
+            row = {
                 "name": unit.removesuffix(SERVICE_SUFFIX),
                 "unit": unit,
                 "group": service["group"],
                 "cgroup": sample_key,
                 "cpu_pct": cpu_pct,
                 "memory_mb": memory_mb,
-            })
+            }
+            row.update(self._service_state_row(states.get(unit)))
+            out.append(row)
         self._service_samples = new_samples
+        for unit, state in sorted(states.items()):
+            if unit in seen_units:
+                continue
+            group = self._service_group(unit)
+            if group is None or not self._service_state_should_surface(state):
+                continue
+            memory_bytes = state.get("memory_current_bytes")
+            out.append({
+                "name": unit.removesuffix(SERVICE_SUFFIX),
+                "unit": unit,
+                "group": group,
+                "cgroup": state.get("control_group") or "",
+                "cpu_pct": None,
+                "memory_mb": (
+                    round(memory_bytes / (1024 * 1024), 1)
+                    if isinstance(memory_bytes, int) and memory_bytes >= 0
+                    else None
+                ),
+                **self._service_state_row(state),
+            })
         return out
+
+    @staticmethod
+    def _service_state_row(state: dict[str, Any] | None) -> dict[str, Any]:
+        if not state:
+            return {
+                "active_state": None,
+                "sub_state": None,
+                "load_state": None,
+                "result": None,
+                "n_restarts": None,
+                "main_pid": None,
+                "tasks_current": None,
+            }
+        return {
+            "active_state": state.get("active_state"),
+            "sub_state": state.get("sub_state"),
+            "load_state": state.get("load_state"),
+            "result": state.get("result"),
+            "n_restarts": state.get("n_restarts"),
+            "main_pid": state.get("main_pid"),
+            "tasks_current": state.get("tasks_current"),
+        }
+
+    @staticmethod
+    def _service_state_should_surface(state: dict[str, Any]) -> bool:
+        active = str(state.get("active_state") or "")
+        result = str(state.get("result") or "")
+        restarts = state.get("n_restarts")
+        try:
+            n_restarts = int(restarts)
+        except (TypeError, ValueError):
+            n_restarts = 0
+        if active in {"active", "activating", "deactivating", "failed"}:
+            return True
+        if n_restarts > 0:
+            return True
+        return bool(result and result != "success")
+
+    @classmethod
+    def _tracked_service_units(cls) -> list[str]:
+        return sorted(set(JASPER_SERVICE_GROUPS) | set(EXTRA_SERVICE_GROUPS))
+
+    @staticmethod
+    def _parse_systemd_int(value: str | None) -> int | None:
+        raw = (value or "").strip()
+        if not raw or raw.startswith("["):
+            return None
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return None
+        # systemd uses UINT64_MAX for some unset accounting properties.
+        if parsed >= (1 << 63):
+            return None
+        return parsed
+
+    @classmethod
+    def _parse_systemctl_show_units(cls, text: str) -> dict[str, dict[str, Any]]:
+        records: list[dict[str, str]] = []
+        cur: dict[str, str] = {}
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                if cur:
+                    records.append(cur)
+                    cur = {}
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            cur[key] = value
+        if cur:
+            records.append(cur)
+
+        out: dict[str, dict[str, Any]] = {}
+        for record in records:
+            unit = (record.get("Id") or record.get("Names") or "").split()[0]
+            if not unit:
+                continue
+            out[unit] = {
+                "unit": unit,
+                "load_state": record.get("LoadState") or None,
+                "active_state": record.get("ActiveState") or None,
+                "sub_state": record.get("SubState") or None,
+                "result": record.get("Result") or None,
+                "n_restarts": cls._parse_systemd_int(record.get("NRestarts")) or 0,
+                "main_pid": cls._parse_systemd_int(record.get("MainPID")) or 0,
+                "tasks_current": cls._parse_systemd_int(record.get("TasksCurrent")),
+                "memory_current_bytes": cls._parse_systemd_int(
+                    record.get("MemoryCurrent"),
+                ),
+                "cpu_usage_nsec": cls._parse_systemd_int(
+                    record.get("CPUUsageNSec"),
+                ),
+                "control_group": record.get("ControlGroup") or "",
+            }
+        return out
+
+    @classmethod
+    def _read_service_states(
+        cls,
+        units: list[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        selected = units if units is not None else cls._tracked_service_units()
+        if not selected:
+            return {}
+        props = [
+            "Id", "LoadState", "ActiveState", "SubState", "Result",
+            "NRestarts", "MainPID", "TasksCurrent", "MemoryCurrent",
+            "CPUUsageNSec", "ControlGroup",
+        ]
+        cmd = ["systemctl", "show", "--no-page"]
+        for prop in props:
+            cmd.append(f"--property={prop}")
+        cmd.extend(selected)
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=2.0,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
+            return {}
+        if proc.returncode not in (0, 1):
+            return {}
+        return cls._parse_systemctl_show_units(proc.stdout)
 
     @staticmethod
     def _service_group(unit: str) -> str | None:

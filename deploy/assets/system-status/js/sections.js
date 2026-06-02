@@ -388,13 +388,42 @@ export function servicesTable(m, services) {
     return wrap;
   }
 
-  const sorted = services.slice().sort((a, b) =>
-    (b.cpu_pct == null ? -1 : b.cpu_pct) - (a.cpu_pct == null ? -1 : a.cpu_pct));
+  function serviceSeverity(s) {
+    const active = s.active_state || "";
+    const result = s.result || "";
+    if (active === "failed") return 4;
+    if (result && result !== "success") return 3;
+    if ((s.n_restarts || 0) > 0) return 2;
+    if (active && !["active", "inactive"].includes(active)) return 1;
+    return 0;
+  }
+
+  function stateCell(s) {
+    const active = s.active_state || (s.cgroup ? "active" : "unknown");
+    let tone = "idle";
+    if (active === "active") tone = "ok";
+    else if (active === "failed") tone = "danger";
+    else if (["activating", "deactivating", "reloading"].includes(active)) tone = "warn";
+    const parts = [];
+    if (s.sub_state && s.sub_state !== active) parts.push(s.sub_state);
+    if (s.result && s.result !== "success") parts.push(s.result);
+    return h("div", null,
+      badge(active, tone),
+      parts.length ? h("p.service-group", null, parts.join(" · ")) : null);
+  }
+
+  const sorted = services.slice().sort((a, b) => {
+    const sevDelta = serviceSeverity(b) - serviceSeverity(a);
+    if (sevDelta) return sevDelta;
+    return (b.cpu_pct == null ? -1 : b.cpu_pct) - (a.cpu_pct == null ? -1 : a.cpu_pct);
+  });
 
   const bodyRows = sorted.map((s) => h("tr", null,
     h("td", null,
       h("p.service-name", null, s.name),
       h("p.service-group", null, s.group || "Service")),
+    h("td", null, stateCell(s)),
+    h("td.num", null, s.n_restarts == null ? "—" : String(s.n_restarts)),
     h("td.num", null, s.cpu_pct == null ? "—" : s.cpu_pct.toFixed(1) + "%"),
     h("td.num", null, s.memory_mb == null ? "—" : Math.round(s.memory_mb) + " MB"),
   ));
@@ -411,12 +440,16 @@ export function servicesTable(m, services) {
     const unshown = Math.max(0, systemCpu - shownCpu);
     totalsRow = h("tr.totals", null,
       h("td", null, "System total · shown / unshown / free"),
+      h("td", null, ""),
+      h("td.num", null, ""),
       h("td.num", null, Math.round(capacityPercent(systemCpu, cores.length)) + "% (" +
         Math.round(shownCpu) + " + " + Math.round(unshown) + " + " + Math.round(headroom) + " / " + maxScale + "%)"),
       h("td.num", null, anyMem ? Math.round(shownMem) + " MB" : "—"));
   } else {
     totalsRow = h("tr.totals", null,
       h("td", null, "Shown subtotal"),
+      h("td", null, ""),
+      h("td.num", null, ""),
       h("td.num", null, Math.round(shownCpu) + "%"),
       h("td.num", null, anyMem ? Math.round(shownMem) + " MB" : "—"));
   }
@@ -424,7 +457,9 @@ export function servicesTable(m, services) {
   wrap.append(h("div.table-wrap", null,
     h("table.table.table--services", null,
       h("thead", null, h("tr", null,
-        h("th", null, "Service"), h("th.num", null, "CPU"), h("th.num", null, "Mem"))),
+        h("th", null, "Service"), h("th", null, "State"),
+        h("th.num", null, "Restarts"), h("th.num", null, "CPU"),
+        h("th.num", null, "Mem"))),
       h("tbody", null, ...bodyRows, totalsRow))));
   return wrap;
 }

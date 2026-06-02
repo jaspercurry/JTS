@@ -345,6 +345,11 @@
   .active-speaker-actions {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   }
+  .active-speaker-actions--targets { margin-top: -4px; }
+  .active-speaker-plan {
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+  }
   @media (max-width: 420px) {
     .active-speaker-status__head { align-items: stretch; flex-direction: column; }
     .active-speaker-facts > div { grid-template-columns: 1fr; gap: 2px; }

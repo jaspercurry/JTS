@@ -48,6 +48,12 @@ from .safe_playback import (
     load_safe_playback_state,
     stop_safe_playback_session,
 )
+from .tone_plan import (
+    TONE_PLAN_KIND,
+    build_safe_tone_plan,
+    load_active_speaker_preset,
+    tone_targets_payload,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
@@ -62,6 +68,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "STARTUP_HEADROOM_DB",
     "STARTUP_LIMITER_CLIP_LIMIT_DB",
+    "TONE_PLAN_KIND",
     "ActiveChannelMap",
     "ActiveSpeakerConfigError",
     "ActiveSpeakerPreset",
@@ -75,6 +82,8 @@ __all__ = [
     "classify_camilla_config_text",
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",
+    "build_safe_tone_plan",
+    "load_active_speaker_preset",
     "parse_aplay_playback_devices",
     "parse_camilla_statefile_config_path",
     "probe_active_speaker_environment",
@@ -83,4 +92,5 @@ __all__ = [
     "arm_safe_playback_session",
     "load_safe_playback_state",
     "stop_safe_playback_session",
+    "tone_targets_payload",
 ]

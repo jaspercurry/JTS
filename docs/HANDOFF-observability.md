@@ -1,20 +1,47 @@
 # Handoff: observability & debug-mode design
 
-How JTS logging works today, the principle that keeps it
-diagnosable without spamming the SD card, and the planned
-per-subsystem debug toggle. Read [HANDOFF-resilience.md](HANDOFF-resilience.md)
-first — this sits on top of that resilience ladder and does not
-restate it.
+How JTS logging and diagnostic capture work today, the principle
+that keeps production diagnosable without turning it into a profiler,
+and where deeper resource characterization belongs. Read
+[HANDOFF-resilience.md](HANDOFF-resilience.md) first — this sits on
+top of that resilience ladder and does not restate it.
 
 > **Status: current-state reference + approved design.** The
 > "Current state" section is operational truth (verified
-> 2026-06-01). The "Plan" section is approved-but-not-yet-built:
-> Tier A + B next, C + D later. When Tier B/C ship, move their
-> rows from "Plan" to "Current state" and bump the footer.
+> 2026-06-02). Tier A/B/C are built; Tier D was removed in review.
+> New observability work should preserve the three-plane boundary
+> below: cheap production truth, temporary debug verbosity, and
+> explicit bounded diagnostic artifacts.
 
 ---
 
 ## Current state (operational truth)
+
+**Three-plane boundary (load-bearing, verified 2026-06-02).**
+JTS intentionally separates:
+
+1. **Production health:** always-on, cheap, fixed-shape truth:
+   `/healthz`, `/state`, `/system/snapshot`,
+   `jasper-doctor --json`, daemon STATUS sockets, and structured
+   `event=` journal lines. This plane may add low-cost fields such
+   as service `ActiveState`/`SubState`/`NRestarts`, outputd bridge
+   counters, restart/failure warnings, and installed wake-asset
+   checks. It must not include raw log bundles, PSS scans, profilers,
+   or long soak history.
+2. **Temporary debug verbosity:** the `/system` Debug card and
+   `/var/lib/jasper/debug.env` raise scoped daemon logging for a
+   TTL-bound session. It is additive only and auto-expires; it is not
+   a memory profiler.
+3. **Bounded diagnostics:** explicit operator commands produce
+   artifacts, then exit. Whole-system memory/CPU/journal
+   characterization lives in `jasper-system-soak`, normally launched
+   via `bash scripts/pi-system-soak.sh ...`, which in turn uses
+   `scripts/pi-run-diagnostic.sh` so systemd bounds memory/runtime and
+   gives the kernel an obvious diagnostic process to kill before
+   product daemons.
+
+This is the project rule that keeps observability from muddying the
+steady state: production gets truth, not lab equipment.
 
 **Logging is plain `logging.basicConfig(level=INFO)` per daemon.**
 Each long-running daemon (`jasper-voice`, `jasper-control`,
@@ -89,7 +116,7 @@ extension of the debug card below.
 
 ---
 
-## Plan (approved 2026-05-30; not yet built)
+## Built tiers and removed surfaces
 
 **Design invariant (non-negotiable):** debug mode is **additive
 only**. It may *raise* verbosity; it must **never** lower a daemon
@@ -266,8 +293,8 @@ via `JASPER_FLIGHT_RECORDER=disabled`. Tests:
 `tests/test_flight_recorder.py` plus the flag-dump test in
 `test_tools_diagnostic.py`. **Remaining: on-device verification** —
 deploy, then confirm a WARNING produces an `event=flightrec.dump`
-burst in `journalctl`, and that "flag that" + a doctor FAIL each
-trigger one.
+burst in `journalctl`, and that "flag that" plus a manual
+`systemctl kill -s USR1 <unit>` each trigger one.
 
 **Tier D — considered and removed (2026-05-30).** A one-tap
 "Download diagnostics" button (GET `/diagnostics-bundle` →
@@ -329,4 +356,4 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-06-01
+Last verified: 2026-06-02

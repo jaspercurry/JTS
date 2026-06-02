@@ -54,7 +54,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
-  var activeSpeaker = {loading: false, action: '', payload: null, session: null, error: ''};
+  var activeSpeaker = {loading: false, action: '', payload: null, session: null, targets: null, plan: null, error: ''};
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
@@ -479,7 +479,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   function renderActiveSpeakerSetup() {
     var body = renderActiveSpeakerStatus();
-    var open = activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.session || activeSpeaker.error;
+    var open = activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.session || activeSpeaker.plan || activeSpeaker.error;
     return '<section class="active-speaker-setup">' +
       '<details class="advanced"' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
@@ -546,6 +546,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       }).join('') + '</dl>' +
       renderActiveSpeakerIssues(envIssues, sessionIssues) +
       renderActiveSpeakerActions(ok, session) +
+      renderActiveSpeakerPlan(activeSpeaker.plan) +
       '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'Playback remains disabled until the safe tone path is implemented.') + '</p>' +
     '</div>';
   }
@@ -568,6 +569,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   function renderActiveSpeakerActions(ok, session) {
     var busy = !!activeSpeaker.action;
     var state = session || {};
+    var targets = activeSpeaker.targets && Array.isArray(activeSpeaker.targets.targets)
+      ? activeSpeaker.targets.targets : [];
     if (busy) {
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--ghost" disabled>' + escapeHtml(activeSpeaker.action) + '</button>' +
@@ -575,14 +578,47 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       '</div>';
     }
     if (state.status === 'armed') {
+      var targetButtons = targets.length ? targets.slice(0, 6).map(function(target) {
+        var label = target.label || ((target.side || '') + ' ' + (target.driver_role || 'channel'));
+        return '<button type="button" class="btn btn--ghost" data-act="prepare-active-tone" ' +
+          'data-side="' + escapeHtml(target.side || '') + '" ' +
+          'data-driver-role="' + escapeHtml(target.driver_role || '') + '">' +
+          'Prepare ' + escapeHtml(label) + '</button>';
+      }).join('') : '<span class="setting-row__hint">No preset channel targets available.</span>';
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--danger" data-act="stop-active-speaker">Stop</button>' +
         '<span class="setting-row__hint">Armed safety session. Tone playback is not implemented in this build.</span>' +
+      '</div>' +
+      '<div class="active-speaker-actions active-speaker-actions--targets">' +
+        targetButtons +
       '</div>';
     }
     return '<div class="active-speaker-actions">' +
       '<button type="button" class="btn btn--ghost" data-act="arm-active-speaker"' + (ok ? '' : ' disabled') + '>Arm safe session</button>' +
       '<span class="setting-row__hint">Arming records the safety state only; it does not play sound.</span>' +
+    '</div>';
+  }
+  function renderActiveSpeakerPlan(plan) {
+    if (!plan) return '';
+    var tone = plan.tone || {};
+    var target = plan.target || {};
+    var rows = [
+      ['Plan status', plan.status || 'unknown'],
+      ['Target', target.label || target.driver_role || 'unknown'],
+      ['Tone', (tone.frequency_hz || '?') + ' Hz at ' + fmtDb(tone.level_dbfs) + ' dBFS'],
+      ['Duration', String(tone.duration_ms || '?') + ' ms'],
+      ['Would play', plan.would_play ? 'Yes' : 'No']
+    ];
+    var issues = Array.isArray(plan.issues) ? plan.issues.slice(0, 4) : [];
+    return '<div class="active-speaker-plan">' +
+      '<p class="setting-row__title">Prepared channel test</p>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
+        return '<li>' + escapeHtml('Plan: ' + (issue.code || 'issue')) + '</li>';
+      }).join('') + '</ul>' : '') +
+      '<p class="setting-row__hint">' + escapeHtml(plan.next_step || 'Prepared only; no sound was emitted.') + '</p>' +
     '</div>';
   }
 
@@ -961,6 +997,12 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     else if (act === 'refresh-active-speaker') { refreshActiveSpeakerStatus(); }
     else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Arming'); }
     else if (act === 'stop-active-speaker') { activeSpeakerPost('./active-speaker/stop', 'Stopping'); }
+    else if (act === 'prepare-active-tone') {
+      activeSpeakerTonePlan({
+        side: t.getAttribute('data-side') || '',
+        driver_role: t.getAttribute('data-driver-role') || ''
+      });
+    }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -1137,21 +1179,32 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     }
   }
   async function refreshActiveSpeakerStatus() {
-    activeSpeaker = {loading: true, action: '', payload: activeSpeaker.payload, session: activeSpeaker.session, error: ''};
+    activeSpeaker = {
+      loading: true, action: '',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      plan: null,
+      error: ''
+    };
     render();
     try {
       var envResp = await fetch('./active-speaker/environment', {cache: 'no-store'});
       if (!envResp.ok) throw new Error('environment probe failed');
       var sessionResp = await fetch('./active-speaker/safe-playback', {cache: 'no-store'});
       if (!sessionResp.ok) throw new Error('safe playback status failed');
+      var targetsResp = await fetch('./active-speaker/tone-targets', {cache: 'no-store'});
+      if (!targetsResp.ok) throw new Error('tone targets failed');
       activeSpeaker = {
         loading: false, action: '',
         payload: await envResp.json(),
         session: await sessionResp.json(),
+        targets: await targetsResp.json(),
+        plan: null,
         error: ''
       };
     } catch (e) {
-      activeSpeaker = {loading: false, action: '', payload: null, session: null, error: e.message};
+      activeSpeaker = {loading: false, action: '', payload: null, session: null, targets: null, plan: null, error: e.message};
     }
     render();
   }
@@ -1160,6 +1213,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       loading: false, action: actionLabel,
       payload: activeSpeaker.payload,
       session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      plan: null,
       error: ''
     };
     render();
@@ -1174,6 +1229,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         loading: false, action: '',
         payload: activeSpeaker.payload,
         session: await resp.json(),
+        targets: activeSpeaker.targets,
+        plan: null,
         error: ''
       };
     } catch (e) {
@@ -1181,6 +1238,45 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         loading: false, action: '',
         payload: activeSpeaker.payload,
         session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        plan: activeSpeaker.plan,
+        error: e.message
+      };
+    }
+    render();
+  }
+  async function activeSpeakerTonePlan(target) {
+    activeSpeaker = {
+      loading: false, action: 'Preparing',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      plan: activeSpeaker.plan,
+      error: ''
+    };
+    render();
+    try {
+      var resp = await fetch('./active-speaker/tone-plan', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(target || {})
+      });
+      if (!resp.ok) throw new Error('tone plan failed');
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        plan: await resp.json(),
+        error: ''
+      };
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        plan: activeSpeaker.plan,
         error: e.message
       };
     }

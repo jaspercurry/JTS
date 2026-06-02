@@ -67,6 +67,7 @@ from ..audio_validation import (
     current_artifact_filter_kwargs as _audio_validation_filter_kwargs,
 )
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
+from ..env_load import subprocess_env_with_fresh_files
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -1874,6 +1875,7 @@ def _make_handler(
                     proc = subprocess.run(
                         ["/opt/jasper/.venv/bin/jasper-doctor", "--json"],
                         capture_output=True, text=True, timeout=30,
+                        env=subprocess_env_with_fresh_files(),
                     )
                 except (subprocess.SubprocessError, FileNotFoundError) as e:
                     self._send_json(
