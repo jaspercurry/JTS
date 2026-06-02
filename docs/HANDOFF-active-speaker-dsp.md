@@ -9,6 +9,20 @@
 > stereo Apple USB-C dongle passthrough path; active crossover
 > hardware is future work.
 
+> **Implementation status, 2026-06-01:** A0 schema substrate has
+> started. `jasper.active_speaker` now defines import-cheap,
+> side-effect-free preset, channel-map, safety-envelope, crossover
+> region, and speaker-baseline profile models with validation and
+> tests. A1 template work has also started:
+> `jasper.active_speaker.camilla_yaml.emit_active_speaker_startup_config`
+> emits muted/protected CamillaDSP startup templates with explicit
+> active-hardware playback device input, `volume_limit: 0.0`, startup
+> headroom, tweeter protective HP, per-driver mute, and per-driver
+> limiter chains. `/sound/` has a read-only Advanced speaker setup
+> entry point that labels this as schema plus startup-template only.
+> No tone playback, channel test, CamillaDSP reload/apply path, or
+> hardware loading exists yet.
+
 ## Current Operational Truth
 
 Active speaker DSP is a separate layer from room correction and from
@@ -378,10 +392,14 @@ Updated execution plan:
 
 1. **Substrate slice**: implement data models and validation for
    speaker presets, active channel maps, and baseline profiles without
-   loading them onto hardware yet.
+   loading them onto hardware yet. Started 2026-06-01 as
+   `jasper.active_speaker`; current scope is validation plus muted
+   startup-template generation only, not live DSP loading.
 2. **Safe config slice**: generate 2-way and 3-way CamillaDSP
    templates with explicit muted/protected startup state, validate
-   them, and make rollback mechanical.
+   them, and make rollback mechanical. Started 2026-06-01 as a
+   no-apply startup-template emitter; `camilladsp --check`, rollback
+   statefile handling, and hardware loading are still future work.
 3. **Engineering interop slice**: import REW/VituixCAD measurement
    artifacts and freeze the first named preset before attempting an
    end-user wizard.
@@ -505,4 +523,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-05-28
+Last verified: 2026-06-01

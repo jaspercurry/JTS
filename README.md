@@ -241,7 +241,9 @@ when the configured AEC mic is present with 6-channel firmware — see
   design system ([`deploy/assets/app.css`](deploy/assets/app.css)).
   Applying emits a CamillaDSP config that preserves any active
   room-correction PEQs; Off turns off only preference shaping without
-  clearing room correction. See
+  clearing room correction. A collapsed Advanced speaker setup card now
+  marks the active crossover commissioning lane as schema plus
+  startup-template only while the safety substrate is built. See
   [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
   for the composition contract, profile semantics, and observability
   hooks.

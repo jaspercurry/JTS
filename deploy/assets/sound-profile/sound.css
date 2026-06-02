@@ -303,6 +303,14 @@
     min-width: 4.5rem; text-align: right;
     font-variant-numeric: tabular-nums; color: var(--foreground);
   }
+  .active-speaker-setup .setting-row { align-items: flex-start; }
+  .status-pill {
+    align-self: flex-start; white-space: nowrap;
+    padding: 4px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 700;
+    background: color-mix(in oklch, var(--status-warn) 14%, transparent);
+    color: var(--status-warn);
+  }
   /* Canonical checkbox toggle (sage). Checkbox-based per web conventions. */
   .toggle { position: relative; display: inline-block; flex-shrink: 0; width: 48px; height: 28px; }
   .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }

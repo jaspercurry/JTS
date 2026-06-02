@@ -195,8 +195,8 @@ the room-correction main lane:
 
 | Stage | Capability | Ship criteria |
 |---|---|---|
-| A0 | Preset/schema substrate | Driver-set preset schema, active channel map, baseline profile schema, and validation, with no hardware loading. |
-| A1 | Safe CamillaDSP templates | Generate checked 2-way/3-way templates with muted/protected startup state, explicit channel labels, and rollback. |
+| A0 | Preset/schema substrate | Started 2026-06-01 in `jasper.active_speaker`: driver-set preset schema, active channel map, baseline profile schema, and validation, with no hardware loading. |
+| A1 | Safe CamillaDSP templates | Started 2026-06-01 as a no-apply startup-template emitter with muted/protected 2-way/3-way output chains and explicit mixer output labels. Still needs `camilladsp --check`, rollback statefile handling, and hardware loading gates. |
 | A2 | Engineering preset interop | Import or reference REW/VituixCAD artifacts, freeze expected envelopes, safe sweep ranges, polarity, delay ranges, trims, limiters, and BSC. |
 | A3 | Channel/path safety | Prove every audible path flows through the protected active baseline; verify physical outputs before drivers are connected. |
 | A4 | Phone-as-mic W0 | Raw PCM WebSocket ingest, calibration blocking, browser processing sanity checks, and resumable server-side session state. |
@@ -273,4 +273,4 @@ The LLM must not:
 - DRC-FIR and rePhase prior art.
 - Toole / Olive / Welti room-correction and preference research.
 
-Last verified: 2026-05-29
+Last verified: 2026-06-01

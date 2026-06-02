@@ -388,6 +388,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
   function renderOff() {
     el('view-body').innerHTML =
+      '<div class="saved-stack">' +
       '<section class="off-card">' +
         '<div class="off-card__icon">' + ico('spark') + '</div>' +
         '<p class="off-card__text">Create a sound profile that changes how your speaker sounds.</p>' +
@@ -395,7 +396,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
           '<button type="button" class="btn btn--ghost" data-act="browse-presets">Try a stock profile</button>' +
           '<button type="button" class="btn btn--primary" data-act="new-draft">Create custom profile</button>' +
         '</div>' +
-      '</section>';
+      '</section>' +
+      renderActiveSpeakerSetup() +
+      '</div>';
   }
 
   function profileRow(entry, live, deletable) {
@@ -440,7 +443,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       '<div class="list-card"><div class="list-card__rows">' +
         presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
     el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection +
-      renderSoundSettings() + '</div>';
+      renderSoundSettings() + renderActiveSpeakerSetup() + '</div>';
   }
   function fmtTrim(v) { v = Number(v) || 0; return v > 0 ? '−' + v.toFixed(1) + ' dB' : 'Off'; }
   function renderSoundSettings() {
@@ -469,6 +472,21 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
               '" step="0.5" value="' + trim + '" aria-label="Extra headroom in dB">' +
             '<span class="headroom-readout" id="set-headroom-readout">' + fmtTrim(trim) + '</span>' +
           '</div>' +
+        '</div>' +
+      '</details>' +
+    '</section>';
+  }
+  function renderActiveSpeakerSetup() {
+    return '<section class="active-speaker-setup">' +
+      '<details class="advanced">' +
+        '<summary>Advanced speaker setup</summary>' +
+        '<div class="setting-row setting-row--stack">' +
+          '<div class="setting-row__text">' +
+            '<p class="setting-row__title">Active crossover commissioning</p>' +
+            '<p class="setting-row__hint">For speakers with separate woofer, mid, or tweeter amplifier channels. ' +
+              'The current implementation is schema and startup-template only; it will not play tones or load active crossover configs.</p>' +
+          '</div>' +
+          '<div class="status-pill status-pill--planned">Safety-first planning</div>' +
         '</div>' +
       '</details>' +
     '</section>';

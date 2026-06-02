@@ -63,6 +63,12 @@ belong last in each per-driver chain. The active baseline profile must
 be stored separately from room-correction bundles and preference
 profiles.
 
+Implementation note, 2026-06-01: the first active-speaker substrate
+lives in `jasper.active_speaker`. It validates presets, output channel
+maps, safety envelopes, crossover regions, and baseline acceptance
+evidence, and emits muted/protected startup templates for manual
+inspection, but does not load CamillaDSP configs yet.
+
 ## LLM Boundary
 
 An LLM can explain why a null test failed, ask whether timing
@@ -71,4 +77,4 @@ check to run next. It must not invent filter taps, remove tweeter
 protection, write arbitrary CamillaDSP YAML, or call magnitude-only
 data valid for phase alignment.
 
-Last verified: 2026-05-26
+Last verified: 2026-06-01

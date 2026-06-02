@@ -338,6 +338,7 @@ id = "room-correction-and-calibration"
 title = "Room correction and calibration agent"
 safety = "audio-output-risk"
 code = [
+  "jasper/active_speaker/**",
   "jasper/correction/**",
   "jasper/calibration_agent/**",
   "jasper/web/correction_setup.py",

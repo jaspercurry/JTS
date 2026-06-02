@@ -149,8 +149,22 @@ fixtures). This remains reversible: no profile persistence, no volume
 authority, and the action result reports the generated config basename
 rather than exposing raw filesystem paths.
 
+### Advanced speaker setup entry point
+
+As of 2026-06-01, `/sound/` also shows a collapsed **Advanced speaker
+setup** card for active crossover commissioning. It is intentionally
+read-only: it labels active speaker setup as schema plus startup-template
+only and does not play tones, start sweeps, load active crossover configs,
+or touch CamillaDSP. The actual substrate starts in `jasper.active_speaker`
+and the canonical safety/design plan lives in
+[`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
+
 ## Files
 
+- `jasper/active_speaker/` — import-cheap active-speaker preset,
+  channel-map, safety-envelope, baseline-profile schemas, and
+  muted/protected startup-template YAML emission. Current scope is
+  validation/template generation only; no hardware loading.
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
   preview response, expanded-band overlays, the peak-boost `estimate_headroom_db`
@@ -455,4 +469,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-05-31
+Last verified: 2026-06-01

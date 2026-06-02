@@ -137,6 +137,8 @@ def test_sound_module_preserves_editor_behaviour():
     assert "function cancelLiveDrafts()" in js
     assert "jsonHeaders()" in js
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
+    assert "Active crossover commissioning" in js
+    assert "startup-template only" in js
     assert "window.prompt" not in js
 
 
