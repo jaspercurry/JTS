@@ -150,10 +150,20 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
 
     assert "function refreshActiveSpeakerStatus()" in js
     assert "fetch('./active-speaker/environment'" in js
+    assert "fetch('./active-speaker/safe-playback'" in js
+    assert "activeSpeakerPost('./active-speaker/arm', 'Arming')" in js
+    assert "activeSpeakerPost('./active-speaker/stop', 'Stopping')" in js
     assert "data-act=\"refresh-active-speaker\"" in js
-    assert "activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.error" in js
+    assert "data-act=\"arm-active-speaker\"" in js
+    assert "data-act=\"stop-active-speaker\"" in js
+    assert "class=\"btn btn--danger\" data-act=\"stop-active-speaker\"" in js
+    assert "activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.session || activeSpeaker.error" in js
     assert "'<details class=\"advanced\"' + (open ? ' open' : '')" in js
     assert "safe.playback_allowed ? 'Allowed' : 'Not allowed yet'" in js
+    assert "function renderActiveSpeakerIssues(envIssues, sessionIssues)" in js
+    assert "row[0] + ': ' + (issue.code || 'issue')" in js
+    assert "Arming records the safety state only; it does not play sound." in js
+    assert "Tone playback is not implemented in this build." in js
     assert "reload CamillaDSP" in js
     assert "play tones" in js
 
@@ -187,6 +197,44 @@ def test_active_speaker_environment_payload_uses_configured_evidence_path(
     assert calls == {
         "path_safety_evidence_path": "/tmp/path-safety.json",
     }
+
+
+def test_active_speaker_safe_playback_payloads_are_no_audio(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
+        str(tmp_path / "safe-playback.json"),
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_environment_payload",
+        lambda: {
+            "status": "pass",
+            "load_gate": "ready",
+            "ok_to_load_active_config": True,
+            "camilla_config": {
+                "classification": "active_startup_candidate",
+                "path": "/tmp/active.yml",
+            },
+            "safe_playback": {
+                "status": "not_implemented",
+                "playback_allowed": False,
+            },
+            "issues": [],
+        },
+    )
+
+    armed = sound_setup._active_speaker_arm_payload()
+    status = sound_setup._active_speaker_safe_playback_payload()
+    stopped = sound_setup._active_speaker_stop_payload()
+
+    assert armed["status"] == "armed"
+    assert armed["playback_allowed"] is False
+    assert status["status"] == "armed"
+    assert stopped["status"] == "stopped"
+    assert stopped["session_id"] == armed["session_id"]
 
 
 def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():

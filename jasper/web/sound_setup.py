@@ -647,6 +647,47 @@ def _active_speaker_environment_payload() -> dict[str, Any]:
     return report
 
 
+def _active_speaker_safe_playback_payload() -> dict[str, Any]:
+    """Return the current no-audio active-speaker safety session."""
+
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+
+    return load_safe_playback_state()
+
+
+def _active_speaker_arm_payload() -> dict[str, Any]:
+    """Arm a no-audio active-speaker safety session if gates pass."""
+
+    from jasper.active_speaker.safe_playback import arm_safe_playback_session
+
+    environment_report = _active_speaker_environment_payload()
+    state = arm_safe_playback_session(environment_report)
+    logger.info(
+        "event=sound.active_speaker_safe_playback action=arm status=%s "
+        "session_id=%s load_gate=%s blockers=%d",
+        state.get("status"),
+        state.get("session_id"),
+        state.get("environment", {}).get("load_gate"),
+        len(state.get("issues") or []),
+    )
+    return state
+
+
+def _active_speaker_stop_payload() -> dict[str, Any]:
+    """Stop any no-audio active-speaker safety session."""
+
+    from jasper.active_speaker.safe_playback import stop_safe_playback_session
+
+    state = stop_safe_playback_session()
+    logger.info(
+        "event=sound.active_speaker_safe_playback action=stop status=%s "
+        "session_id=%s",
+        state.get("status"),
+        state.get("session_id"),
+    )
+    return state
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -702,6 +743,15 @@ def _make_handler(
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
+            if path == "/active-speaker/safe-playback":
+                try:
+                    self._send_json(_active_speaker_safe_playback_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_safe_playback result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -712,6 +762,8 @@ def _make_handler(
                 "/live-draft",
                 "/preview",
                 "/settings",
+                "/active-speaker/arm",
+                "/active-speaker/stop",
                 "/profiles/save",
                 "/profiles/rename",
                 "/profiles/delete",
@@ -723,6 +775,12 @@ def _make_handler(
                 return
             try:
                 raw = self._read_json()
+                if path == "/active-speaker/arm":
+                    self._send_json(_active_speaker_arm_payload())
+                    return
+                if path == "/active-speaker/stop":
+                    self._send_json(_active_speaker_stop_payload())
+                    return
                 if path == "/settings":
                     settings = SoundSettings.from_mapping(raw)
                     try:

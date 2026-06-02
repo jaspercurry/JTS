@@ -159,8 +159,13 @@ read-only: a user can click **Check environment** to fetch
 count, current CamillaDSP config classification, validation status,
 load-gate status, and why safe playback is still blocked. It does not play
 tones, start sweeps, reload CamillaDSP, load active crossover configs, or
-touch live audio. The actual substrate starts in `jasper.active_speaker`
-and the canonical safety/design plan lives in
+touch live audio. The same card can **Arm safe session** and **Stop** a
+no-audio safety session through `/sound/active-speaker/arm` and
+`/sound/active-speaker/stop`; arming only persists the current safety state
+when the environment load gate passes, and Stop is a normal-sized,
+idempotent control that records the session as stopped. It still does not
+emit tones or authorize playback. The actual substrate starts in
+`jasper.active_speaker` and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 
 ## Files
@@ -168,8 +173,9 @@ and the canonical safety/design plan lives in
 - `jasper/active_speaker/` — import-cheap active-speaker preset,
   channel-map, safety-envelope, baseline-profile schemas, and
   muted/protected startup-template YAML emission plus read-only
-  environment reporting. Current scope is validation/template generation
-  and status only; no hardware loading or playback.
+  environment reporting plus no-audio safe-playback session state. Current
+  scope is validation/template generation and status/session bookkeeping
+  only; no hardware loading or playback.
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
   preview response, expanded-band overlays, the peak-boost `estimate_headroom_db`
