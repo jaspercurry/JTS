@@ -5,6 +5,7 @@ systemctl, arecord, etc) are exercised on the Pi via
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import subprocess
 import sys
@@ -98,25 +99,54 @@ def os_environ_get(name: str) -> str | None:
 def _install_fake_openwakeword_package(
     monkeypatch,
     tmp_path: Path,
-    filenames: set[str],
+    files: dict[str, bytes],
+    required_assets: tuple[SimpleNamespace, ...],
 ) -> None:
     pkg = tmp_path / "openwakeword"
     models = pkg / "resources" / "models"
     models.mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
-    for filename in filenames:
-        (models / filename).write_bytes(b"model")
+    for filename, payload in files.items():
+        (models / filename).write_bytes(payload)
     monkeypatch.setitem(
         sys.modules,
         "openwakeword",
         SimpleNamespace(__file__=str(pkg / "__init__.py")),
     )
+    monkeypatch.setattr(
+        wake_models,
+        "required_openwakeword_assets",
+        lambda: required_assets,
+    )
+
+
+def _fake_asset(filename: str, payload: bytes = b"model") -> SimpleNamespace:
+    return SimpleNamespace(
+        filename=filename,
+        download_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+
+
+def _required_fake_openwakeword_assets() -> tuple[SimpleNamespace, ...]:
+    return (
+        _fake_asset("embedding_model.onnx"),
+        _fake_asset("melspectrogram.onnx"),
+        _fake_asset("silero_vad.onnx"),
+    )
 
 
 def test_openwakeword_doctor_fails_when_silero_asset_missing(monkeypatch, tmp_path: Path):
-    filenames = {asset.filename for asset in wake_models.openwakeword_assets()}
-    filenames.remove("silero_vad.onnx")
-    _install_fake_openwakeword_package(monkeypatch, tmp_path, filenames)
+    required_assets = _required_fake_openwakeword_assets()
+    _install_fake_openwakeword_package(
+        monkeypatch,
+        tmp_path,
+        {
+            "embedding_model.onnx": b"model",
+            "melspectrogram.onnx": b"model",
+            "hey_jarvis_v0.1.onnx": b"model",
+        },
+        required_assets,
+    )
 
     r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
 
@@ -128,17 +158,48 @@ def test_openwakeword_doctor_allows_missing_inactive_bundled_model(
     monkeypatch,
     tmp_path: Path,
 ):
-    filenames = {
-        asset.filename
-        for asset in wake_models.required_openwakeword_assets()
-    }
-    filenames.add("hey_jarvis_v0.1.onnx")
-    _install_fake_openwakeword_package(monkeypatch, tmp_path, filenames)
+    required_assets = _required_fake_openwakeword_assets()
+    _install_fake_openwakeword_package(
+        monkeypatch,
+        tmp_path,
+        {
+            "embedding_model.onnx": b"model",
+            "melspectrogram.onnx": b"model",
+            "silero_vad.onnx": b"model",
+            "hey_jarvis_v0.1.onnx": b"model",
+        },
+        required_assets,
+    )
 
     r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
 
     assert r.status == "ok"
     assert "hey_jarvis_v0.1.onnx" in r.detail
+
+
+def test_openwakeword_doctor_fails_when_required_asset_hash_mismatches(
+    monkeypatch,
+    tmp_path: Path,
+):
+    required_assets = _required_fake_openwakeword_assets()
+    _install_fake_openwakeword_package(
+        monkeypatch,
+        tmp_path,
+        {
+            "embedding_model.onnx": b"model",
+            "melspectrogram.onnx": b"model",
+            "silero_vad.onnx": b"wrong-model",
+            "hey_jarvis_v0.1.onnx": b"model",
+        },
+        required_assets,
+    )
+
+    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
+
+    assert r.status == "fail"
+    assert "hash mismatch" in r.detail
+    assert "silero_vad.onnx" in r.detail
+    assert "deploy/install.sh" in r.detail
 
 
 # -------------------------------------------------- provider-aware key check

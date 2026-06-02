@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -512,17 +513,26 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                 f"{models_dir} missing — re-run deploy/install.sh to stage "
                 "JTS's hash-checked OpenWakeWord ONNX assets.",
             )
-        missing_assets = [
-            asset.filename
-            for asset in required_openwakeword_assets()
-            if not (models_dir / asset.filename).is_file()
-            or (models_dir / asset.filename).stat().st_size <= 0
-        ]
+        missing_assets: list[str] = []
+        mismatched_assets: list[str] = []
+        for asset in required_openwakeword_assets():
+            path = models_dir / asset.filename
+            if not path.is_file() or path.stat().st_size <= 0:
+                missing_assets.append(asset.filename)
+                continue
+            if _sha256_file(path) != asset.download_sha256:
+                mismatched_assets.append(asset.filename)
         if missing_assets:
             return CheckResult(
                 "openWakeWord models", "fail",
                 "missing package assets: "
                 f"{', '.join(sorted(missing_assets))}; re-run deploy/install.sh",
+            )
+        if mismatched_assets:
+            return CheckResult(
+                "openWakeWord models", "fail",
+                "package asset hash mismatch: "
+                f"{', '.join(sorted(mismatched_assets))}; re-run deploy/install.sh",
             )
         wake_model = Path(cfg.wake_model)
         if wake_model.is_absolute():
@@ -542,6 +552,14 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
         )
     except Exception as e:  # noqa: BLE001
         return CheckResult("openWakeWord models", "fail", str(e))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # ----------------------------------------------------------------------
