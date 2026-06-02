@@ -12,6 +12,7 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/arm       arm a no-audio active-speaker safety session
   POST /active-speaker/stop      stop the no-audio active-speaker session
   POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
+  POST /active-speaker/play-tone render a bounded no-audio tone artifact
   POST /profiles/save save or update a named custom profile
   POST /profiles/rename rename a named custom profile
   POST /profiles/delete delete a named custom profile
@@ -682,14 +683,18 @@ def _active_speaker_arm_payload() -> dict[str, Any]:
 def _active_speaker_stop_payload() -> dict[str, Any]:
     """Stop any no-audio active-speaker safety session."""
 
+    from jasper.active_speaker.playback import stop_tone_playback
     from jasper.active_speaker.safe_playback import stop_safe_playback_session
 
+    playback = stop_tone_playback(reason="operator_stop")
     state = stop_safe_playback_session()
     logger.info(
         "event=sound.active_speaker_safe_playback action=stop status=%s "
-        "session_id=%s",
+        "session_id=%s playback_status=%s audio_emitted=%s",
         state.get("status"),
         state.get("session_id"),
+        playback.get("status"),
+        bool(playback.get("audio_emitted")),
     )
     return state
 
@@ -744,6 +749,41 @@ def _active_speaker_tone_plan_payload(raw: dict[str, Any]) -> dict[str, Any]:
         bool(plan.get("would_play")),
     )
     return plan
+
+
+def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Render a bounded no-audio tone artifact for the requested target."""
+
+    from jasper.active_speaker.playback import start_tone_playback
+    from jasper.active_speaker.safe_playback import (
+        load_safe_playback_state,
+        record_safe_playback_result,
+    )
+
+    plan = _active_speaker_tone_plan_payload(raw)
+    safe_session = load_safe_playback_state()
+    playback = start_tone_playback(plan, safe_session=safe_session)
+    session = record_safe_playback_result(playback)
+    logger.info(
+        "event=sound.active_speaker_tone_playback status=%s backend=%s "
+        "side=%s driver_role=%s output_index=%s level_dbfs=%s "
+        "duration_ms=%s audio_emitted=%s blockers=%d artifact=%s",
+        playback.get("status"),
+        playback.get("backend"),
+        playback.get("target", {}).get("side"),
+        playback.get("target", {}).get("driver_role"),
+        playback.get("target", {}).get("output_index"),
+        playback.get("tone", {}).get("level_dbfs"),
+        playback.get("tone", {}).get("duration_ms"),
+        bool(playback.get("audio_emitted")),
+        len(playback.get("issues") or []),
+        (playback.get("artifact") or {}).get("wav_basename"),
+    )
+    return {
+        "plan": plan,
+        "playback": playback,
+        "session": session,
+    }
 
 
 def _make_handler(
@@ -832,6 +872,7 @@ def _make_handler(
                 "/active-speaker/arm",
                 "/active-speaker/stop",
                 "/active-speaker/tone-plan",
+                "/active-speaker/play-tone",
                 "/profiles/save",
                 "/profiles/rename",
                 "/profiles/delete",
@@ -851,6 +892,9 @@ def _make_handler(
                     return
                 if path == "/active-speaker/tone-plan":
                     self._send_json(_active_speaker_tone_plan_payload(raw))
+                    return
+                if path == "/active-speaker/play-tone":
+                    self._send_json(_active_speaker_tone_playback_payload(raw))
                     return
                 if path == "/settings":
                     settings = SoundSettings.from_mapping(raw)

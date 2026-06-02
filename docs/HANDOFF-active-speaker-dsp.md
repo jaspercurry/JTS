@@ -29,11 +29,20 @@
 > bounded channel-test intent from the preset, armed session, and
 > current environment report, but the returned plan still says
 > `would_play: false` and cannot emit sound.
+> `jasper.active_speaker.playback` now adds the first playback seam:
+> `/sound/active-speaker/play-tone` validates the current plan and
+> armed safe session, then renders a bounded multi-channel WAV artifact
+> through a dry backend. It sets `audio_emitted: false`, does not open
+> ALSA, does not reload CamillaDSP, and does not touch live volume.
+> The dry backend also enforces its own artifact envelope
+> (48 kHz max, 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps a
+> small rolling set of generated artifacts so `/var/lib/jasper` cannot
+> grow without bound during repeated checks.
 > `jasper-active-speaker startup-template` can write one of these
 > candidate templates from a preset JSON file and run
-> `camilladsp --check` when the binary is available. No tone playback,
-> channel test, CamillaDSP reload/apply path, or hardware loading
-> exists yet. The first packaged worked-example preset is
+> `camilladsp --check` when the binary is available. No sound-emitting
+> tone playback, physical channel test, CamillaDSP reload/apply path,
+> or hardware loading exists yet. The first packaged worked-example preset is
 > `jasper/active_speaker/presets/bc_de250_dayton_e150he44_v1.json`.
 > `jasper-active-speaker path-audit` now exposes the deterministic
 > audible-path safety checklist and can evaluate operator evidence,
@@ -97,6 +106,14 @@ The existing deployed audio topology is not yet active 2-way ready:
   (`woofer`, `tweeter`). For a stereo active pair this is four
   physical outputs (`left_woofer`, `left_tweeter`,
   `right_woofer`, `right_tweeter`).
+- The current active-speaker preset `channel_map` is a **logical
+  CamillaDSP output map**, not a complete physical-DAC setup UI. A
+  future DAC/speaker setup surface must discover or accept the
+  physical device lanes, let users group lanes into speakers, swap
+  left/right, mark passive speakers, assign active driver roles up to
+  3-way, and identify subwoofer outputs. Do not bake HiFiBerry DAC-X8,
+  Apple dongle, or any other DAC-specific physical assumption into
+  `tone_plan` or the dry playback artifact backend.
 - Before tweeter hardware is connected, all audible paths must be
   proven to pass through the same protected crossover path. A TTS
   bypass into a raw active amp channel is a driver-damage hazard.
@@ -450,6 +467,23 @@ returns `would_play: false`, `playback_allowed: false`, and
 `tone_playback_implemented: false` in this build. It is a contract for future
 playback code, not a sound-emitting backend.
 
+`jasper.active_speaker.playback` is the first backend seam for executing that
+intent. The default backend is still no-audio: it writes a bounded
+multi-channel WAV plus JSON metadata under
+`/var/lib/jasper/active_speaker_tone_artifacts` (overridable in tests) with
+only the selected logical output channel populated. The backend enforces the
+same no-audio resource envelope at the writer boundary, not just in the web
+route: sample rate is capped at 48 kHz, artifacts are capped at 16 channels,
+duration clamps to 100-500 ms, and level clamps to -80..-45 dBFS. It keeps
+the newest 24 artifact sets by default (override:
+`JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_RETENTION`, capped at 100) and prunes
+older generated `tone_*.wav` / `tone_*.json` pairs after each successful
+render. `/sound/active-speaker/play-tone` returns the plan, playback result,
+and updated safe-session summary; every current result says
+`audio_emitted: false`. This is useful for verifying target selection,
+channel count, level clamp, artifact schema, logging, retention, and Stop
+semantics before any ALSA/CamillaDSP-emitting backend exists.
+
 `jasper.active_speaker.calibration_level` owns the commissioning test-signal
 level contract. It deliberately separates calibration level from normal system
 volume: the operator controls the requested test level, JTS clamps it to a
@@ -537,6 +571,9 @@ Updated execution plan:
    session bookkeeping for the future tone path without authorizing playback.
    Expanded with `jasper.active_speaker.tone_plan`, which prepares
    preset-derived, clamped channel-test plans while still forbidding playback.
+   Expanded with `jasper.active_speaker.playback`, a no-audio backend seam
+   that renders bounded logical-output WAV artifacts and records
+   `audio_emitted: false` lifecycle evidence without opening hardware.
 5. **Consumer W0 slice**: prototype phone-as-mic raw PCM WebSocket
    capture, calibration blocking, browser processing sanity checks,
    and resumable server-side session state.

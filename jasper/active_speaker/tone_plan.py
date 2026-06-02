@@ -217,6 +217,10 @@ def build_safe_tone_plan(
         "tone_playback_implemented": False,
         "preset_id": preset.preset_id,
         "preset_name": preset.name,
+        "channel_map": {
+            "layout": preset.channel_map.layout,
+            "output_count": len(preset.channel_map.outputs),
+        },
         "target": {
             "side": target.side if target else side,
             "driver_role": target.driver_role if target else driver_role,

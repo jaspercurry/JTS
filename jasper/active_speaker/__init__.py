@@ -46,6 +46,7 @@ from .safe_playback import (
     SAFE_PLAYBACK_SESSION_KIND,
     arm_safe_playback_session,
     load_safe_playback_state,
+    record_safe_playback_result,
     stop_safe_playback_session,
 )
 from .calibration_level import (
@@ -62,6 +63,14 @@ from .tone_plan import (
     build_safe_tone_plan,
     load_active_speaker_preset,
     tone_targets_payload,
+)
+from .playback import (
+    TONE_PLAYBACK_ARTIFACT_KIND,
+    TONE_PLAYBACK_RESULT_KIND,
+    NullTonePlaybackBackend,
+    WavArtifactTonePlaybackBackend,
+    start_tone_playback,
+    stop_tone_playback,
 )
 
 __all__ = [
@@ -82,6 +91,8 @@ __all__ = [
     "STARTUP_HEADROOM_DB",
     "STARTUP_LIMITER_CLIP_LIMIT_DB",
     "TONE_PLAN_KIND",
+    "TONE_PLAYBACK_ARTIFACT_KIND",
+    "TONE_PLAYBACK_RESULT_KIND",
     "ActiveChannelMap",
     "ActiveSpeakerConfigError",
     "ActiveSpeakerPreset",
@@ -90,8 +101,10 @@ __all__ = [
     "DriverSpec",
     "OutputChannel",
     "PathSafetyRequirement",
+    "NullTonePlaybackBackend",
     "SafetyEnvelope",
     "SpeakerBaselineProfile",
+    "WavArtifactTonePlaybackBackend",
     "classify_camilla_config_text",
     "calibration_level_payload",
     "clamp_test_level_dbfs",
@@ -107,6 +120,9 @@ __all__ = [
     "requirements_payload",
     "arm_safe_playback_session",
     "load_safe_playback_state",
+    "record_safe_playback_result",
+    "start_tone_playback",
     "stop_safe_playback_session",
+    "stop_tone_playback",
     "tone_targets_payload",
 ]

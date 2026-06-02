@@ -54,7 +54,10 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
-  var activeSpeaker = {loading: false, action: '', payload: null, session: null, targets: null, plan: null, error: '', levelDbfs: null};
+  var activeSpeaker = {
+    loading: false, action: '', payload: null, session: null, targets: null,
+    plan: null, playback: null, error: '', levelDbfs: null
+  };
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
@@ -480,7 +483,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   function renderActiveSpeakerSetup() {
     var body = renderActiveSpeakerStatus();
-    var open = activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.session || activeSpeaker.plan || activeSpeaker.error;
+    var open = activeSpeaker.loading || activeSpeaker.payload ||
+      activeSpeaker.session || activeSpeaker.plan || activeSpeaker.playback ||
+      activeSpeaker.error;
     return '<section class="active-speaker-setup">' +
       '<details class="advanced"' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
@@ -550,6 +555,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       (session.status === 'armed' ? renderActiveSpeakerLevel() : '') +
       renderActiveSpeakerActions(ok, session) +
       renderActiveSpeakerPlan(activeSpeaker.plan) +
+      renderActiveSpeakerPlayback(activeSpeaker.playback) +
       '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'Playback remains disabled until the safe tone path is implemented.') + '</p>' +
     '</div>';
   }
@@ -675,7 +681,35 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
         return '<li>' + escapeHtml('Plan: ' + (issue.code || 'issue')) + '</li>';
       }).join('') + '</ul>' : '') +
+      (plan.status === 'ready' ? '<div class="active-speaker-actions">' +
+        '<button type="button" class="btn btn--ghost" data-act="verify-active-tone">Verify tone artifact</button>' +
+        '<span class="setting-row__hint">Generates a no-audio multi-channel WAV for inspection.</span>' +
+      '</div>' : '') +
       '<p class="setting-row__hint">' + escapeHtml(plan.next_step || 'Prepared only; no sound was emitted.') + '</p>' +
+    '</div>';
+  }
+  function renderActiveSpeakerPlayback(playback) {
+    if (!playback) return '';
+    var artifact = playback.artifact || {};
+    var target = playback.target || {};
+    var rows = [
+      ['Playback status', playback.status || 'unknown'],
+      ['Backend', playback.backend || 'none'],
+      ['Target', target.label || target.driver_role || 'unknown'],
+      ['Artifact', artifact.wav_basename || 'none'],
+      ['Channels', artifact.channel_count == null ? 'unknown' : String(artifact.channel_count)],
+      ['Audio emitted', playback.audio_emitted ? 'Yes' : 'No']
+    ];
+    var issues = Array.isArray(playback.issues) ? playback.issues.slice(0, 4) : [];
+    return '<div class="active-speaker-plan">' +
+      '<p class="setting-row__title">Tone artifact check</p>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
+        return '<li>' + escapeHtml('Playback: ' + (issue.code || 'issue')) + '</li>';
+      }).join('') + '</ul>' : '') +
+      '<p class="setting-row__hint">No audio was emitted by this backend.</p>' +
     '</div>';
   }
 
@@ -1060,6 +1094,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         driver_role: t.getAttribute('data-driver-role') || ''
       });
     }
+    else if (act === 'verify-active-tone') { activeSpeakerTonePlayback(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -1108,6 +1143,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       if (levelReadout) levelReadout.textContent = fmtDbfs(activeSpeaker.levelDbfs);
       if (activeSpeaker.plan) {
         activeSpeaker.plan = null;
+        activeSpeaker.playback = null;
         render();
       }
       return;
@@ -1253,6 +1289,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       plan: null,
+      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     };
@@ -1271,6 +1308,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: await sessionResp.json(),
         targets: nextTargets,
         plan: null,
+        playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs == null && nextTargets.calibration_level ?
           (nextTargets.calibration_level.test_signal || {}).default_level_dbfs :
@@ -1279,7 +1317,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     } catch (e) {
       activeSpeaker = {
         loading: false, action: '', payload: null, session: null, targets: null,
-        plan: null, error: e.message, levelDbfs: activeSpeaker.levelDbfs
+        plan: null, playback: null, error: e.message, levelDbfs: activeSpeaker.levelDbfs
       };
     }
     render();
@@ -1291,6 +1329,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       plan: null,
+      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     };
@@ -1308,6 +1347,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: await resp.json(),
         targets: activeSpeaker.targets,
         plan: null,
+        playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
@@ -1318,6 +1358,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       };
@@ -1331,6 +1372,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       plan: activeSpeaker.plan,
+      playback: activeSpeaker.playback,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     };
@@ -1356,6 +1398,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         plan: nextPlan,
+        playback: null,
         error: '',
         levelDbfs: isFinite(returnedLevel) ? returnedLevel : activeSpeakerLevelConfig().value
       };
@@ -1366,6 +1409,59 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+    }
+    render();
+  }
+  async function activeSpeakerTonePlayback() {
+    var target = activeSpeaker.plan && activeSpeaker.plan.target || {};
+    activeSpeaker = {
+      loading: false, action: 'Verifying',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      plan: activeSpeaker.plan,
+      playback: activeSpeaker.playback,
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    };
+    render();
+    try {
+      var payload = {
+        side: target.side || '',
+        driver_role: target.driver_role || '',
+        level_dbfs: activeSpeakerLevelConfig().value
+      };
+      var resp = await fetch('./active-speaker/play-tone', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok) throw new Error('tone artifact check failed');
+      var result = await resp.json();
+      var playback = result.playback || null;
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: result.session || activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        plan: result.plan || activeSpeaker.plan,
+        playback: playback,
+        error: '',
+        levelDbfs: playback && playback.tone && isFinite(Number(playback.tone.level_dbfs)) ?
+          Number(playback.tone.level_dbfs) : activeSpeaker.levelDbfs
+      };
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       };

@@ -155,12 +155,14 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "activeSpeakerPost('./active-speaker/arm', 'Arming')" in js
     assert "activeSpeakerPost('./active-speaker/stop', 'Stopping')" in js
     assert "fetch('./active-speaker/tone-plan'" in js
+    assert "fetch('./active-speaker/play-tone'" in js
     assert "data-act=\"refresh-active-speaker\"" in js
     assert "data-act=\"arm-active-speaker\"" in js
     assert "data-act=\"stop-active-speaker\"" in js
     assert "data-act=\"prepare-active-tone\"" in js
+    assert "data-act=\"verify-active-tone\"" in js
     assert "class=\"btn btn--danger\" data-act=\"stop-active-speaker\"" in js
-    assert "activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.session || activeSpeaker.plan || activeSpeaker.error" in js
+    assert "activeSpeaker.playback" in js
     assert "'<details class=\"advanced\"' + (open ? ' open' : '')" in js
     assert "safe.playback_allowed ? 'Allowed' : 'Not allowed yet'" in js
     assert "Calibration level" in js
@@ -173,7 +175,10 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "function renderActiveSpeakerIssues(envIssues, sessionIssues)" in js
     assert "row[0] + ': ' + (issue.code || 'issue')" in js
     assert "function renderActiveSpeakerPlan(plan)" in js
+    assert "function renderActiveSpeakerPlayback(playback)" in js
     assert "Would play" in js
+    assert "Verify tone artifact" in js
+    assert "No audio was emitted by this backend." in js
     assert "No preset channel targets available." in js
     assert ">Prepare channel test</button>" not in js
     assert "Arming records the safety state only; it does not play sound." in js
@@ -221,6 +226,10 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
         "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
         str(tmp_path / "safe-playback.json"),
     )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
+        str(tmp_path / "tone-artifacts"),
+    )
     monkeypatch.setattr(
         sound_setup,
         "_active_speaker_environment_payload",
@@ -251,6 +260,11 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
         "driver_role": "tweeter",
         "level_dbfs": -55,
     })
+    playback = sound_setup._active_speaker_tone_playback_payload({
+        "side": "mono",
+        "driver_role": "tweeter",
+        "level_dbfs": -55,
+    })
     status = sound_setup._active_speaker_safe_playback_payload()
     stopped = sound_setup._active_speaker_stop_payload()
 
@@ -261,11 +275,18 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
     assert plan["status"] == "ready"
     assert plan["would_play"] is False
     assert plan["target"]["driver_role"] == "tweeter"
+    assert plan["channel_map"]["output_count"] == 2
     assert plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -80.0
     assert level_plan["tone"]["level_dbfs"] == -55.0
     assert level_plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -55.0
+    assert playback["playback"]["status"] == "completed"
+    assert playback["playback"]["audio_emitted"] is False
+    assert playback["playback"]["artifact"]["channel_count"] == 2
+    assert playback["playback"]["artifact"]["target_output_index"] == 1
+    assert playback["session"]["playback"]["status"] == "completed"
     assert status["status"] == "armed"
     assert stopped["status"] == "stopped"
+    assert stopped["playback"]["status"] == "stopped"
     assert stopped["session_id"] == armed["session_id"]
 
 

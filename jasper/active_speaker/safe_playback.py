@@ -59,6 +59,10 @@ def _base_state(*, now_epoch: float) -> dict[str, Any]:
         "expires_at": None,
         "last_action": "status",
         "environment": {},
+        "playback": {
+            "status": "idle",
+            "audio_emitted": False,
+        },
         "issues": [],
     }
 
@@ -90,6 +94,7 @@ def _normalise_state(raw: Any, *, now_epoch: float) -> dict[str, Any]:
     state["playback_allowed"] = False
     state["tone_playback_implemented"] = False
     state.setdefault("issues", [])
+    state.setdefault("playback", {"status": "idle", "audio_emitted": False})
     return state
 
 
@@ -212,8 +217,68 @@ def stop_safe_playback_session(
             "expires_at": None,
             "last_action": reason or "operator_stop",
             "environment": prior.get("environment") or {},
+            "playback": {
+                "status": "stopped" if prior.get("session_id") else "idle",
+                "playback_id": (prior.get("playback") or {}).get("playback_id"),
+                "audio_emitted": False,
+                "reason": reason or "operator_stop",
+            },
             "issues": [],
         }
     )
     _atomic_write_json(_state_path(state_path), state)
     return state
+
+
+def record_safe_playback_result(
+    result: dict[str, Any],
+    *,
+    state_path: str | Path | None = None,
+    now: NowFn = _now,
+) -> dict[str, Any]:
+    """Persist the latest no-audio tone-backend lifecycle result."""
+
+    now_epoch = now()
+    prior = load_safe_playback_state(state_path=state_path, now=now)
+    playback = {
+        "status": result.get("status") or "unknown",
+        "backend": result.get("backend"),
+        "playback_id": result.get("playback_id"),
+        "audio_emitted": bool(result.get("audio_emitted")),
+        "target": result.get("target"),
+        "tone": result.get("tone"),
+        "artifact": _artifact_summary(result.get("artifact")),
+        "issue_count": len(result.get("issues") or []),
+    }
+    state = _normalise_state(prior, now_epoch=now_epoch)
+    state.update(
+        {
+            "updated_at": _utc_from_epoch(now_epoch),
+            "last_action": f"tone_playback_{playback['status']}",
+            "playback": playback,
+        }
+    )
+    _atomic_write_json(_state_path(state_path), state)
+    return state
+
+
+def _artifact_summary(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    return {
+        key: raw.get(key)
+        for key in (
+            "wav_basename",
+            "metadata_basename",
+            "sample_rate_hz",
+            "sample_format",
+            "channel_count",
+            "target_output_index",
+            "frame_count",
+            "duration_ms",
+            "peak_dbfs",
+            "retention_keep",
+            "retention_removed",
+        )
+        if raw.get(key) is not None
+    }

@@ -152,8 +152,9 @@ rather than exposing raw filesystem paths.
 ### Advanced speaker setup entry point
 
 As of 2026-06-02, `/sound/` also shows a collapsed **Advanced speaker
-setup** card for active crossover commissioning. It is intentionally
-read-only: a user can click **Check environment** to fetch
+setup** card for active crossover commissioning. It intentionally remains
+no-audio until the hardware playback path exists: a user can click
+**Check environment** to fetch
 `/sound/active-speaker/environment`, which runs the read-only
 `jasper.active_speaker.environment` probe and reports ALSA playback-device
 count, current CamillaDSP config classification, validation status,
@@ -173,6 +174,16 @@ armed state also exposes a **Calibration level** slider backed by
 `-80 dBFS`, is clamped by backend-owned bounds, and is separate from normal
 listening volume. The current mic meter is a schema placeholder/classifier;
 real microphone observations and sound-emitting playback are future slices.
+The card can also **Verify tone artifact** through
+`/sound/active-speaker/play-tone`: this validates the selected logical output
+target and writes a bounded multi-channel WAV artifact with only that output
+channel populated. It records `audio_emitted: false`; it does not open ALSA,
+reload CamillaDSP, or change volume. The dry backend enforces its own writer
+caps (48 kHz max, 16 channels max, 100-500 ms, -80..-45 dBFS) and prunes old
+generated tone artifacts, keeping the newest 24 sets by default. Physical DAC
+lane assignment, speaker grouping, left/right swaps, active driver roles,
+passive speakers, and subwoofer outputs remain future setup work rather than
+hidden assumptions in the current `/sound/` card.
 The actual
 substrate starts in
 `jasper.active_speaker` and the canonical safety/design plan lives in
@@ -185,9 +196,9 @@ substrate starts in
   muted/protected startup-template YAML emission plus read-only
   environment reporting, no-audio safe-playback session state, and
   preset-derived no-audio tone-plan preparation with a bounded
-  calibration-level contract. Current scope is
-  validation/template generation and status/session/plan bookkeeping only;
-  no hardware loading or playback.
+  calibration-level contract plus dry tone-artifact rendering. Current scope is
+  validation/template generation and status/session/plan/artifact bookkeeping
+  only; no hardware loading or sound-emitting playback.
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
   preview response, expanded-band overlays, the peak-boost `estimate_headroom_db`

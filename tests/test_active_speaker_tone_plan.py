@@ -106,6 +106,7 @@ def test_build_safe_tone_plan_ready_still_cannot_play() -> None:
     assert plan["would_play"] is False
     assert plan["playback_allowed"] is False
     assert plan["tone_playback_implemented"] is False
+    assert plan["channel_map"] == {"layout": "mono", "output_count": 2}
     assert plan["target"]["output_index"] == 1
     assert plan["tone"]["frequency_hz"] == 3200
     assert plan["tone"]["level_dbfs"] == -45.0
