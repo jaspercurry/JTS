@@ -479,7 +479,8 @@ def _outputd_stability_inputs() -> dict:
         "system_env": {
             "JASPER_OUTPUTD_BACKEND": "alsa",
             "JASPER_OUTPUTD_DAC_PCM": "outputd_dac",
-            "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+            "JASPER_AUDIO_DAC_ID": audio_validation.DAC8X_DAC_ID,
+            "JASPER_AUDIO_DAC_CARD": "sndrpihifiberry",
         },
         "service_states": {
             "jasper-outputd.service": "active",
@@ -594,12 +595,63 @@ def test_outputd_stability_profile_passes_without_chip_aec_or_voice():
     assert artifact.mic_id == "not_applicable"
     assert artifact.dac_id == "hifiberry_dac8x"
     assert artifact.checks["service_state"]["status"] == "pass"
+    assert artifact.checks["dac_identity"]["status"] == "pass"
+    assert artifact.checks["dac_identity"]["observed"]["card"] == "sndrpihifiberry"
     assert artifact.checks["dac_output"]["status"] == "pass"
     assert artifact.checks["outputd_reference_health"]["status"] == "pass"
     assert "runtime_profile" not in artifact.checks
     assert "bridge_counter_window" not in artifact.checks
     assert "chip_profile_readback" not in artifact.checks
     assert artifact.recommendation == "outputd_dac_stability_validated"
+
+
+def test_outputd_stability_profile_requires_dac8x_identity():
+    inputs = _outputd_stability_inputs()
+    inputs["system_env"] = {
+        **inputs["system_env"],
+        "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
+    }
+    artifact = audio_validation.build_outputd_stability_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            _outputd_sample(reference_sequence=10, dac_frames_written=1000),
+            _outputd_sample(reference_sequence=16, dac_frames_written=7000),
+        ],
+        duration_seconds=10,
+    )
+
+    assert artifact.status == "fail"
+    assert artifact.dac_id == "apple_usb_c_dongle"
+    assert artifact.checks["dac_identity"]["status"] == "fail"
+    assert (
+        artifact.recommendation
+        == "run_on_hifiberry_dac8x_target_before_validation"
+    )
+
+
+def test_outputd_stability_profile_rejects_fallback_dac_card():
+    inputs = _outputd_stability_inputs()
+    inputs["system_env"] = {
+        **inputs["system_env"],
+        "JASPER_AUDIO_DAC_CARD": "A",
+    }
+    artifact = audio_validation.build_outputd_stability_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            _outputd_sample(reference_sequence=10, dac_frames_written=1000),
+            _outputd_sample(reference_sequence=16, dac_frames_written=7000),
+        ],
+        duration_seconds=10,
+    )
+
+    assert artifact.status == "fail"
+    assert artifact.dac_id == "hifiberry_dac8x"
+    assert artifact.checks["dac_identity"]["status"] == "fail"
+    assert artifact.checks["dac_identity"]["observed"]["card"] == "A"
+    assert (
+        artifact.recommendation
+        == "run_on_hifiberry_dac8x_target_before_validation"
+    )
 
 
 def test_outputd_stability_profile_accepts_string_sample_rate_from_status():

@@ -503,18 +503,34 @@ def check_tts_open(cfg: Config) -> CheckResult:
 def check_openwakeword_model(cfg: Config) -> CheckResult:
     try:
         import openwakeword
+        from ..wake_models import required_openwakeword_assets
         pkg_dir = Path(openwakeword.__file__).parent
         models_dir = pkg_dir / "resources" / "models"
         if not models_dir.exists():
             return CheckResult(
                 "openWakeWord models", "fail",
-                f"{models_dir} missing — run "
-                "`/opt/jasper/.venv/bin/python -c 'import openwakeword.utils; "
-                "openwakeword.utils.download_models()'`",
+                f"{models_dir} missing — re-run deploy/install.sh to stage "
+                "JTS's hash-checked OpenWakeWord ONNX assets.",
             )
-        candidates = list(models_dir.glob(f"{cfg.wake_model}*.onnx")) + list(
-            models_dir.glob(f"{cfg.wake_model}*.tflite")
-        )
+        missing_assets = [
+            asset.filename
+            for asset in required_openwakeword_assets()
+            if not (models_dir / asset.filename).is_file()
+            or (models_dir / asset.filename).stat().st_size <= 0
+        ]
+        if missing_assets:
+            return CheckResult(
+                "openWakeWord models", "fail",
+                "missing package assets: "
+                f"{', '.join(sorted(missing_assets))}; re-run deploy/install.sh",
+            )
+        wake_model = Path(cfg.wake_model)
+        if wake_model.is_absolute():
+            candidates = [wake_model] if wake_model.is_file() else []
+        else:
+            candidates = list(models_dir.glob(f"{cfg.wake_model}*.onnx")) + list(
+                models_dir.glob(f"{cfg.wake_model}*.tflite")
+            )
         if not candidates:
             return CheckResult(
                 "openWakeWord models", "warn",

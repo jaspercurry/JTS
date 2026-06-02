@@ -96,6 +96,17 @@ def test_openwakeword_assets_are_pinned():
     assert len(filenames) == len(set(filenames))
     assert "embedding_model.onnx" in filenames
     assert "melspectrogram.onnx" in filenames
+    assert "silero_vad.onnx" in filenames
+    required_filenames = {
+        asset.filename
+        for asset in wake_models.required_openwakeword_assets()
+    }
+    assert required_filenames == {
+        "embedding_model.onnx",
+        "melspectrogram.onnx",
+        "silero_vad.onnx",
+    }
+    assert required_filenames.issubset(filenames)
     for asset in assets:
         assert asset.download_url.startswith(wake_models.OPENWAKEWORD_RELEASE_BASE)
         assert asset.filename.endswith(".onnx")

@@ -69,8 +69,9 @@ fetch-bearing surfaces still have provenance entries:
 - Curated external wake model `jarvis_v2.onnx`.
 - openWakeWord ONNX package-resource assets from the upstream `v0.5.1`
   release that JTS needs at runtime: `embedding_model.onnx`,
-  `melspectrogram.onnx`, and all six stock wake models (`alexa`,
-  `hey_jarvis`, `hey_mycroft`, `hey_rhasspy`, `timer`, `weather`).
+  `melspectrogram.onnx`, `silero_vad.onnx`, and all six stock wake
+  models (`alexa`, `hey_jarvis`, `hey_mycroft`, `hey_rhasspy`,
+  `timer`, `weather`).
 - DTLN-aec ONNX model stages listed in `jasper/aec_engines/dtln_models.py`.
 
 `deploy/install.sh` also builds these source inputs from commit archive
@@ -198,4 +199,4 @@ or support third-party speakers, add a migration/check path that records
 or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
 and CamillaGUI bits.
 
-Last verified: 2026-06-01
+Last verified: 2026-06-02

@@ -159,6 +159,16 @@ sha256 = "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f"
 verification = "SHA-256 checked by deploy/install.sh before staging"
 
 [[artifact]]
+id = "openwakeword-silero-vad-model"
+kind = "onnx-model"
+consumer = "jasper/vad.py, jasper/wake_models.py, and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/silero_vad.onnx"
+sha256 = "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
 id = "openwakeword-alexa-model"
 kind = "onnx-model"
 consumer = "jasper/wake_models.py and deploy/install.sh"

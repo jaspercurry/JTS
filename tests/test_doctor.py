@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from jasper.audio_profile_state import MicProbe
+from jasper import wake_models
 from jasper.cli import doctor
 from jasper.config import Config
 from jasper.correction import bundles
@@ -89,6 +90,55 @@ def test_load_env_files_shell_wins_over_files(monkeypatch, tmp_path: Path):
 def os_environ_get(name: str) -> str | None:
     import os
     return os.environ.get(name)
+
+
+# -------------------------------------------------- openWakeWord assets
+
+
+def _install_fake_openwakeword_package(
+    monkeypatch,
+    tmp_path: Path,
+    filenames: set[str],
+) -> None:
+    pkg = tmp_path / "openwakeword"
+    models = pkg / "resources" / "models"
+    models.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    for filename in filenames:
+        (models / filename).write_bytes(b"model")
+    monkeypatch.setitem(
+        sys.modules,
+        "openwakeword",
+        SimpleNamespace(__file__=str(pkg / "__init__.py")),
+    )
+
+
+def test_openwakeword_doctor_fails_when_silero_asset_missing(monkeypatch, tmp_path: Path):
+    filenames = {asset.filename for asset in wake_models.openwakeword_assets()}
+    filenames.remove("silero_vad.onnx")
+    _install_fake_openwakeword_package(monkeypatch, tmp_path, filenames)
+
+    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
+
+    assert r.status == "fail"
+    assert "silero_vad.onnx" in r.detail
+
+
+def test_openwakeword_doctor_allows_missing_inactive_bundled_model(
+    monkeypatch,
+    tmp_path: Path,
+):
+    filenames = {
+        asset.filename
+        for asset in wake_models.required_openwakeword_assets()
+    }
+    filenames.add("hey_jarvis_v0.1.onnx")
+    _install_fake_openwakeword_package(monkeypatch, tmp_path, filenames)
+
+    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
+
+    assert r.status == "ok"
+    assert "hey_jarvis_v0.1.onnx" in r.detail
 
 
 # -------------------------------------------------- provider-aware key check

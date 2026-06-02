@@ -45,6 +45,7 @@ DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 ALLOWED_STATUSES = frozenset({"pass", "warn", "fail", "unknown"})
 CHIP_AEC_PROFILE = "xvf_chip_aec"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
+DAC8X_DAC_ID = "hifiberry_dac8x"
 HARDWARE_VALIDATION_PROFILES = (
     CHIP_AEC_PROFILE,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
@@ -694,9 +695,11 @@ def _dac_details(
 ) -> dict[str, JsonValue]:
     outputd_dac = outputd_status.get("dac") if isinstance(outputd_status, dict) else None
     dac_pcm = ""
+    dac_card = ""
     sample_rate: JsonValue = None
     if isinstance(outputd_dac, dict):
         dac_pcm = str(outputd_dac.get("pcm") or "")
+        dac_card = str(outputd_dac.get("card") or "")
         raw_sample_rate = outputd_dac.get("sample_rate")
         if isinstance(raw_sample_rate, (str, int, float, bool)) or raw_sample_rate is None:
             sample_rate = raw_sample_rate
@@ -706,6 +709,12 @@ def _dac_details(
             or os.environ.get("JASPER_OUTPUTD_DAC_PCM")
             or "outputd_dac"
         )
+    if not dac_card:
+        dac_card = (
+            system_env.get("JASPER_AUDIO_DAC_CARD")
+            or os.environ.get("JASPER_AUDIO_DAC_CARD")
+            or ""
+        )
     dac_id = (
         system_env.get("JASPER_AUDIO_DAC_ID")
         or os.environ.get("JASPER_AUDIO_DAC_ID")
@@ -714,6 +723,7 @@ def _dac_details(
     return {
         "id": dac_id,
         "pcm": dac_pcm,
+        "card": dac_card,
         "backend": str(
             (outputd_status or {}).get("backend")
             or system_env.get("JASPER_OUTPUTD_BACKEND")
@@ -744,6 +754,46 @@ def _runtime_identity_check(system_env: Mapping[str, str]) -> dict[str, JsonValu
         required=False,
         summary="Pi/runtime identity captured for artifact attribution.",
         observed=observed,
+    )
+
+
+def _dac_identity_check(
+    dac: Mapping[str, JsonValue],
+    *,
+    expected_id: str,
+) -> dict[str, JsonValue]:
+    dac_card = str(dac.get("card") or "").strip()
+    observed = {
+        "id": dac.get("id"),
+        "card": dac_card,
+        "pcm": dac.get("pcm"),
+        "backend": dac.get("backend"),
+        "sample_rate": dac.get("sample_rate"),
+    }
+    expected = {
+        "id": expected_id,
+        "card": "recognized non-fallback ALSA card",
+    }
+    card_ok = bool(dac_card) and dac_card != "A"
+    if dac.get("id") == expected_id and card_ok:
+        return _check(
+            "pass",
+            summary=f"Expected output DAC identity {expected_id} is active.",
+            observed=observed,
+            expected=expected,
+        )
+    if dac.get("id") == expected_id:
+        summary = (
+            f"Expected output DAC identity {expected_id} is active, "
+            "but ALSA card identity is missing or fallback-like."
+        )
+    else:
+        summary = f"This validation profile must run on {expected_id}."
+    return _check(
+        "fail",
+        summary=summary,
+        observed=observed,
+        expected=expected,
     )
 
 
@@ -1434,6 +1484,8 @@ def _outputd_stability_recommendation(
 ) -> str:
     if checks.get("service_state", {}).get("status") == "fail":
         return "fix_outputd_pipeline_services_before_validation"
+    if checks.get("dac_identity", {}).get("status") == "fail":
+        return "run_on_hifiberry_dac8x_target_before_validation"
     if checks.get("dac_output", {}).get("status") in {"fail", "unknown", "not_run"}:
         return "fix_outputd_runtime_observability_before_validation"
     if checks.get("outputd_reference_health", {}).get("status") == "fail":
@@ -1588,9 +1640,11 @@ def build_outputd_stability_hardware_validation_artifact(
     if outputd_status is None:
         outputd_status = _query_outputd_status(_outputd_socket_path(system_env))
 
+    dac = _dac_details(system_env, outputd_status)
     checks: dict[str, Mapping[str, Any]] = {
         "runtime_identity": _runtime_identity_check(system_env),
         "service_state": _outputd_pipeline_service_state_check(service_states),
+        "dac_identity": _dac_identity_check(dac, expected_id=DAC8X_DAC_ID),
         "dac_output": _outputd_dac_status_check(outputd_status),
         "outputd_reference_health": _outputd_reference_health_check(
             outputd_status_samples,
@@ -1613,11 +1667,19 @@ def build_outputd_stability_hardware_validation_artifact(
         ),
     }
     status = _rollup_status(checks)
-    dac = _dac_details(system_env, outputd_status)
     errors: list[str] = []
     for name, check in checks.items():
         if check.get("status") == "fail":
             errors.append(f"{name}: {check.get('summary', 'failed')}")
+    notes = [
+        f"{HARDWARE_VALIDATION_KIND}: passive outputd/DAC stability evidence",
+        "No playback stimulus was generated.",
+        "No capture loop was opened.",
+        (
+            "Chip-AEC, AEC bridge, XVF readback, and jasper-voice state are "
+            "not prerequisites for this profile."
+        ),
+    ]
     return make_artifact(
         validated_at=now,
         mic_id="not_applicable",
@@ -1626,12 +1688,7 @@ def build_outputd_stability_hardware_validation_artifact(
         status=status,
         checks=checks,
         recommendation=_outputd_stability_recommendation(status, checks),
-        notes=(
-            f"{HARDWARE_VALIDATION_KIND}: passive outputd/DAC stability evidence",
-            "No playback stimulus was generated.",
-            "No capture loop was opened.",
-            "Chip-AEC, AEC bridge, XVF readback, and jasper-voice state are not prerequisites for this profile.",
-        ),
+        notes=tuple(notes),
         errors=tuple(errors),
     )
 

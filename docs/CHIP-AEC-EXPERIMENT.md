@@ -75,11 +75,13 @@ unless `--force` is passed. It writes timestamped schema-v1 artifacts
 through `jasper/audio_validation.py` and updates `latest.json` only as
 the status-surface pointer. It does not generate playback, open capture
 loops, or call XVF write/persist commands (`SAVE_CONFIGURATION` and
-`REBOOT` remain forbidden). Fixed-delay and long-window drift evidence
-remain `not_run` until an explicit operator-confirmed playback/capture
-probe lands, so clean passive evidence still produces a partial
-validation result rather than default-on chip-AEC approval: a
-`status=warn` artifact with
+`REBOOT` remain forbidden). For DAC8x/outputd stability, supply the
+source externally (for example, AirPlay playing into the normal JTS
+renderer path) and let the profile observe outputd counters during that
+window. Fixed-delay and long-window drift evidence remain `not_run`
+until an explicit operator-confirmed playback/capture probe lands, so
+clean passive evidence still produces a partial validation result rather
+than default-on chip-AEC approval: a `status=warn` artifact with
 `recommendation=run_drift_delay_validation`.
 
 For the DAC8x/outputd xrun workstream, use the separate outputd-only
@@ -96,6 +98,164 @@ wake legs, or an active `jasper-voice`; it is evidence for DAC8x/outputd
 stability, not chip-AEC viability.
 Passive `AEC_AECCONVERGED=0` is reported as `not_observed`, not failure,
 because the runner may not have observed meaningful far-end audio.
+
+For the concrete HiFiBerry DAC8x workstream, use the same runner with
+the explicit DAC8x outputd-stability profile:
+
+```sh
+sudo jasper-audio-hw-validate \
+  --profile hifiberry_dac8x_outputd_stability \
+  --duration-seconds 60 \
+  --stdout
+sudo jasper-audio-hw-validate \
+  --profile hifiberry_dac8x_outputd_stability \
+  --long-window \
+  --stdout
+```
+
+That profile is deliberately narrow: by default it passively samples
+outputd before/after the observation window and records DAC/content xrun,
+clipping, reference-sequence, watchdog, service-state, and DAC identity
+evidence while an operator-controlled source is active. It requires the
+installer/reconciler-written `JASPER_AUDIO_DAC_ID=hifiberry_dac8x`
+identity and a recognized non-fallback `JASPER_AUDIO_DAC_CARD`
+(`sndrpihifiberry` on the observed Pi), and fails if the active output
+DAC is Apple, unknown, or still on installer fallback card `A`. It does
+not generate playback, restart services, write temporary chip-ref env,
+open capture loops, sample bridge counters, or write XVF settings.
+Passing this profile only means the concrete DAC8x digital outputd path
+stayed stable during the window; acoustic drift/delay, chip convergence,
+and wake telemetry remain separate gates.
+
+**HiFiBerry DAC8x alternate-DAC bringup (partial, 2026-06-01).**
+
+Host `jts3.local` is the first concrete non-Apple-DAC validation
+target. The deploy manifest after the DAC8x installer patch reported
+branch `codex/dac8x-validation`, build `1e2f96f-dirty`, installed at
+`2026-06-01T16:46:14-04:00`.
+
+What passed:
+
+- DAC8x ALSA identity: playback card `sndrpihifiberry`
+  (`snd_rpi_hifiberry_dac8x`), device `0`.
+- DAC8x bounded silent ALSA smoke:
+  `hw:CARD=sndrpihifiberry,DEV=0` accepted 48 kHz S16_LE, 8-channel
+  playback for 2 seconds; `plughw:CARD=sndrpihifiberry,DEV=0`
+  accepted 48 kHz S16_LE stereo for 2 seconds.
+- Installer/outputd wiring: `/etc/asound.conf` rendered
+  `pcm.outputd_dac` as a `plug` wrapper to
+  `hw:CARD=sndrpihifiberry,DEV=0`, skipping Apple-only
+  `jasper-dac-init` and headphone-monitor units.
+- outputd physical ownership: while outputd was active, `aplay -l`
+  showed the DAC8x playback subdevice as `0/1`; logs showed
+  `event=outputd.alsa.opened ... dac_pcm=outputd_dac` and
+  `event=outputd.ready`.
+- XVF3800 identity after hotplug: USB VID/PID `2886:001a`, ALSA card
+  `Array`, firmware `2.0.8`; `/proc/asound/.../stream0` showed the
+  expected 16 kHz S16_LE, 2-channel playback endpoint and 16 kHz
+  S16_LE, 6-channel capture endpoint.
+- outputd chip-reference open: temporary lab env
+  `JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0`,
+  `JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE=16000`,
+  `JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES=320`,
+  `JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES=1280`, and
+  `JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:19190` opened
+  cleanly. Logs showed `event=outputd.chip_ref.opened` and no
+  `queue_full`, `write_failed`, or xrun warnings during a short idle
+  soak.
+- Bounded digital playback through the normal outputd path worked:
+  a 60-second `correction_substream` stimulus produced stable
+  outputd DAC progress, nonzero bridge reference RMS, and no
+  outputd/chip-ref problem logs.
+- After the updated installer was re-run, a 60-second post-install
+  smoke artifact
+  (`/var/lib/jasper/audio-validation/dac8x-postinstall-smoke-20260601T2051Z.json`)
+  passed every check: playback return code, `outputd_dac`, chip-ref
+  PCM, DAC/content xrun counters, outputd log health, bridge reference
+  signal, and bridge starvation.
+- A durable 30-minute digital stability artifact was written on the
+  Pi at
+  `/var/lib/jasper/audio-validation/dac8x-20260601T201320Z.json`.
+  Signal: bounded generated 48 kHz stereo S16_LE sine at `-30 dBFS`
+  into `correction_substream`; elapsed playback `1800.171 s`;
+  services stayed `jasper-outputd=active`,
+  `jasper-aec-bridge=active`, `jasper-voice=inactive`.
+  DAC-side checks passed: `outputd_dac` remained open, DAC
+  `xrun_count=0`, DAC frames advanced by `86,521,856`, chip-ref PCM
+  stayed `plughw:CARD=Array,DEV=0`, and the bridge saw 361 RMS
+  windows with `max_ref_rms=733` and `max_ref_starve=0`.
+- A follow-up instrumented 30-minute watchdog run wrote
+  `/var/lib/jasper/audio-validation/dac8x-watchdog-20260601T2102Z/`.
+  It sampled outputd status once per second and captured a trigger
+  bundle at
+  `trigger-20260601T212153Z-content-xrun/` within about 94 ms of the
+  xrun counter changing. The trigger confirmed low system load
+  (`0.21 0.19 0.15`), no swap use, services active, no kernel
+  USB/ALSA errors in `dmesg`, DAC `xrun_count=0`, TTS queue empty,
+  chip-ref outputs still open, and immediate recovery.
+
+What did **not** pass yet:
+
+- The 30-minute artifact recommendation was **fail** because outputd
+  logged one upstream content-side xrun:
+  `event=outputd.xrun source=content pcm=outputd_content_capture
+  count=1` at `2026-06-01T16:30:03-04:00`. This did not coincide with
+  a DAC xrun, chip-ref queue/drop/write failure, or bridge starvation,
+  so the current read is "upstream content-loop scheduling glitch,"
+  not "DAC8x/chip-ref clock failure." Still, do not mark the
+  30-minute full-pipeline gate passed until a repeat run is clean or
+  the content xrun is explained.
+- The instrumented repeat also failed the 30-minute gate with one
+  content-side xrun:
+  `/var/lib/jasper/audio-validation/dac8x-watchdog-20260601T2102Z/summary.json`
+  reported `content_xruns=1`, `dac_xruns=0`, playback return code
+  `0`, and one trigger directory. This makes the content-path xrun
+  reproducible enough to debug before acoustic/chip convergence.
+  Current best read: the failure is in the upstream content loop
+  (`correction_substream` → fan-in → Camilla → `outputd_content_capture`
+  → outputd), not the DAC8x physical write or XVF USB-IN reference
+  path. The trigger journal again shows nearby localhost
+  `jasper-control` health/shairport probe traffic, but that is only a
+  lead, not proof.
+- After the canonical DAC8x artifact profile landed, a 60-second run
+  passed and wrote
+  `/var/lib/jasper/audio-validation/20260601T220417.929544Z__xvf3800__hifiberry_dac8x__hifiberry_dac8x_outputd_stability__warn.json`.
+  The 30-minute canonical repeat then reproduced the blocker and wrote
+  `/var/lib/jasper/audio-validation/20260601T220604.408436Z__xvf3800__hifiberry_dac8x__hifiberry_dac8x_outputd_stability__fail.json`.
+  Its bounded playback completed (`86,400,000` generated frames), bridge
+  counters passed (`ref_starved_frames_delta=0`, drop deltas `0`), DAC
+  writes advanced with `dac_xrun_delta=0`, but
+  `outputd_reference_health` failed on `content_xrun_delta=1`.
+  The matching outputd log line was:
+  `event=outputd.xrun source=content pcm=outputd_content_capture count=1
+  errno=32 frames_read=56188928 empty_periods=4 partial_periods=0
+  eagain_count=3 dac_frames_written=56193024 period_frames=1024
+  buffer_frames=4096`.
+- No audible DAC8x→air→XVF drift/delay run has been performed. The
+  DAC8x HAT had no amplifier/speaker path connected during this pass,
+  so the run proved digital fanout only.
+- No chip convergence check or wake telemetry review has been
+  performed.
+- One fresh-install reboot was observed before validation drop-ins were
+  added: the unconfigured `jasper-voice` service exited because
+  `JASPER_VOICE_PROVIDER` was unset and its systemd
+  `StartLimitAction=reboot` escalated the restart loop. This was not a
+  DAC8x clock/routing failure, but it is a real fresh-install safety
+  gap. The local lab Pi was stabilized by parking `jasper-voice` and
+  adding validation-only `StartLimitAction=none`/`Restart=no` drop-ins
+  for `jasper-outputd`, `jasper-aec-bridge`, and `jasper-voice`.
+
+Recommendation as of this snapshot: **PASS** for DAC8x hardware
+visibility, ALSA shape, outputd DAC ownership, and XVF USB-IN
+reference-open compatibility; **WARN** for "DAC8x ready for
+chip-AEC validation" because two 30-minute digital artifacts each had
+one content-side xrun and the acoustic drift/delay, chip convergence,
+and wake telemetry gates below have not run. Do not enable chip-AEC by
+default on DAC8x from this result; debug the content-path xrun first.
+Future DAC8x repeats should use
+`jasper-audio-hw-validate --profile hifiberry_dac8x_outputd_stability`
+so clean or failing windows land in the canonical audio-validation
+artifact stream instead of temporary lab-script JSON.
 
 **What remains is validation, not plumbing.** Keep chip-AEC opt-in until
 a fresh telemetry window shows its recall / false-accept contribution:
@@ -991,13 +1151,33 @@ they survive future doc edits (per [AGENTS.md](../AGENTS.md)
 
 ---
 
-Last operational verification: 2026-05-31 (deployed build `c95bfdd` to
-the Pi; `jasper-doctor` critical checks passed; runtime wake legs were
-armed as `on`, `chip_aec_150`, and `chip_aec_210`; `/wake/` now exposes
-the mic/topology status card. The prior live Pi lab pass found the old
-feeder-path drift was a harness artifact; direct source fanout held about
-`~1 ppm` over 15 minutes; controlled direct A/B showed useful chip AEC
-reduction; ASR fixed gated `150°/210°` with `AEC_AECEMPHASISONOFF=2` was
-the best tested wake-shaped output, with `150°` the standout beam). This
-doc still preserves a dmix-era experiment snapshot in places; current
-production topology lives in `docs/audio-paths.md`.
+Last operational verification: 2026-05-31 for the Apple-DAC production
+chip-AEC path (deployed build `c95bfdd`; `jasper-doctor` critical checks
+passed; runtime wake legs were armed as `on`, `chip_aec_150`, and
+`chip_aec_210`; `/wake/` exposes the mic/topology status card). DAC8x
+alternate-DAC partial verification: 2026-06-01 on `jts3.local`, build
+`1e2f96f-dirty`; final install time `2026-06-01T16:46:14-04:00`;
+hardware visibility, ALSA smoke, outputd ownership, and XVF USB-IN
+chip-reference open passed. A 60-second post-install smoke artifact
+(`/var/lib/jasper/audio-validation/dac8x-postinstall-smoke-20260601T2051Z.json`)
+passed all checks. A 30-minute digital artifact
+(`/var/lib/jasper/audio-validation/dac8x-20260601T201320Z.json`) passed
+DAC/chip-ref checks but failed the full-pipeline stability gate on one
+content-side xrun. An instrumented repeat
+(`/var/lib/jasper/audio-validation/dac8x-watchdog-20260601T2102Z/summary.json`
+plus trigger bundle) reproduced one content-side xrun with DAC/chip-ref
+healthy, pointing at the upstream content loop rather than DAC8x.
+After rebasing onto the canonical validation runner work, `jts3.local`
+was redeployed at build `4c8c29f-dirty` with install time
+`2026-06-01T18:01:14-04:00`. The new
+`hifiberry_dac8x_outputd_stability` profile wrote a clean 60-second
+artifact and then a failing 30-minute artifact with
+`content_xrun_delta=1`, `dac_xrun_delta=0`, no bridge drops/starvation,
+and recommendation
+`fix_outputd_content_or_reference_xruns_before_dac8x_timing` in that
+pre-rebase prototype. The rebased canonical outputd-only profile uses
+`fix_outputd_stability_before_dac_validation` for the same outputd xrun
+class.
+Acoustic drift/delay, chip convergence, and wake telemetry remain open.
+This doc still preserves a dmix-era experiment snapshot in places;
+current production topology lives in `docs/audio-paths.md`.

@@ -355,6 +355,38 @@ def test_restart_systemd_units_restarts_multiple_units_no_block(monkeypatch):
     assert kwargs["timeout"] == 5
 
 
+def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(_common, "read_active_provider", lambda: "")
+    monkeypatch.setattr(
+        _common.subprocess, "run",
+        lambda cmd, **kwargs: calls.append((cmd, kwargs)),
+    )
+
+    _common.restart_voice_daemon()
+
+    assert calls == []
+
+
+def test_restart_voice_daemon_enables_then_restarts_when_provider_set(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(_common, "read_active_provider", lambda: "openai")
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+
+    monkeypatch.setattr(_common.subprocess, "run", fake_run)
+
+    _common.restart_voice_daemon()
+
+    assert [cmd for cmd, _ in calls] == [
+        ["systemctl", "enable", "jasper-voice.service"],
+        ["systemctl", "restart", "--no-block", "jasper-voice"],
+    ]
+
+
 # ----------------------------------------------------------------------
 # Canonical design system (canonical_page)
 # ----------------------------------------------------------------------

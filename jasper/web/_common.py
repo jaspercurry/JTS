@@ -68,8 +68,9 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from ..voice.provider_state import read_active_provider
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Cookie + header constants.
@@ -865,7 +866,22 @@ def restart_systemd_units(*units: str) -> None:
 def restart_voice_daemon() -> None:
     """Best-effort restart of jasper-voice so it picks up new
     credentials / new provider / wake model on its next boot."""
+    if not read_active_provider():
+        logger.info("not starting jasper-voice: JASPER_VOICE_PROVIDER is unset")
+        return
+    _enable_systemd_unit("jasper-voice")
     restart_systemd_units("jasper-voice")
+
+
+def _enable_systemd_unit(unit: str) -> None:
+    try:
+        subprocess.run(
+            ["systemctl", "enable", f"{unit}.service"],
+            check=False, timeout=5,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("%s enable failed: %s", unit, e)
 
 
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:

@@ -118,6 +118,12 @@ OPENWAKEWORD_ASSETS: tuple[OpenWakeWordAsset, ...] = (
         download_sha256="ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f",
     ),
     OpenWakeWordAsset(
+        key="silero_vad",
+        filename="silero_vad.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/silero_vad.onnx",
+        download_sha256="a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+    ),
+    OpenWakeWordAsset(
         key="alexa",
         filename="alexa_v0.1.onnx",
         download_url=f"{OPENWAKEWORD_RELEASE_BASE}/alexa_v0.1.onnx",
@@ -154,6 +160,12 @@ OPENWAKEWORD_ASSETS: tuple[OpenWakeWordAsset, ...] = (
         download_sha256="8441da8e746899e8d969528d5bad5651cdd563079c05962788f77753041f60e7",
     ),
 )
+
+OPENWAKEWORD_REQUIRED_RUNTIME_ASSET_KEYS = frozenset({
+    "embedding_model",
+    "melspectrogram",
+    "silero_vad",
+})
 
 
 # ---- Registry ---------------------------------------------------------
@@ -267,6 +279,15 @@ def downloadable() -> Iterable[WakeModelEntry]:
 def openwakeword_assets() -> Iterable[OpenWakeWordAsset]:
     """Iterate openWakeWord package-resource ONNX files install.sh owns."""
     return iter(OPENWAKEWORD_ASSETS)
+
+
+def required_openwakeword_assets() -> Iterable[OpenWakeWordAsset]:
+    """Iterate the ONNX assets openWakeWord needs before any wake model runs."""
+    return (
+        asset
+        for asset in OPENWAKEWORD_ASSETS
+        if asset.key in OPENWAKEWORD_REQUIRED_RUNTIME_ASSET_KEYS
+    )
 
 
 def default() -> WakeModelEntry:
