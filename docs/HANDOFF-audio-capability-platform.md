@@ -320,6 +320,9 @@ artifact stays `status=warn` and recommends `run_drift_delay_validation`
 even when runtime, outputd, bridge, and chip readback checks are clean.
 Passive `AEC_AECCONVERGED=0` is reported as `not_observed`, not failure,
 because no explicit far-end stimulus may have been present.
+If the flag reaches `1` and later returns to `0` in the same window,
+the convergence check is `warn`; stable convergence means no later
+valid poll contradicted the first converged sample.
 
 ---
 

@@ -700,6 +700,36 @@ def test_chip_aec_hardware_validation_zero_convergence_is_not_observed():
     assert artifact.recommendation == "run_drift_delay_validation"
 
 
+def test_chip_aec_hardware_validation_warns_when_convergence_is_lost():
+    inputs = _active_chip_inputs()
+    artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
+        **inputs,
+        outputd_status_samples=[
+            _outputd_sample(reference_sequence=10, dac_frames_written=1000),
+            _outputd_sample(reference_sequence=14, dac_frames_written=5000),
+        ],
+        bridge_stats_samples=[
+            _bridge_sample(frames_processed=100),
+            _bridge_sample(frames_processed=140),
+        ],
+        chip_readback=_chip_readback(),
+        chip_convergence_polls=[
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        ],
+        duration_seconds=10,
+    )
+
+    check = artifact.checks["chip_convergence"]
+    assert artifact.status == "warn"
+    assert check["status"] == "warn"
+    assert "did not remain converged" in check["summary"]
+    assert check["observed"]["first_converged_sample_index"] == 1
+    assert check["observed"]["nonconverged_after_first_count"] == 1
+
+
 def test_chip_aec_hardware_validation_fails_on_outputd_xrun_window():
     inputs = _active_chip_inputs()
     artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
@@ -892,6 +922,40 @@ def test_run_chip_aec_hardware_validation_uses_one_bounded_window(
     assert chip_poll_durations == [9.0]
     assert result.artifact is not None
     assert result.artifact.checks["outputd_reference_health"]["status"] == "pass"
+
+
+def test_poll_chip_convergence_uses_full_window_after_convergence(monkeypatch):
+    reads: list[float] = []
+    sleeps: list[float] = []
+    now = [100.0]
+
+    def read_xvf_parameter(command, *, timeout):
+        assert command == audio_validation.CHIP_AEC_CONVERGENCE_COMMAND
+        assert timeout == 5.0
+        reads.append(now[0])
+        return {command: [1]}
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(audio_validation, "_read_xvf_parameter", read_xvf_parameter)
+    monkeypatch.setattr(audio_validation.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(audio_validation.time, "sleep", sleep)
+
+    polls = audio_validation._poll_chip_convergence(
+        duration_seconds=10,
+        interval_seconds=4,
+    )
+
+    assert sleeps == [4, 4, 2]
+    assert reads == [100.0, 104.0, 108.0, 110.0]
+    assert polls == [
+        {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+    ]
 
 
 def test_run_outputd_stability_profile_does_not_probe_chip_or_voice(

@@ -98,6 +98,9 @@ wake legs, or an active `jasper-voice`; it is evidence for DAC8x/outputd
 stability, not chip-AEC viability.
 Passive `AEC_AECCONVERGED=0` is reported as `not_observed`, not failure,
 because the runner may not have observed meaningful far-end audio.
+If the flag reaches `1` and later returns to `0` during the same
+window, the convergence check is `warn`; a long-window pass requires
+the chip to stay converged after first convergence.
 
 For the concrete HiFiBerry DAC8x workstream, use the same runner with
 the explicit DAC8x outputd-stability profile:
@@ -1179,7 +1182,33 @@ and recommendation
 `fix_outputd_content_or_reference_xruns_before_dac8x_timing` in that
 pre-rebase prototype. The rebased canonical outputd-only profile uses
 `fix_outputd_stability_before_dac_validation` for the same outputd xrun
-class.
-Acoustic drift/delay, chip convergence, and wake telemetry remain open.
-This doc still preserves a dmix-era experiment snapshot in places;
-current production topology lives in `docs/audio-paths.md`.
+class. Later 2026-06-02 validation on `jts3.local` at build `00ad9c5`
+superseded the content-xrun result for the current outputd rate-match
+path: a 30-minute DAC8x/outputd stability artifact
+(`/var/lib/jasper/audio-validation/20260602T145451.927767Z__not_applicable__hifiberry_dac8x__hifiberry_dac8x_outputd_stability__pass.json`)
+and a later 15-minute artifact with chip-AEC active
+(`/var/lib/jasper/audio-validation/20260602T165217.698268Z__not_applicable__hifiberry_dac8x__hifiberry_dac8x_outputd_stability__pass.json`)
+both reported `content_xrun_delta=0`, `dac_xrun_delta=0`, and no
+clipping. After fixing the validator so chip convergence no longer
+short-circuits the requested window, a true 15-minute chip-AEC passive
+artifact on dirty build `00ad9c5-dirty`
+(`/var/lib/jasper/audio-validation/20260602T172105.858422Z__xvf3800__hifiberry_dac8x__xvf_chip_aec__warn.json`)
+confirmed active `xvf_chip_aec`, reconciler-owned chip-reference fanout,
+volatile XVF profile readback (`SHF_BYPASS=0`,
+`AEC_ASROUTONOFF=1`, fixed beams on/gated,
+`AUDIO_MGR_SYS_DELAY=12`), and `AEC_AECCONVERGED=1` across 176 polls.
+During that window, AirPlay content was observed flowing in `/state`
+(`music_dbfs` samples between roughly -32 and -39 dBFS, with one quiet
+passage near -77 dBFS), `content_xrun_delta=0`, `dac_xrun_delta=0`,
+`reference_sequence_delta=42283`, bridge frames advanced by 45096, and
+queue drops, UDP send drops, and ref-starved frame deltas stayed zero.
+The artifact remains `warn` because fixed acoustic delay / long-window
+drift are not directly measured by the passive runner. Wake-event rows
+from the chip-AEC transition show chip-beam fires and
+saved `aec-chip-aec-150` / `aec-chip-aec-210` WAVs, but no fresh
+music-active wake event was captured during the later AirPlay attempt;
+music-under-wake telemetry remains inconclusive. Fixed acoustic
+drift/delay and a labeled music-active wake window remain the next
+gates before any default-on chip-AEC decision. This doc still preserves
+a dmix-era experiment snapshot in places; current production topology
+lives in `docs/audio-paths.md`.

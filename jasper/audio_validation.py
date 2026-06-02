@@ -1442,10 +1442,29 @@ def _chip_convergence_check(
             observed=observed,
             expected={CHIP_AEC_CONVERGENCE_COMMAND: "0 or 1"},
         )
-    if any(value == 1 for value in values):
+    if 1 in values:
+        first_converged_index = values.index(1)
+        nonconverged_after_first = [
+            value for value in values[first_converged_index + 1:] if value != 1
+        ]
+        observed["first_converged_sample_index"] = first_converged_index
+        observed["nonconverged_after_first_count"] = len(nonconverged_after_first)
+        if nonconverged_after_first:
+            return _check(
+                "warn",
+                summary=(
+                    "XVF3800 reported AEC convergence but did not remain "
+                    "converged for the full validation window."
+                ),
+                observed=observed,
+                expected={
+                    CHIP_AEC_CONVERGENCE_COMMAND:
+                        "1, with no later 0 once convergence is observed",
+                },
+            )
         return _check(
             "pass",
-            summary="XVF3800 reported AEC convergence during the validation window.",
+            summary="XVF3800 reported stable AEC convergence during the validation window.",
             observed=observed,
             expected={CHIP_AEC_CONVERGENCE_COMMAND: 1},
         )
@@ -2128,9 +2147,6 @@ def _poll_chip_convergence(
     while True:
         result = _read_xvf_parameter(CHIP_AEC_CONVERGENCE_COMMAND, timeout=timeout)
         polls.append(result)
-        value = _normalize_xvf_values(result.get(CHIP_AEC_CONVERGENCE_COMMAND))
-        if value and value[0] == 1:
-            break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
