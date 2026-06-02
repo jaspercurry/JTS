@@ -33,7 +33,7 @@ from .wake_events import (
     CAPTURE_POST_SEC,
 )
 from .cues import AudioCueManager, build_cue_tts_backend
-from .vad import SpeechVAD
+from .vad import SpeechVAD, SpeechVADSetupError
 from .wake_legs import LegSpec, wake_input_legs
 from .wake_condition_context import classify_condition
 from .wake_conditions import DEFAULT_CONDITION
@@ -79,7 +79,9 @@ from .wake import WakeWordDetector
 from .weather import WeatherClient
 
 logger = logging.getLogger(__name__)
-VOICE_PROVIDER_NOT_CONFIGURED_EXIT = 78
+EX_CONFIG_EXIT = 78
+VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
+VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
 
 # Canonical playbook for editing this constant (and any tool
 # description in jasper/tools/) lives at docs/HANDOFF-prompting.md
@@ -3835,6 +3837,14 @@ def main() -> None:
         logger.warning("event=voice.unconfigured reason=%s", e)
         print(str(e), file=sys.stderr)
         sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)
+    except SpeechVADSetupError as e:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+        logger.error("event=voice.vad_setup_failed reason=%s", e)
+        print(str(e), file=sys.stderr)
+        sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)
     except KeyboardInterrupt:
         sys.exit(0)
 
