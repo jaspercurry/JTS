@@ -222,8 +222,7 @@ park_output_audio() {
         log_event "output_park_skip" "output_dac_id=${OUTPUT_DAC_ID} recognized=0 no_restart=1"
         return
     fi
-    "$SYSTEMCTL" stop jasper-voice.service 2>/dev/null || true
-    "$SYSTEMCTL" stop jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block stop jasper-voice.service jasper-outputd.service 2>/dev/null || true
     "$SYSTEMCTL" reset-failed jasper-voice.service jasper-outputd.service 2>/dev/null || true
     log_event "output_parked" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=0"
 }
@@ -235,8 +234,8 @@ restart_audio_if_needed() {
     fi
     "$SYSTEMCTL" stop jasper-voice.service 2>/dev/null || true
     "$SYSTEMCTL" reset-failed jasper-outputd.service 2>/dev/null || true
-    "$SYSTEMCTL" restart jasper-outputd.service 2>/dev/null || true
-    "$SYSTEMCTL" restart jasper-aec-reconcile.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block restart jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block restart jasper-aec-reconcile.service 2>/dev/null || true
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
 }
 

@@ -160,8 +160,8 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "restart jasper-headphone-monitor.service" in commands
     assert "stop jasper-voice.service" in commands
     assert "reset-failed jasper-outputd.service" in commands
-    assert "restart jasper-outputd.service" in commands
-    assert "restart jasper-aec-reconcile.service" in commands
+    assert "--no-block restart jasper-outputd.service" in commands
+    assert "--no-block restart jasper-aec-reconcile.service" in commands
 
 
 def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
@@ -179,8 +179,8 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "reset-failed jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "enable jasper-dac-init.service" not in commands
     assert "stop jasper-voice.service" in commands
-    assert "restart jasper-outputd.service" in commands
-    assert "restart jasper-aec-reconcile.service" in commands
+    assert "--no-block restart jasper-outputd.service" in commands
+    assert "--no-block restart jasper-aec-reconcile.service" in commands
 
 
 def test_reconcile_unknown_role_parks_output_without_rerender(tmp_path: Path):
@@ -194,8 +194,7 @@ def test_reconcile_unknown_role_parks_output_without_rerender(tmp_path: Path):
     assert _render_log(tmp_path) == ""
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-dac-init.service jasper-headphone-monitor.service" in commands
-    assert "stop jasper-voice.service" in commands
-    assert "stop jasper-outputd.service" in commands
+    assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert "reset-failed jasper-voice.service jasper-outputd.service" in commands
     assert "restart jasper-outputd.service" not in commands
     assert "restart jasper-aec-reconcile.service" not in commands
@@ -226,5 +225,5 @@ def test_reconcile_recognized_role_restarts_outputd_after_unknown_state(
     commands = _systemctl_log(tmp_path)
     assert "stop jasper-voice.service" in commands
     assert "reset-failed jasper-outputd.service" in commands
-    assert "restart jasper-outputd.service" in commands
-    assert "restart jasper-aec-reconcile.service" in commands
+    assert "--no-block restart jasper-outputd.service" in commands
+    assert "--no-block restart jasper-aec-reconcile.service" in commands
