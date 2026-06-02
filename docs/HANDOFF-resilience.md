@@ -995,6 +995,13 @@ For anyone touching the resilience code:
 - `deploy/udev/99-jasper-aec-reconcile.rules` — generic ALSA
   `controlC*` add/remove trigger for the reconciler. The service itself
   is what stays conservative about which mic config it owns.
+- `deploy/bin/jasper-audio-hardware-reconcile` +
+  `deploy/systemd/jasper-audio-hardware-reconcile.service` +
+  `deploy/udev/99-jasper-audio-hardware-reconcile.rules` — the same
+  event-driven shape for output DAC roles. The oneshot classifies the
+  selected final-output DAC, updates JTS-owned DAC identity/asound
+  state for recognized roles, and enables Apple mixer helpers only for
+  the Apple output role.
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, starts jasper-camilla,
   then runs the reconciler so mic/AEC/voice state matches present

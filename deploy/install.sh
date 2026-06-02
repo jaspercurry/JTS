@@ -153,8 +153,9 @@ Run for real from a Pi-local checkout:
    - Enable socket-activated setup wizards and always-on audio/control
      services.
    - Enable/start or restart renderer services, jasper-fanin,
-     jasper-outputd, DAC init, headphone monitor, nginx, Avahi,
-     CamillaGUI socket, and the WiFi guardian.
+     jasper-outputd, audio-hardware reconciliation, DAC init,
+     headphone monitor, nginx, Avahi, CamillaGUI socket, and the WiFi
+     guardian.
    - Require jasper-outputd to be active and answering STATUS before
      voice is reconciled onto the outputd TTS socket.
    - Seed or validate the outputd Camilla statefile while preserving
@@ -661,49 +662,20 @@ detect_card() {
     fi
 }
 
-detect_apple_dongle_card() {
-    find_card aplay 'usb-c to 3.5mm' || true
-}
-
-detect_dac8x_output_card() {
-    find_card aplay 'snd_rpi_hifiberry_dac8x|hifiberry.*dac8x|dac8x' || true
-}
-
 select_audio_hardware_roles() {
-    # Hardware roles are intentionally separate:
-    #   - APPLE_DONGLE_CARD is the Apple-only analog mixer control card.
-    #   - OUTPUT_DAC_CARD is the final speaker-output card outputd opens.
-    #   - OUTPUT_DAC_ID is a stable validation/reporting identity for the
-    #     role that was positively detected, not a broad DAC registry.
-    APPLE_DONGLE_CARD=$(detect_apple_dongle_card)
-    if [[ -n "${APPLE_DONGLE_CARD}" ]]; then
-        DONGLE_CARD="${APPLE_DONGLE_CARD}"
-        APPLE_DONGLE_PRESENT=1
-        APPLE_DONGLE_SERVICE_CARD="${APPLE_DONGLE_CARD}"
+    # Hardware roles are intentionally separate. The reconciler owns
+    # detection so install, boot, and udev-triggered changes share one
+    # policy surface.
+    eval "$(bash "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" --print-env)"
+    if [[ "${APPLE_DONGLE_PRESENT}" == "1" ]]; then
         echo "  Apple dongle: CARD=${DONGLE_CARD}"
     else
-        DONGLE_CARD="A"
-        APPLE_DONGLE_PRESENT=0
-        APPLE_DONGLE_SERVICE_CARD="auto"
         echo "  Apple dongle: not detected (fallback CARD=${DONGLE_CARD} for legacy templates)"
     fi
-
-    DAC8X_OUTPUT_CARD=$(detect_dac8x_output_card)
-    if [[ -n "${DAC8X_OUTPUT_CARD}" ]]; then
-        OUTPUT_DAC_CARD="${DAC8X_OUTPUT_CARD}"
-        OUTPUT_DAC_ID="hifiberry_dac8x"
-    elif [[ "${APPLE_DONGLE_PRESENT}" == "1" ]]; then
-        OUTPUT_DAC_CARD="${APPLE_DONGLE_CARD}"
-        OUTPUT_DAC_ID="apple_usb_c_dongle"
-    else
-        OUTPUT_DAC_CARD="${DONGLE_CARD}"
-        OUTPUT_DAC_ID="${OUTPUT_DAC_CARD}"
-    fi
-
     echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"
     echo "  Output DAC id: ${OUTPUT_DAC_ID}"
     export DONGLE_CARD APPLE_DONGLE_PRESENT APPLE_DONGLE_SERVICE_CARD
-    export OUTPUT_DAC_CARD OUTPUT_DAC_ID
+    export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
 install_alsa() {
@@ -773,6 +745,9 @@ install_alsa() {
         echo "  /var/lib/jasper/audio_quality.env defaulted to samplerate_medium."
     fi
     install -d -m 0755 /var/lib/jasper-asound
+    install -m 0644 \
+        "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
+        "${ENV_DIR}/asoundrc.jasper.source"
     /usr/local/sbin/jasper-render-asound-conf
     ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf
     chmod 0644 /var/lib/jasper-asound/asound.conf
@@ -2368,6 +2343,12 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
+        /usr/local/sbin/jasper-audio-hardware-reconcile
 
     # jasper-fanin: per-renderer snd-aloop substream fan-in daemon.
     # **Production default** as of 2026-05-26 — replaces the
@@ -2473,6 +2454,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-aec-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-aec-reconcile.rules
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
+        /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
     udevadm control --reload-rules
     # Trigger the rule once for the currently-attached dongle so we
     # don't have to wait for the next replug. ATTR{} match is
@@ -2593,23 +2577,10 @@ install_systemd_units() {
 
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service \
+        jasper-audio-hardware-reconcile.service \
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
-    if [[ "${OUTPUT_DAC_ID:-}" == "apple_usb_c_dongle" && "${APPLE_DONGLE_PRESENT:-0}" == "1" ]]; then
-        systemctl enable jasper-dac-init.service jasper-headphone-monitor.service
-        # Apply the Apple dongle Headphone-max pin immediately so a fresh
-        # install gets the full analog ceiling without waiting for reboot.
-        systemctl start jasper-dac-init.service || \
-            echo "  WARN: jasper-dac-init failed (dongle not ready?). \
-Will retry on next boot."
-        # Restart the headphone monitor so it picks up post-init state.
-        systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
-    else
-        systemctl disable --now jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
-        systemctl reset-failed jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
-        echo "  Apple dongle mixer services disabled (output_dac_id=${OUTPUT_DAC_ID:-unknown})."
-    fi
 
     # Stop the currently-running voice daemon before outputd claims the
     # direct DAC. On outputd deploys, the old voice process may still
@@ -2619,6 +2590,8 @@ Will retry on next boot."
     # coherent.
     systemctl stop jasper-voice.service 2>/dev/null || true
     systemctl reset-failed jasper-voice.service 2>/dev/null || true
+    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
+        echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
 
     systemctl restart jasper-fanin.service 2>/dev/null || true
     # CamillaDSP captures the fan-in output (`pcm.jasper_capture`).

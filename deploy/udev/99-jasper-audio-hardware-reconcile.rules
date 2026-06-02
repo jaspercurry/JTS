@@ -1,0 +1,11 @@
+# Re-run output-DAC role reconciliation whenever ALSA sound cards appear,
+# disappear, or change. The reconciler is a cheap oneshot: it classifies
+# the current final-output DAC role, gates role-specific helper units
+# such as the Apple dongle mixer monitor, and updates JTS-owned ALSA/env
+# state only for recognized output hardware.
+#
+# Key this to sound control nodes, not a specific USB id, so future
+# supported DACs can be added to the reconciler policy without changing
+# the udev trigger surface.
+
+ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"

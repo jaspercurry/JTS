@@ -1,0 +1,16 @@
+[Unit]
+Description=Reconcile output DAC hardware role
+Documentation=file:/opt/jasper/docs/HANDOFF-speaker-output-reference.md
+After=sound.target
+Wants=sound.target
+Before=jasper-outputd.service jasper-dac-init.service jasper-headphone-monitor.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/jasper/jasper.env
+ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile --reason systemd
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

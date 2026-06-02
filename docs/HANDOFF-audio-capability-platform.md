@@ -37,16 +37,22 @@ small set of canonical facts:
 
 The near-term goal is not a giant abstraction. The near-term goal is a
 small **capability contract** and **validation artifact** that the
-existing surfaces can share: `jasper-aec-reconcile`, `jasper-aec-init`,
-`jasper-aec-bridge`, `jasper-outputd`, `/aec`, `/wake/`, `jasper-doctor`,
-wake telemetry, and the wake-corpus recorder.
+existing surfaces can share: `jasper-audio-hardware-reconcile`,
+`jasper-aec-reconcile`, `jasper-aec-init`, `jasper-aec-bridge`,
+`jasper-outputd`, `/aec`, `/wake/`, `jasper-doctor`, wake telemetry,
+and the wake-corpus recorder.
 
 The product direction:
 
 1. **Different DACs should be usable.** JTS should detect or validate
    whether a DAC can support chip-AEC. If yes, use chip-AEC where it
    wins. If no, fall back cleanly to software AEC3 without leaving the
-   user in a half-enabled state.
+   user in a half-enabled state. DAC role detection is event-driven:
+   install and boot run one reconcile pass, and udev `controlC*`
+   add/remove/change events trigger the same output-hardware reconciler
+   for USB DAC changes. I2S HATs generally appear through boot-time
+   device-tree/ALSA enumeration, so boot/install reconciliation is the
+   primary path for them.
 2. **Different mics should be usable.** A mic with no hardware AEC
    should still get a principled software-AEC path. A future onboarding
    flow can ask the user to say the wake word under controlled

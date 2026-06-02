@@ -100,8 +100,9 @@ def test_install_builds_installs_and_enables_outputd():
     enable_block = install_sh.split(
         "systemctl enable jasper-camilla.service jasper-fanin.service",
         1,
-    )[1].split("systemctl start jasper-dac-init.service", 1)[0]
+    )[1].split("systemctl stop jasper-voice.service", 1)[0]
     assert "jasper-outputd.service" in enable_block
+    assert "jasper-audio-hardware-reconcile.service" in enable_block
     assert "systemctl restart jasper-outputd.service" in install_sh
     assert "require_outputd_ready" in install_sh
     assert "jasper-outputd STATUS probe failed" in install_sh
@@ -109,6 +110,10 @@ def test_install_builds_installs_and_enables_outputd():
     restart_block = install_sh.split(
         "systemctl stop jasper-voice.service", 1,
     )[1].split("systemctl enable jasper-wifi-guardian.service", 1)[0]
+    assert (
+        restart_block.index("jasper-audio-hardware-reconcile --reason install")
+        < restart_block.index("require_outputd_ready")
+    )
     assert (
         restart_block.index("require_outputd_ready")
         < restart_block.index("reconcile_aec_state")

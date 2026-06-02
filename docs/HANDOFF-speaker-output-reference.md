@@ -165,21 +165,23 @@ What exists:
 - DAC output: `outputd_dac`, a direct hardware alias for the selected
   final-output card. Public/default installs use the Apple USB-C
   dongle; DAC8x lab installs use the enumerated
-  `snd_rpi_hifiberry_dac8x` card. `install.sh` also writes
-  `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`, `hifiberry_dac8x`, or
-  the raw fallback card token when no known role is detected) into
+  `snd_rpi_hifiberry_dac8x` card. `jasper-audio-hardware-reconcile`
+  runs at install/boot and from udev `controlC*` add/remove/change
+  events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,
+  `hifiberry_dac8x`, or the raw fallback card token when no known role
+  is detected) plus `JASPER_AUDIO_DAC_CARD` into
   `/etc/jasper/jasper.env` so validation artifacts and status surfaces
-  have a stable hardware id instead of only the generic `outputd_dac`
-  PCM name.
+  have stable hardware identity instead of only the generic
+  `outputd_dac` PCM name.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
-  dongle `Headphone` control. `install.sh` enables them only when the
-  selected final-output DAC is the recognized Apple dongle. DAC8x and
-  unknown-output installs disable/reset those units so irrelevant
-  Apple-specific code does not run. The helpers are still runtime-safe
-  if an operator starts them manually: `jasper-dac-init` exits cleanly
-  when no Apple dongle is detected, and `jasper-headphone-monitor`
-  waits quietly in auto-detect mode.
+  dongle `Headphone` control. The audio-hardware reconciler enables
+  them only when the selected final-output DAC is the recognized Apple
+  dongle. DAC8x and unknown-output states disable/reset those units so
+  irrelevant Apple-specific code does not run. The helpers are still
+  runtime-safe if an operator starts them manually: `jasper-dac-init`
+  exits cleanly when no Apple dongle is detected, and
+  `jasper-headphone-monitor` waits quietly in auto-detect mode.
 - Camilla outputd config: `/etc/camilladsp/outputd-cutover.yml` after
   install, copied from `deploy/camilladsp/outputd-cutover.yml`.
 - Camilla rollback preservation: the outputd `jasper-camilla.service`
@@ -710,10 +712,11 @@ datum: how much assistant audio was actually heard.
   bridge is a lab-gated pipeline fix for snd-aloop content-lane drift.
 - 2026-06-02: Split final-output DAC role from Apple mixer ownership.
   `outputd_dac` may target the Apple USB-C dongle or the JTS3 DAC8x;
-  `jasper-dac-init`/`jasper-headphone-monitor` are now enabled only
-  for the recognized Apple final-output role, with runtime-safe helper
-  scripts for manual/operator starts. Added the outputd-only DAC8x
-  validation profile
+  `jasper-audio-hardware-reconcile` now owns install/boot/udev-triggered
+  DAC role convergence, and `jasper-dac-init`/
+  `jasper-headphone-monitor` are enabled only for the recognized Apple
+  final-output role, with runtime-safe helper scripts for
+  manual/operator starts. Added the outputd-only DAC8x validation profile
   `hifiberry_dac8x_outputd_stability` for content-pipeline soaks that
   should not fail just because chip-AEC/voice is parked.
 
