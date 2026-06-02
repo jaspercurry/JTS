@@ -243,7 +243,14 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
 )
 
 
+PROVIDER_IDS_MANIFEST_FILE = "/var/lib/jasper/voice_provider_ids"
+
 VALID_PROVIDER_IDS = frozenset(provider.id for provider in PROVIDERS)
+
+
+def provider_ids_manifest_text() -> str:
+    """Shell-readable provider-id manifest emitted during install."""
+    return "".join(f"{provider_id}\n" for provider_id in sorted(VALID_PROVIDER_IDS))
 
 
 def provider_by_id(provider_id: str) -> ProviderCatalogEntry | None:

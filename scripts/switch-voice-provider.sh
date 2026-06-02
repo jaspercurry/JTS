@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Flip the real-time voice provider the daemon uses. The three
-# supported providers all sit behind the same `LiveConnection` /
+# Flip the real-time voice provider the daemon uses. Supported
+# providers are read from the installed Python catalog on the Pi. They
+# all sit behind the same `LiveConnection` /
 # `LiveTurn` Protocols, so the daemon's wake/turn loop is unchanged
 # regardless of which one is active — only the SDK calls beneath it
 # differ. See docs/HANDOFF-voice-providers.md for the architecture
@@ -13,16 +14,8 @@
 # Other providers' keys may stay blank.
 #
 # Usage:
-#   bash scripts/switch-voice-provider.sh gemini
-#   bash scripts/switch-voice-provider.sh openai
-#   bash scripts/switch-voice-provider.sh grok
+#   bash scripts/switch-voice-provider.sh <provider-id>
 #   bash scripts/switch-voice-provider.sh           # show current
-#
-# Pricing snapshot at the time of writing (2026-05):
-#   gemini : ~$0.025 / minute  (3 / 12 USD per 1M audio tokens, with cap slack)
-#   openai : ~$0.30  / minute  (32 / 64 / 0.40 USD per 1M tokens)
-#   grok   :  $0.05  / minute  (flat $3.00 / hour, NOT token-based — note
-#                                JASPER_DAILY_SPEND_CAP_USD will under-count)
 #
 # Defaults: PI_HOST/PI_USER come from .env.local when present, then
 # PI_HOST falls back to JASPER_HOSTNAME and jts.local.
@@ -36,36 +29,58 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSH=(ssh -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}")
 OPERATOR_ENV="/etc/jasper/jasper.env"
 PROVIDER_ENV="/var/lib/jasper/voice_provider.env"
+CATALOG_PY="/opt/jasper/.venv/bin/python"
 
 PROVIDER="${1:-}"
 
-case "$PROVIDER" in
-    gemini|openai|grok) ;;
-    "")
-        echo "Current voice provider on ${PI_HOST}:"
-        "${SSH[@]}" "sudo sh -c 'grep -h \"^JASPER_VOICE_PROVIDER=\" \"${PROVIDER_ENV}\" 2>/dev/null || echo \"(unset — visit http://${PI_HOST}/voice/)\"'"
-        echo
-        echo "Configured model overrides:"
-        "${SSH[@]}" "sudo sh -c 'grep -h -E \"^JASPER_(GEMINI|OPENAI|GROK)_MODEL=\" \"${OPERATOR_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null || true'"
-        echo
-        echo "Usage:  bash scripts/switch-voice-provider.sh [gemini|openai|grok]"
-        exit 0
-        ;;
-    *)
-        echo "error: unknown provider '$PROVIDER'. Use 'gemini', 'openai', or 'grok'." >&2
-        exit 2
-        ;;
-esac
+fetch_provider_catalog() {
+    "${SSH[@]}" "sudo ${CATALOG_PY} -c 'from jasper.voice.catalog import PROVIDERS
+for provider in PROVIDERS:
+    print(\"%s\t%s\t%s\" % (provider.id, provider.key_env, provider.model_env))'"
+}
+
+provider_ids_for_usage() {
+    awk -F '\t' 'BEGIN { sep = "" } { printf "%s%s", sep, $1; sep = "|" } END { print "" }'
+}
+
+lookup_catalog_field() {
+    local provider="$1"
+    local column="$2"
+    printf '%s\n' "$CATALOG_ROWS" \
+        | awk -F '\t' -v provider="$provider" -v column="$column" '
+            $1 == provider { print $column; found = 1; exit }
+            END { if (!found) exit 1 }
+        '
+}
+
+CATALOG_ROWS="$(fetch_provider_catalog)" || {
+    echo "error: could not read the installed voice provider catalog on ${PI_HOST}." >&2
+    echo "       Re-run deploy/install so ${CATALOG_PY} can import jasper.voice.catalog." >&2
+    exit 2
+}
+PROVIDER_USAGE="$(printf '%s\n' "$CATALOG_ROWS" | provider_ids_for_usage)"
+
+if [[ -z "$PROVIDER" ]]; then
+    echo "Current voice provider on ${PI_HOST}:"
+    "${SSH[@]}" "sudo sh -c 'grep -h \"^JASPER_VOICE_PROVIDER=\" \"${PROVIDER_ENV}\" 2>/dev/null || echo \"(unset — visit http://${PI_HOST}/voice/)\"'"
+    echo
+    MODEL_ENV_REGEX="$(printf '%s\n' "$CATALOG_ROWS" \
+        | awk -F '\t' 'BEGIN { sep = "" } { printf "%s%s", sep, $3; sep = "|" } END { print "" }')"
+    echo "Configured model overrides:"
+    "${SSH[@]}" "sudo sh -c 'grep -h -E \"^(${MODEL_ENV_REGEX})=\" \"${OPERATOR_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null || true'"
+    echo
+    echo "Usage:  bash scripts/switch-voice-provider.sh [${PROVIDER_USAGE}]"
+    exit 0
+fi
+
+if ! KEY_VAR="$(lookup_catalog_field "$PROVIDER" 2)"; then
+    echo "error: unknown provider '$PROVIDER'. Use one of: ${PROVIDER_USAGE}" >&2
+    exit 2
+fi
 
 # Sanity-check the active provider's API key BEFORE flipping the env —
 # the daemon will refuse to start without it, which would leave the
 # Pi voiceless if we don't catch it here.
-case "$PROVIDER" in
-    gemini) KEY_VAR=GEMINI_API_KEY ;;
-    openai) KEY_VAR=OPENAI_API_KEY ;;
-    grok)   KEY_VAR=XAI_API_KEY ;;
-esac
-
 KEY_LINE=$("${SSH[@]}" "sudo sh -c 'grep -h -E \"^${KEY_VAR}=.*\" \"${OPERATOR_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null | tail -1 || true'")
 if [[ -z "$KEY_LINE" || "$KEY_LINE" == "${KEY_VAR}=" ]]; then
     echo "error: ${KEY_VAR} is not set for the effective voice config on ${PI_HOST}." >&2

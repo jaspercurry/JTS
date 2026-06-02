@@ -54,7 +54,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
-  var activeSpeaker = {loading: false, payload: null, error: ''};
+  var activeSpeaker = {loading: false, action: '', payload: null, session: null, error: ''};
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
@@ -479,7 +479,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   function renderActiveSpeakerSetup() {
     var body = renderActiveSpeakerStatus();
-    var open = activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.error;
+    var open = activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.session || activeSpeaker.error;
     return '<section class="active-speaker-setup">' +
       '<details class="advanced"' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
@@ -521,6 +521,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var alsa = p.alsa || {};
     var validation = p.camilla_validation || {};
     var safe = p.safe_playback || {};
+    var session = activeSpeaker.session || {};
     var ok = !!p.ok_to_load_active_config;
     var devices = Array.isArray(alsa.devices) ? alsa.devices.length : 0;
     var rows = [
@@ -529,9 +530,11 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       ['Volume ceiling', cfg.volume_limit_db == null ? 'Missing' : fmtDb(cfg.volume_limit_db) + ' dB'],
       ['ALSA playback devices', String(devices)],
       ['Config validation', validation.status || 'unknown'],
-      ['Safe playback', safe.playback_allowed ? 'Allowed' : 'Not allowed yet']
+      ['Safe playback', safe.playback_allowed ? 'Allowed' : 'Not allowed yet'],
+      ['Safety session', session.status || 'Not armed']
     ];
-    var issues = Array.isArray(p.issues) ? p.issues.slice(0, 4) : [];
+    var envIssues = Array.isArray(p.issues) ? p.issues.slice(0, 4) : [];
+    var sessionIssues = Array.isArray(session.issues) ? session.issues.slice(0, 4) : [];
     return '<div class="active-speaker-status__stack">' +
       '<div class="row-between active-speaker-status__head">' +
         '<span class="status-pill ' + (ok ? 'status-pill--ready' : 'status-pill--blocked') + '">' +
@@ -541,10 +544,45 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       '<dl class="active-speaker-facts">' + rows.map(function(row) {
         return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
       }).join('') + '</dl>' +
-      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
-        return '<li>' + escapeHtml(issue.code || 'issue') + '</li>';
-      }).join('') + '</ul>' : '<p class="setting-row__hint">No active load blockers in the read-only environment report.</p>') +
+      renderActiveSpeakerIssues(envIssues, sessionIssues) +
+      renderActiveSpeakerActions(ok, session) +
       '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'Playback remains disabled until the safe tone path is implemented.') + '</p>' +
+    '</div>';
+  }
+  function renderActiveSpeakerIssues(envIssues, sessionIssues) {
+    var rows = [];
+    envIssues.forEach(function(issue) {
+      rows.push(['Environment', issue]);
+    });
+    sessionIssues.forEach(function(issue) {
+      rows.push(['Session', issue]);
+    });
+    if (!rows.length) {
+      return '<p class="setting-row__hint">No active load blockers in the read-only environment report.</p>';
+    }
+    return '<ul class="active-speaker-issues">' + rows.slice(0, 6).map(function(row) {
+      var issue = row[1] || {};
+      return '<li>' + escapeHtml(row[0] + ': ' + (issue.code || 'issue')) + '</li>';
+    }).join('') + '</ul>';
+  }
+  function renderActiveSpeakerActions(ok, session) {
+    var busy = !!activeSpeaker.action;
+    var state = session || {};
+    if (busy) {
+      return '<div class="active-speaker-actions">' +
+        '<button type="button" class="btn btn--ghost" disabled>' + escapeHtml(activeSpeaker.action) + '</button>' +
+        '<span class="setting-row__hint">No audio is emitted by this step.</span>' +
+      '</div>';
+    }
+    if (state.status === 'armed') {
+      return '<div class="active-speaker-actions">' +
+        '<button type="button" class="btn btn--danger" data-act="stop-active-speaker">Stop</button>' +
+        '<span class="setting-row__hint">Armed safety session. Tone playback is not implemented in this build.</span>' +
+      '</div>';
+    }
+    return '<div class="active-speaker-actions">' +
+      '<button type="button" class="btn btn--ghost" data-act="arm-active-speaker"' + (ok ? '' : ' disabled') + '>Arm safe session</button>' +
+      '<span class="setting-row__hint">Arming records the safety state only; it does not play sound.</span>' +
     '</div>';
   }
 
@@ -921,6 +959,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     else if (act === 'overwrite') { overwrite(); }
     else if (act === 'reset-draft') { resetDraft(); }
     else if (act === 'refresh-active-speaker') { refreshActiveSpeakerStatus(); }
+    else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Arming'); }
+    else if (act === 'stop-active-speaker') { activeSpeakerPost('./active-speaker/stop', 'Stopping'); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -1097,14 +1137,52 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     }
   }
   async function refreshActiveSpeakerStatus() {
-    activeSpeaker = {loading: true, payload: activeSpeaker.payload, error: ''};
+    activeSpeaker = {loading: true, action: '', payload: activeSpeaker.payload, session: activeSpeaker.session, error: ''};
     render();
     try {
-      var resp = await fetch('./active-speaker/environment', {cache: 'no-store'});
-      if (!resp.ok) throw new Error('environment probe failed');
-      activeSpeaker = {loading: false, payload: await resp.json(), error: ''};
+      var envResp = await fetch('./active-speaker/environment', {cache: 'no-store'});
+      if (!envResp.ok) throw new Error('environment probe failed');
+      var sessionResp = await fetch('./active-speaker/safe-playback', {cache: 'no-store'});
+      if (!sessionResp.ok) throw new Error('safe playback status failed');
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: await envResp.json(),
+        session: await sessionResp.json(),
+        error: ''
+      };
     } catch (e) {
-      activeSpeaker = {loading: false, payload: null, error: e.message};
+      activeSpeaker = {loading: false, action: '', payload: null, session: null, error: e.message};
+    }
+    render();
+  }
+  async function activeSpeakerPost(path, actionLabel) {
+    activeSpeaker = {
+      loading: false, action: actionLabel,
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      error: ''
+    };
+    render();
+    try {
+      var resp = await fetch(path, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: '{}'
+      });
+      if (!resp.ok) throw new Error(actionLabel + ' failed');
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: await resp.json(),
+        error: ''
+      };
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        error: e.message
+      };
     }
     render();
   }

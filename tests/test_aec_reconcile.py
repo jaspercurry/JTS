@@ -4,6 +4,10 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-aec-reconcile"
@@ -29,6 +33,7 @@ def _run_reconcile(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[st
             "JASPER_ENV_FILE": str(tmp_path / "jasper.env"),
             "JASPER_AEC_MODE_FILE": str(tmp_path / "aec_mode.env"),
             "JASPER_VOICE_PROVIDER_FILE": str(tmp_path / "voice_provider.env"),
+            "JASPER_VOICE_PROVIDER_IDS_FILE": str(tmp_path / "voice_provider_ids"),
             "JASPER_ASOUND_ROOT": str(tmp_path / "asound"),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
@@ -60,6 +65,7 @@ def _write_env(
         (tmp_path / "voice_provider.env").write_text(
             f"JASPER_VOICE_PROVIDER={voice_provider}\n"
         )
+    (tmp_path / "voice_provider_ids").write_text(provider_ids_manifest_text())
     return env_file
 
 
@@ -119,6 +125,23 @@ def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> No
     assert "restart jasper-voice.service" in commands
 
 
+@pytest.mark.parametrize("provider_id", sorted(VALID_PROVIDER_IDS))
+def test_reconcile_accepts_catalog_provider_ids(
+    tmp_path: Path,
+    provider_id: str,
+) -> None:
+    _write_env(tmp_path, "Array", voice_provider=provider_id)
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    commands = _systemctl_log(tmp_path)
+    assert "enable jasper-voice.service" in commands
+    assert "restart jasper-voice.service" in commands
+
+
 def test_reconcile_parks_voice_when_provider_unset(tmp_path: Path) -> None:
     env_file = _write_env(tmp_path, "Array", voice_provider="")
     _write_mode(tmp_path)
@@ -136,6 +159,38 @@ def test_reconcile_parks_voice_when_provider_unset(tmp_path: Path) -> None:
 
 def test_reconcile_parks_voice_when_provider_invalid(tmp_path: Path) -> None:
     env_file = _write_env(tmp_path, "Array", voice_provider="bad-provider")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
+    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
+    commands = _systemctl_log(tmp_path)
+    assert "disable --now jasper-voice.service" in commands
+    assert "restart jasper-voice.service" not in commands
+
+
+def test_reconcile_parks_voice_when_provider_manifest_missing(tmp_path: Path) -> None:
+    env_file = _write_env(tmp_path, "Array", voice_provider="gemini")
+    (tmp_path / "voice_provider_ids").unlink()
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
+    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
+    commands = _systemctl_log(tmp_path)
+    assert "disable --now jasper-voice.service" in commands
+    assert "restart jasper-voice.service" not in commands
+
+
+def test_reconcile_parks_voice_when_provider_not_in_manifest(tmp_path: Path) -> None:
+    env_file = _write_env(tmp_path, "Array", voice_provider="grok")
+    (tmp_path / "voice_provider_ids").write_text("gemini\nopenai\n")
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=6)
 

@@ -10,7 +10,12 @@ from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
-from .voice.catalog import default_extra_value, default_model_id, default_voice_id
+from .voice.catalog import (
+    VALID_PROVIDER_IDS,
+    default_extra_value,
+    default_model_id,
+    default_voice_id,
+)
 
 
 class VoiceProviderNotConfigured(RuntimeError):
@@ -118,7 +123,7 @@ def _validate(cfg: "Config") -> "Config":
 
 @dataclass(frozen=True)
 class Config:
-    # Voice provider: "gemini" (default) | "openai" | "grok". The
+    # Voice provider: one of jasper.voice.catalog.VALID_PROVIDER_IDS. The
     # corresponding *_api_key + *_model + *_voice fields are read for
     # whichever provider is selected. Other providers' keys may be
     # blank and the daemon still starts — only the active provider's
@@ -355,10 +360,10 @@ class Config:
                 "/var/lib/jasper/voice_provider.env and restart "
                 "jasper-voice.",
             )
-        if provider not in {"gemini", "openai", "grok"}:
+        if provider not in VALID_PROVIDER_IDS:
             raise RuntimeError(
                 f"unsupported JASPER_VOICE_PROVIDER={provider!r}; expected "
-                "one of: gemini, openai, grok"
+                f"one of: {', '.join(sorted(VALID_PROVIDER_IDS))}"
             )
         # Only the active provider's API key is required. Each provider
         # block's other env vars have sensible defaults, so the user

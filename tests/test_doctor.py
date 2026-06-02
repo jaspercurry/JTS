@@ -18,6 +18,7 @@ from jasper import wake_models
 from jasper.cli import doctor
 from jasper.config import Config
 from jasper.correction import bundles
+from jasper.voice.catalog import PROVIDERS, provider_ids_manifest_text
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
@@ -358,7 +359,7 @@ def _fresh_cfg(monkeypatch, **vars_) -> Config:
 
 
 def test_provider_key_gemini_ok(monkeypatch):
-    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345")
+    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyABCDEF12345")
     r = doctor.check_provider_key(cfg)
     assert r.status == "ok"
     assert r.name == "GEMINI_API_KEY"
@@ -406,6 +407,63 @@ def test_provider_key_other_providers_keys_unchecked(monkeypatch):
     )
     r = doctor.check_provider_key(cfg)
     assert r.status == "ok"
+
+
+def test_provider_key_accepts_each_catalog_provider():
+    for provider in PROVIDERS:
+        key = provider.key_prefix_hint.rstrip(".") + "test-key"
+        cfg = SimpleNamespace(
+            voice_provider=provider.id,
+            **{f"{provider.id.replace('-', '_')}_api_key": key},
+        )
+
+        r = doctor.check_provider_key(cfg)  # type: ignore[arg-type]
+
+        assert r.status == "ok"
+        assert r.name == provider.key_env
+
+
+def test_voice_provider_ids_manifest_ok(monkeypatch, tmp_path: Path):
+    manifest = tmp_path / "voice_provider_ids"
+    manifest.write_text(provider_ids_manifest_text())
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_IDS_FILE", str(manifest))
+
+    r = doctor.check_voice_provider_ids_manifest()
+
+    assert r.status == "ok"
+
+
+def test_voice_provider_ids_manifest_missing_fails(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv(
+        "JASPER_VOICE_PROVIDER_IDS_FILE",
+        str(tmp_path / "missing_provider_ids"),
+    )
+
+    r = doctor.check_voice_provider_ids_manifest()
+
+    assert r.status == "fail"
+    assert "missing" in r.detail
+
+
+def test_voice_provider_ids_manifest_stale_fails(monkeypatch, tmp_path: Path):
+    manifest = tmp_path / "voice_provider_ids"
+    manifest.write_text("gemini\n")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_IDS_FILE", str(manifest))
+
+    r = doctor.check_voice_provider_ids_manifest()
+
+    assert r.status == "fail"
+    assert "stale" in r.detail
+
+
+def test_voice_provider_ids_manifest_reordered_warns(monkeypatch, tmp_path: Path):
+    manifest = tmp_path / "voice_provider_ids"
+    manifest.write_text("openai\ngrok\ngemini\n")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_IDS_FILE", str(manifest))
+
+    r = doctor.check_voice_provider_ids_manifest()
+
+    assert r.status == "warn"
 
 
 # ------------------------------------------------------ Spotify Connect check

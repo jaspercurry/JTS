@@ -42,6 +42,12 @@ from .environment import (
     parse_camilla_statefile_config_path,
     probe_active_speaker_environment,
 )
+from .safe_playback import (
+    SAFE_PLAYBACK_SESSION_KIND,
+    arm_safe_playback_session,
+    load_safe_playback_state,
+    stop_safe_playback_session,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
@@ -52,6 +58,7 @@ __all__ = [
     "OPERATOR_EVIDENCE_SOURCE",
     "PATH_SAFETY_EVIDENCE_KIND",
     "REQUIRED_PATHS",
+    "SAFE_PLAYBACK_SESSION_KIND",
     "SCHEMA_VERSION",
     "STARTUP_HEADROOM_DB",
     "STARTUP_LIMITER_CLIP_LIMIT_DB",
@@ -73,4 +80,7 @@ __all__ = [
     "probe_active_speaker_environment",
     "required_driver_roles",
     "requirements_payload",
+    "arm_safe_playback_session",
+    "load_safe_playback_state",
+    "stop_safe_playback_session",
 ]
