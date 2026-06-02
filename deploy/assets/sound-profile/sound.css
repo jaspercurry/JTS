@@ -346,6 +346,38 @@
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   }
   .active-speaker-actions--targets { margin-top: -4px; }
+  .active-speaker-level {
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px; border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: color-mix(in oklch, var(--foreground) 2%, transparent);
+  }
+  .active-speaker-level__head,
+  .active-speaker-level__meter { gap: 10px; align-items: center; }
+  .active-speaker-level__readout {
+    min-width: 5.5rem; text-align: right;
+    font-size: 13px; font-weight: 700; color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+  }
+  .active-speaker-level__range {
+    width: 100%; min-height: 32px; accent-color: var(--primary);
+  }
+  .active-speaker-meter {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; overflow: hidden;
+    border-radius: 999px; border: 1px solid var(--line);
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0; color: var(--muted-foreground);
+  }
+  .active-speaker-meter__label {
+    padding: 4px 6px; text-align: center;
+    background: color-mix(in oklch, var(--status-warn) 9%, transparent);
+  }
+  .active-speaker-meter__label:nth-child(2) {
+    background: color-mix(in oklch, var(--status-ok) 10%, transparent);
+  }
+  .active-speaker-meter__label:nth-child(3) {
+    background: color-mix(in oklch, var(--status-danger) 10%, transparent);
+  }
   .active-speaker-plan {
     border-top: 1px solid var(--line);
     padding-top: 10px;
@@ -353,6 +385,11 @@
   @media (max-width: 420px) {
     .active-speaker-status__head { align-items: stretch; flex-direction: column; }
     .active-speaker-facts > div { grid-template-columns: 1fr; gap: 2px; }
+    .active-speaker-level__head,
+    .active-speaker-level__meter {
+      align-items: stretch; flex-direction: column;
+    }
+    .active-speaker-level__readout { text-align: left; }
   }
   /* Canonical checkbox toggle (sage). Checkbox-based per web conventions. */
   .toggle { position: relative; display: inline-block; flex-shrink: 0; width: 48px; height: 28px; }

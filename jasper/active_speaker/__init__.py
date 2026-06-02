@@ -48,6 +48,15 @@ from .safe_playback import (
     load_safe_playback_state,
     stop_safe_playback_session,
 )
+from .calibration_level import (
+    CALIBRATION_LEVEL_KIND,
+    DEFAULT_TEST_LEVEL_DBFS,
+    MAX_TEST_LEVEL_DBFS,
+    MIN_TEST_LEVEL_DBFS,
+    calibration_level_payload,
+    clamp_test_level_dbfs,
+    classify_mic_meter,
+)
 from .tone_plan import (
     TONE_PLAN_KIND,
     build_safe_tone_plan,
@@ -59,8 +68,12 @@ __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
     "ACTIVE_BASELINE_KIND",
     "ACTIVE_PRESET_KIND",
+    "CALIBRATION_LEVEL_KIND",
+    "DEFAULT_TEST_LEVEL_DBFS",
     "ENVIRONMENT_REPORT_KIND",
     "HARDWARE_PROBE_EVIDENCE_SOURCE",
+    "MAX_TEST_LEVEL_DBFS",
+    "MIN_TEST_LEVEL_DBFS",
     "OPERATOR_EVIDENCE_SOURCE",
     "PATH_SAFETY_EVIDENCE_KIND",
     "REQUIRED_PATHS",
@@ -80,6 +93,9 @@ __all__ = [
     "SafetyEnvelope",
     "SpeakerBaselineProfile",
     "classify_camilla_config_text",
+    "calibration_level_payload",
+    "clamp_test_level_dbfs",
+    "classify_mic_meter",
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",
     "build_safe_tone_plan",

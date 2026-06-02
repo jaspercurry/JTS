@@ -13,14 +13,21 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from .calibration_level import (
+    DEFAULT_TEST_LEVEL_DBFS,
+    MAX_TEST_LEVEL_DBFS,
+    MIN_TEST_LEVEL_DBFS,
+    calibration_level_payload,
+    clamp_test_level_dbfs,
+)
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, OutputChannel
 
 SCHEMA_VERSION = 1
 TONE_PLAN_KIND = "jts_active_speaker_tone_plan"
 DEFAULT_PRESET_RESOURCE = "presets/bc_de250_dayton_e150he44_v1.json"
-DEFAULT_TONE_LEVEL_DBFS = -50.0
-MIN_TONE_LEVEL_DBFS = -80.0
-MAX_TONE_LEVEL_DBFS = -45.0
+DEFAULT_TONE_LEVEL_DBFS = DEFAULT_TEST_LEVEL_DBFS
+MIN_TONE_LEVEL_DBFS = MIN_TEST_LEVEL_DBFS
+MAX_TONE_LEVEL_DBFS = MAX_TEST_LEVEL_DBFS
 DEFAULT_TONE_DURATION_MS = 300
 MIN_TONE_DURATION_MS = 100
 MAX_TONE_DURATION_MS = 500
@@ -29,16 +36,6 @@ DEFAULT_TONE_RAMP_MS = 20
 
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "message": message}
-
-
-def _clamp_float(value: Any, *, default: float, lo: float, hi: float) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        out = default
-    if not math.isfinite(out):
-        out = default
-    return min(max(out, lo), hi)
 
 
 def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
@@ -79,6 +76,7 @@ def tone_targets_payload(preset: ActiveSpeakerPreset) -> dict[str, Any]:
         "preset_id": preset.preset_id,
         "name": preset.name,
         "layout": preset.channel_map.layout,
+        "calibration_level": calibration_level_payload(),
         "targets": [
             {
                 "side": output.side,
@@ -201,12 +199,8 @@ def build_safe_tone_plan(
 
     role = target.driver_role if target else (driver_role or "unknown")
     frequency_hz, band_limit = _tone_frequency_hz(preset, role)
-    level_dbfs = _clamp_float(
-        requested_level_dbfs,
-        default=DEFAULT_TONE_LEVEL_DBFS,
-        lo=MIN_TONE_LEVEL_DBFS,
-        hi=MAX_TONE_LEVEL_DBFS,
-    )
+    level = calibration_level_payload(requested_level_dbfs=requested_level_dbfs)
+    level_dbfs = clamp_test_level_dbfs(requested_level_dbfs)
     duration_ms = _clamp_int(
         requested_duration_ms,
         default=DEFAULT_TONE_DURATION_MS,
@@ -237,6 +231,7 @@ def build_safe_tone_plan(
             "ramp_ms": min(DEFAULT_TONE_RAMP_MS, duration_ms // 4),
             "band_limit": band_limit,
         },
+        "calibration_level": level,
         "clamps": {
             "min_level_dbfs": MIN_TONE_LEVEL_DBFS,
             "max_level_dbfs": MAX_TONE_LEVEL_DBFS,
