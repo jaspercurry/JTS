@@ -149,6 +149,11 @@ def _fake_openwakeword_assets() -> tuple[SimpleNamespace, ...]:
             filename="hey_jarvis_v0.1.onnx",
             download_sha256=hashlib.sha256(b"model").hexdigest(),
         ),
+        SimpleNamespace(
+            key="alexa",
+            filename="alexa_v0.1.onnx",
+            download_sha256=hashlib.sha256(b"model").hexdigest(),
+        ),
     )
 
 
@@ -194,6 +199,55 @@ def test_openwakeword_doctor_allows_missing_inactive_bundled_model(
 
     assert r.status == "ok"
     assert "hey_jarvis_v0.1.onnx" in r.detail
+
+
+def test_openwakeword_doctor_fails_when_active_bundled_model_missing(
+    monkeypatch,
+    tmp_path: Path,
+):
+    required_assets = _required_fake_openwakeword_assets()
+    _install_fake_openwakeword_package(
+        monkeypatch,
+        tmp_path,
+        {
+            "embedding_model.onnx": b"model",
+            "melspectrogram.onnx": b"model",
+            "silero_vad.onnx": b"model",
+        },
+        required_assets,
+        _fake_openwakeword_assets(),
+    )
+
+    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
+
+    assert r.status == "fail"
+    assert "active wake model" in r.detail
+    assert "deploy/install.sh" in r.detail
+
+
+def test_openwakeword_doctor_missing_custom_model_points_at_path(
+    monkeypatch,
+    tmp_path: Path,
+):
+    required_assets = _required_fake_openwakeword_assets()
+    _install_fake_openwakeword_package(
+        monkeypatch,
+        tmp_path,
+        {
+            "embedding_model.onnx": b"model",
+            "melspectrogram.onnx": b"model",
+            "silero_vad.onnx": b"model",
+        },
+        required_assets,
+        _fake_openwakeword_assets(),
+    )
+    missing = tmp_path / "custom-missing.onnx"
+
+    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model=str(missing)))
+
+    assert r.status == "fail"
+    assert f"active wake model path missing: {missing}" in r.detail
+    assert "registered model in /wake/" in r.detail
 
 
 def test_openwakeword_doctor_fails_when_required_asset_hash_mismatches(

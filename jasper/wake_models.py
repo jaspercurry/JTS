@@ -89,8 +89,7 @@ class OpenWakeWordAsset:
     JTS runs openWakeWord with `inference_framework="onnx"` because
     tflite-runtime does not ship a Python 3.13 wheel for PiOS Trixie.
     These are therefore the exact package-resource files install.sh
-    stages and hash-checks instead of delegating to
-    `openwakeword.utils.download_models()`.
+    stages through the hash-checked asset manifest below.
     """
 
     key: str
@@ -165,6 +164,13 @@ OPENWAKEWORD_REQUIRED_RUNTIME_ASSET_KEYS = frozenset({
     "embedding_model",
     "melspectrogram",
     "silero_vad",
+})
+OPENWAKEWORD_FALLBACK_ASSET_KEYS = frozenset({
+    # Config.from_env falls back to "hey_jarvis" when no wizard/operator
+    # wake model is configured. Keep that package asset fail-fast at
+    # install time so a failed default-model download can still land on
+    # a working fresh install.
+    "hey_jarvis",
 })
 
 
@@ -281,6 +287,14 @@ def openwakeword_assets() -> Iterable[OpenWakeWordAsset]:
     return iter(OPENWAKEWORD_ASSETS)
 
 
+def openwakeword_asset_by_key(key: str) -> OpenWakeWordAsset | None:
+    """Find an openWakeWord package-resource asset by registry/stock key."""
+    for asset in OPENWAKEWORD_ASSETS:
+        if asset.key == key:
+            return asset
+    return None
+
+
 def required_openwakeword_assets() -> Iterable[OpenWakeWordAsset]:
     """Iterate the ONNX assets openWakeWord needs before any wake model runs."""
     return (
@@ -288,6 +302,30 @@ def required_openwakeword_assets() -> Iterable[OpenWakeWordAsset]:
         for asset in OPENWAKEWORD_ASSETS
         if asset.key in OPENWAKEWORD_REQUIRED_RUNTIME_ASSET_KEYS
     )
+
+
+def fallback_openwakeword_assets() -> Iterable[OpenWakeWordAsset]:
+    """Iterate stock assets needed for the compiled-in wake fallback."""
+    return (
+        asset
+        for asset in OPENWAKEWORD_ASSETS
+        if asset.key in OPENWAKEWORD_FALLBACK_ASSET_KEYS
+    )
+
+
+def openwakeword_asset_for_model(model: str) -> OpenWakeWordAsset | None:
+    """Return the package asset for a bare stock wake-model string.
+
+    ``JASPER_WAKE_MODEL`` may be a registry model value ("hey_jarvis")
+    or an operator-set stock name that is not shown in the picker
+    ("timer"). Absolute/external ONNX paths return ``None`` because
+    those are staged under /var/lib/jasper/wake instead.
+    """
+    if "/" in model or model.endswith((".onnx", ".tflite")):
+        return None
+    entry = by_model(model)
+    key = entry.key if entry is not None and entry.bundled else model
+    return openwakeword_asset_by_key(key)
 
 
 def default() -> WakeModelEntry:

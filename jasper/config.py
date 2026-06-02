@@ -439,9 +439,9 @@ class Config:
             # curated picker rows + install-time download list live in
             # jasper/wake_models.py. The compiled-in fallback below is
             # "hey_jarvis" because it's the openWakeWord-bundled model
-            # that is always present (downloaded at install time via
-            # `openwakeword.utils.download_models()`), so dev/test runs
-            # without a seeded env file still load something.
+            # that install.sh treats as a required hash-checked package
+            # asset, so dev/test runs without a seeded env file still
+            # load something.
             wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
             wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.5),
             # JASPER_MIC_DEVICE is a sounddevice/PortAudio identifier, not

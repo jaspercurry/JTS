@@ -64,12 +64,14 @@ from __future__ import annotations
 
 import argparse
 import html
+import importlib.util
 import json
 import logging
 import os
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from .. import wake_models
@@ -158,17 +160,33 @@ def _active_threshold(state: dict[str, str]) -> float:
 
 
 def _is_available(entry: wake_models.WakeModelEntry) -> bool:
-    """Bundled openWakeWord names are install-owned package resources.
+    """Return whether the model can be selected without crashing voice.
 
-    install.sh stages and hash-checks those ONNX files up front; checking
-    the package path here would require importing openwakeword on every
-    page render. External files have to exist on disk to be loadable; a
-    missing file means a failed install-time download (rare, but flagged
-    in the UI so the household knows what's going on).
+    Bundled openWakeWord names are install-owned package resources. We
+    check their resource path via importlib metadata rather than importing
+    openwakeword on every page render. External files have to exist on
+    disk to be loadable; a missing file means a failed install-time
+    download, flagged in the UI so the household knows what's going on.
     """
     if entry.bundled:
-        return True
+        asset_path = _bundled_asset_path(entry)
+        if asset_path is None:
+            return False
+        try:
+            return asset_path.is_file() and asset_path.stat().st_size > 0
+        except OSError:
+            return False
     return os.path.exists(entry.model)
+
+
+def _bundled_asset_path(entry: wake_models.WakeModelEntry) -> Path | None:
+    asset = wake_models.openwakeword_asset_by_key(entry.key)
+    if asset is None:
+        return None
+    spec = importlib.util.find_spec("openwakeword")
+    if spec is None or spec.origin is None:
+        return None
+    return Path(spec.origin).resolve().parent / "resources" / "models" / asset.filename
 
 
 # ----------------------------------------------------------------------

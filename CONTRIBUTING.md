@@ -83,6 +83,9 @@ blank SD card to working speaker.
 - Format with `ruff format`; lint with `ruff check`. Both are dev deps.
 - Match the surrounding style. Don't refactor working code that
   isn't part of your change.
+- For larger or riskier changes, use the COAH quality bar in
+  [AGENTS.md](AGENTS.md#coah-quality-bar): Clean, Observable,
+  Available/resilient, Hardware-safe.
 - Web setup pages follow AGENTS.md "Web wizard conventions" — shared
   CSRF helpers, checkbox-based toggles, and no generated inline JS for
   untrusted device/network metadata.

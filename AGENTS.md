@@ -60,6 +60,39 @@ detail; they do not replace this baseline.
 
 ---
 
+## COAH quality bar
+
+When the user asks whether work meets "COAH standards", treat that as
+the JTS staff-maintainer review bar:
+
+- **Clean.** Boundaries are crisp, ownership is local, names explain the
+  domain, and the design is the smallest durable shape that fits the
+  existing system. Prefer simple composition over speculative
+  abstractions; leave the codebase easier to reason about.
+- **Observable.** Failures and important state transitions are visible
+  through stable `event=` logs, `/state` or doctor surfaces where
+  appropriate, and user-facing UI hints when a household needs to act.
+  Avoid journal spam; make diagnostics specific enough to fix the
+  problem.
+- **Available and resilient.** The speaker should keep working for
+  months on a 1 GB Pi. Availability is the user-visible promise;
+  resilience is how the system keeps that promise under crashes,
+  missing hardware, network stalls, memory pressure, and deploy churn.
+  Changes should have bounded CPU, memory, I/O, subprocess, and network
+  behavior; degrade gracefully where possible and fail fast where a
+  missing dependency would crash a critical runtime path.
+- **Hardware-safe.** Audio output, DAC/mic topology, AEC assumptions,
+  firmware interactions, secrets, and deploy/rollback behavior must not
+  surprise the operator or risk loud output, bricked hardware, broken
+  connectivity, or leaked credentials.
+
+COAH is not a substitute for evidence. A COAH review should inspect the
+actual diff and relevant callers, run targeted tests or hardware checks
+when feasible, scan mapped docs for behavior drift, and call out any
+remaining validation gap explicitly.
+
+---
+
 ## Documentation paradigm
 
 How docs in this repo are structured, so additions land in the
@@ -762,7 +795,8 @@ openWakeWord models. As of 2026-05-16 the default is **"Jarvis"**
 which also still triggers on "Hey Jarvis"). The registry of available
 models is the single source of truth at
 [`jasper/wake_models.py`](jasper/wake_models.py); install.sh reads it
-to know which non-bundled `.onnx` files to fetch.
+to know which non-bundled `.onnx` files and openWakeWord
+package-resource assets to fetch and hash-check.
 
 **Two ways to switch.** Either works.
 
@@ -772,8 +806,8 @@ device. One row per registered model with pronunciation + description
 `/var/lib/jasper/wake_model.env` at mode 0644 and restarts
 `jasper-voice`. A sensitivity slider underneath the picker tunes
 `JASPER_WAKE_THRESHOLD` (0.05–0.95, default 0.50 — lower wakes more
-easily, higher requires a more confident match) and persists into
-the same env file on the same Save. Source:
+easily, higher requires a more confident match), persists into the
+same env file, and has its own Save control. Source:
 [`jasper/web/wake_setup.py`](jasper/web/wake_setup.py).
 
 **Laptop-side script:**
@@ -793,9 +827,10 @@ fetches them every deploy), and restarts `jasper-voice`.
 **Adding a new model**: edit `REGISTRY` in
 [`jasper/wake_models.py`](jasper/wake_models.py) with one
 `WakeModelEntry(...)`. Bundled openWakeWord names (e.g. `alexa`) need
-no `download_url` — `openwakeword.utils.download_models()` already
-pulls them on install. External `.onnx` files set `download_url` to a
-raw URL and `model` to an absolute path under
+no `download_url`, but their exact ONNX file must be listed in
+`OPENWAKEWORD_ASSETS` so install.sh can stage it with bounded retries,
+a byte cap, and SHA-256 verification. External `.onnx` files set
+`download_url` to a raw URL and `model` to an absolute path under
 `/var/lib/jasper/wake/`. Re-run `bash scripts/deploy-to-pi.sh` and
 the new model appears in `/wake/` and `switch-wake-word.sh`
 automatically.

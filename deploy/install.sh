@@ -1293,9 +1293,9 @@ EOF
     fi
 
     # openWakeWord package-resource ONNX files. JTS uses ONNX only
-    # (tflite-runtime has no Python 3.13 wheel), so we replace
-    # openwakeword.utils.download_models() with an explicit hash-
-    # checked manifest in jasper/wake_models.py.
+    # (tflite-runtime has no Python 3.13 wheel), so install.sh stages
+    # the exact package assets from the hash-checked manifest in
+    # jasper/wake_models.py.
     local openwakeword_models_dir
     openwakeword_models_dir="$("${INSTALL_DIR}/.venv/bin/python" - <<'PY'
 import importlib.util
@@ -1310,52 +1310,107 @@ PY
     install -d -m 0755 -o root -g root "${openwakeword_models_dir}"
     OPENWAKEWORD_MODELS_DIR="${openwakeword_models_dir}" \
     "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
-import hashlib
 import os
 import sys
-import urllib.request
 
-from jasper.wake_models import openwakeword_assets
+from jasper.model_downloads import ModelDownloadError, download_model_file, sha256_file
+from jasper.wake_models import (
+    fallback_openwakeword_assets,
+    openwakeword_asset_for_model,
+    openwakeword_assets,
+    required_openwakeword_assets,
+)
 
-def sha256_file(p: str) -> str:
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
+REQUIRED_TIMEOUT_SEC = 30.0
+REQUIRED_RETRIES = 3
+OPTIONAL_TIMEOUT_SEC = 20.0
+OPTIONAL_RETRIES = 1
+MAX_MODEL_BYTES = 64 * 1024 * 1024
 
-models_dir = os.environ["OPENWAKEWORD_MODELS_DIR"]
-failures = 0
-for asset in openwakeword_assets():
+
+def read_env_file(path: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+    except FileNotFoundError:
+        pass
+    return values
+
+
+def active_wake_model() -> str:
+    model = os.environ.get("JASPER_WAKE_MODEL", "").strip()
+    model = read_env_file("/etc/jasper/jasper.env").get(
+        "JASPER_WAKE_MODEL", model,
+    ).strip()
+    model = read_env_file("/var/lib/jasper/wake_model.env").get(
+        "JASPER_WAKE_MODEL", model,
+    ).strip()
+    return model or "hey_jarvis"
+
+
+def stage_asset(asset, *, required: bool) -> bool:
     dest = os.path.join(models_dir, asset.filename)
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         if sha256_file(dest) == asset.download_sha256:
             print(f"  openWakeWord asset present: {asset.filename}")
-            continue
+            return True
         print(f"  openWakeWord asset hash mismatch, re-downloading: {asset.filename}")
         os.unlink(dest)
     print(f"  downloading openWakeWord asset: {asset.filename}")
     print(f"    from: {asset.download_url}")
     print(f"    to:   {dest}")
-    tmp = dest + ".tmp"
     try:
-        urllib.request.urlretrieve(asset.download_url, tmp)
-        got = sha256_file(tmp)
-        if got != asset.download_sha256:
-            print(f"  hash mismatch after download: got {got}, "
-                  f"expected {asset.download_sha256}", file=sys.stderr)
-            os.unlink(tmp)
-            failures += 1
-            continue
-        os.replace(tmp, dest)
-        os.chmod(dest, 0o644)
-    except Exception as e:  # noqa: BLE001
-        print(f"  failed: {e}", file=sys.stderr)
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        failures += 1
+        download_model_file(
+            asset.download_url,
+            dest,
+            expected_sha256=asset.download_sha256,
+            label=f"openWakeWord asset {asset.filename}",
+            timeout_seconds=REQUIRED_TIMEOUT_SEC if required else OPTIONAL_TIMEOUT_SEC,
+            retries=REQUIRED_RETRIES if required else OPTIONAL_RETRIES,
+            max_bytes=MAX_MODEL_BYTES,
+        )
+        return True
+    except ModelDownloadError as e:
+        kind = "required" if required else "optional"
+        print(
+            f"  {kind} openWakeWord asset failed: {asset.filename}: {e}",
+            file=sys.stderr,
+        )
+        return False
 
-sys.exit(1 if failures else 0)
+models_dir = os.environ["OPENWAKEWORD_MODELS_DIR"]
+required_by_key = {}
+for asset in required_openwakeword_assets():
+    required_by_key[asset.key] = asset
+for asset in fallback_openwakeword_assets():
+    required_by_key[asset.key] = asset
+active_asset = openwakeword_asset_for_model(active_wake_model())
+if active_asset is not None:
+    required_by_key[active_asset.key] = active_asset
+
+required_failures = 0
+optional_failures = 0
+for asset in openwakeword_assets():
+    required = asset.key in required_by_key
+    if not stage_asset(asset, required=required):
+        if required:
+            required_failures += 1
+        else:
+            optional_failures += 1
+
+if optional_failures:
+    print(
+        f"  warning: {optional_failures} inactive openWakeWord stock asset(s) "
+        "failed to download; unavailable rows will be disabled in /wake/.",
+        file=sys.stderr,
+    )
+sys.exit(1 if required_failures else 0)
 PY
 
     # Curated non-bundled wake-word models. The registry lives in
@@ -1375,19 +1430,11 @@ PY
     # root:root mirrors the wake-models dir above.
     install -d -m 0755 -o root -g root /var/lib/jasper/wake-events
     if ! "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
-import hashlib
 import os
 import sys
-import urllib.request
 
+from jasper.model_downloads import ModelDownloadError, download_model_file, sha256_file
 from jasper.wake_models import downloadable
-
-def sha256_file(p: str) -> str:
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 failures = 0
 for entry in downloadable():
@@ -1401,23 +1448,18 @@ for entry in downloadable():
     print(f"  downloading wake model: {entry.key}")
     print(f"    from: {entry.download_url}")
     print(f"    to:   {dest}")
-    tmp = dest + ".tmp"
     try:
-        urllib.request.urlretrieve(entry.download_url, tmp)
-        if entry.download_sha256:
-            got = sha256_file(tmp)
-            if got != entry.download_sha256:
-                print(f"  hash mismatch after download: got {got}, "
-                      f"expected {entry.download_sha256}", file=sys.stderr)
-                os.unlink(tmp)
-                failures += 1
-                continue
-        os.replace(tmp, dest)
-        os.chmod(dest, 0o644)
-    except Exception as e:  # noqa: BLE001
+        download_model_file(
+            entry.download_url,
+            dest,
+            expected_sha256=entry.download_sha256,
+            label=f"wake model {entry.key}",
+            timeout_seconds=30.0,
+            retries=2,
+            max_bytes=64 * 1024 * 1024,
+        )
+    except ModelDownloadError as e:
         print(f"  failed: {e}", file=sys.stderr)
-        if os.path.exists(tmp):
-            os.unlink(tmp)
         failures += 1
 
 sys.exit(1 if failures else 0)
@@ -1438,19 +1480,11 @@ PY
     # ONNX = cryptic onnxruntime error at engine init) is caught here.
     install -d -m 0755 -o root -g root /var/lib/jasper/dtln
     if ! "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
-import hashlib
 import os
 import sys
-import urllib.request
 
+from jasper.model_downloads import ModelDownloadError, download_model_file, sha256_file
 from jasper.aec_engines.dtln_models import REGISTRY, DTLN_MODELS_DIR
-
-def sha256_file(p: str) -> str:
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 failures = 0
 for entry in REGISTRY:
@@ -1464,22 +1498,18 @@ for entry in REGISTRY:
             os.unlink(dest)
         print(f"  downloading dtln model: {path.name}")
         print(f"    from: {url}")
-        tmp = dest + ".tmp"
         try:
-            urllib.request.urlretrieve(url, tmp)
-            got = sha256_file(tmp)
-            if got != expected_sha:
-                print(f"  hash mismatch after download: got {got}, "
-                      f"expected {expected_sha}", file=sys.stderr)
-                os.unlink(tmp)
-                failures += 1
-                continue
-            os.replace(tmp, dest)
-            os.chmod(dest, 0o644)
-        except Exception as e:  # noqa: BLE001
+            download_model_file(
+                url,
+                dest,
+                expected_sha256=expected_sha,
+                label=f"DTLN model {path.name}",
+                timeout_seconds=30.0,
+                retries=2,
+                max_bytes=64 * 1024 * 1024,
+            )
+        except ModelDownloadError as e:
             print(f"  failed: {e}", file=sys.stderr)
-            if os.path.exists(tmp):
-                os.unlink(tmp)
             failures += 1
 
 sys.exit(1 if failures else 0)

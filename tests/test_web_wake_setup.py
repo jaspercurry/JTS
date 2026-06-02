@@ -17,18 +17,28 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 from jasper.web import _common, wake_setup
 
 
-# A bundled registry entry is always "available" on a dev box (no .onnx on
-# disk needed); a non-bundled one is not. Tests that need a saveable model
-# must use a bundled entry, mirroring what a fresh install ships.
 def _bundled_entry():
     for e in wake_setup.wake_models.REGISTRY:
         if e.bundled:
             return e
     raise AssertionError("registry has no bundled entry to test with")
+
+
+def _stage_bundled_assets(monkeypatch, tmp_path: Path) -> None:
+    def fake_path(entry):
+        asset = wake_setup.wake_models.openwakeword_asset_by_key(entry.key)
+        if asset is None:
+            return None
+        path = tmp_path / asset.filename
+        path.write_bytes(b"model")
+        return path
+
+    monkeypatch.setattr(wake_setup, "_bundled_asset_path", fake_path)
 
 
 # ----------------------------------------------------------------------
@@ -147,7 +157,8 @@ def test_apply_save_rejects_undownloaded_model():
     assert "deploy" in err
 
 
-def test_apply_save_preserves_existing_threshold():
+def test_apply_save_preserves_existing_threshold(monkeypatch, tmp_path):
+    _stage_bundled_assets(monkeypatch, tmp_path)
     entry = _bundled_entry()
     current = {"JASPER_WAKE_THRESHOLD": "0.42"}
     new, err = wake_setup._apply_save({"model": entry.key}, current)
@@ -325,6 +336,7 @@ def test_post_save_writes_env_and_restarts(tmp_path, monkeypatch):
     and kicks the voice daemon, then redirects with a flash."""
     _make_request.state_path = str(tmp_path / "wake_model.env")
     monkeypatch.setattr(wake_setup, "verify_csrf", lambda *a, **k: True)
+    _stage_bundled_assets(monkeypatch, tmp_path)
     restarted = {"n": 0}
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",

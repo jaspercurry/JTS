@@ -27,6 +27,24 @@ from jasper import wake_models
 from jasper.web import _common, wake_setup
 
 
+def _stage_bundled_asset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    present: bool = True,
+) -> None:
+    def fake_path(entry: wake_models.WakeModelEntry) -> Path | None:
+        asset = wake_models.openwakeword_asset_by_key(entry.key)
+        if asset is None:
+            return None
+        path = tmp_path / asset.filename
+        if present:
+            path.write_bytes(b"model")
+        return path
+
+    monkeypatch.setattr(wake_setup, "_bundled_asset_path", fake_path)
+
+
 # ---------- Registry sanity -----------------------------------------------
 
 
@@ -113,6 +131,15 @@ def test_openwakeword_assets_are_pinned():
         assert len(asset.download_sha256) == 64
 
 
+def test_openwakeword_fallback_asset_is_pinned():
+    """The compiled Config fallback is a load-bearing runtime model.
+    Keep it in the fail-fast install set even when the recommended
+    external Jarvis model download is unavailable on first install."""
+    fallback = list(wake_models.fallback_openwakeword_assets())
+    assert [asset.key for asset in fallback] == ["hey_jarvis"]
+    assert fallback[0].filename == "hey_jarvis_v0.1.onnx"
+
+
 def test_openwakeword_assets_cover_stock_model_names():
     """Operator-set stock names should continue to work even when they
     are not surfaced in the curated picker."""
@@ -132,6 +159,18 @@ def test_bundled_registry_entries_have_package_assets():
     for entry in wake_models.REGISTRY:
         if entry.bundled:
             assert entry.key in assets_by_key
+
+
+def test_openwakeword_asset_for_model_maps_stock_names():
+    assert wake_models.openwakeword_asset_for_model("hey_jarvis").filename == (
+        "hey_jarvis_v0.1.onnx"
+    )
+    assert wake_models.openwakeword_asset_for_model("timer").filename == (
+        "timer_v0.1.onnx"
+    )
+    assert wake_models.openwakeword_asset_for_model(
+        "/var/lib/jasper/wake/jarvis_v2.onnx",
+    ) is None
 
 
 def test_lookup_by_key():
@@ -191,19 +230,27 @@ def test_active_model_falls_back_to_env(monkeypatch):
 
 def test_active_model_falls_back_to_hey_jarvis(monkeypatch):
     """Empty wizard state + empty process env = the in-code default.
-    "hey_jarvis" is always available because it's openWakeWord-
-    bundled, so this fallback never produces a broken daemon."""
+    install.sh treats the matching openWakeWord package asset as
+    required, so this fallback does not depend on a best-effort
+    optional stock-model download."""
     monkeypatch.delenv("JASPER_WAKE_MODEL", raising=False)
     assert wake_setup._active_model({}) == "hey_jarvis"
 
 
-def test_is_available_for_bundled():
-    """Bundled openWakeWord names report available without importing
-    openwakeword on every page render. install.sh is responsible for
-    staging those package-resource ONNX files."""
+def test_is_available_for_present_bundled_asset(monkeypatch, tmp_path: Path):
+    """Bundled openWakeWord names are available only when install.sh
+    staged the matching package-resource ONNX file."""
+    _stage_bundled_asset(monkeypatch, tmp_path)
     entry = wake_models.by_key("hey_jarvis")
     assert entry is not None
     assert wake_setup._is_available(entry) is True
+
+
+def test_is_available_for_missing_bundled_asset(monkeypatch, tmp_path: Path):
+    _stage_bundled_asset(monkeypatch, tmp_path, present=False)
+    entry = wake_models.by_key("hey_jarvis")
+    assert entry is not None
+    assert wake_setup._is_available(entry) is False
 
 
 def test_is_available_for_missing_external_file(tmp_path: Path):
@@ -239,7 +286,11 @@ def test_is_available_for_present_external_file(tmp_path: Path):
 # ---------- Save logic -----------------------------------------------------
 
 
-def test_apply_save_writes_registered_bundled_model():
+def test_apply_save_writes_registered_bundled_model(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _stage_bundled_asset(monkeypatch, tmp_path)
     new, err = wake_setup._apply_save(
         {"model": "hey_jarvis"}, current={},
     )
@@ -311,7 +362,7 @@ def test_apply_save_rejects_unavailable_model(tmp_path: Path, monkeypatch):
 # in jasper.control.server._write_wake_threshold.
 
 
-def test_apply_save_preserves_threshold_in_state():
+def test_apply_save_preserves_threshold_in_state(monkeypatch, tmp_path: Path):
     """The sensitivity slider lives on /system/ but writes the same
     wake_model.env file. A save from /wake/ (model-only form) must
     preserve any JASPER_WAKE_THRESHOLD already in the state dict —
@@ -321,6 +372,7 @@ def test_apply_save_preserves_threshold_in_state():
         "JASPER_WAKE_MODEL": "hey_jarvis",
         "JASPER_WAKE_THRESHOLD": "0.35",
     }
+    _stage_bundled_asset(monkeypatch, tmp_path)
     new, err = wake_setup._apply_save({"model": "alexa"}, current=current)
     assert err is None
     assert new == {
@@ -512,6 +564,7 @@ def test_http_get_returns_html(running_server):
 def test_http_post_save_persists_state(running_server, monkeypatch):
     from ._web_test_helpers import post_with_csrf
     base, state_path = running_server
+    _stage_bundled_asset(monkeypatch, Path(state_path).parent)
     # Stub the systemctl shellout — we don't want a unit test to
     # actually try to restart jasper-voice.
     called = []
@@ -537,6 +590,7 @@ def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch
     zap the user's sensitivity setting."""
     from ._web_test_helpers import post_with_csrf
     base, state_path = running_server
+    _stage_bundled_asset(monkeypatch, Path(state_path).parent)
     called = []
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",

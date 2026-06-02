@@ -242,6 +242,25 @@ def test_install_dry_run_env_alias_and_plan_flag_match():
     assert by_flag.stdout == by_env.stdout
 
 
+def test_model_downloads_are_bounded_and_split_by_runtime_need():
+    """Model fetches should use the shared bounded helper. Required
+    openWakeWord runtime assets and the active stock fallback fail the
+    install; inactive stock rows are allowed to stay unavailable."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+
+    assert "urllib.request.urlretrieve" not in text
+    assert "download_model_file(" in text
+    assert "timeout_seconds=" in text
+    assert "retries=" in text
+    assert "max_bytes" in text
+    assert "required_openwakeword_assets" in text
+    assert "fallback_openwakeword_assets" in text
+    assert "openwakeword_asset_for_model(active_wake_model())" in text
+    assert "required_failures" in text
+    assert "optional_failures" in text
+    assert "unavailable rows will be disabled in /wake/" in text
+
+
 def test_base_source_builds_use_hash_checked_archives():
     """Base Pi installs should consume pinned archives, not require git
     just to fetch source-build inputs."""

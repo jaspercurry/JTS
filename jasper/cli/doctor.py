@@ -546,9 +546,16 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                 models_dir.glob(f"{cfg.wake_model}*.tflite")
             )
         if not candidates:
+            if wake_model.is_absolute():
+                return CheckResult(
+                    "openWakeWord models", "fail",
+                    f"active wake model path missing: {wake_model}; "
+                    "restore the custom model or choose a registered model in /wake/",
+                )
             return CheckResult(
-                "openWakeWord models", "warn",
-                f"no model file matching '{cfg.wake_model}' in {models_dir}",
+                "openWakeWord models", "fail",
+                f"active wake model '{cfg.wake_model}' has no file in "
+                f"{models_dir}; re-run deploy/install.sh",
             )
         active_candidate = candidates[0]
         expected_model_sha: str | None = None
@@ -556,9 +563,14 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
         if active_entry is not None and active_entry.download_sha256:
             expected_model_sha = active_entry.download_sha256
         elif not wake_model.is_absolute():
+            active_key = (
+                active_entry.key
+                if active_entry is not None and active_entry.bundled
+                else cfg.wake_model
+            )
             for asset in openwakeword_assets():
                 if (
-                    getattr(asset, "key", None) == cfg.wake_model
+                    getattr(asset, "key", None) == active_key
                     and active_candidate.name == asset.filename
                 ):
                     expected_model_sha = asset.download_sha256

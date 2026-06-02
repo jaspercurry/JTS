@@ -114,8 +114,8 @@ The benefit is high repeatability and easier security review.
 checked by `scripts/check-provenance.py`, closing the Rust fan-in crate
 gap without changing Pi runtime behavior. openWakeWord stock ONNX
 package-resource assets are now explicit, hash-checked provenance
-artifacts instead of hidden downloads behind
-`openwakeword.utils.download_models()`.
+artifacts staged by install.sh with bounded retries and byte caps,
+instead of hidden package-helper downloads.
 
 **Deferred deliberately.** Python lock adoption is still valuable, but
 it should wait until active `main` dependency churn calms down enough to

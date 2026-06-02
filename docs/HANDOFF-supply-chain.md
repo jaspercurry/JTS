@@ -57,6 +57,11 @@ fetch-bearing surfaces still have provenance entries:
 - `jasper/wake_models.py`
 - `jasper/aec_engines/dtln_models.py`
 
+Model downloads that install.sh performs through JTS Python use
+`jasper.model_downloads.download_model_file`: each fetch has an
+explicit socket timeout, retry count, maximum byte count, temp-file
+staging, and SHA-256 verification before replacement.
+
 ## Pinned And Verified Today
 
 `deploy/install.sh` verifies these downloaded artifacts with
@@ -68,20 +73,24 @@ fetch-bearing surfaces still have provenance entries:
   `armv7l`.
 - Curated external wake model `jarvis_v2.onnx`.
 - openWakeWord ONNX package-resource assets from the upstream `v0.5.1`
-  release that JTS needs at runtime: `embedding_model.onnx`,
-  `melspectrogram.onnx`, `silero_vad.onnx`, and all six stock wake
-  models (`alexa`, `hey_jarvis`, `hey_mycroft`, `hey_rhasspy`,
-  `timer`, `weather`).
+  release. The shared runtime assets are required fail-fast:
+  `embedding_model.onnx`, `melspectrogram.onnx`, and
+  `silero_vad.onnx`. The compiled fallback stock model
+  `hey_jarvis_v0.1.onnx`, plus any active stock wake model, is also
+  required. Inactive stock wake models (`alexa`, `hey_mycroft`,
+  `hey_rhasspy`, `timer`, `weather`, etc.) are best-effort; if their
+  bounded download fails, install continues and `/wake/` disables those
+  rows until the next successful deploy/install.
 - DTLN-aec ONNX model stages listed in `jasper/aec_engines/dtln_models.py`.
 
-`jasper-doctor` re-checks hashes at runtime for the opaque model files
-that JTS stages directly and later loads through ONNX/openWakeWord:
-required openWakeWord package assets, the active wake model when the
-registry has a SHA-256 for it, and the configured DTLN-aec ONNX stages
-when `JASPER_AEC_DTLN_ENABLED=1`. It intentionally does **not** hash every
-installed package or source-built binary; those surfaces are verified at
-install time and doctor checks their behavior/version/service state
-instead.
+`jasper-doctor` re-checks presence and hashes at runtime for the opaque
+model files that JTS stages directly and later loads through
+ONNX/openWakeWord: required openWakeWord package assets, the active wake
+model (hash-checked when the registry has a SHA-256 for it), and the
+configured DTLN-aec ONNX stages when `JASPER_AEC_DTLN_ENABLED=1`. It
+intentionally does **not** hash every installed package or source-built
+binary; those surfaces are verified at install time and doctor checks
+their behavior/version/service state instead.
 
 `deploy/install.sh` also builds these source inputs from commit archive
 URLs and verifies each archive with `sha256sum -c` before unpacking:
@@ -187,6 +196,9 @@ The openWakeWord package-helper gap is closed without changing the
 operator-facing wake model strings. The `/wake/` picker can still save
 stock names like `hey_jarvis`, while install now stages the exact ONNX
 package-resource files those names resolve to and verifies their hashes.
+The active/fallback stock model is treated as runtime-critical; inactive
+stock options are optional so a transient upstream download failure does
+not block unrelated deploys.
 
 Python install determinism remains valuable, but it is intentionally not
 the next slice while `main` is changing quickly. When it comes back, it
