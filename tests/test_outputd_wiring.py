@@ -102,6 +102,11 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "99-jasper-audio-hardware-reconcile.rules" in install_sh
     assert "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile --reason systemd" in unit
     assert "Before=jasper-outputd.service" in unit
+    before_line = next(
+        line for line in unit.splitlines() if line.startswith("Before=")
+    )
+    assert "jasper-dac-init.service" not in before_line
+    assert "jasper-headphone-monitor.service" not in before_line
     assert 'ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*"' in rule
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
