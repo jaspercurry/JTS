@@ -74,6 +74,15 @@ fetch-bearing surfaces still have provenance entries:
   `timer`, `weather`).
 - DTLN-aec ONNX model stages listed in `jasper/aec_engines/dtln_models.py`.
 
+`jasper-doctor` re-checks hashes at runtime for the opaque model files
+that JTS stages directly and later loads through ONNX/openWakeWord:
+required openWakeWord package assets, the active wake model when the
+registry has a SHA-256 for it, and the configured DTLN-aec ONNX stages
+when `JASPER_AEC_DTLN_ENABLED=1`. It intentionally does **not** hash every
+installed package or source-built binary; those surfaces are verified at
+install time and doctor checks their behavior/version/service state
+instead.
+
 `deploy/install.sh` also builds these source inputs from commit archive
 URLs and verifies each archive with `sha256sum -c` before unpacking:
 

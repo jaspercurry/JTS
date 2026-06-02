@@ -1382,10 +1382,13 @@ def _aec_loop(  # noqa: PLR0915
     out_batch_xvf_raw0_dtln = bytearray()
     if xvf_raw0_dtln_enabled:
         try:
+            from jasper.aec_engines import dtln_models
             from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
             xvf_raw0_dtln_size = int(os.environ.get(
                 "JASPER_AEC_XVF_RAW0_DTLN_SIZE",
-                os.environ.get("JASPER_AEC_DTLN_SIZE", "256"),
+                os.environ.get(
+                    "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
+                ),
             ))
             xvf_raw0_dtln_engine = DTLNEngine(
                 model_dir=default_model_dir(), model_size=xvf_raw0_dtln_size,
@@ -1455,10 +1458,13 @@ def _aec_loop(  # noqa: PLR0915
         )
         if _env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
             try:
+                from jasper.aec_engines import dtln_models
                 from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
                 usb_dtln_size = int(os.environ.get(
                     "JASPER_AEC_USB_DTLN_SIZE",
-                    os.environ.get("JASPER_AEC_DTLN_SIZE", "256"),
+                    os.environ.get(
+                        "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
+                    ),
                 ))
                 usb_dtln_engine = DTLNEngine(
                     model_dir=default_model_dir(), model_size=usb_dtln_size,
@@ -1574,8 +1580,11 @@ def _aec_loop(  # noqa: PLR0915
     out_batch_dtln = bytearray()
     if (not production_chip_aec_enabled) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0"):
         try:
+            from jasper.aec_engines import dtln_models
             from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
-            dtln_size = int(os.environ.get("JASPER_AEC_DTLN_SIZE", "256"))
+            dtln_size = int(os.environ.get(
+                "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE),
+            ))
             dtln_engine = DTLNEngine(
                 model_dir=default_model_dir(), model_size=dtln_size,
             )

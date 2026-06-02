@@ -504,7 +504,11 @@ def check_tts_open(cfg: Config) -> CheckResult:
 def check_openwakeword_model(cfg: Config) -> CheckResult:
     try:
         import openwakeword
-        from ..wake_models import required_openwakeword_assets
+        from ..wake_models import (
+            by_model,
+            openwakeword_assets,
+            required_openwakeword_assets,
+        )
         pkg_dir = Path(openwakeword.__file__).parent
         models_dir = pkg_dir / "resources" / "models"
         if not models_dir.exists():
@@ -546,9 +550,31 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                 "openWakeWord models", "warn",
                 f"no model file matching '{cfg.wake_model}' in {models_dir}",
             )
+        active_candidate = candidates[0]
+        expected_model_sha: str | None = None
+        active_entry = by_model(cfg.wake_model)
+        if active_entry is not None and active_entry.download_sha256:
+            expected_model_sha = active_entry.download_sha256
+        elif not wake_model.is_absolute():
+            for asset in openwakeword_assets():
+                if (
+                    getattr(asset, "key", None) == cfg.wake_model
+                    and active_candidate.name == asset.filename
+                ):
+                    expected_model_sha = asset.download_sha256
+                    break
+        if (
+            expected_model_sha is not None
+            and _sha256_file(active_candidate) != expected_model_sha
+        ):
+            return CheckResult(
+                "openWakeWord models", "fail",
+                "active wake model hash mismatch: "
+                f"{active_candidate.name}; re-run deploy/install.sh",
+            )
         return CheckResult(
             "openWakeWord models", "ok",
-            f"{cfg.wake_model} → {candidates[0].name}",
+            f"{cfg.wake_model} → {active_candidate.name}",
         )
     except Exception as e:  # noqa: BLE001
         return CheckResult("openWakeWord models", "fail", str(e))
@@ -3034,6 +3060,10 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
             "skipped — JASPER_AEC_DTLN_ENABLED not set (dual-stream mode)",
         )
 
+    model_result = _check_dtln_model_assets()
+    if model_result is not None:
+        return model_result
+
     # Bridge must be running for the engine to mean anything.
     is_active = _run(
         ["systemctl", "is-active", "jasper-aec-bridge.service"]
@@ -3060,6 +3090,58 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
         )
 
     return _assess_dtln_engine(proc.stdout)
+
+
+def _check_dtln_model_assets() -> CheckResult | None:
+    from jasper.aec_engines import dtln_models
+
+    raw_size = os.environ.get(
+        "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
+    ).strip()
+    try:
+        model_size = int(raw_size)
+    except ValueError:
+        return CheckResult(
+            "DTLN-aec engine", "fail",
+            "JASPER_AEC_DTLN_ENABLED=1 but JASPER_AEC_DTLN_SIZE is not "
+            f"an integer: {raw_size!r}",
+        )
+    model_entry = dtln_models.by_size(model_size)
+    if model_entry is None:
+        available = ", ".join(str(entry.size) for entry in dtln_models.REGISTRY)
+        if not available:
+            available = "none"
+        return CheckResult(
+            "DTLN-aec engine", "fail",
+            "JASPER_AEC_DTLN_ENABLED=1 but JASPER_AEC_DTLN_SIZE="
+            f"{model_size} is not registered in jasper/aec_engines/"
+            f"dtln_models.py (available: {available})",
+        )
+    model_dir = Path(
+        os.environ.get("JASPER_DTLN_MODEL_DIR", dtln_models.DTLN_MODELS_DIR)
+    )
+    missing: list[str] = []
+    mismatched: list[str] = []
+    for path, _, expected_sha in model_entry.files(model_dir):
+        if not path.is_file() or path.stat().st_size <= 0:
+            missing.append(path.name)
+            continue
+        if _sha256_file(path) != expected_sha:
+            mismatched.append(path.name)
+    if missing:
+        return CheckResult(
+            "DTLN-aec engine", "fail",
+            "JASPER_AEC_DTLN_ENABLED=1 but model files are missing: "
+            f"{', '.join(sorted(missing))} in {model_dir}; re-run deploy/install.sh",
+        )
+    if mismatched:
+        return CheckResult(
+            "DTLN-aec engine", "fail",
+            "JASPER_AEC_DTLN_ENABLED=1 but model file hashes do not match "
+            "the registry: "
+            f"{', '.join(sorted(mismatched))} in {model_dir}; re-run deploy/install.sh",
+        )
+    return None
 
 
 # Threshold for `probe_aec_ref_path`. A 5 s, -26 dBFS sine through dsnoop +

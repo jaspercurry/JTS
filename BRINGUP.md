@@ -698,6 +698,12 @@ this runbook's smoke tests. The doctor reads
 provider's key is checked regardless of which env file you put it
 in.
 
+The doctor also re-checks hashes for JTS-staged opaque runtime model
+files that otherwise fail later with cryptic ONNX/runtime errors:
+required openWakeWord package assets, the active wake model when it is
+registry-pinned, and the configured DTLN-aec ONNX stages when DTLN is
+enabled.
+
 `install.sh` runs the doctor at the end of every install, so
 nothing should be surprising here — this phase is just a sanity
 check that everything's still healthy after the manual steps.

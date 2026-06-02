@@ -101,6 +101,7 @@ def _install_fake_openwakeword_package(
     tmp_path: Path,
     files: dict[str, bytes],
     required_assets: tuple[SimpleNamespace, ...],
+    package_assets: tuple[SimpleNamespace, ...] | None = None,
 ) -> None:
     pkg = tmp_path / "openwakeword"
     models = pkg / "resources" / "models"
@@ -118,6 +119,12 @@ def _install_fake_openwakeword_package(
         "required_openwakeword_assets",
         lambda: required_assets,
     )
+    if package_assets is not None:
+        monkeypatch.setattr(
+            wake_models,
+            "openwakeword_assets",
+            lambda: package_assets,
+        )
 
 
 def _fake_asset(filename: str, payload: bytes = b"model") -> SimpleNamespace:
@@ -135,6 +142,16 @@ def _required_fake_openwakeword_assets() -> tuple[SimpleNamespace, ...]:
     )
 
 
+def _fake_openwakeword_assets() -> tuple[SimpleNamespace, ...]:
+    return _required_fake_openwakeword_assets() + (
+        SimpleNamespace(
+            key="hey_jarvis",
+            filename="hey_jarvis_v0.1.onnx",
+            download_sha256=hashlib.sha256(b"model").hexdigest(),
+        ),
+    )
+
+
 def test_openwakeword_doctor_fails_when_silero_asset_missing(monkeypatch, tmp_path: Path):
     required_assets = _required_fake_openwakeword_assets()
     _install_fake_openwakeword_package(
@@ -146,6 +163,7 @@ def test_openwakeword_doctor_fails_when_silero_asset_missing(monkeypatch, tmp_pa
             "hey_jarvis_v0.1.onnx": b"model",
         },
         required_assets,
+        _fake_openwakeword_assets(),
     )
 
     r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
@@ -169,6 +187,7 @@ def test_openwakeword_doctor_allows_missing_inactive_bundled_model(
             "hey_jarvis_v0.1.onnx": b"model",
         },
         required_assets,
+        _fake_openwakeword_assets(),
     )
 
     r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
@@ -192,6 +211,7 @@ def test_openwakeword_doctor_fails_when_required_asset_hash_mismatches(
             "hey_jarvis_v0.1.onnx": b"model",
         },
         required_assets,
+        _fake_openwakeword_assets(),
     )
 
     r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
@@ -200,6 +220,64 @@ def test_openwakeword_doctor_fails_when_required_asset_hash_mismatches(
     assert "hash mismatch" in r.detail
     assert "silero_vad.onnx" in r.detail
     assert "deploy/install.sh" in r.detail
+
+
+def test_openwakeword_doctor_fails_when_active_external_model_hash_mismatches(
+    monkeypatch,
+    tmp_path: Path,
+):
+    required_assets = _required_fake_openwakeword_assets()
+    active_model = tmp_path / "jarvis_v2.onnx"
+    active_model.write_bytes(b"wrong-model")
+    monkeypatch.setattr(
+        wake_models,
+        "by_model",
+        lambda model: SimpleNamespace(
+            download_sha256=hashlib.sha256(b"model").hexdigest(),
+        ) if model == str(active_model) else None,
+    )
+    _install_fake_openwakeword_package(
+        monkeypatch,
+        tmp_path,
+        {
+            "embedding_model.onnx": b"model",
+            "melspectrogram.onnx": b"model",
+            "silero_vad.onnx": b"model",
+        },
+        required_assets,
+        _fake_openwakeword_assets(),
+    )
+
+    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model=str(active_model)))
+
+    assert r.status == "fail"
+    assert "active wake model hash mismatch" in r.detail
+    assert "jarvis_v2.onnx" in r.detail
+
+
+def test_openwakeword_doctor_fails_when_active_bundled_model_hash_mismatches(
+    monkeypatch,
+    tmp_path: Path,
+):
+    required_assets = _required_fake_openwakeword_assets()
+    _install_fake_openwakeword_package(
+        monkeypatch,
+        tmp_path,
+        {
+            "embedding_model.onnx": b"model",
+            "melspectrogram.onnx": b"model",
+            "silero_vad.onnx": b"model",
+            "hey_jarvis_v0.1.onnx": b"wrong-model",
+        },
+        required_assets,
+        _fake_openwakeword_assets(),
+    )
+
+    r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
+
+    assert r.status == "fail"
+    assert "active wake model hash mismatch" in r.detail
+    assert "hey_jarvis_v0.1.onnx" in r.detail
 
 
 # -------------------------------------------------- provider-aware key check
@@ -774,6 +852,120 @@ def test_check_dtln_skips_when_env_disabled(monkeypatch):
     r = doctor.check_aec_bridge_dtln_engine()
     assert r.status == "ok"
     assert "skipped" in r.detail.lower()
+
+
+def _install_fake_dtln_registry(monkeypatch, tmp_path: Path):
+    from jasper.aec_engines import dtln_models
+
+    expected = hashlib.sha256(b"model").hexdigest()
+
+    class _FakeEntry:
+        def __init__(self, size: int):
+            self.size = size
+
+        def files(self, base_dir=tmp_path):
+            base = Path(base_dir)
+            return [
+                (
+                    base / f"dtln_aec_{self.size}_1.onnx",
+                    "https://example.invalid/1",
+                    expected,
+                ),
+                (
+                    base / f"dtln_aec_{self.size}_2.onnx",
+                    "https://example.invalid/2",
+                    expected,
+                ),
+            ]
+
+    entries = {
+        128: _FakeEntry(128),
+        256: _FakeEntry(256),
+    }
+    monkeypatch.setattr(dtln_models, "DEFAULT_SIZE", 256)
+    monkeypatch.setattr(dtln_models, "REGISTRY", tuple(entries.values()))
+    monkeypatch.setattr(dtln_models, "by_size", lambda size: entries.get(size))
+    monkeypatch.setenv("JASPER_DTLN_MODEL_DIR", str(tmp_path))
+
+
+def test_check_dtln_fails_when_enabled_model_file_missing(monkeypatch, tmp_path: Path):
+    _install_fake_dtln_registry(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    (tmp_path / "dtln_aec_256_1.onnx").write_bytes(b"model")
+
+    r = doctor.check_aec_bridge_dtln_engine()
+
+    assert r.status == "fail"
+    assert "model files are missing" in r.detail
+    assert "dtln_aec_256_2.onnx" in r.detail
+    assert "deploy/install.sh" in r.detail
+
+
+def test_check_dtln_fails_when_enabled_model_hash_mismatches(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _install_fake_dtln_registry(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    (tmp_path / "dtln_aec_256_1.onnx").write_bytes(b"model")
+    (tmp_path / "dtln_aec_256_2.onnx").write_bytes(b"wrong-model")
+
+    r = doctor.check_aec_bridge_dtln_engine()
+
+    assert r.status == "fail"
+    assert "hashes do not match" in r.detail
+    assert "dtln_aec_256_2.onnx" in r.detail
+    assert "deploy/install.sh" in r.detail
+
+
+def test_check_dtln_uses_configured_model_size(monkeypatch, tmp_path: Path):
+    _install_fake_dtln_registry(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    monkeypatch.setenv("JASPER_AEC_DTLN_SIZE", "128")
+    monkeypatch.setattr(
+        doctor,
+        "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="inactive"),
+    )
+    (tmp_path / "dtln_aec_128_1.onnx").write_bytes(b"model")
+    (tmp_path / "dtln_aec_128_2.onnx").write_bytes(b"model")
+
+    r = doctor.check_aec_bridge_dtln_engine()
+
+    assert r.status == "ok"
+    assert "bridge not running" in r.detail
+
+
+def test_check_dtln_fails_when_configured_model_size_is_invalid(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _install_fake_dtln_registry(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    monkeypatch.setenv("JASPER_AEC_DTLN_SIZE", "large")
+
+    r = doctor.check_aec_bridge_dtln_engine()
+
+    assert r.status == "fail"
+    assert "JASPER_AEC_DTLN_SIZE" in r.detail
+    assert "not an integer" in r.detail
+
+
+def test_check_dtln_fails_when_configured_model_size_is_not_registered(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _install_fake_dtln_registry(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    monkeypatch.setenv("JASPER_AEC_DTLN_SIZE", "512")
+
+    r = doctor.check_aec_bridge_dtln_engine()
+
+    assert r.status == "fail"
+    assert "JASPER_AEC_DTLN_SIZE=512" in r.detail
+    assert "not registered" in r.detail
+    assert "128" in r.detail
+    assert "256" in r.detail
 
 
 # ---------------------------------------------------- peering doctor checks
