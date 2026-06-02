@@ -112,7 +112,8 @@ def test_shairport_template_keeps_renderer_placeholder():
 
 def test_install_writes_fanin_asound_conf_and_retires_switcher():
     install = (REPO / "deploy" / "install.sh").read_text()
-    assert '> "${ENV_DIR}/asoundrc.jasper.template"' in install
+    assert "jasper_asound_render_template" in install
+    assert '"${ENV_DIR}/asoundrc.jasper.template"' in install
     assert "/usr/local/sbin/jasper-render-asound-conf" in install
     assert "ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf" in install
     assert "chmod 0644 /var/lib/jasper-asound/asound.conf" in install

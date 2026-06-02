@@ -402,8 +402,16 @@ the Apple-specific units. The reconciler runs at install/boot and from
 udev `controlC*` add/remove/change events, so USB DAC changes converge
 without a deploy-only scan. The helper scripts remain runtime-safe for
 manual/operator starts. `outputd_dac` still points at the detected
-final-output card. Software never touches downstream amp gain. The amp
-gain is a physical knob set at install time.
+final-output card. For explicit DAC8x lab wiring, operators may set
+`JASPER_OUTPUT_DAC_ROUTE=mono:N` or `stereo:L,R` in
+`/etc/jasper/jasper.env`; the route is applied only for recognized
+DAC8x hardware and uses 1-indexed physical output numbers. It takes
+effect when deploy, boot/udev reconcile, or a manual
+`jasper-audio-hardware-reconcile` run re-renders `/etc/asound.conf`.
+This is a small final-output alias route for single-amp/commissioning
+cases, not an active-speaker crossover map. Software never touches
+downstream amp gain. The amp gain is a physical knob set at install
+time.
 
 ## AEC bridge implications
 
@@ -443,4 +451,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-01 (assistant loudness matching moved to outputd; provider-profile seed/learn path, STATUS telemetry, and outputd topology rechecked)
+Last verified: 2026-06-02 (DAC8x output route knob added; assistant loudness matching, STATUS telemetry, and outputd topology rechecked)

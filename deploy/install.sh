@@ -17,13 +17,15 @@
 
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 INSTALL_DIR="/opt/jasper"
 CAMILLA_DIR="/opt/camilladsp"
 CAMILLA_CONF="/etc/camilladsp"
 ENV_DIR="/etc/jasper"
 STATE_DIR="/var/lib/jasper"
 SYSTEMD_DIR="/etc/systemd/system"
+
+source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 
 CAMILLA_VERSION="v4.1.3"
 CAMILLA_TARBALL="camilladsp-linux-aarch64.tar.gz"
@@ -677,8 +679,11 @@ select_audio_hardware_roles() {
     fi
     echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"
     echo "  Output DAC id: ${OUTPUT_DAC_ID}"
+    if [[ -n "${OUTPUT_DAC_ROUTE:-}" ]]; then
+        echo "  Output DAC route: $(jasper_asound_log_token "${OUTPUT_DAC_ROUTE}")"
+    fi
     export DONGLE_CARD APPLE_DONGLE_PRESENT APPLE_DONGLE_SERVICE_CARD
-    export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
+    export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED OUTPUT_DAC_ROUTE
 }
 
 install_alsa() {
@@ -733,10 +738,9 @@ install_alsa() {
         echo "  Backed up pre-existing /etc/asound.conf (.pre-jasper.*); see PR #223."
     fi
     install -d -m 0755 "${ENV_DIR}" "${STATE_DIR}"
-    sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
-        -e "s/__OUTPUT_DAC_CARD__/${OUTPUT_DAC_CARD}/g" \
+    jasper_asound_render_template \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
-        > "${ENV_DIR}/asoundrc.jasper.template"
+        "${ENV_DIR}/asoundrc.jasper.template"
     chmod 0644 "${ENV_DIR}/asoundrc.jasper.template"
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-render-asound-conf" \
@@ -2403,6 +2407,10 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
+    install -d -m 0755 /usr/local/lib/jasper
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
+        /usr/local/lib/jasper/jasper-asound-render.sh
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
         /usr/local/sbin/jasper-audio-hardware-reconcile

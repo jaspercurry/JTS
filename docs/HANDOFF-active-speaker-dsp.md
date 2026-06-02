@@ -145,6 +145,16 @@ is physically placed before the 2-to-4 or 2-to-6 split on the stereo
 pair. The profile schema must represent both logical ownership and
 physical filter placement.
 
+Do not confuse active-speaker `channel_map` ownership with the
+final-output DAC8x route knob in
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
+`JASPER_OUTPUT_DAC_ROUTE=mono:N` / `stereo:L,R` is a pre-active,
+1-indexed, final-output alias for lab/single-amp commissioning wiring.
+It keeps ordinary stereo output audible on explicit DAC8x physical
+channels. A loaded active-speaker baseline instead owns a zero-indexed
+CamillaDSP channel map, per-driver filters, limiters, startup mutes,
+and the safety gates that must protect direct-connected drivers.
+
 ## Hard Safety Rules
 
 These are not UX polish; they are anti-smoke rules.

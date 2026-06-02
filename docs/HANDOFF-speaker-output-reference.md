@@ -162,9 +162,9 @@ What exists:
   path. The sinc table is precomputed at startup; steady state should
   be multiply/add work only, but Pi 5 CPU and xrun behavior still need
   hardware soak before enabling it outside the lab.
-- DAC output: `outputd_dac`, a direct hardware alias for the selected
-  final-output card. Public/default installs use the Apple USB-C
-  dongle; DAC8x lab installs use the enumerated
+- DAC output: `outputd_dac`, normally a direct hardware alias for the
+  selected final-output card. Public/default installs use the Apple
+  USB-C dongle; DAC8x lab installs use the enumerated
   `snd_rpi_hifiberry_dac8x` card. `jasper-audio-hardware-reconcile`
   runs at install/boot and from udev `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,
@@ -172,12 +172,27 @@ What exists:
   is detected) plus `JASPER_AUDIO_DAC_CARD` into
   `/etc/jasper/jasper.env` so validation artifacts and status surfaces
   have stable hardware identity instead of only the generic
-  `outputd_dac` PCM name. A recognized role renders the ALSA template
-  and restarts `jasper-outputd` so hotplug arrival recovers from a
-  previously parked state. An unknown/no-output role does **not** render
-  `outputd_dac` to a guessed card; it stops `jasper-voice` and
-  `jasper-outputd` so stale direct-DAC ownership cannot keep running
-  against removed hardware or burn the outputd reboot escalation budget.
+  `outputd_dac` PCM name. For recognized DAC8x hardware only,
+  `JASPER_OUTPUT_DAC_ROUTE=mono:N` renders a stereo-to-mono sum onto
+  one 1-indexed physical DAC8x output, and
+  `JASPER_OUTPUT_DAC_ROUTE=stereo:L,R` maps stereo left/right to two
+  distinct 1-indexed physical outputs. Unset, `direct`, or
+  `passthrough` keeps the direct alias. Invalid routes, duplicate
+  stereo channels, or routes on non-DAC8x hardware are ignored with
+  structured `event=audio_hardware_reconcile.route_ignored` logs. This
+  route knob is for lab/single-amp/commissioning wiring before active
+  speaker profiles are loaded; active crossover channel ownership lives
+  in the active-speaker `channel_map`, not in this ALSA alias. The
+  configured route takes effect when deploy, boot/udev reconcile, or a
+  manual `jasper-audio-hardware-reconcile` run re-renders the managed
+  ALSA template; hardware validation artifacts report the observed
+  route in `dac_identity`. A recognized role renders the ALSA template
+  and restarts
+  `jasper-outputd` so hotplug arrival recovers from a previously parked
+  state. An unknown/no-output role does **not** render `outputd_dac` to
+  a guessed card; it stops `jasper-voice` and `jasper-outputd` so stale
+  direct-DAC ownership cannot keep running against removed hardware or
+  burn the outputd reboot escalation budget.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
   dongle `Headphone` control. The audio-hardware reconciler enables
@@ -724,5 +739,11 @@ datum: how much assistant audio was actually heard.
   manual/operator starts. Added the outputd-only DAC8x validation profile
   `hifiberry_dac8x_outputd_stability` for content-pipeline soaks that
   should not fail just because chip-AEC/voice is parked.
+- 2026-06-02: Added the explicit DAC8x-only
+  `JASPER_OUTPUT_DAC_ROUTE` render path (`mono:N`, `stereo:L,R`) so
+  lab wiring like "single amp on DAC8x physical output 5" survives
+  deploy/reconcile without a hand-edited `/etc/asound.conf`. The
+  default remains direct; non-DAC8x or invalid routes are ignored and
+  logged.
 
 Last verified: 2026-06-02

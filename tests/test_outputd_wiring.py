@@ -35,12 +35,11 @@ def test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop():
     assert "type dsnoop" not in capture
 
 
-def test_asoundrc_declares_outputd_direct_dac_alias():
+def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
-    dac = _pcm_block(rc, "outputd_dac")
-    assert "type hw" in dac
-    assert "card __OUTPUT_DAC_CARD__" in dac
-    assert "device 0" in dac
+    assert "__OUTPUTD_DAC_PCM_BLOCK__" in rc
+    assert "ctl.outputd_dac" in rc
+    assert "card __OUTPUT_DAC_CARD__" in rc
 
 
 def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
@@ -55,13 +54,29 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     assert "hifiberry_dac8x" in reconcile
     assert 'echo "  Output DAC: CARD=${OUTPUT_DAC_CARD}"' in install_sh
     assert 'echo "  Output DAC id: ${OUTPUT_DAC_ID}"' in install_sh
-    assert 's/__OUTPUT_DAC_CARD__/${OUTPUT_DAC_CARD}/g' in install_sh
+    assert "jasper_asound_render_template" in install_sh
     assert "asoundrc.jasper.source" in install_sh
     assert "JASPER_AUDIO_DAC_ID" in install_sh
     assert "JASPER_AUDIO_DAC_CARD" in reconcile
+    assert "JASPER_OUTPUT_DAC_ROUTE" in reconcile
+    assert "OUTPUT_DAC_ROUTE" in install_sh
     assert "APPLE_DONGLE_PRESENT=1" in reconcile
     assert "APPLE_DONGLE_PRESENT=0" in reconcile
     assert 'APPLE_DONGLE_SERVICE_CARD="auto"' in reconcile
+
+
+def test_output_dac_route_policy_is_narrow_and_dac8x_only():
+    route_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
+    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    assert 'OUTPUT_DAC_ID" != "hifiberry_dac8x"' in route_lib
+    assert "mono:([1-8])" in route_lib
+    assert "stereo:([1-8]),([1-8])" in route_lib
+    assert "channels 8" in route_lib
+    assert "0.${mono_idx} 0.5" in route_lib
+    assert "1.${mono_idx} 0.5" in route_lib
+    assert "duplicate_stereo_channel" in route_lib
+    assert "jasper_asound_route_ignored()" in reconcile
+    assert "event=audio_hardware_reconcile.${name}" in reconcile
 
 
 def test_apple_dongle_mixer_services_are_enabled_only_for_apple_output_role():
@@ -99,6 +114,8 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
     assert "deploy/bin/jasper-audio-hardware-reconcile" in install_sh
+    assert "deploy/lib/jasper-asound-render.sh" in install_sh
+    assert "/usr/local/lib/jasper/jasper-asound-render.sh" in install_sh
     assert "99-jasper-audio-hardware-reconcile.rules" in install_sh
     assert "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile --reason systemd" in unit
     assert "Before=jasper-outputd.service" in unit

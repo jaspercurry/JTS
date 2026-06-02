@@ -720,10 +720,16 @@ def _dac_details(
         or os.environ.get("JASPER_AUDIO_DAC_ID")
         or dac_pcm
     )
+    dac_route = (
+        system_env.get("JASPER_OUTPUT_DAC_ROUTE")
+        or os.environ.get("JASPER_OUTPUT_DAC_ROUTE")
+        or ""
+    )
     return {
         "id": dac_id,
         "pcm": dac_pcm,
         "card": dac_card,
+        "route": dac_route,
         "backend": str(
             (outputd_status or {}).get("backend")
             or system_env.get("JASPER_OUTPUTD_BACKEND")
@@ -792,6 +798,7 @@ def _dac_identity_check(
         "id": dac.get("id"),
         "card": dac_card,
         "pcm": dac.get("pcm"),
+        "route": dac.get("route"),
         "backend": dac.get("backend"),
         "sample_rate": dac.get("sample_rate"),
     }

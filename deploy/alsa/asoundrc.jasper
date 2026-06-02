@@ -218,13 +218,12 @@ ctl.outputd_content_capture {
     card Loopback
 }
 
-# Direct DAC alias for jasper-outputd once it owns the final speaker
-# boundary.
-pcm.outputd_dac {
-    type hw
-    card __OUTPUT_DAC_CARD__
-    device 0
-}
+# DAC alias for jasper-outputd once it owns the final speaker boundary.
+# The installer/reconciler renders this block as either the default direct
+# hardware alias or, for explicit DAC8x lab/commissioning configs, a tiny
+# ALSA route map that keeps outputd's public surface stereo while targeting
+# selected physical DAC8x outputs.
+__OUTPUTD_DAC_PCM_BLOCK__
 
 ctl.outputd_dac {
     type hw

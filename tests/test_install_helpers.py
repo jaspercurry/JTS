@@ -41,6 +41,42 @@ def _compute_min_free_kbytes(memtotal_kb: int) -> int:
     return int(result.stdout.strip())
 
 
+def _render_install_asound_template(
+    tmp_path: Path,
+    *,
+    output_dac_id: str,
+    output_dac_card: str,
+    output_dac_route: str,
+) -> tuple[str, str]:
+    source = tmp_path / "asoundrc.jasper"
+    dest = tmp_path / "asoundrc.rendered"
+    source.write_text(
+        "__OUTPUTD_DAC_PCM_BLOCK__\n"
+        "ctl.outputd_dac { card __OUTPUT_DAC_CARD__ }\n"
+        "pcm.jasper_out { card __DONGLE_CARD__ }\n",
+        encoding="utf-8",
+    )
+    script = (
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+        "DONGLE_CARD=A && "
+        f"OUTPUT_DAC_CARD={shlex.quote(output_dac_card)} && "
+        f"OUTPUT_DAC_ID={shlex.quote(output_dac_id)} && "
+        f"OUTPUT_DAC_ROUTE={shlex.quote(output_dac_route)} && "
+        f"jasper_asound_render_template {shlex.quote(str(source))} {shlex.quote(str(dest))}"
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"render helper failed (rc={result.returncode}): {result.stderr}"
+        )
+    return dest.read_text(encoding="utf-8"), result.stderr
+
+
 # Pi 5 SKU memory sizes (real values from /proc/meminfo on each
 # variant — approximate; actual values vary by ~5 MB per board).
 _PI5_1GB_MEMTOTAL_KB = 1014768   # 991 MB
@@ -300,3 +336,38 @@ def test_install_help_is_clean_and_non_root():
     assert result.stdout.startswith("Usage: bash deploy/install.sh")
     assert "install.sh starting" not in result.stdout
     assert "this script must be run as root" not in result.stderr
+
+
+def test_install_asound_renderer_supports_dac8x_mono_route(tmp_path: Path):
+    rendered, stderr = _render_install_asound_template(
+        tmp_path,
+        output_dac_id="hifiberry_dac8x",
+        output_dac_card="sndrpihifiberry",
+        output_dac_route="mono:5",
+    )
+
+    assert stderr == ""
+    assert "type route" in rendered
+    assert 'pcm "hw:CARD=sndrpihifiberry,DEV=0"' in rendered
+    assert "channels 8" in rendered
+    assert "0.4 0.5" in rendered
+    assert "1.4 0.5" in rendered
+    assert "ctl.outputd_dac { card sndrpihifiberry }" in rendered
+    assert "pcm.jasper_out { card A }" in rendered
+
+
+def test_install_asound_renderer_keeps_invalid_route_warning_out_of_config(
+    tmp_path: Path,
+):
+    rendered, stderr = _render_install_asound_template(
+        tmp_path,
+        output_dac_id="hifiberry_dac8x",
+        output_dac_card="sndrpihifiberry",
+        output_dac_route="stereo:5,5",
+    )
+
+    assert "reason=duplicate_stereo_channel" in stderr
+    assert "Ignoring JASPER_OUTPUT_DAC_ROUTE" not in rendered
+    assert "type hw" in rendered
+    assert "card sndrpihifiberry" in rendered
+    assert "type route" not in rendered

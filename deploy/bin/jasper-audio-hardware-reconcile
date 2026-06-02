@@ -16,6 +16,23 @@ APLAY="${JASPER_APLAY:-aplay}"
 REASON="manual"
 PRINT_ENV=0
 NO_RESTART=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
+
+load_asound_render_lib() {
+    if [[ -z "$ASOUND_RENDER_LIB" ]]; then
+        if [[ -r /usr/local/lib/jasper/jasper-asound-render.sh ]]; then
+            ASOUND_RENDER_LIB="/usr/local/lib/jasper/jasper-asound-render.sh"
+        else
+            ASOUND_RENDER_LIB="${SCRIPT_DIR}/../lib/jasper-asound-render.sh"
+        fi
+    fi
+    if [[ ! -r "$ASOUND_RENDER_LIB" ]]; then
+        echo "jasper-audio-hardware-reconcile: missing asound render library: ${ASOUND_RENDER_LIB}" >&2
+        exit 66
+    fi
+    source "$ASOUND_RENDER_LIB"
+}
 
 usage() {
     cat <<'EOF'
@@ -25,6 +42,8 @@ Detect the current final-output DAC role and reconcile owned JTS state:
   - DAC8x present -> outputd_dac targets DAC8x; Apple mixer helpers disabled
   - Apple USB-C dongle present -> outputd_dac targets Apple; Apple helpers enabled
   - no recognized output DAC -> Apple helpers disabled; unknown/fallback id recorded
+  - optional DAC8x-only JASPER_OUTPUT_DAC_ROUTE renders a narrow ALSA
+    channel route for lab/commissioning wiring
 
 --print-env prints shell-quoted role variables for install.sh and performs no mutations.
 --no-restart updates files/service enablement but does not restart outputd/voice.
@@ -57,10 +76,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+load_asound_render_lib
+
 log_event() {
     local name="$1"
     shift
     echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
+}
+
+jasper_asound_route_ignored() {
+    local reason="$1" route="${2:-}"
+    log_event "route_ignored" \
+        "output_dac_id=${OUTPUT_DAC_ID} output_dac_route=$(jasper_asound_log_token "$route") reason=${reason}"
 }
 
 quote_env_value() {
@@ -82,9 +109,20 @@ env_file_value() {
     if [[ ! -f "$ENV_FILE" ]]; then
         return 0
     fi
-    sed -n -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$ENV_FILE" \
-        | tail -n 1 \
-        | sed -E 's/^["'\'']?(.*?)["'\'']?$/\1/'
+    awk -v key="$key" '
+        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            value = $0
+            sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", value)
+            found = value
+            seen = 1
+        }
+        END {
+            if (seen) {
+                print found
+            }
+        }
+    ' "$ENV_FILE" \
+        | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
 set_env_var() {
@@ -139,6 +177,14 @@ DONGLE_CARD="A"
 OUTPUT_DAC_CARD="A"
 OUTPUT_DAC_ID="A"
 OUTPUT_DAC_RECOGNIZED=0
+OUTPUT_DAC_ROUTE="${JASPER_OUTPUT_DAC_ROUTE:-}"
+
+load_output_dac_route() {
+    if [[ -n "${OUTPUT_DAC_ROUTE}" ]]; then
+        return
+    fi
+    OUTPUT_DAC_ROUTE="$(env_file_value "JASPER_OUTPUT_DAC_ROUTE")"
+}
 
 detect_roles() {
     APPLE_DONGLE_CARD="$(find_card 'usb-c to 3.5mm')"
@@ -158,6 +204,7 @@ detect_roles() {
         OUTPUT_DAC_ID="apple_usb_c_dongle"
         OUTPUT_DAC_RECOGNIZED=1
     fi
+    load_output_dac_route
 }
 
 print_env() {
@@ -167,6 +214,7 @@ print_env() {
     printf 'OUTPUT_DAC_CARD=%s\n' "$(quote_env_value "$OUTPUT_DAC_CARD")"
     printf 'OUTPUT_DAC_ID=%s\n' "$(quote_env_value "$OUTPUT_DAC_ID")"
     printf 'OUTPUT_DAC_RECOGNIZED=%s\n' "$(quote_env_value "$OUTPUT_DAC_RECOGNIZED")"
+    printf 'OUTPUT_DAC_ROUTE=%s\n' "$(quote_env_value "$OUTPUT_DAC_ROUTE")"
 }
 
 render_asound_if_needed() {
@@ -183,9 +231,7 @@ render_asound_if_needed() {
 
     install -d -m 0755 "$(dirname "$ASOUND_TEMPLATE")"
     tmp="$(mktemp "${ASOUND_TEMPLATE}.XXXXXX")"
-    sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
-        -e "s/__OUTPUT_DAC_CARD__/${OUTPUT_DAC_CARD}/g" \
-        "$ASOUND_SOURCE_TEMPLATE" > "$tmp"
+    jasper_asound_render_template "$ASOUND_SOURCE_TEMPLATE" "$tmp"
     chmod 0644 "$tmp"
 
     if [[ -f "$ASOUND_TEMPLATE" ]] && cmp -s "$tmp" "$ASOUND_TEMPLATE"; then
@@ -198,7 +244,8 @@ render_asound_if_needed() {
 
     if [[ "$changed" == "1" ]]; then
         "$RENDER_ASOUND_CONF"
-        log_event "asound_rendered" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
+        log_event "asound_rendered" \
+            "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} output_dac_route=$(jasper_asound_log_token "$OUTPUT_DAC_ROUTE")"
         return 0
     fi
     return 1
@@ -263,4 +310,4 @@ else
 fi
 
 log_event "complete" \
-    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed}"
+    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} output_dac_route=$(jasper_asound_log_token "$OUTPUT_DAC_ROUTE") recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed}"

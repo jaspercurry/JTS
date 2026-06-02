@@ -59,7 +59,8 @@ def _run_reconcile(
     fake_renderer, render_log = _fake_renderer(tmp_path)
     source_template = tmp_path / "asoundrc.jasper.source"
     source_template.write_text(
-        "pcm.outputd_dac { card __OUTPUT_DAC_CARD__ }\n"
+        "__OUTPUTD_DAC_PCM_BLOCK__\n"
+        "ctl.outputd_dac { card __OUTPUT_DAC_CARD__ }\n"
         "pcm.jasper_out { card __DONGLE_CARD__ }\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n",
         encoding="utf-8",
@@ -141,6 +142,7 @@ def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
     assert "OUTPUT_DAC_CARD=sndrpihifiberry" in result.stdout
     assert "OUTPUT_DAC_ID=hifiberry_dac8x" in result.stdout
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
+    assert "OUTPUT_DAC_ROUTE=''" in result.stdout
     assert not (tmp_path / "jasper.env").exists()
 
 
@@ -152,6 +154,8 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "pcm.outputd_dac" in template
+    assert "type hw" in template
     assert "card A" in template
     assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
@@ -172,7 +176,9 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x" in env_text
     assert "JASPER_AUDIO_DAC_CARD=sndrpihifiberry" in env_text
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
-    assert "pcm.outputd_dac { card sndrpihifiberry }" in template
+    assert "pcm.outputd_dac" in template
+    assert "type hw" in template
+    assert "card sndrpihifiberry" in template
     assert "pcm.jasper_out { card A }" in template
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-dac-init.service jasper-headphone-monitor.service" in commands
@@ -211,7 +217,12 @@ def test_reconcile_recognized_role_restarts_outputd_after_unknown_state(
         "test",
         initial_env="JASPER_AUDIO_DAC_ID=A\nJASPER_AUDIO_DAC_CARD=A\n",
         initial_template=(
-            "pcm.outputd_dac { card sndrpihifiberry }\n"
+            "pcm.outputd_dac {\n"
+            "    type hw\n"
+            "    card sndrpihifiberry\n"
+            "    device 0\n"
+            "}\n"
+            "ctl.outputd_dac { card sndrpihifiberry }\n"
             "pcm.jasper_out { card A }\n"
             "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
         ),
@@ -227,3 +238,73 @@ def test_reconcile_recognized_role_restarts_outputd_after_unknown_state(
     assert "reset-failed jasper-outputd.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
+
+
+def test_reconcile_dac8x_mono_route_renders_channel_five_sum(tmp_path: Path):
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_OUTPUT_DAC_ROUTE=mono:5\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "type route" in template
+    assert 'pcm "hw:CARD=sndrpihifiberry,DEV=0"' in template
+    assert "channels 8" in template
+    assert "0.4 0.5" in template
+    assert "1.4 0.5" in template
+    assert "output_dac_route=mono:5" in result.stderr
+
+
+def test_reconcile_dac8x_stereo_route_renders_distinct_outputs(tmp_path: Path):
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_OUTPUT_DAC_ROUTE=stereo:5,6\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "type route" in template
+    assert "0.4 1.0" in template
+    assert "1.5 1.0" in template
+
+
+def test_reconcile_ignores_invalid_dac8x_route_without_rerendering_route(
+    tmp_path: Path,
+):
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_OUTPUT_DAC_ROUTE=stereo:5,5\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "type hw" in template
+    assert "type route" not in template
+    assert "reason=duplicate_stereo_channel" in result.stderr
+
+
+def test_reconcile_ignores_route_for_apple_output_role(tmp_path: Path):
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env="JASPER_OUTPUT_DAC_ROUTE=mono:5\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    assert "type hw" in template
+    assert "card A" in template
+    assert "type route" not in template
+    assert "reason=unsupported_dac" in result.stderr
