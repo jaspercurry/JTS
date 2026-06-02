@@ -58,6 +58,10 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     loading: false, action: '', payload: null, session: null, targets: null,
     plan: null, playback: null, error: '', levelDbfs: null
   };
+  var outputTopology = {
+    loading: false, saving: false, payload: null, draft: null,
+    error: '', dirty: false, touched: false
+  };
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
@@ -485,7 +489,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var body = renderActiveSpeakerStatus();
     var open = activeSpeaker.loading || activeSpeaker.payload ||
       activeSpeaker.session || activeSpeaker.plan || activeSpeaker.playback ||
-      activeSpeaker.error;
+      activeSpeaker.error || outputTopology.loading || outputTopology.saving ||
+      outputTopology.error || outputTopology.dirty || outputTopology.touched;
     return '<section class="active-speaker-setup">' +
       '<details class="advanced"' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
@@ -497,8 +502,243 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
           '</div>' +
           '<div class="active-speaker-status">' + body + '</div>' +
         '</div>' +
+        renderOutputTopologySetup() +
       '</details>' +
     '</section>';
+  }
+  function currentOutputTopology() {
+    return outputTopology.draft || outputTopology.payload || null;
+  }
+  function outputGroups(topology) {
+    return topology && Array.isArray(topology.speaker_groups) ? topology.speaker_groups : [];
+  }
+  function outputHardware(topology) {
+    return topology && topology.hardware ? topology.hardware : null;
+  }
+  function outputEvaluation(topology) {
+    return topology && topology.evaluation ? topology.evaluation : {};
+  }
+  function outputAssignedMap(topology) {
+    var out = {};
+    outputGroups(topology).forEach(function(group) {
+      (group.channels || []).forEach(function(channel) {
+        if (channel.physical_output_index == null) return;
+        out[String(channel.physical_output_index)] = {
+          group: group.label || group.id,
+          role: channel.role || 'channel'
+        };
+      });
+    });
+    return out;
+  }
+  function outputStatusClass(statusValue) {
+    if (statusValue === 'verified' || statusValue === 'valid') return ' status-pill--ready';
+    if (statusValue === 'blocked') return ' status-pill--blocked';
+    return ' status-pill--planned';
+  }
+  function humanMode(modeValue) {
+    return {
+      full_range_passive: 'Passive/full range',
+      active_2_way: 'Active 2-way',
+      active_3_way: 'Active 3-way',
+      subwoofer: 'Subwoofer'
+    }[modeValue] || modeValue || 'Unknown';
+  }
+  function humanRole(role) {
+    return {
+      full_range: 'Full range',
+      woofer: 'Woofer',
+      mid: 'Mid',
+      tweeter: 'Tweeter',
+      subwoofer: 'Subwoofer'
+    }[role] || role || 'Channel';
+  }
+  function renderOutputTopologySetup() {
+    return '<div class="setting-row setting-row--stack output-setup">' +
+      '<div class="output-setup__head">' +
+        '<div class="setting-row__text">' +
+          '<p class="setting-row__title">Output setup</p>' +
+          '<p class="setting-row__hint">Map DAC outputs to speakers and driver roles before any active crossover work. ' +
+            'Saving this map does not play sound or reload CamillaDSP.</p>' +
+        '</div>' +
+        renderOutputTopologyActions() +
+      '</div>' +
+      renderOutputTopologyBody() +
+    '</div>';
+  }
+  function renderOutputTopologyActions() {
+    var topology = currentOutputTopology();
+    var hardware = outputHardware(topology);
+    var canPassive = hardware && Number(hardware.physical_output_count) >= 2;
+    var canTwoWay = hardware && Number(hardware.physical_output_count) >= 4;
+    var saveDisabled = !outputTopology.draft || !outputTopology.dirty ||
+      outputTopology.saving || outputTopology.loading;
+    return '<div class="output-setup__actions">' +
+      '<button type="button" class="btn btn--ghost" data-act="refresh-output-topology"' +
+        (outputTopology.loading ? ' disabled' : '') + '>' + (topology ? 'Reload' : 'Load') + '</button>' +
+      '<button type="button" class="btn btn--ghost" data-act="output-starter-passive"' +
+        (canPassive ? '' : ' disabled') + '>Starter stereo</button>' +
+      '<button type="button" class="btn btn--ghost" data-act="output-starter-2way"' +
+        (canTwoWay ? '' : ' disabled') + '>Starter 2-way</button>' +
+      '<button type="button" class="btn btn--primary" data-act="save-output-topology"' +
+        (saveDisabled ? ' disabled' : '') + '>' + (outputTopology.saving ? 'Saving' : 'Save') + '</button>' +
+    '</div>';
+  }
+  function renderOutputTopologyBody() {
+    if (outputTopology.loading && !currentOutputTopology()) {
+      return '<p class="setting-row__hint">Loading output topology…</p>';
+    }
+    if (outputTopology.error) {
+      return '<div class="output-error">' +
+        '<span class="status-pill status-pill--blocked">Output setup unavailable</span>' +
+        '<p class="setting-row__hint">' + escapeHtml(outputTopology.error) + '</p>' +
+      '</div>';
+    }
+    var topology = currentOutputTopology();
+    if (!topology) {
+      return '<div class="output-empty">' +
+        '<p class="setting-row__hint">Load detected hardware to start a speaker output map.</p>' +
+      '</div>';
+    }
+    var evaluation = outputEvaluation(topology);
+    var statusValue = outputTopology.dirty ? 'draft' : (evaluation.status || topology.status || 'draft');
+    return '<div class="output-layout">' +
+      renderOutputHardwareCard(topology, statusValue) +
+      renderOutputStageCard(topology) +
+      renderOutputGroupsCard(topology) +
+      renderOutputSafetyCard(topology, statusValue) +
+    '</div>';
+  }
+  function renderOutputHardwareCard(topology, statusValue) {
+    var hardware = outputHardware(topology) || {};
+    var rows = [
+      ['Device', hardware.device_id || 'unknown'],
+      ['Outputs', String(hardware.physical_output_count || 0) + ' physical'],
+      ['Route', hardware.route || 'default'],
+      ['Topology', topology.name || topology.topology_id || 'Speaker outputs']
+    ];
+    return '<div class="output-card output-card--hardware">' +
+      '<div class="output-card__head">' +
+        '<div><p class="output-card__title">' + escapeHtml(hardware.device_label || 'Unknown output device') + '</p>' +
+        '<p class="setting-row__hint">Detected output hardware</p></div>' +
+        '<span class="status-pill' + outputStatusClass(statusValue) + '">' + escapeHtml(statusValue) + '</span>' +
+      '</div>' +
+      '<dl class="active-speaker-facts output-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+    '</div>';
+  }
+  function outputGroupPoint(group, index, total) {
+    var pos = group.position || {};
+    var hasPos = isFinite(Number(pos.x)) || isFinite(Number(pos.y));
+    var x = hasPos ? Number(pos.x || 0) : (group.kind === 'left' ? -0.65 : (group.kind === 'right' ? 0.65 : 0));
+    var y = hasPos ? Number(pos.y || 0) : (group.kind === 'subwoofer' ? -0.72 : 0.45);
+    if (!hasPos && group.kind === 'mono' && total > 1) x = (index - (total - 1) / 2) * 0.55;
+    return {
+      x: 120 + clamp(x, -1.2, 1.2) * 70,
+      y: 92 - clamp(y, -1.0, 1.0) * 52
+    };
+  }
+  function outputGroupInitial(group) {
+    if (group.kind === 'left') return 'L';
+    if (group.kind === 'right') return 'R';
+    if (group.kind === 'subwoofer') return 'S';
+    return 'M';
+  }
+  function renderOutputStageCard(topology) {
+    var groups = outputGroups(topology);
+    var assigned = outputAssignedMap(topology);
+    var outputs = outputHardware(topology) && Array.isArray(outputHardware(topology).outputs)
+      ? outputHardware(topology).outputs : [];
+    var markers = groups.map(function(group, index) {
+      var p = outputGroupPoint(group, index, groups.length);
+      return '<g class="output-stage__speaker" data-kind="' + escapeHtml(group.kind || '') + '">' +
+        '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="18"></circle>' +
+        '<text x="' + p.x.toFixed(1) + '" y="' + (p.y + 4).toFixed(1) + '">' +
+          escapeHtml(outputGroupInitial(group)) + '</text>' +
+      '</g>';
+    }).join('');
+    var lane = outputs.length ? outputs.map(function(output) {
+      var hit = assigned[String(output.index)];
+      return '<span class="output-chip' + (hit ? ' output-chip--assigned' : '') + '">' +
+        escapeHtml(output.human_label || ('Output ' + (Number(output.index) + 1))) +
+        (hit ? '<small>' + escapeHtml(hit.group + ' · ' + humanRole(hit.role)) + '</small>' : '<small>Unassigned</small>') +
+      '</span>';
+    }).join('') : '<p class="setting-row__hint">No physical outputs detected.</p>';
+    return '<div class="output-card output-card--stage">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Speaker layout</p>' +
+        '<p class="setting-row__hint">Top-down sketch for routing context only.</p></div></div>' +
+      '<svg class="output-stage" viewBox="0 0 240 150" role="img" aria-label="Speaker output layout">' +
+        '<rect x="16" y="18" width="208" height="114" rx="8"></rect>' +
+        '<path d="M60 112 C88 92 152 92 180 112"></path>' +
+        '<text x="120" y="122" class="output-stage__seat">Listening area</text>' +
+        (markers || '<text x="120" y="78" class="output-stage__empty">No groups yet</text>') +
+      '</svg>' +
+      '<div class="output-lane">' + lane + '</div>' +
+    '</div>';
+  }
+  function renderOutputGroupsCard(topology) {
+    var groups = outputGroups(topology);
+    if (!groups.length) {
+      return '<div class="output-card output-card--groups">' +
+        '<p class="output-card__title">Speaker groups</p>' +
+        '<p class="setting-row__hint">Choose a starter map above. JTS keeps it as a draft until you verify channels safely.</p>' +
+      '</div>';
+    }
+    return '<div class="output-card output-card--groups">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Speaker groups</p>' +
+        '<p class="setting-row__hint">Driver roles and assigned DAC outputs.</p></div></div>' +
+      '<div class="output-groups">' + groups.map(renderOutputGroup).join('') + '</div>' +
+    '</div>';
+  }
+  function renderOutputGroup(group) {
+    var channels = Array.isArray(group.channels) ? group.channels : [];
+    return '<div class="output-group">' +
+      '<div class="output-group__head">' +
+        '<div><p class="output-group__title">' + escapeHtml(group.label || group.id) + '</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(humanMode(group.mode)) + '</p></div>' +
+        '<span class="output-group__badge">' + escapeHtml(group.kind || 'speaker') + '</span>' +
+      '</div>' +
+      '<div class="output-roles">' + channels.map(function(channel) {
+        var protection = channel.protection_required
+          ? ' · protection ' + (channel.protection_status || 'unknown') : '';
+        var label = channel.human_output_label ||
+          (channel.physical_output_index == null ? 'No output assigned' : 'Output ' + (Number(channel.physical_output_index) + 1));
+        return '<div class="output-role">' +
+          '<span>' + escapeHtml(humanRole(channel.role)) + '</span>' +
+          '<strong>' + escapeHtml(label) + '</strong>' +
+          '<small>' + escapeHtml((channel.identity_verified ? 'identity verified' : 'identity unverified') + protection) + '</small>' +
+        '</div>';
+      }).join('') + '</div>' +
+    '</div>';
+  }
+  function renderOutputSafetyCard(topology, statusValue) {
+    var evaluation = outputEvaluation(topology);
+    var blockers = Array.isArray(evaluation.blockers) ? evaluation.blockers : [];
+    var warnings = Array.isArray(evaluation.warnings) ? evaluation.warnings : [];
+    var safety = topology.safety || evaluation.safety || {};
+    var rows = [];
+    if (outputTopology.dirty) {
+      rows.push(['warning', 'unsaved_draft', 'Save to run backend validation on this draft.']);
+    }
+    blockers.forEach(function(issue) { rows.push(['blocker', issue.code, issue.message]); });
+    warnings.forEach(function(issue) { rows.push(['warning', issue.code, issue.message]); });
+    rows.push([
+      safety.sound_tests_allowed ? 'warning' : 'info',
+      'sound_tests_allowed',
+      safety.sound_tests_allowed ? 'Sound tests are enabled.' : 'Sound tests remain disabled for this setup surface.'
+    ]);
+    return '<div class="output-card output-card--safety">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Safety evidence</p>' +
+        '<p class="setting-row__hint">Backend validation owns the final decision.</p></div>' +
+        '<span class="status-pill' + outputStatusClass(statusValue) + '">' + escapeHtml(statusValue) + '</span></div>' +
+      '<ul class="output-safety-list">' + rows.slice(0, 8).map(function(row) {
+        return '<li class="output-safety-list__item output-safety-list__item--' + escapeHtml(row[0]) + '">' +
+          '<span>' + escapeHtml(row[1]) + '</span>' +
+          '<p>' + escapeHtml(row[2]) + '</p>' +
+        '</li>';
+      }).join('') + '</ul>' +
+    '</div>';
   }
   function renderActiveSpeakerStatus() {
     if (activeSpeaker.loading) {
@@ -1086,6 +1326,10 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     else if (act === 'overwrite') { overwrite(); }
     else if (act === 'reset-draft') { resetDraft(); }
     else if (act === 'refresh-active-speaker') { refreshActiveSpeakerStatus(); }
+    else if (act === 'refresh-output-topology') { refreshOutputTopology(); }
+    else if (act === 'output-starter-passive') { setOutputStarter('passive'); }
+    else if (act === 'output-starter-2way') { setOutputStarter('active_2_way'); }
+    else if (act === 'save-output-topology') { saveOutputTopology(); }
     else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Arming'); }
     else if (act === 'stop-active-speaker') { activeSpeakerPost('./active-speaker/stop', 'Stopping'); }
     else if (act === 'prepare-active-tone') {
@@ -1281,6 +1525,147 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         render();
       }
     }
+  }
+  function ingestOutputTopology(payload) {
+    var topology = payload && (payload.output_topology || payload);
+    outputTopology.payload = topology || null;
+    outputTopology.draft = topology ? clone(topology) : null;
+    outputTopology.error = '';
+    outputTopology.dirty = false;
+    outputTopology.saving = false;
+    outputTopology.loading = false;
+  }
+  async function refreshOutputTopology(options) {
+    options = options || {};
+    if (!options.silent && outputTopology.dirty &&
+        !await jtsConfirm('Reload output setup and lose the unsaved draft?')) {
+      return;
+    }
+    if (!options.silent) outputTopology.touched = true;
+    outputTopology.loading = true;
+    outputTopology.error = '';
+    if (!options.silent) render();
+    try {
+      var resp = await fetch('./output-topology', {cache: 'no-store'});
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'output setup failed');
+      ingestOutputTopology(payload);
+    } catch (e) {
+      outputTopology.loading = false;
+      outputTopology.error = e.message;
+    }
+    render();
+  }
+  function setOutputDraft(next) {
+    outputTopology.draft = next;
+    outputTopology.dirty = true;
+    outputTopology.touched = true;
+    outputTopology.error = '';
+    render();
+  }
+  function outputChannel(role, index) {
+    var tweeter = role === 'tweeter';
+    return {
+      role: role,
+      physical_output_index: index,
+      identity_verified: false,
+      startup_muted: true,
+      protection_required: tweeter,
+      protection_status: tweeter ? 'required_missing' : 'not_required'
+    };
+  }
+  function baseOutputDraft() {
+    var topology = currentOutputTopology();
+    if (!topology) return null;
+    var next = clone(topology);
+    next.status = 'draft';
+    delete next.evaluation;
+    if (next.safety) next.safety.sound_tests_allowed = false;
+    return next;
+  }
+  async function setOutputStarter(kind) {
+    if (outputTopology.dirty &&
+        !await jtsConfirm('Replace the unsaved output setup draft?')) {
+      return;
+    }
+    var next = baseOutputDraft();
+    if (!next || !next.hardware) {
+      status('Load output hardware before creating a speaker map.', true);
+      return;
+    }
+    var count = Number(next.hardware.physical_output_count) || 0;
+    if (kind === 'passive') {
+      if (count < 2) {
+        status('Starter stereo needs at least two physical outputs.', true);
+        return;
+      }
+      next.name = 'Stereo passive outputs';
+      next.speaker_groups = [
+        {
+          id: 'left', label: 'Left speaker', kind: 'left',
+          mode: 'full_range_passive',
+          position: {x: -0.65, y: 0.42, rotation_degrees: 0},
+          channels: [outputChannel('full_range', 0)]
+        },
+        {
+          id: 'right', label: 'Right speaker', kind: 'right',
+          mode: 'full_range_passive',
+          position: {x: 0.65, y: 0.42, rotation_degrees: 0},
+          channels: [outputChannel('full_range', 1)]
+        }
+      ];
+    } else {
+      if (count < 4) {
+        status('Starter 2-way needs at least four physical outputs.', true);
+        return;
+      }
+      next.name = 'Stereo active 2-way outputs';
+      next.speaker_groups = [
+        {
+          id: 'left', label: 'Left speaker', kind: 'left',
+          mode: 'active_2_way',
+          position: {x: -0.65, y: 0.42, rotation_degrees: 0},
+          channels: [outputChannel('woofer', 0), outputChannel('tweeter', 1)]
+        },
+        {
+          id: 'right', label: 'Right speaker', kind: 'right',
+          mode: 'active_2_way',
+          position: {x: 0.65, y: 0.42, rotation_degrees: 0},
+          channels: [outputChannel('woofer', 2), outputChannel('tweeter', 3)]
+        }
+      ];
+    }
+    next.routing = {
+      main_left_group_id: 'left',
+      main_right_group_id: 'right',
+      mono_group_id: null,
+      subwoofer_group_ids: []
+    };
+    setOutputDraft(next);
+    status('Starter output map is a draft. Save to validate; no sound will play.');
+  }
+  async function saveOutputTopology() {
+    if (!outputTopology.draft) return;
+    outputTopology.saving = true;
+    outputTopology.touched = true;
+    outputTopology.error = '';
+    render();
+    try {
+      var resp = await fetch('./output-topology', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({output_topology: outputTopology.draft})
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'output setup save failed');
+      ingestOutputTopology(payload);
+      status('Saved output setup. No sound was played.');
+    } catch (e) {
+      outputTopology.saving = false;
+      outputTopology.error = e.message;
+      status('Could not save output setup: ' + e.message, true);
+    }
+    render();
   }
   async function refreshActiveSpeakerStatus() {
     activeSpeaker = {
@@ -1486,6 +1871,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         view = 'off';
       }
       render();
+      refreshOutputTopology({silent: true});
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
     }

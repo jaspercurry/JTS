@@ -183,6 +183,14 @@ What exists:
   route knob is for lab/single-amp/commissioning wiring before active
   speaker profiles are loaded; active crossover channel ownership lives
   in the active-speaker `channel_map`, not in this ALSA alias. The
+  product speaker-output topology substrate is separate again:
+  `jasper.output_topology` persists `/var/lib/jasper/output_topology.json`
+  and `/sound/output-topology` exposes a complete replacement JSON
+  contract for physical DAC lanes, speaker groups, passive/active modes,
+  subwoofers, and identity/protection evidence. That topology model has
+  no playback authority, does not rewrite ALSA, and does not load
+  CamillaDSP; it only records and evaluates whether future safe sound
+  tests may proceed through their own safety session.
   configured route takes effect when deploy, boot/udev reconcile, or a
   manual `jasper-audio-hardware-reconcile` run re-renders the managed
   ALSA template; hardware validation artifacts report the observed
@@ -745,5 +753,11 @@ datum: how much assistant audio was actually heard.
   deploy/reconcile without a hand-edited `/etc/asound.conf`. The
   default remains direct; non-DAC8x or invalid routes are ignored and
   logged.
+- 2026-06-02: Added the first product speaker-output topology contract
+  (`jasper.output_topology`, `/var/lib/jasper/output_topology.json`,
+  `/sound/output-topology`). It is a no-audio, no-Camilla, no-ALSA
+  persistence/evaluation surface for DAC lanes, speaker groups, active
+  driver roles, subwoofer routing, and identity/tweeter-protection
+  evidence. Safe playback remains a separate active-speaker session.
 
 Last verified: 2026-06-02

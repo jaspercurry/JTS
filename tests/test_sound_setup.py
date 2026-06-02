@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from jasper.correction.camilla_yaml import emit_correction_config
 from jasper.correction.peq import PEQ
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND
 from jasper.sound.profile import (
     ParametricBand,
     SimpleEq,
@@ -20,6 +23,8 @@ from jasper.sound.profile import (
 )
 from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.web import sound_setup
+
+from ._web_test_helpers import request_with_csrf
 
 
 def _record_dsp_epoch(path: Path, op_id: str) -> None:
@@ -93,6 +98,18 @@ _SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness
 _NODE = shutil.which("node")
 
 
+def _start_sound_server(tmp_path: Path):
+    server = sound_setup.make_server(
+        ("127.0.0.1", 0),
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "sound_profiles.json",
+        config_dir=tmp_path / "configs",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
 def test_index_html_renders_canonical_sound_page():
     html = sound_setup._index_html().decode()
 
@@ -139,6 +156,7 @@ def test_sound_module_preserves_editor_behaviour():
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
     assert "Active crossover commissioning" in js
     assert "./active-speaker/environment" in js
+    assert "./output-topology" in js
     assert "Check environment" in js
     assert "safe_playback" in js
     assert "it will not play tones, reload CamillaDSP, or load active crossover configs" in js
@@ -185,6 +203,23 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Tone playback is not implemented in this build." in js
     assert "reload CamillaDSP" in js
     assert "play tones" in js
+
+
+def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
+    js = _SOUND_MODULE.read_text()
+
+    assert "function renderOutputTopologySetup()" in js
+    assert "function refreshOutputTopology(options)" in js
+    assert "function saveOutputTopology()" in js
+    assert "fetch('./output-topology'" in js
+    assert "headers: jsonHeaders()" in js
+    assert "Saving this map does not play sound or reload CamillaDSP." in js
+    assert "Backend validation owns the final decision." in js
+    assert "Sound tests remain disabled for this setup surface." in js
+    assert "Starter stereo" in js
+    assert "Starter 2-way" in js
+    assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
+    assert "Saved output setup. No sound was played." in js
 
 
 def test_active_speaker_environment_payload_uses_configured_evidence_path(
@@ -288,6 +323,106 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
     assert stopped["status"] == "stopped"
     assert stopped["playback"]["status"] == "stopped"
     assert stopped["session_id"] == armed["session_id"]
+
+
+def test_sound_output_topology_payload_is_no_audio_draft(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
+    monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
+
+    payload = sound_setup._output_topology_payload()["output_topology"]
+
+    assert payload["kind"] == OUTPUT_TOPOLOGY_KIND
+    assert payload["status"] == "draft"
+    assert payload["hardware"]["physical_output_count"] == 8
+    assert payload["safety"]["sound_tests_allowed"] is False
+    assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"
+
+
+def test_sound_output_topology_save_validates_and_persists_complete_contract(
+    monkeypatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    raw = {
+        "output_topology": {
+            "artifact_schema_version": 1,
+            "kind": OUTPUT_TOPOLOGY_KIND,
+            "topology_id": "living_room",
+            "name": "Living room",
+            "status": "draft",
+            "hardware": {
+                "device_id": "hifiberry_dac8x",
+                "device_label": "HiFiBerry DAC8x",
+                "physical_output_count": 8,
+            },
+            "speaker_groups": [
+                {
+                    "id": "left",
+                    "label": "Left speaker",
+                    "kind": "left",
+                    "mode": "full_range_passive",
+                    "channels": [
+                        {
+                            "role": "full_range",
+                            "physical_output_index": 0,
+                            "identity_verified": True,
+                        }
+                    ],
+                }
+            ],
+            "routing": {"main_left_group_id": "left"},
+        }
+    }
+
+    payload = sound_setup._save_output_topology_payload(raw)["output_topology"]
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["status"] == "verified"
+    assert payload["evaluation"]["assigned_output_count"] == 1
+    assert payload["safety"]["sound_tests_allowed"] is False
+    assert saved["status"] == "verified"
+    assert saved["speaker_groups"][0]["channels"][0]["human_output_label"] == (
+        "DAC output 1"
+    )
+
+
+def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        get_resp = urllib.request.urlopen(f"{base}/output-topology")
+        get_payload = json.loads(get_resp.read().decode("utf-8"))
+        assert get_payload["output_topology"]["status"] == "draft"
+
+        post_resp = request_with_csrf(
+            base,
+            "/output-topology",
+            json.dumps(get_payload["output_topology"]).encode("utf-8"),
+            content_type="application/json",
+        )
+        post_payload = json.loads(post_resp.read().decode("utf-8"))
+        assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():

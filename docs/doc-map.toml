@@ -84,6 +84,7 @@ code = [
   "jasper/source_state.py",
   "jasper/camilla.py",
   "jasper/camilla_config_contract.py",
+  "jasper/output_topology.py",
   "deploy/alsa/**",
   "deploy/camilladsp/**",
   "deploy/shairport-sync.conf.template",
