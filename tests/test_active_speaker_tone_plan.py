@@ -83,6 +83,7 @@ def test_tone_targets_payload_is_preset_derived() -> None:
     payload = tone_targets_payload(_preset())
 
     assert payload["preset_id"] == "tone-plan-test-v1"
+    assert payload["calibration_level"]["test_signal"]["default_level_dbfs"] == -80.0
     assert [target["driver_role"] for target in payload["targets"]] == [
         "woofer",
         "tweeter",
@@ -109,10 +110,24 @@ def test_build_safe_tone_plan_ready_still_cannot_play() -> None:
     assert plan["tone"]["frequency_hz"] == 3200
     assert plan["tone"]["level_dbfs"] == -45.0
     assert plan["tone"]["duration_ms"] == 500
+    assert plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -45.0
     assert plan["tone"]["band_limit"] == {
         "type": "highpass",
         "highpass_hz": 1600.0,
     }
+
+
+def test_build_safe_tone_plan_defaults_to_minimum_level() -> None:
+    plan = build_safe_tone_plan(
+        _preset(),
+        safe_session=_armed_session(),
+        environment_report=_environment(ok=True),
+        side="mono",
+        driver_role="woofer",
+    )
+
+    assert plan["tone"]["level_dbfs"] == -80.0
+    assert plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -80.0
 
 
 def test_build_safe_tone_plan_blocks_without_armed_session() -> None:

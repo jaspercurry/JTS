@@ -54,7 +54,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
-  var activeSpeaker = {loading: false, action: '', payload: null, session: null, targets: null, plan: null, error: ''};
+  var activeSpeaker = {loading: false, action: '', payload: null, session: null, targets: null, plan: null, error: '', levelDbfs: null};
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
@@ -80,6 +80,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'k' : String(Math.round(v));
   }
   function fmtQ(v) { return 'Q ' + (Number(v) || 0).toFixed(1); }
+  function fmtDbfs(v) { return fmtDb(v) + ' dBFS'; }
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
       return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch];
@@ -531,7 +532,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       ['ALSA playback devices', String(devices)],
       ['Config validation', validation.status || 'unknown'],
       ['Safe playback', safe.playback_allowed ? 'Allowed' : 'Not allowed yet'],
-      ['Safety session', session.status || 'Not armed']
+      ['Safety session', session.status || 'Not armed'],
+      ['Calibration level', fmtDbfs(activeSpeakerLevelConfig().value)]
     ];
     var envIssues = Array.isArray(p.issues) ? p.issues.slice(0, 4) : [];
     var sessionIssues = Array.isArray(session.issues) ? session.issues.slice(0, 4) : [];
@@ -545,9 +547,64 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
       }).join('') + '</dl>' +
       renderActiveSpeakerIssues(envIssues, sessionIssues) +
+      (session.status === 'armed' ? renderActiveSpeakerLevel() : '') +
       renderActiveSpeakerActions(ok, session) +
       renderActiveSpeakerPlan(activeSpeaker.plan) +
       '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'Playback remains disabled until the safe tone path is implemented.') + '</p>' +
+    '</div>';
+  }
+  function activeSpeakerLevelConfig() {
+    var raw = activeSpeaker.targets && activeSpeaker.targets.calibration_level &&
+      activeSpeaker.targets.calibration_level.test_signal || {};
+    var min = Number(raw.min_level_dbfs);
+    var max = Number(raw.max_level_dbfs);
+    var step = Number(raw.step_db);
+    var def = Number(raw.default_level_dbfs);
+    if (!isFinite(min)) min = -80;
+    if (!isFinite(max)) max = -45;
+    if (!isFinite(step) || step <= 0) step = 1;
+    if (!isFinite(def)) def = min;
+    var value = Number(activeSpeaker.levelDbfs);
+    if (!isFinite(value)) value = def;
+    value = clamp(value, min, max);
+    return {min: min, max: max, step: step, def: def, value: value};
+  }
+  function renderActiveSpeakerLevel() {
+    var cfg = activeSpeakerLevelConfig();
+    var contract = activeSpeaker.plan && activeSpeaker.plan.calibration_level ||
+      activeSpeaker.targets && activeSpeaker.targets.calibration_level || {};
+    var meter = contract.mic_meter || {};
+    var label = {
+      unmeasured: 'Mic unmeasured',
+      too_quiet: 'Too quiet',
+      low: 'Low',
+      usable: 'Usable',
+      too_loud: 'Too loud',
+      clipping: 'Clipping'
+    }[meter.status] || 'Mic unmeasured';
+    var toneClass = meter.tone === 'danger' ? ' status-pill--blocked' :
+      (meter.tone === 'ok' ? ' status-pill--ready' : '');
+    return '<div class="active-speaker-level">' +
+      '<div class="row-between active-speaker-level__head">' +
+        '<div class="setting-row__text">' +
+          '<p class="setting-row__title">Calibration level</p>' +
+          '<p class="setting-row__hint">Test-signal level only. Normal listening volume is untouched.</p>' +
+        '</div>' +
+        '<span class="active-speaker-level__readout" id="active-speaker-level-readout">' +
+          escapeHtml(fmtDbfs(cfg.value)) + '</span>' +
+      '</div>' +
+      '<input type="range" class="active-speaker-level__range" id="active-speaker-level" ' +
+        'min="' + cfg.min + '" max="' + cfg.max + '" step="' + cfg.step + '" value="' + cfg.value + '" ' +
+        'aria-label="Calibration test signal level">' +
+      '<div class="active-speaker-meter">' +
+        '<span class="active-speaker-meter__label">Quiet</span>' +
+        '<span class="active-speaker-meter__label">Usable</span>' +
+        '<span class="active-speaker-meter__label">High</span>' +
+      '</div>' +
+      '<div class="row-between active-speaker-level__meter">' +
+        '<span class="status-pill' + toneClass + '">' + escapeHtml(label) + '</span>' +
+        '<span class="setting-row__hint">JTS caps this at ' + escapeHtml(fmtDbfs(cfg.max)) + '.</span>' +
+      '</div>' +
     '</div>';
   }
   function renderActiveSpeakerIssues(envIssues, sessionIssues) {
@@ -605,7 +662,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var rows = [
       ['Plan status', plan.status || 'unknown'],
       ['Target', target.label || target.driver_role || 'unknown'],
-      ['Tone', (tone.frequency_hz || '?') + ' Hz at ' + fmtDb(tone.level_dbfs) + ' dBFS'],
+      ['Tone', (tone.frequency_hz || '?') + ' Hz at ' + fmtDbfs(tone.level_dbfs)],
       ['Duration', String(tone.duration_ms || '?') + ' ms'],
       ['Would play', plan.would_play ? 'Yes' : 'No']
     ];
@@ -1044,6 +1101,17 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   });
   el('view-body').addEventListener('input', function(ev) {
     if (ev.target.id === 'name-input') { nameDraft = ev.target.value; return; }
+    if (ev.target.id === 'active-speaker-level') {
+      var cfg = activeSpeakerLevelConfig();
+      activeSpeaker.levelDbfs = clamp(ev.target.value, cfg.min, cfg.max);
+      var levelReadout = el('active-speaker-level-readout');
+      if (levelReadout) levelReadout.textContent = fmtDbfs(activeSpeaker.levelDbfs);
+      if (activeSpeaker.plan) {
+        activeSpeaker.plan = null;
+        render();
+      }
+      return;
+    }
     if (ev.target.id === 'set-headroom') {
       var ro = el('set-headroom-readout');           // live readout; commit on 'change'
       if (ro) ro.textContent = fmtTrim(ev.target.value);
@@ -1185,7 +1253,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       plan: null,
-      error: ''
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
     };
     render();
     try {
@@ -1195,16 +1264,23 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       if (!sessionResp.ok) throw new Error('safe playback status failed');
       var targetsResp = await fetch('./active-speaker/tone-targets', {cache: 'no-store'});
       if (!targetsResp.ok) throw new Error('tone targets failed');
+      var nextTargets = await targetsResp.json();
       activeSpeaker = {
         loading: false, action: '',
         payload: await envResp.json(),
         session: await sessionResp.json(),
-        targets: await targetsResp.json(),
+        targets: nextTargets,
         plan: null,
-        error: ''
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs == null && nextTargets.calibration_level ?
+          (nextTargets.calibration_level.test_signal || {}).default_level_dbfs :
+          activeSpeaker.levelDbfs
       };
     } catch (e) {
-      activeSpeaker = {loading: false, action: '', payload: null, session: null, targets: null, plan: null, error: e.message};
+      activeSpeaker = {
+        loading: false, action: '', payload: null, session: null, targets: null,
+        plan: null, error: e.message, levelDbfs: activeSpeaker.levelDbfs
+      };
     }
     render();
   }
@@ -1215,7 +1291,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       plan: null,
-      error: ''
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
     };
     render();
     try {
@@ -1231,7 +1308,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: await resp.json(),
         targets: activeSpeaker.targets,
         plan: null,
-        error: ''
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
       };
     } catch (e) {
       activeSpeaker = {
@@ -1240,7 +1318,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         plan: activeSpeaker.plan,
-        error: e.message
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
       };
     }
     render();
@@ -1252,23 +1331,33 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       plan: activeSpeaker.plan,
-      error: ''
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
     };
     render();
     try {
+      var payload = Object.assign({}, target || {}, {
+        level_dbfs: activeSpeakerLevelConfig().value
+      });
       var resp = await fetch('./active-speaker/tone-plan', {
         method: 'POST',
         headers: jsonHeaders(),
-        body: JSON.stringify(target || {})
+        body: JSON.stringify(payload)
       });
       if (!resp.ok) throw new Error('tone plan failed');
+      var nextPlan = await resp.json();
+      var returnedLevel = nextPlan && nextPlan.calibration_level &&
+        nextPlan.calibration_level.test_signal ?
+        Number(nextPlan.calibration_level.test_signal.requested_level_dbfs) :
+        Number(nextPlan && nextPlan.tone && nextPlan.tone.level_dbfs);
       activeSpeaker = {
         loading: false, action: '',
         payload: activeSpeaker.payload,
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
-        plan: await resp.json(),
-        error: ''
+        plan: nextPlan,
+        error: '',
+        levelDbfs: isFinite(returnedLevel) ? returnedLevel : activeSpeakerLevelConfig().value
       };
     } catch (e) {
       activeSpeaker = {
@@ -1277,7 +1366,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         plan: activeSpeaker.plan,
-        error: e.message
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
       };
     }
     render();

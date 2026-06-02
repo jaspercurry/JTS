@@ -166,8 +166,14 @@ when the environment load gate passes, and Stop is a normal-sized,
 idempotent control that records the session as stopped. It still does not
 emit tones or authorize playback. When armed, the card can also prepare a
 bounded no-audio channel-test plan through `/sound/active-speaker/tone-plan`.
-That plan shows the target output, frequency, level, and duration, but it
-still returns `would_play: false` and does not authorize playback. The actual
+That plan shows the target output, frequency, test-signal level, and duration,
+but it still returns `would_play: false` and does not authorize playback. The
+armed state also exposes a **Calibration level** slider backed by
+`jasper.active_speaker.calibration_level`: it defaults to the minimum
+`-80 dBFS`, is clamped by backend-owned bounds, and is separate from normal
+listening volume. The current mic meter is a schema placeholder/classifier;
+real microphone observations and sound-emitting playback are future slices.
+The actual
 substrate starts in
 `jasper.active_speaker` and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
@@ -178,7 +184,8 @@ substrate starts in
   channel-map, safety-envelope, baseline-profile schemas, and
   muted/protected startup-template YAML emission plus read-only
   environment reporting, no-audio safe-playback session state, and
-  preset-derived no-audio tone-plan preparation. Current scope is
+  preset-derived no-audio tone-plan preparation with a bounded
+  calibration-level contract. Current scope is
   validation/template generation and status/session/plan bookkeeping only;
   no hardware loading or playback.
 - `jasper/sound/profile.py` — import-cheap persisted contract:

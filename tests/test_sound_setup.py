@@ -163,6 +163,13 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "activeSpeaker.loading || activeSpeaker.payload || activeSpeaker.session || activeSpeaker.plan || activeSpeaker.error" in js
     assert "'<details class=\"advanced\"' + (open ? ' open' : '')" in js
     assert "safe.playback_allowed ? 'Allowed' : 'Not allowed yet'" in js
+    assert "Calibration level" in js
+    assert "activeSpeakerLevelConfig()" in js
+    assert "active-speaker-level" in js
+    assert "Normal listening volume is untouched" in js
+    assert "level_dbfs: activeSpeakerLevelConfig().value" in js
+    assert "requested_level_dbfs" in js
+    assert "isFinite(returnedLevel) ? returnedLevel" in js
     assert "function renderActiveSpeakerIssues(envIssues, sessionIssues)" in js
     assert "row[0] + ': ' + (issue.code || 'issue')" in js
     assert "function renderActiveSpeakerPlan(plan)" in js
@@ -239,15 +246,24 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
         "side": "mono",
         "driver_role": "tweeter",
     })
+    level_plan = sound_setup._active_speaker_tone_plan_payload({
+        "side": "mono",
+        "driver_role": "tweeter",
+        "level_dbfs": -55,
+    })
     status = sound_setup._active_speaker_safe_playback_payload()
     stopped = sound_setup._active_speaker_stop_payload()
 
     assert armed["status"] == "armed"
     assert armed["playback_allowed"] is False
     assert targets["targets"]
+    assert targets["calibration_level"]["test_signal"]["default_level_dbfs"] == -80.0
     assert plan["status"] == "ready"
     assert plan["would_play"] is False
     assert plan["target"]["driver_role"] == "tweeter"
+    assert plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -80.0
+    assert level_plan["tone"]["level_dbfs"] == -55.0
+    assert level_plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -55.0
     assert status["status"] == "armed"
     assert stopped["status"] == "stopped"
     assert stopped["session_id"] == armed["session_id"]

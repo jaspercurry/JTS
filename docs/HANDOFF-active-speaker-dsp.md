@@ -440,6 +440,18 @@ returns `would_play: false`, `playback_allowed: false`, and
 `tone_playback_implemented: false` in this build. It is a contract for future
 playback code, not a sound-emitting backend.
 
+`jasper.active_speaker.calibration_level` owns the commissioning test-signal
+level contract. It deliberately separates calibration level from normal system
+volume: the operator controls the requested test level, JTS clamps it to a
+small safe envelope, and the default is the minimum (`-80 dBFS`). The current
+`/sound/` card renders that backend-owned range as a slider only after the
+safe session is armed and sends the selected level into the tone-plan request.
+No current code raises listening volume, emits samples, or trusts the slider
+as permission to play. The same contract has a coarse future mic-meter
+classifier (`unmeasured`, `too_quiet`, `low`, `usable`, `too_loud`,
+`clipping`) so the first real playback slice can add observed microphone
+feedback without inventing a second level schema.
+
 ## Deterministic Tooling Roadmap
 
 Code should eventually own:
