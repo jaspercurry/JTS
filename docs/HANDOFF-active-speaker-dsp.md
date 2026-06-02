@@ -24,7 +24,8 @@
 > candidate templates from a preset JSON file and run
 > `camilladsp --check` when the binary is available. No tone playback,
 > channel test, CamillaDSP reload/apply path, or hardware loading
-> exists yet.
+> exists yet. The first packaged worked-example preset is
+> `jasper/active_speaker/presets/bc_de250_dayton_e150he44_v1.json`.
 
 ## Current Operational Truth
 
@@ -186,7 +187,9 @@ trim, conservative tweeter limiter, and a temporary protective
 tweeter HP around 2x Fc during commissioning. Treat those as worked
 example values, not project-wide defaults. They become defaults only
 inside a named preset for that exact driver/horn/baffle/amp/channel
-map combination.
+map combination. The first data-only version lives at
+`jasper/active_speaker/presets/bc_de250_dayton_e150he44_v1.json`; it
+is a worked example, not commissioned evidence.
 
 ## Measurement Protocol
 
@@ -420,7 +423,9 @@ Updated execution plan:
    work.
 3. **Engineering interop slice**: import REW/VituixCAD measurement
    artifacts and freeze the first named preset before attempting an
-   end-user wizard.
+   end-user wizard. Started 2026-06-01 with a data-only DE250 +
+   E150HE-44 worked-example preset; real engineering artifacts,
+   expected envelopes, and limiter thresholds are still future work.
 4. **Channel and path safety slice**: prove every audible source
    path, including TTS/cues and test tones, flows through the active
    baseline and cannot bypass tweeter protection.

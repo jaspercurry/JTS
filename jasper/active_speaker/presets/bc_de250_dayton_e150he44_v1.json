@@ -1,0 +1,68 @@
+{
+  "artifact_schema_version": 1,
+  "kind": "jts_active_speaker_preset",
+  "preset_id": "bc-de250-dayton-e150he44-v1",
+  "name": "B&C DE250 + Dayton Epique E150HE-44",
+  "way_count": 2,
+  "channel_map": {
+    "layout": "mono",
+    "outputs": [
+      {
+        "index": 0,
+        "side": "mono",
+        "driver_role": "woofer",
+        "label": "mono woofer",
+        "startup_muted": true
+      },
+      {
+        "index": 1,
+        "side": "mono",
+        "driver_role": "tweeter",
+        "label": "mono tweeter",
+        "startup_muted": true
+      }
+    ]
+  },
+  "drivers": {
+    "woofer": {
+      "role": "woofer",
+      "manufacturer": "Dayton Audio",
+      "model": "Epique E150HE-44",
+      "fs_hz": 40,
+      "sensitivity_db": 83.3,
+      "rated_power_w": 60,
+      "expected_nearfield_response": "Smooth usable response through the planned crossover; suppress known upper breakup by crossover design."
+    },
+    "tweeter": {
+      "role": "tweeter",
+      "manufacturer": "B&C Speakers",
+      "model": "DE250",
+      "rated_power_w": 60,
+      "expected_nearfield_response": "Compression-driver horn response must be measured with the final horn or waveguide attached."
+    }
+  },
+  "crossover_regions": [
+    {
+      "id": "woofer_tweeter",
+      "lower_driver": "woofer",
+      "upper_driver": "tweeter",
+      "fc_hz": 1600,
+      "target_type": "LinkwitzRiley",
+      "order": 4,
+      "lower_polarity": "non-inverted",
+      "upper_polarity": "non-inverted",
+      "delay_target_driver": "woofer",
+      "delay_range_ms": [0.05, 0.3],
+      "null_depth_threshold_db": 25
+    }
+  ],
+  "safety": {
+    "initial_sweep_level_db_spl": 65,
+    "max_commissioning_level_db_spl": 85,
+    "escalation_step_db": 5,
+    "require_physical_tweeter_protection": true,
+    "require_channel_identity_before_drivers": true,
+    "emergency_stop_required": true
+  },
+  "notes": "Worked example only. Final EQ, trims, limiter thresholds, and delay require the actual horn, baffle, enclosure, amplifier gain, and measurements."
+}

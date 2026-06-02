@@ -406,11 +406,16 @@ def emit_active_speaker_startup_config(
     )
     mixer_yaml = _emit_split_mixer(preset)
     pipeline_yaml = _emit_pipeline(preset)
-    header_id = f" (baseline_id={baseline_id})" if baseline_id else ""
+    metadata_comments = [f"# preset_id={preset.preset_id}"]
+    if baseline_id:
+        baseline_id = _yaml_string(baseline_id, "baseline_id")
+        metadata_comments.append(f"# baseline_id={baseline_id}")
+    metadata_yaml = "\n".join(metadata_comments)
 
     yaml = f"""---
-# Auto-generated active-speaker startup config{header_id}.
+# Auto-generated active-speaker startup config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_startup_config
+{metadata_yaml}
 # DO NOT HAND-EDIT or load automatically. This template is for hardware
 # bring-up only: all per-driver outputs start muted, tweeter paths include
 # an extra protective high-pass, and the software volume ceiling remains 0 dB.
