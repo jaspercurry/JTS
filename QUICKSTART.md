@@ -190,6 +190,8 @@ Visit these pages from any device on the same Wi-Fi. Replace
   account so "play Taylor Swift" works without your phone.
 - **`http://jts.local/speaker/`** — optional. Rename the speaker as it
   appears in AirPlay, Spotify Connect, Bluetooth, and USB Audio pickers.
+- **`http://jts.local/bluetooth/`** — optional. Open a five-minute
+  no-code pairing window for phones and Bluetooth accessories.
 - **`http://jts.local/system/`** — the dashboard. Status, dial
   onboarding, mic-mute, software version, Wi-Fi.
 

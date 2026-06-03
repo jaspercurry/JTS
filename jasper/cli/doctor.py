@@ -833,6 +833,95 @@ def check_bluealsa() -> CheckResult:
     )
 
 
+def check_bluetooth_pairing_policy() -> CheckResult:
+    """Verify the JTS no-code pairing agent is installed and idle-closed."""
+    expected_exec = "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
+    try:
+        p = _run([
+            "systemctl",
+            "show",
+            "bt-agent.service",
+            "-p",
+            "ActiveState",
+            "-p",
+            "SubState",
+            "-p",
+            "ExecStart",
+        ])
+    except FileNotFoundError:
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "warn",
+            "systemctl unavailable — skipped",
+        )
+    if p.returncode != 0:
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "fail",
+            "systemctl show bt-agent.service failed",
+        )
+    props = {}
+    for line in p.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            props[key] = value
+    active = props.get("ActiveState", "")
+    sub = props.get("SubState", "")
+    if active != "active" or sub != "running":
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "fail",
+            f"bt-agent.service state={active}/{sub}; no-code default agent not running",
+        )
+    exec_start = props.get("ExecStart", "")
+    if expected_exec not in exec_start:
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "fail",
+            f"bt-agent.service ExecStart is not the JTS no-code agent: {exec_start}",
+        )
+
+    try:
+        bt = _run(["bluetoothctl", "show"])
+    except FileNotFoundError:
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "warn",
+            "agent OK, but bluetoothctl unavailable — adapter gate not checked",
+        )
+    if bt.returncode != 0:
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "warn",
+            "agent OK, but bluetoothctl show failed — adapter gate not checked",
+        )
+
+    values: dict[str, str] = {}
+    for line in bt.stdout.splitlines():
+        key, sep, value = line.strip().partition(":")
+        if sep:
+            values[key] = value.strip().split(" ", 1)[0].lower()
+    discoverable = values.get("Discoverable")
+    pairable = values.get("Pairable")
+    if discoverable is None or pairable is None:
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "warn",
+            "agent OK, but adapter Discoverable/Pairable state was not reported",
+        )
+    if discoverable == "yes" or pairable == "yes":
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "warn",
+            f"agent OK, pairing window open (Discoverable={discoverable}, Pairable={pairable})",
+        )
+    return CheckResult(
+        "Bluetooth pairing policy",
+        "ok",
+        "JTS no-code agent active; pairing window closed",
+    )
+
+
 def check_spotify_cache(cfg: Config) -> CheckResult:
     """Verify Spotify is authenticated. Prefers the multi-account
     registry (per-household-member accounts, the modern path) over the
@@ -4623,6 +4712,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_shairport_sync_ap2,
         check_nqptp_running,
         check_bluealsa,
+        check_bluetooth_pairing_policy,
         check_jasper_mux,
         ("Spotify auth", lambda: check_spotify_cache(cfg)),
         ("Spotify Connect device", lambda: check_spotify_connect_device(cfg)),

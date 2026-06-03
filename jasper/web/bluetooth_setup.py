@@ -12,7 +12,6 @@ Routes (nginx strips /bluetooth/):
   POST /discoverable           {"on": bool}
   POST /pair                   {"mac": "..."} — returns {ok: true}
   GET  /pair/<mac>/stream      SSE: pair-flow status events
-  POST /pair/<mac>/respond     {"accept": bool, "value"?: str|int}
   POST /connect                {"mac": "..."}
   POST /disconnect             {"mac": "..."}
   POST /forget                 {"mac": "..."}
@@ -69,9 +68,9 @@ logger = logging.getLogger(__name__)
 class _AsyncDispatcher:
     """Runs an asyncio event loop on a dedicated thread. The HTTP
     handlers (which are sync) submit coroutines via `run()` and
-    block on the result. The engine, agent, and observer all live
-    on this loop, so they share one bus connection and one set of
-    signal subscriptions across the whole daemon.
+    block on the result. The engine and observer live on this loop,
+    so they share one bus connection and one set of signal
+    subscriptions across the whole daemon.
     """
 
     def __init__(self) -> None:
@@ -175,8 +174,8 @@ def _landing_html(csrf_token: str = "") -> bytes:
     body = f"""
 {canonical_header("Bluetooth")}
 <main class="page">
-  <p class="bt-intro">Pair phones (to use this as a Bluetooth speaker), volume
-  knobs, headphones, anything that speaks Bluetooth.</p>
+  <p class="bt-intro">Pair phones for Bluetooth speaker playback, plus volume
+  knobs and other no-code Bluetooth accessories.</p>
 
   <section class="section">
     <div class="info-card">
@@ -189,10 +188,10 @@ def _landing_html(csrf_token: str = "") -> bytes:
       </div>
       <div class="toggle-row">
         <div>
-          <label class="label" for="sw-disc">Discoverable</label>
+          <label class="label" for="sw-disc">Pairing mode</label>
           <div class="hint" id="disc-hint">
-            While on, other devices can see &amp; pair JTS as a speaker.
-            Auto-turns off after 5&nbsp;min.
+            While on, nearby devices can see and pair with JTS.
+            No code required. Auto-turns off after 5&nbsp;min.
           </div>
         </div>
         {toggle_html("sw-disc", disabled=True)}
@@ -320,7 +319,6 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     "/power", "/discoverable", "/scan", "/pair",
                     "/connect", "/disconnect", "/forget",
                 }
-                or (path.startswith("/pair/") and path.endswith("/respond"))
             ):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -379,15 +377,6 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     # subsequent /stream request can consume it.
                     _start_pair_stream(mac)
                     self._send_json({"ok": True})
-                    return
-                if path.startswith("/pair/") and path.endswith("/respond"):
-                    mac = path[len("/pair/"):-len("/respond")]
-                    accept = bool(body.get("accept"))
-                    value = body.get("value")
-                    ok = _dispatch().engine.respond_prompt(
-                        mac, accept=accept, value=value,
-                    )
-                    self._send_json({"ok": ok})
                     return
                 if path == "/connect":
                     mac = (body.get("mac") or "").strip()
@@ -574,13 +563,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if sockets:
         logger.info(
-            "jasper-bluetooth-web adopting systemd fd (Discoverable "
+            "jasper-bluetooth-web adopting systemd fd (pairing mode "
             "auto-off after %ds when toggled on)",
             DISCOVERABLE_AUTO_OFF_SEC,
         )
     else:
         logger.info(
-            "jasper-bluetooth-web listening on http://%s:%d (Discoverable "
+            "jasper-bluetooth-web listening on http://%s:%d (pairing mode "
             "auto-off after %ds when toggled on)",
             args.host, args.port, DISCOVERABLE_AUTO_OFF_SEC,
         )

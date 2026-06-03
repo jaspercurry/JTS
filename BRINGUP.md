@@ -195,7 +195,7 @@ After it finishes:
 
 ```sh
 systemctl status jasper-camilla jasper-voice jasper-mux \
-    librespot shairport-sync nqptp bt-agent
+    librespot shairport-sync nqptp bt-agent.service
 # All should show active (running)
 ```
 
@@ -599,18 +599,15 @@ comfortable-max listening level. The dongle stays at 100% always.
 
 ## Phase 5 — Pair Bluetooth (one-time per device, 2 min)
 
-```sh
-sudo bluetoothctl
-[bluetooth]# scan on
-# Wait for your phone to appear, note its MAC
-[bluetooth]# pair AA:BB:CC:DD:EE:FF
-# Confirm pairing on your phone
-[bluetooth]# trust AA:BB:CC:DD:EE:FF
-[bluetooth]# exit
-```
+Open `http://jts.local/bluetooth/`, turn **Pairing mode** on, then
+choose the speaker from your phone's Bluetooth settings. Pairing mode
+opens a five-minute no-code window: the speaker is visible and accepts
+new Just Works pairings, then automatically closes. No PIN, passkey,
+or numeric-comparison prompt should appear.
 
-Now connect from your phone's Bluetooth settings; A2DP audio
-should route to the speaker.
+After pairing, connect from your phone's Bluetooth settings; A2DP audio
+should route to the speaker. Already-paired devices can reconnect later
+without leaving pairing mode on.
 
 ---
 

@@ -58,3 +58,11 @@ def test_device_actions_use_data_attributes_not_inline_js():
     # The server HTML carries no inline onclick either.
     html = bluetooth_setup._landing_html().decode("utf-8")
     assert "onclick=" not in html
+
+
+def test_bluetooth_module_has_no_code_entry_flow():
+    js = _MODULE_JS.read_text()
+    assert "confirm_passkey" not in js
+    assert "request_passkey" not in js
+    assert "request_pincode" not in js
+    assert "data-pair-action" not in js

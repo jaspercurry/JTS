@@ -1,11 +1,9 @@
 // main.js — /bluetooth/ generic Bluetooth control panel.
 //
 // Phone-Settings-style live device list: pair anything, connect/disconnect/
-// forget, toggle the adapter on/off and discoverable. The page is rendered
+// forget, toggle the adapter on/off and pairing mode. The page is rendered
 // server-side by jasper.web.bluetooth_setup; this module owns ONLY the live
-// behaviour, relocated verbatim from the page's former inline <script> so the
-// hardware-critical pairing flow is unchanged. The only structural change is
-// the move to ES-module imports for the shared CSRF/JSON and dialog helpers:
+// behaviour:
 //
 //   * jsonHeaders() (CSRF X-CSRF-Token + Content-Type) from the shared http.js
 //     — same contract verify_csrf() accepts as a hidden form field. The token
@@ -161,7 +159,7 @@ async function toggleDisc() {
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
       restoreToggle();
-      jtsAlert('Discoverable toggle failed: ' + (data.error || data.message || r.status));
+      jtsAlert('Pairing mode toggle failed: ' + (data.error || data.message || r.status));
     }
   } catch (e) {
     restoreToggle();
@@ -387,45 +385,6 @@ function renderPairStage(mac, data, card) {
     stageEl.innerHTML = `<span class="spinner"></span> Trusting…`;
   } else if (data.stage === 'pairing') {
     stageEl.innerHTML = `<span class="spinner"></span> Pairing…`;
-  } else if (data.stage === 'confirm_passkey') {
-    stageEl.classList.remove('active');
-    card.innerHTML = `
-      <div>Confirm that this code matches what's shown on the device:</div>
-      <div class="passkey">${formatPasskey(data.passkey)}</div>
-      <div class="prompt-buttons">
-        <button class="btn btn--primary" data-pair-action="respond" data-mac="${escapeHtml(mac)}" data-accept="true">Yes, matches</button>
-        <button class="btn btn--danger" data-pair-action="respond" data-mac="${escapeHtml(mac)}" data-accept="false">No</button>
-      </div>
-    `;
-  } else if (data.stage === 'request_passkey') {
-    card.innerHTML = `
-      <div>Enter the passkey shown on the device:</div>
-      <input type="number" id="pk-${cssIdSafe(mac)}" maxlength="6" class="pair-input">
-      <div class="prompt-buttons">
-        <button class="btn btn--primary" data-pair-action="passkey" data-mac="${escapeHtml(mac)}">Enter</button>
-        <button class="btn btn--danger" data-pair-action="respond" data-mac="${escapeHtml(mac)}" data-accept="false">Cancel</button>
-      </div>
-    `;
-  } else if (data.stage === 'request_pincode') {
-    card.innerHTML = `
-      <div>This device wants a PIN code (legacy pairing). Common
-      defaults: <code>0000</code>, <code>1234</code>.</div>
-      <input type="text" id="pc-${cssIdSafe(mac)}" maxlength="16"
-             value="0000" class="pair-input pair-input--wide">
-      <div class="prompt-buttons">
-        <button class="btn btn--primary" data-pair-action="pincode" data-mac="${escapeHtml(mac)}">Enter</button>
-        <button class="btn btn--danger" data-pair-action="respond" data-mac="${escapeHtml(mac)}" data-accept="false">Cancel</button>
-      </div>
-    `;
-  } else if (data.stage === 'display_passkey') {
-    stageEl.classList.remove('active');
-    card.innerHTML = `
-      <div>Type this on the device:</div>
-      <div class="passkey">${formatPasskey(data.passkey)}</div>
-      <div class="pair-waiting">
-        Waiting for the device to enter the passkey…
-      </div>
-    `;
   } else if (data.stage === 'paired') {
     stageEl.innerHTML = '✓ Paired';
     stageEl.classList.remove('active');
@@ -454,29 +413,6 @@ function renderPairStage(mac, data, card) {
     `;
     card.classList.add('pair-card--error');
   }
-}
-
-async function respondPair(mac, accept) {
-  await fetch(`pair/${encodeURIComponent(mac)}/respond`, {
-    method: 'POST', headers: jsonHeaders(),
-    body: JSON.stringify({accept}),
-  });
-}
-
-async function submitPasskey(mac) {
-  const v = document.getElementById(`pk-${cssIdSafe(mac)}`).value;
-  await fetch(`pair/${encodeURIComponent(mac)}/respond`, {
-    method: 'POST', headers: jsonHeaders(),
-    body: JSON.stringify({accept: true, value: parseInt(v, 10) || 0}),
-  });
-}
-
-async function submitPincode(mac) {
-  const v = document.getElementById(`pc-${cssIdSafe(mac)}`).value;
-  await fetch(`pair/${encodeURIComponent(mac)}/respond`, {
-    method: 'POST', headers: jsonHeaders(),
-    body: JSON.stringify({accept: true, value: v}),
-  });
 }
 
 // -------- connect / disconnect / forget --------
@@ -512,16 +448,6 @@ document.addEventListener('click', function(e) {
     return;
   }
 
-  const pairBtn = e.target.closest('button[data-pair-action]');
-  if (!pairBtn) return;
-  const mac = pairBtn.dataset.mac || '';
-  if (pairBtn.dataset.pairAction === 'respond') {
-    respondPair(mac, pairBtn.dataset.accept === 'true');
-  } else if (pairBtn.dataset.pairAction === 'passkey') {
-    submitPasskey(mac);
-  } else if (pairBtn.dataset.pairAction === 'pincode') {
-    submitPincode(mac);
-  }
 });
 
 // The Scan button is server-rendered chrome (no inline onclick); wire it here.
@@ -537,11 +463,6 @@ function escapeHtml(s) {
 }
 function cssIdSafe(s) { return String(s).replace(/[^a-zA-Z0-9]/g, '_'); }
 function iconSlug(s) { return String(s || 'device').replace(/[^a-zA-Z0-9_-]/g, '') || 'device'; }
-function formatPasskey(p) {
-  // Bluez passkey is uint32 0..999999; zero-pad to 6.
-  const n = Number.parseInt(p, 10);
-  return String(Number.isFinite(n) ? n : 0).padStart(6, '0');
-}
 
 // -------- bootstrap --------
 

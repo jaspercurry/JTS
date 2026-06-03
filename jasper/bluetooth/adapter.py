@@ -1,7 +1,7 @@
-"""Adapter-level bluez ops: power, discoverable, pairable, scan.
+"""Adapter-level bluez ops: power, pairing window, scan.
 
 Thin async wrappers around `org.bluez.Adapter1`. The web layer owns
-the policy ("Discoverable defaults off; auto-off after 5 min when on");
+the policy ("pairing mode defaults off; auto-off after 5 min when on");
 this module is the mechanism.
 """
 from __future__ import annotations
@@ -18,12 +18,36 @@ logger = logging.getLogger(__name__)
 BLUEZ_BUS = "org.bluez"
 DEFAULT_ADAPTER = "hci0"
 
-# When the user flips Discoverable ON via the web UI, auto-revert it
-# OFF after this many seconds. Set on bluez via DiscoverableTimeout.
-# The user said "we don't want the speaker just always broadcasting" —
-# this is the safety net so even if they forget to flip it back off,
-# the radio quiets down after a few minutes.
+# When the user flips pairing mode ON via the web UI, auto-revert it
+# OFF after this many seconds. Set on bluez via DiscoverableTimeout
+# and PairableTimeout.
+# This is the safety net so even if they forget to flip it back off,
+# the radio closes the pairing window after a few minutes.
 DISCOVERABLE_AUTO_OFF_SEC = 300
+
+
+async def _close_pairing_window(props, *, best_effort: bool = False) -> None:
+    """Close both BlueZ knobs that admit new pairings."""
+    for key, signature, value in (
+        ("Discoverable", "b", False),
+        ("Pairable", "b", False),
+        ("DiscoverableTimeout", "u", 0),
+        ("PairableTimeout", "u", 0),
+    ):
+        try:
+            await props.call_set(
+                "org.bluez.Adapter1",
+                key,
+                Variant(signature, value),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if not best_effort:
+                raise
+            logger.warning(
+                "event=bluetooth_pairing_window.rollback_failed property=%s err=%s",
+                key,
+                exc,
+            )
 
 
 async def _adapter(bus: MessageBus, adapter: str = DEFAULT_ADAPTER):
@@ -93,31 +117,48 @@ async def set_discoverable(
     *,
     timeout_sec: int = DISCOVERABLE_AUTO_OFF_SEC,
 ) -> None:
-    """Set the adapter's Discoverable property. When turning ON,
-    also set DiscoverableTimeout so the radio quiets down even if
-    the user forgets to flip the toggle back. When turning OFF,
-    set timeout back to 0 (the bluez default for the off state)."""
+    """Open or close the JTS pairing window.
+
+    BlueZ separates visibility (`Discoverable`) from whether incoming
+    pairing requests are accepted (`Pairable`). For JTS the UI intentionally
+    treats the Discoverable toggle as "pairing mode": turning it on makes the
+    speaker visible and pairable for a bounded window; turning it off closes
+    both knobs. Already-paired devices can still reconnect after Pairable is
+    false; BlueZ documents Pairable as affecting only incoming pairing
+    requests.
+    """
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
         _, props = await _adapter(bus, adapter)
         if value:
-            await props.call_set(
-                "org.bluez.Adapter1",
-                "DiscoverableTimeout",
-                Variant("u", int(timeout_sec)),
-            )
-            await props.call_set(
-                "org.bluez.Adapter1", "Discoverable", Variant("b", True),
-            )
+            try:
+                await props.call_set(
+                    "org.bluez.Adapter1",
+                    "PairableTimeout",
+                    Variant("u", int(timeout_sec)),
+                )
+                await props.call_set(
+                    "org.bluez.Adapter1", "Pairable", Variant("b", True),
+                )
+                await props.call_set(
+                    "org.bluez.Adapter1",
+                    "DiscoverableTimeout",
+                    Variant("u", int(timeout_sec)),
+                )
+                await props.call_set(
+                    "org.bluez.Adapter1", "Discoverable", Variant("b", True),
+                )
+            except Exception:
+                logger.warning(
+                    "event=bluetooth_pairing_window.open_failed_rollback "
+                    "adapter=%s",
+                    adapter,
+                    exc_info=True,
+                )
+                await _close_pairing_window(props, best_effort=True)
+                raise
         else:
-            await props.call_set(
-                "org.bluez.Adapter1", "Discoverable", Variant("b", False),
-            )
-            # Reset timeout for a clean state.
-            await props.call_set(
-                "org.bluez.Adapter1",
-                "DiscoverableTimeout", Variant("u", 0),
-            )
+            await _close_pairing_window(props)
     finally:
         bus.disconnect()
 

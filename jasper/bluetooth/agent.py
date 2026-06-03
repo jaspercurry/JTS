@@ -1,200 +1,170 @@
-"""DBus bluez agent — handles pairing prompts.
+"""BlueZ pairing agent for JTS.
 
-Capability is `DisplayYesNo`, which is the right choice for a Pi with
-a web UI (no physical keyboard or display on the Pi itself, but the
-user has a browser they can click in). Per the BT Core Spec SSP table:
+JTS is a headless speaker: it has no trusted local display or keyboard, and
+the product pairing UX is deliberately "turn on pairing mode, then pair from
+your phone." The only supported agent capability is therefore
+NoInputNoOutput. BlueZ maps that to Secure Simple Pairing "Just Works" for
+ordinary phones and audio devices, with no PIN/passkey/code prompt.
 
-  Local DisplayYesNo × Remote DisplayYesNo  → Numeric Comparison
-        (phone, computer: "do these 6 digits match? [Yes/No]")
-  Local DisplayYesNo × Remote KeyboardOnly  → Passkey Entry
-        (BT keyboards: we show 6 digits, user types on remote)
-  Local DisplayYesNo × Remote DisplayOnly   → Passkey Entry
-        (some headsets: read code off remote, type it on Pi)
-  Local DisplayYesNo × Remote NoInputNoOutput → Just Works
-        (headphones, speakers, knobs, BLE: auto-accept)
-  Legacy (pre-SSP) device                   → Legacy PIN
-
-The agent surfaces interactive prompts to the engine via asyncio
-Futures keyed by device D-Bus path. The engine registers a
-PromptHandle before calling `Pair()`; bluez calls back here (e.g.,
-RequestConfirmation); we resolve the handle's `future` with the
-prompt details so the web layer can render the right UI; we then
-await the user's response and return it to bluez.
-
-Pre-2.1 PIN-entry and "we read code off remote display" cases use
-the same PromptHandle pattern; the web UI shows a text/number input
-instead of Yes/No buttons.
+Interactive pairing requests are rejected on purpose. If a device requires a
+PIN, passkey, or numeric comparison, it is outside the supported JTS flow.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from typing import NoReturn
 
+from dbus_next import Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 from dbus_next.service import ServiceInterface, method  # type: ignore
 
 logger = logging.getLogger(__name__)
 
-
-# Bluez raises this name for "user said no / agent rejected".
 REJECTED_DBUS_NAME = "org.bluez.Error.Rejected"
+DEFAULT_AGENT_PATH = "/com/jasper/bt/no_code_agent"
 
 
-@dataclass
-class PromptHandle:
-    """A pending interactive prompt from bluez. The engine awaits
-    `future`; the web layer (via the engine) calls `.respond()`
-    when the user clicks something."""
-
-    device_path: str
-    kind: str = "pending"   # "confirm" | "passkey" | "pincode" | "display_passkey"
-    passkey: int | None = None
-    future: asyncio.Future = field(default_factory=asyncio.Future)
-
-    def respond(self, *, accept: bool, value: str | int | None = None) -> None:
-        if self.future.done():
-            return
-        if not accept:
-            self.future.set_exception(_BluezReject("user declined"))
-            return
-        self.future.set_result(value)
+def _reject(message: str) -> NoReturn:
+    raise DBusError(REJECTED_DBUS_NAME, message)
 
 
-class _BluezReject(Exception):
-    """Internal exception that dbus-next maps to org.bluez.Error.Rejected
-    when raised inside an agent method body (via _DBUS_ERROR_NAME attr)."""
-    _DBUS_ERROR_NAME = REJECTED_DBUS_NAME
+class NoCodeAgent(ServiceInterface):
+    """A single-purpose BlueZ Agent1 implementation.
 
+    Accepts no-code authorization requests and rejects every pairing method
+    that would require a human to compare or type a code.
+    """
 
-class Agent(ServiceInterface):
-    """The bluez agent. Multi-call: one agent serves many concurrent
-    pair attempts. Engine instances register PromptHandles keyed by
-    device path; the agent dispatches callbacks back to them."""
-
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        bus: MessageBus | None = None,
+        on_release: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__("org.bluez.Agent1")
-        self._prompts: dict[str, PromptHandle] = {}
-
-    def register_prompt(self, handle: PromptHandle) -> None:
-        self._prompts[handle.device_path] = handle
-
-    def clear_prompt(self, device_path: str) -> None:
-        self._prompts.pop(device_path, None)
-
-    async def _await_response(
-        self, kind: str, device_path: str, passkey: int | None = None,
-    ):
-        """Resolve the engine's PromptHandle with this prompt's kind/
-        passkey, then await the future for the user's response.
-        Raises Rejected (mapped to org.bluez.Error.Rejected) if no
-        handle is registered — bluez treats that as a pair rejection."""
-        handle = self._prompts.get(device_path)
-        if handle is None:
-            logger.warning(
-                "agent: %s(%s) but no prompt handle registered; rejecting",
-                kind, device_path,
-            )
-            raise _BluezReject("no pending prompt for device")
-        handle.kind = kind
-        handle.passkey = passkey
-        try:
-            return await handle.future
-        finally:
-            self.clear_prompt(device_path)
-
-    # ---------- DBus agent methods ----------
-    # dbus-next reads param annotations as DBus signature fragments
-    # ("o" = object path, "s" = string, "u" = uint32, "q" = uint16).
-    # Methods returning a value to bluez carry a return annotation;
-    # void-returning methods omit `-> None` (the decorator rejects
-    # `None` as a non-string annotation).
-    #
-    # Methods can be async — dbus-next awaits them. That lets us use
-    # asyncio Futures inside without re-entering the event loop.
+        self._bus = bus
+        self._on_release = on_release
 
     @method()
-    def Release(self):  # noqa: N802 (DBus methods are CamelCase)
-        pass
+    def Release(self):  # noqa: N802
+        logger.info("event=bluetooth_agent.release")
+        if self._on_release is not None:
+            self._on_release()
 
     @method()
-    async def RequestPinCode(self, device: "o") -> "s":  # type: ignore  # noqa: N802
-        value = await self._await_response("pincode", device)
-        return str(value or "")
+    def RequestPinCode(self, device: "o") -> "s":  # type: ignore  # noqa: N802
+        logger.warning(
+            "event=bluetooth_agent.reject device=%s reason=pin_required",
+            device,
+        )
+        _reject("JTS does not support PIN-code pairing")
 
     @method()
     def DisplayPinCode(  # noqa: N802
         self, device: "o", pincode: "s",  # type: ignore
     ):
-        logger.info(
-            "agent: display PIN %s for %s — but we have no display; "
-            "user must read this from elsewhere",
-            pincode, device,
+        logger.warning(
+            "event=bluetooth_agent.reject device=%s reason=display_pin_required",
+            device,
         )
+        _reject("JTS does not display PIN codes")
 
     @method()
-    async def RequestPasskey(self, device: "o") -> "u":  # type: ignore  # noqa: N802
-        value = await self._await_response("passkey", device)
-        return int(value or 0)
+    def RequestPasskey(self, device: "o") -> "u":  # type: ignore  # noqa: N802
+        logger.warning(
+            "event=bluetooth_agent.reject device=%s reason=passkey_required",
+            device,
+        )
+        _reject("JTS does not support passkey pairing")
 
     @method()
     def DisplayPasskey(  # noqa: N802
         self, device: "o", passkey: "u", entered: "q",  # type: ignore
     ):
-        # The remote needs the user to type a code; we show it.
-        # bluez calls this repeatedly with `entered` ticking up as
-        # the remote types — only surface on the first call.
-        if entered == 0:
-            asyncio.create_task(self._surface_display_passkey(device, passkey))
-
-    async def _surface_display_passkey(self, device: str, passkey: int) -> None:
-        handle = self._prompts.get(device)
-        if handle is None:
-            return
-        handle.kind = "display_passkey"
-        handle.passkey = int(passkey)
-        # Don't resolve future — the remote types the digits and
-        # the pair completes on its own. The web UI just displays
-        # the digits with a "type these on your device" hint.
+        logger.warning(
+            "event=bluetooth_agent.reject device=%s reason=display_passkey_required",
+            device,
+        )
+        _reject("JTS does not display passkeys")
 
     @method()
-    async def RequestConfirmation(  # noqa: N802
+    def RequestConfirmation(  # noqa: N802
         self, device: "o", passkey: "u",  # type: ignore
     ):
-        # SSP Numeric Comparison — the iPhone-style "do these match?".
-        await self._await_response("confirm", device, passkey=int(passkey))
+        logger.warning(
+            "event=bluetooth_agent.reject device=%s reason=confirmation_required",
+            device,
+        )
+        _reject("JTS does not support numeric comparison pairing")
 
     @method()
-    def RequestAuthorization(self, device: "o"):  # type: ignore  # noqa: N802
-        # Just Works case. We always accept — the user already
-        # initiated the pair by clicking the device in the list.
-        logger.info("agent: auto-authorizing %s", device)
+    async def RequestAuthorization(self, device: "o"):  # type: ignore  # noqa: N802
+        logger.info(
+            "event=bluetooth_agent.authorize_pairing device=%s",
+            device,
+        )
+        await self._trust_device(device)
 
     @method()
-    def AuthorizeService(  # noqa: N802
+    async def AuthorizeService(  # noqa: N802
         self, device: "o", uuid: "s",  # type: ignore
     ):
-        logger.info("agent: auto-authorizing service %s on %s", uuid, device)
+        logger.info(
+            "event=bluetooth_agent.authorize_service device=%s uuid=%s",
+            device,
+            uuid,
+        )
+        await self._trust_device(device)
 
     @method()
     def Cancel(self):  # noqa: N802
-        logger.info("agent: Cancel()")
+        logger.info("event=bluetooth_agent.cancel")
+
+    async def _trust_device(self, device: str) -> None:
+        if self._bus is None:
+            return
+        try:
+            intro = await self._bus.introspect("org.bluez", device)
+            props = self._bus.get_proxy_object(
+                "org.bluez", device, intro,
+            ).get_interface("org.freedesktop.DBus.Properties")
+            await props.call_set(
+                "org.bluez.Device1", "Trusted", Variant("b", True),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "event=bluetooth_agent.trust_failed device=%s err=%s",
+                device,
+                exc,
+            )
+        else:
+            logger.info("event=bluetooth_agent.trusted device=%s", device)
 
 
 async def register_agent(
     bus: MessageBus,
-    agent: Agent,
+    agent: ServiceInterface,
     *,
-    agent_path: str = "/com/jasper/bt/agent",
-    capability: str = "DisplayYesNo",
+    agent_path: str = DEFAULT_AGENT_PATH,
+    capability: str = "NoInputNoOutput",
 ) -> None:
-    """Export the agent on `bus` and register as the default bluez agent.
-    Safe to call multiple times — re-export / re-register are swallowed."""
+    """Export `agent` and request default-agent ownership."""
     try:
         bus.export(agent_path, agent)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        detail = str(exc).lower()
+        already_exported = "already" in detail and (
+            "export" in detail or agent_path.lower() in detail
+        )
+        if not already_exported:
+            logger.warning(
+                "event=bluetooth_agent.export_failed path=%s err=%s",
+                agent_path,
+                exc,
+            )
+            raise
+        logger.debug("event=bluetooth_agent.export_exists path=%s", agent_path)
     intro = await bus.introspect("org.bluez", "/org/bluez")
     mgr = bus.get_proxy_object(
         "org.bluez", "/org/bluez", intro,
@@ -204,17 +174,13 @@ async def register_agent(
     except DBusError as e:
         if "already exists" not in str(e).lower():
             raise
-    try:
-        await mgr.call_request_default_agent(agent_path)
-    except DBusError:
-        # Another agent already holds the default; that's OK.
-        pass
+    await mgr.call_request_default_agent(agent_path)
 
 
 async def unregister_agent(
     bus: MessageBus,
     *,
-    agent_path: str = "/com/jasper/bt/agent",
+    agent_path: str = DEFAULT_AGENT_PATH,
 ) -> None:
     try:
         intro = await bus.introspect("org.bluez", "/org/bluez")
@@ -228,3 +194,12 @@ async def unregister_agent(
         bus.unexport(agent_path)
     except Exception:  # noqa: BLE001
         pass
+
+
+__all__ = [
+    "DEFAULT_AGENT_PATH",
+    "NoCodeAgent",
+    "REJECTED_DBUS_NAME",
+    "register_agent",
+    "unregister_agent",
+]

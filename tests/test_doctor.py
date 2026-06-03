@@ -128,6 +128,92 @@ def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
     assert "jasper-voice.service NRestarts=2" in r.detail
 
 
+def test_check_bluetooth_pairing_policy_ok(monkeypatch):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
+                ),
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "\tPowered: yes\n"
+                    "\tDiscoverable: no\n"
+                    "\tPairable: no\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+    r = doctor.check_bluetooth_pairing_policy()
+
+    assert r.status == "ok"
+    assert "no-code agent active" in r.detail
+    assert "closed" in r.detail
+
+
+def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
+    def fake_run(cmd, *args, **kwargs):
+        assert cmd[:3] == ["systemctl", "show", "bt-agent.service"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "ActiveState=active\n"
+                "SubState=running\n"
+                "ExecStart={ path=/usr/bin/bt-agent ; }\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+    r = doctor.check_bluetooth_pairing_policy()
+
+    assert r.status == "fail"
+    assert "not the JTS no-code agent" in r.detail
+
+
+def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypatch):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
+                ),
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "\tPowered: yes\n"
+                    "\tDiscoverable: no\n"
+                    "\tPairable: yes\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+    r = doctor.check_bluetooth_pairing_policy()
+
+    assert r.status == "warn"
+    assert "pairing window open" in r.detail
+
+
 def test_subprocess_env_with_fresh_files_overrides_stale_daemon_env(tmp_path: Path):
     """Long-lived daemons launching subprocesses need fresh wizard-file
     truth, not the process env captured when the daemon started."""

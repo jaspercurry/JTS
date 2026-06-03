@@ -2,7 +2,8 @@
 # Install jasper voice daemon + always-on CamillaDSP on a Raspberry Pi.
 #
 # Source-builds shairport-sync (AirPlay 2) + nqptp, drops in
-# librespot (rust, via raspotify .deb) + bluez-alsa + bt-agent,
+# librespot (rust, via raspotify .deb) + bluez-alsa + JTS no-code
+# Bluetooth pairing agent,
 # owns the full systemd unit per renderer.
 #
 # Idempotent: re-running upgrades the venv and re-applies configs.
@@ -96,7 +97,7 @@ Run for real from a Pi-local checkout:
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd bluez-alsa-utils bluez-tools avahi-daemon
+     libswresample-dev xxd bluez-alsa-utils avahi-daemon
      avahi-utils.
 
 2. Downloaded or built inputs
@@ -249,7 +250,7 @@ install_deps() {
     # performance. See docs/HANDOFF-aec.md "Resampler quality".
 
     # Source-build deps for shairport-sync (AirPlay 2) + nqptp, plus
-    # the bluez-alsa userspace and the bt-agent helper. All of these
+    # the bluez-alsa userspace and the JTS Bluetooth agent. All of these
     # are absent on a stock Trixie Lite image.
     #
     # `avahi-daemon` is the mDNS *publisher* — Pi OS Lite ships
@@ -265,7 +266,7 @@ install_deps() {
         libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
         libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
         xxd \
-        bluez-alsa-utils bluez-tools avahi-daemon avahi-utils
+        bluez-alsa-utils avahi-daemon avahi-utils
 }
 
 build_webrtc_v2_for_aec3() {
@@ -908,7 +909,7 @@ install_renderers() {
     # restart, picking up any changes made via the web UI / CLI.
     /usr/local/sbin/jasper-apply-airplay-mode
 
-    # bluez-alsa-utils + bluez-tools were apt-installed in install_deps.
+    # bluez-alsa-utils was apt-installed in install_deps.
     # Configure /etc/bluetooth/main.conf for speaker-mode (Just Works
     # pairing, audio-class device).
     bash "${REPO_DIR}/deploy/configure-bluez.sh"
@@ -2530,7 +2531,8 @@ install_systemd_units() {
     udevadm trigger --action=add --subsystem-match=sound 2>/dev/null || true
     udevadm trigger --action=add --subsystem-match=usb 2>/dev/null || true
 
-    # We own the full systemd units for each renderer + nqptp + bt-agent.
+    # We own the full systemd units for each renderer + nqptp + the
+    # no-code Bluetooth pairing agent.
     #
     # Defense in depth: a Pi installed against an older codepath could
     # still have /etc/systemd/system/shairport-sync.service.d/jts-output.conf

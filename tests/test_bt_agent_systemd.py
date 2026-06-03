@@ -1,4 +1,4 @@
-"""Lock down bt-agent.service deploy-stop behavior."""
+"""Lock down bt-agent.service ownership."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,11 +19,18 @@ def _value_for(unit_text: str, key: str) -> str | None:
     return None
 
 
-def test_bt_agent_uses_interrupt_for_cli_style_shutdown() -> None:
+def test_bt_agent_uses_jts_no_code_agent() -> None:
     unit = UNIT_PATH.read_text()
-    assert _value_for(unit, "KillSignal") == "SIGINT"
+    assert _value_for(unit, "ExecStart") == (
+        "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
+    )
 
 
 def test_bt_agent_has_short_stop_timeout() -> None:
     unit = UNIT_PATH.read_text()
-    assert _value_for(unit, "TimeoutStopSec") == "5s"
+    assert _value_for(unit, "TimeoutStopSec") == "10s"
+
+
+def test_bt_agent_restarts_when_bluez_releases_it() -> None:
+    unit = UNIT_PATH.read_text()
+    assert _value_for(unit, "Restart") == "always"

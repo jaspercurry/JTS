@@ -7,7 +7,7 @@ design system.
    ES module -- no inline <script> body, no legacy hand-rolled doctype.
 2. The migration was presentation-only: every route still resolves, the JSON
    POST handlers still enforce CSRF and drive the Bluetooth engine, the SSE
-   pair-stream coordination is untouched, and the public module surface
+   pair-stream coordination remains, and the public module surface
    (_landing_html / main) is unchanged.
 
 The Bluetooth engine and its asyncio dispatcher are mocked -- these tests are
@@ -223,6 +223,16 @@ def test_post_unknown_route_404s_without_revealing_csrf():
     # Route-check happens before CSRF-check: a bogus path 404s even with no
     # token, so it can't be used to probe CSRF state.
     h = _make_request("/bogus", body=b"{}")
+    h.do_POST()
+    assert h.status == int(http.HTTPStatus.NOT_FOUND)
+
+
+def test_post_pair_response_route_is_gone():
+    token = "r" * 64
+    h = _make_request(
+        "/pair/AA:BB:CC:DD:EE:FF/respond", body=b'{"accept": true}',
+        cookies="jts_csrf=" + token, csrf_header=token,
+    )
     h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 

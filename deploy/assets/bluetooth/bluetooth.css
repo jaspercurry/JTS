@@ -194,26 +194,6 @@
 .pair-card .stage.done {
   color: var(--status-ok);
 }
-.pair-card .passkey {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 2em;
-  letter-spacing: 0.1em;
-  font-weight: 700;
-  text-align: center;
-  padding: 0.4rem 0;
-  color: var(--foreground);
-}
-.pair-card .prompt-buttons {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: center;
-  margin-top: 0.5rem;
-}
-.pair-card .pair-waiting {
-  color: var(--muted);
-  text-align: center;
-  font-size: 0.85rem;
-}
 .pair-card .pair-detail {
   color: var(--muted);
   margin-top: 0.4rem;
@@ -222,23 +202,6 @@
   color: var(--status-danger);
   font-weight: 600;
   margin-bottom: 0.4rem;
-}
-/* Centred numeric/PIN entry inside the pair card. */
-.pair-input {
-  font-size: 1.5em;
-  text-align: center;
-  padding: 0.3rem;
-  margin: 0.5rem auto;
-  display: block;
-  width: 6em;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--foreground);
-}
-.pair-input--wide {
-  font-size: 1.3em;
-  width: 10em;
 }
 
 /* Spinners. The small per-stage spinner; @keyframes shared with .btn-spinner. */

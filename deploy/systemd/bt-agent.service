@@ -1,24 +1,16 @@
 [Unit]
-Description=Bluetooth Just Works pairing agent (NoInputNoOutput) for JTS speaker
+Description=Jasper Bluetooth no-code pairing agent
 Requires=bluetooth.service
 After=bluetooth.service
 
 [Service]
 Type=simple
-# bt-agent comes from the bluez-tools apt package. NoInputNoOutput
-# capability means pairing happens without PIN/passkey exchange —
-# correct for a headless speaker (we have no display or keyboard
-# for the user to confirm a code on).
-ExecStart=/usr/bin/bt-agent --capability=NoInputNoOutput
-# bluez-tools' bt-agent behaves like an interactive CLI helper: during
-# deploy restarts we have observed the default SIGTERM path sit in
-# systemd's 90 s stop window before the renderer restart group can
-# continue. Use the same signal a terminal Ctrl-C would send, then
-# escalate quickly. The agent has no durable state; BlueZ pairing
-# policy is re-registered by the next ExecStart.
-KillSignal=SIGINT
-TimeoutStopSec=5s
-Restart=on-failure
+# JTS is a headless speaker. Its single default BlueZ agent advertises
+# NoInputNoOutput so pairing is no-code "Just Works"; PIN/passkey/numeric
+# comparison flows are rejected as unsupported.
+ExecStart=/opt/jasper/.venv/bin/jasper-bluetooth-agent
+TimeoutStopSec=10s
+Restart=always
 RestartSec=2
 
 [Install]

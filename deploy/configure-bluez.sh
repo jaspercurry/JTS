@@ -36,21 +36,22 @@ sudo sed -i "s/^#\?Name = .*/Name = ${speaker_name_sed}/" "$CONF"
 # A2DP-sink-friendly UI (e.g. iOS shows the speaker icon).
 sudo sed -i 's/^#\?Class = .*/Class = 0x200414/' "$CONF"
 
-# Discoverable is OFF at boot — the speaker isn't broadcasting to
-# random nearby phones unless the user explicitly toggles it on via
-# /bluetooth/ in the web UI. Pre-paired devices keep working (they
-# don't need us to be discoverable to reconnect); only NEW pairing
-# from a phone's side needs Discoverable=true.
+# Discoverable is OFF at bluetoothd startup — the speaker is not
+# advertising itself to random nearby phones. The JTS no-code agent
+# also closes Pairable when it starts; /bluetooth/ opens both knobs for
+# a timed pairing window. Pre-paired devices keep working (they don't
+# need us to be discoverable or pairable to reconnect); only NEW pairing
+# needs the window.
 #
-# DiscoverableTimeout is the *default* auto-off when something flips
-# Discoverable=on. Our web UI overrides this per-toggle (5 min when
-# user clicks the switch); the value here matters only if some other
-# tool — bluetoothctl, a foreign agent — flips Discoverable without
-# also setting a timeout. 300 s is the safety net for that case;
-# 0 (the previous setting) meant "stay on forever" which is exactly
-# the broadcast-to-the-world failure mode we don't want.
+# These timeouts are the *default* auto-off when something flips
+# Discoverable or Pairable on. Our web UI sets both per-toggle (5 min
+# when user clicks the switch); the values here matter only if some
+# other tool — bluetoothctl, a foreign agent — flips one without also
+# setting a timeout. 300 s is the safety net for that case; 0 means
+# "stay on forever," which is exactly the broadcast/pair-to-the-world
+# failure mode we don't want.
 sudo sed -i 's/^#\?Discoverable = .*/Discoverable = false/' "$CONF"
 sudo sed -i 's/^#\?DiscoverableTimeout = .*/DiscoverableTimeout = 300/' "$CONF"
-sudo sed -i 's/^#\?PairableTimeout = .*/PairableTimeout = 0/' "$CONF"
+sudo sed -i 's/^#\?PairableTimeout = .*/PairableTimeout = 300/' "$CONF"
 
 echo "$CONF updated. Restart bluetooth with: sudo systemctl restart bluetooth"

@@ -569,9 +569,9 @@ readable form for users who'd rather read than be guided.
 ## Renderer architecture — file map
 
 `install.sh` source-builds shairport-sync (AirPlay 2) + nqptp,
-drops in librespot (rust, via raspotify .deb) + bluez-alsa +
-bt-agent, installs the optional `jasper-usbsink`, and owns the full
-systemd unit per renderer.
+drops in librespot (rust, via raspotify .deb) + bluez-alsa + the
+JTS no-code `bt-agent.service`, installs the optional `jasper-usbsink`,
+and owns the full systemd unit per renderer.
 
 `jasper/renderer.py:RendererClient` reads renderer state from each
 daemon's own surface:

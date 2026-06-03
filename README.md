@@ -351,7 +351,7 @@ deploy/
   alsa/                         /etc/asound.conf template
   camilladsp/                   legacy v1.yml + outputd-cutover.yml baselines
   systemd/                      jasper-{camilla,voice,control,mux,outputd,aec-bridge,aec-init}
-                                + librespot, shairport-sync, nqptp, bt-agent
+                                + librespot, shairport-sync, nqptp, Bluetooth no-code agent
   modules-load.d/               snd-aloop autoload
   modprobe.d/                   snd-aloop single-card config
   bin/                          jasper-librespot-event (--onevent hook)
