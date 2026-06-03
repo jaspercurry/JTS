@@ -125,6 +125,26 @@ def _silence_pcm(*, sec: float, rate: int = TtsPlayout.INPUT_RATE) -> bytes:
     return np.zeros(n, dtype=np.int16).tobytes()
 
 
+async def test_sounddevice_write_segment_accepts_source_profile(monkeypatch):
+    import scipy.signal
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+
+    p = _make_with_stream()
+
+    await p.write_segment(
+        _silence_pcm(sec=0.01),
+        segment_kind="cue",
+        source_profile=object(),
+    )
+
+    assert p.expected_drain_at() != 0.0
+
+
 def test_constructor_clamps_through_set_gain_db():
     """Whatever the env passes, the constructor routes it through the
     same clamp/validate path as runtime updates."""
@@ -494,6 +514,52 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
 
     assert calls == 1
     assert stream.segments_started == [("assistant", None, profile)]
+
+
+async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
+    import scipy.signal
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+
+    def fail_profile_lookup(*_args, **_kwargs):
+        raise AssertionError("explicit profile should skip voice profile lookup")
+
+    monkeypatch.setattr(audio_io_mod, "profile_for_outputd", fail_profile_lookup)
+    profile = AssistantLoudnessProfile(
+        provider="jts",
+        model="synthetic-mute-click",
+        voice="mute",
+        source_lufs=-28.0,
+        source_peak_dbfs=-12.0,
+        confidence=1.0,
+        updated_at="static",
+        method="synthetic_generated",
+    )
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="verse",
+        profile_path="/tmp/profiles.json",
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+
+    mono = np.array([1, 2], dtype=np.int16)
+    await p.write_segment(
+        mono.tobytes(),
+        segment_kind="cue",
+        source_profile=profile,
+    )
+
+    assert stream.segments_started == [("cue", None, profile)]
 
 
 async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):

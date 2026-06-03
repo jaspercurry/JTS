@@ -22,8 +22,10 @@ from .audio_io import (
     make_tts_playout,
 )
 from .assistant_loudness import (
+    AssistantLoudnessProfile,
     active_voice_identity,
     ensure_seed_profile,
+    measure_pcm_24k_mono,
     silence_target_lufs_for_level,
 )
 from .wake_events import (
@@ -82,6 +84,49 @@ logger = logging.getLogger(__name__)
 EX_CONFIG_EXIT = 78
 VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
+SYNTHETIC_AUDIO_PROFILE_PROVIDER = "jts"
+SYNTHETIC_AUDIO_PROFILE_UPDATED_AT = "static"
+
+
+def _synthetic_audio_profile(
+    *,
+    model: str,
+    voice: str,
+    pcm: bytes,
+    fallback_source_lufs: float = -24.0,
+    fallback_peak_dbfs: float = -12.0,
+) -> AssistantLoudnessProfile:
+    """Build source-loudness metadata for generated earcons.
+
+    These sounds are not provider TTS, so using the active assistant
+    voice profile would misdescribe their source level. Outputd still
+    owns the final gain decision; this profile only tells it what
+    loudness/peak the synthetic source PCM starts with.
+    """
+    try:
+        measurement = measure_pcm_24k_mono(pcm)
+        source_lufs = measurement.source_lufs
+        source_peak_dbfs = measurement.source_peak_dbfs
+        confidence = 1.0
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "event=audio.synthetic_profile result=fallback model=%s "
+            "voice=%s exc_type=%s err=%s",
+            model, voice, type(e).__name__, e,
+        )
+        source_lufs = fallback_source_lufs
+        source_peak_dbfs = fallback_peak_dbfs
+        confidence = 0.0
+    return AssistantLoudnessProfile(
+        provider=SYNTHETIC_AUDIO_PROFILE_PROVIDER,
+        model=model,
+        voice=voice,
+        source_lufs=round(float(source_lufs), 2),
+        source_peak_dbfs=round(float(source_peak_dbfs), 2),
+        confidence=confidence,
+        updated_at=SYNTHETIC_AUDIO_PROFILE_UPDATED_AT,
+        method="synthetic_generated",
+    )
 
 # Canonical playbook for editing this constant (and any tool
 # description in jasper/tools/) lives at docs/HANDOFF-prompting.md
@@ -1388,12 +1433,28 @@ class WakeLoop:
                 cfg.mic_mute_state_path,
             )
 
-        # Pre-render the two-tone listening chirps once. Synthesis is
-        # pure (no instance state used), so caching the PCM bytes
-        # keeps the wake-to-audio hot path off any per-call cost.
-        # Same shape `TtsPlayout.write()` accepts (24 kHz int16 mono).
-        self._chirp_on_pcm: bytes = self._generate_listening_chirp(going_on=True)
-        self._chirp_off_pcm: bytes = self._generate_listening_chirp(going_on=False)
+        # Pre-render generated earcons once. Synthesis is pure (no
+        # instance state used), so caching the PCM bytes keeps hot paths
+        # off any per-call cost. Same shape `TtsPlayout.write()` accepts
+        # (24 kHz int16 mono).
+        self._chirp_on_pcm: bytes = self._generate_listening_chirp(
+            going_on=True,
+        )
+        self._chirp_off_pcm: bytes = self._generate_listening_chirp(
+            going_on=False,
+        )
+        self._mute_click_on_pcm: bytes = self._generate_mute_click(going_on=True)
+        self._mute_click_off_pcm: bytes = self._generate_mute_click(going_on=False)
+        self._mute_click_on_profile = _synthetic_audio_profile(
+            model="synthetic-mute-click",
+            voice="unmute",
+            pcm=self._mute_click_on_pcm,
+        )
+        self._mute_click_off_profile = _synthetic_audio_profile(
+            model="synthetic-mute-click",
+            voice="mute",
+            pcm=self._mute_click_off_pcm,
+        )
 
         # Monotonic wallclock at the moment wake fires. Used by
         # _begin_turn to break the wake→activity_start latency into
@@ -1817,9 +1878,18 @@ class WakeLoop:
         """Best-effort. If the TTS stream isn't open or write fails,
         the visual feedback on the web UI is enough — never raise."""
         try:
+            pcm = (
+                self._mute_click_on_pcm
+                if going_on else self._mute_click_off_pcm
+            )
+            profile = (
+                self._mute_click_on_profile
+                if going_on else self._mute_click_off_profile
+            )
             await self._tts.write_segment(
-                self._generate_mute_click(going_on=going_on),
-                segment_kind="chirp",
+                pcm,
+                segment_kind="cue",
+                source_profile=profile,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("mic mute click failed: %s", e)

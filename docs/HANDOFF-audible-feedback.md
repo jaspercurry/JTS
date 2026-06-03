@@ -22,6 +22,28 @@ This document is the canonical reference for the cue subsystem: what
 exists, how to add a new cue (reactive or proactive), where the
 cached files live, and why the design is the way it is.
 
+## Generated feedback sounds
+
+Not every audible feedback sound is a pre-rendered spoken WAV. A few
+short earcons are generated inline in `jasper.voice_daemon` because
+they are sub-100 ms sine blips, not phrases worth caching through
+`jasper/cues/`.
+
+- **Mic mute/unmute click**: `WakeLoop._generate_mute_click` builds
+  the lower-pitch mute and higher-pitch unmute click. WakeLoop
+  pre-renders both PCM buffers at startup, measures their source
+  loudness with `measure_pcm_24k_mono`, and sends playback as
+  `segment_kind="cue"` with an explicit synthetic source-loudness
+  profile. This means outputd level-matches the click like other
+  assistant-owned cue audio: current content baseline when music is
+  playing, otherwise the listening-level-derived silence target, with
+  the same peak cap.
+- **Wake start/end chirps**: `WakeLoop._generate_listening_chirp`
+  still sends `segment_kind="chirp"`. Outputd treats chirps as fixed
+  fallback-gain sounds, not profiled assistant/cue segments. Change
+  this only deliberately; those chirps mark turn lifecycle timing and
+  have different UX constraints from the mute privacy click.
+
 ---
 
 ## Architecture at a glance
@@ -270,4 +292,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-05-23
+Last verified: 2026-06-03

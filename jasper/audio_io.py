@@ -544,6 +544,7 @@ class TtsPlayout:
         *,
         provider_item_id: str | None = None,
         segment_kind: str = "assistant",
+        source_profile=None,
     ) -> None:
         """Write one provider audio chunk.
 
@@ -551,7 +552,7 @@ class TtsPlayout:
         metadata is intentionally ignored here. Outputd overrides this
         to carry provider identity across the IPC boundary.
         """
-        _ = (provider_item_id, segment_kind)
+        _ = (provider_item_id, segment_kind, source_profile)
         await self.write(pcm)
 
     async def end_segment(self) -> None:
@@ -1077,6 +1078,7 @@ class OutputdTtsPlayout(TtsPlayout):
         *,
         provider_item_id: str | None = None,
         segment_kind: str = "assistant",
+        source_profile=None,
     ) -> None:
         """Send un-gained 48 kHz stereo PCM to outputd.
 
@@ -1121,7 +1123,9 @@ class OutputdTtsPlayout(TtsPlayout):
         if hasattr(stream, "set_gain_db"):
             await asyncio.to_thread(stream.set_gain_db, self.gain_db)
         if hasattr(stream, "start_segment"):
-            profile = self._profile_for_segment(segment_kind)
+            profile = self._profile_for_segment(
+                segment_kind, source_profile=source_profile,
+            )
             await asyncio.to_thread(
                 stream.start_segment,
                 kind=segment_kind,
@@ -1144,8 +1148,13 @@ class OutputdTtsPlayout(TtsPlayout):
                 write_ms, chunk_ms, len(mono_i16), self._output_rate,
             )
 
-    def _profile_for_segment(self, segment_kind: str):
-        if segment_kind == "chirp" or not (self._provider and self._model and self._voice):
+    def _profile_for_segment(self, segment_kind: str, *, source_profile=None):
+        if source_profile is not None:
+            return source_profile
+        if (
+            segment_kind == "chirp"
+            or not (self._provider and self._model and self._voice)
+        ):
             return None
         key = (self._provider, self._model, self._voice, self._profile_path)
         if self._profile_cache_key != key:
