@@ -1686,16 +1686,37 @@ def test_begin_session_chip_profile_records_comparison_legs(backend) -> None:
         corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
         include_dtln=True,  # ignored here; this is not the raw0 DTLN path.
         include_raw_mic_0=False,  # forced by the chip profile.
-        include_usb_mic=False,  # forced by the chip profile.
-        include_usb_dtln=True,
+        include_usb_mic=False,
+        include_usb_dtln=False,
         include_xvf_raw0_dtln=True,
         include_aec3_sweep=True,  # incompatible pilot sweep is parked.
     )
 
     assert backend.corpus_profile() == wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON
     assert backend.include_raw_mic_0() is True
-    assert backend.include_usb_mic() is True
+    assert backend.include_usb_mic() is False
     assert backend.include_aec3_sweep() is False
+    assert backend.enabled_legs() == (
+        "chip_aec_150",
+        "chip_aec_210",
+        "raw0",
+        "xvf_raw0_webrtc_aec3",
+        "ref",
+        "xvf_raw0_dtln",
+    )
+
+
+def test_begin_session_chip_profile_records_usb_legs_when_requested(
+    backend,
+) -> None:
+    backend.begin_session(
+        "jasper",
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        include_usb_mic=True,
+        include_usb_dtln=True,
+    )
+
+    assert backend.include_usb_mic() is True
     assert backend.enabled_legs() == (
         "chip_aec_150",
         "chip_aec_210",
@@ -1704,7 +1725,6 @@ def test_begin_session_chip_profile_records_comparison_legs(backend) -> None:
         "ref",
         "usb_raw",
         "usb_webrtc",
-        "xvf_raw0_dtln",
         "usb_dtln",
     )
 
@@ -2017,6 +2037,54 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
         == wake_corpus_setup.DEFAULT_CHIP_REF_BUFFER_FRAMES
     )
     assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED" not in values
+    assert restarts == [
+        wake_corpus_setup.OUTPUTD_UNIT,
+        wake_corpus_setup.AEC_INIT_UNIT,
+        wake_corpus_setup.BRIDGE_UNIT,
+    ]
+
+
+def test_set_bridge_outputs_chip_profile_without_usb_enables_ref_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_unit",
+        lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
+            restarts.append(unit)
+        ),
+    )
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
+    )
+
+    changed = wake_corpus_setup.set_bridge_outputs_for_session(
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        include_dtln=False,
+        include_usb_mic=False,
+        include_usb_dtln=False,
+        include_xvf_raw0_dtln=False,
+        include_aec3_sweep=False,
+    )
+
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in bridge_path.read_text().splitlines()
+    }
+    assert changed is True
+    assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
+    assert "JASPER_AEC_CORPUS_USB_ENABLED" not in values
+    assert "JASPER_AEC_USB_MIC_DEVICE" not in values
+    assert values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
+    assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
+    assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == (
+        wake_corpus_setup.OUTPUTD_REF_UDP_TARGET
+    )
     assert restarts == [
         wake_corpus_setup.OUTPUTD_UNIT,
         wake_corpus_setup.AEC_INIT_UNIT,
@@ -2754,11 +2822,14 @@ def test_html_has_include_usb_mic_checkbox() -> None:
     + label live in the page body; the include_usb_mic payload key lives in
     the behaviour module."""
     html_text = wake_corpus_setup._render_index_html("t")
+    module_js = _module_js()
     assert 'id="include-usb-mic"' in html_text
     assert 'USB mic + reference' in html_text
     assert '16 kHz reference' in html_text
     assert 'id="usb-mic-note"' not in html_text
-    assert 'include_usb_mic' in _module_js()
+    assert 'include_usb_mic' in module_js
+    assert "$('include-usb-mic').disabled = sessionLoaded;" in module_js
+    assert "|| corpusProfile === 'chip_aec_comparison_v1'" not in module_js
 
 
 def test_html_has_dtln_session_checkboxes() -> None:

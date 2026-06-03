@@ -63,8 +63,6 @@ CHIP_AEC_PROFILE_BASE_LEGS = (
     "raw0",
     "xvf_raw0_webrtc_aec3",
     "ref",
-    "usb_raw",
-    "usb_webrtc",
 )
 SILENCE_RMS = 30.0
 MAX_EXPECTED_DURATION_SEC = 30.5
@@ -153,10 +151,21 @@ def _expected_legs(session: dict[str, Any]) -> tuple[str, ...]:
 
     ports = session.get("ports") or {}
     if session.get("corpus_profile") == "chip_aec_comparison_v1":
-        return tuple(
+        legs = [
             leg for leg in CHIP_AEC_PROFILE_BASE_LEGS
             if not ports or leg in ports
-        )
+        ]
+        if session.get("include_usb_mic"):
+            legs.extend(
+                leg for leg in ("usb_raw", "usb_webrtc")
+                if not ports or leg in ports
+            )
+        if session.get("include_usb_dtln"):
+            legs.extend(
+                leg for leg in ("usb_raw", USB_DTLN_LEG)
+                if not ports or leg in ports
+            )
+        return tuple(dict.fromkeys(legs))
 
     legs = ["on", "off"]
     # Older metadata may not have a useful ports map. Treat that as the

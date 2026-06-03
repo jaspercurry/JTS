@@ -31,8 +31,9 @@ matches that.
 browser recorder captures the production software/chip-direct legs
 (`:9876` primary/session carrier, `:9877` chip-direct, `:9878` DTLN)
 plus opt-in `raw0` (`:9879`) for future cheap-mic portability. It can
-also opt into cheap USB mic + reference legs (`:9880`/`:9881`/`:9882`)
-and the XVF chip-AEC beams (`:9887`/`:9888`) for testing hardware AEC
+also opt into cheap USB mic legs (`:9881`/`:9882`) while always keeping
+the reference leg (`:9880`) available for selected AEC experiments, and
+the XVF chip-AEC beams (`:9887`/`:9888`) for testing hardware AEC
 against software AEC on the same utterance. As of 2026-05-31,
 `chip_aec_150` / `chip_aec_210` are no longer corpus-only: they are
 default-OFF, 6-channel-firmware-gated production wake legs when chip-AEC
@@ -262,10 +263,12 @@ through the recorder's `chip_aec_comparison_v1` profile. This profile
 puts the XVF3800 into the lab-proven ASR fixed-beam hardware-AEC mode,
 feeds the chip from outputd's direct final-output fanout, and captures
 both `chip_aec_150` / `chip_aec_210` alongside `raw0`,
-`xvf_raw0_webrtc_aec3`, `ref`, `usb_raw`, and `usb_webrtc`. The profile
-is corpus-only: it exists to compare hardware AEC, software AEC3, raw,
-USB, and optional DTLN on the same utterance before deciding what
-belongs in production fusion.
+`xvf_raw0_webrtc_aec3`, and `ref`. `usb_raw` / `usb_webrtc` remain
+optional inside the profile and should be selected only when the cheap
+USB mic is actually connected. The profile is corpus-only: it exists to
+compare hardware AEC, software AEC3, raw, optional USB, and optional
+DTLN on the same utterance before deciding what belongs in production
+fusion.
 
 **Fusion: existing OR-gate.** The triple-stream architecture shipped
 in PR #253 is unchanged. Each leg scores against its own specialized
@@ -661,7 +664,8 @@ the legs intended for the corpus:
 - Raw mic 0: **on**.
 - Chip-AEC comparison profile: **on** for the next pilot/gold-corpus
   candidate run. This forces raw0, outputd reference fanout, chip AEC
-  `150°/210°`, XVF raw0 WebRTC AEC3, and USB raw/WebRTC AEC3.
+  `150°/210°`, XVF raw0 WebRTC AEC3, and the reference leg. Leave the
+  USB mic option off unless a cheap USB mic is connected.
 - XVF DTLN (`dtln`): **off by default** in chip-profile runs unless we
   explicitly want the legacy ch1 neural comparison.
 - XVF raw0 DTLN: **optional**; include for a short soak if the Pi remains
@@ -1802,8 +1806,7 @@ and DAC/reference validation status once that validation stream exists.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-06-01 (v31 — wake-corpus metadata schema and audit
-contract rechecked against `jasper/web/wake_corpus_setup.py`,
-`jasper/wake_legs.py`, and `scripts/_audit_wake_corpus.py`; validation
-artifact summaries now read the bounded `jasper/audio_validation.py`
-readiness stream.)
+Last verified: 2026-06-02 (v32 — chip-AEC corpus profile rechecked
+against `jasper/web/wake_corpus_setup.py` and
+`scripts/_audit_wake_corpus.py`; reference remains part of the chip
+profile while cheap USB mic legs are optional.)

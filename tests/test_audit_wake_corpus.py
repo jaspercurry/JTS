@@ -239,6 +239,33 @@ def test_expected_legs_accepts_chip_aec_profile_tokens() -> None:
     )
 
 
+def test_expected_legs_chip_aec_profile_fallback_keeps_usb_optional() -> None:
+    session = {
+        "corpus_profile": "chip_aec_comparison_v1",
+        "include_usb_mic": False,
+        "include_usb_dtln": False,
+    }
+
+    assert audit_wake_corpus._expected_legs(session) == (
+        "chip_aec_150",
+        "chip_aec_210",
+        "raw0",
+        "xvf_raw0_webrtc_aec3",
+        "ref",
+    )
+
+    session["include_usb_mic"] = True
+    assert audit_wake_corpus._expected_legs(session) == (
+        "chip_aec_150",
+        "chip_aec_210",
+        "raw0",
+        "xvf_raw0_webrtc_aec3",
+        "ref",
+        "usb_raw",
+        "usb_webrtc",
+    )
+
+
 def test_audit_prints_audio_context_summary(tmp_path: Path, capsys) -> None:
     root = tmp_path / "enrollment_positives"
     files = {

@@ -106,7 +106,7 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `usb_raw` | Cheap USB mic capture with no JTS software processing | No | Watch hardware AGC/limiter state carefully. |
 | `usb_webrtc` | Cheap USB mic through software WebRTC AEC | No | Corpus-only experiment for lower-cost mic paths. |
 | `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
-| `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; list last in playback UI. |
+| `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; chip-AEC comparison sessions include it even when cheap USB mic legs are off. List last in playback UI. |
 | `aec3_variant_1` | Corpus-only parallel WebRTC AEC3 slot 1 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
 | `aec3_variant_2` | Corpus-only parallel WebRTC AEC3 slot 2 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
 | `aec3_variant_3` | Corpus-only parallel WebRTC AEC3 slot 3 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
@@ -522,6 +522,9 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-06-02 (v13):** Clarified chip-AEC corpus profile semantics:
+  `ref` remains part of the profile; cheap USB mic legs are optional and
+  should not be expected when no USB mic is connected.
 - **2026-06-01 (v12):** Added the `audio_context` metadata contract:
   production profile truth, mic firmware/channel state, DAC/reference
   validation status when available, and selected-leg details should guide
@@ -557,6 +560,6 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-06-01 (v12 - corpus metadata contract rechecked
-against the recorder and audit script; audio quality analyzer remains
-offline/future work.)
+Last verified: 2026-06-02 (v13 - chip-AEC profile leg expectations
+rechecked against the recorder and audit script; audio quality analyzer
+remains offline/future work.)

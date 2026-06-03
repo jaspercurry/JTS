@@ -106,11 +106,10 @@ function syncCorpusProfileControls(sessionLoaded = false) {
   const chipProfile = $('include-chip-aec-profile').checked;
   if (chipProfile) {
     $('include-raw-mic-0').checked = true;
-    $('include-usb-mic').checked = true;
     $('include-aec3-sweep').checked = false;
   }
   $('include-raw-mic-0').disabled = sessionLoaded || chipProfile;
-  $('include-usb-mic').disabled = sessionLoaded || chipProfile;
+  $('include-usb-mic').disabled = sessionLoaded;
   $('include-aec3-sweep').disabled = sessionLoaded || chipProfile;
 }
 function orderedLegs(files) {
@@ -373,8 +372,7 @@ async function beginSession() {
   const includeDtln = $('include-dtln').checked;
   const includeXvfRaw0Dtln = $('include-xvf-raw0-dtln').checked;
   const includeAec3Sweep = $('include-aec3-sweep').checked;
-  const includeUsbMic = $('include-usb-mic').checked || includeAec3Sweep
-    || corpusProfile === 'chip_aec_comparison_v1';
+  const includeUsbMic = $('include-usb-mic').checked || includeAec3Sweep;
   const includeUsbDtln = $('include-usb-dtln').checked;
   if (!member) { showErr('member is required'); return; }
   const payload = {
@@ -661,7 +659,7 @@ $('include-usb-dtln').onchange = () => {
 };
 $('include-usb-mic').onchange = () => {
   if (!$('include-usb-mic').checked && (
-    $('include-aec3-sweep').checked || $('include-chip-aec-profile').checked
+    $('include-aec3-sweep').checked
   )) {
     $('include-usb-mic').checked = true;
   }

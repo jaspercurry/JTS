@@ -196,8 +196,6 @@ CHIP_AEC_PROFILE_BASE_LEGS = (
     "raw0",
     "xvf_raw0_webrtc_aec3",
     "ref",
-    "usb_raw",
-    "usb_webrtc",
 )
 LEG_LABELS = {
     "on": "XVF WebRTC AEC3",
@@ -464,6 +462,8 @@ def missing_bridge_outputs_for_session(
     if include_usb_dtln and not status["usb_dtln"]:
         missing.append("usb_dtln")
     if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        if not status["ref"]:
+            missing.append("ref")
         if not status["chip_aec"]:
             missing.append("chip_aec")
         if not status["xvf_raw0_webrtc_aec3"]:
@@ -1154,7 +1154,8 @@ def enable_bridge_outputs_for_session(
 
     if include_dtln:
         values["JASPER_AEC_DTLN_ENABLED"] = "1"
-    if include_usb_mic or include_usb_dtln or sweep_needs_usb:
+    needs_usb = include_usb_mic or include_usb_dtln or sweep_needs_usb
+    if needs_usb:
         values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
         values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
         if (
@@ -1230,7 +1231,6 @@ def set_bridge_outputs_for_session(
     for key in BRIDGE_CORPUS_OUTPUT_VARS:
         values.pop(key, None)
     if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
-        include_usb_mic = True
         include_aec3_sweep = False
     sweep_source = (
         _session_aec3_sweep_source(aec3_sweep_source)
@@ -1251,8 +1251,11 @@ def set_bridge_outputs_for_session(
         # explicitly selected the legacy dtln leg; exit removes this
         # override and restores the production intent.
         values["JASPER_AEC_DTLN_ENABLED"] = "0"
-    if include_usb_mic or include_usb_dtln or sweep_needs_usb:
+    needs_ref = corpus_profile == PROFILE_CHIP_AEC_COMPARISON
+    needs_usb = include_usb_mic or include_usb_dtln or sweep_needs_usb
+    if needs_ref or needs_usb:
         values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
+    if needs_usb:
         values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
         if (
             "JASPER_AEC_USB_MIC_DEVICE" not in values
@@ -1401,10 +1404,16 @@ def _session_legs(
 ) -> tuple[str, ...]:
     if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
         legs = [leg for leg in CHIP_AEC_PROFILE_BASE_LEGS if leg in ports]
+        if include_usb_mic:
+            legs.extend(
+                leg for leg in ("usb_raw", "usb_webrtc") if leg in ports
+            )
         if include_xvf_raw0_dtln and XVF_RAW0_DTLN_LEG in ports:
             legs.append(XVF_RAW0_DTLN_LEG)
         if include_usb_dtln and USB_DTLN_LEG in ports:
-            legs.append(USB_DTLN_LEG)
+            legs.extend(
+                leg for leg in ("usb_raw", USB_DTLN_LEG) if leg in ports
+            )
         return tuple(dict.fromkeys(legs))
 
     sweep_source = (
@@ -2139,17 +2148,18 @@ class RecordingBackend:
             raise ValueError(f"member name has no usable chars: {member!r}")
         if corpus_profile not in CORPUS_PROFILES:
             raise ValueError(f"unknown corpus profile: {corpus_profile!r}")
-        sweep_source = (
-            _session_aec3_sweep_source(aec3_sweep_source)
-            if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
-        )
+        if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+            include_raw_mic_0 = True
+            include_aec3_sweep = False
+            sweep_source = AEC3_SWEEP_SOURCE_XVF
+        else:
+            sweep_source = (
+                _session_aec3_sweep_source(aec3_sweep_source)
+                if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+            )
         effective_include_usb_mic = include_usb_mic or (
             include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
         )
-        if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
-            include_raw_mic_0 = True
-            effective_include_usb_mic = True
-            include_aec3_sweep = False
         with self._lock:
             if self._current is not None:
                 raise StateError(
@@ -3075,7 +3085,6 @@ class _Handler(BaseHTTPRequestHandler):
                 include_usb_mic = True
             if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
                 include_raw_mic_0 = True
-                include_usb_mic = True
                 include_aec3_sweep = False
             enable_bridge_outputs = bool(
                 body.get("enable_bridge_outputs", False),
@@ -3502,7 +3511,8 @@ _INDEX_BODY_TEMPLATE = """{header}
       <label for="include-chip-aec-profile">
         Use <strong>chip AEC comparison profile</strong>
         <span class="hint">— captures chip AEC ASR 150/210, XVF raw0,
-        XVF raw0 WebRTC AEC3, USB raw/AEC3, and the final speaker reference.</span>
+        XVF raw0 WebRTC AEC3, and the final speaker reference. USB mic
+        legs are optional.</span>
       </label>
     </div>
     <div class="row checkbox">
