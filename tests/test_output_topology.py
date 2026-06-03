@@ -6,12 +6,18 @@ from pathlib import Path
 import pytest
 
 from jasper.output_topology import (
+    CHANNEL_IDENTITY_REPORT_KIND,
+    CLOCK_DOMAIN_REPORT_KIND,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
+    channel_identity_report,
+    clock_domain_report,
     hardware_from_env,
     load_output_topology,
     new_topology_draft,
     save_output_topology,
+    set_channel_identity_verified,
+    set_channel_protection_status,
 )
 
 
@@ -52,7 +58,9 @@ def test_hardware_from_env_reports_known_output_counts() -> None:
     assert dac8x.physical_output_count == 8
     assert dac8x.outputs[4].human_label == "DAC output 5"
     assert dac8x.route == "stereo:5,6"
+    assert dac8x.clock_domain_id == "alsa:sndrpihifiberry"
     assert apple.physical_output_count == 2
+    assert apple.clock_domain_label == "Single Apple USB audio device clock"
     assert unknown.physical_output_count == 0
     assert unknown.outputs == ()
 
@@ -105,6 +113,165 @@ def test_passive_stereo_topology_can_be_valid_before_identity_verified() -> None
         "DAC output 1"
     )
     assert payload["safety"]["sound_tests_allowed"] is False
+
+
+def test_channel_identity_report_tracks_assigned_verification_progress() -> None:
+    topology = _topology(
+        groups=[
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [{
+                    "role": "full_range",
+                    "physical_output_index": 1,
+                    "identity_verified": True,
+                }],
+            },
+        ],
+        routing={"main_left_group_id": "left", "main_right_group_id": "right"},
+    )
+
+    report = channel_identity_report(topology)
+
+    assert report["kind"] == CHANNEL_IDENTITY_REPORT_KIND
+    assert report["status"] == "needs_verification"
+    assert report["assigned_channel_count"] == 2
+    assert report["verified_channel_count"] == 1
+    assert report["unverified_channel_count"] == 1
+    assert report["sound_tests_allowed"] is False
+
+
+def test_tweeter_protection_status_can_be_marked_present() -> None:
+    topology = _topology(
+        groups=[
+            {
+                "id": "mono",
+                "label": "Mono speaker",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {"role": "woofer", "physical_output_index": 0},
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "required_missing",
+                    },
+                ],
+            }
+        ],
+        routing={"mono_group_id": "mono"},
+    )
+
+    blocked = topology.evaluation()
+    updated = set_channel_protection_status(
+        topology,
+        speaker_group_id="mono",
+        role="tweeter",
+        protection_status="present",
+    )
+    report = channel_identity_report(updated)
+
+    assert "tweeter_protection_unverified" in {
+        issue["code"] for issue in blocked["blockers"]
+    }
+    tweeter = updated.speaker_groups[0].channels[1]
+    assert tweeter.protection_required is True
+    assert tweeter.protection_status == "present"
+    assert tweeter.startup_muted is True
+    assert "tweeter_protection_unverified" not in {
+        code
+        for target in report["targets"]
+        for code in target["sound_test_blockers"]
+    }
+    targets = {target["id"]: target for target in report["targets"]}
+    assert targets["mono:woofer"]["sound_test_blockers"] == ["identity_unverified"]
+    assert targets["mono:tweeter"]["sound_test_blockers"] == ["identity_unverified"]
+
+
+def test_clock_domain_report_records_single_device_boundary() -> None:
+    topology = _topology(groups=[
+        {
+            "id": "left",
+            "label": "Left speaker",
+            "kind": "left",
+            "mode": "active_2_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 0},
+                {"role": "tweeter", "physical_output_index": 1},
+            ],
+        }
+    ])
+
+    report = clock_domain_report(topology)
+
+    assert report["kind"] == CLOCK_DOMAIN_REPORT_KIND
+    assert report["status"] == "single_device_clock"
+    assert report["clock_domain_count"] == 1
+    assert report["coherent_physical_output_count"] == 8
+    assert report["multi_device_aggregate_supported"] is False
+    assert report["sound_tests_allowed"] is False
+    assert "one coherent multi-output DAC" in report["recommendation"]
+
+
+def test_clock_domain_report_flags_unknown_output_clocking() -> None:
+    topology = new_topology_draft(
+        hardware=hardware_from_env({
+            "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
+            "JASPER_AUDIO_DAC_CARD": "Mystery",
+        })
+    )
+
+    report = clock_domain_report(topology)
+
+    assert report["status"] == "unknown_device_clock"
+    assert report["coherent_physical_output_count"] == 0
+    assert report["issues"][0]["code"] == "unknown_clock_domain"
+
+
+def test_set_channel_identity_verified_updates_one_channel_only() -> None:
+    topology = _topology(groups=[
+        {
+            "id": "left",
+            "label": "Left speaker",
+            "kind": "left",
+            "mode": "active_2_way",
+            "channels": [
+                {"role": "woofer", "physical_output_index": 0},
+                {
+                    "role": "tweeter",
+                    "physical_output_index": 1,
+                    "protection_required": True,
+                    "protection_status": "required_missing",
+                },
+            ],
+        }
+    ])
+
+    updated = set_channel_identity_verified(
+        topology,
+        speaker_group_id="left",
+        role="woofer",
+        identity_verified=True,
+    )
+    group = updated.to_dict()["speaker_groups"][0]
+
+    assert group["channels"][0]["identity_verified"] is True
+    assert group["channels"][1]["identity_verified"] is False
+    assert updated.evaluation()["status"] == "blocked"
+    assert "tweeter_protection_unverified" in {
+        issue["code"] for issue in updated.evaluation()["blockers"]
+    }
 
 
 def test_posted_human_output_label_is_rederived_from_hardware() -> None:

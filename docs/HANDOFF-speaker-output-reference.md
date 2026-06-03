@@ -190,8 +190,31 @@ What exists:
   subwoofers, and identity/protection evidence. That topology model has
   no playback authority, does not rewrite ALSA, and does not load
   CamillaDSP; it only records and evaluates whether future safe sound
-  tests may proceed through their own safety session.
-  configured route takes effect when deploy, boot/udev reconcile, or a
+  tests may proceed through their own safety session. The companion
+  `/sound/active-speaker/channel-identity` route records operator-confirmed
+  physical channel identity for assigned topology channels. It is evidence
+  about wiring only: it does not make the active path safe, does not satisfy
+  tweeter protection, and does not allow any endpoint to emit sound.
+  `/sound/active-speaker/playback-readiness` now composes that topology
+  evidence with active-speaker environment, safe-session, calibration-level,
+  clock-domain, Stop-control, and tone-backend evidence for one selected
+  target. The topology itself still grants no playback authority; the separate
+  active-speaker lab backend can emit only when readiness passes, explicit
+  `aplay` env enablement is present, and the target is not a tweeter/
+  compression driver.
+  `/sound/active-speaker/channel-protection` records the separate human
+  evidence that a compression-driver protection path is physically present, and
+  `/sound/active-speaker/stage-config` can consume the saved mono active 2-way
+  topology to write a protected Epique/F110M startup candidate plus evidence.
+  That staging route still does not rewrite ALSA, load CamillaDSP, reload a
+  graph, or emit sound.
+  The same topology payload includes a clock-domain report for the detected
+  final-output hardware. Today that report is a single-device contract: a
+  recognized DAC8x or Apple output device can be described as one coherent
+  output clock, but JTS does not product-support aggregating multiple USB DACs
+  for active-crossover playback. That remains future lab work until skew/drift
+  can be measured and compensated before any sound-emitting path uses it.
+  The configured route takes effect when deploy, boot/udev reconcile, or a
   manual `jasper-audio-hardware-reconcile` run re-renders the managed
   ALSA template; hardware validation artifacts report the observed
   route in `dac_identity`. A recognized role renders the ALSA template
@@ -759,5 +782,9 @@ datum: how much assistant audio was actually heard.
   persistence/evaluation surface for DAC lanes, speaker groups, active
   driver roles, subwoofer routing, and identity/tweeter-protection
   evidence. Safe playback remains a separate active-speaker session.
+- 2026-06-03: Added the active-speaker playback-readiness gate and the
+  artifact-first topology channel-test slice. Default installs still verify
+  artifacts only; an explicit lab `aplay` backend can emit short, clamped
+  non-tweeter tests after readiness passes.
 
-Last verified: 2026-06-02
+Last verified: 2026-06-03

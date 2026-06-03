@@ -9,7 +9,7 @@
 > stereo Apple USB-C dongle passthrough path; active crossover
 > hardware is future work.
 
-> **Implementation status, 2026-06-02:** A0 schema substrate has
+> **Implementation status, 2026-06-03:** A0 schema substrate has
 > started. `jasper.active_speaker` now defines import-cheap,
 > side-effect-free preset, channel-map, safety-envelope, crossover
 > region, and speaker-baseline profile models with validation and
@@ -18,16 +18,24 @@
 > emits muted/protected CamillaDSP startup templates with explicit
 > active-hardware playback device input, `volume_limit: 0.0`, startup
 > headroom, tweeter protective HP, per-driver mute, and per-driver
-> limiter chains. `/sound/` has a read-only Advanced speaker setup
-> entry point; its **Check environment** action calls
+> limiter chains. `/sound/` has an Advanced speaker setup entry point;
+> its **Check environment** action is read-only: it calls
 > `/sound/active-speaker/environment` and displays the read-only
 > environment report without touching live audio.
 > The same card now includes a lightweight Output setup UI over
 > `/sound/output-topology`; it can render detected physical outputs,
 > speaker groups, assigned/unassigned lanes, safety evidence, and
-> no-audio starter maps for stereo passive or stereo active 2-way
-> wiring. Saving that map only persists the output topology JSON and
-> runs backend validation; it does not load CamillaDSP or emit sound.
+> no-audio setup templates for mono/stereo passive, mono/stereo active
+> 2-way, and mono/stereo active 3-way wiring. Saving that map only
+> persists the output topology JSON and runs backend validation; it
+> does not load CamillaDSP or emit sound.
+> `/sound/active-speaker/channel-identity` now exposes and updates
+> operator-confirmed physical channel identity evidence for the saved
+> topology. The UI can mark or clear an assigned channel as physically
+> verified after wiring inspection, dummy-load/DMM checks, or a future
+> low-level channel test. This still does not play audio, reload
+> CamillaDSP, or grant playback permission; tweeter protection and path
+> safety remain separate blockers.
 > The card can also arm and stop a no-audio safe-playback session
 > through `jasper.active_speaker.safe_playback`; arming only persists
 > safety state after the environment load gate passes, and Stop is
@@ -38,18 +46,45 @@
 > `jasper.active_speaker.playback` now adds the first playback seam:
 > `/sound/active-speaker/play-tone` validates the current plan and
 > armed safe session, then renders a bounded multi-channel WAV artifact
-> through a dry backend. It sets `audio_emitted: false`, does not open
-> ALSA, does not reload CamillaDSP, and does not touch live volume.
-> The dry backend also enforces its own artifact envelope
-> (48 kHz max, 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps a
-> small rolling set of generated artifacts so `/var/lib/jasper` cannot
-> grow without bound during repeated checks.
+> through the default backend. It sets `audio_emitted: false`, does not
+> open ALSA, does not reload CamillaDSP, and does not touch live volume
+> unless the operator explicitly enables the lab `aplay` backend with
+> `JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
+> `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
+> `JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`. Even then, the audible path is
+> short, clamped, topology-readiness-gated, and non-tweeter only in this
+> slice. The backend also enforces its own artifact envelope (48 kHz max,
+> 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps a small rolling set
+> of generated artifacts so `/var/lib/jasper` cannot grow without bound
+> during repeated checks.
+> `jasper.active_speaker.readiness` now provides the read-only
+> `/sound/active-speaker/playback-readiness` gate for one saved topology
+> target. It combines safe-session state, output topology, channel
+> identity, tweeter protection, clock-domain status, active-config/path
+> safety, calibration-level bounds, Stop availability, and active tone
+> backend status. By default, preconditions can pass while
+> `playback_allowed` remains false; only explicit lab backend enablement can
+> turn it true for non-tweeter targets.
+> `jasper.active_speaker.staging` now provides the first build-specific
+> protected startup staging slice. The default preset is
+> `jasper/active_speaker/presets/epique_e150he44_eminence_f110m8_safe_v1.json`
+> for a mono Dayton Epique E150HE-44 woofer plus Eminence F110M-8
+> compression-driver cabinet. `/sound/active-speaker/channel-protection`
+> records operator evidence that the compression-driver protection path is
+> physically present, and `/sound/active-speaker/stage-config` can then write
+> a muted/protected CamillaDSP candidate plus
+> `/var/lib/jasper/active_speaker_staged_config.json` evidence. That route
+> refuses missing tweeter protection, non-contiguous output assignments, and
+> missing explicit hardware playback device evidence. It does not load the
+> config, reload CamillaDSP, emit sound, or grant playback permission.
 > `jasper-active-speaker startup-template` can write one of these
 > candidate templates from a preset JSON file and run
-> `camilladsp --check` when the binary is available. No sound-emitting
-> tone playback, physical channel test, CamillaDSP reload/apply path,
-> or hardware loading exists yet. The first packaged worked-example preset is
-> `jasper/active_speaker/presets/bc_de250_dayton_e150he44_v1.json`.
+> `camilladsp --check` when the binary is available. No CamillaDSP
+> reload/apply path or hardware loading exists yet. The first packaged
+> worked-example preset is
+> `jasper/active_speaker/presets/bc_de250_dayton_e150he44_v1.json`; the
+> current no-audio default preset is the Epique/F110M safe bring-up profile
+> above because it matches Jasper's immediate cabinet build.
 > `jasper-active-speaker path-audit` now exposes the deterministic
 > audible-path safety checklist and can evaluate operator evidence,
 > but operator evidence is not enough to permit active config loading.
@@ -65,6 +100,12 @@
 > path-safety evidence all pass; even that does **not** authorize tone
 > playback until physical channel identity and a level-limited tone
 > generator with emergency stop exist.
+> Current next step: stage and inspect the Epique/F110M protected startup
+> candidate from a saved mono active 2-way output topology, then use the
+> lab-gated topology channel-test slice on real hardware at minimum level,
+> starting dummy-load/non-tweeter constrained. Keep Stop available, watch the
+> generated evidence/logs, and do not permit tweeter/compression-driver
+> playback until the protection path has been verified on hardware.
 
 ## Current Operational Truth
 
@@ -129,6 +170,17 @@ The existing deployed audio topology is not yet active 2-way ready:
   tweeter protection status. It deliberately has no audio side effects;
   active-speaker tone playback and active CamillaDSP loading must still
   pass through their own safety gates.
+- The topology substrate now has a separate channel-identity report and
+  update route (`/sound/active-speaker/channel-identity`). Treat that
+  evidence as an operator-confirmed fact about physical wiring, not as
+  permission to emit sound. Marking a tweeter channel verified does not
+  satisfy tweeter protection, path safety, startup/reload safety, or
+  future level/mic gates.
+- The topology substrate also records tweeter/compression-driver
+  protection evidence via `/sound/active-speaker/channel-protection`.
+  Marking protection present is a human/operator fact about the physical
+  build; it is required before staging the Epique/F110M protected startup
+  candidate, but it still does not load DSP or authorize playback.
 - Before tweeter hardware is connected, all audible paths must be
   proven to pass through the same protected crossover path. A TTS
   bypass into a raw active amp channel is a driver-damage hazard.
@@ -189,6 +241,13 @@ and the safety gates that must protect direct-connected drivers.
 The persisted output topology sits between those two layers: it names
 which physical DAC lane belongs to which speaker/driver role, but it is
 not itself a CamillaDSP config and cannot authorize playback.
+It also records a clock-domain report for the detected final-output
+device. Today that report is intentionally a single-device boundary:
+JTS can describe a coherent DAC8x or Apple output device, but it does
+not product-support aggregating multiple USB DACs for active crossover.
+Multiple USB DACs remain future lab work until JTS can measure and
+compensate inter-device skew/drift before any sound-emitting path uses
+them.
 
 ## Hard Safety Rules
 
@@ -249,8 +308,18 @@ The default stance:
 - Store every accepted baseline as a versioned `speaker_baseline`,
   distinct from room-correction sessions and preference profiles.
 
-For Jasper's own future active build, the proposal-v3 worked example
-is a B&C DE250 plus Dayton Epique E150HE-44 2-way: 1.6 kHz LR4,
+For Jasper's own active bring-up build, the current no-audio default preset
+is a Dayton Epique E150HE-44 plus Eminence F110M-8 2-way:
+2.5 kHz LR4, non-inverted, woofer delay search range 0.0-0.6 ms,
+mandatory physical compression-driver protection, and startup-muted outputs.
+That preset is intentionally conservative for first power-up; final
+crossover frequency, polarity, delay, gain trim, limiter thresholds, and EQ
+must come from measurement with the actual horn/waveguide, baffle, enclosure,
+amplifier gain, and microphone. The data-only default lives at
+`jasper/active_speaker/presets/epique_e150he44_eminence_f110m8_safe_v1.json`.
+
+The proposal-v3 worked example remains a B&C DE250 plus Dayton Epique
+E150HE-44 2-way: 1.6 kHz LR4,
 non-inverted, likely woofer delay around 0.05-0.30 ms, large tweeter
 trim, conservative tweeter limiter, and a temporary protective
 tweeter HP around 2x Fc during commissioning. Treat those as worked
@@ -458,11 +527,18 @@ an operator/harness evidence shape only; future slices can populate the
 evidence from real ALSA, systemd, CamillaDSP, and source-routing probes.
 `environment-probe` adds real read-only ALSA and CamillaDSP config/statefile
 inspection plus a `safe_playback` readiness block. `safe_playback` is not a
-permission grant: current builds always return `playback_allowed: false`.
-The next sound-emitting slice must add physical channel identification,
-explicit low-level/band-limited tone generation, and a user-visible emergency
-stop before any driver-connected playback path exists. The probe still does
-not perform physical channel verification or generate hardware-probe-backed
+permission grant: it reports environment readiness but never authorizes audio
+by itself.
+`jasper.active_speaker.readiness` is the deterministic pre-playback gate for
+one selected saved topology target. `/sound/active-speaker/playback-readiness`
+combines safe-session state, saved output topology, target assignment, channel
+identity, tweeter protection, clock-domain status, active-config/path safety,
+calibration-level bounds, Stop availability, and tone-backend status. It still
+emits no sound; it returns `preconditions_passed` separately from
+`playback_allowed` so artifact verification can proceed while audible playback
+stays disabled. `playback_allowed` can become true only for non-tweeter targets
+when the explicit lab `aplay` backend is enabled. The probe still does not
+perform physical channel verification or generate hardware-probe-backed
 path-safety evidence by itself.
 
 `jasper.active_speaker.safe_playback` is the first no-audio session substrate
@@ -490,17 +566,21 @@ intent. The default backend is still no-audio: it writes a bounded
 multi-channel WAV plus JSON metadata under
 `/var/lib/jasper/active_speaker_tone_artifacts` (overridable in tests) with
 only the selected logical output channel populated. The backend enforces the
-same no-audio resource envelope at the writer boundary, not just in the web
-route: sample rate is capped at 48 kHz, artifacts are capped at 16 channels,
-duration clamps to 100-500 ms, and level clamps to -80..-45 dBFS. It keeps
-the newest 24 artifact sets by default (override:
+same resource envelope at the writer boundary, not just in the web route:
+sample rate is capped at 48 kHz, artifacts are capped at 16 channels, duration
+clamps to 100-500 ms, and level clamps to -80..-45 dBFS. It keeps the newest
+24 artifact sets by default (override:
 `JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_RETENTION`, capped at 100) and prunes
 older generated `tone_*.wav` / `tone_*.json` pairs after each successful
 render. `/sound/active-speaker/play-tone` returns the plan, playback result,
-and updated safe-session summary; every current result says
-`audio_emitted: false`. This is useful for verifying target selection,
-channel count, level clamp, artifact schema, logging, retention, and Stop
-semantics before any ALSA/CamillaDSP-emitting backend exists.
+and updated safe-session summary. The optional lab `aplay` backend can emit
+audio only when `JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
+`JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
+`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>` are all set, the saved topology target
+passes readiness, and the target is not a tweeter/compression driver. This is
+useful for verifying target selection, channel count, level clamp, artifact
+schema, logging, retention, and Stop semantics before richer measurement
+automation exists.
 
 `jasper.active_speaker.calibration_level` owns the commissioning test-signal
 level contract. It deliberately separates calibration level from normal system
@@ -567,12 +647,17 @@ Updated execution plan:
    startup-template` CLI. The CLI writes candidate YAML from preset
    JSON and runs `camilladsp --check` when available. Rollback
    statefile handling and hardware loading gates are still future
-   work.
+   work. Expanded 2026-06-03 with `jasper.active_speaker.staging`,
+   which binds the saved output topology to the Epique/F110M safe
+   bring-up preset and writes a protected startup candidate plus
+   evidence metadata without loading CamillaDSP or emitting sound.
 3. **Engineering interop slice**: import REW/VituixCAD measurement
    artifacts and freeze the first named preset before attempting an
    end-user wizard. Started 2026-06-01 with a data-only DE250 +
-   E150HE-44 worked-example preset; real engineering artifacts,
-   expected envelopes, and limiter thresholds are still future work.
+   E150HE-44 worked-example preset; added the Epique E150HE-44 +
+   Eminence F110M-8 safe bring-up preset on 2026-06-03 for Jasper's
+   immediate mono cabinet build. Real engineering artifacts, expected
+   envelopes, and limiter thresholds are still future work.
 4. **Channel and path safety slice**: prove every audible source
    path, including TTS/cues and test tones, flows through the active
    baseline and cannot bypass tweeter protection. Started 2026-06-01
@@ -589,9 +674,18 @@ Updated execution plan:
    session bookkeeping for the future tone path without authorizing playback.
    Expanded with `jasper.active_speaker.tone_plan`, which prepares
    preset-derived, clamped channel-test plans while still forbidding playback.
-   Expanded with `jasper.active_speaker.playback`, a no-audio backend seam
-   that renders bounded logical-output WAV artifacts and records
-   `audio_emitted: false` lifecycle evidence without opening hardware.
+   Expanded with `jasper.active_speaker.playback`, an artifact-first backend
+   seam that renders bounded logical-output WAV artifacts and, only with
+   explicit lab env enablement, can run the generated artifact through `aplay`
+   for non-tweeter topology targets.
+   Expanded with `jasper.active_speaker.readiness`, a read-only
+   playback-readiness gate that evaluates one requested output target across
+   safe-session, output topology, channel identity, tweeter protection,
+   clock-domain, active-config/path safety, calibration-level, Stop evidence,
+   and tone-backend status. It is the contract an audible backend must trust
+   before attempting playback. Default installs still return
+   `playback_allowed: false`; the lab `aplay` backend can make non-tweeter
+   targets eligible.
 5. **Consumer W0 slice**: prototype phone-as-mic raw PCM WebSocket
    capture, calibration blocking, browser processing sanity checks,
    and resumable server-side session state.
@@ -709,4 +803,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-02
+Last verified: 2026-06-03

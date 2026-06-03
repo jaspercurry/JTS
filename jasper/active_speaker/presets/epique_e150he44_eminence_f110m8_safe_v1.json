@@ -1,0 +1,70 @@
+{
+  "artifact_schema_version": 1,
+  "kind": "jts_active_speaker_preset",
+  "preset_id": "epique-e150he44-eminence-f110m8-safe-v1",
+  "name": "Dayton Epique E150HE-44 + Eminence F110M-8 safe bring-up",
+  "way_count": 2,
+  "channel_map": {
+    "layout": "mono",
+    "outputs": [
+      {
+        "index": 0,
+        "side": "mono",
+        "driver_role": "woofer",
+        "label": "Epique woofer",
+        "startup_muted": true
+      },
+      {
+        "index": 1,
+        "side": "mono",
+        "driver_role": "tweeter",
+        "label": "F110M compression driver",
+        "startup_muted": true
+      }
+    ]
+  },
+  "drivers": {
+    "woofer": {
+      "role": "woofer",
+      "manufacturer": "Dayton Audio",
+      "model": "Epique E150HE-44",
+      "fs_hz": 40,
+      "sensitivity_db": 83.3,
+      "rated_power_w": 60,
+      "expected_nearfield_response": "Manufacturer response extends through the bring-up crossover region; measure final baffle and enclosure before final EQ."
+    },
+    "tweeter": {
+      "role": "tweeter",
+      "manufacturer": "Eminence",
+      "model": "F110M-8",
+      "fs_hz": 1200,
+      "sensitivity_db": 108.4,
+      "rated_power_w": 25,
+      "expected_nearfield_response": "Compression driver must be measured with the final horn or waveguide attached; first bring-up keeps it muted and protected."
+    }
+  },
+  "crossover_regions": [
+    {
+      "id": "woofer_tweeter",
+      "lower_driver": "woofer",
+      "upper_driver": "tweeter",
+      "fc_hz": 2500,
+      "target_type": "LinkwitzRiley",
+      "order": 4,
+      "lower_polarity": "non-inverted",
+      "upper_polarity": "non-inverted",
+      "delay_target_driver": "woofer",
+      "delay_range_ms": [0.0, 0.6],
+      "null_depth_threshold_db": 25
+    }
+  ],
+  "safety": {
+    "initial_sweep_level_db_spl": 60,
+    "max_commissioning_level_db_spl": 80,
+    "escalation_step_db": 3,
+    "require_physical_tweeter_protection": true,
+    "require_channel_identity_before_drivers": true,
+    "emergency_stop_required": true
+  },
+  "notes": "Safe bring-up preset for a mono 2-way cabinet. The 2.5 kHz LR4 target is intentionally conservative for first power-up; final crossover frequency, polarity, delay, gain trim, limiter thresholds, and EQ require measurement with the actual horn, baffle, enclosure, amplifier gain, and microphone."
+}

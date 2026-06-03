@@ -56,10 +56,13 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var statusText = '', statusErr = false;
   var activeSpeaker = {
     loading: false, action: '', payload: null, session: null, targets: null,
-    plan: null, playback: null, error: '', levelDbfs: null
+    stagedConfig: null, plan: null, playback: null, error: '', levelDbfs: null
   };
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
+    identity: null, clockDomain: null, identitySaving: '', protectionSaving: '',
+    readiness: null, readinessChecking: '', readinessError: '',
+    readinessPlayback: null, readinessPlaybackChecking: '',
     error: '', dirty: false, touched: false
   };
   var ZERO_DETENT_DB = 0.1;
@@ -488,9 +491,12 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   function renderActiveSpeakerSetup() {
     var body = renderActiveSpeakerStatus();
     var open = activeSpeaker.loading || activeSpeaker.payload ||
-      activeSpeaker.session || activeSpeaker.plan || activeSpeaker.playback ||
+      activeSpeaker.session || activeSpeaker.stagedConfig ||
+      activeSpeaker.plan || activeSpeaker.playback ||
       activeSpeaker.error || outputTopology.loading || outputTopology.saving ||
-      outputTopology.error || outputTopology.dirty || outputTopology.touched;
+      outputTopology.identitySaving || outputTopology.protectionSaving || outputTopology.error ||
+      outputTopology.readinessChecking || outputTopology.readinessPlaybackChecking ||
+      outputTopology.dirty || outputTopology.touched;
     return '<section class="active-speaker-setup">' +
       '<details class="advanced"' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
@@ -498,7 +504,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
           '<div class="setting-row__text">' +
             '<p class="setting-row__title">Active crossover commissioning</p>' +
             '<p class="setting-row__hint">For speakers with separate woofer, mid, or tweeter amplifier channels. ' +
-              'This status check is read-only; it will not play tones, reload CamillaDSP, or load active crossover configs.</p>' +
+              'Environment checks and staging will not play tones, reload CamillaDSP, or load active crossover configs.</p>' +
           '</div>' +
           '<div class="active-speaker-status">' + body + '</div>' +
         '</div>' +
@@ -517,6 +523,19 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   function outputEvaluation(topology) {
     return topology && topology.evaluation ? topology.evaluation : {};
+  }
+  function outputIdentityReport() {
+    return outputTopology.identity || null;
+  }
+  function outputClockDomainReport() {
+    return outputTopology.clockDomain || null;
+  }
+  function identityTargetFor(groupId, role) {
+    var report = outputIdentityReport();
+    var targets = report && Array.isArray(report.targets) ? report.targets : [];
+    return targets.find(function(target) {
+      return target.speaker_group_id === groupId && target.role === role;
+    }) || null;
   }
   function outputAssignedMap(topology) {
     var out = {};
@@ -560,28 +579,65 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
           '<p class="setting-row__title">Output setup</p>' +
           '<p class="setting-row__hint">Map DAC outputs to speakers and driver roles before any active crossover work. ' +
             'Saving this map does not play sound or reload CamillaDSP.</p>' +
-        '</div>' +
-        renderOutputTopologyActions() +
-      '</div>' +
+        '</div></div>' +
+      renderOutputSetupState() +
       renderOutputTopologyBody() +
+    '</div>';
+  }
+  function outputSetupStatusLabel() {
+    var topology = currentOutputTopology();
+    if (outputTopology.loading && !topology) return 'Loading';
+    if (!topology) return 'Not loaded';
+    if (outputTopology.dirty) return 'Unsaved draft';
+    var evaluation = outputEvaluation(topology);
+    return (evaluation.status || topology.status || 'Saved').replace(/_/g, ' ');
+  }
+  function renderOutputSetupState() {
+    return '<div class="output-setup__state">' +
+      '<span class="status-pill">' + escapeHtml(outputSetupStatusLabel()) + '</span>' +
+      renderOutputTopologyActions() +
     '</div>';
   }
   function renderOutputTopologyActions() {
     var topology = currentOutputTopology();
-    var hardware = outputHardware(topology);
-    var canPassive = hardware && Number(hardware.physical_output_count) >= 2;
-    var canTwoWay = hardware && Number(hardware.physical_output_count) >= 4;
     var saveDisabled = !outputTopology.draft || !outputTopology.dirty ||
       outputTopology.saving || outputTopology.loading;
     return '<div class="output-setup__actions">' +
       '<button type="button" class="btn btn--ghost" data-act="refresh-output-topology"' +
         (outputTopology.loading ? ' disabled' : '') + '>' + (topology ? 'Reload' : 'Load') + '</button>' +
-      '<button type="button" class="btn btn--ghost" data-act="output-starter-passive"' +
-        (canPassive ? '' : ' disabled') + '>Starter stereo</button>' +
-      '<button type="button" class="btn btn--ghost" data-act="output-starter-2way"' +
-        (canTwoWay ? '' : ' disabled') + '>Starter 2-way</button>' +
       '<button type="button" class="btn btn--primary" data-act="save-output-topology"' +
         (saveDisabled ? ' disabled' : '') + '>' + (outputTopology.saving ? 'Saving' : 'Save') + '</button>' +
+    '</div>';
+  }
+  function outputSetupTemplateButton(template, count) {
+    var disabled = count < template.minOutputs;
+    return '<button type="button" class="output-template" data-act="output-template" ' +
+      'data-template="' + escapeHtml(template.id) + '"' + (disabled ? ' disabled' : '') + '>' +
+      '<strong>' + escapeHtml(template.label) + '</strong>' +
+      '<span>' + escapeHtml(template.hint) + '</span>' +
+      '<small>' + escapeHtml(String(template.minOutputs) + '+ output' + (template.minOutputs === 1 ? '' : 's')) + '</small>' +
+    '</button>';
+  }
+  function outputTemplateList() {
+    return [
+      'mono_passive',
+      'mono_active_2way',
+      'mono_active_3way',
+      'stereo_passive',
+      'stereo_active_2way',
+      'stereo_active_3way'
+    ].map(outputTemplateDefinition).filter(Boolean);
+  }
+  function renderOutputSetupTemplates(topology) {
+    var hardware = outputHardware(topology);
+    var count = Number(hardware && hardware.physical_output_count) || 0;
+    var templates = outputTemplateList();
+    return '<div class="output-card output-card--templates">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Setup template</p>' +
+        '<p class="setting-row__hint">Choose the speaker layout you are wiring. This only edits the saved draft map.</p></div></div>' +
+      '<div class="output-template-grid">' + templates.map(function(template) {
+        return outputSetupTemplateButton(template, count);
+      }).join('') + '</div>' +
     '</div>';
   }
   function renderOutputTopologyBody() {
@@ -603,18 +659,25 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var evaluation = outputEvaluation(topology);
     var statusValue = outputTopology.dirty ? 'draft' : (evaluation.status || topology.status || 'draft');
     return '<div class="output-layout">' +
+      renderOutputSetupTemplates(topology) +
       renderOutputHardwareCard(topology, statusValue) +
       renderOutputStageCard(topology) +
       renderOutputGroupsCard(topology) +
+      renderOutputIdentityCard() +
+      renderOutputReadinessCard() +
       renderOutputSafetyCard(topology, statusValue) +
     '</div>';
   }
   function renderOutputHardwareCard(topology, statusValue) {
     var hardware = outputHardware(topology) || {};
+    var clock = outputClockDomainReport();
     var rows = [
       ['Device', hardware.device_id || 'unknown'],
       ['Outputs', String(hardware.physical_output_count || 0) + ' physical'],
       ['Route', hardware.route || 'default'],
+      ['Clock domain', clock && clock.clock_domain_label ||
+        hardware.clock_domain_label || 'Single output device clock'],
+      ['Multi-DAC aggregate', clock && clock.multi_device_aggregate_supported ? 'supported' : 'not enabled'],
       ['Topology', topology.name || topology.topology_id || 'Speaker outputs']
     ];
     return '<div class="output-card output-card--hardware">' +
@@ -682,7 +745,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     if (!groups.length) {
       return '<div class="output-card output-card--groups">' +
         '<p class="output-card__title">Speaker groups</p>' +
-        '<p class="setting-row__hint">Choose a starter map above. JTS keeps it as a draft until you verify channels safely.</p>' +
+        '<p class="setting-row__hint">Choose a setup template above. JTS keeps it as a draft until you verify channels safely.</p>' +
       '</div>';
     }
     return '<div class="output-card output-card--groups">' +
@@ -704,16 +767,194 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
           ? ' · protection ' + (channel.protection_status || 'unknown') : '';
         var label = channel.human_output_label ||
           (channel.physical_output_index == null ? 'No output assigned' : 'Output ' + (Number(channel.physical_output_index) + 1));
+        var target = identityTargetFor(group.id, channel.role) || {};
+        var targetId = target.id || (group.id + ':' + channel.role);
+        var busy = outputTopology.identitySaving === targetId;
+        var protectionBusy = outputTopology.protectionSaving === targetId;
+        var readinessBusy = outputTopology.readinessChecking === targetId;
+        var action = channel.identity_verified ? 'Clear' : 'Mark verified';
+        var protectionPresent = channel.protection_status === 'present';
+        var protectionAction = protectionPresent ? 'Clear protection' : 'Mark protection';
+        var disabled = outputTopology.dirty || busy || protectionBusy ||
+          readinessBusy || channel.physical_output_index == null;
         return '<div class="output-role">' +
-          '<span>' + escapeHtml(humanRole(channel.role)) + '</span>' +
-          '<strong>' + escapeHtml(label) + '</strong>' +
-          '<small>' + escapeHtml((channel.identity_verified ? 'identity verified' : 'identity unverified') + protection) + '</small>' +
+          '<div class="output-role__text">' +
+            '<span>' + escapeHtml(humanRole(channel.role)) + '</span>' +
+            '<strong>' + escapeHtml(label) + '</strong>' +
+            '<small>' + escapeHtml((channel.identity_verified ? 'identity verified' : 'identity unverified') + protection) + '</small>' +
+          '</div>' +
+          '<div class="output-role__actions">' +
+            '<button type="button" class="btn btn--ghost output-role__action" ' +
+              'data-act="mark-output-identity" ' +
+              'data-group-id="' + escapeHtml(group.id) + '" ' +
+              'data-role="' + escapeHtml(channel.role) + '" ' +
+              'data-verified="' + (channel.identity_verified ? 'false' : 'true') + '" ' +
+              'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
+              (disabled ? ' disabled' : '') + '>' +
+              escapeHtml(busy ? 'Saving' : action) + '</button>' +
+            (channel.protection_required ? '<button type="button" class="btn btn--ghost output-role__action" ' +
+              'data-act="mark-output-protection" ' +
+              'data-group-id="' + escapeHtml(group.id) + '" ' +
+              'data-role="' + escapeHtml(channel.role) + '" ' +
+              'data-present="' + (protectionPresent ? 'false' : 'true') + '" ' +
+              'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
+              (disabled ? ' disabled' : '') + '>' +
+              escapeHtml(protectionBusy ? 'Saving' : protectionAction) + '</button>' : '') +
+            '<button type="button" class="btn btn--ghost output-role__action" ' +
+              'data-act="check-output-readiness" ' +
+              'data-group-id="' + escapeHtml(group.id) + '" ' +
+              'data-role="' + escapeHtml(channel.role) + '" ' +
+              'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
+              (disabled ? ' disabled' : '') + '>' +
+              escapeHtml(readinessBusy ? 'Checking' : 'Check readiness') + '</button>' +
+          '</div>' +
         '</div>';
       }).join('') + '</div>' +
     '</div>';
   }
+  function renderOutputIdentityCard() {
+    if (outputTopology.dirty) {
+      return '<div class="output-card output-card--identity">' +
+        '<div class="output-card__head"><div><p class="output-card__title">Channel identity</p>' +
+        '<p class="setting-row__hint">Save this output setup draft before recording physical verification evidence.</p></div>' +
+        '<span class="status-pill">draft</span></div>' +
+        '<p class="setting-row__hint">JTS will re-run backend validation after save, then you can mark assigned channels as physically verified.</p>' +
+      '</div>';
+    }
+    var report = outputIdentityReport();
+    if (!report) {
+      return '<div class="output-card output-card--identity">' +
+        '<div class="output-card__head"><div><p class="output-card__title">Channel identity</p>' +
+        '<p class="setting-row__hint">Load or save the output setup to see verification progress.</p></div></div>' +
+      '</div>';
+    }
+    var assigned = Number(report.assigned_channel_count || 0);
+    var verified = Number(report.verified_channel_count || 0);
+    var unverified = Number(report.unverified_channel_count || 0);
+    var targets = Array.isArray(report.targets) ? report.targets : [];
+    var rows = targets.length ? targets.map(function(target) {
+      var blockers = Array.isArray(target.sound_test_blockers) ? target.sound_test_blockers : [];
+      return '<li class="output-identity-row">' +
+        '<span>' + escapeHtml(target.speaker_label || target.speaker_group_id || 'Speaker') +
+          ' · ' + escapeHtml(humanRole(target.role)) + '</span>' +
+        '<strong>' + escapeHtml(target.identity_verified ? 'Verified' :
+          (target.assigned ? 'Needs check' : 'Unassigned')) + '</strong>' +
+        (blockers.length ? '<small>' + escapeHtml(blockers.slice(0, 2).join(', ')) + '</small>' : '') +
+      '</li>';
+    }).join('') : '<li class="output-identity-row"><span>No channels configured</span><strong>Draft</strong></li>';
+    return '<div class="output-card output-card--identity">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Channel identity</p>' +
+        '<p class="setting-row__hint">Physical verification is operator evidence. It does not authorize playback by itself.</p></div>' +
+        '<span class="status-pill' + outputStatusClass(report.status || 'draft') + '">' +
+          escapeHtml(verified + '/' + assigned + ' verified') + '</span></div>' +
+      (outputTopology.dirty ? '<p class="setting-row__hint">Save the draft before changing identity evidence.</p>' : '') +
+      '<ul class="output-identity-list">' + rows + '</ul>' +
+      '<p class="setting-row__hint">' + escapeHtml(report.next_step || 'Verify assigned channels before sound tests.') + '</p>' +
+      (unverified > 0 ? '<p class="setting-row__hint">Use this only after wiring inspection, dummy-load/DMM checks, or a future low-level channel test confirms the driver.</p>' : '') +
+    '</div>';
+  }
+  function renderOutputReadinessCard() {
+    if (outputTopology.dirty) {
+      return '<div class="output-card output-card--readiness">' +
+        '<div class="output-card__head"><div><p class="output-card__title">Playback readiness</p>' +
+        '<p class="setting-row__hint">Save the output setup before checking a channel.</p></div>' +
+        '<span class="status-pill">draft</span></div>' +
+      '</div>';
+    }
+    if (outputTopology.readinessChecking) {
+      return '<div class="output-card output-card--readiness">' +
+        '<div class="output-card__head"><div><p class="output-card__title">Playback readiness</p>' +
+        '<p class="setting-row__hint">Checking the selected saved channel. No sound will play.</p></div>' +
+        '<span class="status-pill">checking</span></div>' +
+      '</div>';
+    }
+    if (outputTopology.readinessError) {
+      return '<div class="output-card output-card--readiness">' +
+        '<div class="output-card__head"><div><p class="output-card__title">Playback readiness</p>' +
+        '<p class="setting-row__hint">The last readiness check failed. The saved output setup is still available.</p></div>' +
+        '<span class="status-pill status-pill--blocked">check failed</span></div>' +
+        '<p class="setting-row__hint">' + escapeHtml(outputTopology.readinessError) + '</p>' +
+      '</div>';
+    }
+    var readiness = outputTopology.readiness;
+    if (!readiness) {
+      return '<div class="output-card output-card--readiness">' +
+        '<div class="output-card__head"><div><p class="output-card__title">Playback readiness</p>' +
+        '<p class="setting-row__hint">Choose Check readiness on one saved channel to see the no-audio safety checklist.</p></div>' +
+        '<span class="status-pill">not checked</span></div>' +
+      '</div>';
+    }
+    var target = readiness.target || {};
+    var gates = Array.isArray(readiness.required_gates) ? readiness.required_gates : [];
+    var rows = gates.map(function(gate) {
+      return [
+        gate.passed ? 'info' : 'blocker',
+        gate.label || gate.id || 'gate',
+        gate.message || (gate.passed ? 'Passed' : 'Blocked')
+      ];
+    });
+    var statusValue = readiness.preconditions_passed ? 'Preconditions passed' : 'Blocked';
+    return '<div class="output-card output-card--readiness">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Playback readiness</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(target.label || 'Selected channel') + '</p></div>' +
+        '<span class="status-pill' + (readiness.preconditions_passed ? ' status-pill--ready' : ' status-pill--blocked') + '">' +
+          escapeHtml(statusValue) + '</span></div>' +
+      '<ul class="output-safety-list">' + rows.slice(0, 10).map(function(row) {
+        return '<li class="output-safety-list__item output-safety-list__item--' + escapeHtml(row[0]) + '">' +
+          '<span>' + escapeHtml(row[1]) + '</span>' +
+          '<p>' + escapeHtml(row[2]) + '</p>' +
+        '</li>';
+      }).join('') + '</ul>' +
+      '<p class="setting-row__hint">' + escapeHtml(readiness.next_step || 'No audio was emitted.') + '</p>' +
+      '<p class="setting-row__hint">Playback allowed: ' + escapeHtml(readiness.playback_allowed ? 'yes' : 'no') + '. This checklist does not play sound.</p>' +
+      renderOutputReadinessActions(readiness) +
+      renderOutputReadinessPlayback(outputTopology.readinessPlayback) +
+    '</div>';
+  }
+  function renderOutputReadinessActions(readiness) {
+    var target = readiness && readiness.target || {};
+    var disabled = !readiness || !readiness.preconditions_passed ||
+      outputTopology.readinessPlaybackChecking;
+    var attrs = 'data-group-id="' + escapeHtml(target.speaker_group_id || '') + '" ' +
+      'data-role="' + escapeHtml(target.role || '') + '"';
+    var artifactLabel = outputTopology.readinessPlaybackChecking === 'artifact' ?
+      'Verifying' : 'Verify artifact';
+    var playLabel = outputTopology.readinessPlaybackChecking === 'audio' ?
+      'Playing' : 'Play low-level test';
+    return '<div class="active-speaker-actions">' +
+      '<button type="button" class="btn btn--ghost" data-act="play-output-readiness-tone" ' +
+        attrs + ' data-audio="false"' + (disabled ? ' disabled' : '') + '>' +
+        escapeHtml(artifactLabel) + '</button>' +
+      (readiness && readiness.playback_allowed ? '<button type="button" class="btn btn--danger" ' +
+        'data-act="play-output-readiness-tone" ' + attrs + ' data-audio="true"' +
+        (disabled ? ' disabled' : '') + '>' + escapeHtml(playLabel) + '</button>' : '') +
+    '</div>';
+  }
+  function renderOutputReadinessPlayback(playback) {
+    if (!playback) return '';
+    var artifact = playback.artifact || {};
+    var target = playback.target || {};
+    var rows = [
+      ['Playback status', playback.status || 'unknown'],
+      ['Backend', playback.backend || 'none'],
+      ['Target', target.label || target.driver_role || target.role || 'unknown'],
+      ['Artifact', artifact.wav_basename || 'none'],
+      ['Audio emitted', playback.audio_emitted ? 'Yes' : 'No']
+    ];
+    var issues = Array.isArray(playback.issues) ? playback.issues.slice(0, 4) : [];
+    return '<div class="active-speaker-plan output-readiness-playback">' +
+      '<p class="setting-row__title">Channel test result</p>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
+        return '<li>' + escapeHtml('Playback: ' + (issue.code || 'issue')) + '</li>';
+      }).join('') + '</ul>' : '') +
+    '</div>';
+  }
   function renderOutputSafetyCard(topology, statusValue) {
     var evaluation = outputEvaluation(topology);
+    var clock = outputClockDomainReport();
     var blockers = Array.isArray(evaluation.blockers) ? evaluation.blockers : [];
     var warnings = Array.isArray(evaluation.warnings) ? evaluation.warnings : [];
     var safety = topology.safety || evaluation.safety || {};
@@ -723,6 +964,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     }
     blockers.forEach(function(issue) { rows.push(['blocker', issue.code, issue.message]); });
     warnings.forEach(function(issue) { rows.push(['warning', issue.code, issue.message]); });
+    if (clock && clock.status && clock.status !== 'single_device_clock') {
+      rows.push(['warning', 'clock_domain', clock.recommendation || 'Output clocking needs review.']);
+    }
     rows.push([
       safety.sound_tests_allowed ? 'warning' : 'info',
       'sound_tests_allowed',
@@ -768,6 +1012,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var validation = p.camilla_validation || {};
     var safe = p.safe_playback || {};
     var session = activeSpeaker.session || {};
+    var staged = activeSpeaker.stagedConfig || {};
     var ok = !!p.ok_to_load_active_config;
     var devices = Array.isArray(alsa.devices) ? alsa.devices.length : 0;
     var rows = [
@@ -776,6 +1021,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       ['Volume ceiling', cfg.volume_limit_db == null ? 'Missing' : fmtDb(cfg.volume_limit_db) + ' dB'],
       ['ALSA playback devices', String(devices)],
       ['Config validation', validation.status || 'unknown'],
+      ['Staged startup', staged.status || 'not staged'],
       ['Safe playback', safe.playback_allowed ? 'Allowed' : 'Not allowed yet'],
       ['Safety session', session.status || 'Not armed'],
       ['Calibration level', fmtDbfs(activeSpeakerLevelConfig().value)]
@@ -792,6 +1038,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
       }).join('') + '</dl>' +
       renderActiveSpeakerIssues(envIssues, sessionIssues) +
+      renderActiveSpeakerStagedConfig(activeSpeaker.stagedConfig) +
       (session.status === 'armed' ? renderActiveSpeakerLevel() : '') +
       renderActiveSpeakerActions(ok, session) +
       renderActiveSpeakerPlan(activeSpeaker.plan) +
@@ -869,11 +1116,40 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       return '<li>' + escapeHtml(row[0] + ': ' + (issue.code || 'issue')) + '</li>';
     }).join('') + '</ul>';
   }
+  function renderActiveSpeakerStagedConfig(staged) {
+    if (!staged || staged.status === 'not_staged') return '';
+    var cfg = staged.config || {};
+    var preset = staged.preset || {};
+    var load = staged.load || {};
+    var rows = [
+      ['Stage status', staged.status || 'unknown'],
+      ['Preset', preset.name || preset.preset_id || 'unknown'],
+      ['Config', cfg.basename || 'none'],
+      ['Playback device', cfg.playback_device || 'missing'],
+      ['Channels', cfg.playback_channels == null ? 'unknown' : String(cfg.playback_channels)],
+      ['Validation', cfg.validation && cfg.validation.status || 'unknown'],
+      ['Protective HP', cfg.tweeter_protective_highpass_hz ?
+        String(cfg.tweeter_protective_highpass_hz) + ' Hz' : 'unknown'],
+      ['Load gate', load.load_gate || 'not implemented']
+    ];
+    var issues = Array.isArray(staged.issues) ? staged.issues.slice(0, 5) : [];
+    return '<div class="active-speaker-plan active-speaker-stage">' +
+      '<p class="setting-row__title">Protected startup config</p>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
+        return '<li>' + escapeHtml('Stage: ' + (issue.code || 'issue')) + '</li>';
+      }).join('') + '</ul>' : '') +
+      '<p class="setting-row__hint">' + escapeHtml(staged.next_step || 'Staged only; no DSP graph was loaded.') + '</p>' +
+    '</div>';
+  }
   function renderActiveSpeakerActions(ok, session) {
     var busy = !!activeSpeaker.action;
     var state = session || {};
     var targets = activeSpeaker.targets && Array.isArray(activeSpeaker.targets.targets)
       ? activeSpeaker.targets.targets : [];
+    var stageDisabled = outputTopology.dirty ? ' disabled' : '';
     if (busy) {
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--ghost" disabled>' + escapeHtml(activeSpeaker.action) + '</button>' +
@@ -890,13 +1166,15 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       }).join('') : '<span class="setting-row__hint">No preset channel targets available.</span>';
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--danger" data-act="stop-active-speaker">Stop</button>' +
-        '<span class="setting-row__hint">Armed safety session. Tone playback is not implemented in this build.</span>' +
+        '<button type="button" class="btn btn--ghost" data-act="stage-active-config"' + stageDisabled + '>Stage protected config</button>' +
+        '<span class="setting-row__hint">Armed safety session. Artifact checks are available; audible tests require saved output readiness and explicit lab enablement.</span>' +
       '</div>' +
       '<div class="active-speaker-actions active-speaker-actions--targets">' +
         targetButtons +
       '</div>';
     }
     return '<div class="active-speaker-actions">' +
+      '<button type="button" class="btn btn--ghost" data-act="stage-active-config"' + stageDisabled + '>Stage protected config</button>' +
       '<button type="button" class="btn btn--ghost" data-act="arm-active-speaker"' + (ok ? '' : ' disabled') + '>Arm safe session</button>' +
       '<span class="setting-row__hint">Arming records the safety state only; it does not play sound.</span>' +
     '</div>';
@@ -949,7 +1227,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
         return '<li>' + escapeHtml('Playback: ' + (issue.code || 'issue')) + '</li>';
       }).join('') + '</ul>' : '') +
-      '<p class="setting-row__hint">No audio was emitted by this backend.</p>' +
+      '<p class="setting-row__hint">' + escapeHtml(playback.audio_emitted ?
+        'Audio was emitted by the explicitly enabled lab backend.' :
+        'No audio was emitted by this backend.') + '</p>' +
     '</div>';
   }
 
@@ -1327,9 +1607,13 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     else if (act === 'reset-draft') { resetDraft(); }
     else if (act === 'refresh-active-speaker') { refreshActiveSpeakerStatus(); }
     else if (act === 'refresh-output-topology') { refreshOutputTopology(); }
-    else if (act === 'output-starter-passive') { setOutputStarter('passive'); }
-    else if (act === 'output-starter-2way') { setOutputStarter('active_2_way'); }
+    else if (act === 'output-template') { setOutputTemplate(t.getAttribute('data-template') || ''); }
     else if (act === 'save-output-topology') { saveOutputTopology(); }
+    else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
+    else if (act === 'mark-output-protection') { updateOutputChannelProtection(t); }
+    else if (act === 'check-output-readiness') { checkOutputPlaybackReadiness(t); }
+    else if (act === 'play-output-readiness-tone') { playOutputReadinessTone(t); }
+    else if (act === 'stage-active-config') { stageActiveSpeakerConfig(); }
     else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Arming'); }
     else if (act === 'stop-active-speaker') { activeSpeakerPost('./active-speaker/stop', 'Stopping'); }
     else if (act === 'prepare-active-tone') {
@@ -1530,10 +1814,19 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     var topology = payload && (payload.output_topology || payload);
     outputTopology.payload = topology || null;
     outputTopology.draft = topology ? clone(topology) : null;
+    outputTopology.identity = payload && payload.channel_identity || topology && topology.channel_identity || null;
+    outputTopology.clockDomain = payload && payload.clock_domain || topology && topology.clock_domain || null;
     outputTopology.error = '';
     outputTopology.dirty = false;
     outputTopology.saving = false;
     outputTopology.loading = false;
+    outputTopology.identitySaving = '';
+    outputTopology.protectionSaving = '';
+    outputTopology.readiness = null;
+    outputTopology.readinessChecking = '';
+    outputTopology.readinessError = '';
+    outputTopology.readinessPlayback = null;
+    outputTopology.readinessPlaybackChecking = '';
   }
   async function refreshOutputTopology(options) {
     options = options || {};
@@ -1561,6 +1854,12 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     outputTopology.dirty = true;
     outputTopology.touched = true;
     outputTopology.error = '';
+    outputTopology.readiness = null;
+    outputTopology.readinessChecking = '';
+    outputTopology.readinessError = '';
+    outputTopology.readinessPlayback = null;
+    outputTopology.readinessPlaybackChecking = '';
+    activeSpeaker.stagedConfig = null;
     render();
   }
   function outputChannel(role, index) {
@@ -1583,7 +1882,131 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     if (next.safety) next.safety.sound_tests_allowed = false;
     return next;
   }
-  async function setOutputStarter(kind) {
+  function outputTemplateDefinition(kind) {
+    return {
+      mono_passive: {
+        id: 'mono_passive',
+        label: 'Mono passive',
+        hint: 'One full-range channel',
+        minOutputs: 1,
+        name: 'Mono passive output',
+        groups: [{
+          id: 'main', label: 'Main speaker', kind: 'mono',
+          mode: 'full_range_passive',
+          position: {x: 0, y: 0.42, rotation_degrees: 0},
+          channels: [outputChannel('full_range', 0)]
+        }],
+        routing: {mono_group_id: 'main'}
+      },
+      mono_active_2way: {
+        id: 'mono_active_2way',
+        label: 'Mono active 2-way',
+        hint: 'Woofer + tweeter',
+        minOutputs: 2,
+        name: 'Mono active 2-way output',
+        groups: [{
+          id: 'main', label: 'Main speaker', kind: 'mono',
+          mode: 'active_2_way',
+          position: {x: 0, y: 0.42, rotation_degrees: 0},
+          channels: [outputChannel('woofer', 0), outputChannel('tweeter', 1)]
+        }],
+        routing: {mono_group_id: 'main'}
+      },
+      mono_active_3way: {
+        id: 'mono_active_3way',
+        label: 'Mono active 3-way',
+        hint: 'Woofer + mid + tweeter',
+        minOutputs: 3,
+        name: 'Mono active 3-way output',
+        groups: [{
+          id: 'main', label: 'Main speaker', kind: 'mono',
+          mode: 'active_3_way',
+          position: {x: 0, y: 0.42, rotation_degrees: 0},
+          channels: [
+            outputChannel('woofer', 0),
+            outputChannel('mid', 1),
+            outputChannel('tweeter', 2)
+          ]
+        }],
+        routing: {mono_group_id: 'main'}
+      },
+      stereo_passive: {
+        id: 'stereo_passive',
+        label: 'Stereo passive',
+        hint: 'Left + right full-range',
+        minOutputs: 2,
+        name: 'Stereo passive outputs',
+        groups: [
+          {
+            id: 'left', label: 'Left speaker', kind: 'left',
+            mode: 'full_range_passive',
+            position: {x: -0.65, y: 0.42, rotation_degrees: 0},
+            channels: [outputChannel('full_range', 0)]
+          },
+          {
+            id: 'right', label: 'Right speaker', kind: 'right',
+            mode: 'full_range_passive',
+            position: {x: 0.65, y: 0.42, rotation_degrees: 0},
+            channels: [outputChannel('full_range', 1)]
+          }
+        ],
+        routing: {main_left_group_id: 'left', main_right_group_id: 'right'}
+      },
+      stereo_active_2way: {
+        id: 'stereo_active_2way',
+        label: 'Stereo active 2-way',
+        hint: 'Two channels per speaker',
+        minOutputs: 4,
+        name: 'Stereo active 2-way outputs',
+        groups: [
+          {
+            id: 'left', label: 'Left speaker', kind: 'left',
+            mode: 'active_2_way',
+            position: {x: -0.65, y: 0.42, rotation_degrees: 0},
+            channels: [outputChannel('woofer', 0), outputChannel('tweeter', 1)]
+          },
+          {
+            id: 'right', label: 'Right speaker', kind: 'right',
+            mode: 'active_2_way',
+            position: {x: 0.65, y: 0.42, rotation_degrees: 0},
+            channels: [outputChannel('woofer', 2), outputChannel('tweeter', 3)]
+          }
+        ],
+        routing: {main_left_group_id: 'left', main_right_group_id: 'right'}
+      },
+      stereo_active_3way: {
+        id: 'stereo_active_3way',
+        label: 'Stereo active 3-way',
+        hint: 'Three channels per speaker',
+        minOutputs: 6,
+        name: 'Stereo active 3-way outputs',
+        groups: [
+          {
+            id: 'left', label: 'Left speaker', kind: 'left',
+            mode: 'active_3_way',
+            position: {x: -0.65, y: 0.42, rotation_degrees: 0},
+            channels: [
+              outputChannel('woofer', 0),
+              outputChannel('mid', 1),
+              outputChannel('tweeter', 2)
+            ]
+          },
+          {
+            id: 'right', label: 'Right speaker', kind: 'right',
+            mode: 'active_3_way',
+            position: {x: 0.65, y: 0.42, rotation_degrees: 0},
+            channels: [
+              outputChannel('woofer', 3),
+              outputChannel('mid', 4),
+              outputChannel('tweeter', 5)
+            ]
+          }
+        ],
+        routing: {main_left_group_id: 'left', main_right_group_id: 'right'}
+      }
+    }[kind] || null;
+  }
+  async function setOutputTemplate(kind) {
     if (outputTopology.dirty &&
         !await jtsConfirm('Replace the unsaved output setup draft?')) {
       return;
@@ -1594,61 +2017,33 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       return;
     }
     var count = Number(next.hardware.physical_output_count) || 0;
-    if (kind === 'passive') {
-      if (count < 2) {
-        status('Starter stereo needs at least two physical outputs.', true);
-        return;
-      }
-      next.name = 'Stereo passive outputs';
-      next.speaker_groups = [
-        {
-          id: 'left', label: 'Left speaker', kind: 'left',
-          mode: 'full_range_passive',
-          position: {x: -0.65, y: 0.42, rotation_degrees: 0},
-          channels: [outputChannel('full_range', 0)]
-        },
-        {
-          id: 'right', label: 'Right speaker', kind: 'right',
-          mode: 'full_range_passive',
-          position: {x: 0.65, y: 0.42, rotation_degrees: 0},
-          channels: [outputChannel('full_range', 1)]
-        }
-      ];
-    } else {
-      if (count < 4) {
-        status('Starter 2-way needs at least four physical outputs.', true);
-        return;
-      }
-      next.name = 'Stereo active 2-way outputs';
-      next.speaker_groups = [
-        {
-          id: 'left', label: 'Left speaker', kind: 'left',
-          mode: 'active_2_way',
-          position: {x: -0.65, y: 0.42, rotation_degrees: 0},
-          channels: [outputChannel('woofer', 0), outputChannel('tweeter', 1)]
-        },
-        {
-          id: 'right', label: 'Right speaker', kind: 'right',
-          mode: 'active_2_way',
-          position: {x: 0.65, y: 0.42, rotation_degrees: 0},
-          channels: [outputChannel('woofer', 2), outputChannel('tweeter', 3)]
-        }
-      ];
+    var template = outputTemplateDefinition(kind);
+    if (!template) {
+      status('Choose a supported output setup template.', true);
+      return;
     }
+    if (count < template.minOutputs) {
+      status(template.name + ' needs at least ' + template.minOutputs +
+        ' physical output' + (template.minOutputs === 1 ? '.' : 's.'), true);
+      return;
+    }
+    next.name = template.name;
+    next.speaker_groups = template.groups;
     next.routing = {
-      main_left_group_id: 'left',
-      main_right_group_id: 'right',
-      mono_group_id: null,
-      subwoofer_group_ids: []
+      main_left_group_id: template.routing.main_left_group_id || null,
+      main_right_group_id: template.routing.main_right_group_id || null,
+      mono_group_id: template.routing.mono_group_id || null,
+      subwoofer_group_ids: template.routing.subwoofer_group_ids || []
     };
     setOutputDraft(next);
-    status('Starter output map is a draft. Save to validate; no sound will play.');
+    status('Output setup template is a draft. Save to validate; no sound will play.');
   }
   async function saveOutputTopology() {
     if (!outputTopology.draft) return;
     outputTopology.saving = true;
     outputTopology.touched = true;
     outputTopology.error = '';
+    activeSpeaker.stagedConfig = null;
     render();
     try {
       var resp = await fetch('./output-topology', {
@@ -1667,12 +2062,249 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     }
     render();
   }
+  async function updateOutputChannelIdentity(button) {
+    if (outputTopology.dirty) {
+      status('Save the output setup before changing channel identity evidence.', true);
+      return;
+    }
+    var groupId = button.getAttribute('data-group-id') || '';
+    var role = button.getAttribute('data-role') || '';
+    var verified = button.getAttribute('data-verified') !== 'false';
+    var label = button.getAttribute('data-label') || (groupId + ' ' + role);
+    var message = verified
+      ? 'Mark "' + label + '" as physically verified? Only do this after wiring inspection, dummy-load/DMM checks, or a low-level channel test confirms it.'
+      : 'Clear physical verification for "' + label + '"?';
+    if (!await jtsConfirm(message, {danger: verified && role === 'tweeter'})) return;
+
+    outputTopology.identitySaving = groupId + ':' + role;
+    outputTopology.error = '';
+    outputTopology.readinessError = '';
+    outputTopology.readinessPlayback = null;
+    outputTopology.readinessPlaybackChecking = '';
+    outputTopology.touched = true;
+    render();
+    try {
+      var resp = await fetch('./active-speaker/channel-identity', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          speaker_group_id: groupId,
+          role: role,
+          identity_verified: verified
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'channel identity update failed');
+      ingestOutputTopology(payload);
+      status((verified ? 'Marked verified: ' : 'Cleared verification: ') + label + '.');
+    } catch (e) {
+      outputTopology.identitySaving = '';
+      outputTopology.error = e.message;
+      status('Could not update channel identity: ' + e.message, true);
+    }
+    render();
+  }
+  async function updateOutputChannelProtection(button) {
+    if (outputTopology.dirty) {
+      status('Save the output setup before changing protection evidence.', true);
+      return;
+    }
+    var groupId = button.getAttribute('data-group-id') || '';
+    var role = button.getAttribute('data-role') || '';
+    var present = button.getAttribute('data-present') !== 'false';
+    var label = button.getAttribute('data-label') || (groupId + ' ' + role);
+    var message = present
+      ? 'Mark compression-driver protection present for "' + label + '"? Only do this after the physical protection path is installed and inspected.'
+      : 'Clear compression-driver protection evidence for "' + label + '"?';
+    if (!await jtsConfirm(message, {danger: present})) return;
+
+    outputTopology.protectionSaving = groupId + ':' + role;
+    outputTopology.error = '';
+    outputTopology.readinessError = '';
+    outputTopology.readiness = null;
+    outputTopology.readinessPlayback = null;
+    outputTopology.readinessPlaybackChecking = '';
+    outputTopology.touched = true;
+    activeSpeaker.stagedConfig = null;
+    render();
+    try {
+      var resp = await fetch('./active-speaker/channel-protection', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          speaker_group_id: groupId,
+          role: role,
+          protection_present: present
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'channel protection update failed');
+      ingestOutputTopology(payload);
+      outputTopology.protectionSaving = '';
+      status((present ? 'Marked protection present: ' : 'Cleared protection: ') + label + '.');
+    } catch (e) {
+      outputTopology.protectionSaving = '';
+      outputTopology.error = e.message;
+      status('Could not update channel protection: ' + e.message, true);
+    }
+    render();
+  }
+  async function checkOutputPlaybackReadiness(button) {
+    if (outputTopology.dirty) {
+      status('Save the output setup before checking playback readiness.', true);
+      return;
+    }
+    var groupId = button.getAttribute('data-group-id') || '';
+    var role = button.getAttribute('data-role') || '';
+    var label = button.getAttribute('data-label') || (groupId + ' ' + role);
+    var targetId = groupId + ':' + role;
+    outputTopology.readinessChecking = targetId;
+    outputTopology.error = '';
+    outputTopology.readinessError = '';
+    outputTopology.readinessPlayback = null;
+    outputTopology.readinessPlaybackChecking = '';
+    outputTopology.touched = true;
+    render();
+    try {
+      var resp = await fetch('./active-speaker/playback-readiness', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          speaker_group_id: groupId,
+          role: role,
+          level_dbfs: activeSpeakerLevelConfig().value
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'playback readiness failed');
+      outputTopology.readiness = payload;
+      outputTopology.readinessChecking = '';
+      status('Checked playback readiness for ' + label + '. No sound was played.');
+    } catch (e) {
+      outputTopology.readinessChecking = '';
+      outputTopology.readinessError = e.message;
+      status('Could not check playback readiness: ' + e.message, true);
+    }
+    render();
+  }
+  async function playOutputReadinessTone(button) {
+    var groupId = button.getAttribute('data-group-id') || '';
+    var role = button.getAttribute('data-role') || '';
+    var audio = button.getAttribute('data-audio') === 'true';
+    if (audio && !await jtsConfirm(
+      'Play a short low-level channel test? Keep the physical Stop control available and stop immediately if anything sounds wrong.',
+      {danger: true}
+    )) {
+      return;
+    }
+    outputTopology.readinessPlaybackChecking = audio ? 'audio' : 'artifact';
+    outputTopology.readinessError = '';
+    outputTopology.readinessPlayback = null;
+    outputTopology.touched = true;
+    render();
+    try {
+      var resp = await fetch('./active-speaker/play-tone', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          speaker_group_id: groupId,
+          role: role,
+          level_dbfs: activeSpeakerLevelConfig().value,
+          audio: audio
+        })
+      });
+      var result = await resp.json();
+      if (!resp.ok) throw new Error(result.error || 'channel test failed');
+      outputTopology.readinessPlayback = result.playback || null;
+      outputTopology.readinessPlaybackChecking = '';
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: result.session || activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        plan: result.plan || activeSpeaker.plan,
+        playback: result.playback || activeSpeaker.playback,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status(audio ? 'Played low-level channel test.' : 'Verified channel test artifact. No sound was played.');
+    } catch (e) {
+      outputTopology.readinessPlaybackChecking = '';
+      outputTopology.readinessError = e.message;
+      status('Could not run channel test: ' + e.message, true);
+    }
+    render();
+  }
+  async function stageActiveSpeakerConfig() {
+    if (outputTopology.dirty) {
+      status('Save the output setup before staging protected config.', true);
+      return;
+    }
+    if (!await jtsConfirm(
+      'Stage a muted protected startup config from the saved output setup? This writes a candidate file only; it will not load CamillaDSP or play sound.',
+      {danger: false}
+    )) {
+      return;
+    }
+    activeSpeaker = {
+      loading: false, action: 'Staging protected config',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
+      plan: activeSpeaker.plan,
+      playback: activeSpeaker.playback,
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    };
+    render();
+    try {
+      var resp = await fetch('./active-speaker/stage-config', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: '{}'
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'protected config staging failed');
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: payload,
+        plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status(payload.status === 'staged' ?
+        'Staged protected startup config. No DSP graph was loaded.' :
+        'Protected startup config is blocked; review the staging evidence.',
+        payload.status !== 'staged');
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status('Could not stage protected config: ' + e.message, true);
+    }
+    render();
+  }
   async function refreshActiveSpeakerStatus() {
     activeSpeaker = {
       loading: true, action: '',
       payload: activeSpeaker.payload,
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
       plan: null,
       playback: null,
       error: '',
@@ -1684,6 +2316,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       if (!envResp.ok) throw new Error('environment probe failed');
       var sessionResp = await fetch('./active-speaker/safe-playback', {cache: 'no-store'});
       if (!sessionResp.ok) throw new Error('safe playback status failed');
+      var stagedResp = await fetch('./active-speaker/staged-config', {cache: 'no-store'});
+      if (!stagedResp.ok) throw new Error('staged config status failed');
       var targetsResp = await fetch('./active-speaker/tone-targets', {cache: 'no-store'});
       if (!targetsResp.ok) throw new Error('tone targets failed');
       var nextTargets = await targetsResp.json();
@@ -1692,6 +2326,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         payload: await envResp.json(),
         session: await sessionResp.json(),
         targets: nextTargets,
+        stagedConfig: await stagedResp.json(),
         plan: null,
         playback: null,
         error: '',
@@ -1702,6 +2337,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     } catch (e) {
       activeSpeaker = {
         loading: false, action: '', payload: null, session: null, targets: null,
+        stagedConfig: activeSpeaker.stagedConfig,
         plan: null, playback: null, error: e.message, levelDbfs: activeSpeaker.levelDbfs
       };
     }
@@ -1713,6 +2349,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       payload: activeSpeaker.payload,
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
       plan: null,
       playback: null,
       error: '',
@@ -1731,17 +2368,24 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         payload: activeSpeaker.payload,
         session: await resp.json(),
         targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
         plan: null,
         playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      outputTopology.readiness = null;
+      outputTopology.readinessChecking = '';
+      outputTopology.readinessError = '';
+      outputTopology.readinessPlayback = null;
+      outputTopology.readinessPlaybackChecking = '';
     } catch (e) {
       activeSpeaker = {
         loading: false, action: '',
         payload: activeSpeaker.payload,
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -1756,6 +2400,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       payload: activeSpeaker.payload,
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -1782,6 +2427,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         payload: activeSpeaker.payload,
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
         plan: nextPlan,
         playback: null,
         error: '',
@@ -1793,6 +2439,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         payload: activeSpeaker.payload,
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -1808,6 +2455,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       payload: activeSpeaker.payload,
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -1833,6 +2481,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         payload: activeSpeaker.payload,
         session: result.session || activeSpeaker.session,
         targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
         plan: result.plan || activeSpeaker.plan,
         playback: playback,
         error: '',
@@ -1845,6 +2494,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         payload: activeSpeaker.payload,
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,

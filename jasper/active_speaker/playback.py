@@ -12,11 +12,12 @@ import json
 import math
 import os
 import struct
+import subprocess
 import time
 import uuid
 import wave
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 from .calibration_level import (
     DEFAULT_TEST_LEVEL_DBFS,
@@ -33,6 +34,7 @@ from .tone_plan import (
 SCHEMA_VERSION = 1
 TONE_PLAYBACK_RESULT_KIND = "jts_active_speaker_tone_playback_result"
 TONE_PLAYBACK_ARTIFACT_KIND = "jts_active_speaker_tone_playback_artifact"
+TONE_BACKEND_STATUS_KIND = "jts_active_speaker_tone_backend_status"
 DEFAULT_ARTIFACT_DIR = Path("/var/lib/jasper/active_speaker_tone_artifacts")
 DEFAULT_SAMPLE_RATE_HZ = 48_000
 MIN_ARTIFACT_SAMPLE_RATE_HZ = 8_000
@@ -43,12 +45,27 @@ MAX_ARTIFACT_RETENTION = 100
 MIN_PLAYBACK_FREQUENCY_HZ = 20.0
 MAX_PLAYBACK_FREQUENCY_HZ = 20_000.0
 INT16_PEAK = 32767
+DEFAULT_APLAY_BINARY = "aplay"
+DEFAULT_AUDIO_BACKEND = "wav_artifact"
+APLAY_AUDIO_BACKEND = "aplay"
+ENABLE_AUDIO_VALUE = "1"
+TONE_BACKEND_ENV = "JASPER_ACTIVE_SPEAKER_TONE_BACKEND"
+ALLOW_AUDIO_ENV = "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO"
+TEST_PCM_ENV = "JASPER_ACTIVE_SPEAKER_TEST_PCM"
+APLAY_BINARY_ENV = "JASPER_APLAY"
+APLAY_TIMEOUT_PAD_SEC = 1.0
+
+AplayRunner = Callable[
+    [Sequence[str], float],
+    subprocess.CompletedProcess[str],
+]
 
 
 class TonePlaybackBackend(Protocol):
     """Backend seam for current dry-runs and future hardware playback."""
 
     backend_id: str
+    audio_backend: bool
 
     def start(
         self,
@@ -132,6 +149,113 @@ def _artifact_retention(value: Any = None) -> int:
     )
 
 
+def _env_flag(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _aplay_runner(
+    argv: Sequence[str],
+    timeout_sec: float,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(argv),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+    )
+
+
+def tone_backend_status(env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Return the current active-speaker tone backend boundary.
+
+    The artifact backend is always available and never emits audio. The aplay
+    backend is only considered audio-enabled when the operator explicitly
+    chooses it, explicitly allows audio, and provides a PCM target.
+    """
+
+    source = env if env is not None else os.environ
+    requested = str(source.get(TONE_BACKEND_ENV) or DEFAULT_AUDIO_BACKEND).strip()
+    requested = requested.lower() or DEFAULT_AUDIO_BACKEND
+    allow_audio = _env_flag(source.get(ALLOW_AUDIO_ENV))
+    pcm = str(source.get(TEST_PCM_ENV) or "").strip()
+    issues: list[dict[str, str]] = []
+    if requested not in {DEFAULT_AUDIO_BACKEND, APLAY_AUDIO_BACKEND}:
+        issues.append(
+            _issue(
+                "blocker",
+                "unknown_tone_backend",
+                "active-speaker tone backend is not recognized",
+            )
+        )
+    if requested == APLAY_AUDIO_BACKEND and not allow_audio:
+        issues.append(
+            _issue(
+                "blocker",
+                "audio_not_operator_enabled",
+                f"{ALLOW_AUDIO_ENV}=1 is required before audible channel tests",
+            )
+        )
+    if requested == APLAY_AUDIO_BACKEND and not pcm:
+        issues.append(
+            _issue(
+                "blocker",
+                "test_pcm_required",
+                f"{TEST_PCM_ENV} must name the active-speaker test PCM",
+            )
+        )
+    audio_enabled = requested == APLAY_AUDIO_BACKEND and allow_audio and bool(pcm)
+    if issues:
+        status = "blocked"
+    elif audio_enabled:
+        status = "audio_enabled"
+    else:
+        status = "artifact_only"
+    return {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": TONE_BACKEND_STATUS_KIND,
+        "status": status,
+        "backend": requested
+        if requested in {DEFAULT_AUDIO_BACKEND, APLAY_AUDIO_BACKEND}
+        else requested,
+        "artifact_backend": DEFAULT_AUDIO_BACKEND,
+        "audio_backend": APLAY_AUDIO_BACKEND if requested == APLAY_AUDIO_BACKEND else None,
+        "tone_playback_implemented": audio_enabled,
+        "audio_enabled": audio_enabled,
+        "allow_audio_env": ALLOW_AUDIO_ENV,
+        "test_pcm_env": TEST_PCM_ENV,
+        "test_pcm": pcm or None,
+        "issues": issues,
+        "next_step": (
+            "Audible channel tests are explicitly enabled."
+            if audio_enabled
+            else (
+                "Artifact verification is available; audible tests require "
+                "explicit lab enablement."
+            )
+        ),
+    }
+
+
+def enabled_audio_backend(
+    *,
+    env: dict[str, str] | None = None,
+    runner: AplayRunner = _aplay_runner,
+    artifact_dir: str | Path | None = None,
+) -> "AplayTonePlaybackBackend | None":
+    """Return the configured audio backend, or ``None`` when not enabled."""
+
+    status = tone_backend_status(env)
+    if not status["audio_enabled"]:
+        return None
+    return AplayTonePlaybackBackend(
+        pcm=str(status["test_pcm"]),
+        runner=runner,
+        artifact_dir=artifact_dir,
+        aplay_binary=(env or os.environ).get(APLAY_BINARY_ENV) or DEFAULT_APLAY_BINARY,
+    )
+
+
 def _target_output_index(plan: dict[str, Any]) -> int | None:
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
     value = target.get("output_index")
@@ -168,6 +292,10 @@ def _validate_plan_for_dry_backend(
     safe_session: dict[str, Any],
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
+    issues.extend(
+        issue for issue in plan.get("issues", [])
+        if isinstance(issue, dict)
+    )
     if safe_session.get("status") != "armed":
         issues.append(
             _issue(
@@ -407,6 +535,7 @@ class NullTonePlaybackBackend:
     """Dry backend for tests and control-flow checks."""
 
     backend_id = "null"
+    audio_backend = False
 
     def start(
         self,
@@ -442,6 +571,7 @@ class WavArtifactTonePlaybackBackend:
     """Render a bounded multi-channel WAV artifact without playback."""
 
     backend_id = "wav_artifact"
+    audio_backend = False
 
     def __init__(
         self,
@@ -522,32 +652,148 @@ class WavArtifactTonePlaybackBackend:
         }
 
 
+class AplayTonePlaybackBackend:
+    """Play a bounded generated artifact through an explicitly configured PCM."""
+
+    backend_id = APLAY_AUDIO_BACKEND
+    audio_backend = True
+
+    def __init__(
+        self,
+        *,
+        pcm: str,
+        aplay_binary: str = DEFAULT_APLAY_BINARY,
+        runner: AplayRunner = _aplay_runner,
+        artifact_dir: str | Path | None = None,
+        sample_rate_hz: int = DEFAULT_SAMPLE_RATE_HZ,
+        artifact_retention: int | None = None,
+    ) -> None:
+        self.pcm = str(pcm or "").strip()
+        if not self.pcm:
+            raise ValueError("active-speaker test PCM is required")
+        self.aplay_binary = str(aplay_binary or DEFAULT_APLAY_BINARY)
+        self.runner = runner
+        self.artifact_backend = WavArtifactTonePlaybackBackend(
+            artifact_dir=artifact_dir,
+            sample_rate_hz=sample_rate_hz,
+            artifact_retention=artifact_retention,
+        )
+
+    def start(
+        self,
+        plan: dict[str, Any],
+        *,
+        playback_id: str,
+        now_epoch: float,
+    ) -> dict[str, Any]:
+        artifact_result = self.artifact_backend.start(
+            plan,
+            playback_id=playback_id,
+            now_epoch=now_epoch,
+        )
+        artifact = artifact_result.get("artifact") or {}
+        wav_path = str(artifact.get("wav_path") or "")
+        if not wav_path:
+            raise RuntimeError("tone artifact was not generated")
+        duration_sec = (
+            _bounded_int(
+                artifact.get("duration_ms"),
+                default=DEFAULT_TONE_DURATION_MS,
+                lo=MIN_TONE_DURATION_MS,
+                hi=MAX_TONE_DURATION_MS,
+            )
+            / 1000.0
+        )
+        argv = [self.aplay_binary, "-q", "-D", self.pcm, wav_path]
+        completed = self.runner(argv, duration_sec + APLAY_TIMEOUT_PAD_SEC)
+        if completed.returncode != 0:
+            stderr = (completed.stderr or "").strip().splitlines()
+            detail = stderr[0][:160] if stderr else f"exit {completed.returncode}"
+            raise RuntimeError(f"aplay failed: {detail}")
+        return {
+            "backend": self.backend_id,
+            "status": "completed",
+            "audio_emitted": True,
+            "audio_device": {
+                "pcm": self.pcm,
+                "command": Path(self.aplay_binary).name,
+            },
+            "artifact": artifact,
+        }
+
+    def stop(
+        self,
+        *,
+        playback_id: str | None,
+        reason: str,
+        now_epoch: float,
+    ) -> dict[str, Any]:
+        return {
+            "backend": self.backend_id,
+            "status": "stopped",
+            "playback_id": playback_id,
+            "reason": reason,
+            "audio_emitted": False,
+        }
+
+
 def start_tone_playback(
     plan: dict[str, Any],
     *,
     safe_session: dict[str, Any],
     backend: TonePlaybackBackend | None = None,
+    allow_audio: bool = False,
+    allow_tweeter_audio: bool = False,
     now: Any = _now,
 ) -> dict[str, Any]:
-    """Run a tone plan through a no-audio playback backend."""
+    """Run a tone plan through a bounded playback backend."""
 
     now_epoch = float(now())
     playback_id = uuid.uuid4().hex
+    selected = backend or WavArtifactTonePlaybackBackend()
     issues = _validate_plan_for_dry_backend(plan, safe_session=safe_session)
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
     tone = _tone_fields(plan)
     bounded_plan = _plan_with_bounded_tone(plan, tone)
+    audio_backend = bool(getattr(selected, "audio_backend", False))
+    driver_role = str(target.get("driver_role") or target.get("role") or "")
+    if audio_backend and not allow_audio:
+        issues.append(
+            _issue(
+                "blocker",
+                "audio_playback_not_authorized",
+                "audible channel tests require an explicit per-request authorization",
+            )
+        )
+    if audio_backend and not plan.get("playback_allowed"):
+        issues.append(
+            _issue(
+                "blocker",
+                "playback_not_allowed_by_readiness",
+                "readiness gates did not authorize audible playback for this target",
+            )
+        )
+    if audio_backend and driver_role == "tweeter" and not allow_tweeter_audio:
+        issues.append(
+            _issue(
+                "blocker",
+                "tweeter_audio_not_enabled",
+                "tweeter/compression-driver playback is disabled for this slice",
+            )
+        )
     if issues:
         return {
             "artifact_schema_version": SCHEMA_VERSION,
             "kind": TONE_PLAYBACK_RESULT_KIND,
             "status": "blocked",
-            "backend": None,
+            "backend": selected.backend_id if audio_backend else None,
             "playback_id": playback_id,
             "created_at": _utc_from_epoch(now_epoch),
             "audio_emitted": False,
             "target": {
                 "side": target.get("side"),
+                "speaker_group_id": target.get("speaker_group_id"),
+                "role": target.get("role"),
                 "driver_role": target.get("driver_role"),
                 "output_index": target.get("output_index"),
                 "label": target.get("label"),
@@ -557,7 +803,6 @@ def start_tone_playback(
             "issues": issues,
         }
 
-    selected = backend or WavArtifactTonePlaybackBackend()
     try:
         backend_result = selected.start(
             bounded_plan,
@@ -575,6 +820,8 @@ def start_tone_playback(
             "audio_emitted": False,
             "target": {
                 "side": target.get("side"),
+                "speaker_group_id": target.get("speaker_group_id"),
+                "role": target.get("role"),
                 "driver_role": target.get("driver_role"),
                 "output_index": target.get("output_index"),
                 "label": target.get("label"),
@@ -585,7 +832,8 @@ def start_tone_playback(
                 _issue(
                     "blocker",
                     "tone_backend_failed",
-                    f"tone playback backend failed before emitting audio: "
+                    f"tone playback backend failed; successful audio emission "
+                    f"was not confirmed: "
                     f"{type(exc).__name__}",
                 )
             ],
@@ -598,15 +846,21 @@ def start_tone_playback(
         "playback_id": playback_id,
         "created_at": _utc_from_epoch(now_epoch),
         "audio_emitted": bool(backend_result.get("audio_emitted")),
+        "audio_device": backend_result.get("audio_device"),
         "target": {
             "side": target.get("side"),
+            "speaker_group_id": target.get("speaker_group_id"),
+            "role": target.get("role"),
             "driver_role": target.get("driver_role"),
             "output_index": target.get("output_index"),
             "label": target.get("label"),
         },
         "tone": tone,
         "artifact": backend_result.get("artifact"),
-        "issues": [],
+        "issues": [
+            issue for issue in backend_result.get("issues", [])
+            if isinstance(issue, dict)
+        ],
     }
 
 

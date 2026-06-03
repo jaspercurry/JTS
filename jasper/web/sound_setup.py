@@ -4,16 +4,22 @@ URL surface (after nginx strips /sound/):
   GET  /         page render
   GET  /state    persisted profile + preview + stock curve metadata
   GET  /output-topology              speaker/DAC topology draft + safety evidence
+  GET  /active-speaker/channel-identity physical-output identity evidence
   GET  /active-speaker/environment     read-only active-speaker readiness
   GET  /active-speaker/safe-playback   no-audio safety session state
+  GET  /active-speaker/staged-config   latest protected startup config evidence
   GET  /active-speaker/tone-targets    preset-derived channel-test targets
   POST /preview  preview a draft profile without touching live audio
   POST /live-draft apply a draft to live audio without persisting
   POST /audition validate and load a draft/bypass config without persisting
   POST /active-speaker/arm       arm a no-audio active-speaker safety session
   POST /active-speaker/stop      stop the no-audio active-speaker session
+  POST /active-speaker/playback-readiness no-audio target readiness checklist
+  POST /active-speaker/stage-config stage protected startup config
   POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
-  POST /active-speaker/play-tone render a bounded no-audio tone artifact
+  POST /active-speaker/play-tone run a bounded artifact/audio-gated tone test
+  POST /active-speaker/channel-identity mark/clear physical identity evidence
+  POST /active-speaker/channel-protection mark/clear tweeter protection evidence
   POST /output-topology save a complete speaker/DAC topology draft
   POST /profiles/save save or update a named custom profile
   POST /profiles/rename rename a named custom profile
@@ -45,8 +51,12 @@ from typing import Any, Callable
 
 from jasper.output_topology import (
     OutputTopology,
+    channel_identity_report,
+    clock_domain_report,
     load_output_topology,
     save_output_topology,
+    set_channel_identity_verified,
+    set_channel_protection_status,
 )
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
@@ -154,7 +164,11 @@ def _state_payload(
 
 def _output_topology_payload() -> dict[str, Any]:
     topology = load_output_topology()
-    return {"output_topology": topology.to_dict(include_evaluation=True)}
+    return {
+        "output_topology": topology.to_dict(include_evaluation=True),
+        "channel_identity": channel_identity_report(topology),
+        "clock_domain": clock_domain_report(topology),
+    }
 
 
 def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
@@ -173,7 +187,102 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
         len(evaluation["blockers"]),
         len(evaluation["warnings"]),
     )
-    return {"output_topology": topology.to_dict(include_evaluation=True)}
+    return {
+        "output_topology": topology.to_dict(include_evaluation=True),
+        "channel_identity": channel_identity_report(topology),
+        "clock_domain": clock_domain_report(topology),
+    }
+
+
+def _active_speaker_channel_identity_payload() -> dict[str, Any]:
+    """Return physical-channel identity evidence for the saved topology."""
+
+    topology = load_output_topology()
+    return {
+        "channel_identity": channel_identity_report(topology),
+        "clock_domain": clock_domain_report(topology),
+    }
+
+
+def _active_speaker_channel_identity_save_payload(
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Mark or clear a saved topology channel's physical identity evidence."""
+
+    if not isinstance(raw, dict):
+        raise ValueError("channel identity request must be an object")
+    topology = load_output_topology()
+    speaker_group_id = str(raw.get("speaker_group_id") or raw.get("group_id") or "")
+    role = str(raw.get("role") or "")
+    verified = raw.get("identity_verified")
+    if not isinstance(verified, bool):
+        raise ValueError("identity_verified must be a boolean")
+    updated = set_channel_identity_verified(
+        topology,
+        speaker_group_id=speaker_group_id,
+        role=role,
+        identity_verified=verified,
+    )
+    save_output_topology(updated)
+    report = channel_identity_report(updated)
+    evaluation = updated.evaluation()
+    logger.info(
+        "event=sound.active_speaker_channel_identity action=%s "
+        "topology_id=%s group_id=%s role=%s status=%s verified=%d/%d "
+        "blockers=%d",
+        "mark_verified" if verified else "clear_verified",
+        updated.topology_id,
+        speaker_group_id,
+        role,
+        report.get("status"),
+        report.get("verified_channel_count"),
+        report.get("assigned_channel_count"),
+        len(evaluation.get("blockers") or []),
+    )
+    return {
+        "output_topology": updated.to_dict(include_evaluation=True),
+        "channel_identity": report,
+        "clock_domain": clock_domain_report(updated),
+    }
+
+
+def _active_speaker_channel_protection_save_payload(
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Mark or clear a saved topology channel's protection evidence."""
+
+    if not isinstance(raw, dict):
+        raise ValueError("channel protection request must be an object")
+    topology = load_output_topology()
+    speaker_group_id = str(raw.get("speaker_group_id") or raw.get("group_id") or "")
+    role = str(raw.get("role") or "")
+    protection_present = raw.get("protection_present")
+    if not isinstance(protection_present, bool):
+        raise ValueError("protection_present must be a boolean")
+    updated = set_channel_protection_status(
+        topology,
+        speaker_group_id=speaker_group_id,
+        role=role,
+        protection_status="present" if protection_present else "required_missing",
+    )
+    save_output_topology(updated)
+    report = channel_identity_report(updated)
+    evaluation = updated.evaluation()
+    logger.info(
+        "event=sound.active_speaker_channel_protection action=%s "
+        "topology_id=%s group_id=%s role=%s status=%s blockers=%d",
+        "mark_present" if protection_present else "clear_present",
+        updated.topology_id,
+        speaker_group_id,
+        role,
+        report.get("status"),
+        len(evaluation.get("blockers") or []),
+    )
+    return {
+        "output_topology": updated.to_dict(include_evaluation=True),
+        "channel_identity": report,
+        "clock_domain": clock_domain_report(updated),
+    }
 
 
 def _log_live_draft_unavailable(
@@ -685,6 +794,41 @@ def _active_speaker_environment_payload() -> dict[str, Any]:
     return report
 
 
+def _active_speaker_staged_config_payload() -> dict[str, Any]:
+    """Return the latest protected startup config staging evidence."""
+
+    from jasper.active_speaker.staging import load_staged_startup_config
+
+    return load_staged_startup_config()
+
+
+def _active_speaker_stage_config_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Stage a protected startup config from the saved topology."""
+
+    from jasper.active_speaker.staging import stage_protected_startup_config
+
+    if not isinstance(raw, dict):
+        raise ValueError("stage config request must be an object")
+    playback_device = raw.get("playback_device")
+    if playback_device is not None and not isinstance(playback_device, str):
+        raise ValueError("playback_device must be a string")
+    topology = load_output_topology()
+    payload = stage_protected_startup_config(
+        topology,
+        playback_device=playback_device,
+    )
+    logger.info(
+        "event=sound.active_speaker_stage_config status=%s topology_id=%s "
+        "preset_id=%s config=%s blockers=%d",
+        payload.get("status"),
+        payload.get("topology", {}).get("topology_id"),
+        payload.get("preset", {}).get("preset_id"),
+        payload.get("config", {}).get("basename"),
+        len(payload.get("issues") or []),
+    )
+    return payload
+
+
 def _active_speaker_safe_playback_payload() -> dict[str, Any]:
     """Return the current no-audio active-speaker safety session."""
 
@@ -782,30 +926,132 @@ def _active_speaker_tone_plan_payload(raw: dict[str, Any]) -> dict[str, Any]:
     return plan
 
 
-def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    """Render a bounded no-audio tone artifact for the requested target."""
+def _active_speaker_playback_readiness_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return a no-audio readiness checklist for one saved topology target."""
 
-    from jasper.active_speaker.playback import start_tone_playback
+    if not isinstance(raw, dict):
+        raise ValueError("playback readiness request must be an object")
+    from jasper.active_speaker.calibration_level import calibration_level_payload
+    from jasper.active_speaker.playback import tone_backend_status
+    from jasper.active_speaker.readiness import build_playback_readiness
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+
+    target = raw.get("target") if isinstance(raw.get("target"), dict) else {}
+    topology = load_output_topology()
+    environment_report = _active_speaker_environment_payload()
+    safe_session = load_safe_playback_state()
+    calibration_level = calibration_level_payload(
+        requested_level_dbfs=raw.get("level_dbfs"),
+    )
+    report = build_playback_readiness(
+        topology,
+        speaker_group_id=raw.get("speaker_group_id") or target.get("speaker_group_id"),
+        role=(
+            raw.get("role")
+            or raw.get("driver_role")
+            or target.get("role")
+            or target.get("driver_role")
+        ),
+        environment_report=environment_report,
+        safe_session=safe_session,
+        calibration_level=calibration_level,
+        tone_backend=tone_backend_status(),
+        stop_control_available=True,
+    )
+    logger.info(
+        "event=sound.active_speaker_playback_readiness status=%s "
+        "group_id=%s role=%s preconditions=%s blockers=%d",
+        report.get("status"),
+        report.get("target", {}).get("speaker_group_id"),
+        report.get("target", {}).get("role"),
+        bool(report.get("preconditions_passed")),
+        len(report.get("issues") or []),
+    )
+    return report
+
+
+def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Run a bounded tone test for a preset or saved-topology target."""
+
+    from jasper.active_speaker.playback import (
+        enabled_audio_backend,
+        start_tone_playback,
+    )
     from jasper.active_speaker.safe_playback import (
         load_safe_playback_state,
         record_safe_playback_result,
     )
+    from jasper.active_speaker.topology_tone import build_topology_tone_plan
 
-    plan = _active_speaker_tone_plan_payload(raw)
+    target = raw.get("target") if isinstance(raw.get("target"), dict) else {}
+    topology_target = bool(
+        raw.get("speaker_group_id")
+        or raw.get("role")
+        or target.get("speaker_group_id")
+        or target.get("role")
+    )
+    if topology_target:
+        topology = load_output_topology()
+        readiness = _active_speaker_playback_readiness_payload(raw)
+        plan = build_topology_tone_plan(
+            topology,
+            readiness_report=readiness,
+            speaker_group_id=raw.get("speaker_group_id")
+            or target.get("speaker_group_id"),
+            role=(
+                raw.get("role")
+                or raw.get("driver_role")
+                or target.get("role")
+                or target.get("driver_role")
+            ),
+            requested_level_dbfs=raw.get("level_dbfs"),
+            requested_duration_ms=raw.get("duration_ms"),
+        )
+    else:
+        plan = _active_speaker_tone_plan_payload(raw)
     safe_session = load_safe_playback_state()
-    playback = start_tone_playback(plan, safe_session=safe_session)
+    wants_audio = bool(raw.get("audio"))
+    backend = enabled_audio_backend() if wants_audio else None
+    if wants_audio and backend is None:
+        plan = {
+            **plan,
+            "status": "blocked",
+            "playback_allowed": False,
+            "would_play": False,
+            "issues": [
+                *(plan.get("issues") if isinstance(plan.get("issues"), list) else []),
+                {
+                    "severity": "blocker",
+                    "code": "audio_backend_not_enabled",
+                    "message": (
+                        "audible channel tests require explicit lab backend "
+                        "enablement"
+                    ),
+                },
+            ],
+        }
+    playback = start_tone_playback(
+        plan,
+        safe_session=safe_session,
+        backend=backend,
+        allow_audio=wants_audio,
+    )
     session = record_safe_playback_result(playback)
     logger.info(
         "event=sound.active_speaker_tone_playback status=%s backend=%s "
-        "side=%s driver_role=%s output_index=%s level_dbfs=%s "
-        "duration_ms=%s audio_emitted=%s blockers=%d artifact=%s",
+        "source=%s side=%s group_id=%s driver_role=%s output_index=%s "
+        "level_dbfs=%s duration_ms=%s audio_requested=%s audio_emitted=%s "
+        "blockers=%d artifact=%s",
         playback.get("status"),
         playback.get("backend"),
+        plan.get("source") or "preset",
         playback.get("target", {}).get("side"),
+        playback.get("target", {}).get("speaker_group_id"),
         playback.get("target", {}).get("driver_role"),
         playback.get("target", {}).get("output_index"),
         playback.get("tone", {}).get("level_dbfs"),
         playback.get("tone", {}).get("duration_ms"),
+        wants_audio,
         bool(playback.get("audio_emitted")),
         len(playback.get("issues") or []),
         (playback.get("artifact") or {}).get("wav_basename"),
@@ -888,6 +1134,24 @@ def _make_handler(
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
+            if path == "/active-speaker/staged-config":
+                try:
+                    self._send_json(_active_speaker_staged_config_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_staged_config result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
+            if path == "/active-speaker/channel-identity":
+                try:
+                    self._send_json(_active_speaker_channel_identity_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_channel_identity result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
             if path == "/active-speaker/tone-targets":
                 try:
                     self._send_json(_active_speaker_tone_targets_payload())
@@ -909,6 +1173,10 @@ def _make_handler(
                 "/settings",
                 "/active-speaker/arm",
                 "/active-speaker/stop",
+                "/active-speaker/channel-identity",
+                "/active-speaker/channel-protection",
+                "/active-speaker/playback-readiness",
+                "/active-speaker/stage-config",
                 "/active-speaker/tone-plan",
                 "/active-speaker/play-tone",
                 "/output-topology",
@@ -928,6 +1196,38 @@ def _make_handler(
                     return
                 if path == "/active-speaker/stop":
                     self._send_json(_active_speaker_stop_payload())
+                    return
+                if path == "/active-speaker/channel-identity":
+                    try:
+                        self._send_json(
+                            _active_speaker_channel_identity_save_payload(raw)
+                        )
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_channel_identity "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/channel-protection":
+                    try:
+                        self._send_json(
+                            _active_speaker_channel_protection_save_payload(raw)
+                        )
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_channel_protection "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/playback-readiness":
+                    self._send_json(_active_speaker_playback_readiness_payload(raw))
+                    return
+                if path == "/active-speaker/stage-config":
+                    self._send_json(_active_speaker_stage_config_payload(raw))
                     return
                 if path == "/active-speaker/tone-plan":
                     self._send_json(_active_speaker_tone_plan_payload(raw))

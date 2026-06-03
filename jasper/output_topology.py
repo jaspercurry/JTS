@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 OUTPUT_TOPOLOGY_KIND = "jts_output_topology"
+CHANNEL_IDENTITY_REPORT_KIND = "jts_output_channel_identity_report"
+CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
 SUPPORTED_DEVICE_OUTPUT_COUNTS = {
@@ -143,6 +145,33 @@ def _float(value: Any, field_name: str, *, default: float = 0.0) -> float:
     return out
 
 
+def _safe_id_fragment(value: str) -> str:
+    out = re.sub(r"[^A-Za-z0-9_.:-]+", "_", value.strip())
+    return out[:64] or "unknown"
+
+
+def default_clock_domain_id(device_id: str, card_id: str | None = None) -> str:
+    """Return the current single-device clock-domain id.
+
+    JTS does not yet aggregate multiple output DACs. This id records the
+    current assumption explicitly so future multi-device work has a contract
+    to replace rather than reverse-engineer from labels.
+    """
+
+    if card_id:
+        return f"alsa:{_safe_id_fragment(card_id)}"
+    if device_id:
+        return f"device:{_safe_id_fragment(device_id)}"
+    return "unknown"
+
+
+def default_clock_domain_label(device_id: str) -> str:
+    return {
+        "apple_usb_c_dongle": "Single Apple USB audio device clock",
+        "hifiberry_dac8x": "Single HiFiBerry DAC8x device clock",
+    }.get(device_id, "Single output device clock")
+
+
 @dataclass(frozen=True)
 class PhysicalOutput:
     """One physical DAC lane visible to the user."""
@@ -195,6 +224,8 @@ class OutputHardware:
     physical_output_count: int
     card_id: str | None = None
     route: str | None = None
+    clock_domain_id: str = "unknown"
+    clock_domain_label: str = "Single output device clock"
     outputs: tuple[PhysicalOutput, ...] = field(default_factory=tuple)
 
     @classmethod
@@ -206,6 +237,13 @@ class OutputHardware:
         )
         if count < 0 or count > 64:
             raise OutputTopologyError("physical_output_count must be 0-64")
+        device_id = _require_id(raw.get("device_id"), "hardware.device_id")
+        card_id = _optional_id(raw.get("card_id"))
+        clock_domain_id = _require_id(
+            raw.get("clock_domain_id")
+            or default_clock_domain_id(device_id, card_id),
+            "hardware.clock_domain_id",
+        )
         outputs_raw = raw.get("outputs")
         outputs = (
             tuple(
@@ -216,11 +254,17 @@ class OutputHardware:
             else default_physical_outputs(count)
         )
         hardware = cls(
-            device_id=_require_id(raw.get("device_id"), "hardware.device_id"),
+            device_id=device_id,
             device_label=_text(raw.get("device_label"), "hardware.device_label"),
             physical_output_count=count,
-            card_id=_optional_id(raw.get("card_id")),
+            card_id=card_id,
             route=raw.get("route") if isinstance(raw.get("route"), str) else None,
+            clock_domain_id=clock_domain_id,
+            clock_domain_label=_text(
+                raw.get("clock_domain_label"),
+                "hardware.clock_domain_label",
+                default=default_clock_domain_label(device_id),
+            ),
             outputs=outputs,
         )
         hardware.validate()
@@ -253,6 +297,8 @@ class OutputHardware:
             "device_id": self.device_id,
             "device_label": self.device_label,
             "physical_output_count": self.physical_output_count,
+            "clock_domain_id": self.clock_domain_id,
+            "clock_domain_label": self.clock_domain_label,
             "outputs": [output.to_dict() for output in self.outputs],
         }
         if self.card_id:
@@ -573,6 +619,8 @@ def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
         physical_output_count=output_count,
         card_id=card_id,
         route=route,
+        clock_domain_id=default_clock_domain_id(device_id, card_id),
+        clock_domain_label=default_clock_domain_label(device_id),
         outputs=default_physical_outputs(output_count),
     )
 
@@ -746,6 +794,272 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
             "next_step": next_step,
         },
     }
+
+
+def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
+    """Return user-confirmed physical channel identity progress.
+
+    This report is deliberately narrower than ``evaluate_output_topology``:
+    it answers "which assigned DAC lane does the operator still need to
+    physically verify?" It does not authorize playback or infer that tweeter
+    protection is safe merely because identity was confirmed.
+    """
+
+    targets: list[dict[str, Any]] = []
+    verified_count = 0
+    assigned_count = 0
+    for group in topology.speaker_groups:
+        for channel in group.channels:
+            assigned = channel.physical_output_index is not None
+            if assigned:
+                assigned_count += 1
+            if assigned and channel.identity_verified:
+                verified_count += 1
+            protection_blocked = (
+                channel.protection_required and channel.protection_status != "present"
+            )
+            targets.append({
+                "id": f"{group.id}:{channel.role}",
+                "speaker_group_id": group.id,
+                "speaker_label": group.label,
+                "speaker_kind": group.kind,
+                "speaker_mode": group.mode,
+                "role": channel.role,
+                "physical_output_index": channel.physical_output_index,
+                "human_output_label": channel.human_output_label,
+                "assigned": assigned,
+                "identity_verified": channel.identity_verified,
+                "startup_muted": channel.startup_muted,
+                "protection_required": channel.protection_required,
+                "protection_status": channel.protection_status,
+                "sound_test_blockers": [
+                    code for code, blocked in (
+                        ("physical_output_unassigned", not assigned),
+                        ("identity_unverified", not channel.identity_verified),
+                        ("tweeter_protection_unverified", protection_blocked),
+                        (
+                            "tweeter_must_start_muted",
+                            channel.role == "tweeter" and not channel.startup_muted,
+                        ),
+                    )
+                    if blocked
+                ],
+            })
+
+    evaluation = topology.evaluation()
+    unverified_count = sum(
+        1 for target in targets
+        if target["assigned"] and not target["identity_verified"]
+    )
+    if not topology.speaker_groups:
+        status = "draft"
+        next_step = "Create a speaker map before verifying physical outputs."
+    elif evaluation["blockers"]:
+        status = "blocked"
+        next_step = "Resolve topology blockers before channel identity can be trusted."
+    elif unverified_count:
+        status = "needs_verification"
+        next_step = "Verify each assigned physical output before sound tests."
+    else:
+        status = "verified"
+        next_step = "Channel identity is verified; path safety still gates playback."
+
+    return {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": CHANNEL_IDENTITY_REPORT_KIND,
+        "status": status,
+        "topology_status": evaluation["status"],
+        "assigned_channel_count": assigned_count,
+        "verified_channel_count": verified_count,
+        "unverified_channel_count": unverified_count,
+        "sound_tests_allowed": False,
+        "targets": targets,
+        "next_step": next_step,
+    }
+
+
+def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
+    """Return read-only output clocking evidence for the topology.
+
+    This intentionally does not try to implement multi-DAC aggregation. It
+    names the current single-device clock-domain assumption and preserves the
+    product boundary: active-crossover playback should use one coherent
+    multi-output device until a future lab path proves multi-device skew/drift.
+    """
+
+    hardware = topology.hardware
+    issues: list[dict[str, str]] = []
+    notes: list[str] = [
+        "All current physical outputs are assumed to belong to one output device clock domain.",
+        "Multiple independent USB DACs are not aggregated by this topology contract.",
+    ]
+    if hardware.physical_output_count <= 0:
+        status = "missing_hardware"
+        issues.append(
+            _issue(
+                "blocker",
+                "no_output_hardware",
+                "no recognized output hardware is available",
+            )
+        )
+    elif hardware.device_id not in SUPPORTED_DEVICE_OUTPUT_COUNTS:
+        status = "unknown_device_clock"
+        issues.append(
+            _issue(
+                "warning",
+                "unknown_clock_domain",
+                "output hardware clocking is not recognized by JTS",
+            )
+        )
+    else:
+        status = "single_device_clock"
+
+    return {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": CLOCK_DOMAIN_REPORT_KIND,
+        "status": status,
+        "clock_domain_id": hardware.clock_domain_id,
+        "clock_domain_label": hardware.clock_domain_label,
+        "clock_domain_count": 1 if hardware.physical_output_count > 0 else 0,
+        "coherent_physical_output_count": hardware.physical_output_count
+        if status == "single_device_clock"
+        else 0,
+        "multi_device_aggregate_supported": False,
+        "future_multi_device_lab_path": True,
+        "sound_tests_allowed": False,
+        "issues": issues,
+        "notes": notes,
+        "recommendation": (
+            "Use one coherent multi-output DAC/interface for active crossover. "
+            "Treat multiple USB DACs as future lab work until JTS can measure "
+            "and compensate inter-device skew and drift."
+        ),
+    }
+
+
+def set_channel_identity_verified(
+    topology: OutputTopology,
+    *,
+    speaker_group_id: str,
+    role: str,
+    identity_verified: bool,
+) -> OutputTopology:
+    """Return a copy with one channel's physical identity evidence updated."""
+
+    group_id = _require_id(speaker_group_id, "speaker_group_id")
+    role_id = _enum(role, "role", SUPPORTED_ROLES)
+    matches = [
+        (group, channel)
+        for group in topology.speaker_groups
+        for channel in group.channels
+        if group.id == group_id and channel.role == role_id
+    ]
+    if not matches:
+        raise OutputTopologyError("speaker channel not found")
+    if len(matches) > 1:
+        raise OutputTopologyError("speaker channel identity is ambiguous")
+    matched_channel = matches[0][1]
+    if matched_channel.physical_output_index is None and identity_verified:
+        raise OutputTopologyError("cannot verify an unassigned physical output")
+
+    groups: list[SpeakerGroup] = []
+    for group in topology.speaker_groups:
+        if group.id != group_id:
+            groups.append(group)
+            continue
+        channels = []
+        for channel in group.channels:
+            if channel.role != role_id:
+                channels.append(channel)
+                continue
+            channels.append(SpeakerChannel(
+                role=channel.role,
+                physical_output_index=channel.physical_output_index,
+                human_output_label=channel.human_output_label,
+                identity_verified=bool(identity_verified),
+                startup_muted=channel.startup_muted,
+                protection_required=channel.protection_required,
+                protection_status=channel.protection_status,
+            ))
+        groups.append(SpeakerGroup(
+            id=group.id,
+            label=group.label,
+            kind=group.kind,
+            mode=group.mode,
+            position=group.position,
+            channels=tuple(channels),
+        ))
+    return OutputTopology(
+        topology_id=topology.topology_id,
+        name=topology.name,
+        hardware=topology.hardware,
+        speaker_groups=tuple(groups),
+        routing=topology.routing,
+        status="draft",
+    )
+
+
+def set_channel_protection_status(
+    topology: OutputTopology,
+    *,
+    speaker_group_id: str,
+    role: str,
+    protection_status: str,
+) -> OutputTopology:
+    """Return a copy with one channel's protection evidence updated."""
+
+    group_id = _require_id(speaker_group_id, "speaker_group_id")
+    role_id = _enum(role, "role", SUPPORTED_ROLES)
+    status = _enum(protection_status, "protection_status", PROTECTION_STATUSES)
+    matches = [
+        (group, channel)
+        for group in topology.speaker_groups
+        for channel in group.channels
+        if group.id == group_id and channel.role == role_id
+    ]
+    if not matches:
+        raise OutputTopologyError("speaker channel not found")
+    if len(matches) > 1:
+        raise OutputTopologyError("speaker channel protection is ambiguous")
+    if role_id != "tweeter" and status != "not_required":
+        raise OutputTopologyError("only tweeter channels can require protection")
+
+    groups: list[SpeakerGroup] = []
+    for group in topology.speaker_groups:
+        if group.id != group_id:
+            groups.append(group)
+            continue
+        channels = []
+        for channel in group.channels:
+            if channel.role != role_id:
+                channels.append(channel)
+                continue
+            protection_required = channel.protection_required or role_id == "tweeter"
+            channels.append(SpeakerChannel(
+                role=channel.role,
+                physical_output_index=channel.physical_output_index,
+                human_output_label=channel.human_output_label,
+                identity_verified=channel.identity_verified,
+                startup_muted=True if role_id == "tweeter" else channel.startup_muted,
+                protection_required=protection_required,
+                protection_status=status,
+            ))
+        groups.append(SpeakerGroup(
+            id=group.id,
+            label=group.label,
+            kind=group.kind,
+            mode=group.mode,
+            position=group.position,
+            channels=tuple(channels),
+        ))
+    return OutputTopology(
+        topology_id=topology.topology_id,
+        name=topology.name,
+        hardware=topology.hardware,
+        speaker_groups=tuple(groups),
+        routing=topology.routing,
+        status="draft",
+    )
 
 
 def topology_path(path: str | Path | None = None) -> Path:

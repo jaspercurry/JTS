@@ -24,7 +24,7 @@ from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, OutputChanne
 
 SCHEMA_VERSION = 1
 TONE_PLAN_KIND = "jts_active_speaker_tone_plan"
-DEFAULT_PRESET_RESOURCE = "presets/bc_de250_dayton_e150he44_v1.json"
+DEFAULT_PRESET_RESOURCE = "presets/epique_e150he44_eminence_f110m8_safe_v1.json"
 DEFAULT_TONE_LEVEL_DBFS = DEFAULT_TEST_LEVEL_DBFS
 MIN_TONE_LEVEL_DBFS = MIN_TEST_LEVEL_DBFS
 MAX_TONE_LEVEL_DBFS = MAX_TEST_LEVEL_DBFS

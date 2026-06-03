@@ -152,8 +152,7 @@ rather than exposing raw filesystem paths.
 ### Advanced speaker setup entry point
 
 As of 2026-06-02, `/sound/` also shows a collapsed **Advanced speaker
-setup** card for active crossover commissioning. It intentionally remains
-no-audio until the hardware playback path exists: a user can click
+setup** card for active crossover commissioning. A user can click
 **Check environment** to fetch
 `/sound/active-speaker/environment`, which runs the read-only
 `jasper.active_speaker.environment` probe and reports ALSA playback-device
@@ -173,12 +172,12 @@ armed state also exposes a **Calibration level** slider backed by
 `jasper.active_speaker.calibration_level`: it defaults to the minimum
 `-80 dBFS`, is clamped by backend-owned bounds, and is separate from normal
 listening volume. The current mic meter is a schema placeholder/classifier;
-real microphone observations and sound-emitting playback are future slices.
+real microphone observations are a future slice.
 The card can also **Verify tone artifact** through
 `/sound/active-speaker/play-tone`: this validates the selected logical output
 target and writes a bounded multi-channel WAV artifact with only that output
-channel populated. It records `audio_emitted: false`; it does not open ALSA,
-reload CamillaDSP, or change volume. The dry backend enforces its own writer
+channel populated. The default backend records `audio_emitted: false`; it does
+not open ALSA, reload CamillaDSP, or change volume. The writer enforces its own
 caps (48 kHz max, 16 channels max, 100-500 ms, -80..-45 dBFS) and prunes old
 generated tone artifacts, keeping the newest 24 sets by default. Physical DAC
 lane assignment, speaker grouping, left/right swaps, active driver roles,
@@ -190,25 +189,63 @@ tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
 tones, or authorizes playback; the audible safe-session path remains separate.
 The same `/sound/` card renders a lightweight **Output setup** surface over
 that endpoint: it shows detected hardware, a top-down speaker sketch, assigned
-and unassigned physical outputs, backend safety evidence, and no-audio starter
-maps for stereo passive and stereo active 2-way wiring. Saving a starter map is
-a complete topology JSON replacement and only runs backend validation; it does
-not play sound or change the live DSP graph.
+and unassigned physical outputs, backend safety evidence, and no-audio setup
+templates for mono/stereo passive, mono/stereo active 2-way, and mono/stereo
+active 3-way wiring. Saving a setup template is a complete topology JSON
+replacement and only runs backend validation; it does not play sound or change
+the live DSP graph. The same payload carries a clock-domain report that records
+the current single final-output device assumption; aggregating multiple USB
+DACs is explicitly not enabled for product active-crossover playback yet. The
+same card now shows **Channel identity** progress from
+`/sound/active-speaker/channel-identity`;
+users can mark or clear an assigned output as physically verified only after
+external wiring inspection, dummy-load/DMM checks, or a future low-level
+channel test confirms the driver. Identity evidence is stored in the topology
+contract, but it is not playback permission and it does not satisfy tweeter
+protection or path-safety blockers by itself.
+The same saved-channel rows can now **Check readiness** through
+`/sound/active-speaker/playback-readiness`. That route returns a versioned,
+no-audio checklist for one selected topology target by combining safe-session
+state, output topology, channel identity, tweeter protection, clock-domain
+status, active-config/path safety, calibration-level bounds, and Stop
+availability. It reports `preconditions_passed` separately from
+`playback_allowed`. Default installs still return `playback_allowed: false`
+and can verify artifacts only; explicit lab enablement
+(`JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
+`JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
+`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`) can make non-tweeter saved topology
+targets eligible for a short low-level audible test. Tweeter/compression-driver
+audio remains disabled in this slice even with the lab backend enabled.
+For Jasper's immediate mono 2-way build, the same row can now record
+compression-driver protection evidence through
+`/sound/active-speaker/channel-protection`, and the card can **Stage protected
+config** through `/sound/active-speaker/stage-config`. The staged config binds
+the saved output topology to the Epique E150HE-44 + Eminence F110M-8 safe
+bring-up preset, writes a muted/protected CamillaDSP candidate, and persists
+readable evidence at `/var/lib/jasper/active_speaker_staged_config.json`. It
+requires the compression-driver protection path to be marked present and it
+refuses unsupported output assignments. It still does not load CamillaDSP,
+reload the graph, emit sound, or authorize playback.
 The active-speaker runtime substrate starts in
 `jasper.active_speaker`, the physical topology substrate starts in
 `jasper.output_topology`, and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
+The next `/sound/` slice should be hardware validation of the staged
+Epique/F110M candidate and lab-gated channel-test path, then, only after
+evidence is good, a richer measurement loop around the microphone.
 
 ## Files
 
 - `jasper/active_speaker/` — import-cheap active-speaker preset,
   channel-map, safety-envelope, baseline-profile schemas, and
-  muted/protected startup-template YAML emission plus read-only
-  environment reporting, no-audio safe-playback session state, and
-  preset-derived no-audio tone-plan preparation with a bounded
-  calibration-level contract plus dry tone-artifact rendering. Current scope is
-  validation/template generation and status/session/plan/artifact bookkeeping
-  only; no hardware loading or sound-emitting playback.
+muted/protected startup-template YAML emission plus read-only
+environment reporting, safe-playback session state, preset-derived no-audio
+tone-plan preparation, topology-target tone plans, bounded artifact rendering,
+an explicitly lab-gated `aplay` backend for non-tweeter targets, and a
+read-only playback-readiness gate plus protected startup-config staging for the
+Epique/F110M mono cabinet. Current scope is validation/template generation and
+status/session/plan/artifact/readiness/staging bookkeeping plus optional lab
+channel tests; no CamillaDSP hardware loading exists.
 - `jasper/output_topology.py` — import-cheap physical-output topology
   contract for DAC lanes, speaker groups, passive/active modes, subwoofers,
   identity verification, and tweeter-protection evidence. Current scope is
@@ -518,4 +555,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-02
+Last verified: 2026-06-03

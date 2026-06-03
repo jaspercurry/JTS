@@ -413,9 +413,20 @@ cases, not an active-speaker crossover map. The product speaker-output
 topology contract lives at `/var/lib/jasper/output_topology.json` and is
 served by `/sound/output-topology`; it records physical DAC lanes,
 speaker groups, passive/active modes, subwoofers, and safety evidence
-without rewriting ALSA, loading CamillaDSP, or emitting audio. Software
-never touches downstream amp gain. The amp gain is a physical knob set
-at install time.
+without rewriting ALSA, loading CamillaDSP, or emitting audio.
+`/sound/active-speaker/channel-identity` records operator-confirmed
+physical channel identity on that saved topology, but still grants no
+playback authority. `/sound/active-speaker/playback-readiness` combines
+that target evidence with safe-session, active-config/path-safety,
+clock-domain, calibration-level, Stop-control, and tone-backend checks.
+The topology itself still grants no playback authority; the separate
+active-speaker lab tone backend can emit only after explicit env enablement,
+passed readiness, and a non-tweeter target. Software never touches downstream
+amp gain. The amp gain is a physical knob set at install time.
+The same topology surface reports the detected output clock domain. Current
+product support assumes one coherent final-output device (for example DAC8x or
+one Apple dongle); multiple USB DAC aggregation is a future lab feature, not a
+supported active-crossover playback path.
 
 ## AEC bridge implications
 
@@ -455,4 +466,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-02 (speaker output topology contract, DAC8x output route knob, assistant loudness matching, STATUS telemetry, and outputd topology rechecked)
+Last verified: 2026-06-03 (speaker output topology/readiness contract, DAC8x output route knob, assistant loudness matching, STATUS telemetry, and outputd topology rechecked)

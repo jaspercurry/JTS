@@ -59,18 +59,32 @@ from .calibration_level import (
     classify_mic_meter,
 )
 from .tone_plan import (
+    DEFAULT_PRESET_RESOURCE,
     TONE_PLAN_KIND,
     build_safe_tone_plan,
     load_active_speaker_preset,
     tone_targets_payload,
 )
 from .playback import (
+    AplayTonePlaybackBackend,
+    TONE_BACKEND_STATUS_KIND,
     TONE_PLAYBACK_ARTIFACT_KIND,
     TONE_PLAYBACK_RESULT_KIND,
     NullTonePlaybackBackend,
     WavArtifactTonePlaybackBackend,
+    enabled_audio_backend,
     start_tone_playback,
     stop_tone_playback,
+    tone_backend_status,
+)
+from .topology_tone import build_topology_tone_plan
+from .staging import (
+    ACTIVE_PLAYBACK_DEVICE_ENV,
+    STAGED_CONFIG_PATH_ENV,
+    STAGED_METADATA_PATH_ENV,
+    STAGED_STARTUP_CONFIG_KIND,
+    load_staged_startup_config,
+    stage_protected_startup_config,
 )
 
 __all__ = [
@@ -78,6 +92,7 @@ __all__ = [
     "ACTIVE_BASELINE_KIND",
     "ACTIVE_PRESET_KIND",
     "CALIBRATION_LEVEL_KIND",
+    "DEFAULT_PRESET_RESOURCE",
     "DEFAULT_TEST_LEVEL_DBFS",
     "ENVIRONMENT_REPORT_KIND",
     "HARDWARE_PROBE_EVIDENCE_SOURCE",
@@ -88,11 +103,17 @@ __all__ = [
     "REQUIRED_PATHS",
     "SAFE_PLAYBACK_SESSION_KIND",
     "SCHEMA_VERSION",
+    "STAGED_CONFIG_PATH_ENV",
+    "STAGED_METADATA_PATH_ENV",
+    "STAGED_STARTUP_CONFIG_KIND",
     "STARTUP_HEADROOM_DB",
     "STARTUP_LIMITER_CLIP_LIMIT_DB",
     "TONE_PLAN_KIND",
+    "TONE_BACKEND_STATUS_KIND",
     "TONE_PLAYBACK_ARTIFACT_KIND",
     "TONE_PLAYBACK_RESULT_KIND",
+    "ACTIVE_PLAYBACK_DEVICE_ENV",
+    "AplayTonePlaybackBackend",
     "ActiveChannelMap",
     "ActiveSpeakerConfigError",
     "ActiveSpeakerPreset",
@@ -112,7 +133,10 @@ __all__ = [
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",
     "build_safe_tone_plan",
+    "build_topology_tone_plan",
+    "enabled_audio_backend",
     "load_active_speaker_preset",
+    "load_staged_startup_config",
     "parse_aplay_playback_devices",
     "parse_camilla_statefile_config_path",
     "probe_active_speaker_environment",
@@ -122,7 +146,9 @@ __all__ = [
     "load_safe_playback_state",
     "record_safe_playback_result",
     "start_tone_playback",
+    "stage_protected_startup_config",
     "stop_safe_playback_session",
     "stop_tone_playback",
     "tone_targets_payload",
+    "tone_backend_status",
 ]

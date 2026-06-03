@@ -24,7 +24,7 @@ from jasper.sound.profile import (
 from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.web import sound_setup
 
-from ._web_test_helpers import request_with_csrf
+from ._web_test_helpers import json_post_with_csrf, request_with_csrf
 
 
 def _record_dsp_epoch(path: Path, op_id: str) -> None:
@@ -159,7 +159,7 @@ def test_sound_module_preserves_editor_behaviour():
     assert "./output-topology" in js
     assert "Check environment" in js
     assert "safe_playback" in js
-    assert "it will not play tones, reload CamillaDSP, or load active crossover configs" in js
+    assert "Environment checks and staging will not play tones" in js
     assert "window.prompt" not in js
 
 
@@ -169,7 +169,9 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "function refreshActiveSpeakerStatus()" in js
     assert "fetch('./active-speaker/environment'" in js
     assert "fetch('./active-speaker/safe-playback'" in js
+    assert "fetch('./active-speaker/staged-config'" in js
     assert "fetch('./active-speaker/tone-targets'" in js
+    assert "fetch('./active-speaker/stage-config'" in js
     assert "activeSpeakerPost('./active-speaker/arm', 'Arming')" in js
     assert "activeSpeakerPost('./active-speaker/stop', 'Stopping')" in js
     assert "fetch('./active-speaker/tone-plan'" in js
@@ -177,6 +179,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"refresh-active-speaker\"" in js
     assert "data-act=\"arm-active-speaker\"" in js
     assert "data-act=\"stop-active-speaker\"" in js
+    assert "data-act=\"stage-active-config\"" in js
     assert "data-act=\"prepare-active-tone\"" in js
     assert "data-act=\"verify-active-tone\"" in js
     assert "class=\"btn btn--danger\" data-act=\"stop-active-speaker\"" in js
@@ -192,6 +195,11 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "isFinite(returnedLevel) ? returnedLevel" in js
     assert "function renderActiveSpeakerIssues(envIssues, sessionIssues)" in js
     assert "row[0] + ': ' + (issue.code || 'issue')" in js
+    assert "function renderActiveSpeakerStagedConfig(staged)" in js
+    assert "Protected startup config" in js
+    assert "Staged startup" in js
+    assert "Stage protected config" in js
+    assert "This writes a candidate file only; it will not load CamillaDSP or play sound." in js
     assert "function renderActiveSpeakerPlan(plan)" in js
     assert "function renderActiveSpeakerPlayback(playback)" in js
     assert "Would play" in js
@@ -200,7 +208,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "No preset channel targets available." in js
     assert ">Prepare channel test</button>" not in js
     assert "Arming records the safety state only; it does not play sound." in js
-    assert "Tone playback is not implemented in this build." in js
+    assert "Artifact checks are available" in js
+    assert "explicit lab enablement" in js
     assert "reload CamillaDSP" in js
     assert "play tones" in js
 
@@ -211,13 +220,38 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "function renderOutputTopologySetup()" in js
     assert "function refreshOutputTopology(options)" in js
     assert "function saveOutputTopology()" in js
+    assert "function updateOutputChannelIdentity(button)" in js
+    assert "function updateOutputChannelProtection(button)" in js
+    assert "function checkOutputPlaybackReadiness(button)" in js
     assert "fetch('./output-topology'" in js
+    assert "fetch('./active-speaker/channel-identity'" in js
+    assert "fetch('./active-speaker/channel-protection'" in js
+    assert "fetch('./active-speaker/playback-readiness'" in js
+    assert 'data-act="mark-output-identity"' in js
+    assert 'data-act="mark-output-protection"' in js
+    assert 'data-act="check-output-readiness"' in js
     assert "headers: jsonHeaders()" in js
     assert "Saving this map does not play sound or reload CamillaDSP." in js
     assert "Backend validation owns the final decision." in js
+    assert "Physical verification is operator evidence." in js
+    assert "Multi-DAC aggregate" in js
+    assert "not enabled" in js
+    assert "Mark verified" in js
+    assert "Mark protection" in js
+    assert "Check readiness" in js
+    assert "Playback readiness" in js
+    assert "Preconditions passed" in js
+    assert "Verify artifact" in js
+    assert "Play low-level test" in js
+    assert "The last readiness check failed" in js
+    assert "Save this output setup draft before recording physical verification evidence." in js
     assert "Sound tests remain disabled for this setup surface." in js
-    assert "Starter stereo" in js
-    assert "Starter 2-way" in js
+    assert "Setup template" in js
+    assert "Mono active 2-way" in js
+    assert "Stereo active 3-way" in js
+    assert "Output setup template is a draft." in js
+    assert "Starter stereo" not in js
+    assert "Starter 2-way" not in js
     assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
     assert "Saved output setup. No sound was played." in js
 
@@ -325,6 +359,197 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
     assert stopped["session_id"] == armed["session_id"]
 
 
+def test_active_speaker_playback_readiness_payload_is_no_audio(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
+        str(tmp_path / "safe-playback.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
+        str(tmp_path / "tone-artifacts"),
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_environment_payload",
+        lambda: {
+            "status": "pass",
+            "load_gate": "ready",
+            "ok_to_load_active_config": True,
+            "safe_playback": {
+                "status": "not_implemented",
+                "playback_allowed": False,
+            },
+            "issues": [],
+        },
+    )
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            }
+        ],
+        "routing": {"main_left_group_id": "left"},
+    })
+
+    armed = sound_setup._active_speaker_arm_payload()
+    readiness = sound_setup._active_speaker_playback_readiness_payload({
+        "speaker_group_id": "left",
+        "role": "woofer",
+        "level_dbfs": -60,
+    })
+    artifact = sound_setup._active_speaker_tone_playback_payload({
+        "speaker_group_id": "left",
+        "role": "woofer",
+        "level_dbfs": -60,
+    })
+    blocked_audio = sound_setup._active_speaker_tone_playback_payload({
+        "speaker_group_id": "left",
+        "role": "woofer",
+        "level_dbfs": -60,
+        "audio": True,
+    })
+
+    assert armed["status"] == "armed"
+    assert readiness["status"] == "preconditions_passed"
+    assert readiness["preconditions_passed"] is True
+    assert readiness["playback_allowed"] is False
+    assert readiness["would_play"] is False
+    assert readiness["tone_playback_implemented"] is False
+    assert readiness["target"]["physical_output_index"] == 0
+    assert readiness["calibration_level"]["test_signal"]["requested_level_dbfs"] == -60
+    assert artifact["plan"]["source"] == "output_topology"
+    assert artifact["plan"]["target"]["output_index"] == 0
+    assert artifact["playback"]["backend"] == "wav_artifact"
+    assert artifact["playback"]["audio_emitted"] is False
+    assert artifact["playback"]["artifact"]["target_output_index"] == 0
+    assert blocked_audio["playback"]["status"] == "blocked"
+    assert blocked_audio["playback"]["audio_emitted"] is False
+    assert "audio_backend_not_enabled" in {
+        issue["code"] for issue in blocked_audio["playback"]["issues"]
+    }
+
+
+def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
+        str(tmp_path / "active_staged.yml"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
+    saved = sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_mono",
+        "name": "Bench mono",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "mono",
+                "label": "Mono cabinet",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "required_missing",
+                    },
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "mono"},
+    })
+
+    blocked = sound_setup._active_speaker_stage_config_payload({})
+    protected = sound_setup._active_speaker_channel_protection_save_payload({
+        "speaker_group_id": "mono",
+        "role": "tweeter",
+        "protection_present": True,
+    })
+    staged = sound_setup._active_speaker_stage_config_payload({})
+    loaded = sound_setup._active_speaker_staged_config_payload()
+
+    assert saved["output_topology"]["status"] == "blocked"
+    assert blocked["status"] == "blocked"
+    assert "tweeter_protection_required" in {
+        issue["code"] for issue in blocked["issues"]
+    }
+    assert protected["output_topology"]["status"] == "verified"
+    assert staged["status"] == "staged"
+    assert staged["config"]["basename"] == "active_staged.yml"
+    assert staged["config"]["playback_device"] == "hw:DAC8,0"
+    assert staged["config"]["tweeter_protective_highpass_hz"] == 5000
+    assert staged["load"]["load_allowed"] is False
+    assert Path(staged["config"]["path"]).exists()
+    assert loaded["status"] == "staged"
+
+
+def test_active_speaker_stage_config_rejects_non_string_playback_device() -> None:
+    with pytest.raises(ValueError, match="playback_device must be a string"):
+        sound_setup._active_speaker_stage_config_payload({
+            "playback_device": {"device": "hw:DAC8,0"},
+        })
+
+
 def test_sound_output_topology_payload_is_no_audio_draft(
     monkeypatch,
     tmp_path: Path,
@@ -336,11 +561,14 @@ def test_sound_output_topology_payload_is_no_audio_draft(
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
     monkeypatch.setenv("JASPER_AUDIO_DAC_CARD", "sndrpihifiberry")
 
-    payload = sound_setup._output_topology_payload()["output_topology"]
+    envelope = sound_setup._output_topology_payload()
+    payload = envelope["output_topology"]
 
     assert payload["kind"] == OUTPUT_TOPOLOGY_KIND
     assert payload["status"] == "draft"
     assert payload["hardware"]["physical_output_count"] == 8
+    assert envelope["clock_domain"]["status"] == "single_device_clock"
+    assert envelope["clock_domain"]["multi_device_aggregate_supported"] is False
     assert payload["safety"]["sound_tests_allowed"] is False
     assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"
 
@@ -382,16 +610,183 @@ def test_sound_output_topology_save_validates_and_persists_complete_contract(
         }
     }
 
-    payload = sound_setup._save_output_topology_payload(raw)["output_topology"]
+    payload = sound_setup._save_output_topology_payload(raw)
+    topology = payload["output_topology"]
     saved = json.loads(path.read_text(encoding="utf-8"))
 
-    assert payload["status"] == "verified"
-    assert payload["evaluation"]["assigned_output_count"] == 1
-    assert payload["safety"]["sound_tests_allowed"] is False
+    assert topology["status"] == "verified"
+    assert topology["evaluation"]["assigned_output_count"] == 1
+    assert topology["safety"]["sound_tests_allowed"] is False
     assert saved["status"] == "verified"
     assert saved["speaker_groups"][0]["channels"][0]["human_output_label"] == (
         "DAC output 1"
     )
+    assert payload["channel_identity"]["verified_channel_count"] == 1
+    assert payload["clock_domain"]["status"] == "single_device_clock"
+
+
+def test_sound_channel_identity_route_marks_saved_topology_only(
+    monkeypatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            }
+        ],
+        "routing": {"main_left_group_id": "left"},
+    })
+
+    payload = sound_setup._active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "left",
+        "role": "full_range",
+        "identity_verified": True,
+    })
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["channel_identity"]["status"] == "verified"
+    assert payload["channel_identity"]["verified_channel_count"] == 1
+    assert payload["clock_domain"]["multi_device_aggregate_supported"] is False
+    assert payload["output_topology"]["status"] == "verified"
+    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is True
+
+    payload = sound_setup._active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "left",
+        "role": "full_range",
+        "identity_verified": False,
+    })
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["channel_identity"]["status"] == "needs_verification"
+    assert payload["channel_identity"]["verified_channel_count"] == 0
+    assert payload["output_topology"]["status"] == "valid"
+    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"speaker_group_id": "left", "role": "full_range"},
+        {
+            "speaker_group_id": "left",
+            "role": "full_range",
+            "identity_verified": "false",
+        },
+        [
+            {
+                "speaker_group_id": "left",
+                "role": "full_range",
+                "identity_verified": True,
+            }
+        ],
+    ],
+)
+def test_sound_channel_identity_save_requires_explicit_boolean(
+    monkeypatch,
+    tmp_path: Path,
+    raw,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            }
+        ],
+        "routing": {"main_left_group_id": "left"},
+    })
+
+    with pytest.raises(ValueError, match="identity|object"):
+        sound_setup._active_speaker_channel_identity_save_payload(raw)
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
+
+
+def test_sound_channel_identity_http_route_rejects_non_boolean_evidence(
+    monkeypatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            }
+        ],
+        "routing": {"main_left_group_id": "left"},
+    })
+
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        resp = json_post_with_csrf(
+            base,
+            "/active-speaker/channel-identity",
+            {
+                "speaker_group_id": "left",
+                "role": "full_range",
+                "identity_verified": "false",
+            },
+            expect_status=400,
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+        saved = json.loads(path.read_text(encoding="utf-8"))
+
+        assert "identity_verified must be a boolean" in payload["error"]
+        assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(

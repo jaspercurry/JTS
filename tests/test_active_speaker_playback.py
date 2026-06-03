@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import struct
+import subprocess
 import wave
 from pathlib import Path
 
@@ -10,10 +11,12 @@ import pytest
 
 from jasper.active_speaker import ActiveSpeakerPreset, build_safe_tone_plan
 from jasper.active_speaker.playback import (
+    AplayTonePlaybackBackend,
     NullTonePlaybackBackend,
     WavArtifactTonePlaybackBackend,
     start_tone_playback,
     stop_tone_playback,
+    tone_backend_status,
 )
 from jasper.active_speaker.safe_playback import (
     arm_safe_playback_session,
@@ -286,6 +289,124 @@ def test_null_backend_and_stop_contract_do_not_emit_audio() -> None:
     assert stopped["audio_emitted"] is False
 
 
+def test_tone_backend_status_requires_explicit_audio_enablement() -> None:
+    default = tone_backend_status({})
+    blocked = tone_backend_status({
+        "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+        "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+    })
+    enabled = tone_backend_status({
+        "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+        "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+        "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+    })
+
+    assert default["status"] == "artifact_only"
+    assert default["audio_enabled"] is False
+    assert blocked["status"] == "blocked"
+    assert "audio_not_operator_enabled" in {
+        issue["code"] for issue in blocked["issues"]
+    }
+    assert enabled["status"] == "audio_enabled"
+    assert enabled["audio_enabled"] is True
+    assert enabled["test_pcm"] == "hw:Active"
+
+
+def test_audio_backend_blocks_when_readiness_did_not_authorize_audio(
+    tmp_path: Path,
+) -> None:
+    result = start_tone_playback(
+        _plan(),
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["audio_emitted"] is False
+    assert result["artifact"] is None
+    assert "playback_not_allowed_by_readiness" in {
+        issue["code"] for issue in result["issues"]
+    }
+
+
+def test_aplay_backend_runs_generated_artifact_when_audio_is_authorized(
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def runner(argv, timeout):
+        calls.append((list(argv), timeout))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    plan = {
+        **_plan(),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+        "target": {
+            **_plan()["target"],
+            "driver_role": "woofer",
+            "output_index": 0,
+        },
+    }
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            aplay_binary="/usr/bin/aplay",
+            artifact_dir=tmp_path,
+            runner=runner,
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "completed"
+    assert result["backend"] == "aplay"
+    assert result["audio_emitted"] is True
+    assert result["audio_device"] == {"pcm": "hw:Active", "command": "aplay"}
+    assert result["artifact"]["wav_basename"].startswith("tone_")
+    assert calls
+    assert calls[0][0][:4] == ["/usr/bin/aplay", "-q", "-D", "hw:Active"]
+    assert calls[0][0][4].endswith(".wav")
+
+
+def test_audio_backend_refuses_tweeter_in_first_audible_slice(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        **_plan(),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+    }
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert "tweeter_audio_not_enabled" in {
+        issue["code"] for issue in result["issues"]
+    }
+
+
 def test_start_tone_playback_reports_backend_failures_without_audio() -> None:
     class FailingBackend:
         backend_id = "failing-test"
@@ -311,7 +432,8 @@ def test_start_tone_playback_reports_backend_failures_without_audio() -> None:
         "severity": "blocker",
         "code": "tone_backend_failed",
         "message": (
-            "tone playback backend failed before emitting audio: PermissionError"
+            "tone playback backend failed; successful audio emission "
+            "was not confirmed: PermissionError"
         ),
     }]
 
