@@ -389,6 +389,21 @@ class SessionConfig:
     correction_strategy: str = strategy.DEFAULT_CORRECTION_STRATEGY_ID
 
 
+# After a sweep the session waits in an awaiting_*_capture state for the
+# browser to upload the recording. If that upload never arrives (iOS screen
+# lock, backgrounded tab, network blip), the session would wedge forever and
+# block every future /start. This watchdog abandons such a stranded session so
+# the wizard self-recovers. A sweep+upload normally completes in seconds; 120 s
+# is generous headroom. Mirrors voice_daemon's measurement-window auto-clear.
+AWAITING_CAPTURE_TIMEOUT_SEC = 120.0
+
+_AWAITING_CAPTURE_STATES = frozenset({
+    SessionState.AWAITING_CAPTURE,
+    SessionState.AWAITING_REPEAT_CAPTURE,
+    SessionState.AWAITING_VERIFY_CAPTURE,
+})
+
+
 class MeasurementSession:
     """Multi-position measurement session.
 
@@ -472,6 +487,13 @@ class MeasurementSession:
         self._autolevel_lock_event: asyncio.Event | None = None
         self._autolevel_cancel_event: asyncio.Event | None = None
 
+        # Single-slot watchdog that abandons a session stranded waiting for a
+        # capture upload (see AWAITING_CAPTURE_TIMEOUT_SEC). Armed/cancelled
+        # centrally from _set_state; capture_timeout_sec is overridable in
+        # tests (and disabled when <= 0).
+        self._capture_timeout_task: asyncio.Task[None] | None = None
+        self.capture_timeout_sec: float = AWAITING_CAPTURE_TIMEOUT_SEC
+
         # Optional client-reported room noise floor (the autolevel
         # preflight measures this in the browser before the tone
         # plays). Saved into info.json so debug bundles preserve the
@@ -525,9 +547,54 @@ class MeasurementSession:
         self._events.append(ev)
         self.updated_at = ev.timestamp
 
+    def _cancel_capture_timeout(self) -> None:
+        task = self._capture_timeout_task
+        self._capture_timeout_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _arm_capture_timeout(self, state: SessionState) -> None:
+        if self.capture_timeout_sec <= 0:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._capture_timeout_task = loop.create_task(
+            self._capture_timeout_guard(state, self.capture_timeout_sec)
+        )
+
+    async def _capture_timeout_guard(
+        self, expected_state: SessionState, timeout_sec: float,
+    ) -> None:
+        try:
+            await asyncio.sleep(timeout_sec)
+        except asyncio.CancelledError:
+            return
+        async with self._lock:
+            # Own the slot first so _fail()'s cancel doesn't cancel us.
+            self._capture_timeout_task = None
+            if self.state != expected_state:
+                return
+            logger.warning(
+                "event=correction_capture_timeout session=%s state=%s "
+                "after_sec=%.0f",
+                self.session_id, expected_state.value, timeout_sec,
+            )
+            await self._fail(
+                "capture never arrived — tap Start to measure again"
+            )
+
     async def _set_state(self, state: SessionState, **extra: Any) -> None:
         prev = self.state
         self.state = state
+        # Re-arm the stranded-capture watchdog on every transition: cancel any
+        # pending timer, then start a fresh one only when entering an
+        # awaiting_*_capture state. An upload (or any other transition) cancels
+        # it for free.
+        self._cancel_capture_timeout()
+        if state in _AWAITING_CAPTURE_STATES:
+            self._arm_capture_timeout(state)
         payload = {"state": state.value, "prev": prev.value, **extra}
         self._emit("state", payload)
         logger.info(
@@ -1388,6 +1455,7 @@ class MeasurementSession:
         return False
 
     async def _fail(self, message: str) -> None:
+        self._cancel_capture_timeout()
         self.error = message
         self.state = SessionState.FAILED
         self._emit("error", {"message": message})

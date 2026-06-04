@@ -377,6 +377,7 @@ __HEADER__
     <button id="apply-correction" type="button" class="btn btn--primary hidden">Apply correction</button>
     <button id="verify-correction" type="button" class="btn btn--primary hidden">Verify with re-measurement</button>
     <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset to flat</button>
+    <button id="cancel-measurement" type="button" class="btn btn--danger hidden">Cancel measurement</button>
   </p>
   <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the iPhone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
   <p class="hint" style="margin-top:0.4em">Each measurement starts from flat — your current correction (if any) is reset first so the sweep captures the raw room. After you tap <strong>Apply</strong>, the new correction takes over.</p>
