@@ -1,8 +1,12 @@
 # JTS — Staff Engineering Review for Google OSS Ownership
 
 > **Status: historical review.** Snapshot from 2026-05-26 / PR #335.
-> Preserved as a point-in-time OSS-readiness assessment, not current
-> operational truth. Current documentation rules live in
+> **Superseded by [REVIEW-2026-06-04-deep-dive.md](REVIEW-2026-06-04-deep-dive.md)**
+> (the current assessment — this snapshot predates the
+> `active_speaker`/`output_topology`/DAC8x subsystem, the supply-chain
+> provenance rework, the `http_security` guard, and the canonical-UI
+> migration). Preserved as a point-in-time OSS-readiness assessment, not
+> current operational truth. Current documentation rules live in
 > [AGENTS.md#documentation-paradigm](../AGENTS.md#documentation-paradigm);
 > the repo doc atlas lives in
 > [README.md#documentation-map](../README.md#documentation-map).
