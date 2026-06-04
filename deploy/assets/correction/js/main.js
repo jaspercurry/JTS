@@ -1723,12 +1723,15 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
             al.locked_main_volume_db.toFixed(1) + ' dB. Ready to measure.';
           autolevelDetail.textContent = '';
         } else if (al.status === 'maxed_out') {
+          var capStr = (al.cap_db != null) ? al.cap_db.toFixed(0) : '?';
           autolevelLine.textContent =
-            'Tone reached the software volume ceiling (−6 dB) at ' +
-            latestMicRmsDb.toFixed(1) + ' dBFS — target was ' +
-            targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0) + '.';
+            '✓ Leveled to ' + capStr + ' dB — the safe maximum for this room. ' +
+            'You can measure now.';
           autolevelDetail.textContent =
-            'If the tone you just heard sounded like a reasonable measurement level, tap Auto-level again and use Lock now. Otherwise, turn up your amplifier and retry.';
+            'The mic read ' + latestMicRmsDb.toFixed(0) + ' dBFS (target ' +
+            targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0) + ' dBFS), ' +
+            'so auto-level couldn’t confirm by ear. If the tone sounded reasonable, ' +
+            'just tap Run measurement. To go louder, turn up your amplifier and retry.';
         } else if (al.status === 'cancelled') {
           autolevelLine.textContent = 'Auto-level cancelled — speaker volume restored.';
           autolevelDetail.textContent = '';

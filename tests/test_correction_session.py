@@ -458,3 +458,21 @@ async def test_capture_upload_cancels_the_timeout(tmp_path: Path):
     # Past the timeout window: the upload must have cancelled the watchdog.
     await asyncio.sleep(0.2)
     assert sess.state != SessionState.FAILED
+
+
+# --- Bug 2 regression: autolevel cap math --------------------------------
+# The maxed_out UI previously hardcoded "(-6 dB)" instead of the real cap,
+# misleading the user. The cap is computed here; pin it so the UI can read
+# cap_db with confidence and the hardcoded-constant class of bug can't recur.
+def test_compute_autolevel_cap_clamps():
+    from jasper.correction.session import compute_autolevel_cap
+
+    def cap(original):
+        return compute_autolevel_cap(
+            original, bump_db=6.0, floor_db=-20.0, ceil_db=-6.0
+        )
+
+    assert cap(-19.0) == -13.0   # +6 bump lands inside the band
+    assert cap(-28.5) == -20.0   # very quiet listener floored UP to usable
+    assert cap(-2.0) == -6.0     # loud listener clamped to the safety ceiling
+    assert cap(-12.0) == -6.0    # -12+6 = -6 exactly at the ceiling
