@@ -1008,18 +1008,19 @@ def test_sound_css_marks_live_sources_with_red_dots():
     assert "background: var(--destructive);" in css
 
 
-def test_sound_module_draws_only_expanded_peq_component_curve():
+def test_sound_module_draws_a_single_response_curve_with_no_overlays():
     js = _SOUND_MODULE.read_text()
     render_start = js.index("function renderGraph(payload, enabled)")
     render_end = js.index("  // Render the graph", render_start)
     render_body = js[render_start:render_end]
 
-    assert "function expandedPeqBandIndex()" in js
-    assert "item.index === expandedBand" in render_body
-    assert "component selected" in render_body
-    assert "(comp.advanced || []).forEach" not in render_body
-    assert "drawPath(comp.curve" not in render_body
-    assert "drawPath(comp.simple" not in render_body
+    # One line only: the summed curve + fill. No per-band component overlay is
+    # drawn, even for the expanded band (its dot + width shading mark it).
+    assert "drawArea(payload.preview" in render_body
+    assert "drawPath(curvePts, 'curve')" in render_body
+    assert "component selected" not in render_body
+    assert "comp.advanced" not in render_body
+    assert "bandComponent" not in render_body
     # Band dots are anchored to the summed curve and only drawn when enabled.
     assert "if (enabled) html += drawBandMarkers(curvePts);" in render_body
 
@@ -1101,7 +1102,7 @@ def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path
     ]
     assert payload["profile"]["curve_id"] == "harman"
     assert payload["preview"]
-    assert payload["components"]["curve"]
+    assert "components" not in payload  # single-line graph: no per-band overlay data
     assert payload["limits"]["max_parametric_bands"] == 8
     # Cut-filter Q ceiling is exposed so the UI's Width slider can bound HP/LP.
     assert payload["limits"]["cut_max_q"] == 1.4

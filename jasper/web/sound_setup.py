@@ -12,7 +12,7 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/bringup-preflight guided/manual bring-up readiness
   GET  /active-speaker/startup-load guarded startup-load/rollback state
   GET  /active-speaker/tone-targets    preset-derived channel-test targets
-  POST /preview  preview a draft profile without touching live audio
+  POST /preview  preview a draft profile's response without touching live audio
   POST /live-draft apply a draft to live audio without persisting
   POST /audition validate and load a draft/bypass config without persisting
   POST /active-speaker/arm       arm a no-audio active-speaker safety session
@@ -84,7 +84,6 @@ from jasper.sound.profile import (
     load_profile,
     profile_library_payload,
     rename_named_profile,
-    response_component_payload,
     response_preview,
     save_named_profile,
     save_profile,
@@ -138,7 +137,6 @@ def _state_payload(
         "profile": profile.to_dict(),
         "curves": curve_payload(),
         "preview": response_preview(profile),
-        "components": response_component_payload(profile),
         "headroom_db": estimate_headroom_db(profile),
         # Authoritative "is an EQ effectively applied?" signal: 0 when the
         # profile is disabled (bypass) OR flat (no active filters). The page

@@ -15,7 +15,6 @@ from jasper.sound.profile import (
     loudness_compensation_db,
     profile_library_payload,
     rename_named_profile,
-    response_component_payload,
     response_preview,
     save_named_profile,
     save_profile,
@@ -187,26 +186,6 @@ def test_loudness_compensation_anchored_to_attenuation():
     )
     cuts_only = SoundProfile(simple_eq=SimpleEq(mid_db=-6.0, treble_db=-4.0))
     assert loudness_compensation_db(cuts_only) == 0.0
-
-
-def test_response_component_payload_splits_advanced_bands():
-    profile = SoundProfile(
-        curve_id="harman",
-        simple_eq=SimpleEq(treble_db=-1.0),
-        parametric_bands=(
-            ParametricBand(freq_hz=2000.0, gain_db=-2.0, q=2.0),
-            ParametricBand(enabled=False, freq_hz=3000.0, gain_db=3.0, q=1.0),
-        ),
-    )
-
-    payload = response_component_payload(profile)
-
-    assert payload["curve"]
-    assert payload["simple"]
-    assert payload["advanced"][0]["index"] == 0
-    assert payload["advanced"][0]["preview"]
-    assert payload["advanced"][1]["index"] == 1
-    assert payload["advanced"][1]["preview"] == []
 
 
 def test_save_and_load_profile_round_trip(tmp_path):

@@ -23,12 +23,12 @@ graph keeps the single total-response curve visually dominant. Each
 enabled band is one dot anchored **on** that summed curve (the curve's
 own value at the band's frequency), so the dot sits on the line for every
 filter type — including shelves and cuts, whose response at the corner
-frequency is not the band's nominal gain. When a PEQ band row is
-expanded, the graph adds that one band's individual response as a
-secondary overlay and, for peaking filters, its translucent width region
-plus a frequency guide line; collapsed/non-selected bands are just the
-on-curve dot — no per-band marker lines or component curves clutter the
-default view. Dragging points on the graph is deferred; the graph is a
+frequency is not the band's nominal gain. The graph draws exactly **one
+line** — the summed response — in every state. The expanded band is
+marked by its filled on-curve dot, a frequency guide line, and (for
+peaking filters) a translucent width region; it does **not** draw a
+second per-band response curve. Collapsed/non-selected bands are just the
+on-curve dot. Dragging points on the graph is deferred; the graph is a
 display surface, not the state authority.
 
 Available band types (all CamillaDSP biquads): **Lowshelf**, **Peaking**,
