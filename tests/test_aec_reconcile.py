@@ -28,6 +28,15 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
 def _run_reconcile(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     env = os.environ.copy()
+    # These tests drive the active provider exclusively through the
+    # VOICE_PROVIDER_FILE they write. The reconciler also has an env-var
+    # fallback (valid_voice_provider "$JASPER_VOICE_PROVIDER"), so an
+    # ambient JASPER_VOICE_PROVIDER — which CI sets to "gemini" so
+    # jasper.config loads, and which a dev shell often exports — would
+    # leak in and make the "parks when provider unset/invalid" cases see
+    # a valid provider and never park. Drop it so the file is the only
+    # source of truth, matching what each test sets up.
+    env.pop("JASPER_VOICE_PROVIDER", None)
     env.update(
         {
             "JASPER_ENV_FILE": str(tmp_path / "jasper.env"),
