@@ -6,6 +6,7 @@ pipeline with hand-built fake response objects matching the SDK's shape.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest
 
 try:
     from jasper.voice.gemini_session import (
+        GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
         GeminiLiveConnection,
         GeminiLiveSession,
         GeminiLiveTurn,
@@ -65,6 +67,133 @@ async def _run_turn(conn: "GeminiLiveConnection", cum_in: int, cum_out: int):
         server_content=_SC(turn_complete=True),
     ))
     return turn
+
+
+@dataclass
+class _GoAway:
+    """Stand-in for response.go_away. The SDK exposes `time_left` as a
+    datetime.timedelta; the receive loop only reads it via getattr."""
+    time_left: Any = None
+
+
+@dataclass
+class _GoAwayResp:
+    """Response object carrying only a GoAway (no server_content)."""
+    go_away: Any = None
+    server_content: Any = None
+    tool_call: Any = None
+    data: bytes | None = None
+    session_resumption_update: Any = None
+    usage_metadata: Any = None
+
+
+class _FakeReceiveSession:
+    """Drives GeminiLiveConnection._receive_loop with a scripted sequence
+    of responses, then raises CancelledError so the loop exits cleanly
+    without going through any reconnect/clean-close branch."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+
+    async def _receive(self):
+        if self._responses:
+            return self._responses.pop(0)
+        raise asyncio.CancelledError
+
+
+async def _run_receive_loop_with(conn, responses):
+    """Bind `conn` to a scripted fake session and run one pass of the
+    receive loop over the scripted responses."""
+    conn._session = _FakeReceiveSession(responses)
+    with pytest.raises(asyncio.CancelledError):
+        await conn._receive_loop()
+
+
+@pytest.mark.asyncio
+async def test_goaway_mid_turn_with_ample_time_defers_reconnect():
+    """A GoAway arriving while a turn is in flight, with time_left
+    comfortably above the deferral threshold, must NOT tear the session
+    down: it sets the pending flag and leaves the reconnect event clear
+    so the in-flight turn keeps running. The reconnect fires only once
+    the turn is released."""
+    import datetime
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    turn = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = turn
+
+    ample = datetime.timedelta(
+        seconds=GOAWAY_DEFER_MIN_TIME_LEFT_SEC + 60.0
+    )
+    await _run_receive_loop_with(conn, [_GoAwayResp(go_away=_GoAway(ample))])
+
+    # Deferred: pending flag set, reconnect NOT triggered, turn intact.
+    assert conn._goaway_reconnect_pending is True
+    assert not conn._reconnect_event.is_set()
+    assert conn._active_turn is turn
+
+    # Releasing the turn fires the deferred reconnect.
+    await conn._on_turn_released(turn)
+    assert conn._goaway_reconnect_pending is False
+    assert conn._reconnect_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_goaway_with_no_active_turn_reconnects_immediately():
+    """No turn in flight → reconnect promptly as before, regardless of
+    time_left."""
+    import datetime
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    assert conn._active_turn is None
+
+    ample = datetime.timedelta(
+        seconds=GOAWAY_DEFER_MIN_TIME_LEFT_SEC + 60.0
+    )
+    await _run_receive_loop_with(conn, [_GoAwayResp(go_away=_GoAway(ample))])
+
+    assert conn._goaway_reconnect_pending is False
+    assert conn._reconnect_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_goaway_mid_turn_with_little_time_reconnects_immediately():
+    """A GoAway mid-turn but with time_left below the threshold can't
+    safely defer (the server is about to drop us) — reconnect promptly,
+    do not set the pending flag."""
+    import datetime
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    turn = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = turn
+
+    little = datetime.timedelta(
+        seconds=GOAWAY_DEFER_MIN_TIME_LEFT_SEC - 5.0
+    )
+    await _run_receive_loop_with(conn, [_GoAwayResp(go_away=_GoAway(little))])
+
+    assert conn._goaway_reconnect_pending is False
+    assert conn._reconnect_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_goaway_mid_turn_with_unparseable_time_reconnects_immediately():
+    """If time_left can't be interpreted, fail safe to the existing
+    reconnect-immediately behaviour rather than deferring on a value we
+    can't reason about."""
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    turn = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = turn
+
+    await _run_receive_loop_with(
+        conn, [_GoAwayResp(go_away=_GoAway(object()))]
+    )
+
+    assert conn._goaway_reconnect_pending is False
+    assert conn._reconnect_event.is_set()
 
 
 @pytest.mark.asyncio
