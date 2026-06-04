@@ -7,6 +7,8 @@ from jasper.active_speaker.calibration_level import (
     calibration_level_payload,
     clamp_test_level_dbfs,
     classify_mic_meter,
+    load_calibration_level_state,
+    update_calibration_level_state,
 )
 
 
@@ -41,3 +43,65 @@ def test_classify_mic_meter_clipping_overrides_level() -> None:
     assert meter["status"] == "clipping"
     assert meter["tone"] == "danger"
     assert meter["recommendation"] == "stop_or_lower"
+
+
+def test_calibration_level_state_limits_large_upward_steps(tmp_path) -> None:
+    path = tmp_path / "level.json"
+
+    first = update_calibration_level_state(
+        action="set",
+        requested_level_dbfs=-55,
+        state_path=path,
+    )
+    loaded = load_calibration_level_state(state_path=path)
+
+    assert first["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS + 1
+    assert first["issues"][0]["code"] == "upward_step_limited"
+    assert loaded["test_signal"]["requested_level_dbfs"] == first["test_signal"][
+        "requested_level_dbfs"
+    ]
+
+
+def test_calibration_level_state_defaults_when_payload_is_invalid(tmp_path) -> None:
+    path = tmp_path / "level.json"
+    path.write_text("[]", encoding="utf-8")
+
+    loaded = load_calibration_level_state(state_path=path)
+
+    assert loaded["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
+    assert loaded["last_action"] == "default_floor"
+    assert loaded["state_path"] == str(path)
+
+
+def test_calibration_level_state_allows_lower_and_reset(tmp_path) -> None:
+    path = tmp_path / "level.json"
+    update_calibration_level_state(action="raise", state_path=path)
+    update_calibration_level_state(action="raise", state_path=path)
+
+    lowered = update_calibration_level_state(
+        action="set",
+        requested_level_dbfs=MIN_TEST_LEVEL_DBFS,
+        state_path=path,
+    )
+    raised = update_calibration_level_state(action="raise", state_path=path)
+    reset = update_calibration_level_state(action="stop", state_path=path)
+
+    assert lowered["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
+    assert raised["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS + 1
+    assert reset["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
+
+
+def test_calibration_level_state_resets_on_mic_clipping(tmp_path) -> None:
+    path = tmp_path / "level.json"
+    update_calibration_level_state(action="raise", state_path=path)
+
+    clipped = update_calibration_level_state(
+        action="raise",
+        observed_mic_dbfs=-20,
+        mic_clipping=True,
+        state_path=path,
+    )
+
+    assert clipped["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
+    assert clipped["mic_meter"]["status"] == "clipping"
+    assert clipped["issues"][0]["code"] == "mic_clipping_reset_to_floor"

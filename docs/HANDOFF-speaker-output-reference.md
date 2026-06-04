@@ -203,11 +203,13 @@ What exists:
   `aplay` env enablement is present, and the target is not a tweeter/
   compression driver.
   `/sound/active-speaker/channel-protection` records the separate human
-  evidence that a compression-driver protection path is physically present, and
-  `/sound/active-speaker/stage-config` can consume the saved mono active 2-way
-  topology to write a protected Epique/F110M startup candidate plus evidence.
-  That staging route still does not rewrite ALSA, load CamillaDSP, reload a
-  graph, or emit sound.
+  evidence that a compression-driver protection path is physically present or
+  that software-guarded bring-up has been explicitly requested. Software guard
+  remains a topology/playback blocker; it only lets
+  `/sound/active-speaker/stage-config` consume the saved mono active 2-way
+  topology and write a no-load protected Epique/F110M startup candidate plus
+  startup-mute/high-pass/limiter/headroom evidence. That staging route still
+  does not rewrite ALSA, load CamillaDSP, reload a graph, or emit sound.
   The same topology payload includes a clock-domain report for the detected
   final-output hardware. Today that report is a single-device contract: a
   recognized DAC8x or Apple output device can be described as one coherent

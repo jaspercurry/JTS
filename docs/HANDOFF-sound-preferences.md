@@ -170,9 +170,17 @@ That plan shows the target output, frequency, test-signal level, and duration,
 but it still returns `would_play: false` and does not authorize playback. The
 armed state also exposes a **Calibration level** slider backed by
 `jasper.active_speaker.calibration_level`: it defaults to the minimum
-`-80 dBFS`, is clamped by backend-owned bounds, and is separate from normal
-listening volume. The current mic meter is a schema placeholder/classifier;
-real microphone observations are a future slice.
+`-80 dBFS`, persists at
+`/var/lib/jasper/active_speaker_calibration_level.json`, is clamped by
+backend-owned bounds, and is separate from normal listening volume. The
+browser updates it through `/sound/active-speaker/calibration-level`; the
+backend accepts only one 1 dB upward step per transition and lets Lower,
+Reset, Stop, or future clipping evidence return to the floor. Tone-plan,
+readiness, and artifact routes consume the accepted persisted level rather
+than a caller-supplied `level_dbfs`. This is still only the software guard
+substrate: it does not write live CamillaDSP volume or emit samples. The
+current mic meter is a schema placeholder/classifier; real microphone
+observations are a future slice.
 The card can also **Verify tone artifact** through
 `/sound/active-speaker/play-tone`: this validates the selected logical output
 target and writes a bounded multi-channel WAV artifact with only that output
@@ -223,16 +231,20 @@ config** through `/sound/active-speaker/stage-config`. The staged config binds
 the saved output topology to the Epique E150HE-44 + Eminence F110M-8 safe
 bring-up preset, writes a muted/protected CamillaDSP candidate, and persists
 readable evidence at `/var/lib/jasper/active_speaker_staged_config.json`. It
-requires the compression-driver protection path to be marked present and it
-refuses unsupported output assignments. It still does not load CamillaDSP,
-reload the graph, emit sound, or authorize playback.
+accepts either physical compression-driver protection evidence or an explicit
+software-guarded bring-up request. Software guard is still a topology/playback
+blocker; it only allows no-load staging after the generated candidate proves
+startup mute, protective high-pass, startup headroom, limiter, and no-playback
+evidence. The route refuses unsupported output assignments and still does not
+load CamillaDSP, reload the graph, emit sound, or authorize playback.
 The active-speaker runtime substrate starts in
 `jasper.active_speaker`, the physical topology substrate starts in
 `jasper.output_topology`, and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 The next `/sound/` slice should be hardware validation of the staged
-Epique/F110M candidate and lab-gated channel-test path, then, only after
-evidence is good, a richer measurement loop around the microphone.
+Epique/F110M candidate plus the guarded startup-load/rollback path, then,
+only after evidence is good, a lab-gated channel-test path and a richer
+measurement loop around the microphone.
 
 ## Files
 
@@ -245,7 +257,9 @@ an explicitly lab-gated `aplay` backend for non-tweeter targets, and a
 read-only playback-readiness gate plus protected startup-config staging for the
 Epique/F110M mono cabinet. Current scope is validation/template generation and
 status/session/plan/artifact/readiness/staging bookkeeping plus optional lab
-channel tests; no CamillaDSP hardware loading exists.
+channel tests and a guarded startup-config load/rollback boundary. The staging
+writer is still no-load; only the startup-load route may reload the protected
+graph, and it still does not emit audio or authorize playback.
 - `jasper/output_topology.py` — import-cheap physical-output topology
   contract for DAC lanes, speaker groups, passive/active modes, subwoofers,
   identity verification, and tweeter-protection evidence. Current scope is

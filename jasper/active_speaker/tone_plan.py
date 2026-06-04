@@ -67,7 +67,11 @@ def load_active_speaker_preset(
     return ActiveSpeakerPreset.from_mapping(raw)
 
 
-def tone_targets_payload(preset: ActiveSpeakerPreset) -> dict[str, Any]:
+def tone_targets_payload(
+    preset: ActiveSpeakerPreset,
+    *,
+    calibration_level: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return preset-derived channel targets for the web UI."""
 
     return {
@@ -76,7 +80,7 @@ def tone_targets_payload(preset: ActiveSpeakerPreset) -> dict[str, Any]:
         "preset_id": preset.preset_id,
         "name": preset.name,
         "layout": preset.channel_map.layout,
-        "calibration_level": calibration_level_payload(),
+        "calibration_level": calibration_level or calibration_level_payload(),
         "targets": [
             {
                 "side": output.side,

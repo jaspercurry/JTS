@@ -173,6 +173,23 @@ def test_playback_readiness_requires_tweeter_protection_for_tweeter_target() -> 
     assert "tweeter_protection" not in codes
 
 
+def test_playback_readiness_keeps_software_guard_request_blocked() -> None:
+    report = build_playback_readiness(
+        _topology(protection="software_guard_requested"),
+        speaker_group_id="left",
+        role="tweeter",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+    )
+
+    codes = {issue["code"] for issue in report["issues"]}
+
+    assert report["status"] == "blocked"
+    assert "tweeter_software_guard_requested" in codes
+    assert report["playback_allowed"] is False
+
+
 def test_playback_readiness_requires_environment_and_safe_session() -> None:
     report = build_playback_readiness(
         _topology(),

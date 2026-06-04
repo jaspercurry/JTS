@@ -56,7 +56,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   var statusText = '', statusErr = false;
   var activeSpeaker = {
     loading: false, action: '', payload: null, session: null, targets: null,
-    stagedConfig: null, plan: null, playback: null, error: '', levelDbfs: null
+    stagedConfig: null, calibrationLevel: null, plan: null, playback: null,
+    bringup: null, startupLoad: null, error: '', levelDbfs: null
   };
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
@@ -572,6 +573,15 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       subwoofer: 'Subwoofer'
     }[role] || role || 'Channel';
   }
+  function humanProtectionStatus(value) {
+    return {
+      not_required: 'not needed',
+      required_missing: 'not set',
+      present: 'physical protection',
+      software_guard_requested: 'software guard requested',
+      unknown: 'unknown'
+    }[value] || value || 'unknown';
+  }
   function renderOutputTopologySetup() {
     return '<div class="setting-row setting-row--stack output-setup">' +
       '<div class="output-setup__head">' +
@@ -763,8 +773,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         '<span class="output-group__badge">' + escapeHtml(group.kind || 'speaker') + '</span>' +
       '</div>' +
       '<div class="output-roles">' + channels.map(function(channel) {
+        var protectionStatus = channel.protection_status || 'unknown';
         var protection = channel.protection_required
-          ? ' · protection ' + (channel.protection_status || 'unknown') : '';
+          ? ' · guard ' + humanProtectionStatus(protectionStatus) : '';
         var label = channel.human_output_label ||
           (channel.physical_output_index == null ? 'No output assigned' : 'Output ' + (Number(channel.physical_output_index) + 1));
         var target = identityTargetFor(group.id, channel.role) || {};
@@ -773,8 +784,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         var protectionBusy = outputTopology.protectionSaving === targetId;
         var readinessBusy = outputTopology.readinessChecking === targetId;
         var action = channel.identity_verified ? 'Clear' : 'Mark verified';
-        var protectionPresent = channel.protection_status === 'present';
-        var protectionAction = protectionPresent ? 'Clear protection' : 'Mark protection';
+        var protectionPresent = protectionStatus === 'present';
+        var softwareGuard = protectionStatus === 'software_guard_requested';
         var disabled = outputTopology.dirty || busy || protectionBusy ||
           readinessBusy || channel.physical_output_index == null;
         return '<div class="output-role">' +
@@ -792,14 +803,32 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
               'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
               (disabled ? ' disabled' : '') + '>' +
               escapeHtml(busy ? 'Saving' : action) + '</button>' +
-            (channel.protection_required ? '<button type="button" class="btn btn--ghost output-role__action" ' +
-              'data-act="mark-output-protection" ' +
-              'data-group-id="' + escapeHtml(group.id) + '" ' +
-              'data-role="' + escapeHtml(channel.role) + '" ' +
-              'data-present="' + (protectionPresent ? 'false' : 'true') + '" ' +
-              'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
-              (disabled ? ' disabled' : '') + '>' +
-              escapeHtml(protectionBusy ? 'Saving' : protectionAction) + '</button>' : '') +
+            (channel.protection_required ? (
+              (protectionPresent || softwareGuard ? '<button type="button" class="btn btn--ghost output-role__action" ' +
+                'data-act="mark-output-protection" ' +
+                'data-group-id="' + escapeHtml(group.id) + '" ' +
+                'data-role="' + escapeHtml(channel.role) + '" ' +
+                'data-status="required_missing" ' +
+                'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
+                (disabled ? ' disabled' : '') + '>' +
+                escapeHtml(protectionBusy ? 'Saving' : 'Clear guard') + '</button>' : '') +
+              (!protectionPresent ? '<button type="button" class="btn btn--ghost output-role__action" ' +
+                'data-act="mark-output-protection" ' +
+                'data-group-id="' + escapeHtml(group.id) + '" ' +
+                'data-role="' + escapeHtml(channel.role) + '" ' +
+                'data-status="present" ' +
+                'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
+                (disabled ? ' disabled' : '') + '>' +
+                escapeHtml(protectionBusy ? 'Saving' : 'Hardware protected') + '</button>' : '') +
+              (!softwareGuard ? '<button type="button" class="btn btn--ghost output-role__action" ' +
+                'data-act="mark-output-protection" ' +
+                'data-group-id="' + escapeHtml(group.id) + '" ' +
+                'data-role="' + escapeHtml(channel.role) + '" ' +
+                'data-status="software_guard_requested" ' +
+                'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
+                (disabled ? ' disabled' : '') + '>' +
+                escapeHtml(protectionBusy ? 'Saving' : 'Use software guard') + '</button>' : '')
+            ) : '') +
             '<button type="button" class="btn btn--ghost output-role__action" ' +
               'data-act="check-output-readiness" ' +
               'data-group-id="' + escapeHtml(group.id) + '" ' +
@@ -1022,6 +1051,8 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       ['ALSA playback devices', String(devices)],
       ['Config validation', validation.status || 'unknown'],
       ['Staged startup', staged.status || 'not staged'],
+      ['Startup load', activeSpeaker.startupLoad && activeSpeaker.startupLoad.state ?
+        (activeSpeaker.startupLoad.state.status || 'idle') : 'idle'],
       ['Safe playback', safe.playback_allowed ? 'Allowed' : 'Not allowed yet'],
       ['Safety session', session.status || 'Not armed'],
       ['Calibration level', fmtDbfs(activeSpeakerLevelConfig().value)]
@@ -1039,7 +1070,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       }).join('') + '</dl>' +
       renderActiveSpeakerIssues(envIssues, sessionIssues) +
       renderActiveSpeakerStagedConfig(activeSpeaker.stagedConfig) +
-      (session.status === 'armed' ? renderActiveSpeakerLevel() : '') +
+      renderActiveSpeakerBringup(activeSpeaker.bringup) +
+      renderActiveSpeakerStartupLoad(activeSpeaker.startupLoad) +
+      renderActiveSpeakerLevel() +
       renderActiveSpeakerActions(ok, session) +
       renderActiveSpeakerPlan(activeSpeaker.plan) +
       renderActiveSpeakerPlayback(activeSpeaker.playback) +
@@ -1047,8 +1080,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     '</div>';
   }
   function activeSpeakerLevelConfig() {
-    var raw = activeSpeaker.targets && activeSpeaker.targets.calibration_level &&
-      activeSpeaker.targets.calibration_level.test_signal || {};
+    var contract = activeSpeaker.calibrationLevel ||
+      (activeSpeaker.targets && activeSpeaker.targets.calibration_level) || {};
+    var raw = contract.test_signal || {};
     var min = Number(raw.min_level_dbfs);
     var max = Number(raw.max_level_dbfs);
     var step = Number(raw.step_db);
@@ -1064,9 +1098,12 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   function renderActiveSpeakerLevel() {
     var cfg = activeSpeakerLevelConfig();
-    var contract = activeSpeaker.plan && activeSpeaker.plan.calibration_level ||
+    var contract = activeSpeaker.calibrationLevel ||
+      activeSpeaker.plan && activeSpeaker.plan.calibration_level ||
       activeSpeaker.targets && activeSpeaker.targets.calibration_level || {};
     var meter = contract.mic_meter || {};
+    var guard = contract.software_gain_guard || {};
+    var issues = Array.isArray(contract.issues) ? contract.issues : [];
     var label = {
       unmeasured: 'Mic unmeasured',
       too_quiet: 'Too quiet',
@@ -1089,6 +1126,11 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       '<input type="range" class="active-speaker-level__range" id="active-speaker-level" ' +
         'min="' + cfg.min + '" max="' + cfg.max + '" step="' + cfg.step + '" value="' + cfg.value + '" ' +
         'aria-label="Calibration test signal level">' +
+      '<div class="active-speaker-actions">' +
+        '<button type="button" class="btn btn--ghost" data-act="active-level" data-level-action="lower">Lower</button>' +
+        '<button type="button" class="btn btn--ghost" data-act="active-level" data-level-action="reset">Reset</button>' +
+        '<button type="button" class="btn btn--ghost" data-act="active-level" data-level-action="raise">Raise 1 dB</button>' +
+      '</div>' +
       '<div class="active-speaker-meter">' +
         '<span class="active-speaker-meter__label">Quiet</span>' +
         '<span class="active-speaker-meter__label">Usable</span>' +
@@ -1096,8 +1138,12 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       '</div>' +
       '<div class="row-between active-speaker-level__meter">' +
         '<span class="status-pill' + toneClass + '">' + escapeHtml(label) + '</span>' +
-        '<span class="setting-row__hint">JTS caps this at ' + escapeHtml(fmtDbfs(cfg.max)) + '.</span>' +
+        '<span class="setting-row__hint">JTS caps this at ' + escapeHtml(fmtDbfs(cfg.max)) +
+          ' and limits upward moves to ' + escapeHtml(fmtDb(Number(guard.upward_step_limit_db) || cfg.step)) + ' dB.</span>' +
       '</div>' +
+      (issues.length ? '<ul class="active-speaker-issues">' + issues.slice(0, 3).map(function(issue) {
+        return '<li>' + escapeHtml('Level guard: ' + (issue.code || 'issue')) + '</li>';
+      }).join('') + '</ul>' : '') +
     '</div>';
   }
   function renderActiveSpeakerIssues(envIssues, sessionIssues) {
@@ -1130,7 +1176,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       ['Validation', cfg.validation && cfg.validation.status || 'unknown'],
       ['Protective HP', cfg.tweeter_protective_highpass_hz ?
         String(cfg.tweeter_protective_highpass_hz) + ' Hz' : 'unknown'],
-      ['Load gate', load.load_gate || 'not implemented']
+      ['Load gate', load.load_gate || 'startup load not checked']
     ];
     var issues = Array.isArray(staged.issues) ? staged.issues.slice(0, 5) : [];
     return '<div class="active-speaker-plan active-speaker-stage">' +
@@ -1142,6 +1188,98 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         return '<li>' + escapeHtml('Stage: ' + (issue.code || 'issue')) + '</li>';
       }).join('') + '</ul>' : '') +
       '<p class="setting-row__hint">' + escapeHtml(staged.next_step || 'Staged only; no DSP graph was loaded.') + '</p>' +
+    '</div>';
+  }
+  function modeStatusLabel(mode) {
+    return {
+      ready: 'Ready',
+      ready_to_arm: 'Ready to arm',
+      armed: 'Armed',
+      ready_relative: 'Mic relative',
+      ready_calibrated: 'Mic calibrated',
+      blocked: 'Blocked'
+    }[mode && mode.status] || (mode && mode.status) || 'Unknown';
+  }
+  function renderActiveSpeakerBringup(preflight) {
+    if (!preflight) return '';
+    var modes = preflight.modes || {};
+    var manual = modes.manual_guarded_bringup || {};
+    var guided = modes.guided_calibration || {};
+    var mic = preflight.microphone || {};
+    var guard = preflight.software_guard || {};
+    var level = preflight.calibration_level || {};
+    var failed = []
+      .concat(Array.isArray(manual.required_gates) ? manual.required_gates : [])
+      .concat(Array.isArray(guided.required_gates) ? guided.required_gates : [])
+      .filter(function(gate, index, arr) {
+        if (!gate || gate.passed) return false;
+        var messageKey = String(gate.message || '').trim().toLowerCase();
+        return arr.findIndex(function(item) {
+          if (!item || item.passed) return false;
+          if (item.id && gate.id && item.id === gate.id) return true;
+          return messageKey && String(item.message || '').trim().toLowerCase() === messageKey;
+        }) === index;
+      })
+      .slice(0, 5);
+    var rows = [
+      ['Manual guarded', modeStatusLabel(manual)],
+      ['Guided calibration', modeStatusLabel(guided)],
+      ['Microphone', mic.status || 'not checked'],
+      ['Guard', guard.status || 'unknown'],
+      ['Start level', level.at_floor ? 'At floor' : 'Reset needed']
+    ];
+    return '<div class="active-speaker-plan active-speaker-stage">' +
+      '<p class="setting-row__title">Bring-up preflight</p>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      (failed.length ? '<ul class="active-speaker-issues">' + failed.map(function(gate) {
+        return '<li>' + escapeHtml('Preflight: ' + (gate.message || gate.id || 'gate blocked')) + '</li>';
+      }).join('') + '</ul>' : '') +
+      '<p class="setting-row__hint">' + escapeHtml(preflight.next_step || 'Choose guided calibration when a mic is working; manual guarded bring-up stays available for known plans.') + '</p>' +
+    '</div>';
+  }
+  function renderActiveSpeakerStartupLoad(startupLoad) {
+    if (!startupLoad) return '';
+    var state = startupLoad.state || {};
+    var preflight = startupLoad.preflight || {};
+    var candidate = preflight.candidate || {};
+    var canLoad = !!preflight.load_allowed;
+    var canRollback = !!state.rollback_available;
+    var busy = !!activeSpeaker.action;
+    var rows = [
+      ['Load state', state.status || 'idle'],
+      ['Preflight', preflight.status || 'unknown'],
+      ['Candidate', candidate.basename || 'none'],
+      ['Path safety', preflight.path_safety && preflight.path_safety.load_gate || 'unknown'],
+      ['Rollback target', state.previous_config_path ? state.previous_config_path.split('/').pop() : 'none']
+    ];
+    var issues = []
+      .concat(Array.isArray(preflight.issues) ? preflight.issues : [])
+      .concat(Array.isArray(state.issues) ? state.issues : [])
+      .filter(function(issue, index, arr) {
+        if (!issue) return false;
+        var code = issue.code || '';
+        return arr.findIndex(function(item) {
+          return item && item.code === code;
+        }) === index;
+      })
+      .slice(0, 5);
+    return '<div class="active-speaker-plan active-speaker-stage">' +
+      '<p class="setting-row__title">Startup load</p>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
+        return '<li>' + escapeHtml('Load: ' + (issue.message || issue.code || 'issue')) + '</li>';
+      }).join('') + '</ul>' : '') +
+      '<div class="active-speaker-actions">' +
+        '<button type="button" class="btn btn--ghost" data-act="load-active-startup"' +
+          (busy || !canLoad ? ' disabled' : '') + '>Load protected config</button>' +
+        '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup"' +
+          (busy || !canRollback ? ' disabled' : '') + '>Rollback to prior config</button>' +
+      '</div>' +
+      '<p class="setting-row__hint">' + escapeHtml(preflight.next_step || 'Loading reloads CamillaDSP but does not play sound.') + '</p>' +
     '</div>';
   }
   function renderActiveSpeakerActions(ok, session) {
@@ -1614,8 +1752,13 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     else if (act === 'check-output-readiness') { checkOutputPlaybackReadiness(t); }
     else if (act === 'play-output-readiness-tone') { playOutputReadinessTone(t); }
     else if (act === 'stage-active-config') { stageActiveSpeakerConfig(); }
+    else if (act === 'load-active-startup') { loadActiveStartupConfig(); }
+    else if (act === 'rollback-active-startup') { rollbackActiveStartupConfig(); }
     else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Arming'); }
     else if (act === 'stop-active-speaker') { activeSpeakerPost('./active-speaker/stop', 'Stopping'); }
+    else if (act === 'active-level') {
+      updateActiveSpeakerLevel(t.getAttribute('data-level-action') || 'set');
+    }
     else if (act === 'prepare-active-tone') {
       activeSpeakerTonePlan({
         side: t.getAttribute('data-side') || '',
@@ -1694,6 +1837,10 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       refreshActiveCount();
       refreshDraftActionState();
       schedulePreview(); requestLiveSource({immediate: false});
+      return;
+    }
+    if (ev.target.id === 'active-speaker-level') {
+      updateActiveSpeakerLevel('set', Number(ev.target.value));
       return;
     }
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
@@ -2111,12 +2258,16 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     }
     var groupId = button.getAttribute('data-group-id') || '';
     var role = button.getAttribute('data-role') || '';
-    var present = button.getAttribute('data-present') !== 'false';
+    var nextStatus = button.getAttribute('data-status') || (
+      button.getAttribute('data-present') !== 'false' ? 'present' : 'required_missing'
+    );
     var label = button.getAttribute('data-label') || (groupId + ' ' + role);
-    var message = present
-      ? 'Mark compression-driver protection present for "' + label + '"? Only do this after the physical protection path is installed and inspected.'
-      : 'Clear compression-driver protection evidence for "' + label + '"?';
-    if (!await jtsConfirm(message, {danger: present})) return;
+    var message = nextStatus === 'present'
+      ? 'Mark physical compression-driver protection present for "' + label + '"? Only do this after the protection path is installed and inspected.'
+      : (nextStatus === 'software_guard_requested'
+        ? 'Use software-guarded bring-up for "' + label + '"? JTS will still block playback; this only allows a muted, high-passed, limited startup candidate to be staged for review.'
+        : 'Clear compression-driver guard evidence for "' + label + '"?');
+    if (!await jtsConfirm(message, {danger: nextStatus === 'present'})) return;
 
     outputTopology.protectionSaving = groupId + ':' + role;
     outputTopology.error = '';
@@ -2134,14 +2285,14 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         body: JSON.stringify({
           speaker_group_id: groupId,
           role: role,
-          protection_present: present
+          protection_status: nextStatus
         })
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'channel protection update failed');
       ingestOutputTopology(payload);
       outputTopology.protectionSaving = '';
-      status((present ? 'Marked protection present: ' : 'Cleared protection: ') + label + '.');
+      status('Set guard to ' + humanProtectionStatus(nextStatus) + ': ' + label + '.');
     } catch (e) {
       outputTopology.protectionSaving = '';
       outputTopology.error = e.message;
@@ -2171,8 +2322,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         headers: jsonHeaders(),
         body: JSON.stringify({
           speaker_group_id: groupId,
-          role: role,
-          level_dbfs: activeSpeakerLevelConfig().value
+          role: role
         })
       });
       var payload = await resp.json();
@@ -2209,7 +2359,6 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         body: JSON.stringify({
           speaker_group_id: groupId,
           role: role,
-          level_dbfs: activeSpeakerLevelConfig().value,
           audio: audio
         })
       });
@@ -2223,6 +2372,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: result.session || activeSpeaker.session,
         targets: activeSpeaker.targets,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
         plan: result.plan || activeSpeaker.plan,
         playback: result.playback || activeSpeaker.playback,
         error: '',
@@ -2253,6 +2405,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -2267,12 +2422,16 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'protected config staging failed');
+      var startupLoad = await fetchActiveSpeakerStartupLoad();
       activeSpeaker = {
         loading: false, action: '',
         payload: activeSpeaker.payload,
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         stagedConfig: payload,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: startupLoad,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: '',
@@ -2289,12 +2448,231 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       };
       status('Could not stage protected config: ' + e.message, true);
+    }
+    render();
+  }
+  async function updateActiveSpeakerLevel(action, requestedLevel) {
+    var cfg = activeSpeakerLevelConfig();
+    var body = {
+      action: action || 'set'
+    };
+    if (requestedLevel != null) body.level_dbfs = requestedLevel;
+    activeSpeaker = {
+      loading: false, action: 'Updating level',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
+      plan: null,
+      playback: null,
+      error: '',
+      levelDbfs: cfg.value
+    };
+    render();
+    try {
+      var resp = await fetch('./active-speaker/calibration-level', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(body)
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'calibration level update failed');
+      var accepted = payload && payload.test_signal ?
+        Number(payload.test_signal.requested_level_dbfs) : cfg.value;
+      var startupLoad = await fetchActiveSpeakerStartupLoad();
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: payload,
+        bringup: activeSpeaker.bringup,
+        startupLoad: startupLoad,
+        plan: null,
+        playback: null,
+        error: '',
+        levelDbfs: isFinite(accepted) ? accepted : cfg.value
+      };
+      status(payload.issues && payload.issues.length ?
+        'Level raised one guarded step; larger upward move was limited.' :
+        'Calibration level updated.');
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
+        plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status('Could not update calibration level: ' + e.message, true);
+    }
+    render();
+  }
+  async function fetchActiveSpeakerStartupLoad() {
+    var resp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
+    if (!resp.ok) throw new Error('startup load status failed');
+    return await resp.json();
+  }
+  async function loadActiveStartupConfig() {
+    if (!await jtsConfirm(
+      'Load the protected startup config into CamillaDSP? This reloads the DSP graph but does not play tones or change the calibration level.',
+      {danger: false}
+    )) {
+      return;
+    }
+    activeSpeaker = {
+      loading: false, action: 'Loading protected config',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
+      plan: null,
+      playback: null,
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    };
+    render();
+    try {
+      var resp = await fetch('./active-speaker/load-startup-config', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: '{}'
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'startup load failed');
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: {
+          state: payload.load || {},
+          preflight: payload.preflight || {}
+        },
+        plan: null,
+        playback: null,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      var loaded = payload.load && payload.load.status === 'loaded';
+      status(loaded ?
+        'Protected startup config loaded. No sound was played.' :
+        'Startup config load is blocked; review the load evidence.',
+        !loaded);
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
+        plan: null,
+        playback: null,
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status('Could not load protected config: ' + e.message, true);
+    }
+    render();
+  }
+  async function rollbackActiveStartupConfig() {
+    if (!await jtsConfirm(
+      'Rollback to the config that was active before the protected startup load? This reloads CamillaDSP but does not play sound.',
+      {danger: false}
+    )) {
+      return;
+    }
+    activeSpeaker = {
+      loading: false, action: 'Rolling back',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
+      plan: null,
+      playback: null,
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    };
+    render();
+    try {
+      var resp = await fetch('./active-speaker/rollback-startup-config', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: '{}'
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'startup rollback failed');
+      var startupLoad = await fetchActiveSpeakerStartupLoad();
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: startupLoad.state ? startupLoad : {
+          state: payload.rollback || {},
+          preflight: activeSpeaker.startupLoad && activeSpeaker.startupLoad.preflight || {}
+        },
+        plan: null,
+        playback: null,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      var rolledBack = payload.rollback && payload.rollback.status === 'rolled_back';
+      status(rolledBack ?
+        'Rolled back to the prior config. No sound was played.' :
+        'Startup rollback is blocked; review the load evidence.',
+        !rolledBack);
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
+        plan: null,
+        playback: null,
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status('Could not roll back startup config: ' + e.message, true);
     }
     render();
   }
@@ -2305,6 +2683,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
       plan: null,
       playback: null,
       error: '',
@@ -2318,8 +2699,17 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       if (!sessionResp.ok) throw new Error('safe playback status failed');
       var stagedResp = await fetch('./active-speaker/staged-config', {cache: 'no-store'});
       if (!stagedResp.ok) throw new Error('staged config status failed');
+      var levelResp = await fetch('./active-speaker/calibration-level', {cache: 'no-store'});
+      if (!levelResp.ok) throw new Error('calibration level status failed');
+      var bringupResp = await fetch('./active-speaker/bringup-preflight', {cache: 'no-store'});
+      if (!bringupResp.ok) throw new Error('bring-up preflight failed');
+      var startupLoadResp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
+      if (!startupLoadResp.ok) throw new Error('startup load status failed');
       var targetsResp = await fetch('./active-speaker/tone-targets', {cache: 'no-store'});
       if (!targetsResp.ok) throw new Error('tone targets failed');
+      var nextLevel = await levelResp.json();
+      var nextBringup = await bringupResp.json();
+      var nextStartupLoad = await startupLoadResp.json();
       var nextTargets = await targetsResp.json();
       activeSpeaker = {
         loading: false, action: '',
@@ -2327,17 +2717,22 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: await sessionResp.json(),
         targets: nextTargets,
         stagedConfig: await stagedResp.json(),
+        calibrationLevel: nextLevel,
+        bringup: nextBringup,
+        startupLoad: nextStartupLoad,
         plan: null,
         playback: null,
         error: '',
-        levelDbfs: activeSpeaker.levelDbfs == null && nextTargets.calibration_level ?
-          (nextTargets.calibration_level.test_signal || {}).default_level_dbfs :
-          activeSpeaker.levelDbfs
+        levelDbfs: nextLevel && nextLevel.test_signal ?
+          Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
       };
     } catch (e) {
       activeSpeaker = {
         loading: false, action: '', payload: null, session: null, targets: null,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
         plan: null, playback: null, error: e.message, levelDbfs: activeSpeaker.levelDbfs
       };
     }
@@ -2350,6 +2745,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
       plan: null,
       playback: null,
       error: '',
@@ -2363,16 +2761,28 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         body: '{}'
       });
       if (!resp.ok) throw new Error(actionLabel + ' failed');
+      var nextSession = await resp.json();
+      var nextLevel = nextSession.calibration_level || activeSpeaker.calibrationLevel;
+      if (path.indexOf('/stop') >= 0 &&
+          !(nextLevel && nextLevel.status === 'reset_failed')) {
+        var levelResp = await fetch('./active-speaker/calibration-level', {cache: 'no-store'});
+        if (levelResp.ok) nextLevel = await levelResp.json();
+      }
+      var startupLoad = await fetchActiveSpeakerStartupLoad();
       activeSpeaker = {
         loading: false, action: '',
         payload: activeSpeaker.payload,
-        session: await resp.json(),
+        session: nextSession,
         targets: activeSpeaker.targets,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: nextLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: startupLoad,
         plan: null,
         playback: null,
         error: '',
-        levelDbfs: activeSpeaker.levelDbfs
+        levelDbfs: nextLevel && nextLevel.test_signal ?
+          Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
       };
       outputTopology.readiness = null;
       outputTopology.readinessChecking = '';
@@ -2386,6 +2796,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -2401,6 +2814,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -2408,9 +2824,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     };
     render();
     try {
-      var payload = Object.assign({}, target || {}, {
-        level_dbfs: activeSpeakerLevelConfig().value
-      });
+      var payload = Object.assign({}, target || {});
       var resp = await fetch('./active-speaker/tone-plan', {
         method: 'POST',
         headers: jsonHeaders(),
@@ -2428,6 +2842,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: nextPlan.calibration_level || activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
         plan: nextPlan,
         playback: null,
         error: '',
@@ -2440,6 +2857,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -2456,6 +2876,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       session: activeSpeaker.session,
       targets: activeSpeaker.targets,
       stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -2465,8 +2888,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     try {
       var payload = {
         side: target.side || '',
-        driver_role: target.driver_role || '',
-        level_dbfs: activeSpeakerLevelConfig().value
+        driver_role: target.driver_role || ''
       };
       var resp = await fetch('./active-speaker/play-tone', {
         method: 'POST',
@@ -2482,6 +2904,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: result.session || activeSpeaker.session,
         targets: activeSpeaker.targets,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: result.plan && result.plan.calibration_level || activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
         plan: result.plan || activeSpeaker.plan,
         playback: playback,
         error: '',
@@ -2495,6 +2920,9 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
         session: activeSpeaker.session,
         targets: activeSpeaker.targets,
         stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,

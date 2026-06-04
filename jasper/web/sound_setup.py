@@ -8,14 +8,20 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/environment     read-only active-speaker readiness
   GET  /active-speaker/safe-playback   no-audio safety session state
   GET  /active-speaker/staged-config   latest protected startup config evidence
+  GET  /active-speaker/calibration-level backend-owned level guard
+  GET  /active-speaker/bringup-preflight guided/manual bring-up readiness
+  GET  /active-speaker/startup-load guarded startup-load/rollback state
   GET  /active-speaker/tone-targets    preset-derived channel-test targets
   POST /preview  preview a draft profile without touching live audio
   POST /live-draft apply a draft to live audio without persisting
   POST /audition validate and load a draft/bypass config without persisting
   POST /active-speaker/arm       arm a no-audio active-speaker safety session
   POST /active-speaker/stop      stop the no-audio active-speaker session
+  POST /active-speaker/calibration-level update backend-owned level guard
   POST /active-speaker/playback-readiness no-audio target readiness checklist
   POST /active-speaker/stage-config stage protected startup config
+  POST /active-speaker/load-startup-config load protected startup config, no sound
+  POST /active-speaker/rollback-startup-config restore pre-load config, no sound
   POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
   POST /active-speaker/play-tone run a bounded artifact/audio-gated tone test
   POST /active-speaker/channel-identity mark/clear physical identity evidence
@@ -256,25 +262,33 @@ def _active_speaker_channel_protection_save_payload(
     topology = load_output_topology()
     speaker_group_id = str(raw.get("speaker_group_id") or raw.get("group_id") or "")
     role = str(raw.get("role") or "")
-    protection_present = raw.get("protection_present")
-    if not isinstance(protection_present, bool):
-        raise ValueError("protection_present must be a boolean")
+    requested_status = raw.get("protection_status")
+    if requested_status is not None:
+        if not isinstance(requested_status, str):
+            raise ValueError("protection_status must be a string")
+        protection_status = requested_status
+    else:
+        protection_present = raw.get("protection_present")
+        if not isinstance(protection_present, bool):
+            raise ValueError("protection_present must be a boolean")
+        protection_status = "present" if protection_present else "required_missing"
     updated = set_channel_protection_status(
         topology,
         speaker_group_id=speaker_group_id,
         role=role,
-        protection_status="present" if protection_present else "required_missing",
+        protection_status=protection_status,
     )
     save_output_topology(updated)
     report = channel_identity_report(updated)
     evaluation = updated.evaluation()
     logger.info(
-        "event=sound.active_speaker_channel_protection action=%s "
-        "topology_id=%s group_id=%s role=%s status=%s blockers=%d",
-        "mark_present" if protection_present else "clear_present",
+        "event=sound.active_speaker_channel_protection "
+        "topology_id=%s group_id=%s role=%s protection_status=%s "
+        "status=%s blockers=%d",
         updated.topology_id,
         speaker_group_id,
         role,
+        protection_status,
         report.get("status"),
         len(evaluation.get("blockers") or []),
     )
@@ -779,7 +793,7 @@ def _active_speaker_environment_payload() -> dict[str, Any]:
 
     from jasper.active_speaker.environment import probe_active_speaker_environment
 
-    evidence_path = os.environ.get("JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE")
+    evidence_path = _active_speaker_path_safety_evidence_path()
     report = probe_active_speaker_environment(
         path_safety_evidence_path=evidence_path or None,
     )
@@ -792,6 +806,11 @@ def _active_speaker_environment_payload() -> dict[str, Any]:
         bool(report.get("safe_playback", {}).get("playback_allowed")),
     )
     return report
+
+
+def _active_speaker_path_safety_evidence_path() -> str | None:
+    evidence_path = os.environ.get("JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE")
+    return evidence_path.strip() if evidence_path and evidence_path.strip() else None
 
 
 def _active_speaker_staged_config_payload() -> dict[str, Any]:
@@ -837,6 +856,40 @@ def _active_speaker_safe_playback_payload() -> dict[str, Any]:
     return load_safe_playback_state()
 
 
+def _active_speaker_calibration_level_payload(
+    raw: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return or update the backend-owned active-speaker level guard."""
+
+    from jasper.active_speaker.calibration_level import (
+        load_calibration_level_state,
+        update_calibration_level_state,
+    )
+
+    if raw is None:
+        return load_calibration_level_state()
+    if not isinstance(raw, dict):
+        raise ValueError("calibration level request must be an object")
+    action = str(raw.get("action") or "set")
+    level = raw.get("level_dbfs", raw.get("requested_level_dbfs"))
+    payload = update_calibration_level_state(
+        action=action,
+        requested_level_dbfs=level,
+        observed_mic_dbfs=raw.get("observed_mic_dbfs"),
+        mic_clipping=bool(raw.get("mic_clipping")),
+    )
+    logger.info(
+        "event=sound.active_speaker_calibration_level action=%s "
+        "level_dbfs=%s prior_level_dbfs=%s delta_db=%s issues=%d",
+        payload.get("last_action"),
+        payload.get("test_signal", {}).get("requested_level_dbfs"),
+        payload.get("prior_level_dbfs"),
+        payload.get("applied_delta_db"),
+        len(payload.get("issues") or []),
+    )
+    return payload
+
+
 def _active_speaker_arm_payload() -> dict[str, Any]:
     """Arm a no-audio active-speaker safety session if gates pass."""
 
@@ -858,18 +911,32 @@ def _active_speaker_arm_payload() -> dict[str, Any]:
 def _active_speaker_stop_payload() -> dict[str, Any]:
     """Stop any no-audio active-speaker safety session."""
 
+    from jasper.active_speaker.calibration_level import update_calibration_level_state
     from jasper.active_speaker.playback import stop_tone_playback
     from jasper.active_speaker.safe_playback import stop_safe_playback_session
 
     playback = stop_tone_playback(reason="operator_stop")
-    state = stop_safe_playback_session()
+    state = dict(stop_safe_playback_session())
+    try:
+        state["calibration_level"] = update_calibration_level_state(action="stop")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "event=sound.active_speaker_calibration_level action=stop_reset "
+            "result=error error=%s",
+            type(e).__name__,
+        )
+        state["calibration_level"] = {
+            "status": "reset_failed",
+            "error": str(e),
+        }
     logger.info(
         "event=sound.active_speaker_safe_playback action=stop status=%s "
-        "session_id=%s playback_status=%s audio_emitted=%s",
+        "session_id=%s playback_status=%s audio_emitted=%s level_status=%s",
         state.get("status"),
         state.get("session_id"),
         playback.get("status"),
         bool(playback.get("audio_emitted")),
+        state.get("calibration_level", {}).get("status"),
     )
     return state
 
@@ -887,7 +954,116 @@ def _active_speaker_tone_targets_payload() -> dict[str, Any]:
 
     from jasper.active_speaker.tone_plan import tone_targets_payload
 
-    return tone_targets_payload(_active_speaker_preset())
+    return tone_targets_payload(
+        _active_speaker_preset(),
+        calibration_level=_active_speaker_calibration_level_payload(),
+    )
+
+
+def _active_speaker_bringup_preflight_payload() -> dict[str, Any]:
+    """Return guided-vs-manual active-speaker bring-up readiness."""
+
+    from jasper.active_speaker.bringup import build_bringup_preflight
+    from jasper.active_speaker.playback import tone_backend_status
+
+    topology = load_output_topology()
+    environment_report = _active_speaker_environment_payload()
+    safe_session = _active_speaker_safe_playback_payload()
+    staged_config = _active_speaker_staged_config_payload()
+    calibration_level = _active_speaker_calibration_level_payload()
+    payload = build_bringup_preflight(
+        topology,
+        environment_report=environment_report,
+        safe_session=safe_session,
+        staged_config=staged_config,
+        calibration_level=calibration_level,
+        tone_backend=tone_backend_status(),
+        stop_control_available=True,
+    )
+    logger.info(
+        "event=sound.active_speaker_bringup_preflight status=%s "
+        "manual_available=%s guided_available=%s microphone=%s guard=%s",
+        payload.get("status"),
+        bool(payload.get("manual_bringup_available")),
+        bool(payload.get("guided_calibration_available")),
+        payload.get("microphone", {}).get("status"),
+        payload.get("software_guard", {}).get("status"),
+    )
+    return payload
+
+
+def _active_speaker_startup_load_payload() -> dict[str, Any]:
+    """Return startup load state plus current guarded preflight."""
+
+    from jasper.active_speaker.startup_load import (
+        build_startup_load_preflight,
+        load_startup_load_state,
+    )
+
+    topology = load_output_topology()
+    payload = {
+        "state": load_startup_load_state(),
+        "preflight": build_startup_load_preflight(
+            topology,
+            path_safety_evidence_path=_active_speaker_path_safety_evidence_path(),
+        ),
+    }
+    logger.info(
+        "event=sound.active_speaker_startup_load status=%s preflight=%s "
+        "rollback_available=%s",
+        payload["state"].get("status"),
+        payload["preflight"].get("status"),
+        bool(payload["state"].get("rollback_available")),
+    )
+    return payload
+
+
+async def _active_speaker_load_startup_config_payload(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Load the protected startup config through the guarded backend."""
+
+    from jasper.active_speaker.startup_load import load_protected_startup_config
+
+    topology = load_output_topology()
+    cam = camilla_factory()
+    payload = await load_protected_startup_config(
+        topology,
+        load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
+        get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+        path_safety_evidence_path=_active_speaker_path_safety_evidence_path(),
+    )
+    logger.info(
+        "event=sound.active_speaker_startup_load action=load status=%s "
+        "preflight=%s rollback_available=%s",
+        payload.get("load", {}).get("status"),
+        payload.get("preflight", {}).get("status"),
+        bool(payload.get("load", {}).get("rollback_available")),
+    )
+    return payload
+
+
+async def _active_speaker_rollback_startup_config_payload(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Rollback the protected startup config through the guarded backend."""
+
+    from jasper.active_speaker.startup_load import rollback_protected_startup_config
+
+    cam = camilla_factory()
+    payload = await rollback_protected_startup_config(
+        load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
+        get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+    )
+    logger.info(
+        "event=sound.active_speaker_startup_load action=rollback status=%s "
+        "active=%s",
+        payload.get("rollback", {}).get("status"),
+        payload.get("rollback", {}).get("active_config_path"),
+    )
+    return payload
 
 
 def _active_speaker_tone_plan_payload(raw: dict[str, Any]) -> dict[str, Any]:
@@ -900,13 +1076,14 @@ def _active_speaker_tone_plan_payload(raw: dict[str, Any]) -> dict[str, Any]:
     preset = _active_speaker_preset()
     environment_report = _active_speaker_environment_payload()
     safe_session = load_safe_playback_state()
+    level = _active_speaker_calibration_level_payload()
     plan = build_safe_tone_plan(
         preset,
         safe_session=safe_session,
         environment_report=environment_report,
         side=raw.get("side") or target.get("side"),
         driver_role=raw.get("driver_role") or target.get("driver_role"),
-        requested_level_dbfs=raw.get("level_dbfs"),
+        requested_level_dbfs=level.get("test_signal", {}).get("requested_level_dbfs"),
         requested_duration_ms=raw.get("duration_ms"),
     )
     logger.info(
@@ -931,7 +1108,6 @@ def _active_speaker_playback_readiness_payload(raw: dict[str, Any]) -> dict[str,
 
     if not isinstance(raw, dict):
         raise ValueError("playback readiness request must be an object")
-    from jasper.active_speaker.calibration_level import calibration_level_payload
     from jasper.active_speaker.playback import tone_backend_status
     from jasper.active_speaker.readiness import build_playback_readiness
     from jasper.active_speaker.safe_playback import load_safe_playback_state
@@ -940,9 +1116,7 @@ def _active_speaker_playback_readiness_payload(raw: dict[str, Any]) -> dict[str,
     topology = load_output_topology()
     environment_report = _active_speaker_environment_payload()
     safe_session = load_safe_playback_state()
-    calibration_level = calibration_level_payload(
-        requested_level_dbfs=raw.get("level_dbfs"),
-    )
+    calibration_level = _active_speaker_calibration_level_payload()
     report = build_playback_readiness(
         topology,
         speaker_group_id=raw.get("speaker_group_id") or target.get("speaker_group_id"),
@@ -993,6 +1167,7 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
     if topology_target:
         topology = load_output_topology()
         readiness = _active_speaker_playback_readiness_payload(raw)
+        level = _active_speaker_calibration_level_payload()
         plan = build_topology_tone_plan(
             topology,
             readiness_report=readiness,
@@ -1004,7 +1179,9 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
                 or target.get("role")
                 or target.get("driver_role")
             ),
-            requested_level_dbfs=raw.get("level_dbfs"),
+            requested_level_dbfs=level.get("test_signal", {}).get(
+                "requested_level_dbfs"
+            ),
             requested_duration_ms=raw.get("duration_ms"),
         )
     else:
@@ -1134,6 +1311,33 @@ def _make_handler(
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
+            if path == "/active-speaker/calibration-level":
+                try:
+                    self._send_json(_active_speaker_calibration_level_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_calibration_level result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
+            if path == "/active-speaker/bringup-preflight":
+                try:
+                    self._send_json(_active_speaker_bringup_preflight_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_bringup_preflight result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
+            if path == "/active-speaker/startup-load":
+                try:
+                    self._send_json(_active_speaker_startup_load_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_startup_load result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
             if path == "/active-speaker/staged-config":
                 try:
                     self._send_json(_active_speaker_staged_config_payload())
@@ -1173,10 +1377,13 @@ def _make_handler(
                 "/settings",
                 "/active-speaker/arm",
                 "/active-speaker/stop",
+                "/active-speaker/calibration-level",
                 "/active-speaker/channel-identity",
                 "/active-speaker/channel-protection",
                 "/active-speaker/playback-readiness",
                 "/active-speaker/stage-config",
+                "/active-speaker/load-startup-config",
+                "/active-speaker/rollback-startup-config",
                 "/active-speaker/tone-plan",
                 "/active-speaker/play-tone",
                 "/output-topology",
@@ -1196,6 +1403,9 @@ def _make_handler(
                     return
                 if path == "/active-speaker/stop":
                     self._send_json(_active_speaker_stop_payload())
+                    return
+                if path == "/active-speaker/calibration-level":
+                    self._send_json(_active_speaker_calibration_level_payload(raw))
                     return
                 if path == "/active-speaker/channel-identity":
                     try:
@@ -1228,6 +1438,24 @@ def _make_handler(
                     return
                 if path == "/active-speaker/stage-config":
                     self._send_json(_active_speaker_stage_config_payload(raw))
+                    return
+                if path == "/active-speaker/load-startup-config":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_load_startup_config_payload(
+                                camilla_factory=camilla_factory,
+                            )
+                        )
+                    )
+                    return
+                if path == "/active-speaker/rollback-startup-config":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_rollback_startup_config_payload(
+                                camilla_factory=camilla_factory,
+                            )
+                        )
+                    )
                     return
                 if path == "/active-speaker/tone-plan":
                     self._send_json(_active_speaker_tone_plan_payload(raw))
