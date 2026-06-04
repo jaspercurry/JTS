@@ -24,6 +24,7 @@ from .camilla_yaml import (
     PROTECTIVE_TWEETER_HP_MULTIPLIER,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
+    STARTUP_MUTE_GAIN_DB,
     emit_active_speaker_startup_config,
 )
 from .environment import classify_camilla_config_text
@@ -179,6 +180,14 @@ def _channels_by_role(group: SpeakerGroup | None) -> dict[str, SpeakerChannel]:
     return {channel.role: channel for channel in group.channels}
 
 
+def _software_guard_requested(group: SpeakerGroup | None) -> bool:
+    return any(
+        channel.role == "tweeter"
+        and channel.protection_status == "software_guard_requested"
+        for channel in (group.channels if group else ())
+    )
+
+
 def _resolve_playback_device(
     topology: OutputTopology,
     *,
@@ -203,6 +212,229 @@ def _protective_hp_hz(preset: ActiveSpeakerPreset) -> float | None:
     return max(fc_values) * PROTECTIVE_TWEETER_HP_MULTIPLIER
 
 
+def _parse_scalar(value: str) -> Any:
+    cleaned = value.split("#", 1)[0].strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        return cleaned[1:-1]
+    if cleaned in {"true", "false"}:
+        return cleaned == "true"
+    try:
+        if "." in cleaned:
+            return float(cleaned)
+        return int(cleaned)
+    except ValueError:
+        return cleaned
+
+
+def _parse_inline_mapping(value: str) -> dict[str, Any]:
+    value = value.strip()
+    if not (value.startswith("{") and value.endswith("}")):
+        return {}
+    out: dict[str, Any] = {}
+    for item in value[1:-1].split(","):
+        if ":" not in item:
+            continue
+        key, raw_value = item.split(":", 1)
+        out[key.strip()] = _parse_scalar(raw_value)
+    return out
+
+
+def _parse_inline_list(value: str) -> list[Any]:
+    value = value.strip()
+    if not (value.startswith("[") and value.endswith("]")):
+        return []
+    return [
+        _parse_scalar(item)
+        for item in value[1:-1].split(",")
+        if item.strip()
+    ]
+
+
+def _top_level_sections(text: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not line.startswith(" ") and stripped.endswith(":"):
+            current = stripped[:-1]
+            sections[current] = []
+            continue
+        if current:
+            sections[current].append(line)
+    return sections
+
+
+def _parse_generated_filters(text: str) -> dict[str, dict[str, Any]]:
+    filters: dict[str, dict[str, Any]] = {}
+    current_name: str | None = None
+    in_parameters = False
+    for line in _top_level_sections(text).get("filters", []):
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+        if indent == 2 and stripped.endswith(":"):
+            current_name = stripped[:-1]
+            filters[current_name] = {"parameters": {}}
+            in_parameters = False
+            continue
+        if not current_name or ":" not in stripped:
+            continue
+        key, raw_value = stripped.split(":", 1)
+        key = key.strip()
+        if indent == 4 and key == "type":
+            filters[current_name]["type"] = str(_parse_scalar(raw_value))
+            in_parameters = False
+            continue
+        if indent == 4 and key == "parameters":
+            filters[current_name]["parameters"].update(_parse_inline_mapping(raw_value))
+            in_parameters = True
+            continue
+        if indent > 4 and in_parameters:
+            filters[current_name]["parameters"][key] = _parse_scalar(raw_value)
+    return filters
+
+
+def _parse_generated_pipeline_filters(text: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for line in _top_level_sections(text).get("pipeline", []):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("- "):
+            if current:
+                items.append(current)
+            current = {}
+            stripped = stripped[2:]
+        if current is None or ":" not in stripped:
+            continue
+        key, raw_value = stripped.split(":", 1)
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if raw_value.startswith("["):
+            current[key] = _parse_inline_list(raw_value)
+        else:
+            current[key] = _parse_scalar(raw_value)
+    if current:
+        items.append(current)
+    return [item for item in items if item.get("type") == "Filter"]
+
+
+def _float_matches(value: Any, expected: float) -> bool:
+    try:
+        return abs(float(value) - expected) < 0.0001
+    except (TypeError, ValueError):
+        return False
+
+
+def _filter_param_matches(
+    filters: dict[str, dict[str, Any]],
+    name: str,
+    *,
+    filter_type: str,
+    params: dict[str, Any],
+) -> bool:
+    filter_def = filters.get(name, {})
+    if filter_def.get("type") != filter_type:
+        return False
+    actual = filter_def.get("parameters", {})
+    for key, expected in params.items():
+        value = actual.get(key)
+        if isinstance(expected, float):
+            if not _float_matches(value, expected):
+                return False
+        elif value != expected:
+            return False
+    return True
+
+
+def _pipeline_contains_chain(
+    pipeline_filters: list[dict[str, Any]],
+    *,
+    channels: set[int],
+    required_names: tuple[str, ...],
+) -> bool:
+    for item in pipeline_filters:
+        item_channels = {
+            int(channel)
+            for channel in item.get("channels", [])
+            if isinstance(channel, int)
+        }
+        item_names = tuple(str(name) for name in item.get("names", []))
+        if item_channels == channels and all(name in item_names for name in required_names):
+            return True
+    return False
+
+
+def _software_guard_evidence(
+    yaml: str,
+    *,
+    preset: ActiveSpeakerPreset,
+) -> dict[str, Any]:
+    protective_hp_hz = _protective_hp_hz(preset)
+    filters = _parse_generated_filters(yaml)
+    pipeline_filters = _parse_generated_pipeline_filters(yaml)
+    tweeter_channels = {
+        output.index
+        for output in preset.channel_map.outputs
+        if output.driver_role == "tweeter"
+    }
+    checks = {
+        "startup_muted": _filter_param_matches(
+            filters,
+            "as_tweeter_startup_mute",
+            filter_type="Gain",
+            params={"gain": STARTUP_MUTE_GAIN_DB, "mute": True},
+        ),
+        "protective_highpass": (
+            protective_hp_hz is not None
+            and _filter_param_matches(
+                filters,
+                "as_tweeter_protective_hp",
+                filter_type="BiquadCombo",
+                params={
+                    "type": "LinkwitzRileyHighpass",
+                    "freq": protective_hp_hz,
+                    "order": 4,
+                },
+            )
+        ),
+        "startup_headroom": _filter_param_matches(
+            filters,
+            "active_startup_headroom",
+            filter_type="Gain",
+            params={"gain": -STARTUP_HEADROOM_DB},
+        ),
+        "startup_limiter": _filter_param_matches(
+            filters,
+            "as_tweeter_startup_limiter",
+            filter_type="Limiter",
+            params={"clip_limit": STARTUP_LIMITER_CLIP_LIMIT_DB},
+        ),
+        "tweeter_pipeline_guarded": _pipeline_contains_chain(
+            pipeline_filters,
+            channels=tweeter_channels,
+            required_names=(
+                "as_tweeter_protective_hp",
+                "as_tweeter_startup_mute",
+                "as_tweeter_startup_limiter",
+            ),
+        ),
+    }
+    return {
+        "mode": "software_guard_requested",
+        "no_load": True,
+        "no_playback": True,
+        "protective_highpass_hz": protective_hp_hz,
+        "startup_headroom_db": STARTUP_HEADROOM_DB,
+        "limiter_clip_limit_db": STARTUP_LIMITER_CLIP_LIMIT_DB,
+        "tweeter_channels": sorted(tweeter_channels),
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
+
+
 def _bind_preset_to_topology(
     preset: ActiveSpeakerPreset,
     topology: OutputTopology,
@@ -210,19 +442,30 @@ def _bind_preset_to_topology(
 ) -> tuple[ActiveSpeakerPreset | None, list[dict[str, str]], list[dict[str, Any]]]:
     issues: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
+    channels = _channels_by_role(group)
+    tweeter = channels.get("tweeter")
+    software_guard_requested = _software_guard_requested(group)
     evaluation = topology.evaluation()
-    topology_valid = not evaluation.get("blockers")
+    topology_blockers = [
+        issue for issue in evaluation.get("blockers", [])
+        if not (
+            software_guard_requested
+            and isinstance(issue, dict)
+            and issue.get("code") == "tweeter_software_guard_requested"
+        )
+    ]
+    topology_valid = not topology_blockers
     gates.append(_gate(
         "topology_valid",
-        label="Saved output setup has no backend blockers",
+        label="Saved output setup has no staging blockers",
         passed=topology_valid,
         message=(
-            "Saved output setup is valid"
+            "Saved output setup can be staged for no-load review"
             if topology_valid
             else "Resolve saved output setup blockers before staging active DSP"
         ),
     ))
-    for issue in evaluation.get("blockers", []):
+    for issue in topology_blockers:
         if isinstance(issue, dict):
             issues.append({
                 "severity": str(issue.get("severity", "blocker")),
@@ -266,7 +509,6 @@ def _bind_preset_to_topology(
             "stage protected config requires one saved mono active 2-way speaker group",
         ))
 
-    channels = _channels_by_role(group)
     outputs: list[OutputChannel] = []
     roles = required_driver_roles(preset.way_count) if preset_shape_ok else ()
     missing_roles = [role for role in roles if role not in channels]
@@ -358,32 +600,48 @@ def _bind_preset_to_topology(
             f"first protected staging slice requires {expected_role_order}",
         ))
 
-    tweeter = channels.get("tweeter")
-    tweeter_protected = bool(
+    tweeter_guard_declared = bool(
         tweeter
         and tweeter.startup_muted
         and tweeter.protection_required
-        and tweeter.protection_status == "present"
+        and tweeter.protection_status in {"present", "software_guard_requested"}
     )
     gates.append(_gate(
-        "tweeter_protection_present",
-        label="Compression-driver protection is marked present",
-        passed=tweeter_protected,
+        "tweeter_guard_declared",
+        label="Compression-driver guard mode is explicit",
+        passed=tweeter_guard_declared,
         message=(
             "Compression-driver protection is present"
-            if tweeter_protected
-            else "Mark the F110M/compression-driver protection present before staging"
+            if tweeter and tweeter.protection_status == "present"
+            else (
+                "Software-only compression-driver guard was requested"
+                if software_guard_requested
+                else "Choose physical protection or software-guarded bring-up before staging"
+            )
         ),
     ))
-    if not tweeter_protected:
+    if not tweeter_guard_declared:
         issues.append(_issue(
             "blocker",
             "tweeter_protection_required",
-            "compression-driver protection must be marked present before staging",
+            "compression-driver guard mode must be explicit before staging",
+        ))
+    elif software_guard_requested:
+        issues.append(_issue(
+            "warning",
+            "software_tweeter_guard_requested",
+            (
+                "software-only compression-driver guard requested; staging may "
+                "write a no-load candidate but cannot authorize playback"
+            ),
         ))
 
     if issues:
-        return None, issues, gates
+        blocker_count = sum(
+            1 for issue in issues if issue.get("severity") == "blocker"
+        )
+        if blocker_count:
+            return None, issues, gates
 
     return replace(
         preset,
@@ -437,8 +695,11 @@ def stage_protected_startup_config(
     meta_path = staged_metadata_path(metadata_path)
     validation: dict[str, Any] = {"status": "skipped", "reason": "not_generated"}
     classification: dict[str, Any] = {}
+    software_guard: dict[str, Any] = {}
+    software_guard_requested = _software_guard_requested(group)
+    blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
 
-    if not issues and bound_preset and resolved_playback_device:
+    if blocker_count == 0 and bound_preset and resolved_playback_device:
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             yaml = emit_active_speaker_startup_config(
@@ -471,6 +732,30 @@ def stage_protected_startup_config(
                         "code": str(issue.get("code", "config_issue")),
                         "message": str(issue.get("message", "generated config issue")),
                     })
+            if software_guard_requested:
+                software_guard = _software_guard_evidence(yaml, preset=bound_preset)
+                gates.append(_gate(
+                    "software_tweeter_guard_evidence",
+                    label="Software compression-driver guard is present in generated config",
+                    passed=bool(software_guard.get("passed")),
+                    message=(
+                        "Generated config keeps the compression-driver path muted, "
+                        "high-passed, limited, and headroom-clamped"
+                        if software_guard.get("passed")
+                        else "Generated config is missing required software guard evidence"
+                    ),
+                ))
+                if not software_guard.get("passed"):
+                    missing = sorted(
+                        key for key, passed in software_guard.get("checks", {}).items()
+                        if not passed
+                    )
+                    issues.append(_issue(
+                        "blocker",
+                        "software_tweeter_guard_incomplete",
+                        "software compression-driver guard is incomplete: "
+                        + ", ".join(missing),
+                    ))
             validation = (
                 validate(out_path).to_dict()
                 if run_config_check
@@ -566,12 +851,13 @@ def stage_protected_startup_config(
             "tweeter_protective_highpass_hz": _protective_hp_hz(preset),
             "validation": validation,
         },
+        "software_guard": software_guard,
         "load": {
             "load_allowed": False,
-            "load_gate": "not_implemented",
+            "load_gate": "startup_load_preflight_required",
             "next_step": (
-                "Loading the protected graph remains a separate lab-gated slice; "
-                "this step only stages and validates the candidate."
+                "Run the guarded startup-load preflight before CamillaDSP is "
+                "allowed to reload this staged graph."
             ),
         },
         "required_gates": gates,

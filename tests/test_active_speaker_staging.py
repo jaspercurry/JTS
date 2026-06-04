@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import jasper.active_speaker.staging as staging_mod
 from jasper.active_speaker import (
     STAGED_STARTUP_CONFIG_KIND,
     load_active_speaker_preset,
@@ -92,6 +93,7 @@ def test_stage_protected_startup_config_writes_muted_candidate(
     assert payload["config"]["validation"]["status"] == "valid"
     assert payload["config"]["tweeter_protective_highpass_hz"] == 5000
     assert payload["load"]["load_allowed"] is False
+    assert payload["load"]["load_gate"] == "startup_load_preflight_required"
     assert payload["issues"] == []
     assert "preset_id=epique-e150he44-eminence-f110m8-safe-v1" in text
     assert "split_active_2way" in text
@@ -121,6 +123,88 @@ def test_stage_protected_startup_config_blocks_missing_tweeter_protection(
         issue["code"] for issue in payload["issues"]
     }
     assert payload["config"]["validation"]["status"] == "skipped"
+
+
+def test_stage_protected_startup_config_allows_software_guard_request_no_load_candidate(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "active_staged.yml"
+    meta = tmp_path / "active_staged.json"
+
+    payload = stage_protected_startup_config(
+        _topology(protection_status="software_guard_requested"),
+        config_path=out,
+        metadata_path=meta,
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+    text = out.read_text(encoding="utf-8")
+    loaded = load_staged_startup_config(metadata_path=meta)
+    codes = {issue["code"]: issue["severity"] for issue in payload["issues"]}
+    guard_gate = next(
+        gate for gate in payload["required_gates"]
+        if gate["id"] == "software_tweeter_guard_evidence"
+    )
+
+    assert payload["status"] == "staged"
+    assert payload["load"]["load_allowed"] is False
+    assert payload["software_guard"]["passed"] is True
+    assert payload["software_guard"]["no_load"] is True
+    assert payload["software_guard"]["no_playback"] is True
+    assert all(payload["software_guard"]["checks"].values())
+    assert guard_gate["passed"] is True
+    assert codes == {"software_tweeter_guard_requested": "warning"}
+    assert "as_tweeter_protective_hp" in text
+    assert "as_tweeter_startup_mute" in text
+    assert "as_tweeter_startup_limiter" in text
+    assert loaded["status"] == "staged"
+    assert loaded["software_guard"]["passed"] is True
+
+
+def test_stage_protected_startup_config_blocks_incomplete_software_guard_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    original_emit = staging_mod.emit_active_speaker_startup_config
+
+    def corrupt_tweeter_mute(*args, **kwargs):
+        text = original_emit(*args, **kwargs)
+        text = text.replace(
+            (
+                "  as_tweeter_startup_mute:\n"
+                "    type: Gain\n"
+                "    parameters: { gain: -120.0000, inverted: false, mute: true }"
+            ),
+            (
+                "  as_tweeter_startup_mute:\n"
+                "    type: Gain\n"
+                "    parameters: { gain: -120.0000, inverted: false, mute: false }"
+            ),
+        )
+        out_path = kwargs.get("out_path")
+        if out_path is not None:
+            Path(out_path).write_text(text, encoding="utf-8")
+        return text
+
+    monkeypatch.setattr(
+        staging_mod,
+        "emit_active_speaker_startup_config",
+        corrupt_tweeter_mute,
+    )
+    payload = stage_protected_startup_config(
+        _topology(protection_status="software_guard_requested"),
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["software_guard"]["passed"] is False
+    assert payload["software_guard"]["checks"]["startup_muted"] is False
+    assert "software_tweeter_guard_incomplete" in {
+        issue["code"] for issue in payload["issues"]
+    }
 
 
 def test_stage_protected_startup_config_blocks_noncontiguous_outputs(
