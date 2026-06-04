@@ -57,6 +57,34 @@ blank SD card to working speaker.
 4. **Push and open a PR** against `main`. Fill in the template.
 5. **No direct pushes to main** — even one-line fixes go through PR.
 
+### Branch protection
+
+`main` is protected: the `pytest` GitHub Actions check (which also runs
+`ruff check .`) **must pass before any PR can merge**, force-pushes and
+branch deletion are blocked, and the rule is enforced for admins too — so
+nobody, including the maintainer, can merge into a red `main`. There is no
+required reviewer, so you can self-merge your own green PR.
+
+Two operational notes:
+
+- **The required check is named `pytest`.** If you ever rename that job in
+  `.github/workflows/tests.yml`, update the branch-protection rule in the
+  same change, or every merge will block on a check that never reports.
+- **Emergency override.** If CI is wedged or GitHub Actions is down and a
+  fix genuinely cannot wait, an admin can temporarily lift protection at
+  `Settings → Branches → main`, merge, and re-enable it immediately — or
+  reapply the rule via the API:
+
+  ```sh
+  gh api -X PUT repos/<owner>/<repo>/branches/main/protection \
+    -H "Accept: application/vnd.github+json" --input - <<'JSON'
+  {"required_status_checks":{"strict":false,"contexts":["pytest"]},
+   "enforce_admins":true,"required_pull_request_reviews":null,
+   "restrictions":null,"allow_force_pushes":false,"allow_deletions":false,
+   "required_conversation_resolution":true}
+  JSON
+  ```
+
 ## Tests
 
 - **Hardware-free pytest** (`pytest`) — required green before merge.
