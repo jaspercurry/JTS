@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Make the USB-gadget device name (as a connected Mac/PC shows it in its
+# audio device list) track the speaker's configured Speaker Name.
+#
+# Background: the host displays the UAC2 AudioStreaming interface string,
+# which the kernel hardcodes as "Playback Inactive" in usb_f_uac2.ko and
+# does NOT expose via configfs on 6.12. The only lever is the compiled
+# module. We build a name-patched copy into the kernel's `updates/`
+# directory (which modprobe searches before `kernel/`), so when the
+# gadget function is created the patched module autoloads instead of the
+# stock one. See deploy/usbsink/uac2_name_patch.py for the byte transform
+# and docs/HANDOFF-usbsink.md "Device name" for the full design.
+#
+# Runs as jasper-usbsink-init's ExecStartPre (best-effort, leading `-`):
+# a failure here must NEVER block USB audio — it only means the host
+# shows the default "Playback Inactive" label. This single hook covers
+# every path that needs the name re-applied:
+#   - boot / feature-enable      (override absent       -> build)
+#   - rename via /system wizard  (name changed in marker -> rebuild + reload)
+#   - kernel update + reboot     (new kernel, no override -> rebuild)
+#
+# Idempotent and cheap in steady state: a marker (kernel ver + name +
+# stock-module hash) lets an unchanged boot exit in milliseconds without
+# touching the module tree, running depmod, or reloading anything.
+#
+# Mirrors the deploy/bin/jasper-wifi-guardian self-heal idiom: oneshot,
+# structured event= logs, no-op steady state, degrade-don't-break.
+set -uo pipefail
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+PATCHER="${SELF_DIR}/uac2_name_patch.py"
+SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
+
+KVER="$(uname -r)"
+MODDIR="/lib/modules/${KVER}"
+UPDATES_DIR="${MODDIR}/updates"
+OVERRIDE="${UPDATES_DIR}/usb_f_uac2.ko"
+MARKER="${UPDATES_DIR}/.jasper-usbsink-name.marker"
+
+emit() {  # emit <outcome> [k=v ...]
+    local outcome="$1"; shift || true
+    printf 'event=usbsink_name.%s %s\n' "${outcome}" "$*" >&2
+}
+
+# --- desired name -----------------------------------------------------
+# Seed from the inherited environment (systemd loads speaker_name.env via
+# EnvironmentFile=) so a transiently-unreadable file still yields the real
+# name; then re-source the file as the single source of truth so it wins.
+NAME="${JASPER_SPEAKER_NAME:-JTS}"
+if [[ -r "${SPEAKER_NAME_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${SPEAKER_NAME_FILE}" 2>/dev/null || true
+    NAME="${JASPER_SPEAKER_NAME:-JTS}"
+fi
+
+# --- locate the STOCK module (always under kernel/, never updates/) ---
+STOCK="$(find "${MODDIR}/kernel" -name 'usb_f_uac2.ko*' 2>/dev/null | head -n1)"
+if [[ -z "${STOCK}" ]]; then
+    emit "no_stock_module" "kver=${KVER}"
+    exit 0   # nothing we can do; gadget-up still brings up USB audio
+fi
+
+if [[ ! -r "${PATCHER}" ]]; then
+    emit "patcher_missing" "path=${PATCHER}"
+    exit 0
+fi
+
+STOCK_HASH="$(sha256sum "${STOCK}" 2>/dev/null | awk '{print $1}')"
+DESIRED_MARKER="${KVER}	${NAME}	${STOCK_HASH}"
+
+# --- steady-state fast path ------------------------------------------
+if [[ -f "${OVERRIDE}" && -f "${MARKER}" ]] \
+   && [[ "$(cat "${MARKER}" 2>/dev/null)" == "${DESIRED_MARKER}" ]]; then
+    emit "steady_state" "name=\"${NAME}\" kver=${KVER}"
+    exit 0
+fi
+
+# --- (re)build the override ------------------------------------------
+mkdir -p "${UPDATES_DIR}"
+TMP="$(mktemp -d /tmp/usbsink-name.XXXXXX)" || { emit "mktemp_failed"; exit 0; }
+trap 'rm -rf "${TMP}"' EXIT
+RAW="${TMP}/usb_f_uac2.ko"
+
+case "${STOCK}" in
+    *.xz)  xz   -dc "${STOCK}" > "${RAW}" 2>/dev/null ;;
+    *.zst) zstd -dc "${STOCK}" > "${RAW}" 2>/dev/null ;;
+    *.gz)  gzip -dc "${STOCK}" > "${RAW}" 2>/dev/null ;;
+    *)     cp "${STOCK}" "${RAW}" ;;
+esac
+if [[ ! -s "${RAW}" ]]; then
+    emit "decompress_failed" "stock=${STOCK}"
+    exit 0
+fi
+
+# Build into a temp file first, validate it (integrity gate below),
+# and only then copy it into the live `updates/` path. modprobe reads
+# the override solely during gadget-up, which runs strictly after this
+# ExecStartPre returns, so there is no concurrent reader to tear.
+OUT_TMP="${TMP}/usb_f_uac2.override.ko"
+summary="$(/usr/bin/python3 "${PATCHER}" "${RAW}" "${NAME}" "${OUT_TMP}" 2>&1)"
+rc=$?
+
+if [[ ${rc} -ne 0 ]]; then
+    # Primary string not found (rc=3) or error — leave stock in charge.
+    # Drop any stale override so the unpatched module autoloads and the
+    # host shows the default label rather than a wrong/old name.
+    emit "patch_failed" "rc=${rc} ${summary}"
+    if [[ -f "${OVERRIDE}" ]]; then
+        rm -f "${OVERRIDE}" "${MARKER}"
+        depmod "${KVER}" 2>/dev/null || true
+        emit "override_removed" "kver=${KVER}"
+    fi
+    exit 0
+fi
+
+# Integrity gate before publishing: the patcher only overwrites
+# equal-length byte spans, so a correct override is a valid ELF whose
+# size equals the decompressed stock. Verify both before installing.
+# This is what makes the "degrades cosmetically, never breaks USB audio"
+# promise hold even for a truncated/partial write — a bad override is
+# never published, so the stock module autoloads and the host shows the
+# default label instead of the gadget failing to come up.
+raw_size=$(stat -c%s "${RAW}" 2>/dev/null || echo 0)
+out_size=$(stat -c%s "${OUT_TMP}" 2>/dev/null || echo 0)
+magic=$(head -c4 "${OUT_TMP}" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+if [[ "${out_size}" != "${raw_size}" || "${magic}" != "7f454c46" ]]; then
+    emit "override_invalid" "out_size=${out_size} stock_size=${raw_size} magic=${magic}"
+    if [[ -f "${OVERRIDE}" ]]; then
+        rm -f "${OVERRIDE}" "${MARKER}"
+        depmod "${KVER}" 2>/dev/null || true
+        emit "override_removed" "kver=${KVER}"
+    fi
+    exit 0
+fi
+
+install -m 0644 "${OUT_TMP}" "${OVERRIDE}"
+depmod "${KVER}" 2>/dev/null || true
+printf '%s' "${DESIRED_MARKER}" > "${MARKER}"
+emit "applied" "name=\"${NAME}\" kver=${KVER} ${summary}"
+
+# --- force the freshly-patched module to load ------------------------
+# We only get here when the marker was stale (enable, rename, or kernel
+# change), so any loaded usb_f_uac2 carries a stale string. Unload it so
+# gadget-up's function-create autoloads the new override. The gadget is
+# down at ExecStartPre time (init's stop ran gadget-down first), so the
+# module's refcount is 0 and rmmod is safe. Best-effort: if it sticks,
+# the host just shows the old name until the next bring-up — cosmetic.
+if lsmod | awk '{print $1}' | grep -qx 'usb_f_uac2'; then
+    if rmmod usb_f_uac2 2>/dev/null; then
+        emit "reloaded" "detail=stale_module_unloaded"
+    else
+        emit "reload_skipped" "detail=usb_f_uac2_busy"
+    fi
+fi
+
+exit 0
