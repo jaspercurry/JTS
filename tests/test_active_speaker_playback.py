@@ -100,6 +100,17 @@ def _plan() -> dict:
     )
 
 
+def _with_loaded_startup(plan: dict) -> dict:
+    return {
+        **plan,
+        "safety": {
+            **(plan.get("safety") if isinstance(plan.get("safety"), dict) else {}),
+            "protected_startup_loaded": True,
+            "startup_load_status": "loaded",
+        },
+    }
+
+
 def test_wav_artifact_backend_renders_only_target_output_channel(
     tmp_path: Path,
 ) -> None:
@@ -382,7 +393,7 @@ def test_aplay_backend_runs_generated_artifact_when_audio_is_authorized(
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     plan = {
-        **_plan(),
+        **_with_loaded_startup(_plan()),
         "playback_allowed": True,
         "would_play": True,
         "tone_playback_implemented": True,
@@ -420,7 +431,7 @@ def test_audio_backend_refuses_tweeter_in_first_audible_slice(
     tmp_path: Path,
 ) -> None:
     plan = {
-        **_plan(),
+        **_with_loaded_startup(_plan()),
         "playback_allowed": True,
         "would_play": True,
         "tone_playback_implemented": True,
@@ -440,6 +451,40 @@ def test_audio_backend_refuses_tweeter_in_first_audible_slice(
 
     assert result["status"] == "blocked"
     assert "tweeter_audio_not_enabled" in {
+        issue["code"] for issue in result["issues"]
+    }
+
+
+def test_audio_backend_requires_loaded_protected_startup_config(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        **_plan(),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+        "target": {
+            **_plan()["target"],
+            "driver_role": "woofer",
+            "output_index": 0,
+        },
+    }
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["audio_emitted"] is False
+    assert "protected_startup_config_not_loaded" in {
         issue["code"] for issue in result["issues"]
     }
 

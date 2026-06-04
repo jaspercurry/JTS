@@ -10,11 +10,16 @@ from typing import Any
 from jasper.active_speaker import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_startup_config
 from jasper.active_speaker.path_safety import (
+    build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
     requirements_payload,
+    write_path_safety_evidence,
 )
+from jasper.active_speaker.calibration_level import load_calibration_level_state
 from jasper.active_speaker.environment import probe_active_speaker_environment
+from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.dsp_apply import validate_camilla_config
+from jasper.output_topology import load_output_topology
 
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
@@ -164,6 +169,29 @@ def _cmd_path_audit(args: argparse.Namespace) -> int:
     return 0 if payload["requirements_met"] else 1
 
 
+def _cmd_path_probe(args: argparse.Namespace) -> int:
+    evidence = build_startup_load_path_safety_evidence(
+        load_output_topology(args.topology),
+        staged_config=load_staged_startup_config(),
+        calibration_level=load_calibration_level_state(),
+        current_config_path=args.current_config,
+    )
+    evidence_path = write_path_safety_evidence(evidence, path=args.output)
+    report = evaluate_path_safety_evidence(evidence)
+    payload = {
+        "evidence_path": str(evidence_path),
+        "report": report,
+        "evidence": evidence,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Wrote path-safety evidence: {evidence_path}")
+        _print_path_audit_summary(report)
+        print("No audio was emitted and CamillaDSP was not reloaded.")
+    return 0 if report["ok_to_load_active_config"] else 1
+
+
 def _cmd_environment_probe(args: argparse.Namespace) -> int:
     payload = probe_active_speaker_environment(
         config_path=args.config,
@@ -237,6 +265,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     path_audit.add_argument("--json", action="store_true")
     path_audit.set_defaults(func=_cmd_path_audit)
+
+    path_probe = sub.add_parser(
+        "path-probe",
+        help="generate no-audio startup-load path-safety evidence",
+    )
+    path_probe.add_argument(
+        "--topology",
+        help="optional output-topology JSON path (default: JTS output topology state)",
+    )
+    path_probe.add_argument(
+        "--current-config",
+        help=(
+            "current CamillaDSP config path to treat as the rollback target; "
+            "omitting it writes blocked evidence"
+        ),
+    )
+    path_probe.add_argument(
+        "--output",
+        "-o",
+        help=(
+            "where to write path-safety evidence "
+            "(default: JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE or /var/lib/jasper)"
+        ),
+    )
+    path_probe.add_argument("--json", action="store_true")
+    path_probe.set_defaults(func=_cmd_path_probe)
 
     environment = sub.add_parser(
         "environment-probe",

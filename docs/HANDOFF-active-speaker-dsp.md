@@ -52,19 +52,21 @@
 > `JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
 > `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
 > `JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`. Even then, the audible path is
-> short, clamped, topology-readiness-gated, and non-tweeter only in this
-> slice. The backend also enforces its own artifact envelope (48 kHz max,
-> 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps a small rolling set
-> of generated artifacts so `/var/lib/jasper` cannot grow without bound
-> during repeated checks.
+> short, clamped, topology-readiness-gated, protected-startup-load-gated, and
+> non-tweeter only in this slice. The backend also enforces its own artifact
+> envelope (48 kHz max, 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps
+> a small rolling set of generated artifacts so `/var/lib/jasper` cannot grow
+> without bound during repeated checks.
 > `jasper.active_speaker.readiness` now provides the read-only
 > `/sound/active-speaker/playback-readiness` gate for one saved topology
 > target. It combines safe-session state, output topology, channel
 > identity, tweeter protection, clock-domain status, active-config/path
-> safety, calibration-level bounds, Stop availability, and active tone
-> backend status. By default, preconditions can pass while
-> `playback_allowed` remains false; only explicit lab backend enablement can
-> turn it true for non-tweeter targets.
+> safety, calibration-level bounds, protected startup-load state, Stop
+> availability, and active tone backend status. By default, preconditions can
+> pass while `playback_allowed` remains false; only explicit lab backend
+> enablement plus a loaded/current protected startup config can turn it true
+> for non-tweeter targets. If CamillaDSP is no longer running the loaded
+> startup config path, readiness blocks before the playback backend is reached.
 > `jasper.active_speaker.staging` now provides the first build-specific
 > protected startup staging slice. The default preset is
 > `jasper/active_speaker/presets/epique_e150he44_eminence_f110m8_safe_v1.json`
@@ -110,6 +112,21 @@
 > `dsp_apply` persist phase, so a missing rollback breadcrumb causes immediate
 > rollback instead of leaving CamillaDSP pointed at an active startup graph
 > with no recovery state.
+> `/sound/active-speaker/check-path-safety` now writes the first
+> hardware-probe-backed path-safety evidence artifact at
+> `/var/lib/jasper/active_speaker_path_safety.json` (or
+> `JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE`). This is still a no-audio
+> proof step: it inspects the saved topology, staged protected candidate,
+> backend calibration-level guard, and current CamillaDSP config path. The
+> artifact binds that proof to the topology identity, target assignments,
+> staged config path and hash, and rollback config path and hash. The evidence
+> scope is `load_only_no_audio`; a passing check may unlock the startup-load
+> path but never tones or normal playback by itself. Startup load rejects stale
+> evidence and asks the user to run Check protected path again if the saved
+> topology, staged candidate, or rollback anchor changed after the proof. The
+> check is deliberately honest about rollback: if the current config is raw
+> stereo or unknown custom DSP, rollback is treated as unprotected and the
+> evidence stays blocked until a protected rollback strategy exists.
 > `jasper-active-speaker startup-template` can write one of these
 > candidate templates from a preset JSON file and run
 > `camilladsp --check` when the binary is available. The guarded web load
@@ -134,12 +151,11 @@
 > path-safety evidence all pass; even that does **not** authorize tone
 > playback until physical channel identity and a level-limited tone
 > generator with emergency stop exist.
-> Current next step: use the guarded startup-load preflight to load the
-> Epique/F110M protected startup graph only when hardware-probe-backed path
-> safety exists, then immediately verify rollback on the same machine before
-> any audible horn test. The next audible slice must still be lab-gated,
-> level-bounded, Stop-controlled, microphone-aware when available, and start
-> at the test-level floor before any compression-driver output is enabled.
+> Current next step: use the guarded startup-load preflight on hardware, verify
+> rollback, then exercise the lab-gated low-level woofer/mid test path before
+> any compression-driver output is enabled. The first audible horn slice must
+> remain separately gated, high-passed, level-bounded, Stop-controlled,
+> microphone-aware when available, and start at the test-level floor.
 
 ## Current Operational Truth
 
@@ -548,6 +564,9 @@ Current no-hardware path safety command:
 ```sh
 jasper-active-speaker path-audit --requirements
 jasper-active-speaker path-audit ./path_safety_evidence.json
+jasper-active-speaker path-probe \
+  --current-config ./active_speaker_startup.yml \
+  --output ./path_safety_evidence.json
 jasper-active-speaker environment-probe --json
 jasper-active-speaker environment-probe \
   --config ./active_speaker_startup.yml \
@@ -560,22 +579,33 @@ permission to load an active config. `path-audit` reports both
 `requirements_met` and `ok_to_load_active_config`; the latter is true
 only when evidence is marked as hardware-probe-backed. Evidence must
 declare `"evidence_source": "operator"` or `"hardware_probe"` so future
-loaders never infer trust level from a missing field. This is currently
-an operator/harness evidence shape only; future slices can populate the
-evidence from real ALSA, systemd, CamillaDSP, and source-routing probes.
-`environment-probe` adds real read-only ALSA and CamillaDSP config/statefile
-inspection plus a `safe_playback` readiness block. `safe_playback` is not a
-permission grant: it reports environment readiness but never authorizes audio
-by itself.
+loaders never infer trust level from a missing field. `path-probe` and the
+`/sound/active-speaker/check-path-safety` route now populate the first
+hardware-probe-backed form for the startup-load preflight. It is a local
+state inspection, not an audio probe: it does not reload CamillaDSP, open ALSA,
+or play tones. It can still block on missing staged evidence, unverified
+physical outputs, an unreadable calibration-level guard, or an unprotected
+rollback target. The startup loader also rechecks the evidence binding against
+the current staged candidate and rollback anchor; stale evidence is reported as
+`evidence_stale` and must be refreshed before loading. `environment-probe` adds
+real read-only ALSA and CamillaDSP
+config/statefile inspection plus a `safe_playback` readiness block.
+`safe_playback` is not a permission grant: it reports environment readiness
+but never authorizes audio by itself.
 `jasper.active_speaker.readiness` is the deterministic pre-playback gate for
 one selected saved topology target. `/sound/active-speaker/playback-readiness`
 combines safe-session state, saved output topology, target assignment, channel
 identity, tweeter protection, clock-domain status, active-config/path safety,
-calibration-level bounds, Stop availability, and tone-backend status. It still
-emits no sound; it returns `preconditions_passed` separately from
+calibration-level bounds, protected startup-load state, Stop availability, and
+tone-backend status. It still emits no sound; it returns `preconditions_passed`
+separately from
 `playback_allowed` so artifact verification can proceed while audible playback
 stays disabled. `playback_allowed` can become true only for non-tweeter targets
-when the explicit lab `aplay` backend is enabled. The probe still does not
+when the explicit lab `aplay` backend is enabled and the protected startup DSP
+state says the loaded config is still the current CamillaDSP config with a
+rollback anchor. The playback backend requires the tone plan to carry that
+loaded-startup proof before allowing `aplay`; the readiness route remains the
+layer that reads live startup/CamillaDSP state. The probe still does not
 perform physical channel verification or generate hardware-probe-backed
 path-safety evidence by itself.
 

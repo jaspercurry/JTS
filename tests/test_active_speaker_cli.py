@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from jasper.active_speaker import (
+    HARDWARE_PROBE_EVIDENCE_SOURCE,
     OPERATOR_EVIDENCE_SOURCE,
     PATH_SAFETY_EVIDENCE_KIND,
     requirements_payload,
@@ -235,6 +236,53 @@ def test_path_audit_cli_requires_evidence_or_requirements():
         assert e.code == 2
     else:  # pragma: no cover - defensive assertion style
         raise AssertionError("expected parser exit without evidence")
+
+
+def test_path_probe_cli_writes_probe_backed_evidence(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    output = tmp_path / "path_safety.json"
+
+    def fake_evidence(*args, **kwargs):
+        paths = {}
+        for requirement in requirements_payload()["requirements"]:
+            paths[requirement["id"]] = {
+                check: True for check in requirement["checks"]
+            }
+        return {
+            "artifact_schema_version": 1,
+            "kind": PATH_SAFETY_EVIDENCE_KIND,
+            "evidence_source": HARDWARE_PROBE_EVIDENCE_SOURCE,
+            "evidence_mode": "startup_load_preflight",
+            "paths": paths,
+        }
+
+    monkeypatch.setattr("jasper.cli.active_speaker.load_output_topology", lambda path=None: object())
+    monkeypatch.setattr("jasper.cli.active_speaker.load_staged_startup_config", lambda: {})
+    monkeypatch.setattr("jasper.cli.active_speaker.load_calibration_level_state", lambda: {})
+    monkeypatch.setattr(
+        "jasper.cli.active_speaker.build_startup_load_path_safety_evidence",
+        fake_evidence,
+    )
+
+    code = main([
+        "path-probe",
+        "--current-config",
+        "/tmp/protected.yml",
+        "--output",
+        str(output),
+        "--json",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["evidence_path"] == str(output)
+    assert payload["report"]["load_gate"] == "ready"
+    assert json.loads(output.read_text(encoding="utf-8"))["evidence_source"] == (
+        HARDWARE_PROBE_EVIDENCE_SOURCE
+    )
 
 
 def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):

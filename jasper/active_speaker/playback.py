@@ -792,6 +792,7 @@ def start_tone_playback(
     selected = backend or WavArtifactTonePlaybackBackend()
     issues = _validate_plan_for_dry_backend(plan, safe_session=safe_session)
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
+    safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
     tone = _tone_fields(plan)
     bounded_plan = _plan_with_bounded_tone(plan, tone)
     audio_backend = bool(getattr(selected, "audio_backend", False))
@@ -810,6 +811,17 @@ def start_tone_playback(
                 "blocker",
                 "playback_not_allowed_by_readiness",
                 "readiness gates did not authorize audible playback for this target",
+            )
+        )
+    if audio_backend and not safety.get("protected_startup_loaded"):
+        issues.append(
+            _issue(
+                "blocker",
+                "protected_startup_config_not_loaded",
+                (
+                    "audible channel tests require the protected startup DSP "
+                    "to be loaded and current"
+                ),
             )
         )
     if audio_backend and driver_role == "tweeter" and not allow_tweeter_audio:

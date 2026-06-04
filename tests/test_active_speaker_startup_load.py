@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.path_safety import (
-    HARDWARE_PROBE_EVIDENCE_SOURCE,
-    PATH_SAFETY_EVIDENCE_KIND,
-    REQUIRED_PATHS,
+    build_startup_load_path_safety_evidence,
+    write_path_safety_evidence,
 )
 from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.active_speaker.startup_load import (
@@ -88,22 +86,6 @@ def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
     )
 
 
-def _write_path_safety(path: Path) -> Path:
-    path.write_text(
-        json.dumps({
-            "artifact_schema_version": 1,
-            "kind": PATH_SAFETY_EVIDENCE_KIND,
-            "evidence_source": HARDWARE_PROBE_EVIDENCE_SOURCE,
-            "paths": {
-                requirement.id: {check: True for check in requirement.checks}
-                for requirement in REQUIRED_PATHS
-            },
-        }),
-        encoding="utf-8",
-    )
-    return path
-
-
 def _staged(tmp_path: Path) -> dict:
     return stage_protected_startup_config(
         _topology(),
@@ -112,6 +94,31 @@ def _staged(tmp_path: Path) -> dict:
         validate=_valid_config,
         created_at="2026-06-04T12:00:00Z",
     )
+
+
+def _protected_prior(tmp_path: Path, staged: dict, name: str = "prior_active.yml") -> Path:
+    prior = tmp_path / name
+    prior.write_text(
+        Path(staged["config"]["path"]).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    return prior
+
+
+def _write_path_safety(
+    path: Path,
+    *,
+    topology: OutputTopology | None = None,
+    staged: dict,
+    current_config_path: str | Path | None = None,
+) -> Path:
+    evidence = build_startup_load_path_safety_evidence(
+        topology or _topology(),
+        staged_config=staged,
+        calibration_level=calibration_level_payload(),
+        current_config_path=current_config_path or staged["config"]["path"],
+    )
+    return write_path_safety_evidence(evidence, path=path)
 
 
 def test_startup_load_preflight_blocks_without_path_safety(
@@ -132,11 +139,15 @@ def test_startup_load_preflight_blocks_without_path_safety(
 
 
 def test_startup_load_preflight_requires_level_floor(tmp_path: Path) -> None:
+    staged = _staged(tmp_path)
     report = build_startup_load_preflight(
         _topology(),
-        staged_config=_staged(tmp_path),
+        staged_config=staged,
         calibration_level=calibration_level_payload(requested_level_dbfs=-70),
-        path_safety_evidence_path=_write_path_safety(tmp_path / "path_safety.json"),
+        path_safety_evidence_path=_write_path_safety(
+            tmp_path / "path_safety.json",
+            staged=staged,
+        ),
         validate=_valid_config,
     )
 
@@ -158,7 +169,10 @@ def test_startup_load_preflight_blocks_stale_staged_topology(
     report = build_startup_load_preflight(
         topology,
         staged_config=staged,
-        path_safety_evidence_path=_write_path_safety(tmp_path / "path_safety.json"),
+        path_safety_evidence_path=_write_path_safety(
+            tmp_path / "path_safety.json",
+            staged=staged,
+        ),
         validate=_valid_config,
     )
     gates = {gate["id"]: gate["passed"] for gate in report["required_gates"]}
@@ -171,11 +185,39 @@ def test_startup_load_preflight_blocks_stale_staged_topology(
     }
 
 
+def test_startup_load_preflight_blocks_stale_path_safety_rollback_binding(
+    tmp_path: Path,
+) -> None:
+    staged = _staged(tmp_path)
+    prior_a = _protected_prior(tmp_path, staged, "prior_a.yml")
+    prior_b = _protected_prior(tmp_path, staged, "prior_b.yml")
+
+    report = build_startup_load_preflight(
+        _topology(),
+        staged_config=staged,
+        path_safety_evidence_path=_write_path_safety(
+            tmp_path / "path_safety.json",
+            staged=staged,
+            current_config_path=prior_a,
+        ),
+        current_config_path=prior_b,
+        validate=_valid_config,
+    )
+    gates = {gate["id"]: gate["passed"] for gate in report["required_gates"]}
+
+    assert report["status"] == "blocked"
+    assert report["path_safety"]["load_gate"] == "evidence_stale"
+    assert gates["path_safety_matches_current_startup_load"] is False
+    assert "path_safety_evidence_stale" in {
+        issue["code"] for issue in report["issues"]
+    }
+
+
 def test_startup_load_blocks_when_rollback_anchor_is_missing(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    _staged(tmp_path)
+    staged = _staged(tmp_path)
     missing_prior = tmp_path / "missing-prior.yml"
     fake = FakeCamilla(str(missing_prior))
     state_path = tmp_path / "startup_load.json"
@@ -190,18 +232,22 @@ def test_startup_load_blocks_when_rollback_anchor_is_missing(
             _topology(),
             load_config=fake.set_config_file_path,
             get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(tmp_path / "path_safety.json"),
+            path_safety_evidence_path=_write_path_safety(
+                tmp_path / "path_safety.json",
+                staged=staged,
+                current_config_path=missing_prior,
+            ),
             state_path=state_path,
             validate=_valid_config,
         )
     )
     state = load_startup_load_state(state_path=state_path)
 
-    assert result["preflight"]["load_allowed"] is True
+    assert result["preflight"]["load_allowed"] is False
     assert result["load"]["status"] == "blocked"
     assert fake.loaded_paths == []
-    assert "rollback_anchor_missing" in {
-        issue["code"] for issue in result["load"]["issues"]
+    assert "rollback_target_protected_not_verified" in {
+        issue["code"] for issue in result["preflight"]["issues"]
     }
     assert state["status"] == "blocked"
     assert state["rollback_available"] is False
@@ -209,8 +255,7 @@ def test_startup_load_blocks_when_rollback_anchor_is_missing(
 
 def test_startup_load_records_rollback_state(monkeypatch, tmp_path: Path) -> None:
     stage = _staged(tmp_path)
-    prior = tmp_path / "prior.yml"
-    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    prior = _protected_prior(tmp_path, stage)
     fake = FakeCamilla(str(prior))
     state_path = tmp_path / "startup_load.json"
     monkeypatch.setenv(
@@ -224,7 +269,11 @@ def test_startup_load_records_rollback_state(monkeypatch, tmp_path: Path) -> Non
             _topology(),
             load_config=fake.set_config_file_path,
             get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(tmp_path / "path_safety.json"),
+            path_safety_evidence_path=_write_path_safety(
+                tmp_path / "path_safety.json",
+                staged=stage,
+                current_config_path=prior,
+            ),
             state_path=state_path,
             validate=_valid_config,
         )
@@ -240,9 +289,8 @@ def test_startup_load_records_rollback_state(monkeypatch, tmp_path: Path) -> Non
 
 
 def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) -> None:
-    _staged(tmp_path)
-    prior = tmp_path / "prior.yml"
-    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    staged = _staged(tmp_path)
+    prior = _protected_prior(tmp_path, staged)
     fake = FakeCamilla(str(prior))
     state_path = tmp_path / "startup_load.json"
     monkeypatch.setenv(
@@ -256,7 +304,11 @@ def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) ->
             _topology(),
             load_config=fake.set_config_file_path,
             get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(tmp_path / "path_safety.json"),
+            path_safety_evidence_path=_write_path_safety(
+                tmp_path / "path_safety.json",
+                staged=staged,
+                current_config_path=prior,
+            ),
             state_path=state_path,
             validate=_valid_config,
         )
@@ -282,9 +334,8 @@ def test_startup_rollback_reports_snapshot_failure(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    _staged(tmp_path)
-    prior = tmp_path / "prior.yml"
-    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    staged = _staged(tmp_path)
+    prior = _protected_prior(tmp_path, staged)
     fake = FakeCamilla(str(prior))
     state_path = tmp_path / "startup_load.json"
     monkeypatch.setenv(
@@ -297,7 +348,11 @@ def test_startup_rollback_reports_snapshot_failure(
             _topology(),
             load_config=fake.set_config_file_path,
             get_current_config_path=fake.get_config_file_path,
-            path_safety_evidence_path=_write_path_safety(tmp_path / "path_safety.json"),
+            path_safety_evidence_path=_write_path_safety(
+                tmp_path / "path_safety.json",
+                staged=staged,
+                current_config_path=prior,
+            ),
             state_path=state_path,
             validate=_valid_config,
         )

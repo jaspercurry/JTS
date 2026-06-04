@@ -31,7 +31,13 @@ from .calibration_level import (
     load_calibration_level_state,
 )
 from .environment import classify_camilla_config_text
-from .path_safety import evaluate_path_safety_evidence
+from .path_safety import (
+    evaluate_path_safety_evidence,
+    software_guard_ready_for_startup,
+    staged_target_signature,
+    topology_target_signature,
+    validate_startup_load_evidence_binding,
+)
 from .safe_playback import load_safe_playback_state
 from .staging import load_staged_startup_config
 
@@ -179,32 +185,6 @@ def _calibration_at_floor(calibration_level: dict[str, Any]) -> bool:
     return requested <= floor + 1e-6
 
 
-def _topology_uses_software_guard(topology: OutputTopology) -> bool:
-    return any(
-        channel.role == "tweeter"
-        and channel.protection_status == "software_guard_requested"
-        for group in topology.speaker_groups
-        for channel in group.channels
-    )
-
-
-def _software_guard_ready(
-    topology: OutputTopology,
-    staged_config: dict[str, Any],
-) -> bool:
-    if not _topology_uses_software_guard(topology):
-        return True
-    guard = staged_config.get("software_guard")
-    if not isinstance(guard, dict):
-        return False
-    return (
-        staged_config.get("status") == "staged"
-        and bool(guard.get("passed"))
-        and bool(guard.get("no_load"))
-        and bool(guard.get("no_playback"))
-    )
-
-
 def _topology_blockers(
     topology: OutputTopology,
     *,
@@ -224,42 +204,6 @@ def _staged_config_path(staged_config: dict[str, Any]) -> Path | None:
         return None
     raw = config.get("path")
     return Path(raw) if isinstance(raw, str) and raw.strip() else None
-
-
-def _target_signature(topology: OutputTopology) -> list[dict[str, Any]]:
-    targets: list[dict[str, Any]] = []
-    for group in topology.speaker_groups:
-        for channel in group.channels:
-            targets.append({
-                "speaker_group_id": group.id,
-                "role": channel.role,
-                "physical_output_index": channel.physical_output_index,
-                "identity_verified": bool(channel.identity_verified),
-                "startup_muted": bool(channel.startup_muted),
-                "protection_required": bool(channel.protection_required),
-                "protection_status": channel.protection_status,
-            })
-    return sorted(targets, key=lambda item: (item["speaker_group_id"], item["role"]))
-
-
-def _staged_target_signature(staged_config: dict[str, Any]) -> list[dict[str, Any]]:
-    targets = staged_config.get("targets")
-    if not isinstance(targets, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for raw in targets:
-        if not isinstance(raw, dict):
-            continue
-        out.append({
-            "speaker_group_id": raw.get("speaker_group_id"),
-            "role": raw.get("role"),
-            "physical_output_index": raw.get("physical_output_index"),
-            "identity_verified": bool(raw.get("identity_verified")),
-            "startup_muted": bool(raw.get("startup_muted")),
-            "protection_required": bool(raw.get("protection_required")),
-            "protection_status": raw.get("protection_status"),
-        })
-    return sorted(out, key=lambda item: (str(item["speaker_group_id"]), str(item["role"])))
 
 
 def _staged_topology_payload(
@@ -296,7 +240,8 @@ def _staged_topology_payload(
         "hardware_clock_domain": (
             staged_hardware.get("clock_domain_id") == topology.hardware.clock_domain_id
         ),
-        "targets": _staged_target_signature(staged_config) == _target_signature(topology),
+        "targets": staged_target_signature(staged_config)
+        == topology_target_signature(topology),
     }
     for check, passed in checks.items():
         if not passed:
@@ -437,6 +382,12 @@ def _path_safety_payload(path: str | Path | None) -> dict[str, Any]:
         }
     report["provided"] = True
     report["path"] = str(path)
+    report["evidence_mode"] = raw.get("evidence_mode")
+    report["scope"] = raw.get("scope")
+    report["provenance"] = (
+        raw.get("provenance") if isinstance(raw.get("provenance"), dict) else {}
+    )
+    report["raw_evidence"] = raw
     report["issues"] = [
         _normalise_issue(issue)
         for issue in report.get("issues", [])
@@ -460,6 +411,7 @@ def build_startup_load_preflight(
     calibration_level: dict[str, Any] | None = None,
     safe_session: dict[str, Any] | None = None,
     path_safety_evidence_path: str | Path | None = None,
+    current_config_path: str | Path | None = None,
     stop_control_available: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
@@ -480,8 +432,27 @@ def build_startup_load_preflight(
     candidate = _candidate_payload(staged_path, validate=validate)
     staged_topology = _staged_topology_payload(topology, staged)
     path_safety = _path_safety_payload(path_safety_evidence_path)
+    if isinstance(path_safety.get("raw_evidence"), dict):
+        path_safety_binding = validate_startup_load_evidence_binding(
+            path_safety["raw_evidence"],
+            topology,
+            staged_config=staged,
+            current_config_path=current_config_path,
+        )
+    else:
+        path_safety_binding = {
+            "status": "missing",
+            "matched": False,
+            "checks": {},
+            "issues": [],
+        }
+    path_safety_ok = bool(path_safety.get("ok_to_load_active_config"))
+    path_safety_bound = bool(path_safety_binding.get("matched"))
+    path_safety_load_gate = str(path_safety.get("load_gate") or "blocked")
+    if path_safety_ok and not path_safety_bound:
+        path_safety_load_gate = "evidence_stale"
     identity = channel_identity_report(topology)
-    software_guard_ready = _software_guard_ready(topology, staged)
+    software_guard_ready = software_guard_ready_for_startup(topology, staged)
     topology_blockers = _topology_blockers(
         topology,
         software_guard_ready=software_guard_ready,
@@ -559,11 +530,21 @@ def build_startup_load_preflight(
         _gate(
             "path_safety_ready",
             label="Path safety evidence authorizes active config load",
-            passed=bool(path_safety.get("ok_to_load_active_config")),
+            passed=path_safety_ok,
             message=(
                 "Hardware-probe-backed path safety is ready"
-                if path_safety.get("ok_to_load_active_config")
-                else f"Path safety gate is {path_safety.get('load_gate') or 'blocked'}"
+                if path_safety_ok
+                else f"Path safety gate is {path_safety_load_gate}"
+            ),
+        ),
+        _gate(
+            "path_safety_matches_current_startup_load",
+            label="Path safety evidence matches this startup load",
+            passed=path_safety_bound,
+            message=(
+                "Path safety evidence matches this startup load"
+                if path_safety_bound
+                else "Run Check protected path again before loading"
             ),
         ),
         _gate(
@@ -608,6 +589,11 @@ def build_startup_load_preflight(
         if isinstance(issue, dict)
     )
     issues.extend(_normalise_issue(issue) for issue in path_safety.get("issues", []))
+    issues.extend(
+        _normalise_issue(issue)
+        for issue in path_safety_binding.get("issues", [])
+        if isinstance(issue, dict)
+    )
     if not level_at_floor:
         issues.append(
             _issue(
@@ -639,10 +625,14 @@ def build_startup_load_preflight(
         },
         "path_safety": {
             "status": path_safety.get("status"),
-            "load_gate": path_safety.get("load_gate"),
-            "ok_to_load_active_config": bool(
-                path_safety.get("ok_to_load_active_config")
-            ),
+            "load_gate": path_safety_load_gate,
+            "ok_to_load_active_config": path_safety_ok and path_safety_bound,
+            "evidence_ok": path_safety_ok,
+            "binding": {
+                "status": path_safety_binding.get("status"),
+                "matched": path_safety_bound,
+                "checks": path_safety_binding.get("checks") or {},
+            },
             "path": path_safety.get("path"),
         },
         "identity": {
@@ -717,36 +707,15 @@ async def load_protected_startup_config(
 ) -> dict[str, Any]:
     """Load the staged active-speaker startup config after all gates pass."""
 
-    preflight = build_startup_load_preflight(
-        topology,
-        path_safety_evidence_path=path_safety_evidence_path,
-        validate=validate,
-    )
-    candidate_path = preflight.get("candidate", {}).get("path")
-    if not preflight.get("load_allowed"):
-        payload = _loaded_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=None,
-            last_action="load_blocked",
-            preflight=preflight,
-            issues=[
-                _normalise_issue(issue)
-                for issue in preflight.get("issues", [])
-                if isinstance(issue, dict)
-            ],
-        )
-        logger.info(
-            "event=active_speaker.startup_load result=blocked blockers=%d gate=%s",
-            len(payload["issues"]),
-            preflight.get("path_safety", {}).get("load_gate"),
-        )
-        return {"preflight": preflight, "load": payload}
-
     try:
         prior_config_path = await get_current_config_path()
     except Exception as exc:  # noqa: BLE001
+        preflight = build_startup_load_preflight(
+            topology,
+            path_safety_evidence_path=path_safety_evidence_path,
+            validate=validate,
+        )
+        candidate_path = preflight.get("candidate", {}).get("path")
         issue = _issue(
             "blocker",
             "current_config_snapshot_failed",
@@ -763,6 +732,36 @@ async def load_protected_startup_config(
         )
         _record_state(payload, state_path=state_path)
         return {"preflight": preflight, "load": payload}
+
+    preflight = build_startup_load_preflight(
+        topology,
+        path_safety_evidence_path=path_safety_evidence_path,
+        current_config_path=prior_config_path,
+        validate=validate,
+    )
+    candidate_path = preflight.get("candidate", {}).get("path")
+    if not preflight.get("load_allowed"):
+        payload = _loaded_state_payload(
+            status="blocked",
+            candidate_config_path=candidate_path,
+            active_config_path=None,
+            previous_config_path=str(prior_config_path) if prior_config_path else None,
+            last_action="load_blocked",
+            preflight=preflight,
+            issues=[
+                _normalise_issue(issue)
+                for issue in preflight.get("issues", [])
+                if isinstance(issue, dict)
+            ],
+        )
+        _record_state(payload, state_path=state_path)
+        logger.info(
+            "event=active_speaker.startup_load result=blocked blockers=%d gate=%s",
+            len(payload["issues"]),
+            preflight.get("path_safety", {}).get("load_gate"),
+        )
+        return {"preflight": preflight, "load": payload}
+
     if not prior_config_path:
         issue = _issue(
             "blocker",
