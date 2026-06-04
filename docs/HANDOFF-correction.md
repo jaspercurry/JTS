@@ -338,9 +338,21 @@
     `event=correction_start_rejected reason=calibration_device_mismatch`.
     The device picker now forces an explicit `deviceId` and re-enumerates
     on `devicechange` so the USB mic appears reliably on iOS.
+  - **Capture upload limit.** A capture WAV is ~1-2 MB; the nginx
+    `/correction/` location sets `client_max_body_size 32m` (matching the
+    backend `MAX_WAV_BODY_BYTES`) so the upload reaches the app and is capped
+    with a clean error instead of a raw nginx 413. Guarded by a static test in
+    `tests/test_correction_systemd_unit.py`.
+  - **Mic-picker UX.** The page auto-detects microphones on landing
+    ("Refresh microphones" re-detects), infers the calibration model from the
+    device label (`iMM-6`/`UMM-6`/`UMIK`), and remembers the serial of a
+    successful fetch in the browser's `localStorage` (raw serials stay off the
+    Pi) — auto-filling and auto-fetching it next time so a repeat measurement
+    needs no re-typing or Fetch tap.
 
   Backend logic is unit-covered; the iPhone device-picker, Cancel button,
-  Wake Lock, and auto-level copy still need an on-device confirmation pass.
+  Wake Lock, auto-level copy, and the mic-picker UX still need an on-device
+  confirmation pass.
 
 **Current sequencing note (2026-05-28):** after the latest research
 intake, the next room-correction priority is still measurement trust
