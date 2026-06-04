@@ -137,3 +137,61 @@ def test_play_unknown_slug_returns_2(cli_env, capsys):
     assert code == 2
     captured = capsys.readouterr()
     assert "unknown" in captured.err.lower()
+
+
+class _FakeResponse:
+    """Minimal context-manager stand-in for urllib's HTTP response."""
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_play_valid_slug_routes_to_control_endpoint(cli_env, capsys):
+    """Happy path: a valid slug must POST to jasper-control and report
+    success — exercising the code past find_cue() that used to raise
+    NameError on the undefined `_env`. Mocks the HTTP POST so no
+    network is touched."""
+    captured_url = {}
+
+    def _fake_urlopen(req, timeout=None):
+        captured_url["url"] = req.full_url
+        captured_url["data"] = req.data
+        return _FakeResponse(b'{"result": "ok"}')
+
+    with patch("urllib.request.urlopen", _fake_urlopen):
+        code = cli.main(["play", "cant_connect"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "played cant_connect" in out
+    # Default control host/port came from os.environ.get fallbacks.
+    assert captured_url["url"] == "http://127.0.0.1:8780/cue/play"
+    assert b"cant_connect" in captured_url["data"]
+
+
+def test_play_valid_slug_honors_control_env_overrides(cli_env, monkeypatch):
+    """The os.environ.get fallbacks are overridable — confirms the
+    env lookups (formerly the broken `_env` calls) read the live
+    environment."""
+    monkeypatch.setenv("JASPER_CONTROL_HOST", "10.0.0.5")
+    monkeypatch.setenv("JASPER_CONTROL_PORT", "9999")
+    captured_url = {}
+
+    def _fake_urlopen(req, timeout=None):
+        captured_url["url"] = req.full_url
+        return _FakeResponse(b'{"result": "ok"}')
+
+    with patch("urllib.request.urlopen", _fake_urlopen):
+        code = cli.main(["play", "cant_connect"])
+
+    assert code == 0
+    assert captured_url["url"] == "http://10.0.0.5:9999/cue/play"

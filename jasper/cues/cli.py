@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import urllib.parse
 
@@ -163,8 +164,8 @@ def _cmd_play(args) -> int:
     import urllib.error
     import urllib.request
 
-    host = _env("JASPER_CONTROL_HOST", "127.0.0.1")
-    port = int(_env("JASPER_CONTROL_PORT", "8780"))
+    host = os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1")
+    port = int(os.environ.get("JASPER_CONTROL_PORT", "8780"))
     url = f"http://{host}:{port}/cue/play"
     body = _json.dumps({"slug": args.slug}).encode("utf-8")
     req = urllib.request.Request(
