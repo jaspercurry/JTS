@@ -44,7 +44,7 @@ dependencies = [
     "spotipy==2.24.0",
     "httpx==0.28.1",
     "onnxruntime>=1.17",
-    "nyct-gtfs==2.0.0",
+    "nyct-gtfs==2.1.0",
     "rapidfuzz>=3.6,<4",
     # XVF3800 control: jasper.xvf.xvf_host (vendored from
     # github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY) talks to
