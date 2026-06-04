@@ -1401,6 +1401,10 @@ class WakeLoop:
         self._state = State.WAKE
         self._turn: LiveTurn | None = None
         self._session_id: int | None = None
+        # Re-entrancy guard for _end_turn (see its docstring). A bare
+        # flag, deliberately NOT an early _state flip — _state must stay
+        # SESSION through the teardown so output-stream gates hold.
+        self._ending: bool = False
         self._bg_tasks: set[asyncio.Task] = set()
         self._refractory_until: float = 0.0
 
@@ -3171,6 +3175,39 @@ class WakeLoop:
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
     async def _end_turn(self, reason: str = "ended") -> None:
+        # Re-entrancy guard. The teardown (_end_turn_inner) runs many
+        # awaits — telemetry, peering notify, bg-task join, end_input with
+        # a 2 s timeout, release, "done listening" chirp, duck restore —
+        # and only flips _state to WAKE at its very last line, clearing
+        # _session_id just before. Two callers can race into it on the
+        # single event loop: the control-socket mute_mic handler and the
+        # main mic loop's _handle_session_frame. Without a guard the
+        # second entrant re-runs teardown and trips
+        # `assert self._session_id is not None` after it was cleared
+        # (the main-loop caller does not swallow that → daemon crash).
+        #
+        # We guard with a dedicated _ending flag, NOT by flipping _state
+        # to WAKE up front. _state must stay SESSION for the whole
+        # teardown: the teardown itself plays a chirp on the single
+        # PortAudio TTS stream, and several concurrently-runnable
+        # coroutines gate on SESSION to avoid colliding with it —
+        # play_supervisor_cue() skips while SESSION, announce_timer()
+        # defers while SESSION, and the mic loops route to
+        # _handle_session_frame (not _handle_wake_frame) while SESSION.
+        # Flipping to WAKE early would let a supervisor cue / timer
+        # announcement garble the teardown chirp, or (during a mute-
+        # initiated teardown, before _mic_muted is set) let a fresh wake
+        # frame begin a NEW turn whose _turn/_session_id this teardown
+        # would then tear down.
+        if self._ending or self._turn is None:
+            return
+        self._ending = True
+        try:
+            await self._end_turn_inner(reason)
+        finally:
+            self._ending = False
+
+    async def _end_turn_inner(self, reason: str = "ended") -> None:
         # Capture drain timing before any await adds latency. Measured
         # as "time from last server activity to turn end" — meaningful
         # only when audio was actually received (otherwise it's the
