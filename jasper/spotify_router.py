@@ -46,6 +46,12 @@ SPOTIFY_SCOPE = (
     "playlist-read-private playlist-read-collaborative"
 )
 
+# Per-request timeout (seconds) for the spotipy HTTP client. spotipy's
+# default is no timeout, so a hung Spotify API socket would block the
+# calling thread indefinitely. Bounded here so callers (e.g. mux's pause
+# loop) can't be suspended forever on one stuck account.
+_SPOTIPY_REQUESTS_TIMEOUT_SEC = 4.0
+
 # Re-resolve a cached AirPlay-session→account decision after this many
 # seconds even if nothing else changed. Belt-and-suspenders against
 # stale tokens or a Spotify state we missed.
@@ -194,7 +200,10 @@ def build_clients(
                     detail="cache unreadable or empty",
                 ))
                 continue
-            sp = spotipy.Spotify(auth_manager=auth)
+            sp = spotipy.Spotify(
+                auth_manager=auth,
+                requests_timeout=_SPOTIPY_REQUESTS_TIMEOUT_SEC,
+            )
             clients[account.name] = AccountClient(account=account, sp=sp)
             statuses.append(AccountStatus(name=account.name, state=ACCOUNT_OK))
         except Exception as e:  # noqa: BLE001

@@ -312,6 +312,43 @@ def test_tone_backend_status_requires_explicit_audio_enablement() -> None:
     assert enabled["test_pcm"] == "hw:Active"
 
 
+def test_tone_backend_status_blocks_forbidden_main_lane_test_pcm() -> None:
+    blocked = tone_backend_status({
+        "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+        "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+        "JASPER_ACTIVE_SPEAKER_TEST_PCM": "plug:jasper_out",
+    })
+
+    assert blocked["status"] == "blocked"
+    assert blocked["audio_enabled"] is False
+    assert "test_pcm_forbidden_main_lane" in {
+        issue["code"] for issue in blocked["issues"]
+    }
+
+
+def test_tone_backend_status_allows_dedicated_active_test_pcm() -> None:
+    enabled = tone_backend_status({
+        "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+        "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+        "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+    })
+
+    assert enabled["status"] == "audio_enabled"
+    assert enabled["audio_enabled"] is True
+    assert "test_pcm_forbidden_main_lane" not in {
+        issue["code"] for issue in enabled["issues"]
+    }
+
+
+def test_aplay_backend_refuses_forbidden_main_lane_pcm(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="protected main lane"):
+        AplayTonePlaybackBackend(
+            pcm="plug:jasper_out",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        )
+
+
 def test_audio_backend_blocks_when_readiness_did_not_authorize_audio(
     tmp_path: Path,
 ) -> None:

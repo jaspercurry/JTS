@@ -13,7 +13,11 @@ Public surface (everything else is implementation detail):
   - confidence.build_position_report(...) → per-band multi-position report
   - browser_audio.assess_browser_audio_path(...) → getUserMedia preflight report
   - peq.design_peq(measured_db, target_db, freqs, **constraints) → list[PEQ]
-  - camilla_yaml.emit_correction_config(base_yaml_path, peqs, out_path)
+  - apply path: jasper.sound.camilla_yaml.emit_sound_config(profile,
+    room_peqs=..., out_path=..., profile_id=...) — what session.py
+    actually emits before reloading CamillaDSP. (camilla_yaml.
+    emit_correction_config(peqs, *, ...) is legacy and not on the
+    live apply path.)
   - coordinator.measurement_window() — async context manager
   - session.MeasurementSession — state machine for the multi-step flow
 

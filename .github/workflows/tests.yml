@@ -40,12 +40,12 @@ jobs:
         run: pip install -e '.[dev]'
 
       - name: Test (hardware-free; voice_eval explicitly excluded)
-        # voice_eval is the paid LLM suite — never CI material. Auto-skip
-        # is unreliable here because tests/test_doctor.py leaks
-        # OPENAI_API_KEY=wiz-key into os.environ (via load_env_files) and
-        # the voice_eval conftest's skip check then sees a non-empty key
-        # and tries to use it. --ignore is the durable fix; the env-leak
-        # in test_doctor is a separate bug worth tracking.
+        # voice_eval is the paid LLM suite — never CI material, purely on
+        # cost discipline. The test_doctor OPENAI_API_KEY=wiz-key env-leak
+        # (via load_env_files) is now contained by conftest.py's autouse
+        # _isolate_environ fixture (landed in #256), which snapshots and
+        # restores os.environ around every test. --ignore is justified
+        # solely by paid-LLM cost — not by the leak, which is fixed.
         run: pytest -q --tb=short --ignore=tests/voice_eval
 
       # Lint deferred: `ruff check .` reports ~185 pre-existing

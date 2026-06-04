@@ -13,6 +13,7 @@ Off-switch: JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled reverts to
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -217,3 +218,108 @@ async def test_web_api_pause_exception_on_one_account_tries_next(
     assert await mux._spotify_pause_via_web_api() is True
     assert bad.pause_calls == ["jts-1"]
     assert good.pause_calls == ["jts-2"]
+
+
+# ----------------------------------------------------------------------
+# A hung Spotify API socket must NOT suspend the mux tick. spotipy has
+# no requests_timeout by default; the two to_thread calls in
+# _spotify_pause_via_web_api are wrapped in asyncio.wait_for so a stuck
+# account is bounded and the loop continues to the next account.
+# ----------------------------------------------------------------------
+
+class _HangingSpClient:
+    """spotipy stand-in whose .sp call blocks until released. Models a
+    hung Spotify API socket (no server response). The blocking happens
+    inside a worker thread via asyncio.to_thread, exactly as the real
+    spotipy HTTP call would."""
+
+    def __init__(self, name, devices, *, hang_on):
+        import threading
+        self.account = SimpleNamespace(name=name)
+        self._release = threading.Event()
+        self.pause_calls: list[str] = []
+
+        def _devices():
+            if hang_on == "devices":
+                self._release.wait(timeout=10.0)
+            return {"devices": devices}
+
+        def _pause(device_id):
+            self.pause_calls.append(device_id)
+            if hang_on == "pause":
+                self._release.wait(timeout=10.0)
+
+        self.sp = SimpleNamespace(devices=_devices, pause_playback=_pause)
+
+    def release(self):
+        self._release.set()
+
+
+@pytest.fixture
+def _clamp_wait_for(monkeypatch):
+    """Clamp the wait_for timeout *as seen by jasper.mux* to a tiny value
+    so a hung call trips the timeout in milliseconds instead of the
+    production 5 s, keeping the test fast while still exercising the real
+    wrap. Returns the unclamped wait_for so the test's own outer guard
+    isn't shortened."""
+    real_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(aw, timeout):
+        return await real_wait_for(aw, timeout=0.1)
+
+    import jasper.mux as _mux
+    monkeypatch.setattr(_mux.asyncio, "wait_for", fast_wait_for)
+    return real_wait_for
+
+
+@pytest.mark.asyncio
+async def test_web_api_hung_devices_does_not_hang_tick(
+    mux, monkeypatch, _clamp_wait_for,
+):
+    """A hung sp.devices() call must time out and be skipped — the pause
+    helper returns without suspending the mux tick. A second, healthy
+    account still gets paused, proving the loop continues."""
+    monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS")
+    hung = _HangingSpClient("primary", [
+        {"name": "JTS", "id": "jts-hung", "is_active": True},
+    ], hang_on="devices")
+    good = _FakeSpClient("secondary", [
+        {"name": "JTS", "id": "jts-good", "is_active": True},
+    ])
+    _attach_fake_router(mux, [hung, good])
+    real_wait_for = _clamp_wait_for
+    try:
+        result = await real_wait_for(
+            mux._spotify_pause_via_web_api(), timeout=5.0,
+        )
+    finally:
+        hung.release()
+    assert result is True
+    assert good.pause_calls == ["jts-good"]
+
+
+@pytest.mark.asyncio
+async def test_web_api_hung_pause_does_not_hang_tick(
+    mux, monkeypatch, _clamp_wait_for,
+):
+    """A hung sp.pause_playback() call must time out and be skipped —
+    the loop continues to the next account rather than freezing the
+    mux tick indefinitely on one stuck account."""
+    monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS")
+    hung = _HangingSpClient("primary", [
+        {"name": "JTS", "id": "jts-hung", "is_active": True},
+    ], hang_on="pause")
+    good = _FakeSpClient("secondary", [
+        {"name": "JTS", "id": "jts-good", "is_active": True},
+    ])
+    _attach_fake_router(mux, [hung, good])
+    real_wait_for = _clamp_wait_for
+    try:
+        result = await real_wait_for(
+            mux._spotify_pause_via_web_api(), timeout=5.0,
+        )
+    finally:
+        hung.release()
+    assert result is True
+    assert hung.pause_calls == ["jts-hung"]
+    assert good.pause_calls == ["jts-good"]

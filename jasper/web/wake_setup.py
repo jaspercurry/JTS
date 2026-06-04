@@ -109,7 +109,7 @@ WAKE_PAGE_CSS_HREF = "/assets/wake/wake.css"
 # Tests + `_active_threshold` reference it; the slider's min/max/step
 # constants live inline in the rendered HTML (no Python tests exercise
 # them so a duplicate Python constant would just rot).
-DEFAULT_WAKE_THRESHOLD = 0.5
+DEFAULT_WAKE_THRESHOLD = 0.3
 
 
 # ----------------------------------------------------------------------

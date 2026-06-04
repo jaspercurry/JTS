@@ -229,15 +229,16 @@ convenient. Avoid clickable `<div class="switch">` controls. Native
 checkboxes give keyboard interaction, focus state, and accessibility
 semantics for free.
 
-The confirm/alert dialog helper ships automatically on every page rendered
-through `wrap_page()`. A page that hand-rolls its own document shell (builds
-its own `<!doctype html>` + `<style>` instead of calling `wrap_page()` —
-`/wifi/`, `/bluetooth/`, `/correction/`, `/ha/`, `/wake-corpus/`) must embed
-it: concatenate `DIALOG_CSS` into its `<style>` and emit
-`<script>{dialog_helpers_js()}</script>` before the page's own script. A
-regression test in
+The confirm/alert dialog ships automatically on every wizard: each one
+now renders through `canonical_page()` (migration complete — see
+"Canonical design system" below), which loads the shared
+[`/assets/shared/js/dialog.js`](deploy/assets/shared/js/dialog.js)
+module. No wizard hand-rolls its own `<!doctype html>` shell anymore, so
+none needs to manually embed `DIALOG_CSS` / `dialog_helpers_js()` — that
+legacy inline twin in `_common.py` is now unused. A regression test in
 [`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
-fails the build if a wizard calls the helper without wiring it.
+keeps native `confirm()`/`alert()`/`prompt()` out of the canonical ES
+modules.
 
 Treat device names, SSIDs, USB descriptors, Bluetooth MAC-adjacent
 metadata, and browser-provided labels as untrusted. Escape before
@@ -253,18 +254,22 @@ primitive unless there is a documented, reviewed reason not to.
 
 ### Canonical design system (new look)
 
-The management UI is migrating to the redesigned look first shipped on
+The management UI has migrated to the redesigned look first shipped on
 the landing page ([`deploy/index.html`](deploy/index.html)): an oklch
-sage/beige palette with Figtree + Outfit. The shared design layer is a
-single static stylesheet, [`deploy/assets/app.css`](deploy/assets/app.css)
+sage/beige palette with Figtree + Outfit. **The migration is complete —
+every wizard under `jasper/web/*_setup.py` renders through
+[`canonical_page()`](jasper/web/_common.py) and ships its page behaviour
+as a static ES module** (no `<!doctype>` hand-rolled shells, no inline
+`<script>` on a migrated page). The shared design layer is a single
+static stylesheet, [`deploy/assets/app.css`](deploy/assets/app.css)
 — tokens, base reset, `@font-face`, and shared component primitives
 (`.page`, `.eyebrow`, `.segmented`, `.btn`, `.ico`, focus/reduced-motion).
 nginx serves it from `/assets/` (the same path as the fonts); `install.sh`
 installs it.
 
-A page adopts the new look by rendering with
-[`canonical_page()`](jasper/web/_common.py) instead of the legacy
-`wrap_page()`. `canonical_page(title, body, *, csrf_token, page_css)`
+A page renders with
+[`canonical_page()`](jasper/web/_common.py).
+`canonical_page(title, body, *, csrf_token, page_css)`
 emits the document shell — doctype, the cache-busted
 `/assets/app.css?v=<build-sha>` link, the CSRF meta tag, the shared inline
 icon sprite (`CANONICAL_ICON_SPRITE`), and the body. **Page-specific CSS
@@ -275,9 +280,12 @@ which every page already depends on for fonts); `jasper-doctor`'s
 
 [`jasper/web/sound_setup.py`](jasper/web/sound_setup.py) (`/sound/`) and
 [`jasper/web/system_setup.py`](jasper/web/system_setup.py) (`/system/`)
-are the migrated wizards on this system; mirror them when migrating the
-next. The legacy `PAGE_STYLE`/`wrap_page` path remains for un-migrated
-wizards; don't mix the two on one page. The design tokens currently live
+are the reference wizards — mirror their shape when adding a new one.
+The legacy `wrap_page`/`PAGE_STYLE`/`TOGGLE_CSS`/`NAV_BACK` primitives
+in [`jasper/web/_common.py`](jasper/web/_common.py) are now **unused by
+any shipped wizard** (a removal candidate); the constants remain in
+`_common.py` only because that dead-code cleanup is deferred — they have
+*not* been deleted. The design tokens currently live
 in both `deploy/index.html` and `app.css` until the landing page is
 migrated to link the stylesheet — a test
 ([`tests/test_web_design_system.py`](tests/test_web_design_system.py))
@@ -601,6 +609,22 @@ source metadata, lane assignment, fan-in config, mux, volume,
 `/sources/`, doctor, and correction measurement-window updates,
 including `/source/select` landing-page selection wiring.
 
+### Final output — `jasper-outputd`
+
+`jasper-outputd.service` is the **final-output owner**: it sits after
+fan-in and CamillaDSP in the chain and owns "what the speaker actually
+emits." `jasper-voice` declares it as a hard `After=`/`Wants=`
+dependency; `jasper-camilla` integrates with it through a shared
+CamillaDSP statefile (`outputd-statefile.yml`, seeded from
+`outputd-cutover.yml`) rather than a systemd dependency. Assistant TTS
+routes to its local socket (`JASPER_TTS_TRANSPORT=outputd`,
+`JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock`) rather than the
+legacy PortAudio `jasper_out` writer. The topology contract lives in
+[`jasper/output_topology.py`](jasper/output_topology.py). This is coarse
+on purpose — the canonical design (output/reference/TTS/barge-in signal
+flow, rollback behavior) is
+[`docs/HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md).
+
 Spotify volume control goes via the Spotify Web API (the multi-
 account `spotify_router`) since librespot has no local control
 HTTP — see [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md).
@@ -805,7 +829,7 @@ device. One row per registered model with pronunciation + description
 + author-reported false-fire rate. Pick one, hit Save — writes
 `/var/lib/jasper/wake_model.env` at mode 0644 and restarts
 `jasper-voice`. A sensitivity slider underneath the picker tunes
-`JASPER_WAKE_THRESHOLD` (0.05–0.95, default 0.50 — lower wakes more
+`JASPER_WAKE_THRESHOLD` (0.05–0.95, default 0.30 — lower wakes more
 easily, higher requires a more confident match), persists into the
 same env file, and has its own Save control. Source:
 [`jasper/web/wake_setup.py`](jasper/web/wake_setup.py).

@@ -838,11 +838,16 @@ Concrete changes:
   → JSON-serializable curve (frequency, dB).
 - `jasper/correction/peq.py`: greedy peak-fit on 20-350 Hz residual
   vs target. ≤5 PEQ filters. Cuts only. Q ∈ [1.0, 8.0]. Max -10 dB.
-- `jasper/correction/camilla_yaml.py`: build a new pipeline that
+- YAML emit (live apply path): `jasper/correction/session.py` calls
+  `jasper.sound.camilla_yaml.emit_sound_config(profile, room_peqs=...,
+  out_path=..., profile_id=...)`, which builds a new pipeline that
   inserts the PEQ filter chain BEFORE the existing `master_gain`
   mixer. Preserves the master_gain placeholder so future revisions
   don't conflict. Writes to
-  `/var/lib/camilladsp/configs/correction_<ts>.yml` via ruamel.yaml.
+  `/var/lib/camilladsp/configs/correction_<ts>.yml`.
+  (`jasper/correction/camilla_yaml.py:emit_correction_config(peqs, *,
+  ...)` is the legacy standalone emitter and is **not** on the live
+  apply path.)
 - Extend `jasper/camilla.py` `CamillaController` with:
   - `set_config_path(path: str) -> bool` — calls
     `c.config.set_file_path(path)` then `c.general.reload()`.

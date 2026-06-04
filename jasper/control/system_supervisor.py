@@ -34,12 +34,14 @@ sync). This is one tier *below* the kernel hardware watchdog (Tier
 Why not session-gated like ShairportSupervisor
 -----------------------------------------------
 A live voice session implies functioning mic capture + audio
-playback + LLM session — if any of those were healthy, our probes
-above would succeed. So if all 3 probes are failing for 3
-consecutive cycles, the box is wedged badly enough that no live
-session is going through anyway. The 24-hour rate-limit is the
-defensive guardrail; a per-session gate would add complexity for
-no realistic payoff in the failure-mode this supervisor targets.
+playback + LLM session. `_run_all_probes` returns on the FIRST
+failing probe (any-fail, not all-fail), so a cycle counts as failed
+the moment any one of sshd / jasper-control / loadavg is unhealthy.
+By the time even one probe has failed for 3 consecutive cycles, the
+box is wedged badly enough that no live session is going through
+anyway. The 24-hour rate-limit is the defensive guardrail; a
+per-session gate would add complexity for no realistic payoff in
+the failure-mode this supervisor targets.
 
 Disable knob
 ------------

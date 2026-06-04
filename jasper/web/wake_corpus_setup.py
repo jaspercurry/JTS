@@ -38,9 +38,10 @@ What this adds:
 
 Usage:
   sudo /opt/jasper/.venv/bin/jasper-wake-corpus-web
-  # then open http://jts.local:8782/ in any browser on the LAN
+  # binds loopback (127.0.0.1:8782) by default; reach it via nginx at
+  # http://jts.local/wake-corpus/ from any browser on the LAN
 
-  # or override the bind for security:
+  # the bind is overridable (it already defaults to loopback):
   sudo jasper-wake-corpus-web --host 127.0.0.1 --port 8782
 """
 from __future__ import annotations

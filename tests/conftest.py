@@ -13,7 +13,8 @@ Two pieces here, both load-bearing:
   (e.g. by jasper.env_load.load_env_files, which is what production
   ships) silently leak across tests. The leak's most-visible victim
   was tests/voice_eval/ running with OPENAI_API_KEY=wiz-key dragged in
-  from a test_doctor case — see #254 / #255 for context.
+  from a test_doctor case — see #254 / #255 / #256 for context (this
+  fixture, which contains that leak, landed in #256).
 """
 import os
 import sys

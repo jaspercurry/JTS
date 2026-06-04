@@ -1,0 +1,37 @@
+# Dependency-update automation for JTS.
+#
+# Why: JTS is a months-unattended appliance with a security-relevant
+# dependency surface (openai, google-genai, httpx, spotipy, onnxruntime,
+# pyusb, esptool, dbus-next, zeroconf) plus GitHub Actions and Rust crates.
+# Without this, CVEs in pinned deps age silently. Dependabot raises
+# review-able PRs that the existing pytest + provenance CI gate validates.
+#
+# Scope note: this gives CVE alerts + bump PRs without committing to a
+# lockfile design (a committed Python lock is tracked separately in
+# docs/HANDOFF-supply-chain.md). The pip ecosystem here watches the
+# pyproject direct deps.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "cargo"
+    directory: "/rust/jasper-fanin"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "cargo"
+    directory: "/rust/jasper-outputd"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

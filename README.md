@@ -778,6 +778,11 @@ reference. Currently:
   Proposal (created 2026-05-22, not yet implemented) for
   restructuring the `jts.local` management surface into a tighter
   layout with a first-run setup wizard.
+- [`HANDOFF-canonical-ui-migration.md`](docs/HANDOFF-canonical-ui-migration.md)
+  — **Historical** (snapshot 2026-05-31) — the handoff for the
+  now-completed canonical design-system migration of all wizards.
+  Primary-source archaeology only; current management-UI direction
+  lives in [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md).
 - [`HANDOFF-volume-control-redesign.md`](docs/HANDOFF-volume-control-redesign.md)
   — **Superseded** (2026-05-14) — historical record of why AirPlay
   receiver-originated volume reflection didn't work. Keep for

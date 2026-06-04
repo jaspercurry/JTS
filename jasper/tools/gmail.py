@@ -2,7 +2,7 @@
 
 Backed by `jasper.google_creds.GoogleClients`. Two tools:
 
-- `gmail_unread_summary(max=5, account="")` — top-N unread inbox
+- `gmail_unread_summary(limit=5, account="")` — top-N unread inbox
   messages with from/subject/date/snippet. The model uses these to
   answer 'any new emails' / 'who emailed me'.
 - `gmail_read_thread(thread_id, account="")` — full read of one
