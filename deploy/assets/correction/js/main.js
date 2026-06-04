@@ -143,14 +143,41 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
       var devices = await navigator.mediaDevices.enumerateDevices();
       var inputs = devices.filter(function (d) { return d.kind === 'audioinput'; });
       var prior = selectedId || inputDeviceSelect.value || '';
-      inputDeviceSelect.innerHTML = '<option value="">Default microphone</option>';
-      inputs.forEach(function (d, idx) {
+      // iOS/CoreAudio reports a synthetic "default"/"communications" alias
+      // of a physical mic on top of the real entry, so the same mic shows
+      // up twice ("Default" + "iPhone"). Collapse by groupId, preferring the
+      // entry with a concrete deviceId and a real label.
+      var byGroup = {};
+      inputs.forEach(function (d) {
+        var key = d.groupId || d.deviceId;
+        if (!key) { byGroup[d.deviceId || Math.random()] = d; return; }
+        var cur = byGroup[key];
+        if (!cur) { byGroup[key] = d; return; }
+        var dAlias = (d.deviceId === 'default' || d.deviceId === 'communications');
+        var curAlias = (cur.deviceId === 'default' || cur.deviceId === 'communications');
+        if (curAlias && !dAlias) byGroup[key] = d;
+        else if (curAlias === dAlias && !cur.label && d.label) byGroup[key] = d;
+      });
+      var unique = Object.keys(byGroup).map(function (k) { return byGroup[k]; });
+      // A disabled placeholder (not a selectable value="" "Default mic")
+      // forces an explicit choice; startMicCapture refuses an empty value
+      // rather than silently capturing the OS default (built-in) mic.
+      inputDeviceSelect.innerHTML = '';
+      var placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.disabled = true;
+      placeholder.textContent = unique.length
+        ? 'Select a microphone…'
+        : 'No mics yet — tap “Detect microphones”';
+      inputDeviceSelect.appendChild(placeholder);
+      unique.forEach(function (d, idx) {
         var opt = document.createElement('option');
         opt.value = d.deviceId;
         opt.textContent = d.label || ('Microphone ' + (idx + 1));
         inputDeviceSelect.appendChild(opt);
       });
-      if (prior) inputDeviceSelect.value = prior;
+      inputDeviceSelect.value = prior;
+      if (!inputDeviceSelect.value) placeholder.selected = true;
     } catch (e) {
       console.warn('enumerateDevices failed', e);
     }
@@ -291,7 +318,28 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     };
   }
 
+  function looksLikeBuiltInMic(label) {
+    return /iphone|ipad|ipod|macbook|built[- ]?in|^\s*default/i.test(label || '');
+  }
+
+  // A vendor measurement-mic calibration (Dayton / miniDSP) can never be the
+  // phone's own mic, so capturing from a built-in mic with such a calibration
+  // loaded would silently apply the curve to the wrong microphone. Returns a
+  // user-facing message when that mismatch is detected, else null.
+  function calibrationDeviceMismatch(capturedLabel) {
+    if (!selectedCalibrationMeta) return null;
+    var prov = selectedCalibrationMeta.provider || '';
+    if (prov !== 'dayton_audio' && prov !== 'minidsp') return null;
+    if (!looksLikeBuiltInMic(capturedLabel)) return null;
+    return 'Captured device “' + (capturedLabel || 'default') + '” looks like ' +
+      'this phone’s built-in mic, but you loaded a ' +
+      selectedCalibrationMeta.label + ' calibration. Select the USB ' +
+      'measurement mic under Input device, then Start mic capture again.';
+  }
+
   function renderConstraints(actual, problems) {
+    var mismatch = calibrationDeviceMismatch(actual.label);
+    if (mismatch) problems.push(mismatch);
     var rows = [
       ['inputDevice', 'selected',
        actual.label || actual.deviceId || 'default microphone', true],
@@ -369,6 +417,12 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
   }
 
   async function startMicCapture() {
+    if (!inputDeviceSelect.value) {
+      jtsAlert('Pick a microphone first. Tap “Detect microphones” (and ' +
+        'replug the USB mic if it is not listed), then choose your ' +
+        'measurement mic under Input device.');
+      return;
+    }
     startBtn.disabled = true;
     startBtn.textContent = 'Capturing…';
     stopMicStream();
@@ -391,9 +445,10 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
       sampleRate: REQUIRED_SR,
       channelCount: 1
     };
-    if (inputDeviceSelect.value) {
-      audioConstraints.deviceId = {exact: inputDeviceSelect.value};
-    }
+    // Always pin the exact device. Without {exact} Safari silently falls
+    // back to the built-in mic, which is how an iMM-6C calibration ended up
+    // applied to iPhone-mic audio.
+    audioConstraints.deviceId = {exact: inputDeviceSelect.value};
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: audioConstraints,
@@ -402,7 +457,12 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
       micStream = stream;
     } catch (e) {
       stopMicStream();
-      jtsAlert('Microphone permission denied or unavailable: ' + e.message);
+      if (e && e.name === 'OverconstrainedError') {
+        jtsAlert('That microphone is no longer available (was it unplugged?). ' +
+          'Tap “Detect microphones”, reselect it, and try again.');
+      } else {
+        jtsAlert('Microphone permission denied or unavailable: ' + e.message);
+      }
       startBtn.disabled = false;
       startBtn.textContent = 'Start mic capture';
       return;
@@ -1415,6 +1475,12 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
   }
 
   async function startMeasurement() {
+    var capturedLabel = selectedInputDevice && selectedInputDevice.browser_label;
+    var mismatch = calibrationDeviceMismatch(capturedLabel);
+    if (mismatch) {
+      jtsAlert(mismatch);
+      return;
+    }
     runBtn.disabled = true;
     continueBtn.classList.add('hidden');
     applyBtn.classList.add('hidden');
@@ -1948,8 +2014,29 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     refreshCurrentCorrection();
   }
 
+  // iOS Safari only surfaces real device labels — and fully enumerates USB
+  // audio devices — after a getUserMedia grant. Open a throwaway stream,
+  // stop it immediately, then enumerate so the USB measurement mic appears
+  // without the unplug/replug dance.
+  async function detectMicrophones() {
+    refreshInputsBtn.disabled = true;
+    try {
+      var tmp = await navigator.mediaDevices.getUserMedia({audio: true, video: false});
+      tmp.getTracks().forEach(function (t) { t.stop(); });
+    } catch (e) {
+      console.warn('mic prime failed', e);
+    }
+    await populateInputDevices();
+    refreshInputsBtn.disabled = false;
+  }
+
   startBtn.addEventListener('click', function () { startMicCapture(); });
-  refreshInputsBtn.addEventListener('click', function () { populateInputDevices(); });
+  refreshInputsBtn.addEventListener('click', function () { detectMicrophones(); });
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', function () {
+      populateInputDevices(inputDeviceSelect.value);
+    });
+  }
   inputDeviceSelect.addEventListener('change', function () {
     if (micStream) {
       startMicCapture().catch(function (e) {

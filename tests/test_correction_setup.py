@@ -781,3 +781,50 @@ def test_e2e_trailing_slash_index_serves_same_html():
     finally:
         server.shutdown()
         server.server_close()
+
+
+# --- Bug 1 regression: calibration↔device mismatch backstop -----------------
+# A vendor measurement-mic calibration applied to phone-built-in-mic audio
+# silently invalidates the measurement. The browser blocks it, but this
+# server-side gate is the reliable backstop. Reproduces the cmm31555 iMM-6C
+# run on 2026-06-04 where input_device.browser_label was "iPhone Microphone".
+import types  # noqa: E402
+
+
+def _cal(provider):
+    return types.SimpleNamespace(provider=provider)
+
+
+def test_calibration_device_mismatch_blocks_vendor_mic_on_builtin():
+    for label in ("iPhone Microphone", "iPad Microphone", "MacBook Pro Microphone",
+                  "Built-in Microphone", "Default"):
+        msg = correction_setup._calibration_device_mismatch(
+            _cal("dayton_audio"), {"browser_label": label}
+        )
+        assert msg is not None, label
+        assert "USB" in msg
+    # miniDSP is also an external-only provider
+    assert correction_setup._calibration_device_mismatch(
+        _cal("minidsp"), {"browser_label": "iPhone Microphone"}
+    ) is not None
+
+
+def test_calibration_device_mismatch_allows_real_usb_mic():
+    for label in ("iMM-6C", "USB Audio Device", "UMIK-1", "Microphone 2"):
+        assert correction_setup._calibration_device_mismatch(
+            _cal("dayton_audio"), {"browser_label": label}
+        ) is None, label
+
+
+def test_calibration_device_mismatch_ignores_manual_and_absent():
+    # Manual "other" upload: we can't assume it isn't a phone curve — don't gate.
+    assert correction_setup._calibration_device_mismatch(
+        _cal("other"), {"browser_label": "iPhone Microphone"}
+    ) is None
+    # No calibration / no device → nothing to check.
+    assert correction_setup._calibration_device_mismatch(
+        None, {"browser_label": "iPhone Microphone"}
+    ) is None
+    assert correction_setup._calibration_device_mismatch(
+        _cal("dayton_audio"), None
+    ) is None

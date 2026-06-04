@@ -46,6 +46,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from http import HTTPStatus
@@ -260,12 +261,12 @@ __HEADER__
     <div class="mic-row">
       <label for="input-device-select">Input device
         <select id="input-device-select">
-          <option value="">Default microphone</option>
+          <option value="" disabled selected>Tap “Detect microphones”…</option>
         </select>
       </label>
-      <button id="refresh-inputs" type="button" class="btn btn--ghost">Refresh inputs</button>
+      <button id="refresh-inputs" type="button" class="btn btn--ghost">Detect microphones</button>
     </div>
-    <p class="hint" style="margin:0">Browser labels usually appear after you tap <strong>Start mic capture</strong> and grant permission.</p>
+    <p class="hint" style="margin:0">Tap <strong>Detect microphones</strong> and grant permission so your USB measurement mic appears, then select it before <strong>Start mic capture</strong>.</p>
 
     <label for="mic-model-select">Calibration
       <select id="mic-model-select">
@@ -665,6 +666,37 @@ def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
     return {k: v for k, v in sanitized.items() if v is not None} or None
 
 
+_BUILTIN_MIC_LABEL_RE = re.compile(
+    r"iphone|ipad|ipod|macbook|built[- ]?in|^\s*default", re.IGNORECASE
+)
+# Vendor providers whose mics are always external USB measurement mics —
+# they can never legitimately be the phone's own built-in microphone.
+_EXTERNAL_MIC_PROVIDERS = frozenset({"dayton_audio", "minidsp"})
+
+
+def _calibration_device_mismatch(
+    mic_calibration: Any, input_device: dict[str, Any] | None
+) -> str | None:
+    """Detect applying a vendor measurement-mic calibration curve to audio
+    captured from the phone's built-in mic — a silent, measurement-
+    invalidating mismatch. The browser blocks this too, but this is the
+    reliable backstop a stale/bypassed client cannot evade.
+    """
+    if mic_calibration is None or not input_device:
+        return None
+    provider = str(getattr(mic_calibration, "provider", "") or "")
+    if provider not in _EXTERNAL_MIC_PROVIDERS:
+        return None
+    label = str(input_device.get("browser_label") or input_device.get("label") or "")
+    if label and _BUILTIN_MIC_LABEL_RE.search(label):
+        return (
+            f'captured device "{label}" looks like the phone built-in mic, but '
+            f"a {provider} measurement-mic calibration is loaded; select the USB "
+            "measurement mic before measuring"
+        )
+    return None
+
+
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /start: snapshot any current correction, hard-reset
     CamillaDSP to the base config, replace the session, and ask the
@@ -725,6 +757,15 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 calibration_id,
                 root=_calibration_root(),
             )
+
+        mismatch = _calibration_device_mismatch(mic_calibration, input_device)
+        if mismatch is not None:
+            logger.warning(
+                "event=correction_start_rejected reason=calibration_device_mismatch "
+                "provider=%s",
+                getattr(mic_calibration, "provider", ""),
+            )
+            raise ValueError(mismatch)
 
         sess = _replace_session(
             total_positions=total_positions,
