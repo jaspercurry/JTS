@@ -52,7 +52,7 @@
   .eq-graph .curve { fill: none; stroke: var(--primary); stroke-width: 2.5; stroke-linejoin: round; }
   .eq-graph.off .curve { stroke: var(--foreground-020); stroke-dasharray: 5 4; }
   .eq-graph .band-width { fill: var(--primary); opacity: 0.14; }
-  .eq-graph .band-marker { stroke: var(--primary-040); stroke-width: 1.2; stroke-dasharray: 3 4; }
+  .eq-graph .band-guide { stroke: var(--primary-040); stroke-width: 1.2; stroke-dasharray: 3 4; }
   .eq-graph .band-dot { fill: var(--background); stroke: var(--primary); stroke-width: 2; }
   .eq-graph .band-dot.selected { fill: var(--primary); }
 

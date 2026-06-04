@@ -128,9 +128,17 @@ const fail = (message) => {
   throw new Error(`${message}\napply=${JSON.stringify(applyRequests)}\nlive=${JSON.stringify(liveDraftRequests)}`);
 };
 
-const source = readFileSync(process.argv[2], "utf8")
-  .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m, "const jtsConfirm = async () => true;\n");
-new Function(source)();
+// Inline the real eq-math module (pure, DOM-free) so the harness exercises
+// the actual graph math. Both module imports are stripped because the source
+// is eval'd via new Function(), where ES import statements are illegal.
+const modulePath = process.argv[2];
+const eqMathPath = new URL("../../deploy/assets/sound-profile/js/eq-math.js", import.meta.url);
+const eqMathPreamble = readFileSync(eqMathPath, "utf8").replace(/^export\s+/gm, "");
+
+const source = readFileSync(modulePath, "utf8")
+  .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m, "const jtsConfirm = async () => true;\n")
+  .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "");
+new Function(eqMathPreamble + "\n" + source)();
 
 await flush();
 await flush();

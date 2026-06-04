@@ -60,6 +60,7 @@ from jasper.output_topology import (
 )
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
+    CUT_MAX_Q,
     MAX_FREQ_HZ,
     MAX_PARAMETRIC_BANDS,
     MAX_Q,
@@ -149,6 +150,7 @@ def _state_payload(
             "max_freq_hz": MAX_FREQ_HZ,
             "min_q": MIN_Q,
             "max_q": MAX_Q,
+            "cut_max_q": CUT_MAX_Q,
             "simple_bands": simple_bands_payload(),
             "headroom_trim_max_db": HEADROOM_TRIM_MAX_DB,
         },

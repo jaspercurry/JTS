@@ -43,7 +43,31 @@ MIN_FREQ_HZ = 20.0
 MAX_FREQ_HZ = 20000.0
 MIN_Q = 0.2
 MAX_Q = 10.0
+# High/low-pass cut filters get a tighter Q ceiling than peaking/notch. A
+# high-Q cut produces a large resonant BOOST at the corner (a Q=8 highpass
+# peaks ~+18 dB), which is both surprising on a "pass" filter and a needless
+# clipping source. 1.4 caps the resonant bump near +3 dB. Notch is exempt —
+# it is meant to be surgical and narrow.
+CUT_MAX_Q = 1.4
 FILTER_EPSILON_DB = 0.05
+
+# Cut/notch biquads shape the response without a user gain term. They are
+# "active" by virtue of being enabled, not by a non-zero gain — see
+# FilterSpec.active(). Highpass/Lowpass protect against rumble / tame top
+# end; Notch is a surgical gain-less cut.
+GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
+
+# Sample rate the drawn magnitude response is evaluated at. Must match
+# CamillaDSP's runtime rate (camilla_config_contract.DEFAULT_SAMPLE_RATE =
+# 48000) so the preview curve matches the speaker's actual output. Hardcoded
+# (not imported) to keep this module import-cheap and dependency-free.
+RESPONSE_SAMPLE_RATE_HZ = 48000
+
+# Advanced shelves are realised by CamillaDSP at a fixed 6 dB/oct slope (see
+# _advanced_filters). For the preview we draw a Butterworth (non-resonant,
+# no-overshoot) shelf, which is visually equivalent and has the correct
+# half-gain-at-corner knee. Q is therefore not a user control for shelves.
+_SHELF_Q = 1.0 / math.sqrt(2.0)
 STOCK_PROFILE_PREFIX = "stock:"
 CUSTOM_PROFILE_PREFIX = "custom_"
 _CUSTOM_PROFILE_ID_RE = re.compile(r"^custom_[a-f0-9]{12}$")
@@ -105,6 +129,8 @@ class FilterSpec:
     slope: float | None = None
 
     def active(self) -> bool:
+        if self.biquad_type in GAINLESS_BIQUAD_TYPES:
+            return True
         return abs(self.gain) >= FILTER_EPSILON_DB
 
 
@@ -278,8 +304,28 @@ class ParametricBand:
             "low_shelf": "Lowshelf",
             "highshelf": "Highshelf",
             "high_shelf": "Highshelf",
+            "highpass": "Highpass",
+            "high_pass": "Highpass",
+            "hpf": "Highpass",
+            "lowpass": "Lowpass",
+            "low_pass": "Lowpass",
+            "lpf": "Lowpass",
+            "notch": "Notch",
         }
         biquad_type = aliases.get(kind.lower(), "Peaking")
+        # Cut/notch types carry no user gain — pin to 0 so a stale gain from
+        # a prior type (or hostile input) can't leak into the response.
+        if biquad_type in GAINLESS_BIQUAD_TYPES:
+            gain_db = 0.0
+        else:
+            gain_db = _clip(
+                _coerce_float(raw.get("gain_db", raw.get("gain", 0.0)), 0.0),
+                -ADVANCED_GAIN_LIMIT_DB,
+                ADVANCED_GAIN_LIMIT_DB,
+            )
+        q = _clip(_coerce_float(raw.get("q", 1.0), 1.0), MIN_Q, MAX_Q)
+        if biquad_type in ("Highpass", "Lowpass"):
+            q = min(q, CUT_MAX_Q)  # cap the resonant boost on cut filters
         return cls(
             enabled=_coerce_bool(raw.get("enabled"), True),
             biquad_type=biquad_type,
@@ -288,12 +334,8 @@ class ParametricBand:
                 MIN_FREQ_HZ,
                 MAX_FREQ_HZ,
             ),
-            gain_db=_clip(
-                _coerce_float(raw.get("gain_db", raw.get("gain", 0.0)), 0.0),
-                -ADVANCED_GAIN_LIMIT_DB,
-                ADVANCED_GAIN_LIMIT_DB,
-            ),
-            q=_clip(_coerce_float(raw.get("q", 1.0), 1.0), MIN_Q, MAX_Q),
+            gain_db=gain_db,
+            q=q,
         )
 
     def to_dict(self) -> dict[str, float | bool | str]:
@@ -692,6 +734,16 @@ def _advanced_filters(bands: Iterable[ParametricBand]) -> tuple[FilterSpec, ...]
                     slope=6.0,
                 )
             )
+        elif band.biquad_type in GAINLESS_BIQUAD_TYPES:
+            specs.append(
+                FilterSpec(
+                    f"sound_advanced_{i}",
+                    band.biquad_type,
+                    band.freq_hz,
+                    0.0,
+                    q=band.q,
+                )
+            )
         else:
             specs.append(
                 FilterSpec(
@@ -718,23 +770,104 @@ def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
     return tuple(spec for spec in filters if spec.active())
 
 
-def _filter_response_db(spec: FilterSpec, freqs: Iterable[float]) -> list[float]:
-    out: list[float] = []
+def _biquad_coeffs(
+    biquad_type: str, freq: float, gain_db: float, q: float
+) -> tuple[float, float, float, float, float, float]:
+    """RBJ Audio EQ Cookbook biquad coefficients (un-normalised).
+
+    https://www.w3.org/TR/audio-eq-cookbook/ — the same digital biquad
+    family CamillaDSP realises, so the magnitude we draw matches the
+    speaker's actual output for the Q-parameterised types (Peaking,
+    Highpass, Lowpass, Notch). Shelves use a fixed Butterworth Q (see
+    _SHELF_Q) to mirror CamillaDSP's 6 dB/oct advanced-shelf emit.
+
+    This MUST stay byte-for-byte equivalent to biquadCoeffs() in
+    deploy/assets/sound-profile/js/eq-math.js. Both are checked against
+    tests/fixtures/peq_response_fixture.json.
+    """
+    w0 = 2.0 * math.pi * max(freq, 1e-6) / RESPONSE_SAMPLE_RATE_HZ
+    cw = math.cos(w0)
+    sw = math.sin(w0)
+    eff_q = _SHELF_Q if biquad_type in ("Lowshelf", "Highshelf") else max(q, 1e-4)
+    alpha = sw / (2.0 * eff_q)
+    if biquad_type == "Lowpass":
+        return ((1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
+    if biquad_type == "Highpass":
+        return ((1 + cw) / 2, -(1 + cw), (1 + cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
+    if biquad_type == "Notch":
+        return (1.0, -2 * cw, 1.0, 1 + alpha, -2 * cw, 1 - alpha)
+    amp = 10.0 ** (gain_db / 40.0)
+    if biquad_type == "Lowshelf":
+        beta = 2.0 * math.sqrt(amp) * alpha
+        return (
+            amp * ((amp + 1) - (amp - 1) * cw + beta),
+            2 * amp * ((amp - 1) - (amp + 1) * cw),
+            amp * ((amp + 1) - (amp - 1) * cw - beta),
+            (amp + 1) + (amp - 1) * cw + beta,
+            -2 * ((amp - 1) + (amp + 1) * cw),
+            (amp + 1) + (amp - 1) * cw - beta,
+        )
+    if biquad_type == "Highshelf":
+        beta = 2.0 * math.sqrt(amp) * alpha
+        return (
+            amp * ((amp + 1) + (amp - 1) * cw + beta),
+            -2 * amp * ((amp - 1) + (amp + 1) * cw),
+            amp * ((amp + 1) + (amp - 1) * cw - beta),
+            (amp + 1) - (amp - 1) * cw + beta,
+            2 * ((amp - 1) - (amp + 1) * cw),
+            (amp + 1) - (amp - 1) * cw - beta,
+        )
+    # Peaking (default).
+    return (
+        1 + alpha * amp,
+        -2 * cw,
+        1 - alpha * amp,
+        1 + alpha / amp,
+        -2 * cw,
+        1 - alpha / amp,
+    )
+
+
+def _freq_trig(freqs: Iterable[float]) -> list[tuple[float, float, float, float]]:
+    """Per-frequency (cos ω, sin ω, cos 2ω, sin 2ω) at the response rate.
+
+    Depends only on the frequency grid, not on any filter, so a summed
+    response computes it once and reuses it across every band — the trig is
+    the bulk of the per-point cost. Pass the result to _filter_response_db.
+    """
+    table: list[tuple[float, float, float, float]] = []
     for freq in freqs:
-        safe_freq = max(float(freq), 1e-6)
-        if spec.biquad_type == "Lowshelf":
-            # Smooth log-frequency shelf approximation. This is only
-            # for preview/headroom; CamillaDSP computes the real biquad.
-            x = math.log2(safe_freq / spec.freq)
-            out.append(spec.gain / (1.0 + math.exp(3.0 * x)))
-        elif spec.biquad_type == "Highshelf":
-            x = math.log2(safe_freq / spec.freq)
-            out.append(spec.gain / (1.0 + math.exp(-3.0 * x)))
-        else:
-            q = spec.q or 1.0
-            delta_oct = math.log2(safe_freq / spec.freq)
-            bw = 1.0 / max(q, 1e-3)
-            out.append(spec.gain / (1.0 + (delta_oct / bw) ** 2))
+        w = 2.0 * math.pi * max(float(freq), 1e-6) / RESPONSE_SAMPLE_RATE_HZ
+        table.append((math.cos(w), math.sin(w), math.cos(2.0 * w), math.sin(2.0 * w)))
+    return table
+
+
+def _filter_response_db(
+    spec: FilterSpec,
+    freqs: Iterable[float],
+    trig: list[tuple[float, float, float, float]] | None = None,
+) -> list[float]:
+    """Magnitude response in dB of one biquad across ``freqs``.
+
+    Evaluates |H(e^{jω})| of the RBJ biquad. Cascading is exact in dB
+    (|H1·H2| = |H1|·|H2| ⇒ dB adds), so callers sum per-band results. Pass
+    a shared ``trig`` table (from _freq_trig) to avoid recomputing the
+    per-frequency trig once per band in a multi-band sum.
+    """
+    b0, b1, b2, a0, a1, a2 = _biquad_coeffs(
+        spec.biquad_type, spec.freq, spec.gain, spec.q or 1.0
+    )
+    if trig is None:
+        trig = _freq_trig(freqs)
+    out: list[float] = []
+    for c1, s1, c2, s2 in trig:
+        num_re = b0 + b1 * c1 + b2 * c2
+        num_im = -(b1 * s1 + b2 * s2)
+        den_re = a0 + a1 * c1 + a2 * c2
+        den_im = -(a1 * s1 + a2 * s2)
+        num = num_re * num_re + num_im * num_im
+        den = den_re * den_re + den_im * den_im
+        out.append(10.0 * math.log10(max(num / den, 1e-12)) if den > 0.0 else 0.0)
     return out
 
 
@@ -742,16 +875,20 @@ def response_preview(
     profile: SoundProfile,
     freqs: Iterable[float] = DEFAULT_PREVIEW_FREQS,
 ) -> list[dict[str, float]]:
-    """Approximate magnitude response for UI preview and headroom.
+    """Summed magnitude response (dB) for UI preview and headroom.
 
-    The preview is intentionally labelled approximate in the UI. The
-    actual audio path uses CamillaDSP's filter implementation.
+    Real RBJ biquad magnitude (see _biquad_coeffs), evaluated at
+    RESPONSE_SAMPLE_RATE_HZ so it matches CamillaDSP's actual output for the
+    Q-parameterised types. Shelves are drawn as a fixed Butterworth shelf to
+    mirror the 6 dB/oct slope emit. Cascading is exact in dB, so per-band
+    results sum.
     """
 
     freq_list = [float(freq) for freq in freqs]
+    trig = _freq_trig(freq_list)
     totals = [0.0 for _ in freq_list]
     for spec in build_sound_filters(profile):
-        for i, db in enumerate(_filter_response_db(spec, freq_list)):
+        for i, db in enumerate(_filter_response_db(spec, freq_list, trig)):
             totals[i] += db
     return [
         {"freq_hz": round(freq, 3), "db": round(db, 3)}
@@ -763,14 +900,15 @@ def response_component_payload(
     profile: SoundProfile,
     freqs: Iterable[float] = DEFAULT_PREVIEW_FREQS,
 ) -> dict[str, Any]:
-    """Approximate component responses for UI overlays.
+    """Per-component responses for the UI overlays.
 
-    This is intentionally the same cheap preview math used by
-    ``response_preview``. The graph is an interaction aid, not the DSP
-    authority; CamillaDSP owns the actual filter implementation.
+    The same real RBJ magnitude math as ``response_preview`` (shared trig
+    table), split into curve / simple / advanced groups. The graph is an
+    interaction aid, not the DSP authority; CamillaDSP owns the runtime path.
     """
 
     freq_list = [float(freq) for freq in freqs]
+    trig = _freq_trig(freq_list)
 
     def _points(specs: Iterable[FilterSpec]) -> list[dict[str, float]]:
         totals = [0.0 for _ in freq_list]
@@ -779,7 +917,7 @@ def response_component_payload(
             if not spec.active():
                 continue
             active = True
-            for i, db in enumerate(_filter_response_db(spec, freq_list)):
+            for i, db in enumerate(_filter_response_db(spec, freq_list, trig)):
                 totals[i] += db
         if not active:
             return []
@@ -842,9 +980,9 @@ def loudness_compensation_db(profile: SoundProfile) -> float:
 
     Anchored to attenuation (>= 0): a net-louder profile is turned down
     toward flat loudness; a net-quieter (subtractive) profile is left alone
-    rather than boosted, so the compensation can never cause clipping. This
-    is an approximation, consistent with response_preview; CamillaDSP owns
-    the real filters.
+    rather than boosted, so the compensation can never cause clipping. The
+    loudness weighting is a deliberate heuristic; it reads the same accurate
+    response_preview magnitude the graph draws.
     """
 
     if not build_sound_filters(profile):

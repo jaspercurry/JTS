@@ -19,14 +19,32 @@ It is deliberately separate from `/correction/`:
 
 The advanced parametric editor is intentionally touch-first: users
 adjust filter type, frequency, gain, and Q/width with controls while the
-graph keeps the total response visually dominant. When a PEQ band row is
-expanded, the graph also shows that one band's individual response as a
-secondary overlay and, for peaking filters, its translucent width region;
-collapsed/non-selected bands remain passive markers only.
-Dragging points on the graph is deferred; the graph is a display
-surface, not the state authority. Advanced PEQ bands show a vertical
-frequency marker even when gain is still 0 dB, so a newly-added band has
-a visible place on the response chart before it changes the sound.
+graph keeps the single total-response curve visually dominant. Each
+enabled band is one dot anchored **on** that summed curve (the curve's
+own value at the band's frequency), so the dot sits on the line for every
+filter type — including shelves and cuts, whose response at the corner
+frequency is not the band's nominal gain. When a PEQ band row is
+expanded, the graph adds that one band's individual response as a
+secondary overlay and, for peaking filters, its translucent width region
+plus a frequency guide line; collapsed/non-selected bands are just the
+on-curve dot — no per-band marker lines or component curves clutter the
+default view. Dragging points on the graph is deferred; the graph is a
+display surface, not the state authority.
+
+Available band types (all CamillaDSP biquads): **Lowshelf**, **Peaking**,
+**Highshelf**, **Highpass**, **Lowpass**, **Notch**. The three cut/notch
+types carry no gain — the UI hides the Gain control, the model pins gain
+to 0, and the emitted YAML omits the gain term. Shelves hide the Width
+control (their slope is fixed at 6 dB/oct in the emit). High/low-pass Q is
+capped at `CUT_MAX_Q` (1.4) in both the model and the slider, because a
+high-Q cut is a large resonant *boost* at the corner (a Q=8 highpass peaks
+~+18 dB) — surprising on a "pass" filter and a needless clipping source;
+Notch keeps the full Q range since it is meant to be surgical. Switching a
+band into high/low-pass snaps Q to Butterworth (0.707). The graph draws
+real RBJ-cookbook biquad magnitude evaluated at CamillaDSP's 48 kHz rate
+(`jasper/sound/profile.py` `_biquad_coeffs`, mirrored by
+`deploy/assets/sound-profile/js/eq-math.js`), so the line matches the
+speaker's actual output.
 
 The Draft editor has two exclusive modes:
 
@@ -346,7 +364,9 @@ convention other wizards follow.
 `/sound/preview`:
 
 1. Parses and clamps the posted `SoundProfile`.
-2. Returns approximate total and component response previews.
+2. Returns total and per-component response previews — real RBJ biquad
+   magnitude at 48 kHz, matching CamillaDSP's output (shelves are drawn
+   as a fixed Butterworth shelf to mirror the 6 dB/oct slope emit).
 3. Does not touch CamillaDSP or disk.
 
 `/sound/profiles/save`, `/sound/profiles/rename`, and
@@ -555,4 +575,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-03
+Last verified: 2026-06-04
