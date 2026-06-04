@@ -12,11 +12,25 @@ failures unwind correctly too.
 """
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jasper.usbsink.daemon import UsbSinkDaemon, DaemonConfig
+from jasper.usbsink.audio_bridge import BridgeStats, BLOCK_FRAMES
+from jasper.usbsink.daemon import (
+    WATCHDOG_STALE_SEC,
+    UsbSinkDaemon,
+    DaemonConfig,
+)
+
+
+class _FakeHeartbeat:
+    def __init__(self):
+        self.bumps = 0
+
+    def bump(self):
+        self.bumps += 1
 
 
 def _make_daemon_with_stubs(*, bridge_fail=False, heartbeat_fail=False):
@@ -182,3 +196,108 @@ def test_daemon_wires_mixer_card_to_volume_bridge_and_state_publisher():
     assert daemon._volume_bridge._card_name == "short-form"
     # StatePublisher checks /proc/asound/<short>/ for host-connected.
     assert str(daemon._state_publisher._host_card_path) == "/proc/asound/short-form"
+
+
+def test_setup_logging_installs_usbsink_flight_recorder(monkeypatch):
+    """Default daemon startup should join the standard JTS observability
+    path: INFO journal, DEBUG ring, dump on WARNING/SIGUSR1."""
+    root = logging.getLogger()
+    jasper = logging.getLogger("jasper")
+    saved = (root.handlers[:], root.level, jasper.level)
+    calls: list[str] = []
+    try:
+        root.handlers[:] = []
+        monkeypatch.setattr(
+            "jasper.flight_recorder.install",
+            lambda subsystem: calls.append(subsystem),
+        )
+        UsbSinkDaemon(DaemonConfig())._setup_logging()
+        assert calls == ["usbsink"]
+    finally:
+        root.handlers[:], root.level = saved[0], saved[1]
+        jasper.setLevel(saved[2])
+
+
+# ----------------------------------------------------------------------
+# Watchdog policy: output progress is daemon health; capture progress is
+# source activity. A USB host can be idle forever without causing restart.
+# ----------------------------------------------------------------------
+
+
+def test_watchdog_bumps_on_playback_progress_even_when_capture_idle(caplog):
+    daemon = UsbSinkDaemon(DaemonConfig())
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_capture_progress_mono = now - WATCHDOG_STALE_SEC - 1.0
+    daemon._last_playback_progress_mono = now - 1.0
+    stats = BridgeStats(
+        playback_callbacks=1,
+        frames_output=BLOCK_FRAMES,
+    )
+
+    with caplog.at_level(logging.INFO):
+        daemon._observe_bridge_progress(stats, hb, now)
+
+    assert hb.bumps == 1
+    assert daemon._last_playback_callbacks_seen == 1
+    assert daemon._capture_idle_logged is True
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("event=usbsink.capture_idle" in m for m in messages)
+    assert not any("event=usbsink.playback_no_progress" in m for m in messages)
+
+
+def test_watchdog_suppresses_when_playback_callback_stalls(caplog):
+    daemon = UsbSinkDaemon(DaemonConfig())
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_playback_progress_mono = now - WATCHDOG_STALE_SEC - 0.1
+    stats = BridgeStats()
+
+    with caplog.at_level(logging.WARNING):
+        daemon._observe_bridge_progress(stats, hb, now)
+
+    assert hb.bumps == 0
+    assert daemon._playback_stale_logged is True
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("event=usbsink.playback_no_progress" in m for m in messages)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        daemon._observe_bridge_progress(stats, hb, now + 1.0)
+
+    assert hb.bumps == 0
+    assert not any(
+        "event=usbsink.playback_no_progress" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_capture_resume_logs_once_after_idle(caplog):
+    daemon = UsbSinkDaemon(DaemonConfig())
+    hb = _FakeHeartbeat()
+    now = 100.0
+    daemon._last_capture_progress_mono = now - WATCHDOG_STALE_SEC - 1.0
+    daemon._last_playback_progress_mono = now - 1.0
+
+    with caplog.at_level(logging.INFO):
+        daemon._observe_bridge_progress(
+            BridgeStats(playback_callbacks=1, frames_output=BLOCK_FRAMES),
+            hb,
+            now,
+        )
+        caplog.clear()
+        daemon._observe_bridge_progress(
+            BridgeStats(
+                capture_callbacks=1,
+                playback_callbacks=2,
+                frames_captured=BLOCK_FRAMES,
+                frames_output=2 * BLOCK_FRAMES,
+            ),
+            hb,
+            now + 1.0,
+        )
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("event=usbsink.capture_resumed" in m for m in messages)
+    assert daemon._capture_idle_logged is False
+    assert hb.bumps == 2

@@ -5,14 +5,15 @@
 
 * persist a toggle to ``/var/lib/jasper/debug.env`` (atomic rewrite,
   preserving other keys — same idiom as the AEC-leg toggle);
-* apply it — restart the target daemon so its ``apply_for`` runs again
-  (``voice`` / ``aec``), or set the level **in process** for
-  ``control`` itself (restarting jasper-control would drop the request
-  + the expiry timer — a self-restart footgun, so it's special-cased);
+* apply it — restart the target daemon so its ``apply_for`` runs again,
+  defer optional daemons that are not running, or set the level **in
+  process** for ``control`` itself (restarting jasper-control would drop
+  the request + the expiry timer — a self-restart footgun);
 * enforce **auto-expiry** — a single ``threading.Timer`` clears the
-  flags + restarts the affected daemons when the shared TTL elapses, so
-  a forgotten toggle self-heals back to INFO. Re-armed on every change
-  and reconciled on jasper-control startup.
+  flags when the shared TTL elapses while each daemon self-quiets its
+  journal handler in process, so a forgotten toggle self-heals back to
+  INFO without a restart. Re-armed on every change and reconciled on
+  jasper-control startup.
 
 Threading model: jasper-control is a stdlib threaded HTTP server (no
 persistent asyncio loop on the request path), so expiry uses a plain
@@ -68,6 +69,35 @@ def _restart_unit(unit: str) -> None:
     subprocess.Popen(["systemctl", "restart", "--no-block", unit])
 
 
+def _unit_is_active(unit: str) -> bool:
+    """Whether systemd reports the unit active. Raises on spawn failure so
+    the endpoint can surface a real apply-path problem on the Pi."""
+    proc = subprocess.run(
+        ["systemctl", "is-active", "--quiet", unit],
+        check=False,
+        timeout=3,
+    )
+    return proc.returncode == 0
+
+
+def _restart_unit_if_active(subsystem: str, unit: str, enabled: bool) -> None:
+    """Apply debug to optional daemons without changing source enablement.
+
+    ``systemctl restart`` starts inactive services, which would make the
+    Debug card an accidental source toggle for optional renderers like USB
+    input. If the unit is stopped, leave the env flag in place and let the
+    daemon pick it up on its next legitimate start.
+    """
+    if _unit_is_active(unit):
+        _restart_unit(unit)
+        return
+    logger.info(
+        "event=debug.apply_deferred subsystem=%s unit=%s enabled=%s "
+        "reason=unit_inactive",
+        subsystem, unit, enabled,
+    )
+
+
 # Seam for tests: swap out the timer factory so unit tests don't spawn
 # real background threads. Returns an object with .cancel().
 def _schedule(delay: float, fn) -> "threading.Timer":
@@ -97,8 +127,8 @@ def _arm_expiry_locked(state: debug_mode.DebugState, now: float) -> None:
 def _on_expiry() -> None:
     """Timer callback: the shared TTL elapsed. Clear the debug.env SSOT (so
     `/state` reads off and the next daemon start is clean). Every daemon —
-    voice, aec, AND control — quiets its own journal handler via its
-    per-process self-quiet timer (``debug_mode.apply_for``); no restart."""
+    including control — quiets its own journal handler via its per-process
+    self-quiet timer (``debug_mode.apply_for``); no restart."""
     with _lock:
         _atomic_write(_clear_all())
         _cancel_timer_locked()
@@ -125,14 +155,18 @@ def set_debug(
         _atomic_write(updates)
         state = debug_mode.read_debug_state(now=now)
         _arm_expiry_locked(state, now)
-    if subsystem == "control":
+    sub = SUBSYSTEMS[subsystem]
+    if sub.apply_policy == "in_process":
         # In-process — no self-restart. apply_for re-reads debug.env (just
         # written), moves control's journal handler, and (re-)arms/cancels
-        # control's per-process self-quiet timer — same path as voice/aec.
+        # control's per-process self-quiet timer — same path as the
+        # daemon subsystems.
         # Pass `now` so the expiry check matches the just-written timestamp.
         debug_mode.apply_for("control", now=now)
+    elif sub.apply_policy == "restart_if_active":
+        _restart_unit_if_active(subsystem, sub.unit, enabled)
     else:
-        _restart_unit(SUBSYSTEMS[subsystem].unit)
+        _restart_unit(sub.unit)
     logger.info(
         "event=debug.toggle subsystem=%s enabled=%s remaining_sec=%.0f client=control",
         subsystem, enabled, state.remaining_sec,
@@ -147,7 +181,12 @@ def snapshot(now: float | None = None) -> dict:
     st = debug_mode.read_debug_state(now=now)
     return {
         "subsystems": [
-            {"id": s.id, "label": s.label, "enabled": s.id in st.active}
+            {
+                "id": s.id,
+                "label": s.label,
+                "enabled": s.id in st.active,
+                "apply_policy": s.apply_policy,
+            }
             for s in SUBSYSTEMS.values()
         ],
         "any_active": bool(st.active),

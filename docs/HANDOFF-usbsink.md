@@ -6,7 +6,7 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-> ### Current operational truth (updated 2026-05-27)
+> ### Current operational truth (updated 2026-06-04)
 >
 > USB Audio Input is shipped and off by default. Enabling it from
 > `/sources/` writes the gadget overlay/config and requires reboot for
@@ -29,6 +29,14 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > `playing` is the RMS/hysteresis signal from the host stream;
 > `preempted` is separate mux state and does not change `playing`.
 > Mux preempts USB via the local `/preempt` endpoint on port 8781.
+> USB capture idleness is normal: the feature may be enabled while no
+> host is plugged in, while a host is plugged in but paused, or while
+> another renderer is being used. `jasper-usbsink` therefore treats
+> playback/output callback progress as daemon liveness for the systemd
+> watchdog, because that callback should keep writing either host audio
+> or explicit silence into `usbsink_substream`. Capture callback stalls
+> are INFO-level `event=usbsink.capture_idle` / `capture_resumed`
+> diagnostics plus `playing=false`, not restart decisions.
 >
 > Disabled cost is effectively zero resident daemon memory; enabled
 > cost is about 18-22 MB Pss. When adding another music source, use
@@ -1196,14 +1204,14 @@ the same size as the AEC bridge subsystem.
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| Host unplugs USB cable | `/proc/asound/UAC2Gadget` capture endpoint signals EPIPE on next read | sounddevice raises `PortAudioError`; daemon catches, sets `host_connected=false`, waits 500 ms, reopens the stream. Loops until host reconnects or service stops. |
+| Host unplugs USB cable | Capture callbacks may idle, PortAudio may report status flags, or the stream may fail depending on host/kernel behavior. | Capture-only idle publishes `playing=false` and logs `event=usbsink.capture_idle`. PortAudio status flags are surfaced in the journal. If the stream failure takes down the daemon, systemd restarts it via `Restart=on-failure`. |
 | Host enters suspend (Mac sleeps) | Capture endpoint goes silent (no errors, just zeros); RMS drops below threshold | Daemon publishes `playing=false`. Mux releases USB winner. No special handling needed. |
-| Host suspends and re-enumerates on wake | sounddevice stream may error or silently stop delivering callbacks. Detection: 5 s without a callback fires. | Daemon timer-based watchdog reopens the stream. |
+| Host suspends and re-enumerates on wake | sounddevice stream may error, emit PortAudio status flags, or temporarily stop capture callbacks. | Errors/status flags are surfaced in the journal. Capture-only idle publishes `playing=false` and logs `event=usbsink.capture_idle`; it does not watchdog-restart because host silence is valid. If the output callback also stops, the systemd watchdog restarts the daemon. |
 | Pi reboots mid-session | systemd starts jasper-usbsink-init then jasper-usbsink; ConfigFS gadget comes back up. Host re-detects JTS. | Standard boot path. Init unit handles idempotency (existing gadget descriptor → skip create). |
 | libcomposite fails to load (kernel module corrupted) | `modprobe libcomposite` returns non-zero in `jasper-usbsink-init`'s ExecStartPre | Init unit fails; jasper-usbsink doesn't start. Doctor catches it on the next run. Sources wizard shows toggle as "available: false" because card isn't present. |
 | ConfigFS write fails (e.g. UDC already bound to a different gadget) | uac2-gadget-up.sh returns non-zero | Init unit fails; same as above. Operator runs `uac2-gadget-down.sh` manually or reboots. |
 | Audio bridge daemon crashes | systemd `Restart=on-failure` | Restarts within 2 s. Audio gap is ~2 s; state file might have stale `playing=true` for a tick. Mux re-evaluates next tick. |
-| Audio bridge wedges (callback stops firing) | `WatchdogSec=15s` + `Type=notify` heartbeat from the daemon's main loop every 5 s | systemd kills + restarts the daemon. Same as crash. |
+| Audio bridge output wedges (playback callback stops firing) | `WatchdogSec=15s` + `Type=notify` heartbeat from the daemon's main loop, bumped only by playback/output callback progress | systemd kills + restarts the daemon. Same as crash. |
 | Mixer observer thread dies | Daemon's main loop checks observer task with `task.done()` every 5 s | Logs warning, restarts the observer task. Volume bridge degraded but audio continues. |
 | Mux POST to preempt endpoint fails | httpx exception in `Mux._pause(USBSINK)` | Logs warning; USB audio continues mixing briefly. Documented limitation (matches Bluetooth's behavior, but rarer because the local HTTP path is more reliable than DBus). |
 | Two USB hosts plugged in simultaneously (impossible by UAC2 spec) | Splitter physically prevents this | Hardware-enforced; nothing to do |
@@ -1212,9 +1220,15 @@ the same size as the AEC bridge subsystem.
 ### Watchdog pattern
 
 The daemon uses `Type=notify` with `WatchdogSec=15s`. The main async
-loop calls `sdnotify.notifier.notify("WATCHDOG=1")` every 5 seconds.
-If the loop wedges (e.g. sounddevice callback thread deadlocks), the
-watchdog fires and systemd restarts.
+loop uses `jasper.watchdog.Heartbeat`, but it bumps the progress
+sentinel only when the playback/output callback has advanced. That
+callback should keep running while USB input is idle because it writes
+silence into the private fan-in lane. Capture callback progress is
+source-activity evidence, not daemon-health evidence; an idle host must
+not look like a crash.
+
+If the playback/output callback wedges, heartbeat pats stop, the
+watchdog fires, and systemd restarts.
 
 Mirrors the pattern in
 [jasper/watchdog.py](../jasper/watchdog.py) — same helper, no new
