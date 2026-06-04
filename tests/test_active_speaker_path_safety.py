@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from jasper.active_speaker import (
@@ -7,9 +9,72 @@ from jasper.active_speaker import (
     OPERATOR_EVIDENCE_SOURCE,
     PATH_SAFETY_EVIDENCE_KIND,
     ActiveSpeakerConfigError,
+    build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
     requirements_payload,
+    write_path_safety_evidence,
 )
+from jasper.active_speaker.calibration_level import calibration_level_payload
+from jasper.active_speaker.staging import stage_protected_startup_config
+from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+
+
+def _topology() -> OutputTopology:
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_mono",
+        "name": "Bench mono cabinet",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "mono",
+                "label": "Mono cabinet",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "software_guard_requested",
+                    },
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "mono"},
+    })
+
+
+def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
+    return CamillaConfigValidationResult(
+        status=ValidationStatus.VALID,
+        path=str(path),
+    )
+
+
+def _staged(tmp_path: Path) -> dict:
+    return stage_protected_startup_config(
+        _topology(),
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-04T12:00:00Z",
+    )
 
 
 def _passing_evidence() -> dict:
@@ -134,3 +199,73 @@ def test_path_safety_rejects_missing_schema_metadata():
 
     with pytest.raises(ActiveSpeakerConfigError, match="kind"):
         evaluate_path_safety_evidence(evidence)
+
+
+def test_startup_load_path_probe_passes_with_protected_rollback(
+    tmp_path: Path,
+) -> None:
+    staged = _staged(tmp_path)
+    evidence = build_startup_load_path_safety_evidence(
+        _topology(),
+        staged_config=staged,
+        calibration_level=calibration_level_payload(),
+        current_config_path=staged["config"]["path"],
+        generated_at="2026-06-04T12:00:00Z",
+    )
+
+    report = evaluate_path_safety_evidence(evidence)
+
+    assert evidence["evidence_source"] == HARDWARE_PROBE_EVIDENCE_SOURCE
+    assert evidence["evidence_mode"] == "startup_load_preflight"
+    assert evidence["scope"] == "load_only_no_audio"
+    assert report["ok_to_load_active_config"] is True
+    assert report["load_gate"] == "ready"
+
+
+def test_startup_load_path_probe_blocks_unprotected_rollback_target(
+    tmp_path: Path,
+) -> None:
+    staged = _staged(tmp_path)
+    prior = tmp_path / "prior_stereo.yml"
+    prior.write_text(
+        "devices:\n"
+        "  volume_limit: 0\n"
+        "  playback:\n"
+        "    type: Alsa\n"
+        "    device: default:CARD=JasperOut\n"
+        "    channels: 2\n",
+        encoding="utf-8",
+    )
+
+    evidence = build_startup_load_path_safety_evidence(
+        _topology(),
+        staged_config=staged,
+        calibration_level=calibration_level_payload(),
+        current_config_path=prior,
+    )
+    report = evaluate_path_safety_evidence(evidence)
+
+    assert report["status"] == "blocked"
+    assert report["ok_to_load_active_config"] is False
+    assert any(
+        issue["code"] == "rollback_target_protected_not_verified"
+        for issue in report["issues"]
+    )
+    assert any(
+        issue["code"] == "rollback_target_not_protected"
+        for issue in evidence["observed_issues"]
+    )
+
+
+def test_write_path_safety_evidence_persists_probe_payload(tmp_path: Path) -> None:
+    staged = _staged(tmp_path)
+    evidence = build_startup_load_path_safety_evidence(
+        _topology(),
+        staged_config=staged,
+        calibration_level=calibration_level_payload(),
+        current_config_path=staged["config"]["path"],
+    )
+
+    path = write_path_safety_evidence(evidence, path=tmp_path / "path_safety.json")
+
+    assert path.read_text(encoding="utf-8").startswith("{\n")

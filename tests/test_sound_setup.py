@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -175,6 +176,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/startup-load'" in js
     assert "fetch('./active-speaker/tone-targets'" in js
     assert "fetch('./active-speaker/stage-config'" in js
+    assert "fetch('./active-speaker/check-path-safety'" in js
     assert "fetch('./active-speaker/load-startup-config'" in js
     assert "fetch('./active-speaker/rollback-startup-config'" in js
     assert "activeSpeakerPost('./active-speaker/arm', 'Arming')" in js
@@ -185,6 +187,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"arm-active-speaker\"" in js
     assert "data-act=\"stop-active-speaker\"" in js
     assert "data-act=\"stage-active-config\"" in js
+    assert "data-act=\"check-active-path-safety\"" in js
     assert "data-act=\"load-active-startup\"" in js
     assert "data-act=\"rollback-active-startup\"" in js
     assert "data-act=\"prepare-active-tone\"" in js
@@ -218,6 +221,11 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "manual guarded bring-up stays available" in js
     assert "function renderActiveSpeakerStartupLoad(startupLoad)" in js
     assert "Startup load" in js
+    assert "Check protected path" in js
+    assert "function checkActivePathSafety()" in js
+    assert "var environment = await fetchActiveSpeakerEnvironment()" in js
+    assert "payload: environment" in js
+    assert "Protected path check passed. No sound was played." in js
     assert "Load protected config" in js
     assert "Rollback to prior config" in js
     assert "This reloads the DSP graph but does not play tones" in js
@@ -456,6 +464,30 @@ def test_active_speaker_playback_readiness_payload_is_no_audio(
         "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
         str(tmp_path / "tone-artifacts"),
     )
+    startup_load_state = tmp_path / "startup-load.json"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
+        str(startup_load_state),
+    )
+    active_config_path = tmp_path / "active-startup.yml"
+    prior_config_path = tmp_path / "prior.yml"
+    active_config_path.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    prior_config_path.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    startup_load_state.write_text(
+        json.dumps({
+            "artifact_schema_version": 1,
+            "kind": "jts_active_speaker_startup_load_state",
+            "status": "loaded",
+            "loaded": True,
+            "candidate_config_path": str(active_config_path),
+            "active_config_path": str(active_config_path),
+            "previous_config_path": str(prior_config_path),
+            "rollback_available": True,
+            "last_action": "load",
+            "issues": [],
+        }),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         sound_setup,
         "_active_speaker_environment_payload",
@@ -463,6 +495,10 @@ def test_active_speaker_playback_readiness_payload_is_no_audio(
             "status": "pass",
             "load_gate": "ready",
             "ok_to_load_active_config": True,
+            "camilla_config": {
+                "path": str(active_config_path),
+                "classification": "active_startup_candidate",
+            },
             "safe_playback": {
                 "status": "not_implemented",
                 "playback_allowed": False,
@@ -619,6 +655,81 @@ def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
     assert staged["load"]["load_allowed"] is False
     assert Path(staged["config"]["path"]).exists()
     assert loaded["status"] == "staged"
+
+
+def test_active_speaker_path_safety_payload_writes_no_audio_evidence(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
+        str(tmp_path / "active_staged.yml"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
+        str(tmp_path / "path_safety.json"),
+    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_mono",
+        "name": "Bench mono",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "mono",
+                "label": "Mono cabinet",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "software_guard_requested",
+                    },
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "mono"},
+    })
+    staged = sound_setup._active_speaker_stage_config_payload({})
+    fake = FakeCamilla(staged["config"]["path"])
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_check_path_safety_payload(
+            camilla_factory=lambda: fake,
+        )
+    )
+
+    evidence_path = Path(payload["evidence_path"])
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert payload["report"]["ok_to_load_active_config"] is True
+    assert payload["startup_load"]["preflight"]["path_safety"]["load_gate"] == "ready"
+    assert evidence["evidence_mode"] == "startup_load_preflight"
+    assert fake.set_calls == []
 
 
 def test_active_speaker_stage_config_rejects_non_string_playback_device() -> None:

@@ -20,6 +20,7 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/calibration-level update backend-owned level guard
   POST /active-speaker/playback-readiness no-audio target readiness checklist
   POST /active-speaker/stage-config stage protected startup config
+  POST /active-speaker/check-path-safety inspect and persist no-audio path evidence
   POST /active-speaker/load-startup-config load protected startup config, no sound
   POST /active-speaker/rollback-startup-config restore pre-load config, no sound
   POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
@@ -809,8 +810,13 @@ def _active_speaker_environment_payload() -> dict[str, Any]:
 
 
 def _active_speaker_path_safety_evidence_path() -> str | None:
+    from jasper.active_speaker.path_safety import path_safety_evidence_path
+
     evidence_path = os.environ.get("JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE")
-    return evidence_path.strip() if evidence_path and evidence_path.strip() else None
+    if evidence_path and evidence_path.strip():
+        return evidence_path.strip()
+    default_path = path_safety_evidence_path()
+    return str(default_path) if default_path.exists() else None
 
 
 def _active_speaker_staged_config_payload() -> dict[str, Any]:
@@ -1018,6 +1024,77 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
     return payload
 
 
+async def _active_speaker_check_path_safety_payload(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Build and persist no-audio startup-load path-safety evidence."""
+
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.path_safety import (
+        build_startup_load_path_safety_evidence,
+        evaluate_path_safety_evidence,
+        write_path_safety_evidence,
+    )
+    from jasper.active_speaker.staging import load_staged_startup_config
+    from jasper.active_speaker.startup_load import (
+        build_startup_load_preflight,
+        load_startup_load_state,
+    )
+
+    topology = load_output_topology()
+    staged_config = load_staged_startup_config()
+    calibration_level = load_calibration_level_state()
+    current_config_path: str | None = None
+    current_config_error: str | None = None
+    try:
+        current_config_path = await camilla_factory().get_config_file_path(
+            best_effort=False
+        )
+    except Exception as exc:  # noqa: BLE001
+        current_config_error = type(exc).__name__
+        logger.warning(
+            "event=sound.active_speaker_path_safety action=current_config "
+            "result=error error=%s",
+            current_config_error,
+        )
+    evidence = build_startup_load_path_safety_evidence(
+        topology,
+        staged_config=staged_config,
+        calibration_level=calibration_level,
+        current_config_path=current_config_path,
+        current_config_error=current_config_error,
+    )
+    report = evaluate_path_safety_evidence(evidence)
+    target = write_path_safety_evidence(evidence)
+    preflight = build_startup_load_preflight(
+        topology,
+        staged_config=staged_config,
+        calibration_level=calibration_level,
+        path_safety_evidence_path=target,
+        current_config_path=current_config_path,
+    )
+    logger.info(
+        "event=sound.active_speaker_path_safety action=check status=%s "
+        "load_gate=%s path=%s blockers=%d",
+        report.get("status"),
+        report.get("load_gate"),
+        target,
+        int(report.get("blocker_count") or 0),
+    )
+    return {
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_path_safety_check",
+        "evidence_path": str(target),
+        "evidence": evidence,
+        "report": report,
+        "startup_load": {
+            "state": load_startup_load_state(),
+            "preflight": preflight,
+        },
+    }
+
+
 async def _active_speaker_load_startup_config_payload(
     *,
     camilla_factory: Callable[[], Any],
@@ -1111,12 +1188,14 @@ def _active_speaker_playback_readiness_payload(raw: dict[str, Any]) -> dict[str,
     from jasper.active_speaker.playback import tone_backend_status
     from jasper.active_speaker.readiness import build_playback_readiness
     from jasper.active_speaker.safe_playback import load_safe_playback_state
+    from jasper.active_speaker.startup_load import load_startup_load_state
 
     target = raw.get("target") if isinstance(raw.get("target"), dict) else {}
     topology = load_output_topology()
     environment_report = _active_speaker_environment_payload()
     safe_session = load_safe_playback_state()
     calibration_level = _active_speaker_calibration_level_payload()
+    startup_load_state = load_startup_load_state()
     report = build_playback_readiness(
         topology,
         speaker_group_id=raw.get("speaker_group_id") or target.get("speaker_group_id"),
@@ -1129,6 +1208,7 @@ def _active_speaker_playback_readiness_payload(raw: dict[str, Any]) -> dict[str,
         environment_report=environment_report,
         safe_session=safe_session,
         calibration_level=calibration_level,
+        startup_load_state=startup_load_state,
         tone_backend=tone_backend_status(),
         stop_control_available=True,
     )
@@ -1382,6 +1462,7 @@ def _make_handler(
                 "/active-speaker/channel-protection",
                 "/active-speaker/playback-readiness",
                 "/active-speaker/stage-config",
+                "/active-speaker/check-path-safety",
                 "/active-speaker/load-startup-config",
                 "/active-speaker/rollback-startup-config",
                 "/active-speaker/tone-plan",
@@ -1438,6 +1519,15 @@ def _make_handler(
                     return
                 if path == "/active-speaker/stage-config":
                     self._send_json(_active_speaker_stage_config_payload(raw))
+                    return
+                if path == "/active-speaker/check-path-safety":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_check_path_safety_payload(
+                                camilla_factory=camilla_factory,
+                            )
+                        )
+                    )
                     return
                 if path == "/active-speaker/load-startup-config":
                     self._send_json(

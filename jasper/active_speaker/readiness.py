@@ -77,6 +77,48 @@ def _bounded_level(calibration_level: dict[str, Any]) -> bool:
     )
 
 
+def _startup_load_payload(
+    startup_load_state: dict[str, Any] | None,
+    environment_report: dict[str, Any],
+) -> dict[str, Any]:
+    state = startup_load_state if isinstance(startup_load_state, dict) else {}
+    camilla = (
+        environment_report.get("camilla_config")
+        if isinstance(environment_report.get("camilla_config"), dict)
+        else {}
+    )
+    active_path = str(state.get("active_config_path") or "")
+    current_path = str(camilla.get("path") or "")
+    loaded = state.get("status") == "loaded" and bool(active_path)
+    rollback_available = bool(state.get("rollback_available"))
+    current_matches = bool(current_path and active_path and current_path == active_path)
+    if loaded and rollback_available and current_matches:
+        status = "loaded"
+        message = "Protected startup DSP is loaded"
+    elif loaded and not rollback_available:
+        status = "rollback_missing"
+        message = "Protected startup DSP has no rollback anchor"
+    elif loaded and not current_path:
+        status = "current_config_unknown"
+        message = "CamillaDSP current config path is unavailable"
+    elif loaded and not current_matches:
+        status = "mismatch"
+        message = "CamillaDSP is no longer running the loaded startup config"
+    else:
+        status = "not_loaded"
+        message = "Load the protected startup DSP before any audible test"
+    return {
+        "status": status,
+        "loaded": loaded,
+        "rollback_available": rollback_available,
+        "active_config_path": active_path or None,
+        "current_config_path": current_path or None,
+        "current_config_matches_loaded": current_matches,
+        "ready_for_playback": loaded and rollback_available and current_matches,
+        "message": message,
+    }
+
+
 def build_playback_readiness(
     topology: OutputTopology,
     *,
@@ -85,6 +127,7 @@ def build_playback_readiness(
     environment_report: dict[str, Any],
     safe_session: dict[str, Any],
     calibration_level: dict[str, Any],
+    startup_load_state: dict[str, Any] | None = None,
     tone_backend: dict[str, Any] | None = None,
     stop_control_available: bool = True,
     allow_tweeter_playback: bool = False,
@@ -118,6 +161,7 @@ def build_playback_readiness(
         issue for issue in environment_report.get("issues", [])
         if isinstance(issue, dict)
     ]
+    startup_load = _startup_load_payload(startup_load_state, environment_report)
     session_issues = [
         issue for issue in safe_session.get("issues", [])
         if isinstance(issue, dict)
@@ -199,6 +243,12 @@ def build_playback_readiness(
                 if environment_report.get("ok_to_load_active_config")
                 else "Active-speaker environment is blocked"
             ),
+        ),
+        _gate(
+            "protected_startup_config_loaded",
+            label="Protected startup DSP is loaded",
+            passed=bool(startup_load.get("ready_for_playback")),
+            message=str(startup_load.get("message") or "Load protected startup DSP"),
         ),
         _gate(
             "safe_session_armed",
@@ -324,6 +374,16 @@ def build_playback_readiness(
             "load_gate": environment_report.get("load_gate"),
             "ok_to_load_active_config": bool(
                 environment_report.get("ok_to_load_active_config")
+            ),
+        },
+        "startup_load": {
+            "status": startup_load.get("status"),
+            "loaded": bool(startup_load.get("loaded")),
+            "rollback_available": bool(startup_load.get("rollback_available")),
+            "active_config_path": startup_load.get("active_config_path"),
+            "current_config_path": startup_load.get("current_config_path"),
+            "current_config_matches_loaded": bool(
+                startup_load.get("current_config_matches_loaded")
             ),
         },
         "safe_session": {

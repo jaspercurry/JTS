@@ -110,6 +110,11 @@ def build_topology_tone_plan(
         if isinstance(readiness_report.get("target"), dict)
         else {}
     )
+    startup_load = (
+        readiness_report.get("startup_load")
+        if isinstance(readiness_report.get("startup_load"), dict)
+        else {}
+    )
     issues: list[dict[str, str]] = []
     if not isinstance(readiness_report, dict):
         issues.append(_issue("blocker", "readiness_required", "readiness report is required"))
@@ -205,6 +210,12 @@ def build_topology_tone_plan(
                 else None
             ),
             "readiness_status": readiness_report.get("status"),
+            "protected_startup_loaded": bool(
+                startup_load.get("loaded")
+                and startup_load.get("rollback_available")
+                and startup_load.get("current_config_matches_loaded")
+            ),
+            "startup_load_status": startup_load.get("status"),
             "requires_emergency_stop": True,
             "artifact_verification_available": True,
             "audible_playback_allowed": playback_allowed,

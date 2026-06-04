@@ -51,7 +51,22 @@ def _environment() -> dict:
         "status": "pass",
         "ok_to_load_active_config": True,
         "load_gate": "ready",
+        "camilla_config": {
+            "path": "/tmp/active.yml",
+            "classification": "active_startup_candidate",
+        },
         "issues": [],
+    }
+
+
+def _startup_load() -> dict:
+    return {
+        "status": "loaded",
+        "loaded": True,
+        "candidate_config_path": "/tmp/active.yml",
+        "active_config_path": "/tmp/active.yml",
+        "previous_config_path": "/tmp/prior.yml",
+        "rollback_available": True,
     }
 
 
@@ -73,6 +88,7 @@ def test_topology_tone_plan_uses_saved_physical_output_map() -> None:
         environment_report=_environment(),
         safe_session=_session(),
         calibration_level=calibration_level_payload(requested_level_dbfs=-60),
+        startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({
             "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
             "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
@@ -111,6 +127,7 @@ def test_topology_tone_plan_can_prepare_artifact_without_audio_authority() -> No
         environment_report=_environment(),
         safe_session=_session(),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({}),
     )
 
@@ -140,6 +157,7 @@ def test_topology_tone_plan_blocks_mismatched_readiness_report() -> None:
         environment_report=_environment(),
         safe_session=_session(),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({}),
     )
 

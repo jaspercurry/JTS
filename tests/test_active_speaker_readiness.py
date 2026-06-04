@@ -48,11 +48,15 @@ def _topology(*, verified: bool = True, protection: str = "present") -> OutputTo
     })
 
 
-def _environment(*, ready: bool = True) -> dict:
+def _environment(*, ready: bool = True, config_path: str = "/tmp/active.yml") -> dict:
     return {
         "status": "pass" if ready else "blocked",
         "ok_to_load_active_config": ready,
         "load_gate": "ready" if ready else "environment_blocked",
+        "camilla_config": {
+            "path": config_path,
+            "classification": "active_startup_candidate" if ready else "missing",
+        },
         "issues": [] if ready else [
             {
                 "severity": "blocker",
@@ -60,6 +64,21 @@ def _environment(*, ready: bool = True) -> dict:
                 "message": "active config missing",
             }
         ],
+    }
+
+
+def _startup_load(
+    *,
+    loaded: bool = True,
+    active_path: str = "/tmp/active.yml",
+) -> dict:
+    return {
+        "status": "loaded" if loaded else "idle",
+        "loaded": loaded,
+        "candidate_config_path": active_path if loaded else None,
+        "active_config_path": active_path if loaded else None,
+        "previous_config_path": "/tmp/prior.yml" if loaded else None,
+        "rollback_available": loaded,
     }
 
 
@@ -80,6 +99,7 @@ def test_playback_readiness_passes_preconditions_without_authorizing_audio() -> 
         environment_report=_environment(),
         safe_session=_safe_session(),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
     )
 
     assert report["kind"] == PLAYBACK_READINESS_KIND
@@ -102,6 +122,7 @@ def test_playback_readiness_allows_non_tweeter_when_audio_backend_enabled() -> N
         environment_report=_environment(),
         safe_session=_safe_session(),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({
             "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
             "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
@@ -124,6 +145,7 @@ def test_playback_readiness_keeps_tweeter_audio_disabled_in_first_slice() -> Non
         environment_report=_environment(),
         safe_session=_safe_session(),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
         tone_backend=tone_backend_status({
             "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
             "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
@@ -146,6 +168,7 @@ def test_playback_readiness_fails_closed_for_unverified_identity() -> None:
         environment_report=_environment(),
         safe_session=_safe_session(),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
     )
 
     codes = {issue["code"] for issue in report["issues"]}
@@ -164,6 +187,7 @@ def test_playback_readiness_requires_tweeter_protection_for_tweeter_target() -> 
         environment_report=_environment(),
         safe_session=_safe_session(),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
     )
 
     codes = {issue["code"] for issue in report["issues"]}
@@ -181,6 +205,7 @@ def test_playback_readiness_keeps_software_guard_request_blocked() -> None:
         environment_report=_environment(),
         safe_session=_safe_session(),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
     )
 
     codes = {issue["code"] for issue in report["issues"]}
@@ -198,6 +223,7 @@ def test_playback_readiness_requires_environment_and_safe_session() -> None:
         environment_report=_environment(ready=False),
         safe_session=_safe_session(armed=False),
         calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
     )
 
     codes = {issue["code"] for issue in report["issues"]}
@@ -208,3 +234,78 @@ def test_playback_readiness_requires_environment_and_safe_session() -> None:
     assert "safe_session_armed" in codes
     assert gates["active_config_load_gate"] is False
     assert gates["safe_session_armed"] is False
+
+
+def test_playback_readiness_requires_loaded_protected_startup_config() -> None:
+    report = build_playback_readiness(
+        _topology(),
+        speaker_group_id="left",
+        role="woofer",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(loaded=False),
+        tone_backend=tone_backend_status({
+            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+        }),
+    )
+    gates = {gate["id"]: gate["passed"] for gate in report["required_gates"]}
+
+    assert report["status"] == "blocked"
+    assert report["playback_allowed"] is False
+    assert report["startup_load"]["loaded"] is False
+    assert gates["protected_startup_config_loaded"] is False
+    assert "protected_startup_config_loaded" in {
+        issue["code"] for issue in report["issues"]
+    }
+
+
+def test_playback_readiness_blocks_when_camilla_config_no_longer_matches_loaded_startup() -> None:
+    report = build_playback_readiness(
+        _topology(),
+        speaker_group_id="left",
+        role="woofer",
+        environment_report=_environment(config_path="/tmp/other.yml"),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(active_path="/tmp/active.yml"),
+        tone_backend=tone_backend_status({
+            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+        }),
+    )
+
+    assert report["status"] == "blocked"
+    assert report["playback_allowed"] is False
+    assert report["startup_load"]["current_config_matches_loaded"] is False
+
+
+def test_playback_readiness_blocks_when_current_camilla_path_is_unknown() -> None:
+    environment = _environment()
+    environment["camilla_config"] = {}
+
+    report = build_playback_readiness(
+        _topology(),
+        speaker_group_id="left",
+        role="woofer",
+        environment_report=environment,
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(active_path="/tmp/active.yml"),
+        tone_backend=tone_backend_status({
+            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+        }),
+    )
+    gates = {gate["id"]: gate["passed"] for gate in report["required_gates"]}
+
+    assert report["status"] == "blocked"
+    assert report["playback_allowed"] is False
+    assert report["startup_load"]["status"] == "current_config_unknown"
+    assert report["startup_load"]["current_config_path"] is None
+    assert report["startup_load"]["current_config_matches_loaded"] is False
+    assert gates["protected_startup_config_loaded"] is False

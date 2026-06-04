@@ -233,14 +233,16 @@ The same saved-channel rows can now **Check readiness** through
 `/sound/active-speaker/playback-readiness`. That route returns a versioned,
 no-audio checklist for one selected topology target by combining safe-session
 state, output topology, channel identity, tweeter protection, clock-domain
-status, active-config/path safety, calibration-level bounds, and Stop
-availability. It reports `preconditions_passed` separately from
+status, active-config/path safety, calibration-level bounds, protected
+startup-load state, and Stop availability. It reports `preconditions_passed`
+separately from
 `playback_allowed`. Default installs still return `playback_allowed: false`
 and can verify artifacts only; explicit lab enablement
 (`JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
 `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
 `JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`) can make non-tweeter saved topology
-targets eligible for a short low-level audible test. Tweeter/compression-driver
+targets eligible for a short low-level audible test only after the protected
+startup DSP is loaded, current, and rollbackable. Tweeter/compression-driver
 audio remains disabled in this slice even with the lab backend enabled.
 For Jasper's immediate mono 2-way build, the same row can now record
 compression-driver protection evidence through
@@ -255,14 +257,25 @@ blocker; it only allows no-load staging after the generated candidate proves
 startup mute, protective high-pass, startup headroom, limiter, and no-playback
 evidence. The route refuses unsupported output assignments and still does not
 load CamillaDSP, reload the graph, emit sound, or authorize playback.
+The same card can now run **Check protected path** through
+`/sound/active-speaker/check-path-safety`. That POST writes
+`active_speaker_path_safety.json` with hardware-probe-backed, no-audio
+startup-load evidence from the saved topology, staged protected candidate,
+calibration-level guard, and current CamillaDSP config path. It is intentionally
+load-scoped only: it can unblock the guarded startup-load gate, but it does not
+authorize tones or normal playback. The loader treats the saved artifact as
+stale if the topology, staged candidate, or rollback config path/hash changes
+after the check. If the current rollback target is raw stereo or an unknown
+custom config, the check stays blocked rather than silently blessing an unsafe
+rollback path.
 The active-speaker runtime substrate starts in
 `jasper.active_speaker`, the physical topology substrate starts in
 `jasper.output_topology`, and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
-The next `/sound/` slice should be hardware validation of the staged
-Epique/F110M candidate plus the guarded startup-load/rollback path, then,
-only after evidence is good, a lab-gated channel-test path and a richer
-measurement loop around the microphone.
+The next `/sound/` slice should resolve the first-load rollback strategy for
+software-guarded compression-driver bring-up, then move to the first
+lab-gated, very-low-level woofer/mid channel-test path on hardware and a richer
+measurement loop around the microphone before any horn output is enabled.
 
 ## Files
 

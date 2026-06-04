@@ -1295,6 +1295,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         return '<li>' + escapeHtml('Load: ' + (issue.message || issue.code || 'issue')) + '</li>';
       }).join('') + '</ul>' : '') +
       '<div class="active-speaker-actions">' +
+        '<button type="button" class="btn btn--ghost" data-act="check-active-path-safety"' +
+          (busy ? ' disabled' : '') + '>Check protected path</button>' +
         '<button type="button" class="btn btn--ghost" data-act="load-active-startup"' +
           (busy || !canLoad ? ' disabled' : '') + '>Load protected config</button>' +
         '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup"' +
@@ -1781,6 +1783,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'check-output-readiness') { checkOutputPlaybackReadiness(t); }
     else if (act === 'play-output-readiness-tone') { playOutputReadinessTone(t); }
     else if (act === 'stage-active-config') { stageActiveSpeakerConfig(); }
+    else if (act === 'check-active-path-safety') { checkActivePathSafety(); }
     else if (act === 'load-active-startup') { loadActiveStartupConfig(); }
     else if (act === 'rollback-active-startup') { rollbackActiveStartupConfig(); }
     else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Arming'); }
@@ -2580,6 +2583,74 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var resp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
     if (!resp.ok) throw new Error('startup load status failed');
     return await resp.json();
+  }
+  async function fetchActiveSpeakerEnvironment() {
+    var resp = await fetch('./active-speaker/environment', {cache: 'no-store'});
+    if (!resp.ok) throw new Error('environment probe failed');
+    return await resp.json();
+  }
+  async function checkActivePathSafety() {
+    activeSpeaker = {
+      loading: false, action: 'Checking protected path',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
+      plan: null,
+      playback: null,
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    };
+    render();
+    try {
+      var resp = await fetch('./active-speaker/check-path-safety', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: '{}'
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'protected path check failed');
+      var ready = payload.report && payload.report.ok_to_load_active_config;
+      var environment = await fetchActiveSpeakerEnvironment();
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: environment,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: payload.startup_load || activeSpeaker.startupLoad,
+        plan: null,
+        playback: null,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status(ready ?
+        'Protected path check passed. No sound was played.' :
+        'Protected path check found blockers. No sound was played.',
+        !ready);
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
+        plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status('Could not check protected path: ' + e.message, true);
+    }
+    render();
   }
   async function loadActiveStartupConfig() {
     if (!await jtsConfirm(
