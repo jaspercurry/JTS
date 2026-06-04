@@ -204,10 +204,13 @@ headers and `/system/`'s cased card titles coexist correctly. Stat-tile labels
 **Tracked follow-up — split `/sound/`'s JS into modules (hardware-gated).**
 `/system/`'s behaviour is split into layered ES modules
 (`dom`/`format`/`charts`/`components`/`sections`/`views`/`api`/`actions`/
-`main`). `/sound/`'s is still a single module — the EQ editor relocated
-verbatim from the old inline `_SOUND_JS`
+`main`). `/sound/`'s view/state/IO logic is still a single module — the EQ
+editor relocated verbatim from the old inline `_SOUND_JS`
 ([`deploy/assets/sound-profile/js/main.js`](../deploy/assets/sound-profile/js/main.js)).
-Splitting it to match (a shared `store` + `eq`/`views`/`io`) is planned but
+The one piece carved out is the pure, DOM-free RBJ biquad math
+([`eq-math.js`](../deploy/assets/sound-profile/js/eq-math.js)), shared with a
+node parity check and mirrored in Python.
+Splitting the rest to match (a shared `store` + `eq`/`views`/`io`) is planned but
 was **deliberately deferred, not blind-refactored**: the editor's ~25
 mutable state vars are woven through its math, `innerHTML` rendering, and
 the live-draft IO, and the live-draft path coordinates rapid edits →

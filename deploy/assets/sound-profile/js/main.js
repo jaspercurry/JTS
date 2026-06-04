@@ -9,17 +9,19 @@
 // unchanged.
 //
 // FOLLOW-UP (deferred, hardware-gated): unlike /system/'s JS — split into
-// dom/format/charts/components/sections/views/api/actions/main — this is
-// still one module. The editor's ~25 state vars are woven through its EQ
-// math, innerHTML rendering, and the live-draft IO; splitting it into a
-// shared store + eq/views/io modules is planned but MUST be exercised on
-// the Pi (band-drag + live-draft → CamillaDSP) before merge. Do not
-// blind-refactor it. See docs/HANDOFF-management-ui.md.
+// dom/format/charts/components/sections/views/api/actions/main — this view/
+// state/IO logic is still one module. The pure RBJ biquad math lives in the
+// sibling eq-math.js (shared with the node parity check). The editor's ~25
+// state vars are woven through its rendering and the live-draft IO; splitting
+// the rest into a shared store + views/io modules is planned but MUST be
+// exercised on the Pi (band-drag + live-draft → CamillaDSP) before merge.
+// Do not blind-refactor it. See docs/HANDOFF-management-ui.md.
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js";
 (function() {
   var LIMIT_DEFAULTS = {
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
-    min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10,
+    min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10, cut_max_q: 1.4,
     simple_bands: [], headroom_trim_max_db: 12
   };
   var DEFAULT_SAVED_ID = 'stock:flat';
@@ -233,17 +235,29 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     }
     return out;
   }
-  function specActive(s) { return Math.abs(Number(s.gain_db || 0)) >= 0.05; }
+  function bandType(s) { return s.type || s.biquad_type || 'Peaking'; }
+  function isGainless(s) { return GAINLESS_TYPES.indexOf(bandType(s)) >= 0; }
+  // Cut filters (HP/LP) get a tighter Q ceiling — a high-Q cut is a big
+  // resonant boost at the corner. Mirrors CUT_MAX_Q in jasper/sound/profile.py.
+  function bandQMax(type) {
+    return (type === 'Highpass' || type === 'Lowpass') ? limits.cut_max_q : limits.max_q;
+  }
+  // Cut/notch bands are active by virtue of existing; gain-bearing bands
+  // need a non-trivial gain to count (mirrors FilterSpec.active() in Python).
+  function specActive(s) {
+    return isGainless(s) || Math.abs(Number(s.gain_db || 0)) >= 0.05;
+  }
+  // Real RBJ biquad magnitude (shared eq-math.js, byte-equivalent to the
+  // Python preview). Replaces the old exp() approximation; required for the
+  // cut/notch types, which have no closed-form approximation.
   function responseDb(spec, freq) {
-    var f = Math.max(Number(freq) || 0, 1e-6);
-    var c = Math.max(Number(spec.freq_hz || spec.freq || 1000), 1e-6);
-    var gain = Number(spec.gain_db || 0);
-    var type = spec.type || spec.biquad_type || 'Peaking';
-    var x = Math.log(f / c) / Math.log(2);
-    if (type === 'Lowshelf') return gain / (1 + Math.exp(3 * x));
-    if (type === 'Highshelf') return gain / (1 + Math.exp(-3 * x));
-    var q = Math.max(Number(spec.q || 1), 1e-3);
-    return gain / (1 + Math.pow(x / (1 / q), 2));
+    return magnitudeDb(
+      bandType(spec),
+      Number(spec.freq_hz || spec.freq || 1000),
+      Number(spec.gain_db || 0),
+      Number(spec.q || 1),
+      Number(freq) || 0
+    );
   }
   function curveSpecs(profile) { return (curvesById[profile.curve_id] || {}).filters || []; }
   function simpleSpecs(profile) {
@@ -307,26 +321,48 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       ' L' + gx(20000).toFixed(1) + ' ' + gy(MINDB).toFixed(1) +
       ' L' + gx(20).toFixed(1) + ' ' + gy(MINDB).toFixed(1) + ' Z"></path>';
   }
-  function drawBandMarkers() {
+  // db value of the summed curve at an arbitrary frequency. The preview
+  // points are ascending in freq_hz; interpolate linearly in log-frequency
+  // so a band dot lands exactly ON the drawn curve regardless of filter type.
+  function summedDbAt(points, freq) {
+    if (!points || !points.length) return 0;
+    if (freq <= points[0].freq_hz) return points[0].db;
+    for (var i = 1; i < points.length; i += 1) {
+      if (freq <= points[i].freq_hz) {
+        var p0 = points[i - 1], p1 = points[i];
+        var span = Math.log(p1.freq_hz) - Math.log(p0.freq_hz);
+        var t = span > 0 ? (Math.log(freq) - Math.log(p0.freq_hz)) / span : 0;
+        return p0.db + t * (p1.db - p0.db);
+      }
+    }
+    return points[points.length - 1].db;
+  }
+  // One dot per band, sitting on the summed curve. Only the expanded band
+  // adds a frequency guide line (+ width shading for Peaking) — no per-band
+  // marker lines or component curves clutter the default view.
+  function drawBandMarkers(summed) {
     if (view !== 'draft' || mode !== 'peq') return '';
     var expandedBand = expandedPeqBandIndex();
     var html = '';
     (draft.parametric_bands || []).forEach(function(b, i) {
       if (!b || b.enabled === false) return;
-      var sel = i === expandedBand ? ' selected' : '';
-      var cx = gx(clamp(b.freq_hz, 20, 20000)), cy = gy(clamp(b.gain_db, MINDB, MAXDB));
-      if ((b.type || 'Peaking') === 'Peaking' && i === expandedBand) {
-        var q = Math.max(Number(b.q || 1), 0.2);
-        var lo = gx(clamp(b.freq_hz / Math.pow(2, 1 / q), 20, 20000));
-        var hi = gx(clamp(b.freq_hz * Math.pow(2, 1 / q), 20, 20000));
-        html += '<rect class="band-width" x="' + Math.min(lo, hi).toFixed(1) +
-                '" y="' + padT + '" width="' + Math.abs(hi - lo).toFixed(1) +
-                '" height="' + (H - padB - padT) + '"></rect>';
+      var sel = i === expandedBand;
+      var fx = clamp(b.freq_hz, 20, 20000);
+      var cx = gx(fx), cy = gy(clamp(summedDbAt(summed, fx), MINDB, MAXDB));
+      if (sel) {
+        if ((b.type || 'Peaking') === 'Peaking') {
+          var q = Math.max(Number(b.q || 1), 0.2);
+          var lo = gx(clamp(b.freq_hz / Math.pow(2, 1 / q), 20, 20000));
+          var hi = gx(clamp(b.freq_hz * Math.pow(2, 1 / q), 20, 20000));
+          html += '<rect class="band-width" x="' + Math.min(lo, hi).toFixed(1) +
+                  '" y="' + padT + '" width="' + Math.abs(hi - lo).toFixed(1) +
+                  '" height="' + (H - padB - padT) + '"></rect>';
+        }
+        html += '<line class="band-guide" x1="' + cx.toFixed(1) + '" x2="' + cx.toFixed(1) +
+                '" y1="' + cy.toFixed(1) + '" y2="' + (H - padB) + '"></line>';
       }
-      html += '<line class="band-marker" x1="' + cx.toFixed(1) + '" x2="' + cx.toFixed(1) +
-              '" y1="' + padT + '" y2="' + (H - padB) + '"></line>';
-      html += '<circle class="band-dot' + sel + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) +
-              '" r="' + (sel ? 4.5 : 3.5) + '"></circle>';
+      html += '<circle class="band-dot' + (sel ? ' selected' : '') + '" cx="' + cx.toFixed(1) +
+              '" cy="' + cy.toFixed(1) + '" r="' + (sel ? 4.5 : 3.5) + '"></circle>';
     });
     return html;
   }
@@ -363,7 +399,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       ? (payload.preview || [])
       : [{freq_hz: 20, db: 0}, {freq_hz: 20000, db: 0}];
     html += drawPath(curvePts, 'curve');
-    html += drawBandMarkers();
+    if (enabled) html += drawBandMarkers(curvePts);
     svg.innerHTML = html;
     var peak = (payload.preview || []).reduce(function(m, p) { return Math.max(m, p.db); }, 0);
     var summary = el('plot-summary');
@@ -435,7 +471,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     profile = normalizeProfile(profile);
     var n = 0;
     Object.keys(profile.simple_eq).forEach(function(k) { if (Math.abs(profile.simple_eq[k]) >= 0.05) n += 1; });
-    n += profile.parametric_bands.filter(function(b) { return b.enabled !== false && Math.abs(b.gain_db) >= 0.05; }).length;
+    n += profile.parametric_bands.filter(function(b) { return b.enabled !== false && specActive(b); }).length;
     if (profile.curve_id && profile.curve_id !== 'flat') n += 1;
     return n === 0 ? 'Flat' : n + ' band' + (n === 1 ? '' : 's');
   }
@@ -1267,30 +1303,38 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
   }
   function bandRow(band, index) {
     var open = !allCollapsed && index === activeBand;
+    var type = band.type || 'Peaking';
+    var shelf = type === 'Lowshelf' || type === 'Highshelf';
+    var gainless = GAINLESS_TYPES.indexOf(type) >= 0;
     var body = '';
     if (open) {
+      // Gain hidden for cut/notch (no gain term); Width hidden for shelves
+      // (CamillaDSP fixes their slope at 6 dB/oct — the control would be inert).
       body = '<div class="band-row__body">' +
         '<div class="range-row"><span class="range-row__label">Type</span>' +
           '<div class="segmented" data-band="' + index + '">' +
-            typeBtn('Lowshelf', 'Low', band.type) + typeBtn('Peaking', 'Peak', band.type) +
-            typeBtn('Highshelf', 'High', band.type) + '</div></div>' +
+            typeBtn('Lowshelf', 'Low', type) + typeBtn('Peaking', 'Peak', type) +
+            typeBtn('Highshelf', 'High', type) + typeBtn('Highpass', 'HP', type) +
+            typeBtn('Lowpass', 'LP', type) + typeBtn('Notch', 'Notch', type) + '</div></div>' +
         rangeRow('Freq', band.freq_hz, limits.min_freq_hz, limits.max_freq_hz,
           {kind: 'freq', log: true, variant: 'thumb', step: 1, format: function(v) { return fmtFreq(v); }}) +
-        rangeRow('Gain', band.gain_db, -limits.advanced_gain_db, limits.advanced_gain_db,
-          {kind: 'gain', step: 0.1, format: function(v) { return fmtDb(v) + ' dB'; }}) +
-        rangeRow('Width', band.q, limits.min_q, limits.max_q,
-          {kind: 'q', step: 0.1, format: function(v) { return fmtQ(v); }}) +
+        (gainless ? '' : rangeRow('Gain', band.gain_db, -limits.advanced_gain_db, limits.advanced_gain_db,
+          {kind: 'gain', step: 0.1, format: function(v) { return fmtDb(v) + ' dB'; }})) +
+        (shelf ? '' : rangeRow('Width', band.q, limits.min_q, bandQMax(type),
+          {kind: 'q', step: 0.1, format: function(v) { return fmtQ(v); }})) +
         '<button type="button" class="band-row__delete" data-act="del-band" data-index="' + index + '">' +
           ico('trash') + 'Delete band</button>' +
       '</div>';
     }
+    var meta = escapeHtml(type) + ' · ' + Math.round(band.freq_hz) + ' Hz';
+    if (!gainless) meta += ' · ' + band.gain_db.toFixed(1) + ' dB';
+    if (!shelf) meta += ' · Q ' + band.q.toFixed(1);
     return '<div class="band-row" data-index="' + index + '" data-open="' + (open ? 'true' : 'false') + '">' +
       '<button type="button" class="band-row__header" data-act="toggle-band" data-index="' + index + '">' +
         '<span class="band-row__title">' +
           '<span class="band-dot' + (open ? ' band-dot--active' : '') + '">' + (index + 1) + '</span>' +
           '<span><p class="band-row__name">Band ' + (index + 1) + '</p>' +
-            '<p class="band-row__meta">' + escapeHtml(band.type) + ' · ' + Math.round(band.freq_hz) +
-            ' Hz · ' + band.gain_db.toFixed(1) + ' dB · Q ' + band.q.toFixed(1) + '</p></span>' +
+            '<p class="band-row__meta">' + meta + '</p></span>' +
         '</span>' + ico('chevron', 'band-row__chev') +
       '</button>' + body + '</div>';
   }
@@ -1632,7 +1676,26 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
     if (typeBtn) {
       var wrap = typeBtn.closest('[data-band]');
       var bi = Number(wrap.getAttribute('data-band'));
-      if (draft.parametric_bands[bi]) { draft.parametric_bands[bi].type = typeBtn.getAttribute('data-band-type'); activeBand = bi; onDraftChanged(true); }
+      if (draft.parametric_bands[bi]) {
+        var nextType = typeBtn.getAttribute('data-band-type');
+        var b = draft.parametric_bands[bi];
+        var prevType = b.type || 'Peaking';
+        b.type = nextType;
+        // Cut/notch types carry no gain — zero it so a stale value can't
+        // linger in the draft (the backend pins it to 0 on save anyway).
+        if (GAINLESS_TYPES.indexOf(nextType) >= 0) b.gain_db = 0;
+        // Switching INTO a high/low-pass: snap to Butterworth Q so a band
+        // inheriting a high peaking-Q doesn't surprise the user with a large
+        // resonant boost at the corner (a q=8 HPF peaks ~+18 dB). The user can
+        // still widen/narrow it afterwards. Notch keeps its Q (it wants to be
+        // narrow); shelves ignore Q entirely.
+        if ((nextType === 'Highpass' || nextType === 'Lowpass') &&
+            prevType !== 'Highpass' && prevType !== 'Lowpass') {
+          b.q = 0.707;
+        }
+        activeBand = bi;
+        onDraftChanged(true);
+      }
     }
   });
   el('view-body').addEventListener('input', function(ev) {
@@ -1654,7 +1717,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
       activeBand = bi;
       if (range === 'freq') band.freq_hz = sliderToFreq(ev.target.value, limits.min_freq_hz, limits.max_freq_hz);
       if (range === 'gain') band.gain_db = clamp(ev.target.value, -limits.advanced_gain_db, limits.advanced_gain_db);
-      if (range === 'q') band.q = clamp(ev.target.value, limits.min_q, limits.max_q);
+      if (range === 'q') band.q = clamp(ev.target.value, limits.min_q, bandQMax(band.type));
       var ro = row.querySelector('[data-readout="' + range + '"]');
       if (ro) ro.textContent = range === 'freq' ? fmtFreq(band.freq_hz) : (range === 'gain' ? fmtDb(band.gain_db) + ' dB' : fmtQ(band.q));
       positionThumb(ev.target);

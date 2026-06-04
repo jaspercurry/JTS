@@ -27,7 +27,12 @@ from jasper.camilla_config_contract import (
     PeqFilter,
 )
 
-from .profile import FilterSpec, SoundProfile, build_sound_filters
+from .profile import (
+    FilterSpec,
+    GAINLESS_BIQUAD_TYPES,
+    SoundProfile,
+    build_sound_filters,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +78,13 @@ def _emit_filter_spec(spec: FilterSpec) -> list[str]:
     ]
     if spec.biquad_type in {"Lowshelf", "Highshelf"}:
         lines.append(f"      slope: {_fmt(spec.slope or 6.0)}")
+        lines.append(f"      gain: {_fmt(spec.gain)}")
+    elif spec.biquad_type in GAINLESS_BIQUAD_TYPES:
+        # Highpass/Lowpass/Notch shape the response without a gain term.
+        lines.append(f"      q: {_fmt(spec.q or 1.0)}")
     else:
         lines.append(f"      q: {_fmt(spec.q or 1.0)}")
-    lines.append(f"      gain: {_fmt(spec.gain)}")
+        lines.append(f"      gain: {_fmt(spec.gain)}")
     return lines
 
 

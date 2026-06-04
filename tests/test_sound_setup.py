@@ -889,22 +889,31 @@ def test_sound_module_draws_only_expanded_peq_component_curve():
     assert "(comp.advanced || []).forEach" not in render_body
     assert "drawPath(comp.curve" not in render_body
     assert "drawPath(comp.simple" not in render_body
-    assert "drawBandMarkers()" in render_body  # passive PEQ markers stay visible
+    # Band dots are anchored to the summed curve and only drawn when enabled.
+    assert "if (enabled) html += drawBandMarkers(curvePts);" in render_body
 
 
-def test_sound_module_draws_width_region_only_for_expanded_peq_band():
+def test_sound_module_anchors_band_dots_to_the_summed_curve():
     js = _SOUND_MODULE.read_text()
-    markers_start = js.index("function drawBandMarkers()")
+    markers_start = js.index("function drawBandMarkers(summed)")
     markers_end = js.index("function expandedPeqBandIndex()", markers_start)
     markers_body = js[markers_start:markers_end]
 
     assert "var expandedBand = expandedPeqBandIndex();" in markers_body
     assert "i === expandedBand" in markers_body
-    assert "(b.type || 'Peaking') === 'Peaking' && i === expandedBand" in markers_body
-    assert "band-marker" in markers_body
+    # The dot sits ON the curve (summedDbAt), not at the band's raw gain — the
+    # fix for the shelf/cut "dot floats off the line" bug.
+    assert "summedDbAt(summed, fx)" in markers_body
     assert "band-dot" in markers_body
+    # Only the expanded band adds a guide line + width shading; no per-band
+    # marker lines clutter the default view.
+    assert "band-guide" in markers_body
+    assert "band-marker" not in markers_body
+    assert "(b.type || 'Peaking') === 'Peaking'" in markers_body
 
     css = _SOUND_CSS.read_text()
+    assert ".band-guide" in css
+    assert ".band-marker " not in css
     assert ".band-width.selected" not in css
 
 
@@ -963,7 +972,31 @@ def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path
     assert payload["preview"]
     assert payload["components"]["curve"]
     assert payload["limits"]["max_parametric_bands"] == 8
+    # Cut-filter Q ceiling is exposed so the UI's Width slider can bound HP/LP.
+    assert payload["limits"]["cut_max_q"] == 1.4
     assert payload["headroom_db"] > 0
+
+
+def test_sound_module_hides_uncontrollable_band_controls():
+    js = _SOUND_MODULE.read_text()
+    band_row = js[js.index("function bandRow(band, index)"):js.index("function typeBtn(")]
+    # All six band types are offered.
+    for t in ("Lowshelf", "Peaking", "Highshelf", "Highpass", "Lowpass", "Notch"):
+        assert "typeBtn('" + t + "'" in band_row
+    # Gain is hidden for cut/notch (no gain term); Width is hidden for shelves
+    # (slope fixed at 6 dB/oct, so the control would be inert).
+    assert "gainless ? '' : rangeRow('Gain'" in band_row
+    assert "shelf ? '' : rangeRow('Width'" in band_row
+
+
+def test_sound_module_bounds_cut_filter_width_with_cut_max_q():
+    js = _SOUND_MODULE.read_text()
+    # The Width slider and its clamp use a per-type ceiling for HP/LP, sourced
+    # from limits.cut_max_q (SSOT in jasper/sound/profile.py CUT_MAX_Q).
+    assert "function bandQMax(type)" in js
+    assert "limits.cut_max_q" in js
+    assert "rangeRow('Width', band.q, limits.min_q, bandQMax(type)" in js
+    assert "clamp(ev.target.value, limits.min_q, bandQMax(band.type))" in js
 
 
 def test_state_filter_count_signals_effective_eq_for_initial_view():

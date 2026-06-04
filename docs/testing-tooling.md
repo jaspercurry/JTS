@@ -76,6 +76,28 @@ The policy and update workflow live in
 
 ---
 
+## PEQ graph math parity (JS ↔ Python)
+
+The /sound/ EQ graph draws real RBJ biquad magnitude in the browser
+([`deploy/assets/sound-profile/js/eq-math.js`](../deploy/assets/sound-profile/js/eq-math.js)),
+mirrored by the Python preview in
+[`jasper/sound/profile.py`](../jasper/sound/profile.py)
+(`_biquad_coeffs` / `_filter_response_db`).
+[`tests/fixtures/peq_response_fixture.json`](../tests/fixtures/peq_response_fixture.json)
+is the shared contract:
+
+```sh
+node scripts/check-peq-parity.mjs   # asserts eq-math.js matches the fixture
+```
+
+`tests/test_sound_peq_response.py` asserts the Python side matches the same
+fixture (and adds filter-theory sanity probes). Run the node check when you
+touch either implementation — if they drift, one side regressed. The Python
+half runs in normal `pytest`; the node half is a maintainer check (like the
+firmware builds below), not always-on CI.
+
+---
+
 ## Optional ESP32 firmware builds
 
 [`scripts/check-firmware-builds.sh`](../scripts/check-firmware-builds.sh)
