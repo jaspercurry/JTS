@@ -313,6 +313,34 @@
 - ⏳ **Phase 5 — FIR filter ladder.** Stage 0 substrate started:
   inspect/stage imported FIR coefficients and report runtime readiness,
   but do not generate or apply FIR filters yet.
+- ✅ **First hardware end-to-end pass + hardening (2026-06-04).** The
+  initial real-device run (iPhone Safari + Dayton iMM-6C) surfaced four
+  bugs, now fixed: (a) the Dayton serial lookup never worked — the
+  calibration filename is in a query param, not the URL path
+  (`_extract_links`); (b) capture silently used the iPhone built-in mic
+  instead of the USB mic; (c) a session stranded in `awaiting_capture`
+  wedged forever; (d) the auto-level "maxed out" copy hardcoded a wrong
+  ceiling. Two new operator-visible invariants landed:
+  - **Stranded-capture watchdog.** A session left in any
+    `awaiting_*_capture` state (browser never uploaded the recording) is
+    abandoned to `FAILED` after `AWAITING_CAPTURE_TIMEOUT_SEC` (120 s, in
+    `jasper/correction/session.py`), so `/start` is never permanently
+    blocked. A **Cancel measurement** button (shown in the waiting/needs
+    states) and `POST /reset` recover it manually. The measurement window
+    closes before `awaiting_capture`, so a wedge never leaves the speaker
+    muted. Logs `event=correction_capture_timeout`.
+  - **Calibration↔device mismatch reject.** `POST /start` returns 400 when
+    a vendor measurement-mic calibration (Dayton / miniDSP — derived from
+    `calibration.SUPPORTED_MODELS`) is loaded but the captured input device
+    looks like the phone built-in mic (`_calibration_device_mismatch`).
+    Defended in depth: a browser guard plus this server backstop a
+    stale/bypassed client can't evade. Logs
+    `event=correction_start_rejected reason=calibration_device_mismatch`.
+    The device picker now forces an explicit `deviceId` and re-enumerates
+    on `devicechange` so the USB mic appears reliably on iOS.
+
+  Backend logic is unit-covered; the iPhone device-picker, Cancel button,
+  Wake Lock, and auto-level copy still need an on-device confirmation pass.
 
 **Current sequencing note (2026-05-28):** after the latest research
 intake, the next room-correction priority is still measurement trust
