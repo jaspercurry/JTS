@@ -23,10 +23,16 @@ Defaults:
   - Voice: ``eve``. Other Grok voices: ``ara``, ``rex``, ``sal``, ``leo``.
 
 Pricing: Grok Voice Agent bills a flat $3.00/hour per session — neither
-audio tokens nor cached input. The token-based spend cap will under-
-count Grok usage. If running on Grok primarily, override the spend cap
-manually or treat it as advisory until usage.py grows time-based
-accounting (deferred — see usage.py)."""
+audio tokens nor cached input, so the per-turn token rows price to $0.
+Real cost is connection uptime: the daemon wires a
+``ConnectionUptimeMeter`` into this connection (gated on the bundled
+``flat_per_hour_usd > 0`` rate for the active model), and this class
+inherits the ``set_uptime_meter`` / ``mark_connected`` /
+``mark_disconnected`` plumbing from ``OpenAIRealtimeConnection``. The
+recorded intervals fold into the daily spend cap via
+``UsageStore._time_billed_spend_by_provider`` — so the cap constrains
+Grok the same as token-billed providers. See ``jasper.usage`` and
+``jasper.voice_daemon._make_connection``."""
 from __future__ import annotations
 
 import logging
