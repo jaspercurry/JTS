@@ -118,7 +118,7 @@ globalThis.fetch = (path, options = {}) => {
     }));
   }
   if (path === "./preview") {
-    return Promise.resolve(response({ preview: [], components: {} }));
+    return Promise.resolve(response({ preview: [] }));
   }
   throw new Error(`unexpected fetch: ${path}`);
 };

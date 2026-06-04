@@ -896,56 +896,6 @@ def response_preview(
     ]
 
 
-def response_component_payload(
-    profile: SoundProfile,
-    freqs: Iterable[float] = DEFAULT_PREVIEW_FREQS,
-) -> dict[str, Any]:
-    """Per-component responses for the UI overlays.
-
-    The same real RBJ magnitude math as ``response_preview`` (shared trig
-    table), split into curve / simple / advanced groups. The graph is an
-    interaction aid, not the DSP authority; CamillaDSP owns the runtime path.
-    """
-
-    freq_list = [float(freq) for freq in freqs]
-    trig = _freq_trig(freq_list)
-
-    def _points(specs: Iterable[FilterSpec]) -> list[dict[str, float]]:
-        totals = [0.0 for _ in freq_list]
-        active = False
-        for spec in specs:
-            if not spec.active():
-                continue
-            active = True
-            for i, db in enumerate(_filter_response_db(spec, freq_list, trig)):
-                totals[i] += db
-        if not active:
-            return []
-        return [
-            {"freq_hz": round(freq, 3), "db": round(db, 3)}
-            for freq, db in zip(freq_list, totals)
-        ]
-
-    if not profile.enabled:
-        return {"curve": [], "simple": [], "advanced": []}
-
-    advanced = []
-    for index, band in enumerate(profile.parametric_bands):
-        specs = _advanced_filters((band,))
-        advanced.append(
-            {
-                "index": index,
-                "enabled": band.enabled,
-                "preview": _points(specs),
-            }
-        )
-    return {
-        "curve": _points(_curve_filters(profile.curve_id)),
-        "simple": _points(_simple_filters(profile.simple_eq)),
-        "advanced": advanced,
-    }
-
-
 def estimate_headroom_db(profile: SoundProfile) -> float:
     """Digital preamp attenuation needed before preference boosts."""
 
