@@ -284,21 +284,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     profile = normalizeProfile(profile);
     var freqs = previewFreqs();
     if (profile.enabled === false) {
-      return {preview: [], components: {curve: [], simple: [], advanced: []}, off: true};
+      return {preview: [], off: true};
     }
     var all = curveSpecs(profile).concat(simpleSpecs(profile), advancedSpecs(profile));
-    var preview = pointsFor(all, freqs, false);
-    return {
-      preview: preview,
-      components: {
-        curve: pointsFor(curveSpecs(profile), freqs, true),
-        simple: pointsFor(simpleSpecs(profile), freqs, true),
-        advanced: (profile.parametric_bands || []).map(function(b, i) {
-          return {index: i, enabled: b.enabled !== false,
-                  preview: pointsFor(advancedSpecs({parametric_bands: [b]}), freqs, true)};
-        })
-      }
-    };
+    return {preview: pointsFor(all, freqs, false)};
   }
 
   // ---- graph rendering ------------------------------------------------
@@ -387,14 +376,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       html += '<text text-anchor="middle" x="' + gx(f).toFixed(1) + '" y="' + (H - 8) + '">' +
               (f >= 1000 ? (f / 1000) + 'k' : f) + '</text>';
     });
-    var comp = payload.components || {};
+    // One line only: the summed response. The selected band is marked by its
+    // on-curve dot + width shading (drawBandMarkers), not a second curve.
     if (enabled) {
       html += drawArea(payload.preview || []);
-      var expandedBand = expandedPeqBandIndex();
-      var bandComponent = (comp.advanced || []).find(function(item) {
-        return item.index === expandedBand;
-      });
-      if (bandComponent) html += drawPath(bandComponent.preview || [], 'component selected');
     }
     var curvePts = enabled
       ? (payload.preview || [])
@@ -414,7 +399,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderLiveGraph() {
     var profile = liveProfile();
     el('live-label').textContent = liveLabel();
-    if (!profile) { renderGraph({preview: [], components: {}}, false); return; }
+    if (!profile) { renderGraph({preview: []}, false); return; }
     renderGraph(previewPayload(profile), profile.enabled !== false);
   }
 

@@ -523,6 +523,15 @@ reference. Currently:
   `http://jts.local/peers/`. P2P via mDNS-SD + multicast UDP, no
   hub, no SPOF. **Start here for `jasper/peering/`, the wake-handler
   restructure, or anything related to the `/peers/` wizard.**
+- [`HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md) — **Proposed
+  design (not yet built).** Synchronized grouped playback across
+  speakers: stereo pair, 2.1 with a wireless sub, and multi-room.
+  Brainy speakers (Pi 5 + CamillaDSP) + cheap dumb endpoints (Pi
+  Zero 2 W + I2S DAC) for the sub and a full-range satellite. A room
+  is one logical speaker to AirPlay/Spotify/BT. Adopts Snapcast as
+  the sync engine, a fixed leader per room, and reuses the peering
+  discovery substrate. First deliverable is a P0 measurement spike.
+  **Start here for any multi-room / stereo-pair / wireless-sub work.**
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine: why software AEC, why not chip AEC)
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —

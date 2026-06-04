@@ -365,7 +365,11 @@ This is the **only** supported deploy path. It does, in order:
    Passwordless sudo (`sudo -n true`) is the unattended path; if the
    deploy is attached to an interactive terminal, it can fall back to
    `ssh -tt ... sudo` prompts without storing the password. Do not add
-   broad sudoers rules from the installer.
+   broad sudoers rules from the installer. **If a deploy fails the
+   `sudo -n` preflight on a Pi, that Pi just needs passwordless sudo
+   enabled once — the recommended posture and the exact one-liner are in
+   [BRINGUP.md](BRINGUP.md) "Phase 2.5 — Enable passwordless sudo". It is
+   per-Pi, so a working speaker and a freshly-imaged one can differ.**
 3. `rsync` to the remote user's `${HOME}/jts/` (for the default
    beginner path this is `pi@jts.local:/home/pi/jts/`; excludes `.git/`,
    `.venv/`, `captures/`, `wake-events/`, `*.egg-info`, etc.)
@@ -2667,3 +2671,73 @@ account, and this applies whether you're on Claude Code or Codex.
 (A GitHub MCP may also be available in some sessions, but it is not
 reliably loaded; `gh` is the dependable path. The earlier
 "`mcp__github__*`, not `gh`" guidance here was a Codex-era artifact.)
+
+---
+
+## PR workflow on a fast-moving `main` — read before you push
+
+`main` moves fast (multiple PRs land per hour; Claude *and* Codex both work
+this repo). The slow part of shipping is almost never the CI gate itself —
+it's a branch going **stale** under you. These habits keep velocity high
+without merging breakage. They were distilled from a real incident where a
+branch sat while `main` advanced 23 commits and silently went un-mergeable.
+
+1. **Local preflight before every push.** Run `ruff check .` plus a fast
+   test subset for what you touched (`pytest tests/test_<area>.py`) before
+   you push. This catches undefined names / dead imports / obvious breaks in
+   seconds instead of a ~4-minute CI round-trip. This is the single biggest
+   velocity win. Do *not* lean on a local full-suite run to gate — on macOS
+   the `test_wifi_guardian_script.py` / `test_aec_reconcile.py` subprocess
+   tests flake under load (posix_spawn `EMFILE`/`EAGAIN`); CI on Linux is the
+   source of truth for the full suite.
+
+2. **Short-lived branches; rebase before you push/merge.** `git fetch origin`
+   at the start, and rebase onto `origin/main` right before pushing and again
+   before merging. Don't let a branch sit. A large, long-lived branch (e.g. a
+   multi-day refactor of a 3,000+ line file) is the worst staleness profile —
+   decompose big work into small, independently-mergeable steps.
+
+3. **`main` is branch-protected.** The `pytest` check (which also runs
+   `ruff check .`) — and the `rust` check (cargo build of the audio
+   daemons) — **must pass before any PR merges**, enforced for admins too;
+   force-pushes and branch deletion are blocked. You cannot merge a red
+   `main`; wait for green. (Emergency override + the exact rule live in
+   [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection).)
+
+4. **A conflicted (DIRTY) PR cannot run CI at all.** GitHub builds checks
+   against a merge ref that does not exist when there's a conflict, so the
+   checks simply never register. If your checks "never appear" after a push,
+   **suspect a conflict first** (`gh pr view <n> --json mergeable`), not a
+   trigger glitch — rebase onto `main` to resolve.
+
+5. **What the CI gate covers — and does NOT.** It runs: hardware-free
+   `pytest` (voice_eval is **excluded** — paid LLM suite, never CI), `ruff`,
+   the supply-chain provenance check, and (since this section landed) a
+   `cargo build --release --locked` of `rust/jasper-fanin` and
+   `rust/jasper-outputd` (running the crates' unit tests in CI is a pending
+   follow-up — adding the gate surfaced 3 stale loudness tests in
+   jasper-outputd; see the `rust` job comment in `.github/workflows/tests.yml`).
+   It does **not** exercise real audio/mic/voice hardware or the Pi-side
+   install — those still need a deploy + `jasper-doctor` / on-device check.
+   "Green CI" means "safe to merge," not "validated on hardware."
+
+6. **Workflow-file merges need the `workflow` token scope.** A `gh` OAuth
+   token without `workflow` scope **cannot merge a PR that touches
+   `.github/workflows/*`** (you'll get "refusing to allow an OAuth App to
+   create or update workflow … without `workflow` scope"). Open the PR
+   normally; a human merges it from the web UI. Don't burn time retrying the
+   `gh` merge.
+
+7. **Don't re-run the default ruff cleanup — it's done.** `main` is clean
+   under the committed `[tool.ruff]` config (default `E`/`F` rules; `E701`/
+   `E731`/`E402` intentionally ignored; dbus `F821` per-file-ignored). A
+   *broader* pass (`--select I,UP,B`, ~hundreds of mostly import-sort items
+   plus a few real `B`-rule signals) is a separate, deliberate decision — if
+   taken, it's one fast atomic autofix PR landed in a quiet `main` window,
+   never a long-lived branch. `ruff check . --select I,UP,B --statistics`
+   shows the current latent count.
+
+8. **Coordinate across agents.** Because Claude and Codex both touch this
+   repo, two sessions can independently make the same change (it has already
+   caused conflicts). Always `git fetch` before starting *and* before
+   pushing, and assume `main` moved while you were working.

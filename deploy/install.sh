@@ -146,7 +146,8 @@ Run for real from a Pi-local checkout:
    - Seed /etc/jasper/jasper.env on fresh installs.
    - Migrate wizard-owned keys out of /etc/jasper/jasper.env into
      /var/lib/jasper/* env files for voice provider, transit, weather,
-     wake detection legs, and WiFi guardian recovery.
+     wake detection legs, multi-room grouping, and WiFi guardian
+     recovery.
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, and correction TLS CA/cert files.
@@ -169,6 +170,10 @@ Run for real from a Pi-local checkout:
      release/branch must also stop/disable jasper-outputd because that
      older code does not know about the outputd unit.
    - Run the AEC/mic reconciler so voice follows attached hardware.
+   - Install the multi-room grouping units (snapserver, snapclient,
+     grouping-reconcile) DISABLED. Grouping is never auto-enabled and
+     the snapcast apt packages are NOT installed on a solo speaker;
+     the /grouping opt-in owns enabling units and fetching binaries.
    - Regenerate audio cues if jasper-cues is installed.
    - Run jasper-doctor as a final non-blocking health summary.
 
@@ -1615,6 +1620,7 @@ PY
     migrate_weather_config
     migrate_wifi_guardian
     migrate_wake_legs_config
+    migrate_grouping
 }
 
 render_voice_provider_ids_manifest() {
@@ -1796,6 +1802,68 @@ migrate_transit_config() {
             chmod 0640 "${wizard_env}"
             echo "${k}=${stale_value}" >> "${wizard_env}"
             echo "  migrate_transit_config: moved ${k}=${stale_value}"
+            echo "    from ${jasper_env} to ${wizard_env}"
+        fi
+        sed -i.bak "/^${k}=/d" "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+    done
+}
+
+# Migrate stale multi-room grouping env vars from /etc/jasper/jasper.env
+# into the wizard-owned /var/lib/jasper/grouping.env. The /grouping
+# wizard (and jasper.multiroom.config) owns every JASPER_GROUPING_* key;
+# an operator who pastes them into jasper.env (CI bootstrap, headless
+# imaging, SSH-driven setup) gets them moved automatically so the wizard
+# file stays the single source of truth — exactly like transit/weather.
+#
+# Grouping is OFF BY DEFAULT on a solo speaker: absence of grouping.env
+# means off (jasper.multiroom.config fail-safes to enabled=False). So we
+# only create the file when an operator actually referenced a grouping
+# key — a fresh solo install never grows the file, and this NEVER enables
+# any unit (the reconciler does that on explicit opt-in).
+#
+# Idempotent. Safe on fresh installs (no-op) and on long-lived ones
+# (already-migrated keys just clean up the jasper.env residue).
+migrate_grouping() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local wizard_env="${STATE_DIR}/grouping.env"
+
+    # Mirror jasper.multiroom.config's env keys. Duplicated here because
+    # install.sh runs before the venv Python is guaranteed importable.
+    local keys=(
+        JASPER_GROUPING_ENABLED
+        JASPER_GROUPING_ROLE
+        JASPER_GROUPING_CHANNEL
+        JASPER_GROUPING_BOND_ID
+        JASPER_GROUPING_LEADER_ADDR
+        JASPER_GROUPING_BUFFER_MS
+        JASPER_GROUPING_CODEC
+    )
+
+    [[ -f "${jasper_env}" ]] || return 0
+
+    install -d -m 0750 "${STATE_DIR}"
+
+    local k line stale_value
+    for k in "${keys[@]}"; do
+        line=$(grep -E "^${k}=" "${jasper_env}" || true)
+        [[ -z "${line}" ]] && continue
+        stale_value="${line#${k}=}"
+        stale_value="${stale_value%$'\r'}"
+        stale_value="${stale_value%$'\n'}"
+
+        if [[ -f "${wizard_env}" ]] && grep -qE "^${k}=" "${wizard_env}"; then
+            sed -i.bak "/^${k}=/d" "${jasper_env}"
+            rm -f "${jasper_env}.bak"
+            echo "  migrate_grouping: removed stale ${k} line from ${jasper_env}"
+            continue
+        fi
+
+        if [[ -n "${stale_value}" ]]; then
+            touch "${wizard_env}"
+            chmod 0644 "${wizard_env}"
+            echo "${k}=${stale_value}" >> "${wizard_env}"
+            echo "  migrate_grouping: moved ${k}=${stale_value}"
             echo "    from ${jasper_env} to ${wizard_env}"
         fi
         sed -i.bak "/^${k}=/d" "${jasper_env}"
@@ -2466,6 +2534,53 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbsink-wait-card" \
         /usr/local/sbin/jasper-usbsink-wait-card
+    # Makes the host-visible USB device name track the Speaker Name by
+    # patching the kernel's hardcoded UAC2 AudioStreaming string into a
+    # `updates/` module override (configfs can't set it on 6.12). Pure
+    # bash + stdlib python3 — no kernel headers / dkms. Run as
+    # jasper-usbsink-init's best-effort ExecStartPre. See
+    # docs/HANDOFF-usbsink.md "Device name".
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-name-patch" \
+        /usr/local/sbin/jasper-usbsink-name-patch
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/uac2_name_patch.py" \
+        /usr/local/sbin/uac2_name_patch.py
+
+    # jasper multi-room grouping (snapcast). snapserver is the timing
+    # master; snapclient plays a single channel on each speaker. The
+    # reconcile oneshot maps the wizard-owned /var/lib/jasper/grouping.env
+    # role to which units run (leader => snapserver + snapclient;
+    # follower => snapclient only; off/invalid => neither). All three ship
+    # DISABLED — a solo speaker runs none of them, and the reconciler is
+    # the only thing that enables/starts them on explicit opt-in. We do
+    # NOT auto-enable grouping here. See docs/HANDOFF-multiroom.md and
+    # jasper.multiroom.reconcile.
+    #
+    # Packages: we deliberately do NOT apt-install snapserver/snapclient
+    # in the core install. The vast majority of speakers are solo, the
+    # snapcast packages pull in extra runtime deps (libsoxr, libvorbis,
+    # libflac, avahi client, etc.) and an enabled-by-default snapserver
+    # daemon socket — pure dead weight + attack surface on a box that
+    # will never group. Mirrors the off-by-default posture of the
+    # usbsink dtoverlay (staged but inert until the wizard opts in) and
+    # the optional ESP32 firmware (sources staged, build gated behind
+    # JASPER_BUILD_OPTIONAL_FIRMWARE=1). The units reference
+    # /usr/bin/snapserver and /usr/bin/snapclient (Trixie's `snapserver`
+    # / `snapclient` apt packages); installing those is the grouping
+    # opt-in's job, not every solo install's. The reconciler's plan is
+    # fail-safe — if the binaries are absent the unit simply fails to
+    # start and grouping stays off, never wedging a solo speaker.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
+        "${SYSTEMD_DIR}/jasper-snapserver.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-snapclient.service" \
+        "${SYSTEMD_DIR}/jasper-snapclient.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+
     # Triggered by the udev rule installed below when the Apple dongle
     # re-enumerates: reset-failed, restart Camilla, then run the
     # mic/AEC reconciler so a hardware reconnect recovers without

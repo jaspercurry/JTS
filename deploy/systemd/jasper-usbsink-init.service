@@ -28,6 +28,13 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # CONFIGFS — surface that as a unit failure rather than letting the
 # next step fail mysteriously.
 ExecStartPre=/sbin/modprobe libcomposite
+# Make the host-visible device name track the Speaker Name by patching
+# the kernel's hardcoded UAC2 AudioStreaming string (configfs can't set
+# it on 6.12). Best-effort (leading `-`): a failure here only means the
+# host shows the default "Playback Inactive" label — it must never block
+# USB audio. Runs before gadget-up so the patched module autoloads when
+# the function is created. See docs/HANDOFF-usbsink.md "Device name".
+ExecStartPre=-/usr/local/sbin/jasper-usbsink-name-patch
 ExecStart=/usr/local/sbin/jasper-usbsink-gadget-up
 ExecStartPost=/usr/local/sbin/jasper-usbsink-wait-card 30
 ExecStop=/usr/local/sbin/jasper-usbsink-gadget-down

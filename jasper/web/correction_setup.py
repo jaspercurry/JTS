@@ -261,12 +261,12 @@ __HEADER__
     <div class="mic-row">
       <label for="input-device-select">Input device
         <select id="input-device-select">
-          <option value="" disabled selected>Tap “Detect microphones”…</option>
+          <option value="" disabled selected>Detecting microphones…</option>
         </select>
       </label>
-      <button id="refresh-inputs" type="button" class="btn btn--ghost">Detect microphones</button>
+      <button id="refresh-inputs" type="button" class="btn btn--ghost">Refresh microphones</button>
     </div>
-    <p class="hint" style="margin:0">Tap <strong>Detect microphones</strong> and grant permission so your USB measurement mic appears, then select it before <strong>Start mic capture</strong>.</p>
+    <p class="hint" style="margin:0">Your USB measurement mic should appear automatically (grant mic permission if asked). Tap <strong>Refresh microphones</strong> if it doesn’t, then select it before <strong>Start mic capture</strong>.</p>
 
     <label for="mic-model-select">Calibration
       <select id="mic-model-select">
@@ -667,12 +667,12 @@ def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
     return {k: v for k, v in sanitized.items() if v is not None} or None
 
 
+# UX-side mirror lives in deploy/assets/correction/js/main.js
+# (looksLikeBuiltInMic); keep the two patterns in sync. This server gate is
+# the one that actually blocks a wrong-mic measurement.
 _BUILTIN_MIC_LABEL_RE = re.compile(
     r"iphone|ipad|ipod|macbook|built[- ]?in|^\s*default", re.IGNORECASE
 )
-# Vendor providers whose mics are always external USB measurement mics —
-# they can never legitimately be the phone's own built-in microphone.
-_EXTERNAL_MIC_PROVIDERS = frozenset({"dayton_audio", "minidsp"})
 
 
 def _calibration_device_mismatch(
@@ -685,8 +685,17 @@ def _calibration_device_mismatch(
     """
     if mic_calibration is None or not input_device:
         return None
+    # Every entry in the calibration registry is an external USB measurement
+    # mic that can never be the phone's own built-in mic. Derive the provider
+    # set from the registry so a new vendor only has to be added in one place.
+    # mic_calibration is non-None here, so calibration (numpy) is already
+    # imported — this lazy import keeps the idle module import numpy-free.
+    from jasper.correction.calibration import SUPPORTED_MODELS
+    external_providers = {
+        spec["provider"] for spec in SUPPORTED_MODELS.values()
+    }
     provider = str(getattr(mic_calibration, "provider", "") or "")
-    if provider not in _EXTERNAL_MIC_PROVIDERS:
+    if provider not in external_providers:
         return None
     label = str(input_device.get("browser_label") or input_device.get("label") or "")
     if label and _BUILTIN_MIC_LABEL_RE.search(label):

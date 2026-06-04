@@ -13,7 +13,7 @@ jobs:
     env:
       JASPER_VOICE_PROVIDER: gemini
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: System deps for sounddevice (portaudio)
         run: |
@@ -53,3 +53,43 @@ jobs:
         # restores os.environ around every test. --ignore is justified
         # solely by paid-LLM cost — not by the leak, which is fixed.
         run: pytest -q --tb=short --ignore=tests/voice_eval
+
+  rust:
+    # CI must actually COMPILE the Rust audio daemons — the pytest job
+    # above does not. Without this, a dependency bump (e.g. the `alsa`
+    # crate used by jasper-fanin/jasper-outputd) that breaks the build
+    # passes CI green and only fails at deploy-time `cargo build` on the
+    # Pi. This job mirrors install.sh's build (`cargo build --release
+    # --locked`). Uses the runner's preinstalled stable cargo (Trixie
+    # ships rustc 1.85; ubuntu-latest is well above that). NOTE: make this
+    # a required check in main's branch protection (alongside `pytest`)
+    # once this lands on main.
+    #
+    # `cargo test --locked` is intentionally NOT run here yet. Adding this
+    # gate surfaced 3 PRE-EXISTING unit-test failures in jasper-outputd
+    # that were invisible because Rust tests never ran in CI:
+    #   core::tests::outputd_clamps_assistant_gain_before_mixing
+    #   core::tests::resuming_content_meter_clears_prepared_loudness_context
+    #   loudness::tests::steady_tone_reports_plausible_loudness
+    # They lag the "calibrate assistant loudness in outputd" rework
+    # (commit 1853474 + the Level-match commits) — the calibrated assistant
+    # gain is QUIETER than the stale expectation (-15.5 vs -6.0 dB), i.e.
+    # safe-direction, not a loud-output regression. Re-enable `cargo test
+    # --locked` for both crates once the loudness owner updates those
+    # expectations.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: System deps for the ALSA crate
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      - name: jasper-fanin — build (release, locked; mirrors install.sh)
+        working-directory: rust/jasper-fanin
+        run: cargo build --release --locked
+
+      - name: jasper-outputd — build (release, locked; mirrors install.sh)
+        working-directory: rust/jasper-outputd
+        run: cargo build --release --locked

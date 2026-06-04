@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve
 
-from jasper.correction import bundles, quality, sweep
+from jasper.correction import bundles, quality, runtime_integrity, sweep
 from jasper.correction.calibration import store_calibration
 from jasper.correction.session import MeasurementSession, SessionConfig, SessionState
 
@@ -186,7 +186,13 @@ async def test_session_applies_mic_calibration_during_capture(
 
 
 @pytest.mark.asyncio
-async def test_session_records_failed_capture_quality_in_bundle(tmp_path: Path):
+async def test_session_records_failed_capture_quality_in_bundle(
+    tmp_path: Path, monkeypatch,
+):
+    # runtime_integrity.level reads os.getloadavg(); pin a low load so the
+    # "level == ok" assertion below is deterministic instead of failing on a
+    # busy dev machine (it's only ever a flake, never a real product signal).
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: 0.1)
     sess = _make_session(tmp_path)
 
     async def fake_play_sweep(path, **kwargs):

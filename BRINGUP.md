@@ -70,7 +70,9 @@ Optional (satellite devices — see [docs/satellites.md](docs/satellites.md)):
      - Remote Access / SSH: enable SSH with **password
        authentication**. Public-key auth is fine for advanced
        imaging, but the beginner path is password SSH plus
-       `scripts/onboard.sh --adopt`.
+       `scripts/onboard.sh --adopt`. (Right after onboarding you'll
+       also enable **passwordless sudo** — see Phase 2.5; it's what
+       lets `deploy-to-pi.sh` and AI-agent sessions deploy unattended.)
      - Raspberry Pi Connect: leave off; JTS does not use it.
      - Interfaces & Features: leave defaults unless a later phase
        explicitly tells you otherwise.
@@ -198,6 +200,68 @@ systemctl status jasper-camilla jasper-voice jasper-mux \
     librespot shairport-sync nqptp bt-agent.service
 # All should show active (running)
 ```
+
+---
+
+## Phase 2.5 — Enable passwordless sudo (recommended; do this for every Pi)
+
+**Why this matters — read even if you're in a hurry.** The supported
+deploy path (`bash scripts/deploy-to-pi.sh`) and every AI-agent or
+scripted session run *unattended*: they SSH in and run `sudo bash
+install.sh` with nobody at the keyboard. They preflight `sudo -n true`
+(non-interactive sudo) and **refuse to proceed without it** — the project
+will not store or hand-roll your sudo password. Two things make
+unattended deploys work; set up both early so you never hit a wall
+mid-session:
+
+1. **Pubkey SSH** — so SSH needs no password. `scripts/onboard.sh
+   <hostname>.local --adopt` already did this for you (it runs
+   `ssh-copy-id`). Your *first* onboard runs interactively from your
+   terminal, so sudo could prompt for a password then — that's why Phase
+   2 worked without this step.
+2. **Passwordless sudo** — so `sudo -n` works for every deploy *after*
+   the first. `--adopt` deliberately does **not** set this up (the
+   installer never adds broad sudoers rules for you — it's your explicit
+   choice). This phase is that choice.
+
+**Your two options:**
+
+| Option | What every deploy looks like | Pick this if |
+|---|---|---|
+| **Passwordless sudo** (recommended) | `deploy-to-pi.sh` runs fully unattended; AI agents can deploy across sessions with you out of the loop. | A home-LAN appliance you own — the normal case. |
+| **Keep a sudo password** | You must run *every* deploy yourself from an interactive terminal so it can prompt. Unattended and agent-driven deploys are impossible. | You specifically want sudo to require a password. |
+
+For the JTS appliance, **passwordless sudo is the right posture.** It is a
+trusted-LAN device you own, its daemons already run as root, and the
+threat model ([SECURITY.md](SECURITY.md)) already assumes a trusted
+household network. The alternative — re-typing a password on every deploy
+and blocking every agent session — buys you almost nothing here.
+
+**Enable it** (one-time per Pi). SSH in, run these (the first `sudo`
+prompts for the Pi password once), then exit:
+
+```sh
+ssh pi@<hostname>.local
+# then, on the Pi:
+echo "pi ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/010_pi-nopasswd >/dev/null
+sudo chmod 440 /etc/sudoers.d/010_pi-nopasswd
+sudo visudo -cf /etc/sudoers.d/010_pi-nopasswd   # must print: parsed OK
+exit
+```
+
+Verify from your laptop:
+
+```sh
+ssh pi@<hostname>.local 'sudo -n true && echo PASSWORDLESS_SUDO_OK'
+```
+
+**Revoke later** with `sudo rm /etc/sudoers.d/010_pi-nopasswd`.
+
+> **Do this on EVERY speaker you bring up — each Pi has its own sudo
+> config.** The classic failure mode (a real one): your main speaker has
+> passwordless sudo and deploys fine, but a second unit (e.g. a lab Pi)
+> silently doesn't, so deploys and agent sessions to it fail at the
+> `sudo -n` preflight until you run this phase there too.
 
 ---
 
@@ -506,11 +570,11 @@ ssh pi@jts.local 'systemctl is-active jasper-usbsink jasper-usbsink-init'
 
 Plug your Mac/Windows/Linux laptop into the splitter's USB-A leg.
 
-- **macOS**: Open System Settings → Sound → Output. **JTS USB Audio**
-  appears by default (or `<speaker name> USB Audio` if renamed in
-  `/speaker/`). Select it. (Note: macOS may label the device "Playback
-  Inactive" — that's a cosmetic kernel bug in `f_uac2.c`, audio still
-  works. Don't chase.)
+- **macOS**: Open System Settings → Sound → Output. The device appears
+  under your **Speaker Name** (e.g. **JTS**; truncated to 15 chars for
+  this label). Select it. (If it instead shows **"Playback Inactive"**,
+  the name patch didn't apply — see the failure-modes table below and
+  `jasper-doctor`'s `usbsink name` check. Audio still works either way.)
 - **Windows**: Open Sound settings, choose JTS USB Audio as output
   (or the renamed USB Audio device).
 - **Linux**: Should auto-route via PulseAudio/PipeWire, or `pactl
@@ -532,10 +596,11 @@ speakers within a few hundred milliseconds.
 
 ```sh
 ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
-# Expect three OK lines:
+# Expect OK lines including:
 #   usbsink dtoverlay: ok
 #   usbsink state: ok playing=... host_connected=...
 #   usbsink card: ok UAC2Gadget present
+#   usbsink name: ok device name patched to track Speaker Name '...'
 ```
 
 ### Common failure modes
@@ -544,7 +609,7 @@ ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
 |---|---|---|
 | Toggle greyed out, "needs dtoverlay + reboot" note | Phase 2's `install.sh` ran before the source had `set_usb_gadget_mode`, OR you've edited `/boot/firmware/config.txt` since | Re-run `bash scripts/deploy-to-pi.sh` from the laptop, reboot |
 | Host doesn't see the speaker in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbsink-init` didn't bring up the gadget | `journalctl -u jasper-usbsink-init` for ConfigFS errors |
-| Mac says "Playback Inactive" | Cosmetic kernel bug — audio still plays | Ignore |
+| Mac says "Playback Inactive" instead of the Speaker Name | Name patch didn't apply (kernel renamed the string, or override stale). Cosmetic — audio still plays | `journalctl -u jasper-usbsink-init \| grep event=usbsink_name`; `sudo systemctl restart jasper-usbsink-init`; check `jasper-doctor` `usbsink name` |
 | Volume slider on Mac doesn't move JTS | `amixer -c UAC2Gadget controls` should show `PCM Capture Volume`; if missing, gadget descriptor wasn't built with `c_volume_present=1` | `journalctl -u jasper-usbsink \| grep volume_bridge` |
 | Toggle off but `lsmod \| grep libcomposite` shows it loaded | RAM-drift from a previous bad stop — jasper-doctor will warn | `sudo rmmod u_audio libcomposite` or reboot |
 

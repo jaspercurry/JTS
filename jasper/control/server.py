@@ -51,6 +51,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from . import debug_control, shairport_supervisor, system_supervisor, wifi_guardian_state
+from ..multiroom.state import read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
@@ -1376,6 +1377,19 @@ async def _get_state(
         dial["age_seconds"] = None
     dial["online"] = dial_online
 
+    # Multiroom grouping. Re-reads /var/lib/jasper/grouping.env fresh
+    # (never os.environ — jasper-control isn't restarted on a wizard
+    # save). read_grouping_state is itself total, but guard the section
+    # so any future read change can't take the whole /state down: a
+    # broken read leaves grouping null and the rest of /state intact.
+    # enabled=False means grouping is off (solo); enabled=True with a
+    # non-null error is the fail-LOUD "configured but broken" state.
+    try:
+        grouping_state: dict | None = read_grouping_state()
+    except Exception:  # noqa: BLE001
+        logger.exception("grouping state read failed")
+        grouping_state = None
+
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -1452,6 +1466,12 @@ async def _get_state(
             "wifi_guardian": wifi_guardian_state.snapshot(),
         },
         "home_assistant": ha_status,
+        # Multiroom grouping (off by default). null only if the fresh
+        # read itself errored; otherwise a JSON-able snapshot of the
+        # wizard-owned grouping.env (enabled / role / channel / bond_id /
+        # leader_addr / buffer_ms / codec / error). See
+        # jasper/multiroom/state.py + docs/HANDOFF-multiroom.md.
+        "grouping": grouping_state,
         # Runtime debug-logging toggle (the /system Debug card): which
         # subsystems are at DEBUG + the shared auto-expiry countdown.
         "debug": debug_control.snapshot(),
