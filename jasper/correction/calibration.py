@@ -409,12 +409,23 @@ def _looks_like_calibration(text: str) -> bool:
     return True
 
 
+_CALIBRATION_SUFFIXES = (".txt", ".cal", ".frd", ".csv", ".omm")
+
+
 def _extract_links(base_url: str, text: str) -> list[str]:
     links: list[str] = []
     for raw in re.findall(r"""href=["']([^"']+)["']""", text, flags=re.I):
         href = html.unescape(raw)
-        lower = href.lower().split("?", 1)[0]
-        if lower.endswith((".txt", ".cal", ".frd", ".csv", ".omm")):
+        split = urllib.parse.urlsplit(href.lower())
+        # The calibration filename can live in the URL path (…/abc.txt) or,
+        # as Dayton's tool does, only in a query parameter
+        # (…/Download?CalibrationFileName=abc.txt&CalibrationFilePath=…txt).
+        # Checking the path alone silently drops Dayton's real download link
+        # and the whole serial lookup fails with "did not return a parseable
+        # calibration file".
+        candidates = [split.path]
+        candidates.extend(value for _key, value in urllib.parse.parse_qsl(split.query))
+        if any(c.endswith(_CALIBRATION_SUFFIXES) for c in candidates):
             links.append(urllib.parse.urljoin(base_url, href))
     return links
 
