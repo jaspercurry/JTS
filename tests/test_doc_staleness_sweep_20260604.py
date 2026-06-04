@@ -112,18 +112,22 @@ def test_correction_init_points_at_real_apply_path():
 
 
 def test_security_doc_scopes_dns_rebinding_to_control_api():
-    """SECURITY.md item 5: the DNS-rebinding guard is scoped to the
-    jasper-control API; the nginx wizard gap is named as deferred."""
-    # http_security is imported only by jasper-control's server, not web/.
+    """SECURITY.md item 5: the jasper-control API AND the wizard mutating
+    (POST) surface both apply the DNS-rebinding guard; the wizard read
+    (GET) surface is named as the remaining deferred gap.
+
+    (Originally this asserted the wizards had NO guard. The mutating-POST
+    gap was since closed by wiring `mutating_request_allowed` into the
+    shared `verify_csrf()` chokepoint, so the invariant moved with it.)"""
     server = _read("jasper/control/server.py")
     assert "from ..http_security import" in server
-    web_dir = REPO / "jasper" / "web"
-    for py in web_dir.glob("*.py"):
-        assert "http_security" not in py.read_text(encoding="utf-8"), py.name
-
+    # The wizard mutating chokepoint now applies the same guard.
+    common = _read("jasper/web/_common.py")
+    assert "mutating_request_allowed" in common
     sec = _read("SECURITY.md")
     assert "jasper-control" in sec
-    assert "do **not** yet share" in sec
+    assert "state-changing (POST)" in sec  # POST surface now guarded
+    assert "read (GET)" in sec  # read surface named as the deferred gap
 
 
 def test_ci_comment_credits_conftest_fixture_for_env_leak():

@@ -42,9 +42,14 @@ obvious browser-origin and DNS-rebinding abuse via
 `jasper/http_security.py` (`management_read_allowed` /
 `mutating_request_allowed`), caps request sizes, and avoids logging
 credentials. The ~18 nginx-fronted setup wizards under `jasper/web/`
-do **not** yet share that Host-header / DNS-rebinding guard — they
-currently rely on CSRF tokens plus LAN trust. Closing that wizard gap
-is a known, deferred follow-up, not done. Secrets are kept in
+now share that guard on every **state-changing (POST)** request:
+`verify_csrf()` in `jasper/web/_common.py` runs `mutating_request_allowed`
+before any mutation, so a DNS-rebinding / cross-site browser cannot write
+WiFi PSKs, HA tokens, or API keys, or trigger reboots through a wizard.
+The wizard **read (GET)** surface is not yet behind the same Host check
+(there is no single shared GET chokepoint today), so a rebinding read
+could still render a wizard page — though not change state; closing that
+read-side gap is a known, deferred follow-up. Secrets are kept in
 root-owned files where possible.
 
 Diagnostic scripts redact environment-style secret assignments in their
