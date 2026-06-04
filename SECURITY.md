@@ -35,9 +35,17 @@ Include:
 
 JTS assumes a trusted household LAN and local physical ownership of the
 speaker. It does not currently ship full authentication or HTTPS for
-local setup pages. Management endpoints should still reject obvious
-browser-origin and DNS-rebinding abuse, cap request sizes, avoid logging
-credentials, and keep secrets in root-owned files where possible.
+local setup pages.
+
+The `jasper-control` API (`127.0.0.1:8780`, fronted by nginx) rejects
+obvious browser-origin and DNS-rebinding abuse via
+`jasper/http_security.py` (`management_read_allowed` /
+`mutating_request_allowed`), caps request sizes, and avoids logging
+credentials. The ~18 nginx-fronted setup wizards under `jasper/web/`
+do **not** yet share that Host-header / DNS-rebinding guard — they
+currently rely on CSRF tokens plus LAN trust. Closing that wizard gap
+is a known, deferred follow-up, not done. Secrets are kept in
+root-owned files where possible.
 
 Diagnostic scripts redact environment-style secret assignments in their
 log/config snapshots before writing logs or bundles to disk. Wake-event

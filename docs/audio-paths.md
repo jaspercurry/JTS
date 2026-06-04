@@ -130,12 +130,18 @@ mixer, a second output device, or a new volume model.
    not put a source on substream `6` or `7`. If you need another
    production source lane, stop and redesign the topology rather than
    overloading snd-aloop.
-2. **Teach `jasper-fanin` about the lane.** Extend
-   `JASPER_FANIN_INPUT_PCMS` and `JASPER_FANIN_INPUT_RENDERERS` in
-   `deploy/systemd/jasper-fanin.service`. The lists are pipe-delimited
-   because ALSA `hw:` names contain commas. A configured input is part
-   of the production graph; if it cannot be opened, fan-in should fail
-   loudly instead of silently dropping the source. Keep the renderer
+2. **Teach `jasper-fanin` about the lane.** The canonical lane list is
+   the compiled-in default arrays in
+   `rust/jasper-fanin/src/config.rs` `Config::from_env` (~line 80):
+   `input_pcms` and `input_renderers`, kept positionally aligned. Extend
+   both there. The `JASPER_FANIN_INPUT_PCMS` / `JASPER_FANIN_INPUT_RENDERERS`
+   env vars are an *optional override* that replaces the compiled defaults
+   when set — they are **not** wired into
+   `deploy/systemd/jasper-fanin.service` by default, so editing the unit
+   file alone does nothing unless you also set them. The lists are
+   pipe-delimited because ALSA `hw:` names contain commas. A configured
+   input is part of the production graph; if it cannot be opened, fan-in
+   fails loudly instead of silently dropping the source. Keep the renderer
    label stable: mux uses that label when it asks fan-in to pass one
    selected source lane.
 3. **Wire the source daemon to the alias.** Its systemd unit should
