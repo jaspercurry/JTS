@@ -21,7 +21,7 @@ alsa = "0.9"
 # systemd notification socket: READY=1 on startup, WATCHDOG=1 keepalives,
 # STOPPING=1 on shutdown. The Type=notify + WatchdogSec=30s contract
 # in deploy/systemd/jasper-fanin.service requires this.
-sd-notify = "0.4"
+sd-notify = "0.5"
 
 # Structured logging to stderr. journald captures it; the daemon's
 # stdout/stderr are how it surfaces event= lines for jasper-trace.sh
