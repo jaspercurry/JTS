@@ -29,6 +29,7 @@
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
+| Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Preview what install.sh would mutate | [Install dry-run plan](#install-dry-run-plan) |
@@ -282,6 +283,28 @@ The track gets AirDropped to a phone and played back during
 If you find yourself wanting "the same N utterances every time" for a
 test, use this. Output lands at `logs/wake-test-track/<slug>/<slug>.wav`
 which `wake-rate-test.sh` finds automatically.
+
+---
+
+## Multi-room sync spike (P0)
+
+The throwaway feasibility harness for multi-room grouping (stereo pair,
+2.1 wireless sub). Answers the one gating unknown before any product
+code: **does Snapcast hold inter-speaker sync on WiFi, at what buffer
+depth + codec, and what does the FLAC encode cost on a 1 GB Pi?** Runs
+entirely off the live JTS audio path; cleans up after itself.
+
+| Tool | Methodology | When to use |
+|---|---|---|
+| [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh) | Laptop-side SSH harness (`--setup`/`--sweep`/`--record-chirp`/`--teardown`). Stands up a throwaway `snapserver` + `snapclient`s (leader + 2nd Pi + Pi Zero sub) reading a hand-fed FIFO, sweeps buffer `{150,300,500,800,1200}` ms × codec `{pcm,flac,opus}`, optional `--netem` WiFi stress (`wlan0` only). Results in `multiroom-spike/`. | Before P1: pick the buffer/codec that holds the p99<5 ms L/R bound on WiFi. |
+| [`scripts/multiroom-spike-measure.py`](../scripts/multiroom-spike-measure.py) | Pure-stdlib analyzer. `software` (snapserver JSON-RPC latency spread), `acoustic` (single-mic cross-correlation of a click track — ground-truth inter-speaker offset), `summarize` (PASS/FAIL vs target + RAM/CPU + recommended cell). | Analyze a spike run; the acoustic mode is the authoritative comb-filtering check. |
+
+**Safety note:** the spike plays a test track/music straight through a
+throwaway `snapclient`, **bypassing** CamillaDSP's `volume_limit: 0.0`
+ceiling, and its leader-side client can contend with `jasper-outputd`
+for the DAC. Run it with the JTS audio daemons stopped (or on bring-up
+hardware), and set a conservative volume before the first sweep. See
+[`HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §8.
 
 ---
 
