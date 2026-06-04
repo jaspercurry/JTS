@@ -4909,6 +4909,10 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # confirms reachability when on.
         check_peering_mode,
         check_peering_discovery,
+        # Multi-device grouping (channel-split bonds). Config-sanity
+        # only: OK when off (default) or on-and-valid; warn surfaces the
+        # fail-LOUD "enabled but inconsistent" GroupingConfig.error.
+        check_grouping,
         # Catch deployment drift on the shairport-sync.conf alsa block —
         # raw `hw:Loopback` silently breaks AirPlay (the d6c946c bug).
         check_shairport_sync_loopback_plughw,
@@ -5425,6 +5429,30 @@ def _local_peer_id() -> str:
         return Path("/var/lib/jasper/peer_id").read_text().strip()
     except OSError:
         return ""
+
+
+def check_grouping() -> CheckResult:
+    """Verify /var/lib/jasper/grouping.env is internally consistent.
+
+    Off by default; the user opts in via the grouping web wizard. We
+    return `ok` for both OFF (deliberate) and ON-and-valid (configured)
+    — the `warn` case surfaces the fail-LOUD "enabled but broken" state
+    that jasper.multiroom.config carries on GroupingConfig.error."""
+    from ..multiroom.config import load_config as _load_grouping_config
+
+    label = "grouping: mode"
+    cfg = _load_grouping_config()
+    if not cfg.enabled:
+        return CheckResult(label, "ok", "single-speaker (grouping off)")
+    if cfg.error is not None:
+        return CheckResult(label, "warn", cfg.error)
+    detail = (
+        f"on — role={cfg.role} channel={cfg.channel} "
+        f"bond_id={cfg.bond_id} buffer_ms={cfg.buffer_ms}"
+    )
+    if cfg.role == "follower":
+        detail += f" leader_addr={cfg.leader_addr}"
+    return CheckResult(label, "ok", detail)
 
 
 def check_avahi_daemon() -> CheckResult:

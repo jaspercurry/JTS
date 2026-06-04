@@ -1,0 +1,26 @@
+[Unit]
+Description=Reconcile multi-room grouping (snapserver/snapclient) to the wizard intent
+Documentation=file:/opt/jasper/docs/HANDOFF-multiroom.md
+# Mirrors jasper-aec-reconcile: a Type=oneshot that reads the
+# wizard-owned intent file and is the SINGLE writer of runtime state
+# (which of snapserver/snapclient run). It computes a fail-safe plan
+# from /var/lib/jasper/grouping.env (off / invalid => stop both;
+# leader => server + client; follower => client only) and applies it
+# via systemctl. Off-by-default: on a solo box grouping.env reports
+# disabled and the reconciler stops both units (a no-op when they're
+# already inactive). The reconciler — not [Install] — enables/starts
+# the units on opt-in, so this stays cost-free until a household
+# actually groups speakers.
+After=sound.target jasper-camilla.service
+Wants=sound.target jasper-camilla.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/grouping.env
+ExecStart=/opt/jasper/.venv/bin/python -m jasper.multiroom.reconcile --reason systemd
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

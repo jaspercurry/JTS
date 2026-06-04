@@ -1,0 +1,75 @@
+[Unit]
+Description=Jasper Snapcast server — multi-room grouping leader (synchronised stream source)
+# Ships DISABLED. A solo speaker never runs snapcast. The /peers/ (or
+# /sources/) wizard toggle writes /var/lib/jasper/grouping.env and kicks
+# jasper-grouping-reconcile, which is the SINGLE writer that
+# starts/stops this unit per the grouping role (leader => snapserver +
+# snapclient; follower => snapclient only; off/invalid => neither).
+# When grouping is off there is no process and no resident RAM.
+#
+# Reads a pipe FIFO source (/run/jasper-snapserver/snapfifo) fed by the
+# music chain, and serves the synchronised stream to every follower's
+# snapclient (and the leader's own snapclient). Output-side audio, so
+# it joins jts-audio.slice (MemorySwapMax=0) alongside fanin/camilla
+# and the renderers.
+#
+# See docs/HANDOFF-multiroom.md for the full design.
+After=jasper-fanin.service jasper-camilla.service sound.target
+Wants=jasper-fanin.service
+
+# Anti-storm: cap restart attempts WITHOUT rebooting. The essential
+# audio units (camilla/fanin/outputd/voice) use StartLimitAction=reboot
+# because a dead one means a dead speaker. This unit is the opposite:
+# grouping is OPTIONAL, off by default, and its binary may not even be
+# installed (install.sh deliberately skips the snapcast packages). A
+# start failure here must DEGRADE — go `failed`, surfaced on /state +
+# jasper-doctor — never reboot the whole household speaker (rebooting
+# would be a remote-triggerable brick loop: enable grouping w/o the
+# binary → ExecStart fails → reboot → repeat). After the burst systemd
+# stops retrying (default StartLimitAction=none). Design doc §7:
+# "follower degrades, visible; never reboots the household."
+StartLimitIntervalSec=300
+StartLimitBurst=4
+
+[Service]
+# Output-side audio: never let pages swap to zram (decompression
+# jitter blows the ALSA timing budget). The slice enforces
+# MemorySwapMax=0; this unit declares scheduling priority + OOM
+# ordering. NO CPU caps (CPUQuota/CPUWeight/CPUAffinity/CPUShares are
+# forbidden on the JTS audio chain — spikes must stay visible on
+# /system/, not be muted).
+Slice=jts-audio.slice
+Type=simple
+TimeoutStopSec=5s
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/grouping.env
+# NOTE (P1, pending on-hardware): JASPER_SNAPSERVER_ARGS is NOT yet
+# written by the reconciler — snapserver_argv() is spec'd + unit-tested
+# but jasper.multiroom.reconcile.main() currently only start/stops
+# units, it does not yet assemble + persist the args. Until P1 wires
+# that round-trip, $JASPER_SNAPSERVER_ARGS is empty and snapserver
+# would start with its own defaults (not reading the FIFO). Harmless
+# today: off-by-default means nothing starts this unit yet.
+ExecStart=/usr/bin/snapserver $JASPER_SNAPSERVER_ARGS
+Restart=on-failure
+RestartSec=2s
+# Per-unit runtime dir — NOT the shared /run/jasper (jasper-voice owns
+# that for voice.sock + peering.sock). A RuntimeDirectory is reaped
+# when its unit stops; sharing /run/jasper would let snapserver
+# stopping destroy the voice/peering sockets. Hosts the snapfifo.
+RuntimeDirectory=jasper-snapserver
+RuntimeDirectoryMode=0755
+
+# Scheduling priority (NOT a cap): the audio chain runs hot.
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=4
+
+# OOM ordering: an optional renderer must die BEFORE core playback
+# (camilla -900, fanin -800) and the mic/AEC chain (-700). -300 puts
+# it in the optional-renderer band so memory pressure sheds grouping
+# before it touches solo-playback survival.
+OOMScoreAdjust=-300
+
+[Install]
+WantedBy=multi-user.target

@@ -459,6 +459,28 @@ verification = [
 ]
 
 [[subsystem]]
+id = "multiroom-grouping"
+title = "Multi-room speaker grouping (stereo pair / 2.1 / wireless sub)"
+safety = "hardware-risk"
+code = [
+  "jasper/multiroom/**",
+  "deploy/systemd/jasper-snapserver.service",
+  "deploy/systemd/jasper-snapclient.service",
+  "deploy/systemd/jasper-grouping-reconcile.service",
+  "scripts/multiroom-spike.sh",
+  "scripts/multiroom-spike-measure.py",
+]
+docs = [
+  "docs/HANDOFF-multiroom.md",
+]
+requires_docs_when = [
+  "Grouping roles, the snapcast sync transport, channel/leader assignment, the grouping env contract, off-by-default behaviour, or the sync/RAM spike methodology change.",
+]
+verification = [
+  "pytest tests/test_multiroom_config.py tests/test_multiroom_reconcile.py tests/test_multiroom_state.py",
+]
+
+[[subsystem]]
 id = "future-integrations-and-updates"
 title = "Future integrations, remote updates, and roadmap briefs"
 safety = "design-only"

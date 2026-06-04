@@ -1,0 +1,59 @@
+[Unit]
+Description=Jasper Snapcast client — plays this speaker's grouping channel in sync
+# Ships DISABLED. Started by jasper-grouping-reconcile when grouping is
+# enabled and valid, for BOTH roles: a leader runs its own snapclient
+# (host 127.0.0.1) to play its channel locally; a follower runs only
+# the client, pointed at cfg.leader_addr. When grouping is off there is
+# no process and no resident RAM.
+#
+# Plays the synchronised stream into the music chain. Output-side
+# audio, so it joins jts-audio.slice (MemorySwapMax=0) alongside
+# fanin/camilla and the renderers.
+#
+# See docs/HANDOFF-multiroom.md for the full design.
+After=jasper-camilla.service sound.target
+Wants=jasper-camilla.service
+
+# Anti-storm: cap restart attempts WITHOUT rebooting. Grouping is
+# OPTIONAL and off by default, and the snapclient binary may not be
+# installed — so a start failure (e.g. unreachable leader_addr, missing
+# binary, bad args) must DEGRADE this speaker, not reboot it. The most
+# important case: a FOLLOWER whose leader is powered off must NOT
+# reboot-loop — it goes `failed`, surfaced on /state + jasper-doctor,
+# and self-rejoins when the leader returns. After the burst systemd
+# stops retrying (default StartLimitAction=none). Design doc §7:
+# "follower degrades, visible; never reboots the household."
+StartLimitIntervalSec=300
+StartLimitBurst=4
+
+[Service]
+# Output-side audio: never swap to zram. Slice enforces
+# MemorySwapMax=0; this unit declares scheduling priority + OOM
+# ordering. NO CPU caps (forbidden on the JTS audio chain).
+Slice=jts-audio.slice
+Type=simple
+TimeoutStopSec=5s
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/grouping.env
+# NOTE (P1, pending on-hardware): JASPER_SNAPCLIENT_ARGS is NOT yet
+# written by the reconciler — snapclient_argv() is spec'd + unit-tested
+# but jasper.multiroom.reconcile.main() currently only start/stops
+# units, it does not yet assemble + persist the args. Until P1 wires
+# that round-trip, $JASPER_SNAPCLIENT_ARGS is empty and snapclient
+# would start with its own defaults. Harmless today: off-by-default
+# means nothing starts this unit yet.
+ExecStart=/usr/bin/snapclient $JASPER_SNAPCLIENT_ARGS
+Restart=on-failure
+RestartSec=2s
+
+# Scheduling priority (NOT a cap): the audio chain runs hot.
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=4
+
+# OOM ordering: optional renderer, dies before core playback. -300
+# puts it in the optional-renderer band (same as snapserver).
+OOMScoreAdjust=-300
+
+[Install]
+WantedBy=multi-user.target
