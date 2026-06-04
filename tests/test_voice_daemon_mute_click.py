@@ -120,3 +120,38 @@ async def test_mute_click_uses_matched_cue_path():
             },
         )
     ]
+
+
+async def test_listening_chirp_uses_matched_chirp_path():
+    from jasper.assistant_loudness import AssistantLoudnessProfile
+    from jasper.voice_daemon import WakeLoop
+
+    profile = AssistantLoudnessProfile(
+        provider="jts",
+        model="synthetic-listening-chirp",
+        voice="wake_start",
+        source_lufs=-15.0,
+        source_peak_dbfs=-14.9,
+        confidence=1.0,
+        updated_at="static",
+        method="synthetic_generated",
+    )
+    tts = _FakeTts()
+    wl = WakeLoop.__new__(WakeLoop)
+    wl._tts = tts
+    wl._chirp_on_pcm = b"wake"
+    wl._chirp_off_pcm = b"end"
+    wl._chirp_on_profile = profile
+    wl._chirp_off_profile = object()
+
+    await wl._play_listening_chirp(going_on=True)
+
+    assert tts.calls == [
+        (
+            b"wake",
+            {
+                "segment_kind": "chirp",
+                "source_profile": profile,
+            },
+        )
+    ]

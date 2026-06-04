@@ -1443,6 +1443,16 @@ class WakeLoop:
         self._chirp_off_pcm: bytes = self._generate_listening_chirp(
             going_on=False,
         )
+        self._chirp_on_profile = _synthetic_audio_profile(
+            model="synthetic-listening-chirp",
+            voice="wake_start",
+            pcm=self._chirp_on_pcm,
+        )
+        self._chirp_off_profile = _synthetic_audio_profile(
+            model="synthetic-listening-chirp",
+            voice="turn_end",
+            pcm=self._chirp_off_pcm,
+        )
         self._mute_click_on_pcm: bytes = self._generate_mute_click(going_on=True)
         self._mute_click_off_pcm: bytes = self._generate_mute_click(going_on=False)
         self._mute_click_on_profile = _synthetic_audio_profile(
@@ -1949,9 +1959,29 @@ class WakeLoop:
         in __init__ to keep this off the wake hot path."""
         try:
             pcm = self._chirp_on_pcm if going_on else self._chirp_off_pcm
-            await self._tts.write_segment(pcm, segment_kind="chirp")
+            profile = (
+                self._chirp_on_profile
+                if going_on else self._chirp_off_profile
+            )
+            await self._tts.write_segment(
+                pcm,
+                segment_kind="chirp",
+                source_profile=profile,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning("listening chirp failed: %s", e)
+
+    async def _prepare_assistant_loudness_context(self) -> None:
+        provider, model, voice = active_voice_identity(self._cfg)
+        silence_target = silence_target_lufs_for_level(
+            self._volume_coordinator.get_listening_level(),
+        )
+        await self._tts.prepare_assistant_context(
+            provider=provider,
+            model=model,
+            voice=voice,
+            silence_target_lufs=silence_target,
+        )
 
     async def mute_mic(self) -> str:
         """Stop listening: drop mic frames at the wake-loop gate. If a
@@ -2531,6 +2561,11 @@ class WakeLoop:
 
             # Step 3: existing chirp + acquire + drain flow.
             #
+            # Prime outputd's loudness context before the chirp as well
+            # as before assistant TTS. The chirp is fire-and-forget
+            # below, so waiting for _begin_turn's prepare would race it
+            # back onto outputd's no-context fallback.
+            await self._prepare_assistant_loudness_context()
             # "Now listening" chirp. Fire-and-forget so it plays in
             # parallel with `_begin_turn` opening rather than adding
             # ~70 ms to time-to-listen. NOT added to self._bg_tasks —
@@ -2904,6 +2939,7 @@ class WakeLoop:
             return "CAP"
         if self._connection.is_paused():
             return "PAUSED"
+        await self._prepare_assistant_loudness_context()
         asyncio.create_task(
             self._play_listening_chirp(going_on=True),
             name="listening-chirp-on",
@@ -3025,16 +3061,7 @@ class WakeLoop:
             self._vad_off.reset()
         t_after_state = _time.monotonic()
         await self._content_activity.refresh_now()
-        provider, model, voice = active_voice_identity(self._cfg)
-        silence_target = silence_target_lufs_for_level(
-            self._volume_coordinator.get_listening_level(),
-        )
-        await self._tts.prepare_assistant_context(
-            provider=provider,
-            model=model,
-            voice=voice,
-            silence_target_lufs=silence_target,
-        )
+        await self._prepare_assistant_loudness_context()
         await self._tts.pause_content_meter()
         self._content_activity.pause()
         # Tell the volume coordinator a session is active so its

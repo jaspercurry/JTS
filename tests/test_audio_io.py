@@ -62,9 +62,28 @@ class _CaptureOutputdStream:
         self._active_segment: tuple[str, str | None, object | None] | None = None
         self.segments_ended = 0
         self.flush_acks: list[dict] = []
+        self.prepares: list[tuple[str, str, str, float]] = []
+        self.meter_pauses = 0
+        self.meter_resumes = 0
 
     def set_gain_db(self, db: float) -> None:
         self.gains.append(db)
+
+    def prepare_assistant(
+        self,
+        *,
+        provider: str,
+        model: str,
+        voice: str,
+        silence_target_lufs: float,
+    ) -> None:
+        self.prepares.append((provider, model, voice, silence_target_lufs))
+
+    def pause_content_meter(self) -> None:
+        self.meter_pauses += 1
+
+    def resume_content_meter(self) -> None:
+        self.meter_resumes += 1
 
     def start_segment(
         self,
@@ -769,3 +788,163 @@ async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
     assert replacement.gains == [-8.0]
     assert replacement.segments_started == [("assistant", "msg_abc123", None)]
     assert replacement.writes
+
+
+async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
+    monkeypatch,
+):
+    import scipy.signal
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    parent, child = socket.socketpair()
+    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    child.close()
+    p._stream = broken_stream  # type: ignore[assignment]
+
+    replacement = _CaptureOutputdStream()
+
+    async def fake_connect():
+        return replacement
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    mono = np.array([1, 2], dtype=np.int16)
+    await p.write_segment(
+        mono.tobytes(),
+        provider_item_id="msg_abc123",
+        segment_kind="assistant",
+    )
+
+    assert broken_stream.closed
+    assert p._stream is replacement
+    assert replacement.gains == [-8.0]
+    assert replacement.segments_started == [("assistant", "msg_abc123", None)]
+    assert replacement.writes
+
+
+async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
+    monkeypatch,
+):
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    parent, child = socket.socketpair()
+    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    child.close()
+    p._stream = broken_stream  # type: ignore[assignment]
+
+    replacement = _CaptureOutputdStream()
+
+    async def fake_connect():
+        return replacement
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    await p.prepare_assistant_context(
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="marin",
+        silence_target_lufs=-41.0,
+    )
+
+    assert broken_stream.closed
+    assert p._stream is replacement
+    assert replacement.prepares == [
+        ("openai", "gpt-realtime-2", "marin", -41.0)
+    ]
+
+
+async def test_outputd_prepare_reconnect_failure_is_best_effort(
+    monkeypatch,
+):
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    parent, child = socket.socketpair()
+    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    child.close()
+    p._stream = broken_stream  # type: ignore[assignment]
+
+    async def fake_connect():
+        raise OSError("outputd still unavailable")
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    await p.prepare_assistant_context(
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="marin",
+        silence_target_lufs=-41.0,
+    )
+
+    assert broken_stream.closed
+    assert p._stream is broken_stream
+
+
+async def test_outputd_meter_control_reconnects_and_retries_after_broken_pipe(
+    monkeypatch,
+):
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    parent, child = socket.socketpair()
+    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    child.close()
+    p._stream = broken_stream  # type: ignore[assignment]
+
+    replacement = _CaptureOutputdStream()
+
+    async def fake_connect():
+        return replacement
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    await p.pause_content_meter()
+
+    assert broken_stream.closed
+    assert p._stream is replacement
+    assert replacement.meter_pauses == 1
+
+
+async def test_outputd_meter_control_reconnect_failure_is_best_effort(
+    monkeypatch,
+):
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    parent, child = socket.socketpair()
+    broken_stream = audio_io_mod._OutputdStreamAdapter(parent)
+    child.close()
+    p._stream = broken_stream  # type: ignore[assignment]
+
+    async def fake_connect():
+        raise OSError("outputd still unavailable")
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    await p.pause_content_meter()
+
+    assert broken_stream.closed
+    assert p._stream is broken_stream

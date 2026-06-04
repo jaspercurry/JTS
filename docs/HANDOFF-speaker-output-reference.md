@@ -93,11 +93,12 @@ TTS is already a core realtime-voice component:
   `event=outputd.assistant_loudness` plus STATUS telemetry for the
   latest decision. Python seeds and learns profiles but does not set
   final gain.
-- Cues route through the same `TtsPlayout` object so they inherit
+- Cues and chirps route through the same `TtsPlayout` object so they inherit
   outputd routing, drain behavior, and profile/peak-capped gain policy
-  without training live assistant profiles. If a cue arrives with no
-  wake-turn context and no measured content baseline, outputd uses the
-  configured default silence target rather than a fixed legacy gain.
+  without training live assistant profiles. If a feedback sound arrives
+  with no wake-turn context and no measured content baseline, outputd
+  uses the configured default silence target rather than a fixed legacy
+  gain.
 
 That is good groundwork, but it is not a complete "what did the user
 hear?" ledger. Robust barge-in needs both a true AEC reference and
@@ -787,4 +788,4 @@ datum: how much assistant audio was actually heard.
   artifacts only; an explicit lab `aplay` backend can emit short, clamped
   non-tweeter tests after readiness passes.
 
-Last verified: 2026-06-03
+Last verified: 2026-06-04

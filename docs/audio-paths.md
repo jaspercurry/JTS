@@ -278,11 +278,11 @@ JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS=-41.0
 JASPER_OUTPUTD_CONTENT_SILENCE_LUFS=-60.0
 ```
 
-When a cue/assistant segment arrives without a prepared wake-turn
+When a cue/chirp/assistant segment arrives without a prepared wake-turn
 context and without measurable content, outputd uses
 `JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS` as the baseline
-instead of a fixed fallback gain. This keeps no-context cues on the same
-profile/peak-cap path as live assistant speech.
+instead of a fixed fallback gain. This keeps no-context feedback sounds
+on the same profile/peak-cap path as live assistant speech.
 
 ### Debugging Assistant Gain
 
@@ -466,4 +466,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-03 (speaker output topology/readiness contract, DAC8x output route knob, assistant loudness matching, STATUS telemetry, and outputd topology rechecked)
+Last verified: 2026-06-04 (assistant loudness matching note and outputd STATUS telemetry path rechecked)

@@ -825,9 +825,18 @@ class _OutputdStreamAdapter:
         self._recv_buffer.clear()
         self._sock.close()
 
+    def _sendall_locked(self, data: bytes) -> None:
+        if self._closed:
+            raise BrokenPipeError("outputd TTS socket is closed")
+        try:
+            self._sock.sendall(data)
+        except OSError:
+            self._close_unlocked(send_close=False)
+            raise
+
     def set_gain_db(self, db: float) -> None:
         with self._lock:
-            self._sock.sendall(f"GAIN {db:.3f}\n".encode("ascii"))
+            self._sendall_locked(f"GAIN {db:.3f}\n".encode("ascii"))
 
     def prepare_assistant(
         self,
@@ -849,7 +858,7 @@ class _OutputdStreamAdapter:
             )
             return
         with self._lock:
-            self._sock.sendall(
+            self._sendall_locked(
                 (
                     f"PREPARE_ASSISTANT {provider} {model} {voice} "
                     f"{float(silence_target_lufs):.2f}\n"
@@ -858,11 +867,11 @@ class _OutputdStreamAdapter:
 
     def pause_content_meter(self) -> None:
         with self._lock:
-            self._sock.sendall(b"CONTENT_METER_PAUSE\n")
+            self._sendall_locked(b"CONTENT_METER_PAUSE\n")
 
     def resume_content_meter(self) -> None:
         with self._lock:
-            self._sock.sendall(b"CONTENT_METER_RESUME\n")
+            self._sendall_locked(b"CONTENT_METER_RESUME\n")
 
     def start_segment(
         self,
@@ -881,24 +890,24 @@ class _OutputdStreamAdapter:
             if self._active_segment == segment:
                 return
             if self._active_segment is not None:
-                self._sock.sendall(b"SEGMENT_END\n")
+                self._sendall_locked(b"SEGMENT_END\n")
             parts = ["SEGMENT_START", segment[0], segment[1]]
             if profile_tokens is not None:
                 parts.extend(profile_tokens)
-            self._sock.sendall((" ".join(parts) + "\n").encode("ascii"))
+            self._sendall_locked((" ".join(parts) + "\n").encode("ascii"))
             self._active_segment = segment
 
     def end_segment(self) -> None:
         with self._lock:
             if self._active_segment is None:
                 return
-            self._sock.sendall(b"SEGMENT_END\n")
+            self._sendall_locked(b"SEGMENT_END\n")
             self._active_segment = None
 
     def write(self, data: bytes) -> None:
         with self._lock:
-            self._sock.sendall(f"AUDIO {len(data)}\n".encode("ascii"))
-            self._sock.sendall(data)
+            self._sendall_locked(f"AUDIO {len(data)}\n".encode("ascii"))
+            self._sendall_locked(data)
 
     def abort(self) -> None:
         self.flush_sync()
@@ -906,7 +915,7 @@ class _OutputdStreamAdapter:
     def flush_sync(self) -> dict | None:
         with self._lock:
             try:
-                self._sock.sendall(b"FLUSH_SYNC\n")
+                self._sendall_locked(b"FLUSH_SYNC\n")
                 self._active_segment = None
                 line = self._readline_locked(_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC)
             except TimeoutError:
@@ -1012,6 +1021,27 @@ class OutputdTtsPlayout(TtsPlayout):
         self._stream = await self._connect_stream_adapter()  # type: ignore[assignment]
         return self
 
+    async def _current_outputd_stream(self):
+        stream = self._stream
+        if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
+            logger.info(
+                "event=tts_outputd.reconnect reason=closed_socket socket=%s",
+                self._socket_path,
+            )
+            try:
+                stream = await self._connect_stream_adapter()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "event=tts_outputd.reconnect_failed "
+                    "reason=closed_socket socket=%s exc_type=%s err=%s",
+                    self._socket_path,
+                    type(e).__name__,
+                    e,
+                )
+                return None
+            self._stream = stream  # type: ignore[assignment]
+        return stream
+
     def set_gain_db(self, db: float) -> None:
         super().set_gain_db(db)
         stream = self._stream
@@ -1034,22 +1064,37 @@ class OutputdTtsPlayout(TtsPlayout):
         self._provider = provider
         self._model = model
         self._voice = voice
-        stream = self._stream
-        if stream is None:
-            return
-        prepare = getattr(stream, "prepare_assistant", None)
-        if prepare is None:
-            return
-        try:
-            await asyncio.to_thread(
-                prepare,
-                provider=provider,
-                model=model,
-                voice=voice,
-                silence_target_lufs=silence_target_lufs,
-            )
-        except OSError as e:
-            logger.warning("outputd TTS prepare assistant failed: %s", e)
+        for attempt in range(2):
+            stream = await self._current_outputd_stream()
+            if stream is None:
+                return
+            prepare = getattr(stream, "prepare_assistant", None)
+            if prepare is None:
+                return
+            try:
+                await asyncio.to_thread(
+                    prepare,
+                    provider=provider,
+                    model=model,
+                    voice=voice,
+                    silence_target_lufs=silence_target_lufs,
+                )
+                return
+            except OSError as e:
+                if (
+                    attempt == 0
+                    and isinstance(stream, _OutputdStreamAdapter)
+                    and stream.closed
+                ):
+                    logger.info(
+                        "event=tts_outputd.control_retry method=prepare_assistant "
+                        "reason=closed_socket exc_type=%s err=%s",
+                        type(e).__name__,
+                        e,
+                    )
+                    continue
+                logger.warning("outputd TTS prepare assistant failed: %s", e)
+                return
 
     async def pause_content_meter(self) -> None:
         await self._send_meter_control("pause_content_meter")
@@ -1058,16 +1103,32 @@ class OutputdTtsPlayout(TtsPlayout):
         await self._send_meter_control("resume_content_meter")
 
     async def _send_meter_control(self, method: str) -> None:
-        stream = self._stream
-        if stream is None:
-            return
-        fn = getattr(stream, method, None)
-        if fn is None:
-            return
-        try:
-            await asyncio.to_thread(fn)
-        except OSError as e:
-            logger.warning("outputd TTS %s failed: %s", method, e)
+        for attempt in range(2):
+            stream = await self._current_outputd_stream()
+            if stream is None:
+                return
+            fn = getattr(stream, method, None)
+            if fn is None:
+                return
+            try:
+                await asyncio.to_thread(fn)
+                return
+            except OSError as e:
+                if (
+                    attempt == 0
+                    and isinstance(stream, _OutputdStreamAdapter)
+                    and stream.closed
+                ):
+                    logger.info(
+                        "event=tts_outputd.control_retry method=%s "
+                        "reason=closed_socket exc_type=%s err=%s",
+                        method,
+                        type(e).__name__,
+                        e,
+                    )
+                    continue
+                logger.warning("outputd TTS %s failed: %s", method, e)
+                return
 
     async def write(self, pcm: bytes) -> None:
         await self.write_segment(pcm)
@@ -1099,15 +1160,17 @@ class OutputdTtsPlayout(TtsPlayout):
                 )
                 self._closed_stream_warned = True
             return
-        if isinstance(self._stream, _OutputdStreamAdapter) and self._stream.closed:
-            logger.info(
-                "outputd TTS reconnecting after closed socket: socket=%s",
-                self._socket_path,
-            )
-            self._stream = await self._connect_stream_adapter()  # type: ignore[assignment]
+        stream = await self._current_outputd_stream()
+        if stream is None:
+            return
 
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-        if segment_kind == "assistant" and self._provider and self._model and self._voice:
+        if (
+            segment_kind == "assistant"
+            and self._provider
+            and self._model
+            and self._voice
+        ):
             if self._assistant_meter is None:
                 self._assistant_meter = AssistantSourceMeter()
             self._assistant_meter.observe_pcm_24k(pcm)
@@ -1119,21 +1182,48 @@ class OutputdTtsPlayout(TtsPlayout):
 
         chunk_duration_sec = len(mono_i16) / self._output_rate
         write_start = time.monotonic()
-        stream = self._stream
-        if hasattr(stream, "set_gain_db"):
-            await asyncio.to_thread(stream.set_gain_db, self.gain_db)
-        if hasattr(stream, "start_segment"):
-            profile = self._profile_for_segment(
-                segment_kind, source_profile=source_profile,
-            )
-            await asyncio.to_thread(
-                stream.start_segment,
-                kind=segment_kind,
-                provider_item_id=provider_item_id,
-                profile=profile,
-            )
+        for attempt in range(2):
+            try:
+                if hasattr(stream, "set_gain_db"):
+                    await asyncio.to_thread(stream.set_gain_db, self.gain_db)
+                if hasattr(stream, "start_segment"):
+                    profile = self._profile_for_segment(
+                        segment_kind, source_profile=source_profile,
+                    )
+                    await asyncio.to_thread(
+                        stream.start_segment,
+                        kind=segment_kind,
+                        provider_item_id=provider_item_id,
+                        profile=profile,
+                    )
+                break
+            except OSError as e:
+                if (
+                    attempt == 0
+                    and isinstance(stream, _OutputdStreamAdapter)
+                    and stream.closed
+                ):
+                    logger.info(
+                        "event=tts_outputd.segment_setup_retry "
+                        "reason=closed_socket exc_type=%s err=%s",
+                        type(e).__name__,
+                        e,
+                    )
+                    stream = await self._current_outputd_stream()
+                    if stream is None:
+                        return
+                    continue
+                raise
         for chunk in _outputd_audio_chunks(stereo_i16.tobytes()):
-            await asyncio.to_thread(stream.write, chunk)
+            try:
+                await asyncio.to_thread(stream.write, chunk)
+            except OSError:
+                if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
+                    logger.warning(
+                        "event=tts_outputd.audio_write_failed "
+                        "reason=closed_socket",
+                    )
+                raise
         queued_at = time.monotonic()
         if self._ring_end_monotonic is None or queued_at > self._ring_end_monotonic:
             self._ring_end_monotonic = queued_at + chunk_duration_sec

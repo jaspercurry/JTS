@@ -39,10 +39,14 @@ they are sub-100 ms sine blips, not phrases worth caching through
   playing, otherwise the listening-level-derived silence target, with
   the same peak cap.
 - **Wake start/end chirps**: `WakeLoop._generate_listening_chirp`
-  still sends `segment_kind="chirp"`. Outputd treats chirps as fixed
-  fallback-gain sounds, not profiled assistant/cue segments. Change
-  this only deliberately; those chirps mark turn lifecycle timing and
-  have different UX constraints from the mute privacy click.
+  builds the two-note ascending wake chirp and descending turn-end
+  chirp. WakeLoop pre-renders both PCM buffers at startup, measures
+  their source loudness with `measure_pcm_24k_mono`, and sends
+  playback as `segment_kind="chirp"` with an explicit synthetic
+  source-loudness profile. Outputd level-matches chirps through the
+  same assistant-owned loudness policy as TTS and cue audio. The
+  `chirp` segment kind is semantic now — it keeps lifecycle-specific
+  ledger/log visibility without bypassing loudness matching.
 
 ---
 
@@ -292,4 +296,4 @@ failures on the affected paths, but every other path works.
 
 ---
 
-Last verified: 2026-06-03
+Last verified: 2026-06-04

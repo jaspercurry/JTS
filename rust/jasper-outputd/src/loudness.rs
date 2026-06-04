@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 
-use crate::mixer::{clamp_tts_gain_db, MAX_TTS_GAIN_DB};
+use crate::mixer::clamp_tts_gain_db;
 use crate::types::{AssistantProfile, SegmentKind, CHANNELS, SAMPLE_RATE};
 
 const FULL_SCALE: f64 = 32768.0;
@@ -110,37 +110,10 @@ impl AssistantLoudness {
 
     pub fn decide_gain(
         &mut self,
-        kind: SegmentKind,
-        fallback_gain_db: f32,
+        _kind: SegmentKind,
+        _fallback_gain_db: f32,
         profile: Option<AssistantProfile>,
     ) -> AssistantGainDecision {
-        if matches!(kind, SegmentKind::Chirp) {
-            let final_gain = clamp_tts_gain_db(fallback_gain_db);
-            let decision = AssistantGainDecision {
-                provider: None,
-                model: None,
-                voice: None,
-                calibrated: false,
-                profile_confidence: 0.0,
-                baseline_lufs: self
-                    .observed_content_lufs()
-                    .unwrap_or(self.config.content_silence_lufs),
-                target_lufs: 0.0,
-                source_lufs: 0.0,
-                source_peak_dbfs: 0.0,
-                requested_gain_db: fallback_gain_db,
-                peak_cap_gain_db: MAX_TTS_GAIN_DB,
-                final_gain_db: final_gain,
-                clamp_reason: if final_gain != fallback_gain_db {
-                    "gain_clamp"
-                } else {
-                    "chirp"
-                },
-            };
-            self.last_decision = Some(decision.clone());
-            return decision;
-        }
-
         let context = self.pending_context.clone();
         let observed_baseline_lufs = context
             .as_ref()
@@ -520,6 +493,60 @@ mod tests {
         });
 
         let decision = loudness.decide_gain(SegmentKind::Cue, 0.0, None);
+
+        assert_eq!(decision.baseline_lufs, -41.0);
+        assert_eq!(decision.target_lufs, -39.5);
+        assert_eq!(decision.requested_gain_db, -15.5);
+        assert_eq!(decision.final_gain_db, -15.5);
+        assert_eq!(decision.clamp_reason, "fallback_profile");
+    }
+
+    #[test]
+    fn chirp_with_profile_uses_target_loudness_not_fallback_gain() {
+        let mut loudness = AssistantLoudness::new(AssistantLoudnessConfig {
+            assistant_offset_lu: 1.5,
+            default_silence_target_lufs: -41.0,
+            max_peak_dbfs: -3.0,
+            ..AssistantLoudnessConfig::default()
+        });
+
+        let decision = loudness.decide_gain(
+            SegmentKind::Chirp,
+            0.0,
+            Some(AssistantProfile {
+                provider: "jts".to_string(),
+                model: "synthetic-listening-chirp".to_string(),
+                voice: "wake_start".to_string(),
+                source_lufs: Some(-15.0),
+                source_peak_dbfs: Some(-14.9),
+                confidence: 1.0,
+            }),
+        );
+
+        assert_eq!(decision.provider, Some("jts".to_string()));
+        assert_eq!(
+            decision.model,
+            Some("synthetic-listening-chirp".to_string())
+        );
+        assert_eq!(decision.voice, Some("wake_start".to_string()));
+        assert_eq!(decision.baseline_lufs, -41.0);
+        assert_eq!(decision.target_lufs, -39.5);
+        assert_eq!(decision.requested_gain_db, -24.5);
+        assert_eq!(decision.final_gain_db, -24.5);
+        assert_eq!(decision.clamp_reason, "target");
+    }
+
+    #[test]
+    fn chirp_without_profile_uses_fallback_profile_not_fallback_gain() {
+        let mut loudness = AssistantLoudness::new(AssistantLoudnessConfig {
+            assistant_offset_lu: 1.5,
+            default_silence_target_lufs: -41.0,
+            fallback_source_lufs: -24.0,
+            fallback_source_peak_dbfs: -6.0,
+            ..AssistantLoudnessConfig::default()
+        });
+
+        let decision = loudness.decide_gain(SegmentKind::Chirp, 0.0, None);
 
         assert_eq!(decision.baseline_lufs, -41.0);
         assert_eq!(decision.target_lufs, -39.5);
