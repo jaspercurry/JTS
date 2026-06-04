@@ -609,3 +609,43 @@ def test_build_clients_classifies_invalid_grant_from_real_spotipy(tmp_path):
         f"expected REVOKED, got {result.statuses[0].state} "
         f"(detail={result.statuses[0].detail!r})"
     )
+
+
+def test_build_clients_passes_requests_timeout_to_spotipy(tmp_path):
+    """spotipy's default is no requests_timeout, so a hung Spotify API
+    socket would block the calling thread indefinitely (and, via mux's
+    inline-awaited pause loop, the whole mux tick). build_clients must
+    construct spotipy.Spotify with a bounded requests_timeout."""
+    from unittest.mock import MagicMock, patch
+    from jasper.spotify_router import (
+        _SPOTIPY_REQUESTS_TIMEOUT_SEC, build_clients,
+    )
+    from jasper.accounts import Account, Registry
+
+    cache_path = tmp_path / "j.json"
+    cache_path.write_text("{}")  # must exist; SpotifyPKCE is mocked below
+    registry = Registry(
+        accounts=[Account(name="jasper", cache_path=str(cache_path))],
+        default_name="jasper",
+    )
+
+    captured: dict = {}
+
+    def fake_spotify(*args, **kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    fake_auth = MagicMock()
+    fake_auth.get_cached_token.return_value = {"access_token": "tok"}
+
+    with patch("spotipy.oauth2.SpotifyPKCE", return_value=fake_auth), \
+            patch("spotipy.Spotify", side_effect=fake_spotify):
+        result = build_clients(
+            registry, client_id="a" * 32, redirect_uri="https://x/cb",
+        )
+
+    assert "jasper" in result.clients, "usable token should build a client"
+    assert captured.get("requests_timeout") == _SPOTIPY_REQUESTS_TIMEOUT_SEC, (
+        "spotipy.Spotify must be built with a bounded requests_timeout so "
+        "a hung API socket can't block the caller forever"
+    )

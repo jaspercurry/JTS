@@ -958,7 +958,16 @@ class Mux:
         for prefer_active in (True, False):
             for ac in router.clients.values():
                 try:
-                    devices = await asyncio.to_thread(ac.sp.devices)
+                    devices = await asyncio.wait_for(
+                        asyncio.to_thread(ac.sp.devices), timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "spotify devices() timed out for %s — "
+                        "skipping (does not block mux tick)",
+                        ac.account.name,
+                    )
+                    continue
                 except Exception as e:  # noqa: BLE001
                     logger.debug(
                         "spotify devices() failed for %s: %s",
@@ -971,8 +980,11 @@ class Mux:
                     if prefer_active and not d.get("is_active"):
                         continue
                     try:
-                        await asyncio.to_thread(
-                            ac.sp.pause_playback, device_id=d.get("id"),
+                        await asyncio.wait_for(
+                            asyncio.to_thread(
+                                ac.sp.pause_playback, device_id=d.get("id"),
+                            ),
+                            timeout=5.0,
                         )
                         logger.info(
                             "spotify pause via Web API: "
@@ -981,6 +993,13 @@ class Mux:
                             d.get("is_active"),
                         )
                         return True
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "spotify pause_playback timed out for %s — "
+                            "skipping (does not block mux tick)",
+                            ac.account.name,
+                        )
+                        continue
                     except Exception as e:  # noqa: BLE001
                         logger.debug(
                             "spotify pause failed for %s: %s",
