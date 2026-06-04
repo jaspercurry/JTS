@@ -52,6 +52,7 @@ PROTECTION_STATUSES = {
     "not_required",
     "required_missing",
     "present",
+    "software_guard_requested",
     "unknown",
 }
 OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
@@ -729,7 +730,19 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                             f"{group.label} tweeter must require protection",
                         )
                     )
-                if channel.protection_status != "present":
+                if channel.protection_status == "software_guard_requested":
+                    blockers.append(
+                        _issue(
+                            "blocker",
+                            "tweeter_software_guard_requested",
+                            (
+                                f"{group.label} tweeter software guard is requested; "
+                                "stage and review a protected startup config before "
+                                "any load or playback"
+                            ),
+                        )
+                    )
+                elif channel.protection_status != "present":
                     blockers.append(
                         _issue(
                             "blocker",
@@ -815,9 +828,13 @@ def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
                 assigned_count += 1
             if assigned and channel.identity_verified:
                 verified_count += 1
-            protection_blocked = (
-                channel.protection_required and channel.protection_status != "present"
-            )
+            protection_blocker = None
+            if channel.protection_required and channel.protection_status != "present":
+                protection_blocker = (
+                    "tweeter_software_guard_requested"
+                    if channel.protection_status == "software_guard_requested"
+                    else "tweeter_protection_unverified"
+                )
             targets.append({
                 "id": f"{group.id}:{channel.role}",
                 "speaker_group_id": group.id,
@@ -836,7 +853,7 @@ def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
                     code for code, blocked in (
                         ("physical_output_unassigned", not assigned),
                         ("identity_unverified", not channel.identity_verified),
-                        ("tweeter_protection_unverified", protection_blocked),
+                        (protection_blocker, protection_blocker is not None),
                         (
                             "tweeter_must_start_muted",
                             channel.role == "tweeter" and not channel.startup_muted,

@@ -67,7 +67,12 @@ Implementation note, 2026-06-01: the first active-speaker substrate
 lives in `jasper.active_speaker`. It validates presets, output channel
 maps, safety envelopes, crossover regions, and baseline acceptance
 evidence, and emits muted/protected startup templates for manual
-inspection, but does not load CamillaDSP configs yet.
+inspection. As of 2026-06-04, the product load path is still separate and
+guarded: `/sound/active-speaker/load-startup-config` may reload only a
+staged protected startup graph whose metadata still matches the saved
+topology, whose path-safety evidence is hardware-probe-backed, and whose
+prior CamillaDSP config exists as a rollback anchor. It does not emit
+audio or grant playback authority.
 
 ## LLM Boundary
 
@@ -77,4 +82,4 @@ check to run next. It must not invent filter taps, remove tweeter
 protection, write arbitrary CamillaDSP YAML, or call magnitude-only
 data valid for phase alignment.
 
-Last verified: 2026-06-01
+Last verified: 2026-06-04

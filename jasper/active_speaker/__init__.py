@@ -1,8 +1,9 @@
 """Active-speaker crossover commissioning substrate.
 
 This package is intentionally pure Python and import-cheap. It models the
-speaker-baseline layer and can emit no-apply startup templates; it does not
-load CamillaDSP configs or touch hardware.
+speaker-baseline layer, emits protected startup templates, and owns the
+guarded startup-load/rollback boundary. It does not emit audio or grant
+playback authority.
 """
 
 from .profile import (
@@ -52,11 +53,14 @@ from .safe_playback import (
 from .calibration_level import (
     CALIBRATION_LEVEL_KIND,
     DEFAULT_TEST_LEVEL_DBFS,
+    STATE_PATH_ENV,
     MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
     calibration_level_payload,
     clamp_test_level_dbfs,
     classify_mic_meter,
+    load_calibration_level_state,
+    update_calibration_level_state,
 )
 from .tone_plan import (
     DEFAULT_PRESET_RESOURCE,
@@ -86,6 +90,16 @@ from .staging import (
     load_staged_startup_config,
     stage_protected_startup_config,
 )
+from .bringup import BRINGUP_PREFLIGHT_KIND, build_bringup_preflight
+from .startup_load import (
+    STARTUP_LOAD_PREFLIGHT_KIND,
+    STARTUP_LOAD_STATE_ENV,
+    STARTUP_LOAD_STATE_KIND,
+    build_startup_load_preflight,
+    load_protected_startup_config,
+    load_startup_load_state,
+    rollback_protected_startup_config,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
@@ -103,11 +117,15 @@ __all__ = [
     "REQUIRED_PATHS",
     "SAFE_PLAYBACK_SESSION_KIND",
     "SCHEMA_VERSION",
+    "STATE_PATH_ENV",
     "STAGED_CONFIG_PATH_ENV",
     "STAGED_METADATA_PATH_ENV",
     "STAGED_STARTUP_CONFIG_KIND",
     "STARTUP_HEADROOM_DB",
     "STARTUP_LIMITER_CLIP_LIMIT_DB",
+    "STARTUP_LOAD_PREFLIGHT_KIND",
+    "STARTUP_LOAD_STATE_ENV",
+    "STARTUP_LOAD_STATE_KIND",
     "TONE_PLAN_KIND",
     "TONE_BACKEND_STATUS_KIND",
     "TONE_PLAYBACK_ARTIFACT_KIND",
@@ -118,6 +136,7 @@ __all__ = [
     "ActiveSpeakerConfigError",
     "ActiveSpeakerPreset",
     "BaselineVerification",
+    "BRINGUP_PREFLIGHT_KIND",
     "CrossoverRegion",
     "DriverSpec",
     "OutputChannel",
@@ -130,12 +149,17 @@ __all__ = [
     "calibration_level_payload",
     "clamp_test_level_dbfs",
     "classify_mic_meter",
+    "load_calibration_level_state",
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",
     "build_safe_tone_plan",
+    "build_bringup_preflight",
+    "build_startup_load_preflight",
     "build_topology_tone_plan",
     "enabled_audio_backend",
     "load_active_speaker_preset",
+    "load_protected_startup_config",
+    "load_startup_load_state",
     "load_staged_startup_config",
     "parse_aplay_playback_devices",
     "parse_camilla_statefile_config_path",
@@ -145,10 +169,12 @@ __all__ = [
     "arm_safe_playback_session",
     "load_safe_playback_state",
     "record_safe_playback_result",
+    "rollback_protected_startup_config",
     "start_tone_playback",
     "stage_protected_startup_config",
     "stop_safe_playback_session",
     "stop_tone_playback",
     "tone_targets_payload",
     "tone_backend_status",
+    "update_calibration_level_state",
 ]

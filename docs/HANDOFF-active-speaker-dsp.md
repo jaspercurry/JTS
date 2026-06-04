@@ -70,17 +70,51 @@
 > `jasper/active_speaker/presets/epique_e150he44_eminence_f110m8_safe_v1.json`
 > for a mono Dayton Epique E150HE-44 woofer plus Eminence F110M-8
 > compression-driver cabinet. `/sound/active-speaker/channel-protection`
-> records operator evidence that the compression-driver protection path is
-> physically present, and `/sound/active-speaker/stage-config` can then write
-> a muted/protected CamillaDSP candidate plus
+> records either physical compression-driver protection evidence or a
+> software-guarded bring-up request. The software-guard state is deliberately
+> still a topology/playback blocker; it only lets
+> `/sound/active-speaker/stage-config` write a no-load muted/protected
+> CamillaDSP candidate plus
 > `/var/lib/jasper/active_speaker_staged_config.json` evidence. That route
-> refuses missing tweeter protection, non-contiguous output assignments, and
-> missing explicit hardware playback device evidence. It does not load the
-> config, reload CamillaDSP, emit sound, or grant playback permission.
+> refuses missing guard intent, non-contiguous output assignments, and missing
+> explicit hardware playback device evidence. For software-guarded bring-up it
+> also records evidence that the generated graph contains startup mute,
+> protective high-pass, startup headroom, limiter, and no-load/no-playback
+> guarantees. It does not load the config, reload CamillaDSP, emit sound, or
+> grant playback permission.
+> `jasper.active_speaker.bringup` and
+> `/sound/active-speaker/bringup-preflight` now make the product fork explicit:
+> **manual guarded bring-up** can continue without a microphone for an operator
+> with a known plan, while **guided calibration** requires working microphone
+> capture. Manual guarded bring-up still requires saved topology, verified
+> physical output identity, a ready active-speaker environment/load gate,
+> staged guard evidence, Stop availability, and the calibration level at the
+> floor. A calibrated mic upgrades guided confidence; an unchecked or clipping
+> mic blocks guided calibration without pretending manual setup is calibrated.
+> `jasper.active_speaker.startup_load` and
+> `/sound/active-speaker/startup-load` now add the first guarded CamillaDSP
+> reload boundary for this workstream. The UI can show the current
+> startup-load preflight/state, POST
+> `/sound/active-speaker/load-startup-config` to load the staged
+> muted/protected startup graph, and POST
+> `/sound/active-speaker/rollback-startup-config` to restore the config that
+> was active before the load. Loading is blocked unless the staged candidate
+> exists, validates as a JTS active-speaker startup config, path-safety
+> evidence is hardware-probe-backed, assigned physical outputs are verified,
+> the staged metadata still matches the current saved topology, the software
+> guard evidence is intact, the calibration level is at the floor, Stop is
+> available, no tone playback is active, and the current CamillaDSP config
+> path exists as a rollback anchor. This is a DSP reload slice only: it does
+> not generate samples, open ALSA directly, raise volume, or authorize
+> playback. The load transaction persists a rollback anchor during the shared
+> `dsp_apply` persist phase, so a missing rollback breadcrumb causes immediate
+> rollback instead of leaving CamillaDSP pointed at an active startup graph
+> with no recovery state.
 > `jasper-active-speaker startup-template` can write one of these
 > candidate templates from a preset JSON file and run
-> `camilladsp --check` when the binary is available. No CamillaDSP
-> reload/apply path or hardware loading exists yet. The first packaged
+> `camilladsp --check` when the binary is available. The guarded web load
+> path above is now the only product route that may reload this staged graph,
+> and it still does not authorize sound. The first packaged
 > worked-example preset is
 > `jasper/active_speaker/presets/bc_de250_dayton_e150he44_v1.json`; the
 > current no-audio default preset is the Epique/F110M safe bring-up profile
@@ -100,12 +134,12 @@
 > path-safety evidence all pass; even that does **not** authorize tone
 > playback until physical channel identity and a level-limited tone
 > generator with emergency stop exist.
-> Current next step: stage and inspect the Epique/F110M protected startup
-> candidate from a saved mono active 2-way output topology, then use the
-> lab-gated topology channel-test slice on real hardware at minimum level,
-> starting dummy-load/non-tweeter constrained. Keep Stop available, watch the
-> generated evidence/logs, and do not permit tweeter/compression-driver
-> playback until the protection path has been verified on hardware.
+> Current next step: use the guarded startup-load preflight to load the
+> Epique/F110M protected startup graph only when hardware-probe-backed path
+> safety exists, then immediately verify rollback on the same machine before
+> any audible horn test. The next audible slice must still be lab-gated,
+> level-bounded, Stop-controlled, microphone-aware when available, and start
+> at the test-level floor before any compression-driver output is enabled.
 
 ## Current Operational Truth
 
@@ -255,12 +289,15 @@ These are not UX polish; they are anti-smoke rules.
 
 - Do not connect the tweeter until channel identity, gain staging,
   and protective high-pass routing have been proven at low level.
-- Treat a physical series protection capacitor on the tweeter as
-  mandatory unless there is a proven independent protection chain.
-  Size it roughly one to two octaves below the active crossover so it
-  protects against DC/startup faults without becoming the main
-  crossover. If it stays in the final build, measure with it installed
-  because it changes tweeter magnitude and phase.
+- Treat a physical series protection capacitor on the tweeter as the
+  preferred bench-safety path when available, but do not design the product as
+  if most users will have one. If the operator does not have hardware
+  protection, the supported product path is **software-guarded bring-up**, not a
+  fake "physical protection present" checkbox: JTS may stage a
+  no-load/no-playback candidate only after proving startup mute, protective
+  high-pass, startup headroom, limiter, and volume ceiling evidence. Later
+  audible slices must continue from that evidence, reset the test level to the
+  floor, and keep Stop available before allowing any compression-driver tone.
 - A CamillaDSP high-pass and limiter do not protect against wrong
   wiring, wrong channel maps, startup pops, DC faults, `jasper-camilla`
   not running, or a bypass path.
@@ -311,7 +348,8 @@ The default stance:
 For Jasper's own active bring-up build, the current no-audio default preset
 is a Dayton Epique E150HE-44 plus Eminence F110M-8 2-way:
 2.5 kHz LR4, non-inverted, woofer delay search range 0.0-0.6 ms,
-mandatory physical compression-driver protection, and startup-muted outputs.
+physical compression-driver protection preferred, software-guarded no-load
+staging allowed, and startup-muted outputs.
 That preset is intentionally conservative for first power-up; final
 crossover frequency, polarity, delay, gain trim, limiter thresholds, and EQ
 must come from measurement with the actual horn/waveguide, baffle, enclosure,
@@ -585,14 +623,35 @@ automation exists.
 `jasper.active_speaker.calibration_level` owns the commissioning test-signal
 level contract. It deliberately separates calibration level from normal system
 volume: the operator controls the requested test level, JTS clamps it to a
-small safe envelope, and the default is the minimum (`-80 dBFS`). The current
-`/sound/` card renders that backend-owned range as a slider only after the
-safe session is armed and sends the selected level into the tone-plan request.
-No current code raises listening volume, emits samples, or trusts the slider
-as permission to play. The same contract has a coarse future mic-meter
-classifier (`unmeasured`, `too_quiet`, `low`, `usable`, `too_loud`,
-`clipping`) so the first real playback slice can add observed microphone
-feedback without inventing a second level schema.
+small safe envelope, and the default is the minimum (`-80 dBFS`). As of
+2026-06-03 the level is a backend-owned persisted guard at
+`/var/lib/jasper/active_speaker_calibration_level.json` (test override:
+`JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE`). The `/sound/` card updates
+that state through `/sound/active-speaker/calibration-level`; upward movement
+is limited to one 1 dB backend transition, while lowering, reset, Stop, and
+future mic-clipping resets can return directly to the floor. Tone-plan,
+readiness, and artifact routes read the accepted persisted level rather than
+trusting request-local `level_dbfs`. No current code raises listening volume,
+writes live CamillaDSP volume, emits samples, or treats the slider as
+permission to play. The same contract has a coarse future mic-meter classifier
+(`unmeasured`, `too_quiet`, `low`, `usable`, `too_loud`, `clipping`) so the
+first real playback slice can add observed microphone feedback without
+inventing a second level schema.
+
+`jasper.active_speaker.bringup` owns the read-only preflight packet for the
+horn-bring-up product decision. It composes output topology, channel identity,
+staged software-guard evidence, calibration-level floor state, safe-session
+state, tone-backend status, and coarse microphone readiness into two bounded
+modes:
+
+- **Manual guarded bring-up**: available without a microphone for users who
+  already know the crossover plan, but only after topology, output identity,
+  active-speaker environment/load gate, staged guard evidence, Stop, and
+  level-floor gates pass.
+- **Guided calibration**: requires the same gates plus working microphone
+  capture. A calibrated mic enables absolute guidance; an uncalibrated but
+  working mic can provide relative safety feedback only. JTS must not label
+  unmeasured/manual work as calibrated.
 
 ## Deterministic Tooling Roadmap
 
@@ -645,12 +704,16 @@ Updated execution plan:
    them, and make rollback mechanical. Started 2026-06-01 as a
    no-apply startup-template emitter and `jasper-active-speaker
    startup-template` CLI. The CLI writes candidate YAML from preset
-   JSON and runs `camilladsp --check` when available. Rollback
-   statefile handling and hardware loading gates are still future
-   work. Expanded 2026-06-03 with `jasper.active_speaker.staging`,
+   JSON and runs `camilladsp --check` when available. Expanded
+   2026-06-03 with `jasper.active_speaker.staging`,
    which binds the saved output topology to the Epique/F110M safe
    bring-up preset and writes a protected startup candidate plus
    evidence metadata without loading CamillaDSP or emitting sound.
+   Expanded 2026-06-04 with `jasper.active_speaker.startup_load`, which
+   can load that staged startup graph through the shared DSP apply
+   lifecycle only after deterministic gates pass, persists the prior
+   config as a rollback anchor, and exposes rollback through `/sound/`.
+   This is still not a playback slice.
 3. **Engineering interop slice**: import REW/VituixCAD measurement
    artifacts and freeze the first named preset before attempting an
    end-user wizard. Started 2026-06-01 with a data-only DE250 +
@@ -803,4 +866,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-03
+Last verified: 2026-06-04
