@@ -8,9 +8,13 @@ from jasper.camilla import CamillaController
 class _FakeVolume:
     def __init__(self) -> None:
         self.values: list[float] = []
+        self.mutes: list[bool] = []
 
     def set_main_volume(self, value: float) -> None:
         self.values.append(float(value))
+
+    def set_main_mute(self, value: bool) -> None:
+        self.mutes.append(bool(value))
 
 
 class _FakeClient:
@@ -67,6 +71,17 @@ async def test_set_volume_db_rejects_non_finite_strict():
         await cam.set_volume_db(float("inf"))
 
     assert fake.volume.values == []
+
+
+@pytest.mark.asyncio
+async def test_set_main_mute_forwards_boolean_to_camilla():
+    fake = _FakeClient()
+    cam = _controller(fake)
+
+    assert await cam.set_main_mute(True)
+    assert await cam.set_main_mute(False)
+
+    assert fake.volume.mutes == [True, False]
 
 
 @pytest.mark.asyncio

@@ -275,7 +275,8 @@ _dial_heartbeat: dict[str, Any] = _load_dial_heartbeat()
 
 
 # Same range jasper.tools.audio uses for the voice-driven volume tools.
-# 0% = silent at the speaker; 100% = full digital scale.
+# Percent↔dB is the normal attenuation curve. VolumeCoordinator layers
+# Camilla main_mute on top at 0% so content/music 0% is a real mute.
 VOLUME_MIN_DB = -50.0
 VOLUME_MAX_DB = 0.0
 

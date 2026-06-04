@@ -72,7 +72,10 @@ def test_clamping_below_zero_and_above_100():
 class _FakeCamilla:
     def __init__(self, db: float = 0.0) -> None:
         self._db = db
+        self.muted = False
         self.set_calls: list[float] = []
+        self.mute_calls: list[bool] = []
+        self.events: list[tuple[str, float | bool]] = []
         self.get_calls: int = 0
         # When True, every best_effort call is a no-op (writes return
         # False, reads return None) to simulate a camilla restart blip.
@@ -88,6 +91,17 @@ class _FakeCamilla:
             raise CamillaUnavailable("test fake offline")
         return self._db
 
+    async def get_volume_and_mute(
+        self, *, best_effort: bool = False,
+    ) -> tuple[float, bool] | None:
+        self.get_calls += 1
+        if self.unavailable:
+            if best_effort:
+                return None
+            from jasper.camilla import CamillaUnavailable
+            raise CamillaUnavailable("test fake offline")
+        return self._db, self.muted
+
     async def set_volume_db(
         self, db: float, *, best_effort: bool = False,
     ) -> bool:
@@ -98,6 +112,20 @@ class _FakeCamilla:
             raise CamillaUnavailable("test fake offline")
         self._db = db
         self.set_calls.append(db)
+        self.events.append(("volume", db))
+        return True
+
+    async def set_main_mute(
+        self, muted: bool, *, best_effort: bool = False,
+    ) -> bool:
+        if self.unavailable:
+            if best_effort:
+                return False
+            from jasper.camilla import CamillaUnavailable
+            raise CamillaUnavailable("test fake offline")
+        self.muted = bool(muted)
+        self.mute_calls.append(bool(muted))
+        self.events.append(("mute", bool(muted)))
         return True
 
 
@@ -145,14 +173,9 @@ class _RecordingCoordinator(VolumeCoordinator):
         return True
 
     async def _set_camilla(self, level: int) -> bool:
-        from jasper.volume_persistence import percent_to_db
-        db = percent_to_db(level)
-        # Mirror production: best_effort=True so a camilla restart-blip
-        # doesn't propagate into the test (and into the daemon).
-        await self._camilla.set_volume_db(db, best_effort=True)
-        self._persistence.save_now(db)
+        ok = await super()._set_camilla(level)
         self.camilla_writes.append(level)
-        return True
+        return ok
 
 
 def _coord(
@@ -184,6 +207,36 @@ async def test_set_volume_idle_writes_camilla(tmp_path):
     assert coord.camilla_writes == [70]
     # camilla received -15 dB (70% on -50..0 scale)
     assert cam.set_calls and abs(cam.set_calls[-1] - (-15.0)) < 0.01
+    assert cam.mute_calls[-1] is False
+
+
+async def test_set_volume_zero_hard_mutes_camilla_master(tmp_path):
+    """0% content volume is a real mute, not just the dB curve bottom."""
+    coord, cam, persistence = _coord(tmp_path, active={})
+
+    await coord.set_listening_level(0)
+
+    assert coord.camilla_writes == [0]
+    assert cam.mute_calls[-1] is True
+    assert cam.set_calls[-1] == pytest.approx(-50.0)
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 0
+    assert record.main_volume_db == pytest.approx(-50.0)
+
+
+async def test_set_volume_nonzero_clears_mute_after_volume_write(tmp_path):
+    """Unmute order is volume first, then main_mute=false, so there is
+    no full-scale transient while returning from a 0% content mute."""
+    coord, cam, _ = _coord(tmp_path, active={}, db=-50.0)
+    cam.muted = True
+
+    await coord.set_listening_level(75)
+
+    assert cam.events[-2:] == [
+        ("volume", pytest.approx(-12.5)),
+        ("mute", False),
+    ]
 
 
 async def test_set_volume_airplay_active_routes_to_camilla(tmp_path):
@@ -221,6 +274,36 @@ async def test_set_volume_spotify_active_routes_to_spotify(tmp_path):
     await coord.set_listening_level(40)
     assert coord.spotify_writes == [40]
     assert cam.set_calls == []  # Spotify is push-mode; camilla untouched
+
+
+async def test_push_mode_zero_sets_final_mute_after_source_push(tmp_path):
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=0.0,
+    )
+
+    await coord.set_listening_level(0)
+
+    assert coord.spotify_writes == [0]
+    assert cam.mute_calls[-1] is True
+    assert cam.set_calls[-1] == pytest.approx(-50.0)
+    record = persistence.load()
+    assert record is not None
+    assert record.main_volume_db == pytest.approx(-50.0)
+
+
+async def test_push_mode_nonzero_clears_stale_final_mute(tmp_path):
+    coord, cam, _ = _coord(
+        tmp_path, active={"spotactive": True}, db=-50.0,
+    )
+    cam.muted = True
+
+    await coord.set_listening_level(75)
+
+    assert coord.spotify_writes == [75]
+    assert cam.events[-2:] == [
+        ("volume", pytest.approx(0.0)),
+        ("mute", False),
+    ]
 
 
 async def test_set_volume_spotify_failure_updates_camilla_guard(tmp_path):
@@ -314,8 +397,10 @@ async def test_transition_suppressed_during_voice_session(tmp_path):
     coord.note_voice_session(False)
     await coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)
     # Now the transition fires: idle → spotify
-    # (push-mode) pins camilla at 0 dB.
-    assert 0.0 in cam.set_calls
+    # (push-mode) pushes the source and leaves Camilla already unmuted
+    # at its 0 dB carrier.
+    assert coord.spotify_writes[-1] == coord.get_listening_level()
+    assert cam.muted is False
 
 
 async def test_airplay_priority_over_spotify_over_bt(tmp_path):
@@ -352,15 +437,17 @@ async def test_adjust_clamps_to_0_and_100(tmp_path):
 
 
 async def test_mute_then_unmute(tmp_path):
-    coord, _, _ = _coord(tmp_path, active={"spotactive": True})
+    coord, cam, _ = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(70)
     saved = await coord.mute()
     assert saved == 70
     assert coord.spotify_writes[-1] == 0  # silence
+    assert cam.mute_calls[-1] is True
     assert coord.is_muted()
     restored = await coord.unmute()
     assert restored == 70
     assert coord.spotify_writes[-1] == 70
+    assert cam.mute_calls[-1] is False
     assert not coord.is_muted()
 
 
@@ -872,8 +959,8 @@ async def test_transition_idle_to_airplay_keeps_camilla_level(tmp_path):
 
 
 async def test_transition_spotify_to_bluetooth_pushes_to_new_source(tmp_path):
-    """Both sides push-mode. Camilla already at 0 dB; new source's
-    slider needs to be pushed listening_level."""
+    """Both sides push-mode. The new source's slider needs to be pushed;
+    Camilla's carrier is already safe for a nonzero level."""
     coord, _, _ = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(55)
     assert coord.spotify_writes == [55]
@@ -1093,8 +1180,7 @@ async def test_set_camilla_fast_spin_regression(tmp_path):
 
 async def test_set_camilla_defer_logs_session_signaled_event(tmp_path, caplog):
     """The probe-driven defer emits `reason=session_signaled` so it's
-    distinguishable in logs from the in-process flag path (which logs
-    `camilla main_volume deferred to ducker.restore`) and from any
+    distinguishable in logs from the in-process flag path and from any
     future defer reasons."""
     import logging
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
@@ -1195,6 +1281,26 @@ async def test_reconcile_corrects_deep_loud_drift(tmp_path):
     persistence.save_listening_level(0, mark_user_change=True)
     await coord.maybe_reconcile_camilla()
     assert cam.set_calls and cam.set_calls[-1] == pytest.approx(-50.0)
+    assert cam.mute_calls[-1] is True
+
+
+async def test_reconcile_repairs_zero_percent_mute_drift(tmp_path):
+    """At 0%, matching dB is not enough; main_mute must also be true."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-50.0)
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 0
+    persistence.save_listening_level(0, mark_user_change=True)
+    persistence.save_now(-50.0)
+
+    await coord.maybe_reconcile_camilla()
+
+    assert cam.set_calls[-1] == pytest.approx(-50.0)
+    assert cam.mute_calls[-1] is True
 
 
 async def test_reconcile_noop_when_drift_looks_like_duck(tmp_path):
@@ -1362,6 +1468,23 @@ async def test_get_camilla_target_db_push_mode_returns_zero(tmp_path):
     assert target == 0.0
 
 
+async def test_get_camilla_target_db_push_mode_zero_returns_mute_floor(tmp_path):
+    """Ducker.restore must not unmask a push-mode 0% content mute."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-50.0)
+    backend = _FakeBackend(active={"spotactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 0
+    persistence.save_listening_level(0)
+
+    target = await coord.get_camilla_target_db()
+
+    assert target == pytest.approx(-50.0)
+
+
 async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
     """Cross-process staleness guard for the duck-restore path. The
     control daemon (dial / HTTP) writes listening_level to disk on
@@ -1473,7 +1596,7 @@ async def test_set_volume_usbsink_active_routes_to_camilla(tmp_path):
 
 async def test_observe_usbsink_updates_listening_level_when_active(tmp_path):
     """Host slider moves while USB is the active source — listening
-    level follows."""
+    level follows and CamillaDSP, the USB carrier, is updated."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)
     backend = _FakeBackend(active={"usbsinkactive": True})
@@ -1488,6 +1611,136 @@ async def test_observe_usbsink_updates_listening_level_when_active(tmp_path):
     await coord.observe_source_volume(Source.USBSINK, 45)
     assert coord.get_listening_level() == 45
     assert persistence.load().listening_level == 45
+    assert cam.set_calls[-1] == pytest.approx(-27.5)
+    assert cam.mute_calls[-1] is False
+
+
+async def test_observe_usbsink_updates_when_selected_even_if_probe_idle(
+    tmp_path,
+):
+    """Mux selection is the speaker gate; USB host volume should follow
+    it even when the raw usbsink RMS activity probe is currently quiet."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-50.0)
+    backend = _FakeBackend(active={}, selected="usbsink")
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 0
+    persistence.save_listening_level(0)
+    persistence.save_now(-50.0)
+    cam.muted = True
+
+    await coord.observe_source_volume(Source.USBSINK, 50)
+
+    assert coord.get_listening_level() == 50
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 50
+    assert record.main_volume_db == pytest.approx(-25.0)
+    assert cam.events[-2:] == [
+        ("volume", pytest.approx(-25.0)),
+        ("mute", False),
+    ]
+
+
+async def test_observe_usbsink_unmute_restores_camilla_carrier(tmp_path):
+    """Wispr/macOS unmute restores the host slider value; because USB is
+    camilla-master, that observation must also raise Camilla back."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-50.0)
+    backend = _FakeBackend(active={"usbsinkactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 0
+    persistence.save_listening_level(0)
+    persistence.save_now(-50.0)
+    cam.muted = True
+
+    await coord.observe_source_volume(Source.USBSINK, 75)
+
+    assert coord.get_listening_level() == 75
+    record = persistence.load()
+    assert record.listening_level == 75
+    assert record.main_volume_db == pytest.approx(-12.5)
+    assert cam.events[-2:] == [
+        ("volume", pytest.approx(-12.5)),
+        ("mute", False),
+    ]
+
+
+async def test_observe_usbsink_unmute_defers_during_duck(tmp_path):
+    """A USB host unmute records intent but does not clobber active ducking."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-50.0)
+    backend = _FakeBackend(active={"usbsinkactive": True})
+
+    async def probe():
+        return True
+
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None, duck_active_probe=probe,
+    )
+    coord._level = 0
+    persistence.save_listening_level(0)
+    persistence.save_now(-50.0)
+    cam.muted = True
+
+    await coord.observe_source_volume(Source.USBSINK, 75)
+
+    assert coord.get_listening_level() == 75
+    record = persistence.load()
+    assert record.listening_level == 75
+    assert record.main_volume_db == pytest.approx(-50.0)
+    assert cam.set_calls == []
+    assert cam.mute_calls[-1] is False
+
+
+async def test_observe_usbsink_same_level_repairs_camilla_drift(tmp_path):
+    """If JTS already remembers the host level, a fresh USB observation
+    still repairs Camilla drift instead of returning early."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-20.0)
+    backend = _FakeBackend(active={"usbsinkactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 0
+    persistence.save_listening_level(0)
+    persistence.save_now(-20.0)
+
+    await coord.observe_source_volume(Source.USBSINK, 0)
+
+    assert coord.get_listening_level() == 0
+    assert persistence.load().main_volume_db == pytest.approx(-50.0)
+    assert cam.set_calls[-1] == pytest.approx(-50.0)
+    assert cam.mute_calls[-1] is True
+
+
+async def test_observe_usbsink_same_level_repairs_mute_drift(tmp_path):
+    """Even if dB is already at the 0% floor, unmuted Camilla is not
+    converged: 0% must assert main_mute."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-50.0)
+    backend = _FakeBackend(active={"usbsinkactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 0
+    persistence.save_listening_level(0)
+    persistence.save_now(-50.0)
+
+    await coord.observe_source_volume(Source.USBSINK, 0)
+
+    assert coord.get_listening_level() == 0
+    assert cam.set_calls[-1] == pytest.approx(-50.0)
+    assert cam.mute_calls[-1] is True
 
 
 async def test_observe_usbsink_when_inactive_is_ignored(tmp_path):

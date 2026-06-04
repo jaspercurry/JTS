@@ -135,10 +135,12 @@ class CamillaController:
     async def get_volume_and_mute(
         self, *, best_effort: bool = False,
     ) -> tuple[float, bool] | None:
-        """Single round-trip read of main_volume + main_mute. Used by the
-        TTS-gain tracker, which needs to honor mute as well as volume —
-        if the user has muted the speaker, TTS shouldn't talk over the
-        silence they asked for."""
+        """Single round-trip read of main_volume + main_mute.
+
+        Used by VolumeCoordinator to reconcile the content/music carrier:
+        the dB value alone is not converged at 0% unless Camilla's final
+        mute flag is asserted too.
+        """
         def read(c):
             return float(c.volume.main_volume()), bool(c.volume.main_mute())
         try:
@@ -267,6 +269,28 @@ class CamillaController:
             if best_effort:
                 logger.warning(
                     "camilla unavailable; set_volume_db(%.1f) skipped: %s",
+                    target, e,
+                )
+                return False
+            raise
+
+    async def set_main_mute(
+        self, muted: bool, *, best_effort: bool = False,
+    ) -> bool:
+        """Set CamillaDSP's process-wide main mute flag.
+
+        This is separate from `main_volume`: `0%` content/music volume
+        uses this flag for a true final-output mute while keeping the
+        normal 1-100% listening curve intact.
+        """
+        target = bool(muted)
+        try:
+            await self._call(lambda c: c.volume.set_main_mute(target))
+            return True
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.warning(
+                    "camilla unavailable; set_main_mute(%s) skipped: %s",
                     target, e,
                 )
                 return False
