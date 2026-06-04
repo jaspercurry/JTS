@@ -405,7 +405,7 @@ def main():
                         formatted_result.append(str(val))
                 print(f"{args.COMMAND}: [{', '.join(formatted_result)}]")
 
-        print(f"Done!")
+        print("Done!")
             
     except Exception as e:
         print(f"Error executing command {args.COMMAND}: {e}")

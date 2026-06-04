@@ -20,7 +20,6 @@ new creds — the dial accepts a SUBMIT_SETTINGS message at any time.
 from __future__ import annotations
 
 import argparse
-import glob
 import logging
 import os
 import re

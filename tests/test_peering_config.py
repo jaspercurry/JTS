@@ -12,7 +12,6 @@ import uuid
 
 import pytest
 
-from jasper.peering import config as peering_config
 from jasper.peering.config import (
     DEFAULT_ARB_WINDOW_MS,
     DEFAULT_BREAK_THRESHOLD,

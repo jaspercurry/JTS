@@ -23,7 +23,6 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-import pytest
 
 from jasper.web import wake_corpus_setup as wc
 

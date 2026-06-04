@@ -294,7 +294,7 @@ def test_setup_credentials_persists_and_restarts(patched_common, tmp_path):
     }
     cfg = _cfg()
     fake = _make_bound_handler(cfg, "/setup-credentials")
-    creds_path = tmp_path / "google_credentials.env"
+    tmp_path / "google_credentials.env"
     with mock.patch.object(google_setup, "_write_creds_file") as wcf:
         fake.do_POST()
         assert wcf.called

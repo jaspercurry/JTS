@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import os
 import socket
-import threading
 import time
 from http.server import BaseHTTPRequestHandler
 
@@ -152,7 +151,6 @@ def test_install_request_idle_bump_patches_log_request() -> None:
     tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=999.0)
 
     bumps_before = 0
-    bumps_after = 1
 
     class _H(BaseHTTPRequestHandler):
         def __init__(self) -> None:

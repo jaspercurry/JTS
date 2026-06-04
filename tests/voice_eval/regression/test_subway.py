@@ -55,8 +55,8 @@ async def test_next_train_d_uptown(harness, trial: int) -> None:
     transcript stream — no STT pass needed."""
     if not harness.cfg.subway_enabled:
         pytest.skip(
-            f"voice-eval: subway not configured "
-            f"(JASPER_SUBWAY_STATION_ID empty) — set it to run this scenario",
+            "voice-eval: subway not configured "
+            "(JASPER_SUBWAY_STATION_ID empty) — set it to run this scenario",
         )
 
     result = await harness.ask("when's the next train?")

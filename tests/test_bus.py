@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from jasper.bus import BusArrival, BusClient, parse_bus_stops
+from jasper.bus import BusClient, parse_bus_stops
 
 
 def _siri_response(visits):

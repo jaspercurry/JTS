@@ -22,15 +22,11 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-import httpx
 import pytest
 
-from jasper import transit
-from jasper.transit import base, geocode as geocode_mod
-from jasper.transit.providers import nyc_bus
+from jasper.transit import geocode as geocode_mod
 from jasper.web import _common, transit_setup
 
 

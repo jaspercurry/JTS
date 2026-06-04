@@ -340,7 +340,7 @@ def test_router_refresh_if_empty_no_op_when_clients_present():
     """The fast path: when clients is already non-empty, refresh_if_empty
     returns True without calling rebuild_fn — every voice command goes
     through this check, so it has to be cheap on the happy path."""
-    from jasper.spotify_router import AccountStatus, BuildResult
+    from jasper.spotify_router import BuildResult
     calls = {"n": 0}
     def rebuild():
         calls["n"] += 1

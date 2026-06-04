@@ -95,7 +95,6 @@ def test_find_librespot_id_empty_list():
 
 # --- resolve_target branches ---
 
-import asyncio
 
 import pytest
 

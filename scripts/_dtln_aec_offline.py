@@ -86,7 +86,7 @@ def main() -> int:
     m2 = args.models_dir / f"dtln_aec_{args.model_size}_2.onnx"
     if not m1.is_file() or not m2.is_file():
         print(f"Models missing in {args.models_dir} (looking for {m1.name}, {m2.name})", file=sys.stderr)
-        print(f"Run scripts/convert-dtln-aec.sh first.", file=sys.stderr)
+        print("Run scripts/convert-dtln-aec.sh first.", file=sys.stderr)
         return 1
 
     print(f"Loading models from {args.models_dir} (size={args.model_size}) ...")
@@ -122,7 +122,7 @@ def main() -> int:
     print(f"  stage 1: mic={s1_mic_name} ref={s1_ref_name} state={state1_name}{state1_shape}")
     print(f"  stage 2: est={s2_est_name} ref={s2_ref_name} state={state2_name}{state2_shape}")
 
-    print(f"Loading audio ...")
+    print("Loading audio ...")
     mic_i16 = load_wav_int16_mono(args.mic)
     ref_i16 = load_wav_int16_mono(args.ref)
     # The two streams should be the same length per the bridge's

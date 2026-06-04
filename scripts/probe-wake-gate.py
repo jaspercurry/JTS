@@ -210,7 +210,8 @@ def main() -> int:
                 if not s: return None
                 try: return datetime.fromisoformat(s.replace("Z", "+00:00"))
                 except Exception: return None
-            t_wake = _p(d["ts_utc"]); t_speech = _p(d["ts_speech_detected"])
+            t_wake = _p(d["ts_utc"])
+            t_speech = _p(d["ts_speech_detected"])
             live_log[d["event_id"]] = {
                 "live_arm_at_ms": (
                     (t_speech - t_wake).total_seconds() * 1000

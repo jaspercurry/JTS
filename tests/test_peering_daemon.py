@@ -14,10 +14,8 @@ sockets. The state machine and dispatch logic run unmodified.
 from __future__ import annotations
 
 import asyncio
-import os
 import secrets
-import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio

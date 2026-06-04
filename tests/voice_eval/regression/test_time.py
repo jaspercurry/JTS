@@ -116,7 +116,6 @@ async def test_what_time_is_it(harness, trial: int) -> None:
     if result.spoken_text:
         spoken_time = harness.extract_time_from_text(result.spoken_text)
         if spoken_time is not None:
-            from datetime import datetime
             now_local = oracles.time_now_local()
             spoken_dt = datetime.combine(now_local.date(), spoken_time)
             now_naive = now_local.replace(tzinfo=None)

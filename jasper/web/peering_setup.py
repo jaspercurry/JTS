@@ -33,11 +33,9 @@ import html
 import json
 import logging
 import os
-import socket
 import subprocess
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
 
 from ..peering.config import default_room as _default_room_from_hostname
 from ._common import (

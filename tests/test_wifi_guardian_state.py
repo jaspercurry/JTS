@@ -10,7 +10,6 @@ guaranteed on a dev machine; we never actually shell out.
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
