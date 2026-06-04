@@ -506,11 +506,11 @@ ssh pi@jts.local 'systemctl is-active jasper-usbsink jasper-usbsink-init'
 
 Plug your Mac/Windows/Linux laptop into the splitter's USB-A leg.
 
-- **macOS**: Open System Settings → Sound → Output. **JTS USB Audio**
-  appears by default (or `<speaker name> USB Audio` if renamed in
-  `/speaker/`). Select it. (Note: macOS may label the device "Playback
-  Inactive" — that's a cosmetic kernel bug in `f_uac2.c`, audio still
-  works. Don't chase.)
+- **macOS**: Open System Settings → Sound → Output. The device appears
+  under your **Speaker Name** (e.g. **JTS**; truncated to 15 chars for
+  this label). Select it. (If it instead shows **"Playback Inactive"**,
+  the name patch didn't apply — see the failure-modes table below and
+  `jasper-doctor`'s `usbsink name` check. Audio still works either way.)
 - **Windows**: Open Sound settings, choose JTS USB Audio as output
   (or the renamed USB Audio device).
 - **Linux**: Should auto-route via PulseAudio/PipeWire, or `pactl
@@ -532,10 +532,11 @@ speakers within a few hundred milliseconds.
 
 ```sh
 ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
-# Expect three OK lines:
+# Expect OK lines including:
 #   usbsink dtoverlay: ok
 #   usbsink state: ok playing=... host_connected=...
 #   usbsink card: ok UAC2Gadget present
+#   usbsink name: ok device name patched to track Speaker Name '...'
 ```
 
 ### Common failure modes
@@ -544,7 +545,7 @@ ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
 |---|---|---|
 | Toggle greyed out, "needs dtoverlay + reboot" note | Phase 2's `install.sh` ran before the source had `set_usb_gadget_mode`, OR you've edited `/boot/firmware/config.txt` since | Re-run `bash scripts/deploy-to-pi.sh` from the laptop, reboot |
 | Host doesn't see the speaker in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbsink-init` didn't bring up the gadget | `journalctl -u jasper-usbsink-init` for ConfigFS errors |
-| Mac says "Playback Inactive" | Cosmetic kernel bug — audio still plays | Ignore |
+| Mac says "Playback Inactive" instead of the Speaker Name | Name patch didn't apply (kernel renamed the string, or override stale). Cosmetic — audio still plays | `journalctl -u jasper-usbsink-init \| grep event=usbsink_name`; `sudo systemctl restart jasper-usbsink-init`; check `jasper-doctor` `usbsink name` |
 | Volume slider on Mac doesn't move JTS | `amixer -c UAC2Gadget controls` should show `PCM Capture Volume`; if missing, gadget descriptor wasn't built with `c_volume_present=1` | `journalctl -u jasper-usbsink \| grep volume_bridge` |
 | Toggle off but `lsmod \| grep libcomposite` shows it loaded | RAM-drift from a previous bad stop — jasper-doctor will warn | `sudo rmmod u_audio libcomposite` or reboot |
 

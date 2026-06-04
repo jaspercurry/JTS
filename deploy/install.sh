@@ -2466,6 +2466,18 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbsink-wait-card" \
         /usr/local/sbin/jasper-usbsink-wait-card
+    # Makes the host-visible USB device name track the Speaker Name by
+    # patching the kernel's hardcoded UAC2 AudioStreaming string into a
+    # `updates/` module override (configfs can't set it on 6.12). Pure
+    # bash + stdlib python3 — no kernel headers / dkms. Run as
+    # jasper-usbsink-init's best-effort ExecStartPre. See
+    # docs/HANDOFF-usbsink.md "Device name".
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-name-patch" \
+        /usr/local/sbin/jasper-usbsink-name-patch
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/uac2_name_patch.py" \
+        /usr/local/sbin/uac2_name_patch.py
     # Triggered by the udev rule installed below when the Apple dongle
     # re-enumerates: reset-failed, restart Camilla, then run the
     # mic/AEC reconciler so a hardware reconnect recovers without

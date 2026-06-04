@@ -3749,6 +3749,83 @@ def check_usbsink_card() -> CheckResult:
     )
 
 
+def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
+    """When jasper-usbsink is enabled, verify the host-visible device
+    name has been patched to track the Speaker Name.
+
+    The kernel hardcodes the UAC2 AudioStreaming string ("Playback
+    Inactive") that macOS shows as the device name; configfs can't set
+    it on 6.12, so jasper-usbsink-name-patch builds a name-patched
+    `updates/` module override at bring-up. This check confirms the
+    override exists, is genuinely patched, and matches the current
+    Speaker Name + running kernel. A `warn` here is cosmetic only —
+    USB audio still works, the host just shows the default label.
+
+    ``modules_root`` is injectable for tests; production uses the real
+    /lib/modules tree."""
+    if not _systemd_is_active("jasper-usbsink.service"):
+        return CheckResult(
+            "usbsink name", "ok",
+            "service disabled — device-name check skipped",
+        )
+
+    # Reuse the canonical speaker-name reader (single source of truth for
+    # how the name is parsed/validated) rather than re-implementing it.
+    from jasper.speaker_name import runtime_name
+
+    try:
+        name = runtime_name()
+    except Exception:  # malformed file/env — defer to the module default
+        name = "JTS"
+    kver = os.uname().release
+    override = Path(f"{modules_root}/{kver}/updates/usb_f_uac2.ko")
+    marker = Path(f"{modules_root}/{kver}/updates/.jasper-usbsink-name.marker")
+
+    if not override.exists():
+        return CheckResult(
+            "usbsink name", "warn",
+            "no name-patched module override — host shows the default "
+            "'Playback Inactive' label. Restart jasper-usbsink-init "
+            "and check `journalctl -u jasper-usbsink-init | grep "
+            "event=usbsink_name` (a kernel rename of the string degrades "
+            "here gracefully; audio is unaffected).",
+        )
+
+    # The override must be genuinely patched — the stock string gone.
+    try:
+        if b"Playback Inactive\x00" in override.read_bytes():
+            return CheckResult(
+                "usbsink name", "warn",
+                f"override {override} still contains the stock string — "
+                "patch did not take. Restart jasper-usbsink-init.",
+            )
+    except OSError as exc:
+        return CheckResult(
+            "usbsink name", "warn",
+            f"can't read {override}: {exc}",
+        )
+
+    # Marker records the (kernel, name, stock-hash) the override was
+    # built for; a mismatch means a rename or kernel bump hasn't been
+    # re-applied yet.
+    try:
+        fields = marker.read_text().split("\t")
+    except OSError:
+        fields = []
+    if len(fields) >= 2 and fields[0] == kver and fields[1] == name:
+        return CheckResult(
+            "usbsink name", "ok",
+            f"device name patched to track Speaker Name '{name}' "
+            f"(kernel {kver}); host shows it (truncated to 15 chars).",
+        )
+    return CheckResult(
+        "usbsink name", "warn",
+        f"override present but stale for Speaker Name '{name}' / kernel "
+        f"{kver} (marker={fields or 'missing'}). Restart "
+        "jasper-usbsink-init to re-apply.",
+    )
+
+
 def check_usbsink_active_libcomposite() -> CheckResult:
     """The mirror of check_usbsink_state's RAM-drift check: when the
     daemon IS active but libcomposite is NOT loaded, the daemon will
@@ -4804,6 +4881,9 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_usbsink_card,
         check_usbsink_active_libcomposite,
         check_usbsink_preempt_port_reachable,
+        # Host-visible device name tracks Speaker Name via a kernel
+        # module string patch (cosmetic; warn never means broken audio).
+        check_usbsink_name,
         # WiFi: brcmfmac scan suppression is the most common
         # post-bringup foot-gun — silent except in dmesg, and
         # breaks the /wifi/ wizard's primary function.

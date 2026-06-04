@@ -460,27 +460,29 @@ deterministically.
 
 ### 4.1 Boot-time gadget setup
 
-**New files**:
+**Files** (installed to `/usr/local/sbin/` by `install.sh`):
 
 ```
-deploy/usbsink/uac2-gadget-up.sh       # ConfigFS gadget creation
-deploy/usbsink/uac2-gadget-down.sh     # ConfigFS gadget teardown
+deploy/usbsink/jasper-usbsink-gadget-up     # ConfigFS gadget creation
+deploy/usbsink/jasper-usbsink-gadget-down   # ConfigFS gadget teardown
+deploy/usbsink/jasper-usbsink-wait-card     # waits for the ALSA card
 deploy/systemd/jasper-usbsink-init.service
 ```
 
-`uac2-gadget-up.sh` is lifted from
+`jasper-usbsink-gadget-up` is adapted from
 [PiCorrect's setup.sh:68-123](https://github.com/jaspercurry/PiCorrect/blob/main/setup.sh#L68)
-with two modifications:
+with these modifications:
 - Manufacturer/product strings: "Jasper Tech Speaker" /
   `"<speaker name> USB Audio"` (default "JTS USB Audio")
 - Serial number derived from the same `/proc/cpuinfo` line PiCorrect
   uses
-- Idempotency check: skip if `${CONFIGFS}/${NAME}` already exists
+- Idempotency check: skip if `${CONFIGFS}/${NAME}` already exists and is
+  bound to a UDC
 
-`uac2-gadget-down.sh` is the inverse: unbind UDC, remove configs and
-strings, rmdir the gadget directory. Best-effort — if the descriptor
+`jasper-usbsink-gadget-down` is the inverse: unbind UDC, remove configs
+and strings, rmdir the gadget directory. Best-effort — if the descriptor
 is partially broken (rmdir fails because something is still bound), we
-log and continue. The next `up.sh` will handle it.
+log and continue. The next gadget-up will handle it.
 
 `jasper-usbsink-init.service`:
 
@@ -496,18 +498,81 @@ ConditionPathExists=/sys/kernel/config
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/sbin/modprobe libcomposite
-ExecStart=/opt/jasper/deploy/usbsink/uac2-gadget-up.sh
-ExecStartPost=/opt/jasper/deploy/usbsink/wait-for-uac2-card.sh 30
-ExecStop=/opt/jasper/deploy/usbsink/uac2-gadget-down.sh
-ExecStopPost=-/sbin/rmmod libcomposite u_audio
+ExecStartPre=-/usr/local/sbin/jasper-usbsink-name-patch
+ExecStart=/usr/local/sbin/jasper-usbsink-gadget-up
+ExecStartPost=/usr/local/sbin/jasper-usbsink-wait-card 30
+ExecStop=/usr/local/sbin/jasper-usbsink-gadget-down
+ExecStopPost=-/sbin/rmmod u_audio
+ExecStopPost=-/sbin/rmmod libcomposite
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-`wait-for-uac2-card.sh 30` polls `/proc/asound/UAC2Gadget` for up to
+`jasper-usbsink-wait-card 30` polls `/proc/asound/UAC2Gadget` for up to
 30 seconds (PiCorrect's pattern). The enumeration race is real:
-ConfigFS write returns before ALSA registers the card.
+ConfigFS write returns before ALSA registers the card. (The
+`jasper-usbsink-name-patch` ExecStartPre is the device-name patch —
+see §4.1a.)
+
+### 4.1a Host-visible device name (tracks the Speaker Name)
+
+A connected Mac shows the speaker in its audio-output list using the
+UAC2 **AudioStreaming interface string**, which the kernel hardcodes as
+`"Playback Inactive"` (`STR_AS_OUT_ALT0`) / `"Playback Active"`
+(`STR_AS_OUT_ALT1`) in `drivers/usb/gadget/function/f_uac2.c`. macOS
+prefers this over the configfs-settable `iProduct` string, so the
+"JTS USB Audio" product string the gadget-up script sets is *not* what
+the Mac displays. As of Trixie's 6.12 kernel these AS strings are the
+**one** gadget string not exposed through configfs (everything else —
+`function_name`, `c_it_name`, clock names — is), so the compiled module
+is the only lever. (Windows uses `iProduct` and already shows the
+product string correctly; this is macOS-specific.)
+
+We make the host label track the **Speaker Name** (`/system/` wizard →
+`speaker_name.env`) by overwriting those two strings in a patched copy
+of `usb_f_uac2.ko`:
+
+- [`deploy/usbsink/uac2_name_patch.py`](../deploy/usbsink/uac2_name_patch.py)
+  — stdlib-only byte transform (`patch_module_bytes`): finds the
+  null-terminated tokens *by content* (offset-independent, so it
+  survives the strings moving between kernel builds), overwrites them
+  in place preserving length, null-padded. Bounded to **15 chars** (the
+  shorter `"Playback Active"` slot), so both alt strings carry the same
+  name and the label never flickers between idle/streaming. Names
+  longer than 15 chars are truncated *only for this USB label* — the
+  full name still drives `iProduct`, Bluetooth, etc.
+- [`deploy/usbsink/jasper-usbsink-name-patch`](../deploy/usbsink/jasper-usbsink-name-patch)
+  — bash orchestrator (mirrors the `jasper-wifi-guardian` self-heal
+  idiom). Builds the patched module into the kernel's
+  `/lib/modules/$(uname -r)/updates/usb_f_uac2.ko` override (modprobe
+  searches `updates/` before `kernel/`), runs `depmod`, and `rmmod`s a
+  stale in-memory module so the next gadget-up autoloads the override.
+  A marker (`kernel ver + name + stock-module hash`) makes the
+  steady-state boot a millisecond no-op. Structured `event=usbsink_name.*`
+  logs.
+
+Wired as `jasper-usbsink-init`'s **best-effort** `ExecStartPre`
+(leading `-`): it runs before gadget-up so the patched module is loaded
+when the function is created. This one hook covers boot, feature-enable,
+**rename** (the speaker-name save handler in
+[`jasper/web/speaker_setup.py`](../jasper/web/speaker_setup.py)
+`_apply_name()` already restarts `jasper-usbsink-init` when USB sink is
+active; the marker flips and the module is rebuilt + reloaded), and
+**kernel updates** (a
+new kernel boots with no override → it's rebuilt from the new stock
+module before the gadget comes up).
+
+**Why a binary patch and not DKMS.** This codebase ships no kernel
+headers / compiler / dkms, and a 1 GB appliance shouldn't grow them. A
+binary patch needs none of that and **degrades cosmetically**: if a
+future kernel renames the string, the content search misses, the script
+logs `event=usbsink_name.patch_failed`, removes any stale override, and
+the gadget comes up with the stock `"Playback Inactive"` label — USB
+audio is never broken, only the name reverts. `jasper-doctor`'s
+`check_usbsink_name` warns when the override is absent/stale so the drift
+is visible. (Reverting entirely: `rm /lib/modules/*/updates/usb_f_uac2.ko`
++ `depmod`, or a reboot if only an in-memory `insmod` was used.)
 
 ### 4.2 jasper-usbsink daemon
 
@@ -1390,11 +1455,13 @@ blockers; defaults are documented for each.
    (PiCorrect's choice, matches our snd-aloop and DAC). Multi-rate
    gadget descriptors are possible but add complexity. **Default:
    single rate 48k.**
-2. **macOS "Playback Inactive" cosmetic bug**: PiCorrect's
+2. **macOS "Playback Inactive" cosmetic bug**: ~~PiCorrect's
    DEBUGGING.md documents that macOS labels the device as "Playback
    Inactive" due to hardcoded strings in
-   `drivers/usb/gadget/function/f_uac2.c`. It's cosmetic — music
-   still plays. **Default: live with it. Note in BRINGUP.md.**
+   `drivers/usb/gadget/function/f_uac2.c`.~~ **RESOLVED** — the host
+   label now tracks the Speaker Name via a name-patched module override.
+   See §4.1a "Host-visible device name". (Confirmed end-to-end on macOS
+   2026-06-04: a connected Mac shows "JTS".)
 3. **Volume curve**: gadget mixer range is symmetric in dB; CamillaDSP
    `main_volume` is also dB-linear. A direct linear-in-dB mapping
    feels natural. **Default: linear in dB, 100% gadget = 0 dB camilla,
@@ -1642,4 +1709,4 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-05-27
+Last verified: 2026-06-04

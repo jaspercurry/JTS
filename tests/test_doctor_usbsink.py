@@ -1,8 +1,8 @@
 """Unit tests for jasper-doctor's usbsink checks.
 
-The three checks are hardware-side (systemctl, /proc/asound,
-/boot/firmware/config.txt) so we monkeypatch the helpers and reads.
-Pi-side smoke testing happens via jasper-doctor itself.
+The checks are hardware-side (systemctl, /proc/asound,
+/boot/firmware/config.txt, /lib/modules) so we monkeypatch the helpers
+and reads. Pi-side smoke testing happens via jasper-doctor itself.
 """
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
-
 
 from jasper.cli import doctor
 
@@ -285,3 +284,95 @@ def test_preempt_port_reachable_is_ok(monkeypatch):
         s.close()
     assert r.status == "ok"
     assert str(port) in r.detail
+
+
+# ----------------------------------------------------------------------
+# check_usbsink_name — host-visible device name patch state
+# ----------------------------------------------------------------------
+
+_KVER = "6.12.0-test"
+
+
+def _name_env(monkeypatch, *, active: bool, speaker: str = "Kitchen"):
+    """Common monkeypatching: service active state, kernel release,
+    and the canonical speaker-name reader."""
+    monkeypatch.setattr(
+        doctor, "_systemd_is_active", lambda unit: active
+    )
+    monkeypatch.setattr(
+        doctor.os, "uname",
+        lambda: type("U", (), {"release": _KVER})(),
+    )
+    monkeypatch.setattr("jasper.speaker_name.runtime_name", lambda: speaker)
+
+
+def _write_override(root: Path, body: bytes, marker: str | None) -> None:
+    updates = root / _KVER / "updates"
+    updates.mkdir(parents=True, exist_ok=True)
+    (updates / "usb_f_uac2.ko").write_bytes(body)
+    if marker is not None:
+        (updates / ".jasper-usbsink-name.marker").write_text(marker)
+
+
+def test_usbsink_name_skipped_when_disabled(monkeypatch, tmp_path):
+    _name_env(monkeypatch, active=False)
+    r = doctor.check_usbsink_name(modules_root=str(tmp_path))
+    assert r.status == "ok"
+    assert "skipped" in r.detail.lower()
+
+
+def test_usbsink_name_warns_when_override_missing(monkeypatch, tmp_path):
+    _name_env(monkeypatch, active=True)
+    r = doctor.check_usbsink_name(modules_root=str(tmp_path))
+    assert r.status == "warn"
+    assert "no name-patched module override" in r.detail
+
+
+def test_usbsink_name_warns_when_stock_string_remains(monkeypatch, tmp_path):
+    _name_env(monkeypatch, active=True)
+    # Override present but never actually patched.
+    _write_override(
+        tmp_path,
+        b"\x7fELF" + b"Playback Inactive\x00rest",
+        marker=f"{_KVER}\tKitchen\tdeadbeef",
+    )
+    r = doctor.check_usbsink_name(modules_root=str(tmp_path))
+    assert r.status == "warn"
+    assert "stock string" in r.detail
+
+
+def test_usbsink_name_ok_when_patched_and_marker_matches(monkeypatch, tmp_path):
+    _name_env(monkeypatch, active=True, speaker="Kitchen")
+    _write_override(
+        tmp_path,
+        b"\x7fELF Kitchen\x00 patched body, no stock token",
+        marker=f"{_KVER}\tKitchen\tdeadbeef",
+    )
+    r = doctor.check_usbsink_name(modules_root=str(tmp_path))
+    assert r.status == "ok"
+    assert "Kitchen" in r.detail
+
+
+def test_usbsink_name_warns_when_marker_name_stale(monkeypatch, tmp_path):
+    _name_env(monkeypatch, active=True, speaker="Living Room")
+    # Override patched for an older name; speaker has since been renamed.
+    _write_override(
+        tmp_path,
+        b"\x7fELF Kitchen\x00 patched body",
+        marker=f"{_KVER}\tKitchen\tdeadbeef",
+    )
+    r = doctor.check_usbsink_name(modules_root=str(tmp_path))
+    assert r.status == "warn"
+    assert "stale" in r.detail.lower()
+
+
+def test_usbsink_name_warns_when_marker_missing(monkeypatch, tmp_path):
+    _name_env(monkeypatch, active=True, speaker="Kitchen")
+    _write_override(
+        tmp_path,
+        b"\x7fELF Kitchen\x00 patched body",
+        marker=None,
+    )
+    r = doctor.check_usbsink_name(modules_root=str(tmp_path))
+    assert r.status == "warn"
+    assert "stale" in r.detail.lower()
