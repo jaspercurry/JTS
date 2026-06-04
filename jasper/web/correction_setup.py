@@ -261,12 +261,12 @@ __HEADER__
     <div class="mic-row">
       <label for="input-device-select">Input device
         <select id="input-device-select">
-          <option value="" disabled selected>Tap “Detect microphones”…</option>
+          <option value="" disabled selected>Detecting microphones…</option>
         </select>
       </label>
-      <button id="refresh-inputs" type="button" class="btn btn--ghost">Detect microphones</button>
+      <button id="refresh-inputs" type="button" class="btn btn--ghost">Refresh microphones</button>
     </div>
-    <p class="hint" style="margin:0">Tap <strong>Detect microphones</strong> and grant permission so your USB measurement mic appears, then select it before <strong>Start mic capture</strong>.</p>
+    <p class="hint" style="margin:0">Your USB measurement mic should appear automatically (grant mic permission if asked). Tap <strong>Refresh microphones</strong> if it doesn’t, then select it before <strong>Start mic capture</strong>.</p>
 
     <label for="mic-model-select">Calibration
       <select id="mic-model-select">
