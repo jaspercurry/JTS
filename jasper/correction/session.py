@@ -404,6 +404,17 @@ _AWAITING_CAPTURE_STATES = frozenset({
 })
 
 
+def compute_autolevel_cap(
+    original_db: float, *, bump_db: float, floor_db: float, ceil_db: float
+) -> float:
+    """End-of-ramp cap for auto-level: +bump over the user's listening
+    volume, clamped to [floor, ceil]. The floor raises a very quiet listener
+    UP to a usable measurement level; the ceiling is the room safety limit.
+    Pinned by tests so the maxed_out UI reads cap_db rather than hardcoding it.
+    """
+    return max(floor_db, min(original_db + bump_db, ceil_db))
+
+
 class MeasurementSession:
     """Multi-position measurement session.
 
@@ -2696,11 +2707,11 @@ class MeasurementSession:
             )
 
         Defaults give +6 dB bump over normal listening, clamped to
-        [-15, -6] dB. So:
+        [-20, -6] dB. So:
           - user at -20 dB → autolevel cap -14 dB (only ~6 dB louder)
           - user at -5 dB  → cap -6 dB (absolute max)
-          - user at -45 dB → cap -15 dB (boost to usable measurement
-            level)
+          - user at -45 dB → cap -20 dB (floored UP to a usable
+            measurement level)
 
         Combined with the -12 dBFS tone amplitude (matches the
         sweep), worst-case dongle output at the cap is -18 dBFS —
@@ -2746,8 +2757,12 @@ class MeasurementSession:
             al.original_main_volume_db = float(await get_main_volume_db())
             # Compute the dynamic cap NOW that we know original.
             if end_db is None:
-                raw_cap = al.original_main_volume_db + end_db_bump
-                end_db = max(end_db_absolute_min, min(raw_cap, end_db_absolute_max))
+                end_db = compute_autolevel_cap(
+                    al.original_main_volume_db,
+                    bump_db=end_db_bump,
+                    floor_db=end_db_absolute_min,
+                    ceil_db=end_db_absolute_max,
+                )
                 logger.info(
                     "autolevel: dynamic end_db=%.1f dB "
                     "(original=%.1f + bump=%.1f, clamped to [%.1f, %.1f])",

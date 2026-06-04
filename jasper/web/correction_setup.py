@@ -928,7 +928,8 @@ def _handle_autolevel_start(
       1. POST /autolevel/start (kicks off the background task).
       2. Watch the live mic-level meter via AudioWorklet.
       3. When the captured mic RMS lands in the target range
-         (default −20 .. −10 dBFS), POST /autolevel/lock.
+         (computed by the browser from the pre-sweep noise floor),
+         POST /autolevel/lock.
       4. Poll GET /status; `autolevel.status` becomes `locked`,
          `maxed_out`, `cancelled`, or `error`.
     """
