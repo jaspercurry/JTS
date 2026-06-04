@@ -170,7 +170,7 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
       placeholder.disabled = true;
       placeholder.textContent = unique.length
         ? 'Select a microphone…'
-        : 'No mics yet — tap “Detect microphones”';
+        : 'No mic found — tap “Refresh microphones”';
       inputDeviceSelect.appendChild(placeholder);
       unique.forEach(function (d, idx) {
         var opt = document.createElement('option');
@@ -328,6 +328,34 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     return /iphone|ipad|ipod|macbook|built[- ]?in|^\s*default/i.test(label || '');
   }
 
+  // The OS already names the mic — infer its calibration model from the label
+  // so the user doesn't re-identify it. Returns a mic-model-select value
+  // (matching the keys the server renders from calibration.SUPPORTED_MODELS)
+  // or null. Check the more specific UMIK-2 before UMIK-1.
+  function inferCalibrationModelFromLabel(label) {
+    var l = (label || '').toLowerCase();
+    if (/imm-?6/.test(l)) return 'dayton_imm6';   // iMM-6 / iMM-6C share this
+    if (/umm-?6/.test(l)) return 'dayton_umm6';
+    if (/umik-?2/.test(l)) return 'minidsp_umik2';
+    if (/umik/.test(l)) return 'minidsp_umik1';
+    return null;
+  }
+
+  // If we can identify the calibrated mic and the user hasn't already picked a
+  // model, pre-select it and reveal the serial field. Only acts when the
+  // server actually offers that model, and never overrides an explicit choice.
+  function maybeInferCalibrationModel(label) {
+    if (micModelSelect.value) return;
+    var key = inferCalibrationModelFromLabel(label);
+    if (!key) return;
+    var hasOption = Array.prototype.some.call(micModelSelect.options, function (o) {
+      return o.value === key;
+    });
+    if (!hasOption) return;
+    micModelSelect.value = key;
+    updateMicCalibrationRows();
+  }
+
   // A vendor measurement-mic calibration (Dayton / miniDSP) can never be the
   // phone's own mic, so capturing from a built-in mic with such a calibration
   // loaded would silently apply the curve to the wrong microphone. Returns a
@@ -424,7 +452,7 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
   async function startMicCapture() {
     if (!inputDeviceSelect.value) {
-      jtsAlert('Pick a microphone first. Tap “Detect microphones” (and ' +
+      jtsAlert('Pick a microphone first. Tap “Refresh microphones” (and ' +
         'replug the USB mic if it is not listed), then choose your ' +
         'measurement mic under Input device.');
       return;
@@ -465,7 +493,7 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
       stopMicStream();
       if (e && e.name === 'OverconstrainedError') {
         jtsAlert('That microphone is no longer available (was it unplugged?). ' +
-          'Tap “Detect microphones”, reselect it, and try again.');
+          'Tap “Refresh microphones”, reselect it, and try again.');
       } else {
         jtsAlert('Microphone permission denied or unavailable: ' + e.message);
       }
@@ -490,6 +518,7 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     };
     await populateInputDevices(actual.deviceId);
     selectedInputDevice = selectedInputDeviceMetadata(actual);
+    maybeInferCalibrationModel(actual.label);
     var problems = [];
     if (actual.sampleRate !== REQUIRED_SR) problems.push('sampleRate');
     // Only TRUE counts as a problem — undefined / null mean Safari
@@ -2095,6 +2124,8 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     });
   }
   inputDeviceSelect.addEventListener('change', function () {
+    var opt = inputDeviceSelect.options[inputDeviceSelect.selectedIndex];
+    maybeInferCalibrationModel(opt ? opt.textContent : '');
     if (micStream) {
       startMicCapture().catch(function (e) {
         setStateBadge('failed', e.message);
@@ -2138,9 +2169,11 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     }
   });
 
-  // Populate the banner on page load (and after apply / reset so the
-  // user sees the new state without a refresh).
-  populateInputDevices();
+  // Auto-detect microphones on landing so the USB measurement mic shows up
+  // without an extra tap. detectMicrophones() primes a getUserMedia grant then
+  // enumerates; if the browser requires a user gesture (some iOS versions),
+  // it fails soft and the "Refresh microphones" button is the fallback.
+  detectMicrophones();
   updateMicCalibrationRows();
   refreshCurrentCorrection();
 
