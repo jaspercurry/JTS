@@ -226,9 +226,11 @@ Two notes:
   master_gain "the ducking knob" are wrong.
 - `listening_level` is the canonical user-facing volume in the
   VolumeCoordinator (see [HANDOFF-volume.md](HANDOFF-volume.md)). It
-  maps to `main_volume` for IDLE and AirPlay; for Spotify and BT,
-  `main_volume` stays pinned at 0 dB and the source slider carries
-  `listening_level`.
+  maps to `main_volume` for IDLE, AirPlay, and USB sink; for Spotify
+  and BT, `main_volume` stays pinned at 0 dB and the source slider
+  carries `listening_level`. `listening_level=0` is special on every
+  music source: Camilla also asserts `main_mute` and the −50 dB floor
+  so content mute means silent content rather than "very quiet."
 
 ## Assistant Loudness Matching
 
@@ -472,4 +474,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-04 (assistant loudness matching note and outputd STATUS telemetry path rechecked)
+Last verified: 2026-06-04 (0% content-mute invariant, USB Camilla-master note, assistant loudness matching note, and outputd STATUS telemetry path rechecked)

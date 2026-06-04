@@ -66,8 +66,15 @@ When the voice tool / dial / "louder" wants to change volume:
    0 dB** so there's no double-attenuation. If a source-side push
    fails, Camilla remains a degraded-safe fallback guard at the
    canonical level until a later handoff or recovery path can clear it.
+   `listening_level=0` is the explicit exception: the source slider is
+   still pushed to zero, but Camilla also asserts `main_mute` and stores
+   the −50 dB floor so content/music "0%" is actually muted, not just
+   the renderer's lowest slider value. Assistant speech is governed by
+   the voice/mic policy and outputd path, not by source volume.
    In camilla-as-master mode (idle, AirPlay, USB), `main_volume` IS the
-   user-facing knob.
+   user-facing knob. The same 0% rule applies there: the normal
+   −50..0 dB curve remains unchanged for 1-100%, while 0% additionally
+   sets Camilla's `main_mute`.
 
 ### `/state` volume policy visibility
 
@@ -136,6 +143,15 @@ active source already sits at the canonical `listening_level`. At that
 point the source slider has proven it is carrying the user's intent, so
 leaving the downstream fallback attenuation in place would make
 "Spotify 100%" still sound like the older guarded level.
+
+USB is different from Spotify/Bluetooth: the Mac/PC host slider is an
+observed input, but not the final speaker-volume carrier. When USB is
+active, a host-side observation updates `listening_level` and then
+converges Camilla (`main_volume` plus the 0% `main_mute` flag) to match.
+That is the Wispr Flow/macOS mute-unmute path: host "0%" asserts content
+mute; host unmute restores Camilla to the observed level unless the
+voice-session duck gate is active, in which case the dB write is
+deferred but the mute flag still reflects the user's current intent.
 
 **Exception: AirPlay observations are unconditionally skipped.** The
 sender's slider sits *upstream* of camilla in the audio chain —
@@ -241,10 +257,10 @@ Both gates persist `listening_level` (user intent recorded); only
 the camilla write is skipped. When `Ducker.restore()` runs at
 session end it reads disk → `get_camilla_target_db()` → camilla
 lands at the user's intended level. The defer log lines distinguish
-the two paths: `camilla main_volume deferred to ducker.restore`
+the two paths: `event=volume.deferred reason=voice_session_active`
 (flag path) vs `event=volume.deferred reason=session_signaled`
-(probe path). Both `jasper-control` and `jasper-mux` build this
-probe when they construct per-request/per-handoff coordinators.
+(probe path). Both `jasper-control` and `jasper-mux` build this probe
+when they construct per-request/per-handoff coordinators.
 
 #### Why the probe replaced the prior dB-comparison heuristic
 
@@ -350,9 +366,11 @@ self-healing property no matter how the drift was introduced.
 1. `_voice_session_active=False` — the Ducker owns camilla during
    a session.
 2. Active source uses camilla-as-master (idle / AirPlay / USBSINK).
-   Push-mode sources pin camilla at 0 dB by design.
+   Push-mode sources pin camilla at 0 dB by design, except for the
+   explicit 0% content-mute floor.
 3. `|drift| > RECONCILE_DRIFT_DB` (1 dB) — dead band above camilla's
-   normal jitter (~0.1 dB).
+   normal jitter (~0.1 dB). Mute-state drift is also repaired: if dB is
+   already at −50 but `main_mute=false`, 0% is not converged.
 4. Deep quiet drift is skipped (`expected - current >=
    RECONCILE_DUCK_SKIP_DB`) — CueDuck plays proactive cues without
    setting `_voice_session_active`, so a 25 dB drop below expected can
@@ -368,8 +386,9 @@ clear. If this needs to change, gate the reconciler on a "cue
 active" flag set by the cue manager, mirroring `note_voice_session`.
 
 **Emits** `event=volume.reconciled` on every write with
-`source=`, `level=`, `current_db=`, `expected_db=`, `drift_db=`.
-Visible in `journalctl -u jasper-voice` for drift forensics.
+`source=`, `level=`, `current_db=`, `expected_db=`, `drift_db=`,
+`current_mute=`, and `expected_mute=`. Visible in
+`journalctl -u jasper-voice` for drift forensics.
 
 The reconciler does NOT replace mux-owned source handoff. Mux
 `prepare_source_handoff(...)` / `finalize_source_handoff(...)` is the
@@ -393,6 +412,9 @@ Multiple guardrails sit on top:
   at full scale.
 - `CamillaController.set_volume_db` validates every Python write and
   clamps positive gain to 0 dB as runtime defense in depth.
+- `VolumeCoordinator` treats 0% as Camilla `main_mute=true` plus the
+  normal −50 dB floor; nonzero unmute writes the safe dB target before
+  clearing `main_mute`.
 - `jasper-doctor` checks the active Camilla config for
   `devices.volume_limit <= 0` and fails if it is missing or positive.
 - `/state.audio` exposes Camilla playback RMS, playback peak, and
@@ -441,9 +463,9 @@ rules for raw active-source transitions:
 
 | Edge | What happens |
 |---|---|
-| camilla-as-master → push-mode (e.g. AirPlay → Spotify) | push level to new source first; clear camilla to 0 dB only after the push succeeds |
-| push-mode → camilla-as-master (e.g. Spotify → AirPlay) | camilla → percent_to_db(level) (take over) |
-| push → push (e.g. Spotify → BT) | camilla already at 0 dB; push level to new source |
+| camilla-as-master → push-mode (e.g. AirPlay → Spotify) | push level to new source first; confirm Camilla's push-mode carrier only after the push succeeds (`0 dB` for 1-100%, `main_mute=true` + −50 dB for 0%) |
+| push-mode → camilla-as-master (e.g. Spotify → AirPlay) | camilla → percent_to_db(level) and `main_mute=(level == 0)` (take over) |
+| push → push (e.g. Spotify → BT) | push level to new source; keep/clear Camilla's 0% content mute as needed |
 | camilla → camilla (idle ↔ AirPlay) | no change; camilla already carries level |
 
 The first edge is the one users notice: without it, the residual
@@ -508,11 +530,11 @@ Useful references:
 - **No DBus subscription library**. Polling at 1 Hz is the model; if
   someone wants to switch to PropertiesChanged subscriptions later,
   `dbus-next` is the recommended async option.
-- **No master-source mute via -144 dB sentinel**. AirPlay
+- **No AirPlay mute via -144 dB sentinel**. AirPlay
   `AirplayVolume = -144` is a documented "muted" sentinel; we
   treat it as effective silence (clamped to AIRPLAY_DB_MIN → 0%).
-  If a future tool wants explicit mute semantics, add a parameter
-  to the coordinator's `mute()`.
+  The source-volume 0% mute is owned by `VolumeCoordinator` through
+  Camilla `main_mute`, not by source-specific sentinel values.
 - **No iPhone-side slider visual update on Jarvis-initiated changes**.
   This is an AirPlay protocol limitation, not a JTS limitation.
   Audio attenuates correctly; the slider widget on the phone shows
@@ -545,4 +567,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-05-28 (push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and outputd TTS ceiling path rechecked)
+Last verified: 2026-06-04 (0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and outputd TTS ceiling path rechecked)

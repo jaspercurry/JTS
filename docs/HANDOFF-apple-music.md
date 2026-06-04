@@ -275,7 +275,8 @@ subprocess (we own the player; no remote API needed).
 ### Volume
 
 Camilla-as-master (same as AirPlay, USB sink, idle). CamillaDSP
-`main_volume` carries `listening_level`. No upstream protocol slider
+`main_volume` carries `listening_level`; 0% inherits the coordinator's
+Camilla `main_mute` content-mute invariant. No upstream protocol slider
 to drive.
 
 ### Transport routing
@@ -472,4 +473,4 @@ Investigation against MA's actual source code:
 | "44.1/16 → 24/48 is zero-pad" | **Correct but irrelevant.** | Matches librespot's behavior (source-native decode → 48 kHz fan-in lane → output dmix). Consistency across sources > bit-perfect. |
 | "Run MA spike first" | **Correct.** | Cheapest possible validation of the full chain on aarch64. Do before any code. |
 
-Last verified: 2026-05-26
+Last verified: 2026-06-04

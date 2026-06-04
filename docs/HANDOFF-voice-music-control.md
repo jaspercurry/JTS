@@ -49,9 +49,11 @@ The coordinator dispatches to whichever source's slider is active:
   not push volume back to the host)
 - Idle (no source) → CamillaDSP main_volume
 
-CamillaDSP `main_volume` is reserved for the daemon's ducking
-(and for IDLE/AirPlay user volume per the VolumeCoordinator). The
-`master_gain` mixer in v1.yml is identity and not the ducker.
+At 0%, the coordinator also asserts CamillaDSP `main_mute` so content
+mute is actual silence. CamillaDSP `main_volume` is otherwise reserved
+for the daemon's ducking and for camilla-master user volume
+(IDLE/AirPlay/USB) per the VolumeCoordinator. The `master_gain` mixer
+in v1.yml is identity and not the ducker.
 
 ### 2. Transport (next / previous / pause / resume)
 
@@ -135,13 +137,13 @@ invite further conversation.
 - Don't bypass the `ToolRegistry` — every tool goes through it;
   that's how Gemini sees function declarations.
 - Don't change CamillaDSP's `main_volume` directly from a tool —
-  that's the daemon's ducking knob and the IDLE/AirPlay user volume
-  surface, not something a transport or source tool should drive. Use the
-  `VolumeCoordinator` instead.
+  that's the daemon's ducking knob, the camilla-master user volume
+  surface, and the 0% content-mute carrier. Use the `VolumeCoordinator`
+  instead.
 - Don't try to control AirPlay generically — only the
   AirPlay-carrying-Spotify case has a workaround. Be honest with
   the user about other AirPlay sources.
 
 ---
 
-Last verified: 2026-05-28 (source registry, guarded handoff path, and source-capabilities plan link rechecked)
+Last verified: 2026-06-04 (source registry, 0% content mute, USB Camilla-master volume, guarded handoff path, and source-capabilities plan link rechecked)
