@@ -70,7 +70,9 @@ Optional (satellite devices — see [docs/satellites.md](docs/satellites.md)):
      - Remote Access / SSH: enable SSH with **password
        authentication**. Public-key auth is fine for advanced
        imaging, but the beginner path is password SSH plus
-       `scripts/onboard.sh --adopt`.
+       `scripts/onboard.sh --adopt`. (Right after onboarding you'll
+       also enable **passwordless sudo** — see Phase 2.5; it's what
+       lets `deploy-to-pi.sh` and AI-agent sessions deploy unattended.)
      - Raspberry Pi Connect: leave off; JTS does not use it.
      - Interfaces & Features: leave defaults unless a later phase
        explicitly tells you otherwise.
@@ -198,6 +200,68 @@ systemctl status jasper-camilla jasper-voice jasper-mux \
     librespot shairport-sync nqptp bt-agent.service
 # All should show active (running)
 ```
+
+---
+
+## Phase 2.5 — Enable passwordless sudo (recommended; do this for every Pi)
+
+**Why this matters — read even if you're in a hurry.** The supported
+deploy path (`bash scripts/deploy-to-pi.sh`) and every AI-agent or
+scripted session run *unattended*: they SSH in and run `sudo bash
+install.sh` with nobody at the keyboard. They preflight `sudo -n true`
+(non-interactive sudo) and **refuse to proceed without it** — the project
+will not store or hand-roll your sudo password. Two things make
+unattended deploys work; set up both early so you never hit a wall
+mid-session:
+
+1. **Pubkey SSH** — so SSH needs no password. `scripts/onboard.sh
+   <hostname>.local --adopt` already did this for you (it runs
+   `ssh-copy-id`). Your *first* onboard runs interactively from your
+   terminal, so sudo could prompt for a password then — that's why Phase
+   2 worked without this step.
+2. **Passwordless sudo** — so `sudo -n` works for every deploy *after*
+   the first. `--adopt` deliberately does **not** set this up (the
+   installer never adds broad sudoers rules for you — it's your explicit
+   choice). This phase is that choice.
+
+**Your two options:**
+
+| Option | What every deploy looks like | Pick this if |
+|---|---|---|
+| **Passwordless sudo** (recommended) | `deploy-to-pi.sh` runs fully unattended; AI agents can deploy across sessions with you out of the loop. | A home-LAN appliance you own — the normal case. |
+| **Keep a sudo password** | You must run *every* deploy yourself from an interactive terminal so it can prompt. Unattended and agent-driven deploys are impossible. | You specifically want sudo to require a password. |
+
+For the JTS appliance, **passwordless sudo is the right posture.** It is a
+trusted-LAN device you own, its daemons already run as root, and the
+threat model ([SECURITY.md](SECURITY.md)) already assumes a trusted
+household network. The alternative — re-typing a password on every deploy
+and blocking every agent session — buys you almost nothing here.
+
+**Enable it** (one-time per Pi). SSH in, run these (the first `sudo`
+prompts for the Pi password once), then exit:
+
+```sh
+ssh pi@<hostname>.local
+# then, on the Pi:
+echo "pi ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/010_pi-nopasswd >/dev/null
+sudo chmod 440 /etc/sudoers.d/010_pi-nopasswd
+sudo visudo -cf /etc/sudoers.d/010_pi-nopasswd   # must print: parsed OK
+exit
+```
+
+Verify from your laptop:
+
+```sh
+ssh pi@<hostname>.local 'sudo -n true && echo PASSWORDLESS_SUDO_OK'
+```
+
+**Revoke later** with `sudo rm /etc/sudoers.d/010_pi-nopasswd`.
+
+> **Do this on EVERY speaker you bring up — each Pi has its own sudo
+> config.** The classic failure mode (a real one): your main speaker has
+> passwordless sudo and deploys fine, but a second unit (e.g. a lab Pi)
+> silently doesn't, so deploys and agent sessions to it fail at the
+> `sudo -n` preflight until you run this phase there too.
 
 ---
 
