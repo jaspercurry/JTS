@@ -9,6 +9,7 @@ WAV artifact that can be inspected before hardware playback exists.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import struct
@@ -24,6 +25,7 @@ from .calibration_level import (
     MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
 )
+from .camilla_yaml import _forbidden_playback_token
 from .tone_plan import (
     DEFAULT_TONE_DURATION_MS,
     MAX_TONE_DURATION_MS,
@@ -54,6 +56,8 @@ ALLOW_AUDIO_ENV = "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO"
 TEST_PCM_ENV = "JASPER_ACTIVE_SPEAKER_TEST_PCM"
 APLAY_BINARY_ENV = "JASPER_APLAY"
 APLAY_TIMEOUT_PAD_SEC = 1.0
+
+logger = logging.getLogger(__name__)
 
 AplayRunner = Callable[
     [Sequence[str], float],
@@ -204,7 +208,29 @@ def tone_backend_status(env: dict[str, str] | None = None) -> dict[str, Any]:
                 f"{TEST_PCM_ENV} must name the active-speaker test PCM",
             )
         )
-    audio_enabled = requested == APLAY_AUDIO_BACKEND and allow_audio and bool(pcm)
+    forbidden_token = _forbidden_playback_token(pcm) if pcm else None
+    if requested == APLAY_AUDIO_BACKEND and forbidden_token is not None:
+        logger.warning(
+            "event=active_speaker.tone_backend.forbidden_test_pcm "
+            "pcm=%r token=%r",
+            pcm,
+            forbidden_token,
+        )
+        issues.append(
+            _issue(
+                "blocker",
+                "test_pcm_forbidden_main_lane",
+                f"{TEST_PCM_ENV} targets the protected main lane "
+                f"('{forbidden_token}'); audible channel tests must use a "
+                f"dedicated active-speaker PCM",
+            )
+        )
+    audio_enabled = (
+        requested == APLAY_AUDIO_BACKEND
+        and allow_audio
+        and bool(pcm)
+        and forbidden_token is None
+    )
     if issues:
         status = "blocked"
     elif audio_enabled:
@@ -671,6 +697,19 @@ class AplayTonePlaybackBackend:
         self.pcm = str(pcm or "").strip()
         if not self.pcm:
             raise ValueError("active-speaker test PCM is required")
+        forbidden_token = _forbidden_playback_token(self.pcm)
+        if forbidden_token is not None:
+            logger.warning(
+                "event=active_speaker.tone_backend.forbidden_test_pcm "
+                "pcm=%r token=%r",
+                self.pcm,
+                forbidden_token,
+            )
+            raise ValueError(
+                f"active-speaker test PCM '{self.pcm}' targets the protected "
+                f"main lane ('{forbidden_token}'); audible channel tests must "
+                f"use a dedicated active-speaker PCM"
+            )
         self.aplay_binary = str(aplay_binary or DEFAULT_APLAY_BINARY)
         self.runner = runner
         self.artifact_backend = WavArtifactTonePlaybackBackend(
