@@ -142,19 +142,28 @@ def test_dayton_fetch_follows_query_param_download_link():
     assert len(calls) == 2
 
 
-def test_extract_links_detects_calibration_filename_in_query():
-    html_text = (
-        '<a href="/MicrophoneCalibrationTool/Download?'
-        'CalibrationFileName=cmm31555.txt&amp;Microphone=iMM-6">dl</a>'
-    )
-    links = calibration._extract_links(
-        "https://support.daytonaudio.com/MicrophoneCalibrationTool",
-        html_text,
-    )
-    assert links == [
-        "https://support.daytonaudio.com/MicrophoneCalibrationTool/Download?"
-        "CalibrationFileName=cmm31555.txt&Microphone=iMM-6"
-    ]
+def test_dayton_fetch_never_follows_non_http_links():
+    """SSRF/LFI guard: a non-http(s) link in the (external) vendor response
+    must never be fetched. urljoin lets an absolute href override the scheme,
+    so without the guard a file:// link would be opened by the Pi's web
+    process.
+    """
+    followed: list[str] = []
+
+    def fake_open(req, timeout):
+        if isinstance(req, urllib.request.Request):
+            # Only link is a file:// URL whose path ends in a cal suffix.
+            return b'<html><a href="file:///etc/passwd.txt">x</a></html>'
+        followed.append(req)
+        return b"20 -1\n100 0\n1000 1\n"
+
+    with pytest.raises(calibration.CalibrationUpstreamError):
+        calibration.fetch_dayton_calibration_text(
+            vendor_model="iMM-6",
+            serial="cmm31555",
+            opener=fake_open,
+        )
+    assert followed == []  # the file:// link was never opened
 
 
 def test_minidsp_fetch_uses_serial_url_candidates():
