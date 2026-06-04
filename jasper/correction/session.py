@@ -582,18 +582,26 @@ class MeasurementSession:
             await asyncio.sleep(timeout_sec)
         except asyncio.CancelledError:
             return
-        async with self._lock:
-            # Own the slot first so _fail()'s cancel doesn't cancel us.
-            self._capture_timeout_task = None
-            if self.state != expected_state:
-                return
-            logger.warning(
-                "event=correction_capture_timeout session=%s state=%s "
-                "after_sec=%.0f",
-                self.session_id, expected_state.value, timeout_sec,
-            )
-            await self._fail(
-                "capture never arrived — tap Start to measure again"
+        # Self-contained: this runs as a detached task, so any error here would
+        # surface only as an "exception never retrieved" warning. Swallow +
+        # log instead of letting that leak.
+        try:
+            async with self._lock:
+                # Own the slot first so _fail()'s cancel doesn't cancel us.
+                self._capture_timeout_task = None
+                if self.state != expected_state:
+                    return
+                logger.warning(
+                    "event=correction_capture_timeout session=%s state=%s "
+                    "after_sec=%.0f",
+                    self.session_id, expected_state.value, timeout_sec,
+                )
+                await self._fail(
+                    "capture never arrived — tap Start to measure again"
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "capture-timeout guard failed (session=%s)", self.session_id,
             )
 
     async def _set_state(self, state: SessionState, **extra: Any) -> None:

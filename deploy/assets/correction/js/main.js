@@ -320,6 +320,10 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     };
   }
 
+  // This is the UX-side mirror of the authoritative server gate
+  // (_BUILTIN_MIC_LABEL_RE / _calibration_device_mismatch in
+  // jasper/web/correction_setup.py). Keep the two patterns in sync; the
+  // backend is the one that actually blocks a wrong-mic measurement.
   function looksLikeBuiltInMic(label) {
     return /iphone|ipad|ipod|macbook|built[- ]?in|^\s*default/i.test(label || '');
   }
@@ -1817,9 +1821,17 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     var idleStates = ['idle', 'ready', 'applied', 'verified', 'failed'];
     var sessionIdle = idleStates.indexOf(state) !== -1;
     var autolevelRamping = autolevelStatus === 'ramping';
-    // An in-flight measurement (anything not idle and not the autolevel ramp,
-    // which has its own Cancel) can be escaped via the always-visible Cancel.
-    if (!sessionIdle && !autolevelRamping) {
+    // Show Cancel only where the session is genuinely *waiting* on the user or
+    // browser and no background task is about to overwrite the state. During
+    // preparing/sweeping/analyzing/verifying a fire-and-forget sweep/analysis
+    // task is running; /reset would race it (the task sets AWAITING_CAPTURE
+    // *after* reset's IDLE), so Cancel would appear to fail. Those phases take
+    // seconds and land in a waiting state on their own, where Cancel is shown.
+    var cancellableStates = [
+      'awaiting_capture', 'awaiting_repeat_capture', 'awaiting_verify_capture',
+      'needs_next_position', 'needs_repeat_capture',
+    ];
+    if (cancellableStates.indexOf(state) !== -1) {
       cancelMeasureBtn.classList.remove('hidden');
     }
     runBtn.disabled = !sessionIdle || autolevelRamping;
