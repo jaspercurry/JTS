@@ -5,7 +5,7 @@ import wave
 
 import pytest
 
-from jasper.cues import CUES, CueDef
+from jasper.cues import CUES
 from jasper.cues.generator import (
     TTSResult,
     WAV_CHANNELS,
@@ -288,7 +288,7 @@ def test_gemini_tts_raises_after_max_attempts(monkeypatch):
     with the last status (so logs show what Gemini said) instead of
     a vague AttributeError."""
     from jasper.cues.generator import (
-        GeminiTTSGenerator, TTS_MAX_ATTEMPTS,
+        GeminiTTSGenerator,
     )
     g = GeminiTTSGenerator(api_key="x", voice="Aoede")
     monkeypatch.setattr(

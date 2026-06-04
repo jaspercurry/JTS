@@ -23,7 +23,6 @@ Designed to be run interactively or from `install.sh` post-install.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import os
 import sys
@@ -33,7 +32,7 @@ from ..config import Config
 from ..env_load import load_env_files
 from .factory import build_cue_tts_backend
 from .manager import AudioCueManager
-from .registry import CUES, find as find_cue
+from .registry import find as find_cue
 
 
 def _hostname_from_url(url: str) -> str:

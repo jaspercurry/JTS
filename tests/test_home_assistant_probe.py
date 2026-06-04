@@ -7,7 +7,6 @@ as test_home_assistant.py.
 """
 from __future__ import annotations
 
-import asyncio
 
 import httpx
 import pytest
@@ -77,7 +76,6 @@ async def test_probe_status_connected_returns_instance_metadata(monkeypatch):
         return httpx.Response(404)
 
     # Patch HAClient._client to return the mocked client.
-    orig_client = HAClient._client
 
     async def fake_client(self):
         if self._http is None:

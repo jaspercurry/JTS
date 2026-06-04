@@ -255,17 +255,17 @@ def main() -> int:
         output["wake_rate_pct"] = round(n_detected * 100 / max(1, args.reps), 1)
 
         if not args.json:
-            print(f"")
+            print("")
             print(f"File:        {args.wav_path}")
             print(f"Duration:    {duration_sec:.2f}s")
             print(f"Template:    {args.template}")
             print(f"Threshold:   {args.threshold}  (anything ≥ this counts as detection)")
             print(f"Max score:   {max_score:.3f}")
-            print(f"")
+            print("")
             print(f"Located {len(utts)}/{args.reps} 'Jarvis' utterances via cross-correlation.")
-            print(f"")
-            print(f"   #  |   t (s)  | peak score | wake-RMS |  SB-RMS  |  xcorr | status")
-            print(f"  ----+----------+------------+----------+----------+--------+----------------")
+            print("")
+            print("   #  |   t (s)  | peak score | wake-RMS |  SB-RMS  |  xcorr | status")
+            print("  ----+----------+------------+----------+----------+--------+----------------")
             for u in utts:
                 if u["category"] == "detected":
                     status = "✓ DETECTED"
@@ -278,7 +278,7 @@ def main() -> int:
                 print(f"  {u['n']:3d} | {u['t_sec']:7.2f}  |   {u['peak_score']:.3f}    | "
                       f"{u['rms']:7.0f}  | {u['rms_speech_band']:7.0f}  | "
                       f"{u['xcorr']:5.0f}  |  {status}")
-            print(f"")
+            print("")
             print(f"  Total detected:       {n_detected:2d} / {args.reps}  ({n_detected*100/args.reps:.0f}%)")
             n_near = sum(1 for u in utts if u['category'] == 'near_miss')
             n_weak = sum(1 for u in utts if u['category'] == 'weak_signal')
@@ -307,17 +307,17 @@ def main() -> int:
 
     # If we had a template, the above already printed everything.
     if not args.template:
-        print(f"")
+        print("")
         print(f"File:        {args.wav_path}")
         print(f"Duration:    {duration_sec:.2f}s")
         print(f"Threshold:   {args.threshold}")
         print(f"Max score:   {max_score:.3f}")
-        print(f"")
+        print("")
         print(f"Score peaks (no template; ≥{CANDIDATE_MIN_SCORE}, top {MAX_PEAKS_REPORTED}):")
         for i in peak_idxs:
             mark = "✓ YES" if scores[i] >= args.threshold else "   no"
             print(f"  t={i*FRAME_PERIOD_SEC:6.2f}s  score={scores[i]:.3f}  {mark}")
-        print(f"")
+        print("")
         print(f"  Peaks total:            {len(peak_idxs)}")
         print(f"  Peaks above threshold:  {len(peaks_above)}")
     return 0

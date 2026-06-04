@@ -11,7 +11,6 @@ from __future__ import annotations
 import sqlite3
 import sys
 import wave
-from collections import Counter
 from pathlib import Path
 
 import numpy as np

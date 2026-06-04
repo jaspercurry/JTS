@@ -19,7 +19,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from .generator import (
-    GEMINI_TTS_MODEL,
     GeminiTTSGenerator,
     GrokTTSGenerator,
     OpenAITTSGenerator,

@@ -20,7 +20,6 @@ import asyncio
 import os
 import tempfile
 import time
-import uuid
 
 import pytest
 
@@ -508,7 +507,7 @@ async def test_scheduler_update_old_task_does_not_fire():
 
     try:
         sched = TimerScheduler(on_fire=on_fire, db_path=path)
-        old = sched.add(1, label="quick")
+        sched.add(1, label="quick")
         # Update to a longer duration before the original fires.
         updated, _, new_timer = sched.update("quick", 60)
         assert updated is True

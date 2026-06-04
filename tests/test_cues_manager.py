@@ -13,8 +13,6 @@ from jasper.cues.generator import (
     WAV_RATE,
     WAV_SAMPLE_WIDTH,
     cue_filename,
-    cue_hash,
-    cue_path,
 )
 from jasper.cues.registry import find
 

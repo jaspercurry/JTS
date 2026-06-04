@@ -8,7 +8,6 @@ through 5 identical failures. Reuses the test plumbing from
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 
 import pytest
 

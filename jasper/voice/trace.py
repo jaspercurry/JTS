@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from ..tools import Tool, ToolRegistry
+from ..tools import ToolRegistry
 
 
 @dataclass
@@ -195,7 +195,6 @@ def traced_registry(registry: ToolRegistry) -> ToolRegistry:
     Safe to call when no trace is active — the wrapper's emit calls
     are no-ops in that case. So the wrapped registry can be used in
     contexts where tracing is sometimes on and sometimes off."""
-    import asyncio
     import inspect
 
     new = ToolRegistry()

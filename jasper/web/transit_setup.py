@@ -70,7 +70,6 @@ from ._common import (
     verify_csrf,
     read_form,
     restart_voice_daemon,
-    toggle_html,
     write_env_file,
 )
 

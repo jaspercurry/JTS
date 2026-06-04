@@ -24,7 +24,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from jasper.subway import (
-    LINE_TO_FEED,
     ARRIVAL_LIMIT,
     SubwayClient,
     _build_aliases,

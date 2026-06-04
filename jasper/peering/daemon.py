@@ -32,7 +32,7 @@ from .config import (
     PEERING_UDS_PATH,
     PeeringConfig,
 )
-from . import avahi, transport, uds
+from . import avahi, uds
 from .state import (
     Action,
     BroadcastClaim,
@@ -45,7 +45,6 @@ from .state import (
     PeerClaim,
     PeerEnd,
     PeerHeartbeat,
-    PeerState,
     PeerWake,
     PeeringStateMachine,
     ScheduleTimer,

@@ -15,9 +15,6 @@ from ._supervisor import (
     ESCALATION_CUE_SLUG,
     ESCALATION_RATE_LIMIT_SEC,
     ESCALATION_REPEAT_THRESHOLD,
-    RECONNECT_BACKOFF_JITTER_FRACTION,
-    RECONNECT_INITIAL_BACKOFF_SEC,
-    RECONNECT_MAX_BACKOFF_SEC,
     FailureFingerprint,
     reconnect_backoff_delay,
 )
@@ -55,6 +52,47 @@ UNACK_AGE_OUT_SEC = 30.0
 # process's still-lingering WebSocket — empirically the prior 7 s
 # budget (0+1+2+4) was occasionally too tight on busy regions.
 INITIAL_CONNECT_BACKOFF_SCHEDULE = (0.0, 1.0, 2.0, 4.0, 8.0)
+
+# GoAway deferral threshold. When the server sends a GoAway mid-turn
+# (it fires near the ~15-min audio cap and can land while the user is
+# still mid-reply), we don't want to tear the session down and lose the
+# in-flight turn. If the GoAway's `time_left` comfortably exceeds a
+# typical turn, defer the reconnect until the turn is released (mirrors
+# the OpenAI proactive-watchdog deferral idiom). A turn is bounded by
+# the daemon's idle watchdog to ~12 s; 30 s gives ample margin for the
+# turn to finish before the server actually drops us. If `time_left` is
+# below this (or unparseable, or no turn is active), reconnect promptly
+# as before.
+GOAWAY_DEFER_MIN_TIME_LEFT_SEC = 30.0
+
+
+def _goaway_time_left_seconds(time_left) -> float | None:
+    """Best-effort conversion of a GoAway `time_left` to seconds.
+
+    The genai SDK surfaces `time_left` as a `datetime.timedelta` (it may
+    also arrive as a protobuf Duration or a plain number depending on SDK
+    version). Returns None when it can't be interpreted — callers treat
+    None as "don't defer", which fails safe to the existing
+    reconnect-immediately behaviour."""
+    if time_left is None:
+        return None
+    total = getattr(time_left, "total_seconds", None)
+    if callable(total):
+        try:
+            return float(total())
+        except Exception:  # noqa: BLE001
+            return None
+    secs = getattr(time_left, "seconds", None)
+    if secs is not None:
+        try:
+            nanos = getattr(time_left, "nanos", 0) or 0
+            return float(secs) + float(nanos) / 1e9
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        return float(time_left)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_409_conflict(exc: Exception) -> tuple[bool, int | None]:
@@ -522,6 +560,11 @@ class GeminiLiveConnection(LiveConnection):
         self._reconnect_event: asyncio.Event = asyncio.Event()
         self._supervisor_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
+        # Set when a GoAway lands mid-turn with ample time_left: the
+        # reconnect is deferred and fired from `_on_turn_released` so the
+        # in-flight turn isn't torn down mid-reply (mirrors OpenAI's
+        # proactive-watchdog deferral). See _receive_loop's GoAway branch.
+        self._goaway_reconnect_pending: bool = False
         # Pause turn acquisition while a reconnect is in progress so
         # the daemon doesn't try to send audio into a half-open WS.
         self._connected_event: asyncio.Event = asyncio.Event()
@@ -812,6 +855,14 @@ class GeminiLiveConnection(LiveConnection):
         async with self._state_lock:
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
+        # Fire any reconnect a mid-turn GoAway deferred for this turn.
+        if self._goaway_reconnect_pending:
+            self._goaway_reconnect_pending = False
+            logger.info(
+                "live connection: GoAway reconnect — turn just ended, "
+                "firing the deferred reconnect",
+            )
+            self._reconnect_event.set()
 
     def _note_cumulative_usage(
         self, input_tokens: int, output_tokens: int,
@@ -1166,6 +1217,10 @@ class GeminiLiveConnection(LiveConnection):
         # Tear down the old session before opening a new one so we don't
         # leak a half-open WS through the SDK.
         await self._teardown_session()
+        # A reconnect is now underway — any GoAway-deferred reconnect is
+        # subsumed by this one; clear the flag so a later turn release
+        # doesn't fire a spurious second reconnect.
+        self._goaway_reconnect_pending = False
         # Mark the active turn (if any) as lost AND detach it. The
         # daemon's idle watchdog will pick up `turn_lost()` and call
         # `release()`, but in the meantime the connection's slot is free
@@ -1343,6 +1398,25 @@ class GeminiLiveConnection(LiveConnection):
                 go_away = getattr(response, "go_away", None)
                 if go_away is not None:
                     time_left = getattr(go_away, "time_left", None)
+                    secs = _goaway_time_left_seconds(time_left)
+                    # Defer the reconnect when a turn is in flight AND the
+                    # server gave us comfortably more time than a turn
+                    # takes — otherwise tearing down now marks the
+                    # in-flight turn lost and cuts off the user mid-reply.
+                    # Fire the deferred reconnect from `_on_turn_released`.
+                    if (
+                        self._active_turn is not None
+                        and secs is not None
+                        and secs >= GOAWAY_DEFER_MIN_TIME_LEFT_SEC
+                    ):
+                        logger.warning(
+                            "live connection: GoAway received mid-turn, "
+                            "time_left=%s (%.0fs) ≥ %.0fs — deferring reconnect "
+                            "until turn release",
+                            time_left, secs, GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
+                        )
+                        self._goaway_reconnect_pending = True
+                        continue
                     logger.warning(
                         "live connection: GoAway received, time_left=%s, will reconnect",
                         time_left,

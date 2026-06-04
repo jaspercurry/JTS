@@ -314,12 +314,10 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
-            if not (
-                path in {
+            if path not in {
                     "/power", "/discoverable", "/scan", "/pair",
                     "/connect", "/disconnect", "/forget",
-                }
-            ):
+                }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not verify_csrf(self):

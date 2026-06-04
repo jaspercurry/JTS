@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import http
-import types
 from email.message import Message
 from io import BytesIO
 

@@ -1186,7 +1186,6 @@ class OpenAIRealtimeConnection(LiveConnection):
             budget_sec = 0.0
         start = self._monotonic()
         deadline = start + budget_sec
-        last_exc: Exception | None = None
         attempt = 0
         while True:
             attempt += 1
@@ -1207,7 +1206,6 @@ class OpenAIRealtimeConnection(LiveConnection):
                     )
                 return
             except Exception as e:  # noqa: BLE001
-                last_exc = e
                 if not _is_transient(e):
                     logger.warning(
                         "event=openai.initial_connect.fatal phase=%s "

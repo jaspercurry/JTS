@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from typing import Any
 
 import pytest
 

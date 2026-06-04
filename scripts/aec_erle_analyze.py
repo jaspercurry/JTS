@@ -132,17 +132,17 @@ def main() -> int:
     pre_gain_db = broadband_db - args.mic_gain_db
 
     print()
-    print(f"=== AEC3 ERLE analysis ===")
+    print("=== AEC3 ERLE analysis ===")
     print(f"Mic input:    {args.mic}")
     print(f"AEC output:   {args.aec}")
     print(f"Analysed:     {analysed_sec:.1f}s (after {args.skip:.0f}s skip)")
     print()
-    print(f"Broadband (full spectrum, matches bridge log):")
+    print("Broadband (full spectrum, matches bridge log):")
     print(f"  Mic RMS:        {mic_rms:7.1f}")
     print(f"  AEC RMS:        {aec_rms:7.1f}")
     print(f"  Attenuation:    {broadband_db:+6.1f} dB")
     print()
-    print(f"Speech band (300-3400 Hz, where wake-word phonemes live):")
+    print("Speech band (300-3400 Hz, where wake-word phonemes live):")
     print(f"  Mic RMS:        {mic_sb_rms:7.1f}")
     print(f"  AEC RMS:        {aec_sb_rms:7.1f}")
     print(f"  Attenuation:    {speech_db:+6.1f} dB")
@@ -153,13 +153,13 @@ def main() -> int:
     print(f"  Best frame:     {np.min(per_win_arr):+6.1f} dB")
     print(f"  Worst frame:    {np.max(per_win_arr):+6.1f} dB")
     print()
-    print(f"Estimated pre-MIC_GAIN cancellation (engine-only):")
+    print("Estimated pre-MIC_GAIN cancellation (engine-only):")
     print(f"  Approx:         {pre_gain_db:+6.1f} dB "
           f"(broadband {broadband_db:+.1f} − {args.mic_gain_db:+.0f} dB makeup)")
     print(f"  AEC output clip:{aec_clip_pct:6.2f}%  "
           f"(>0.5% means MIC_GAIN+tanh is destroying peaks)")
     print()
-    print(f"=== Interpretation hints ===")
+    print("=== Interpretation hints ===")
     if speech_db > -3:
         print("  ⚠  Speech-band attenuation is < 3 dB — AEC is doing")
         print("     essentially nothing where wake words live. This")

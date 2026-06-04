@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import sys
 import wave
 from pathlib import Path
@@ -117,9 +116,9 @@ def main() -> int:
             continue
 
         print()
-        print(f"=" * 78)
+        print("=" * 78)
         print(f"  {cond}")
-        print(f"=" * 78)
+        print("=" * 78)
         # First pass: collect per-leg results to display them paired up.
         leg_rows = []
         for leg_key, leg_file, leg_desc in LEGS:

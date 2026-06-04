@@ -165,3 +165,28 @@ python_files = ["test_*.py"]
 # def test, so we don't have to repeat the marker on every test.
 # Required by tests/test_gemini_session.py and tests/test_gemini_connection.py.
 asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+# Spikes / one-off experiments are not production code — don't lint them.
+extend-exclude = ["experiments", "scripts/experiments"]
+
+[tool.ruff.lint]
+# Ruff's default rule set (pyflakes `F` + a pragmatic pycodestyle `E`
+# subset) is the bug-catching floor — unused imports, undefined names,
+# f-strings without placeholders, etc. We intentionally do NOT enable
+# import-sorting (`I`) or pyupgrade (`UP`) here: those would rewrite/
+# reorder across the whole tree for no correctness gain. Three E-rules
+# are switched off because the codebase uses them deliberately and
+# pervasively:
+#   E701 — terse one-line guards (`if x: return`)
+#   E731 — assigned lambdas
+#   E402 — deliberate deferred imports / post-`sys.modules`-stub imports
+ignore = ["E701", "E731", "E402"]
+
+[tool.ruff.lint.per-file-ignores]
+# dbus-next reads string type-code annotations off the method signatures
+# (`device: "o"` is a D-Bus object path; "s"/"u"/"q" are string/uint32/
+# uint16). Ruff resolves those forward-ref strings as names and
+# false-flags them as undefined; they are already `# type: ignore`.
+"jasper/bluetooth/agent.py" = ["F821"]

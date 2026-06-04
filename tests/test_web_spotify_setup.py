@@ -18,7 +18,6 @@ import types
 from email.message import Message
 from io import BytesIO
 
-import pytest
 
 from jasper.web import spotify_setup
 

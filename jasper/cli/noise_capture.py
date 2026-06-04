@@ -225,8 +225,8 @@ async def run_capture(args: argparse.Namespace) -> int:
         for leg in leg_ports
     }
 
-    print(f"\nJTS Noise Corpus Capture")
-    print(f"=" * 40)
+    print("\nJTS Noise Corpus Capture")
+    print("=" * 40)
     print(f"  Condition : {args.condition}")
     print(f"  Duration  : {args.duration:.0f} s "
           f"({args.duration / 60:.1f} min)")
@@ -281,7 +281,7 @@ async def run_capture(args: argparse.Namespace) -> int:
         samples_by_leg = dict(zip(leg_ports.keys(), leg_samples))
 
     expected = int(args.duration * SAMPLE_RATE_HZ)
-    print(f"\nCapture complete.")
+    print("\nCapture complete.")
     for leg in leg_ports:
         n = samples_by_leg[leg]
         print(

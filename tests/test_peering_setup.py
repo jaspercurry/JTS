@@ -12,7 +12,6 @@ import socket
 import threading
 import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
 
 import pytest
 

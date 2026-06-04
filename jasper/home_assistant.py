@@ -49,7 +49,6 @@ we'll know.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -385,11 +384,11 @@ class HAClient:
             targets_failed=targets_failed,
             latency_ms=latency_ms,
             error_detail="" if success else (
-                f"Home Assistant said it couldn't find anything matching that"
+                "Home Assistant said it couldn't find anything matching that"
                 if error_code == "no_intent_match" else
-                f"Home Assistant couldn't handle that request"
+                "Home Assistant couldn't handle that request"
                 if error_code in ("failed_to_handle", "unknown") else
-                f"Home Assistant returned no response"
+                "Home Assistant returned no response"
             ),
         )
 

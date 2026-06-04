@@ -7,11 +7,9 @@ synthetic timing.
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -278,7 +276,6 @@ def test_bounded_server_process_request_applies_socket_timeout():
     worker indefinitely (would otherwise wait until OS-side socket
     death, minutes)."""
     from http.server import BaseHTTPRequestHandler
-    from unittest.mock import MagicMock
     from jasper.usbsink.preempt_listener import (
         _BoundedThreadingHTTPServer,
         PREEMPT_REQUEST_TIMEOUT_SEC,

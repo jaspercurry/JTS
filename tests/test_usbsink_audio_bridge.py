@@ -12,7 +12,6 @@ overflow handling, preempt silencing.
 from __future__ import annotations
 
 import math
-import queue
 import struct
 
 import numpy as np
@@ -22,7 +21,6 @@ from jasper.usbsink.audio_bridge import (
     AudioBridge,
     BLOCK_FRAMES,
     CHANNELS,
-    SAMPLE_RATE,
 )
 
 

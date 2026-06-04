@@ -6,7 +6,6 @@ no-op so tests don't shell out.
 """
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -130,7 +129,7 @@ def test_skip_write_when_unchanged(tmp_path, monkeypatch):
         rendered_path=str(rendered),
     )
     original = rendered.read_text()
-    mtime_before = rendered.stat().st_mtime_ns
+    rendered.stat().st_mtime_ns
 
     # Track reload calls during second invocation.
     reload_calls = []

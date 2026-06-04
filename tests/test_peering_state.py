@@ -122,7 +122,7 @@ def test_heartbeat_timeout_clears_suppression():
     m = _make("alice")
     m.handle(PeerClaim(epoch="ep1", peer_id="bob", now=10.0))
     # No heartbeats arrive — timer fires after timeout.
-    actions = m.handle(TimerFired(timer_id=TIMER_HEARTBEAT_TIMEOUT, now=12.1))
+    m.handle(TimerFired(timer_id=TIMER_HEARTBEAT_TIMEOUT, now=12.1))
     assert m.state is PeerState.IDLE
 
 

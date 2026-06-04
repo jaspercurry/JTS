@@ -50,7 +50,6 @@ async def bus_arrivals(
     from this, that's a real bug. (vs. subway where we use the same
     Subway Now source as the daemon, and the bug would be in our
     adapter or transport layer, not the data source itself.)"""
-    import time as _time
     from datetime import datetime
     owns = http is None
     client = http or httpx.AsyncClient(timeout=5.0)

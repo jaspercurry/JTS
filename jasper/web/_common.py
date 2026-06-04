@@ -68,6 +68,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from ..http_security import mutating_request_allowed
 from ..voice.provider_state import read_active_provider
 
 logger = logging.getLogger(__name__)
@@ -1005,11 +1006,47 @@ def _read_or_mint_csrf(
     return secrets.token_urlsafe(_CSRF_TOKEN_BYTES), True
 
 
+def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
+    """Return True iff a state-changing request's Host/Origin is allowed.
+
+    Mirrors jasper-control's `_guard_mutating_request` (server.py): a
+    browser DNS-rebinding / cross-site shape can reach the nginx-fronted
+    wizards exactly as it can reach the control daemon, so the wizards
+    must apply the same allowlist before mutating WiFi PSKs, HA tokens,
+    API keys, or triggering reboots. Reuses
+    `jasper.http_security.mutating_request_allowed` — the same allowlist
+    the control daemon already runs in production (configured hostname,
+    `.local`, RFC1918/ULA/loopback IPs, missing Host for non-browser
+    clients). Folded into `verify_csrf` so every wizard inherits it at
+    its single mutating chokepoint without per-page edits.
+
+    Returns False (so the caller rejects with 403) on a disallowed
+    Host/Origin and logs one structured `event=http.reject` line."""
+    ok, reason = mutating_request_allowed(handler.headers)
+    if not ok:
+        logger.warning(
+            "event=http.reject reason=%s host=%r origin=%r path=%s",
+            reason,
+            handler.headers.get("Host"),
+            handler.headers.get("Origin"),
+            getattr(handler, "path", "?"),
+        )
+    return ok
+
+
 def verify_csrf(
     handler: BaseHTTPRequestHandler, form: dict[str, str] | None = None,
 ) -> bool:
-    """Return True iff the request carries a CSRF token that matches the
-    cookie. `secrets.compare_digest` for constant-time comparison.
+    """Return True iff the request is allowed to mutate: its Host/Origin
+    passes the management allowlist AND it carries a CSRF token that
+    matches the cookie. `secrets.compare_digest` for constant-time
+    comparison.
+
+    The Host/Origin check (`guard_mutating_host`) runs first so a
+    DNS-rebinding / cross-site browser request is rejected before any
+    state change — mirroring jasper-control's `_guard_mutating_request`.
+    Both must pass; a failure of either returns False, and the wizard's
+    POST handler turns that into a 403 via `reject_csrf`.
 
     Accepts the token via either:
       * `form[CSRF_FORM_FIELD]` — the form-rendered case
@@ -1021,6 +1058,8 @@ def verify_csrf(
     Use at the top of every state-changing POST handler. Pair with
     `csrf_field_html()` on form-render sites and `csrf_meta_html()` on
     pages whose JS calls fetch."""
+    if not guard_mutating_host(handler):
+        return False
     cookies = _read_request_cookies(handler)
     cookie_token = cookies.get(CSRF_COOKIE_NAME, "")
     candidates: list[str] = []
