@@ -417,3 +417,44 @@ async def test_session_snapshot_shape(tmp_path: Path):
     assert snap["peqs"] == []
     assert snap["sweep"] is None
     assert snap["config_path"] is None
+
+
+# --- Bug 3 regression: stranded-capture watchdog ---------------------------
+# A sweep leaves the session in awaiting_capture waiting for the browser to
+# upload. If that upload never arrives the session wedged forever and blocked
+# every future /start (observed on hardware 2026-06-04, session 07c57fbe8d12).
+import asyncio  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_awaiting_capture_times_out_to_failed(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.prepare_and_play_sweep(fake_play_sweep)
+    assert sess.state == SessionState.AWAITING_CAPTURE
+    await asyncio.sleep(0.25)
+    assert sess.state == SessionState.FAILED
+    assert "capture" in (sess.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_capture_upload_cancels_the_timeout(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.prepare_and_play_sweep(fake_play_sweep)
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    cap_path = sess.capture_path_for_position(0)
+    cap_path.parent.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(cap_path, sweep_signal.astype(np.float32), sr)
+    await sess.on_capture_uploaded(cap_path)
+    # Past the timeout window: the upload must have cancelled the watchdog.
+    await asyncio.sleep(0.2)
+    assert sess.state != SessionState.FAILED

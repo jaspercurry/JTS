@@ -62,6 +62,7 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
   var applyBtn = document.getElementById('apply-correction');
   var verifyBtn = document.getElementById('verify-correction');
   var resetBtn = document.getElementById('reset-correction');
+  var cancelMeasureBtn = document.getElementById('cancel-measurement');
   var positionsSelect = document.getElementById('positions-select');
   var repeatMainPosition = document.getElementById('repeat-main-position');
   var targetSelect = document.getElementById('target-select');
@@ -104,6 +105,7 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
   var selectedCalibrationId = null;
   var selectedCalibrationMeta = null;
   var selectedInputDevice = null;
+  var wakeLockSentinel = null;
 
   // For the three audio-processing flags (echoCancellation,
   // noiseSuppression, autoGainControl), iOS Safari often returns
@@ -554,9 +556,20 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
     startBtn.textContent = 'Capturing (mic level live below)';
 
+    await acquireWakeLock();
+  }
+
+  // iOS auto-releases the screen wake lock when the tab is backgrounded, which
+  // stalls the poll loop and strands the sweep waiting for a capture upload.
+  // Store the sentinel and re-acquire on visibilitychange so a glance away
+  // mid-measurement doesn't wedge the session.
+  async function acquireWakeLock() {
     try {
       if ('wakeLock' in navigator) {
-        await navigator.wakeLock.request('screen');
+        wakeLockSentinel = await navigator.wakeLock.request('screen');
+        wakeLockSentinel.addEventListener('release', function () {
+          wakeLockSentinel = null;
+        });
       }
     } catch (e) {
       console.warn('wakeLock not granted', e);
@@ -1790,6 +1803,8 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     verifyBtn.disabled = false;
     resetBtn.classList.add('hidden');
     resetBtn.disabled = false;
+    cancelMeasureBtn.classList.add('hidden');
+    cancelMeasureBtn.disabled = false;
     autolevelLockBtn.classList.add('hidden');
     autolevelLockBtn.disabled = false;
     autolevelCancelBtn.classList.add('hidden');
@@ -1799,6 +1814,11 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     var idleStates = ['idle', 'ready', 'applied', 'verified', 'failed'];
     var sessionIdle = idleStates.indexOf(state) !== -1;
     var autolevelRamping = autolevelStatus === 'ramping';
+    // An in-flight measurement (anything not idle and not the autolevel ramp,
+    // which has its own Cancel) can be escaped via the always-visible Cancel.
+    if (!sessionIdle && !autolevelRamping) {
+      cancelMeasureBtn.classList.remove('hidden');
+    }
     runBtn.disabled = !sessionIdle || autolevelRamping;
     autolevelBtn.disabled = !sessionIdle || autolevelRamping;
     // Per-state additions:
@@ -2014,6 +2034,28 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     refreshCurrentCorrection();
   }
 
+  // Always-available escape from an in-flight measurement. POSTs the same
+  // /reset that rolls CamillaDSP back to flat and forces the session to IDLE,
+  // so a stranded awaiting_capture (or any active state) is recoverable from
+  // the UI without SSH. The server-side watchdog also auto-recovers after
+  // ~2 min; this is the instant manual path.
+  async function cancelMeasurement() {
+    if (!(await jtsConfirm('Cancel this measurement and reset to flat?', {danger: true}))) {
+      return;
+    }
+    cancelMeasureBtn.disabled = true;
+    setStateBadge('idle', 'cancelling…');
+    try {
+      await postJson('reset', {});
+    } catch (e) {
+      setStateBadge('failed', e.message);
+    } finally {
+      cancelMeasureBtn.disabled = false;
+    }
+    pollState();
+    refreshCurrentCorrection();
+  }
+
   // iOS Safari only surfaces real device labels — and fully enumerates USB
   // audio devices — after a getUserMedia grant. Open a throwaway stream,
   // stop it immediately, then enumerate so the USB measurement mic appears
@@ -2057,6 +2099,14 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
   applyBtn.addEventListener('click', function () { applyCorrection(); });
   verifyBtn.addEventListener('click', function () { startVerify(); });
   resetBtn.addEventListener('click', function () { resetCorrection(); });
+  cancelMeasureBtn.addEventListener('click', function () { cancelMeasurement(); });
+  document.addEventListener('visibilitychange', function () {
+    // Re-acquire the wake lock the OS dropped while we were backgrounded,
+    // but only while a capture is actually live.
+    if (!document.hidden && micStream && !wakeLockSentinel) {
+      acquireWakeLock();
+    }
+  });
   autolevelBtn.addEventListener('click', function () { startAutolevel(); });
   autolevelCancelBtn.addEventListener('click', function () { cancelAutolevel(); });
   currentCorrectionResetBtn.addEventListener('click', function () { resetFromBanner(); });
