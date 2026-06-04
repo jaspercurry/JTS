@@ -383,7 +383,17 @@ mod tests {
 
         core.step();
 
-        assert_eq!(core.ledger().segment(segment).gain, -6.0);
+        // The ledger now records the calibrated gain from `decide_gain`, not a
+        // raw `clamp_tts_gain_db(20.0)`. With no observed content and no profile,
+        // the decision falls back to the silence target: baseline_lufs=-41.0,
+        // target_lufs=-41.0+1.5=-39.5, fallback source_lufs=-24.0, so
+        // requested_gain=-39.5-(-24.0)=-15.5; the peak cap (-3.0-(-6.0)=+3.0) and
+        // the -6.0 dB clamp leave -15.5 unchanged. Quieter than the old -6.0.
+        assert_eq!(core.ledger().segment(segment).gain, -15.5);
+        // The DAC sample is unchanged: `enqueue_assistant_segment` scales the
+        // audio via `append_assistant_audio(id, gain=20.0, ..)`, i.e.
+        // `clamp_tts_gain_db(20.0)=-6.0` -> 10000*10^(-6/20)=5012. The calibrated
+        // ledger gain governs only telemetry/playout accounting, not this scale.
         assert_eq!(core.dac().periods[0], stereo(5012, 2));
     }
 
@@ -521,7 +531,18 @@ mod tests {
             }),
         );
 
-        assert_eq!(core.ledger().segment(segment).gain, -12.0);
+        // `resume_content_meter()` cleared the prepared context, so the prepared
+        // silence target (-20.0) is discarded and the decision falls back to the
+        // default silence target. With no observed content: baseline_lufs=-41.0,
+        // target_lufs=-41.0+1.5=-39.5; the profile supplies source_lufs=-30.0, so
+        // requested_gain=-39.5-(-30.0)=-9.5; the peak cap (-3.0-(-18.0)=+15.0) and
+        // the -6.0 dB clamp leave -9.5 unchanged. The -12.0 fallback gain is
+        // ignored once a profile yields a calibrated target (see the passing
+        // `calibrated_profile_targets_baseline_plus_offset`). Had the context not
+        // been cleared, baseline=-20.0 would drive the gain to the -6.0 clamp;
+        // clearing it makes the result quieter (-9.5), which is the safe outcome
+        // this test guards.
+        assert_eq!(core.ledger().segment(segment).gain, -9.5);
     }
 
     #[test]
