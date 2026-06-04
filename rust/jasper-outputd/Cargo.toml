@@ -11,7 +11,7 @@ rust-version = "1.75"
 [dependencies]
 # Same ALSA wrapper used by jasper-fanin. outputd's ALSA backend reads
 # Camilla's post-DSP loopback lane and writes the final DAC directly.
-alsa = "0.9"
+alsa = "0.11"
 
 # Top-level error context for daemon startup and I/O failures.
 anyhow = "1"
