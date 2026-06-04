@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import re
 import time
 import urllib.error
@@ -27,6 +28,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_CALIBRATION_DIR = Path("/var/lib/jasper/correction/calibration_mics")
@@ -409,13 +412,33 @@ def _looks_like_calibration(text: str) -> bool:
     return True
 
 
+_CALIBRATION_SUFFIXES = (".txt", ".cal", ".frd", ".csv", ".omm")
+
+
 def _extract_links(base_url: str, text: str) -> list[str]:
     links: list[str] = []
     for raw in re.findall(r"""href=["']([^"']+)["']""", text, flags=re.I):
         href = html.unescape(raw)
-        lower = href.lower().split("?", 1)[0]
-        if lower.endswith((".txt", ".cal", ".frd", ".csv", ".omm")):
-            links.append(urllib.parse.urljoin(base_url, href))
+        resolved = urllib.parse.urljoin(base_url, href)
+        # Only ever follow http(s). urljoin lets an absolute href override
+        # the scheme, so without this guard a `file://…txt` or
+        # `http://127.0.0.1…txt` link in the (external, semi-trusted) vendor
+        # response would be fetched by the Pi's web process — an SSRF/LFI
+        # sink. A cross-host CDN file is still https, so this does not
+        # constrain legitimate vendor hosting.
+        if urllib.parse.urlsplit(resolved).scheme not in ("http", "https"):
+            continue
+        split = urllib.parse.urlsplit(href.lower())
+        # The calibration filename can live in the URL path (…/abc.txt) or,
+        # as Dayton's tool does, only in a query parameter
+        # (…/Download?CalibrationFileName=abc.txt&CalibrationFilePath=…txt).
+        # Checking the path alone silently drops Dayton's real download link
+        # and the whole serial lookup fails with "did not return a parseable
+        # calibration file".
+        candidates = [split.path]
+        candidates.extend(value for _key, value in urllib.parse.parse_qsl(split.query))
+        if any(c.endswith(_CALIBRATION_SUFFIXES) for c in candidates):
+            links.append(resolved)
     return links
 
 
@@ -568,29 +591,49 @@ def fetch_vendor_calibration(
     spec = SUPPORTED_MODELS[model_key]
     provider = spec["provider"]
     vendor_model = spec["vendor_model"]
-    if provider == "dayton_audio":
-        text, source = fetch_dayton_calibration_text(
-            vendor_model=vendor_model,
-            serial=serial,
-            opener=opener,
-        )
-    elif provider == "minidsp":
-        text, source = fetch_minidsp_calibration_text(
-            vendor_model=vendor_model,
+    # serial_hash, never the raw serial — the serial identifies a user's
+    # hardware and is treated as private metadata everywhere else.
+    log_id = f"provider={provider} model={model_key} serial_hash={serial_hash(serial)}"
+    try:
+        if provider == "dayton_audio":
+            text, source = fetch_dayton_calibration_text(
+                vendor_model=vendor_model,
+                serial=serial,
+                opener=opener,
+            )
+        elif provider == "minidsp":
+            text, source = fetch_minidsp_calibration_text(
+                vendor_model=vendor_model,
+                serial=serial,
+                orientation=orientation,
+                opener=opener,
+            )
+        else:
+            raise ValueError(f"no fetcher for provider: {provider}")
+        record = store_calibration(
+            text=text,
+            provider=provider,
+            model=model_key,
+            label=spec["label"],
+            source=source,
             serial=serial,
             orientation=orientation,
-            opener=opener,
+            sign_convention="correction",
+            root=root,
         )
-    else:
-        raise ValueError(f"no fetcher for provider: {provider}")
-    return store_calibration(
-        text=text,
-        provider=provider,
-        model=model_key,
-        label=spec["label"],
-        source=source,
-        serial=serial,
-        orientation=orientation,
-        sign_convention="correction",
-        root=root,
+    except CalibrationNotFoundError:
+        logger.info("event=correction_calibration_lookup %s outcome=not_found", log_id)
+        raise
+    except CalibrationUpstreamError as e:
+        logger.warning(
+            "event=correction_calibration_lookup %s outcome=upstream_error detail=%r",
+            log_id,
+            str(e),
+        )
+        raise
+    logger.info(
+        "event=correction_calibration_lookup %s outcome=ok point_count=%d",
+        log_id,
+        record.point_count,
     )
+    return record

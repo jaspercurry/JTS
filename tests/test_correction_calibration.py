@@ -102,6 +102,70 @@ def test_dayton_fetch_posts_form_and_follows_calibration_link():
     assert len(calls) == 2
 
 
+def test_dayton_fetch_follows_query_param_download_link():
+    """Regression: Dayton's tool returns the calibration filename only in a
+    query parameter (…/Download?CalibrationFileName=cmm31555.txt&…), not in
+    the URL path. _extract_links must detect that; otherwise every real
+    Dayton serial lookup fails with "did not return a parseable calibration
+    file" even though the form found the file. Reproduces the cmm31555 iMM-6C
+    failure observed on hardware 2026-06-04.
+    """
+    calls: list[urllib.request.Request | str] = []
+
+    def fake_open(req, timeout):
+        calls.append(req)
+        if isinstance(req, urllib.request.Request):
+            data = urllib.parse.parse_qs(req.data.decode())
+            assert data["Microphone"] == ["iMM-6"]
+            assert data["SerialNumber"] == ["cmm31555"]
+            # Exact anchor shape returned by Dayton's live tool: filename is
+            # in the query string, path is the extension-less Download route.
+            return (
+                b'<html><a href="/MicrophoneCalibrationTool/Download?'
+                b"CalibrationFileName=cmm31555.txt&amp;"
+                b"CalibrationFilePath=~%2Fcontent%2Fdata%2F"
+                b"MicrophoneCalibrations%2FiMM-6%2Fcmm31555.txt&amp;"
+                b"CalibrationFileReady=True&amp;Microphone=iMM-6&amp;"
+                b'SerialNumber=cmm31555">cmm31555.txt</a></html>'
+            )
+        # The followed link must carry the original query params intact.
+        assert "CalibrationFileName=cmm31555.txt" in req
+        return b"*1000Hz\t-38.2\n\n20.00\t-0.1\n1000\t0.0\n20000\t-2.5\n"
+
+    text, source = calibration.fetch_dayton_calibration_text(
+        vendor_model="iMM-6",
+        serial="cmm31555",
+        opener=fake_open,
+    )
+    assert "20.00" in text
+    assert "Download" in source
+    assert len(calls) == 2
+
+
+def test_dayton_fetch_never_follows_non_http_links():
+    """SSRF/LFI guard: a non-http(s) link in the (external) vendor response
+    must never be fetched. urljoin lets an absolute href override the scheme,
+    so without the guard a file:// link would be opened by the Pi's web
+    process.
+    """
+    followed: list[str] = []
+
+    def fake_open(req, timeout):
+        if isinstance(req, urllib.request.Request):
+            # Only link is a file:// URL whose path ends in a cal suffix.
+            return b'<html><a href="file:///etc/passwd.txt">x</a></html>'
+        followed.append(req)
+        return b"20 -1\n100 0\n1000 1\n"
+
+    with pytest.raises(calibration.CalibrationUpstreamError):
+        calibration.fetch_dayton_calibration_text(
+            vendor_model="iMM-6",
+            serial="cmm31555",
+            opener=fake_open,
+        )
+    assert followed == []  # the file:// link was never opened
+
+
 def test_minidsp_fetch_uses_serial_url_candidates():
     seen: list[str] = []
 
