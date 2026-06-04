@@ -196,6 +196,22 @@ async def test_goaway_mid_turn_with_unparseable_time_reconnects_immediately():
     assert conn._reconnect_event.is_set()
 
 
+def test_goaway_defer_threshold_covers_hard_recording_cap():
+    """Drift guard for GOAWAY_DEFER_MIN_TIME_LEFT_SEC.
+
+    Deferring a mid-turn GoAway is only safe if the deferred window can
+    actually contain a full turn — i.e. the threshold must be >= the
+    longest a turn can run, which is the daemon's hard recording cap.
+    If a future change raises voice_daemon.HARD_RECORDING_CAP_SEC above
+    the threshold, deferral would routinely overrun `time_left`; catch
+    that here rather than discovering it on a live 15-min session. (The
+    overrun is itself fail-safe — the WS drops and we reconnect — but the
+    threshold should still reflect the real bound it claims to cover.)"""
+    from jasper.voice_daemon import HARD_RECORDING_CAP_SEC
+
+    assert GOAWAY_DEFER_MIN_TIME_LEFT_SEC >= HARD_RECORDING_CAP_SEC
+
+
 @pytest.mark.asyncio
 async def test_gemini_usage_is_per_turn_delta_not_cumulative():
     """Gemini's usage_metadata is cumulative for the WebSocket's lifetime.
