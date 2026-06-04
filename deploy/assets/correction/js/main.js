@@ -185,6 +185,28 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     }
   }
 
+  // Remember the serial that produced a successful calibration, keyed by mic
+  // model, in this browser only. Raw serials are kept off the Pi by design
+  // (the server stores serial_hash, not the serial), so the device the user
+  // measures from is the right home for the convenience auto-fill.
+  var SAVED_SERIALS_KEY = 'jts.correction.serials';
+  function loadSavedSerial(model) {
+    try {
+      var map = JSON.parse(localStorage.getItem(SAVED_SERIALS_KEY) || '{}');
+      return (model && map[model]) || '';
+    } catch (e) {
+      return '';  // localStorage blocked (private mode) — non-fatal
+    }
+  }
+  function saveSerial(model, serial) {
+    if (!model || model === 'other' || !serial) return;
+    try {
+      var map = JSON.parse(localStorage.getItem(SAVED_SERIALS_KEY) || '{}');
+      map[model] = serial;
+      localStorage.setItem(SAVED_SERIALS_KEY, JSON.stringify(map));
+    } catch (e) { /* non-fatal */ }
+  }
+
   function updateMicCalibrationRows() {
     var model = micModelSelect.value;
     selectedCalibrationId = null;
@@ -207,6 +229,15 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
       uploadRow.classList.remove('hidden');
       calibrationStatus.textContent =
         'Enter the mic serial so JTS can fetch the calibration file. Upload is available as a fallback.';
+      // If we already know this mic's serial from a prior successful fetch,
+      // fill it in and fetch automatically so the user doesn't re-type or tap
+      // Fetch. Only when the field is empty; fetchCalibration fails soft if the
+      // vendor is unreachable, leaving the serial filled for a manual retry.
+      var saved = loadSavedSerial(model);
+      if (saved && !micSerialInput.value.trim()) {
+        micSerialInput.value = saved;
+        fetchCalibration();
+      }
     }
   }
 
@@ -265,6 +296,7 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
         orientation: micOrientationSelect.value || 'unknown'
       });
       showCalibrationLoaded(payload);
+      if (selectedCalibrationId) saveSerial(model, serial);
     } catch (e) {
       calibrationStatus.className = 'mic-status bad';
       calibrationStatus.textContent =
