@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Literal
 
 from rapidfuzz import fuzz
 
@@ -480,7 +481,9 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
 
     @tool()
     async def spotify_play(
-        query: str, kind: str = "auto", shuffle: bool = False
+        query: str,
+        kind: Literal["auto", "artist", "track", "album", "playlist"] = "auto",
+        shuffle: bool = False,
     ) -> dict:
         """Search Spotify and start playback for the active account.
 

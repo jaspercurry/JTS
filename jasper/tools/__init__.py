@@ -193,8 +193,25 @@ def _annotation_to_schema(annotation: Any) -> dict[str, Any]:
         args = [a for a in typing.get_args(annotation) if a is not type(None)]
         if len(args) == 1:
             return _annotation_to_schema(args[0])
+    if origin is typing.Literal:
+        members = typing.get_args(annotation)
+        # Enum is only meaningful for a homogeneous string literal — that's
+        # the only kind any current tool declares. Mixed-type literals fall
+        # back to a bare string schema rather than emitting a heterogeneous
+        # enum the providers can't validate.
+        if members and all(isinstance(m, str) for m in members):
+            return {"type": "string", "enum": list(members)}
+        return {"type": "string"}
+    if origin in (list, tuple):
+        item_args = typing.get_args(annotation)
+        if item_args:
+            return {"type": "array", "items": _annotation_to_schema(item_args[0])}
+        return {"type": "array"}
     if annotation in _PY_TO_JSON:
         return {"type": _PY_TO_JSON[annotation]}
     if isinstance(annotation, type) and issubclass(annotation, str):
         return {"type": "string"}
+    # dict and any other unrecognized annotation stay a bare string — no
+    # current tool declares a structured dict param, so object-schema
+    # generation would be speculative.
     return {"type": "string"}

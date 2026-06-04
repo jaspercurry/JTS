@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import typing
+
 from jasper.tools import ToolRegistry, tool
+from jasper.tools import _annotation_to_schema
 
 
 def test_registers_and_builds_schema_from_type_hints():
@@ -175,3 +178,104 @@ def test_get_returns_tool_even_if_invisible_to_active_provider():
     reg = ToolRegistry()
     reg.register(restricted)
     assert reg.get("restricted") is not None
+
+
+# ---- Enriched schema generation (Literal enums + list items) --------------
+
+
+def test_literal_str_annotation_yields_enum():
+    """A `Literal['a', 'b']` param emits a JSON-Schema string with an
+    `enum` constraint so the model is bounded to the valid values —
+    previously it silently collapsed to a bare `{"type": "string"}`."""
+    assert _annotation_to_schema(typing.Literal["a", "b"]) == {
+        "type": "string",
+        "enum": ["a", "b"],
+    }
+
+
+def test_literal_mixed_types_falls_back_to_string():
+    """A heterogeneous literal can't be expressed as a string enum the
+    providers will validate, so it degrades to a bare string rather than
+    emitting a mixed-type enum."""
+    assert _annotation_to_schema(typing.Literal["a", 1]) == {"type": "string"}
+
+
+def test_list_annotation_yields_array_with_string_items():
+    """`list[str]` emits an array schema whose items carry the element
+    type — previously collapsed to a bare string."""
+    assert _annotation_to_schema(list[str]) == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+
+
+def test_list_of_int_items_carry_element_type():
+    assert _annotation_to_schema(list[int]) == {
+        "type": "array",
+        "items": {"type": "integer"},
+    }
+
+
+def test_tuple_homogeneous_yields_array():
+    assert _annotation_to_schema(tuple[str, ...]) == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+
+
+def test_dict_annotation_stays_string():
+    """No current tool declares a structured dict param, so dict stays a
+    bare string rather than generating a speculative object schema."""
+    assert _annotation_to_schema(dict) == {"type": "string"}
+
+
+def test_existing_scalar_annotations_unaffected():
+    """Strictly additive: str/int/float/bool still serialize as before."""
+    assert _annotation_to_schema(str) == {"type": "string"}
+    assert _annotation_to_schema(int) == {"type": "integer"}
+    assert _annotation_to_schema(float) == {"type": "number"}
+    assert _annotation_to_schema(bool) == {"type": "boolean"}
+
+
+def test_literal_enum_rides_through_both_serializers():
+    """The enriched schema must pass through both Gemini and OpenAI
+    serializers unchanged — `enum` is standard JSON Schema and rides
+    along with `parameters`. Mirrors spotify_play's `kind` param shape."""
+    @tool()
+    def play(query: str, kind: typing.Literal["artist", "track", "album",
+                                               "playlist", "auto"] = "auto") -> dict:
+        """Search and play."""
+        return {}
+
+    reg = ToolRegistry()
+    reg.register(play)
+
+    expected_kind = {
+        "type": "string",
+        "enum": ["artist", "track", "album", "playlist", "auto"],
+    }
+
+    gemini = reg.function_declarations()[0]
+    assert gemini["parameters"]["properties"]["kind"] == expected_kind
+
+    openai = reg.openai_tools()[0]
+    assert openai["parameters"]["properties"]["kind"] == expected_kind
+
+
+def test_real_spotify_play_kind_serializes_without_error():
+    """Smoke check on the shipped spotify_play tool: its serialized
+    schema must always include a `kind` property. (The tool currently
+    annotates `kind` as a bare `str`, so no enum is emitted yet — this
+    test guards that enrichment stays backward-compatible and the tool
+    keeps serializing cleanly.)"""
+    from jasper.tools.spotify import make_spotify_tools
+
+    reg = ToolRegistry()
+    # Schema serialization only inspects signatures/annotations, so the
+    # router/renderer collaborators are never invoked here — Nones suffice.
+    for fn in make_spotify_tools(None, None, "JTS"):
+        reg.register(fn)
+
+    play = reg.get("spotify_play")
+    assert play is not None
+    assert "kind" in play.parameters["properties"]
