@@ -365,7 +365,11 @@ This is the **only** supported deploy path. It does, in order:
    Passwordless sudo (`sudo -n true`) is the unattended path; if the
    deploy is attached to an interactive terminal, it can fall back to
    `ssh -tt ... sudo` prompts without storing the password. Do not add
-   broad sudoers rules from the installer.
+   broad sudoers rules from the installer. **If a deploy fails the
+   `sudo -n` preflight on a Pi, that Pi just needs passwordless sudo
+   enabled once — the recommended posture and the exact one-liner are in
+   [BRINGUP.md](BRINGUP.md) "Phase 2.5 — Enable passwordless sudo". It is
+   per-Pi, so a working speaker and a freshly-imaged one can differ.**
 3. `rsync` to the remote user's `${HOME}/jts/` (for the default
    beginner path this is `pi@jts.local:/home/pi/jts/`; excludes `.git/`,
    `.venv/`, `captures/`, `wake-events/`, `*.egg-info`, etc.)
