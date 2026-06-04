@@ -56,13 +56,19 @@ INITIAL_CONNECT_BACKOFF_SCHEDULE = (0.0, 1.0, 2.0, 4.0, 8.0)
 # GoAway deferral threshold. When the server sends a GoAway mid-turn
 # (it fires near the ~15-min audio cap and can land while the user is
 # still mid-reply), we don't want to tear the session down and lose the
-# in-flight turn. If the GoAway's `time_left` comfortably exceeds a
-# typical turn, defer the reconnect until the turn is released (mirrors
-# the OpenAI proactive-watchdog deferral idiom). A turn is bounded by
-# the daemon's idle watchdog to ~12 s; 30 s gives ample margin for the
-# turn to finish before the server actually drops us. If `time_left` is
-# below this (or unparseable, or no turn is active), reconnect promptly
-# as before.
+# in-flight turn. If the GoAway's `time_left` is at least as long as the
+# longest a turn can run, defer the reconnect until the turn is released
+# (mirrors the OpenAI proactive-watchdog deferral idiom). A user turn is
+# bounded by the daemon's hard recording cap (HARD_RECORDING_CAP_SEC =
+# 30 s in voice_daemon) and usually ends sooner via the idle watchdog
+# (JASPER_IDLE_TIMEOUT_SEC, default 20 s), so a 30 s threshold lets a turn
+# run to completion inside the deferred window; a test pins
+# `threshold >= HARD_RECORDING_CAP_SEC` so a future cap bump can't
+# silently make deferral unsafe. Fail-safe either way: if `time_left` is
+# below this (or unparseable, or no turn is active) we reconnect promptly,
+# and if a deferred turn still overruns `time_left` the server just drops
+# the WS and the supervisor reconnects — the same outcome as reconnecting
+# now.
 GOAWAY_DEFER_MIN_TIME_LEFT_SEC = 30.0
 
 
