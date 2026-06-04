@@ -1,9 +1,25 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from jasper.config import Config, VoiceProviderNotConfigured
 from jasper.voice import catalog
+
+_ENV_EXAMPLE = Path(__file__).resolve().parent.parent / ".env.example"
+
+
+def _parse_env_example():
+    """Parse KEY=VALUE lines out of .env.example, ignoring comments/blanks."""
+    values: dict[str, str] = {}
+    for raw in _ENV_EXAMPLE.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    return values
 
 
 @pytest.fixture(autouse=True)
@@ -279,3 +295,17 @@ def test_active_voice_model_resolves_for_active_provider(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("JASPER_OPENAI_MODEL", "gpt-realtime-2")
     assert Config.from_env().active_voice_model == "gpt-realtime-2"
+
+
+def test_wake_threshold_default_matches_env_example(monkeypatch):
+    """install.sh seeds /etc/jasper/jasper.env from .env.example as the FIRST
+    EnvironmentFile, so a code default that diverges from .env.example means
+    production silently runs the .env.example value while code+docs claim the
+    code one. Guard the load-bearing wake threshold against that drift —
+    codify, don't memorise."""
+    for var in ["GEMINI_API_KEY", "JASPER_WAKE_THRESHOLD"]:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    env_value = float(_parse_env_example()["JASPER_WAKE_THRESHOLD"])
+    assert Config.from_env().wake_threshold == env_value

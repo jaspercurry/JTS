@@ -448,7 +448,7 @@ class Config:
             # asset, so dev/test runs without a seeded env file still
             # load something.
             wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
-            wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.5),
+            wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3),
             # JASPER_MIC_DEVICE is a sounddevice/PortAudio identifier, not
             # an ALSA pcm string — PortAudio rejects "plughw:" syntax.
             # Accepts an integer index (`sd.query_devices()`), or a
