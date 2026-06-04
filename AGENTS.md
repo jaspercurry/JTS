@@ -2712,11 +2712,8 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
 
 5. **What the CI gate covers — and does NOT.** It runs: hardware-free
    `pytest` (voice_eval is **excluded** — paid LLM suite, never CI), `ruff`,
-   the supply-chain provenance check, and (since this section landed) a
-   `cargo build --release --locked` of `rust/jasper-fanin` and
-   `rust/jasper-outputd` (running the crates' unit tests in CI is a pending
-   follow-up — adding the gate surfaced 3 stale loudness tests in
-   jasper-outputd; see the `rust` job comment in `.github/workflows/tests.yml`).
+   the supply-chain provenance check, and a `cargo build --release --locked`
+   plus `cargo test --locked` of `rust/jasper-fanin` and `rust/jasper-outputd`.
    It does **not** exercise real audio/mic/voice hardware or the Pi-side
    install — those still need a deploy + `jasper-doctor` / on-device check.
    "Green CI" means "safe to merge," not "validated on hardware."

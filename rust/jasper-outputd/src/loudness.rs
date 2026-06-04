@@ -389,7 +389,12 @@ mod tests {
             meter.push_interleaved(&stereo_sine(0.25, SAMPLE_RATE as usize));
         }
         let lufs = meter.short_lufs().unwrap();
-        assert!((-19.0..-15.0).contains(&lufs), "lufs={lufs}");
+        // A 0.25-amplitude sine is ~-15.05 dBFS RMS per channel; the 1 kHz
+        // K-weighting adds ~+0.7 dB, the BS.1770 channel sum of two identical
+        // channels adds +10*log10(2) = +3.01 dB, and the BS.1770 -0.691 dB
+        // absolute offset applies — landing at ~-12.03 LUFS
+        // (-15.05 + 0.70 + 3.01 - 0.69 = -12.03). Bracket that true value tightly.
+        assert!((-13.0..-11.0).contains(&lufs), "lufs={lufs}");
     }
 
     #[test]
