@@ -594,6 +594,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       subwoofer: 'Subwoofer'
     }[role] || role || 'Channel';
   }
+  function toneSummary(tone) {
+    var frequency = Number(tone.frequency_hz);
+    var level = Number(tone.level_dbfs);
+    var duration = Number(tone.duration_ms);
+    if (!isFinite(frequency) || !isFinite(level) || !isFinite(duration)) {
+      return 'unknown';
+    }
+    return Math.round(frequency) + ' Hz at ' + level.toFixed(1) + ' dBFS for ' +
+      Math.round(duration) + ' ms';
+  }
   function humanProtectionStatus(value) {
     return {
       not_required: 'not needed',
@@ -966,11 +976,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var disabled = !readiness || !readiness.preconditions_passed ||
       outputTopology.readinessPlaybackChecking;
     var attrs = 'data-group-id="' + escapeHtml(target.speaker_group_id || '') + '" ' +
-      'data-role="' + escapeHtml(target.role || '') + '"';
+      'data-role="' + escapeHtml(target.role || '') + '" ' +
+      'data-label="' + escapeHtml(target.label || '') + '"';
     var artifactLabel = outputTopology.readinessPlaybackChecking === 'artifact' ?
       'Verifying' : 'Verify artifact';
+    var roleLabel = humanRole(target.role || 'channel').toLowerCase();
     var playLabel = outputTopology.readinessPlaybackChecking === 'audio' ?
-      'Playing' : 'Play low-level test';
+      'Playing' : 'Play quiet ' + roleLabel + ' test';
     return '<div class="active-speaker-actions">' +
       '<button type="button" class="btn btn--ghost" data-act="play-output-readiness-tone" ' +
         attrs + ' data-audio="false"' + (disabled ? ' disabled' : '') + '>' +
@@ -988,6 +1000,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ['Playback status', playback.status || 'unknown'],
       ['Backend', playback.backend || 'none'],
       ['Target', target.label || target.driver_role || target.role || 'unknown'],
+      ['Tone', toneSummary(playback.tone || {})],
       ['Artifact', artifact.wav_basename || 'none'],
       ['Audio emitted', playback.audio_emitted ? 'Yes' : 'No']
     ];
@@ -2391,9 +2404,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function playOutputReadinessTone(button) {
     var groupId = button.getAttribute('data-group-id') || '';
     var role = button.getAttribute('data-role') || '';
+    var label = button.getAttribute('data-label') || (groupId + ' ' + role);
     var audio = button.getAttribute('data-audio') === 'true';
     if (audio && !await jtsConfirm(
-      'Play a short low-level channel test? Keep the physical Stop control available and stop immediately if anything sounds wrong.',
+      'Play one short quiet ' + humanRole(role).toLowerCase() + ' test on "' +
+        label + '"? This first audible slice is limited to woofer, mid, and subwoofer targets; horn/tweeter playback remains blocked.',
       {danger: true}
     )) {
       return;
@@ -2431,7 +2446,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
-      status(audio ? 'Played low-level channel test.' : 'Verified channel test artifact. No sound was played.');
+      status(audio ? 'Played quiet channel test.' : 'Verified channel test artifact. No sound was played.');
     } catch (e) {
       outputTopology.readinessPlaybackChecking = '';
       outputTopology.readinessError = e.message;

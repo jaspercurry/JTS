@@ -53,10 +53,14 @@
 > `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
 > `JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`. Even then, the audible path is
 > short, clamped, topology-readiness-gated, protected-startup-load-gated, and
-> non-tweeter only in this slice. The backend also enforces its own artifact
-> envelope (48 kHz max, 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps
-> a small rolling set of generated artifacts so `/var/lib/jasper` cannot grow
-> without bound during repeated checks.
+> limited to woofer, mid, and subwoofer roles in this slice. The shared
+> `woofer_mid_low_level_v1` policy is recorded in readiness reports, tone
+> plans, playback results, and generated artifact metadata; tweeter/
+> compression-driver and unlisted roles stay blocked even if the lab backend
+> is enabled. The backend also enforces its own artifact envelope (48 kHz max,
+> 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps a small rolling set of
+> generated artifacts so `/var/lib/jasper` cannot grow without bound during
+> repeated checks.
 > `jasper.active_speaker.readiness` now provides the read-only
 > `/sound/active-speaker/playback-readiness` gate for one saved topology
 > target. It combines safe-session state, output topology, channel
@@ -65,8 +69,9 @@
 > availability, and active tone backend status. By default, preconditions can
 > pass while `playback_allowed` remains false; only explicit lab backend
 > enablement plus a loaded/current protected startup config can turn it true
-> for non-tweeter targets. If CamillaDSP is no longer running the loaded
-> startup config path, readiness blocks before the playback backend is reached.
+> for woofer, mid, and subwoofer topology targets. If CamillaDSP is no longer
+> running the loaded startup config path, readiness blocks before the playback
+> backend is reached.
 > `jasper.active_speaker.staging` now provides the first build-specific
 > protected startup staging slice. The default preset is
 > `jasper/active_speaker/presets/epique_e150he44_eminence_f110m8_safe_v1.json`
@@ -600,14 +605,14 @@ calibration-level bounds, protected startup-load state, Stop availability, and
 tone-backend status. It still emits no sound; it returns `preconditions_passed`
 separately from
 `playback_allowed` so artifact verification can proceed while audible playback
-stays disabled. `playback_allowed` can become true only for non-tweeter targets
-when the explicit lab `aplay` backend is enabled and the protected startup DSP
-state says the loaded config is still the current CamillaDSP config with a
-rollback anchor. The playback backend requires the tone plan to carry that
-loaded-startup proof before allowing `aplay`; the readiness route remains the
-layer that reads live startup/CamillaDSP state. The probe still does not
-perform physical channel verification or generate hardware-probe-backed
-path-safety evidence by itself.
+stays disabled. `playback_allowed` can become true only for woofer, mid, or
+subwoofer topology targets when the explicit lab `aplay` backend is enabled and
+the protected startup DSP state says the loaded config is still the current
+CamillaDSP config with a rollback anchor. The playback backend requires the
+same role policy and loaded-startup proof before allowing `aplay`; the
+readiness route remains the layer that reads live startup/CamillaDSP state. The
+probe still does not perform physical channel verification or generate
+hardware-probe-backed path-safety evidence by itself.
 
 `jasper.active_speaker.safe_playback` is the first no-audio session substrate
 for that future work. It writes
@@ -770,15 +775,16 @@ Updated execution plan:
    Expanded with `jasper.active_speaker.playback`, an artifact-first backend
    seam that renders bounded logical-output WAV artifacts and, only with
    explicit lab env enablement, can run the generated artifact through `aplay`
-   for non-tweeter topology targets.
+   for woofer, mid, and subwoofer topology targets only.
    Expanded with `jasper.active_speaker.readiness`, a read-only
    playback-readiness gate that evaluates one requested output target across
    safe-session, output topology, channel identity, tweeter protection,
    clock-domain, active-config/path safety, calibration-level, Stop evidence,
    and tone-backend status. It is the contract an audible backend must trust
    before attempting playback. Default installs still return
-   `playback_allowed: false`; the lab `aplay` backend can make non-tweeter
-   targets eligible.
+   `playback_allowed: false`; the lab `aplay` backend can make woofer, mid, and
+   subwoofer targets eligible only after protected startup load evidence is
+   current.
 5. **Consumer W0 slice**: prototype phone-as-mic raw PCM WebSocket
    capture, calibration blocking, browser processing sanity checks,
    and resumable server-side session state.
@@ -896,4 +902,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-04
+Last verified: 2026-06-05

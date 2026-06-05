@@ -240,10 +240,13 @@ separately from
 and can verify artifacts only; explicit lab enablement
 (`JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
 `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
-`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`) can make non-tweeter saved topology
-targets eligible for a short low-level audible test only after the protected
-startup DSP is loaded, current, and rollbackable. Tweeter/compression-driver
-audio remains disabled in this slice even with the lab backend enabled.
+`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`) can make saved woofer, mid, and
+subwoofer topology targets eligible for a short quiet audible test only after
+the protected startup DSP is loaded, current, and rollbackable. The UI labels
+that action as a quiet role-specific test, confirms the selected target before
+the POST, and records the shared `woofer_mid_low_level_v1` policy in the
+returned evidence. Tweeter/compression-driver and unlisted-role audio remains
+disabled in this slice even with the lab backend enabled.
 For Jasper's immediate mono 2-way build, the same row can now record
 compression-driver protection evidence through
 `/sound/active-speaker/channel-protection`, and the card can **Stage protected
@@ -272,10 +275,9 @@ The active-speaker runtime substrate starts in
 `jasper.active_speaker`, the physical topology substrate starts in
 `jasper.output_topology`, and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
-The next `/sound/` slice should resolve the first-load rollback strategy for
-software-guarded compression-driver bring-up, then move to the first
-lab-gated, very-low-level woofer/mid channel-test path on hardware and a richer
-measurement loop around the microphone before any horn output is enabled.
+The next `/sound/` slice should exercise the lab-gated quiet woofer/mid path on
+hardware, then add the microphone-observed level loop before any horn output is
+enabled.
 
 ## Files
 
@@ -602,4 +604,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-04
+Last verified: 2026-06-05

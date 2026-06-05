@@ -135,6 +135,12 @@ def test_playback_readiness_allows_non_tweeter_when_audio_backend_enabled() -> N
     assert report["would_play"] is True
     assert report["tone_playback_implemented"] is True
     assert report["tone_backend"]["test_pcm"] == "hw:Active"
+    assert report["audible_test"] == {
+        "policy_version": "woofer_mid_low_level_v1",
+        "allowed_roles": ["mid", "subwoofer", "woofer"],
+        "target_role": "woofer",
+        "target_role_allowed": True,
+    }
 
 
 def test_playback_readiness_keeps_tweeter_audio_disabled_in_first_slice() -> None:
@@ -155,6 +161,7 @@ def test_playback_readiness_keeps_tweeter_audio_disabled_in_first_slice() -> Non
 
     assert report["preconditions_passed"] is True
     assert report["playback_allowed"] is False
+    assert report["audible_test"]["target_role_allowed"] is False
     assert "tweeter_audio_not_enabled" in {
         issue["code"] for issue in report["issues"]
     }

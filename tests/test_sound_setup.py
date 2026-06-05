@@ -274,7 +274,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Playback readiness" in js
     assert "Preconditions passed" in js
     assert "Verify artifact" in js
-    assert "Play low-level test" in js
+    assert "Play quiet " in js
     assert "The last readiness check failed" in js
     assert "Save this output setup draft before recording physical verification evidence." in js
     assert "Sound tests remain disabled for this setup surface." in js
