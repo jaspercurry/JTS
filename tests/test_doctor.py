@@ -2680,6 +2680,29 @@ def test_check_correction_current_config_reports_flat_base(
     assert "custom/non-JTS" in r.detail
 
 
+def test_check_correction_current_config_reports_jts_sound_config(
+    monkeypatch, tmp_path,
+):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    generated = config_dir / "sound_current.yml"
+    generated.write_text(
+        "# Source: jasper.sound.camilla_yaml.emit_sound_config\n"
+        "filters:\n"
+        "  flat:\n"
+        "    type: Gain\n"
+    )
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {generated}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_correction_current_config()
+
+    assert r.status == "ok"
+    assert "JTS sound preference" in r.detail
+    assert "no room correction" in r.detail.lower()
+
+
 def test_check_correction_current_config_reports_generated_correction(
     monkeypatch, tmp_path,
 ):

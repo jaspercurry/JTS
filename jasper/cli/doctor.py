@@ -4524,7 +4524,7 @@ def check_camilla_volume_limit() -> CheckResult:
 
 
 def check_correction_current_config() -> CheckResult:
-    from jasper.correction.session import parse_current_correction
+    from jasper.correction.session import describe_current_config
 
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:
@@ -4538,13 +4538,23 @@ def check_correction_current_config() -> CheckResult:
             "current correction", "fail",
             f"CamillaDSP statefile points at missing config {config_path}",
         )
-    parsed = parse_current_correction(str(path), config_dir=path.parent)
-    if parsed is None:
-        if path == Path("/etc/camilladsp/outputd-cutover.yml"):
+
+    descriptor = describe_current_config(str(path), config_dir=path.parent)
+    parsed = descriptor.get("current_correction")
+    if not isinstance(parsed, dict):
+        if descriptor.get("kind") == "base":
             return CheckResult("current correction", "ok", "flat base config")
+        if descriptor.get("managed") is True:
+            return CheckResult(
+                "current correction", "ok",
+                f"{descriptor.get('label', 'JTS-managed config')}: "
+                f"{descriptor.get('message', 'No room correction is applied.')} "
+                f"({config_path})",
+            )
         return CheckResult(
             "current correction", "warn",
-            f"custom/non-JTS config loaded: {config_path}",
+            f"custom/non-JTS config loaded: {config_path}; "
+            f"{descriptor.get('message', 'JTS cannot classify this config.')}",
         )
     return CheckResult(
         "current correction", "ok",
