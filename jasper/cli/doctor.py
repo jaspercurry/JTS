@@ -43,6 +43,8 @@ from ..audio_profile_state import (
     runtime_env_from_mapping,
 )
 from ..audio_validation import (
+    CHIP_AEC_PROFILE,
+    DAC8X_DAC_ID,
     current_artifact_filter_kwargs as _audio_validation_filter_kwargs,
 )
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
@@ -62,6 +64,22 @@ RED = "\033[31m"
 YELLOW = "\033[33m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
+
+_KNOWN_CHIP_AEC_PASSIVE_HARDWARE = frozenset({
+    ("xvf3800", DAC8X_DAC_ID),
+})
+_CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
+    "runtime_profile",
+    "mic_detected",
+    "runtime_env",
+    "service_state",
+    "dac_reference",
+    "wake_legs",
+    "outputd_reference_health",
+    "bridge_counter_window",
+    "chip_profile_readback",
+    "chip_convergence",
+})
 
 
 @dataclass
@@ -2246,7 +2264,7 @@ def _assess_audio_validation_summary(
     if reason:
         detail += f"; {reason}"
 
-    if requested_profile != "xvf_chip_aec":
+    if requested_profile != CHIP_AEC_PROFILE:
         return CheckResult(
             "Audio validation",
             "ok",
@@ -2254,6 +2272,14 @@ def _assess_audio_validation_summary(
         )
     if state == "current" and status == "pass":
         return CheckResult("Audio validation", "ok", detail)
+    if _known_supported_chip_aec_passive_ok(summary):
+        return CheckResult(
+            "Audio validation",
+            "ok",
+            detail
+            + "; known-supported xvf_chip_aec path passed passive hardware "
+            "validation; optional acoustic drift/delay probe not implemented/run",
+        )
     if recommendation in {"run_hardware_validation", "run_drift_delay_validation"}:
         command = "sudo jasper-audio-hw-validate --duration-seconds 10 --stdout"
     else:
@@ -2262,6 +2288,35 @@ def _assess_audio_validation_summary(
         "Audio validation",
         "warn",
         detail + f"; advisory: consider `{command}` after chip-AEC is active",
+    )
+
+
+def _known_supported_chip_aec_passive_ok(summary: dict[str, object]) -> bool:
+    """Return true when the current partial artifact is enough for operators.
+
+    The artifact remains warn because no explicit acoustic drift/delay probe
+    exists yet. For the known-good reference path, clean passive hardware
+    evidence should not remain a product warning; for any other DAC path, the
+    drift/delay gate is still required before recommending chip-AEC.
+    """
+
+    if str(summary.get("state") or "unknown") != "current":
+        return False
+    if str(summary.get("recommendation") or "none") != "run_drift_delay_validation":
+        return False
+    hardware = summary.get("hardware")
+    if not isinstance(hardware, dict):
+        return False
+    mic_id = str(hardware.get("mic_id") or "unknown")
+    dac_id = str(hardware.get("dac_id") or "unknown")
+    if (mic_id, dac_id) not in _KNOWN_CHIP_AEC_PASSIVE_HARDWARE:
+        return False
+    statuses = summary.get("check_statuses")
+    if not isinstance(statuses, dict):
+        return False
+    return all(
+        statuses.get(check_name) == "pass"
+        for check_name in _CHIP_AEC_PASSIVE_REQUIRED_CHECKS
     )
 
 

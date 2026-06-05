@@ -125,7 +125,11 @@ The foundation is partly built:
   state, outputd DAC STATUS, and outputd xrun/clipping/progress counters
   across the bounded window. It writes through the same schema-v1 helper
   and still does not generate playback, open capture loops, or persist
-  chip settings.
+  chip settings. On the known-good XVF3800 + HiFiBerry DAC8x
+  `xvf_chip_aec` path, `jasper-doctor` treats a current clean passive
+  hardware artifact as operator-OK even though the raw artifact remains
+  partial. Unknown or new DAC paths still need the explicit acoustic
+  drift/delay gate before chip-AEC should be recommended.
 - `/wake-corpus/` has the first additive reuse hook: new session and
   clip metadata write an `audio_context` snapshot with production
   profile classification, mic firmware/channel identity, selected leg
@@ -326,11 +330,16 @@ sleep. Observation windows above 120 seconds require `--allow-long` or
 not generate audio, does not open capture loops, and does not call
 `SAVE_CONFIGURATION`, `REBOOT`, or any other XVF write path.
 
-The current hardware runner is passive evidence, not complete proof.
-`measured_drift_delay` remains `not_run` until an explicit
-operator-confirmed playback/capture probe is added, so the top-level
-artifact stays `status=warn` and recommends `run_drift_delay_validation`
-even when runtime, outputd, bridge, and chip readback checks are clean.
+The current hardware runner is passive evidence, not complete acoustic
+proof. `measured_drift_delay` remains `not_run` until an explicit
+operator-confirmed playback/capture probe is added, so the raw artifact
+may stay `status=warn` with
+`recommendation=run_drift_delay_validation` even when runtime, outputd,
+bridge, and chip readback checks are clean. That distinction is
+intentional: doctor reports the known XVF3800 + HiFiBerry DAC8x
+`xvf_chip_aec` path as OK when the required passive hardware checks pass,
+while any unknown/new DAC remains a warning until drift/delay evidence
+exists.
 Passive `AEC_AECCONVERGED=0` is reported as `not_observed`, not failure,
 because no explicit far-end stimulus may have been present.
 If the flag reaches `1` and later returns to `0` in the same window,
@@ -489,7 +498,10 @@ Goal: only now extract broader interfaces.
 
 ### Chip-AEC DAC Gate
 
-Use before recommending chip-AEC with a new DAC.
+Use before recommending chip-AEC with a new or otherwise unproven DAC.
+The known XVF3800 + HiFiBerry DAC8x path already has passive production
+evidence and does not need to block normal operation on this optional
+advanced probe.
 
 Pass criteria:
 
@@ -584,11 +596,13 @@ against clear metrics.
 
 ## Immediate Next Sprint
 
-1. **Extend the DAC validation runner beyond passive outputd health.**
+1. **Add optional acoustic drift/delay validation for new hardware.**
    The `hifiberry_dac8x_outputd_stability` profile now isolates outputd
-   xrun/clipping/progress health; future work should keep playback
+   xrun/clipping/progress health, and the known DAC8x chip-AEC path can
+   run on clean passive evidence. Future work should keep playback
    explicit and add bounded short/long drift plus delay-stability
-   evidence when the operator approves hardware-coupled probes.
+   evidence when the operator approves hardware-coupled probes, mainly
+   for new DAC qualification or deep tuning.
 2. **Promote richer DAC identity.** The readiness snapshot records the
    configured outputd PCM today; a future DAC capability pass should
    persist stable USB/ALSA descriptor facts without trusting browser or
@@ -616,4 +630,4 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-06-04
+Last verified: 2026-06-05
