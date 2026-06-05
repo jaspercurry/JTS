@@ -47,6 +47,7 @@ URL surface (after nginx strips the /wake/ prefix):
   GET  /                page render
   GET  /detection.json  proxy jasper-control /aec — mode + bridge +
                         leg config + threshold
+  POST /profile         body {profile: str} — set canonical input profile
   POST /layer/aec       body {enabled: bool} — set AEC master
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
   POST /layer/dtln      body {enabled: bool} — set DTLN leg
@@ -241,6 +242,60 @@ _LAYERS = (
 )
 
 
+_PROFILES = (
+    (
+        "auto",
+        "Automatic",
+        "Use the best supported path for the hardware detected on this speaker.",
+        "Recommended",
+    ),
+    (
+        "xvf_chip_aec",
+        "XVF chip-AEC",
+        "Use the mic array's hardware echo-cancelled beams.",
+        "XVF3800",
+    ),
+    (
+        "xvf_software_aec3",
+        "XVF software AEC3",
+        "Use WebRTC AEC3 with a raw wake fallback.",
+        "Fallback",
+    ),
+    (
+        "direct_mic",
+        "Direct mic",
+        "Use the selected microphone without an AEC bridge.",
+        "Basic",
+    ),
+)
+
+
+def _profile_card_html() -> str:
+    rows: list[str] = []
+    for key, name, desc, meta in _PROFILES:
+        rows.append(f"""
+    <label class="profile-row" id="profile-row-{key}">
+      <input type="radio" name="profile-choice" id="profile-{key}"
+             value="{key}" disabled>
+      <span class="profile-copy">
+        <span class="profile-name">{html.escape(name)}</span>
+        <span class="profile-desc">{html.escape(desc)}</span>
+      </span>
+      <span class="badge badge--muted">{html.escape(meta)}</span>
+    </label>""")
+    return f"""
+<section class="section profile-card">
+  <div class="section__head">
+    <h2 class="section__title">Input profile</h2>
+  </div>
+  <div class="info-card">
+    <div class="profile-status" id="profile-status">checking…</div>
+    {''.join(rows)}
+    <div class="mic-status-warning" id="profile-custom-warning" hidden></div>
+  </div>
+</section>"""
+
+
 def _layers_card_html() -> str:
     """Render the detection-layers + sensitivity card. State is
     hydrated by the /detection.json poll (deploy/assets/wake/js/main.js);
@@ -265,11 +320,9 @@ def _layers_card_html() -> str:
   </div>
   <div class="info-card">
     <p class="info-card__note">
-      Each layer scores the same wake word independently and OR-gates
-      its fires with the others. Add layers to catch wakes the AEC
-      sometimes misses; remove them to save RAM on 1 GB Pis. The
-      sensitivity slider applies to every active layer. Toggling
-      anything restarts jasper-voice (~15 s of dead wake).
+      Advanced custom controls for corpus tests and nonstandard
+      hardware. Changing a layer switches the input profile to custom.
+      The sensitivity slider applies to every active layer.
     </p>
     {''.join(rows)}
     <div class="layer-row sensitivity-row">
@@ -464,6 +517,8 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 <main class="page">
   {_mic_status_card_html()}
 
+  {_profile_card_html()}
+
   {_layers_card_html()}
 
   <section class="section">
@@ -629,12 +684,23 @@ def _apply_sensitivity(
     )
 
 
+def _apply_profile(profile: str, *, control_base: str) -> tuple[int, bytes]:
+    """Forward a /profile POST to jasper-control's /aec/profile."""
+    return proxy_post(
+        "/aec/profile",
+        control_base=control_base,
+        timeout=5.0,
+        body=json.dumps({"profile": profile}).encode(),
+    )
+
+
 # ----------------------------------------------------------------------
 # HTTP handler.
 # ----------------------------------------------------------------------
 
 
 _VALID_LAYERS = ("aec", "raw", "dtln", "chip_aec")
+_VALID_PROFILES = {key for key, _name, _desc, _meta in _PROFILES}
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
@@ -679,6 +745,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 self._handle_layer(path[len("/layer/"):])
                 return
+            if path == "/profile":
+                if not verify_csrf(self):
+                    reject_csrf(self)
+                    return
+                self._handle_profile()
+                return
             if path == "/sensitivity":
                 if not verify_csrf(self):
                     reject_csrf(self)
@@ -717,6 +789,32 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
             status, resp = _apply_layer(
                 layer, enabled, control_base=cfg["control_base"],
+            )
+            send_proxy_json(self, resp, status=status)
+
+        def _handle_profile(self) -> None:
+            body, err = _read_json_body(self)
+            if err is not None:
+                send_proxy_json(
+                    self,
+                    json.dumps({"error": err}).encode(),
+                    status=400,
+                )
+                return
+            profile = body.get("profile") if body is not None else None
+            if not isinstance(profile, str) or profile not in _VALID_PROFILES:
+                send_proxy_json(
+                    self,
+                    b'{"error":"profile is not supported"}',
+                    status=400,
+                )
+                return
+            logger.info(
+                "event=wake.profile profile=%s client=%s",
+                profile, self.address_string(),
+            )
+            status, resp = _apply_profile(
+                profile, control_base=cfg["control_base"],
             )
             send_proxy_json(self, resp, status=status)
 

@@ -141,6 +141,42 @@ def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
     assert "jasper-voice.service NRestarts=2" in r.detail
 
 
+def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
+    def fail_probe(*_args, **_kwargs):
+        raise AssertionError("Apple USB probe should not run")
+
+    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
+    monkeypatch.setattr(
+        doctor,
+        "_shared_parse_env_file",
+        lambda _path: {"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"},
+    )
+    monkeypatch.setattr(doctor, "_run", fail_probe)
+
+    result = doctor.check_apple_dongle_audio()
+
+    assert result.status == "ok"
+    assert "active output DAC is hifiberry_dac8x" in result.detail
+
+
+def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch):
+    def fail_probe(*_args, **_kwargs):
+        raise AssertionError("Apple mixer probe should not run")
+
+    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
+    monkeypatch.setattr(
+        doctor,
+        "_shared_parse_env_file",
+        lambda _path: {"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"},
+    )
+    monkeypatch.setattr(doctor, "_run", fail_probe)
+
+    result = doctor.check_dongle_headphone_at_max()
+
+    assert result.status == "ok"
+    assert "active output DAC is hifiberry_dac8x" in result.detail
+
+
 def test_check_bluetooth_pairing_policy_ok(monkeypatch):
     def fake_run(cmd, *args, **kwargs):
         if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:

@@ -93,6 +93,13 @@ The foundation is partly built:
   `jasper-doctor` "Audio profile" check so those status surfaces report
   the same requested/active profile, session source, wake legs, and
   warnings.
+- `jasper/voice/input_policy.py` is the first provider-facing consumer
+  of the audio-profile boundary. It converts the applied mic/AEC runtime
+  config into an input-audio contract (`xvf_chip_aec`,
+  `xvf_software_aec3`, `custom_udp`, `direct_mic`) and resolves provider
+  preprocessing such as OpenAI `noise_reduction=auto` from that contract.
+  This keeps provider adapters from hard-coding mic/DAC special cases:
+  they receive a resolved provider policy, not raw hardware guesses.
 - `jasper/audio_validation.py` owns schema-v1 audio-validation
   artifacts at `/var/lib/jasper/audio-validation/`. Artifacts are
   immutable timestamped JSON files keyed by mic/DAC/profile/status;
@@ -143,8 +150,8 @@ The gaps are exactly where future hardware support would hurt:
   to guarantee they remain comparable.
 - There is now a single advisory readiness report for "this Pi is in
   production chip-AEC runtime state" vs "chip-AEC requested but runtime
-  evidence is incomplete." It is not the final default-on DAC validation
-  gate because long-window drift and fixed-delay stability are still
+  evidence is incomplete." It is not a full acoustic validation gate
+  because long-window drift and fixed-delay stability are still
   operator-controlled measurements.
 
 ---
@@ -225,8 +232,11 @@ A declarative runtime profile:
 
 | Profile | Purpose |
 |---|---|
-| `xvf_software_aec3` | Default safe XVF path: raw-ish/ASR mic into WebRTC AEC3. |
-| `xvf_chip_aec` | Opt-in XVF chip-AEC path: chip ASR beams, outputd USB-IN reference, no double-AEC. |
+| `auto` | Fresh-install default. Resolves to `xvf_chip_aec` when 6-channel XVF3800 chip-AEC is available; otherwise falls back to `xvf_software_aec3` / direct mic as the reconciler can support. |
+| `xvf_chip_aec` | Recommended XVF3800 hardware-AEC path: chip ASR beams, outputd USB-IN reference, no double-AEC/raw/DTLN stacking. |
+| `xvf_software_aec3` | XVF fallback path: raw-ish/ASR mic into WebRTC AEC3 with raw wake fallback, DTLN off by default. |
+| `direct_mic` | Basic custom-hardware path with the AEC bridge disabled. |
+| `custom` | Expert/corpus mode. Low-level `JASPER_WAKE_LEG_*` booleans own the leg set directly. |
 | `generic_usb_software_aec3` | Generic mic path: mono mic + outputd/reference into WebRTC AEC3. |
 | `corpus_comparison` | Test-only profile that records many legs from the same utterance. |
 | `dac_validation` | Test-only profile for drift/delay/reference health measurement. |
@@ -242,6 +252,9 @@ Each profile should declare:
 - required services and env vars
 - expected resource cost
 - validation requirements before "recommended" status
+- provider-facing input contract: raw vs processed, echo-cancelled,
+  denoised, beamformed, gain-controlled, and the provenance for any
+  provider preprocessing decision
 
 ### `ValidationArtifact`
 
@@ -490,7 +503,7 @@ Pass criteria:
 Fail behavior:
 
 - keep or return to `xvf_software_aec3`;
-- do not arm chip-AEC wake legs by default;
+- mark chip-AEC unavailable for `auto` and surface the fallback reason;
 - preserve the validation artifact explaining why.
 
 ### Generic Mic Software-AEC Gate
@@ -523,6 +536,8 @@ Every profile transition should emit stable structured logs:
 - `event=audio_validation.loaded`
 - `event=audio_validation.stale`
 - `event=audio_profile.apply_failed`
+- `event=voice.input_policy`
+- `event=voice.input_policy.warning`
 
 Wake events and corpus metadata should include, once fields exist.
 Corpus metadata has the first version of this shape as `audio_context`;
@@ -579,9 +594,9 @@ against clear metrics.
    persist stable USB/ALSA descriptor facts without trusting browser or
    hotplug labels blindly.
 3. **Teach profile selection to consume validation.** Missing/stale
-   chip-AEC validation remains advisory today. A later profile selector
-   should only recommend chip-AEC by default when the artifact proves the
-   DAC/reference gate, while keeping explicit operator opt-in available.
+   chip-AEC validation remains advisory today. The current `auto` profile
+   uses live hardware readiness; a later selector should fold validation
+   freshness into recommendation text and fallback warnings.
 4. **Extend wake-event parity.** Corpus metadata now carries validation
    status; wake-event rows should eventually include the same artifact id
    or timestamp for production telemetry analysis.
@@ -592,7 +607,8 @@ against clear metrics.
 
 - No PipeWire dependency.
 - No broad `MicProfile` Protocol before a second real mic forces one.
-- No default-on chip-AEC without telemetry review.
+- No chip-AEC on hardware that lacks the 6-channel XVF3800/reference
+  path, and no stacked software AEC/raw/DTLN under the chip-AEC profile.
 - No DTLN-by-default on small Pis without measured value and resource
   budget.
 - No production mode that depends on corpus-only legs.
@@ -600,4 +616,4 @@ against clear metrics.
 
 ---
 
-Last verified: 2026-06-02
+Last verified: 2026-06-04

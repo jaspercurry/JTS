@@ -80,7 +80,11 @@ those interfaces; the per-provider adapters are:
 - [`jasper/voice/grok_session.py`](../jasper/voice/grok_session.py) — `GrokRealtimeConnection` (subclass of the OpenAI adapter)
 
 The single switch point is `_make_connection(cfg)` at the top of
-[`voice_daemon.py`](../jasper/voice_daemon.py).
+[`voice_daemon.py`](../jasper/voice_daemon.py). Provider session
+preprocessing is resolved through
+[`jasper/voice/input_policy.py`](../jasper/voice/input_policy.py), which
+turns the applied mic/AEC runtime config into an input-audio contract
+before OpenAI/Grok wire-format fields are chosen.
 
 ## Model catalog policy
 
@@ -223,11 +227,21 @@ Mode in the consumer apps and dictation in Claude Code.
   - **Time-billed providers (Grok) are metered by uptime.** Grok bills
     a flat $/hour, so its token rows price to $0; `ConnectionUptimeMeter`
     records connect/disconnect intervals and the spend queries fold that
-    cost in. The dashboard and cap therefore see real Grok cost.
+    cost in. The `/voice` spend-cap status card and cap therefore see
+    real Grok cost.
   - **Stored cost is a true estimate; the cap pads at read time.**
     `SpendCap` multiplies the rolling spend by
     `JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER` (default 1.25) so the
     breaker stays conservative without inflating the displayed number.
+    `/voice` shows the rolling 24h true estimate, the padded comparison,
+    and the remaining headroom.
+  - **The cap is editable on `/voice`.** The form writes
+    `JASPER_DAILY_SPEND_CAP_USD` and
+    `JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER` into the wizard-owned
+    `/var/lib/jasper/voice_provider.env`, which is sourced after
+    `/etc/jasper/jasper.env`; a saved value there overrides the template
+    default without giving `jasper-web` write access to `/etc`.
+  - **Rate data remains separate from the cap.**
     Bundled rates (`jasper/data/model_pricing.json`, dated) are defaults;
     an optional `JASPER_PRICING_FILE` (`/var/lib/jasper/pricing.json`)
     overlays them per model ID without a code change
@@ -244,6 +258,17 @@ Mode in the consumer apps and dictation in Claude Code.
   — `openai_session.py` upsamples 16→24 kHz with `audioop.ratecv`
   inside the turn's `send_audio` so the rest of the daemon stays at
   16 kHz everywhere.
+- **Provider preprocessing policy**. OpenAI's input `noise_reduction`
+  is not a generic "smart speaker" default; it is a provider-side audio
+  transform on the stream OpenAI receives. `JASPER_OPENAI_NOISE_REDUCTION`
+  defaults to `auto`, resolved by `jasper/voice/input_policy.py` from
+  the effective input contract: already-processed profiles such as
+  `xvf_chip_aec` and `xvf_software_aec3` omit provider denoising,
+  raw direct mics use `far_field`, and explicit `off` / `near_field` /
+  `far_field` values remain operator overrides. `jasper-voice` logs the
+  resolved policy as `event=voice.input_policy` and warns on suspicious
+  combinations such as explicit `far_field` on an already-processed
+  input stream.
 - **Manual VAD signalling**. Both Gemini and OpenAI run with manual
   VAD, but the markers differ: Gemini sends `activity_start` /
   `activity_end` realtime-input events; OpenAI sends
@@ -420,4 +445,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-06-02 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`)
+Last verified: 2026-06-04 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`)

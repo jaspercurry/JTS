@@ -1,9 +1,9 @@
 /* voice.css — page-specific styles for /voice/ (the voice-provider wizard).
  *
  * Only the visuals the shared /assets/app.css doesn't already cover live here:
- * the active-provider radio group, the provider-card header row, the
- * collapsible pricing-rate disclosures, and the monospace research-prompt
- * textareas. Everything else (.page, .info-card, .field, .form-actions,
+ * the active-provider radio group, the spend-cap form layout, the
+ * provider-card header row, the collapsible pricing-rate disclosures, and
+ * the monospace research-prompt textareas. Everything else (.page, .info-card, .field, .form-actions,
  * .form-hint, .badge, .btn--*, .banner, .eyebrow, .section) comes from
  * app.css. This file adds classes only — it defines no :root tokens and reads
  * the shared design tokens so it re-skins with the rest of the system.
@@ -61,6 +61,31 @@
 .provider-radio__status {
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+/* Spend cap --------------------------------------------------------------- */
+.spend-cap-card {
+  gap: 0.8rem;
+}
+
+.spend-cap__stats {
+  margin-block-end: 0.2rem;
+}
+
+.spend-cap__form {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.spend-cap__form .form-actions {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 700px) {
+  .spend-cap__form {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Provider cards ---------------------------------------------------------- */

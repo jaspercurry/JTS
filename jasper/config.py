@@ -10,11 +10,20 @@ from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
+from .usage import (
+    DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
+    DEFAULT_DAILY_SPEND_CAP_USD,
+    DEFAULT_USAGE_DB,
+)
 from .voice.catalog import (
     VALID_PROVIDER_IDS,
     default_extra_value,
     default_model_id,
     default_voice_id,
+)
+from .voice.input_policy import (
+    normalize_openai_noise_reduction,
+    validate_openai_noise_reduction,
 )
 
 
@@ -67,6 +76,7 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_SERVER_VAD_SILENCE_MS must be > 0")
     if cfg.server_vad_prefix_ms < 0:
         raise RuntimeError("JASPER_SERVER_VAD_PREFIX_MS must be >= 0")
+    validate_openai_noise_reduction(cfg.openai_noise_reduction)
     for name, value in [
         ("JASPER_OPENAI_CONTEXT_RESET_SEC", cfg.openai_context_reset_sec),
         ("JASPER_GEMINI_CONTEXT_RESET_SEC", cfg.gemini_context_reset_sec),
@@ -138,6 +148,7 @@ class Config:
     openai_model: str
     openai_voice: str
     openai_reasoning_effort: str
+    openai_noise_reduction: str
 
     grok_api_key: str
     grok_model: str
@@ -154,6 +165,7 @@ class Config:
     # only on 6-channel firmware. See docs/HANDOFF-mic-fusion-architecture.md.
     mic_device_chip_aec_150: str
     mic_device_chip_aec_210: str
+    aec_chip_aec_enabled: bool
     mic_capture_rate: int
     mic_capture_channels: int
     wake_events_dir: str
@@ -428,6 +440,12 @@ class Config:
                 "JASPER_OPENAI_REASONING_EFFORT",
                 default_extra_value("openai", "reasoning_effort"),
             ),
+            # Provider-side input denoising depends on the upstream audio
+            # contract. "auto" resolves later from the active mic/AEC profile
+            # so already-processed streams do not get double-denoised.
+            openai_noise_reduction=normalize_openai_noise_reduction(
+                _env("JASPER_OPENAI_NOISE_REDUCTION", "auto"),
+            ),
             grok_api_key=grok_key,
             # xAI Grok Voice Agent. The `grok-voice-think-fast-1.0`
             # model claims sub-second latency and is OpenAI-Realtime-
@@ -497,6 +515,9 @@ class Config:
             # docs/CHIP-AEC-EXPERIMENT.md.
             mic_device_chip_aec_150=_env("JASPER_MIC_DEVICE_CHIP_AEC_150", ""),
             mic_device_chip_aec_210=_env("JASPER_MIC_DEVICE_CHIP_AEC_210", ""),
+            aec_chip_aec_enabled=_env_bool(
+                "JASPER_AEC_CHIP_AEC_ENABLED", False,
+            ),
             # The XVF3800 supports 16 kHz mono natively, so 16000/1 is the
             # default. Mics that only do 44.1 / 48 kHz (UMIK-2 et al.) need
             # JASPER_MIC_CAPTURE_RATE=48000 and JASPER_MIC_CAPTURE_CHANNELS=2;
@@ -652,11 +673,15 @@ class Config:
             grok_proactive_buffer_sec=_env_int(
                 "JASPER_GROK_PROACTIVE_BUFFER_SEC", 0,
             ),
-            daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
-            daily_spend_cap_safety_multiplier=_env_float(
-                "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER", 1.25,
+            daily_spend_cap_usd=_env_float(
+                "JASPER_DAILY_SPEND_CAP_USD",
+                DEFAULT_DAILY_SPEND_CAP_USD,
             ),
-            usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
+            daily_spend_cap_safety_multiplier=_env_float(
+                "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER",
+                DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
+            ),
+            usage_db=_env("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
             librespot_state_path=_env(
                 "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
             ),

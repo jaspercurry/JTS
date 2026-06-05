@@ -1619,6 +1619,7 @@ PY
         echo "  speaker name: JTS"
     fi
     migrate_voice_provider
+    migrate_openai_noise_reduction_default
     render_voice_provider_ids_manifest
     migrate_transit_config
     migrate_weather_config
@@ -1729,9 +1730,21 @@ migrate_wake_legs_config() {
         want_chip_aec="1"
     fi
 
+    local want_profile="custom"
+    if [[ "${want_chip_aec}" == "1" ]]; then
+        want_profile="xvf_chip_aec"
+    elif [[ "${want_raw}" == "1" && "${want_dtln}" == "0" ]]; then
+        want_profile="xvf_software_aec3"
+    fi
+
     touch "${wizard_env}"
     chmod 0644 "${wizard_env}"
 
+    if ! grep -qE '^JASPER_AUDIO_INPUT_PROFILE=' "${wizard_env}"; then
+        echo "JASPER_AUDIO_INPUT_PROFILE=${want_profile}" >> "${wizard_env}"
+        echo "  migrate_wake_legs_config: set JASPER_AUDIO_INPUT_PROFILE=${want_profile}"
+        echo "    from prior low-level wake/AEC leg vars"
+    fi
     if ! grep -qE '^JASPER_WAKE_LEG_RAW=' "${wizard_env}"; then
         echo "JASPER_WAKE_LEG_RAW=${want_raw}" >> "${wizard_env}"
         echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_RAW=${want_raw}"
@@ -1755,6 +1768,27 @@ migrate_wake_legs_config() {
     sed -i.bak '/^JASPER_MIC_DEVICE_CHIP_AEC_210=/d' "${jasper_env}"
     sed -i.bak '/^JASPER_AEC_CHIP_AEC_ENABLED=/d' "${jasper_env}"
     rm -f "${jasper_env}.bak"
+}
+
+# Migrate the old OpenAI Realtime template default from far_field to auto.
+#
+# The far_field line originally shipped as part of the server-VAD/music
+# experiment. Server VAD was later demoted back to opt-in, but existing
+# installs may still carry the provider-side denoising default in
+# /etc/jasper/jasper.env. Auto lets voice resolve provider preprocessing
+# from the active input contract, while still allowing an operator to set
+# far_field explicitly after migration if their custom raw-mic path wants it.
+migrate_openai_noise_reduction_default() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    [[ -f "${jasper_env}" ]] || return 0
+    if grep -qE '^JASPER_OPENAI_NOISE_REDUCTION=far_field$' "${jasper_env}"; then
+        sed -i.bak \
+            's/^JASPER_OPENAI_NOISE_REDUCTION=far_field$/JASPER_OPENAI_NOISE_REDUCTION=auto/' \
+            "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+        chmod 0640 "${jasper_env}"
+        echo "  migrate_openai_noise_reduction_default: set JASPER_OPENAI_NOISE_REDUCTION=auto"
+    fi
 }
 
 # Migrate stale transit env vars from /etc/jasper/jasper.env into the
@@ -2441,9 +2475,8 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-bluetooth-web.socket" \
         "${SYSTEMD_DIR}/jasper-bluetooth-web.socket"
-    # /system/ dashboard — RAM/CPU/temp sparklines + cloud activity
-    # + restart/diagnostics actions. Socket-activated like the other
-    # wizards.
+    # /system/ dashboard — RAM/CPU/temp sparklines + restart/diagnostics
+    # actions. Socket-activated like the other wizards.
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-system-web.service" \
         "${SYSTEMD_DIR}/jasper-system-web.service"
@@ -2845,28 +2878,32 @@ install_journald_persistent_storage() {
 
 reconcile_aec_state() {
     install -d -m 0755 "${STATE_DIR}"
-    # Four keys live in aec_mode.env, all owned by the /wake/
-    # wake-detection card after the per-leg-toggle refactor:
+    # Five keys live in aec_mode.env, all owned by the /wake/
+    # input-profile / wake-detection cards:
+    #   - JASPER_AUDIO_INPUT_PROFILE  canonical profile selection
+    #                                 (auto, xvf_chip_aec,
+    #                                 xvf_software_aec3, direct_mic,
+    #                                 custom)
     #   - JASPER_AEC_MODE             master AEC bridge toggle
     #   - JASPER_WAKE_LEG_RAW         additive raw chip-direct leg (~5 MB)
     #   - JASPER_WAKE_LEG_DTLN        additive DTLN neural leg (~75 MB)
     #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC beam legs (opt-in,
     #                                 hardware-conditional, mutually
     #                                 exclusive with raw/DTLN)
-    # Defaults: AEC on, raw on (dual-stream is the OSS baseline —
-    # cheap wake-rate win), DTLN off (heavy, opt-in for 2 GB Pis with
-    # a wake-event corpus), chip-AEC off (needs 6-ch firmware + the
-    # chip-AEC bridge/init halves; gate any default-on flip on a
-    # ~1-week telemetry review). See the /wake/ card and AGENTS.md
-    # "AEC bridge — reconciler toggle" for the lever set.
+    # Defaults: profile auto. On the recommended XVF3800 6-channel
+    # hardware that resolves to chip-AEC (no stacked software AEC/raw/DTLN).
+    # When chip-AEC is unavailable it falls back to the software-AEC3
+    # profile (AEC on, raw fallback on, DTLN off). DTLN remains an
+    # explicit custom/lab leg because it is heavy on a 1 GB Pi.
     #
     # On upgrade, the reconciler's ensure_mode_file appends any
     # missing keys with these same defaults — preserving an
-    # operator's hand-set JASPER_AEC_MODE while picking up the new
-    # leg fields. Migration from hand-set underlying env vars in
-    # /etc/jasper/jasper.env runs separately in migrate_wake_legs_config.
+    # operator's hand-set JASPER_AEC_MODE/leg fields while inferring a
+    # profile for pre-profile installs. Migration from hand-set underlying
+    # env vars in /etc/jasper/jasper.env runs separately in
+    # migrate_wake_legs_config.
     if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
-        printf 'JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' \
+        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' \
             > "${STATE_DIR}/aec_mode.env"
         chmod 0644 "${STATE_DIR}/aec_mode.env"
     fi

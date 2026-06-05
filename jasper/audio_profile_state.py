@@ -16,6 +16,26 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 
+PROFILE_AUTO = "auto"
+PROFILE_XVF_CHIP_AEC = "xvf_chip_aec"
+PROFILE_XVF_SOFTWARE_AEC3 = "xvf_software_aec3"
+PROFILE_DIRECT_MIC = "direct_mic"
+PROFILE_CUSTOM = "custom"
+
+CONCRETE_PROFILES = (
+    PROFILE_XVF_CHIP_AEC,
+    PROFILE_XVF_SOFTWARE_AEC3,
+    PROFILE_DIRECT_MIC,
+)
+SELECTABLE_PROFILES = (
+    PROFILE_AUTO,
+    PROFILE_XVF_CHIP_AEC,
+    PROFILE_XVF_SOFTWARE_AEC3,
+    PROFILE_DIRECT_MIC,
+)
+ALL_PROFILES = SELECTABLE_PROFILES + (PROFILE_CUSTOM,)
+
+
 @dataclass(frozen=True)
 class AecIntent:
     """Operator-requested AEC state from `/var/lib/jasper/aec_mode.env`."""
@@ -24,6 +44,7 @@ class AecIntent:
     raw_enabled: bool = True
     dtln_enabled: bool = False
     chip_aec_enabled: bool = False
+    profile_selection: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,6 +79,146 @@ def parse_env_bool(raw: str, default: bool = False) -> bool:
     if value in ("0", "false", "off", "no", "n", "disabled", "disable", ""):
         return False
     return default
+
+
+def normalize_audio_input_profile(raw: str, default: str = PROFILE_CUSTOM) -> str:
+    """Normalize the operator-facing audio input profile id."""
+
+    value = raw.strip().strip("'\"").lower().replace("-", "_")
+    aliases = {
+        "": default,
+        "automatic": PROFILE_AUTO,
+        "xvf_chip": PROFILE_XVF_CHIP_AEC,
+        "chip_aec": PROFILE_XVF_CHIP_AEC,
+        "chip": PROFILE_XVF_CHIP_AEC,
+        "hardware_aec": PROFILE_XVF_CHIP_AEC,
+        "xvf_software": PROFILE_XVF_SOFTWARE_AEC3,
+        "software_aec3": PROFILE_XVF_SOFTWARE_AEC3,
+        "aec3": PROFILE_XVF_SOFTWARE_AEC3,
+        "software": PROFILE_XVF_SOFTWARE_AEC3,
+        "raw": PROFILE_DIRECT_MIC,
+        "direct": PROFILE_DIRECT_MIC,
+        "off": PROFILE_DIRECT_MIC,
+        "disabled": PROFILE_DIRECT_MIC,
+        "manual": PROFILE_CUSTOM,
+    }
+    value = aliases.get(value, value)
+    return value if value in ALL_PROFILES else default
+
+
+def infer_audio_input_profile(intent: AecIntent) -> str:
+    """Infer the closest profile for pre-profile aec_mode.env files."""
+
+    mode = (intent.mode or "auto").strip().strip("'\"").lower()
+    if mode != "auto":
+        return PROFILE_DIRECT_MIC
+    if intent.chip_aec_enabled:
+        return PROFILE_XVF_CHIP_AEC
+    if intent.raw_enabled and not intent.dtln_enabled:
+        return PROFILE_XVF_SOFTWARE_AEC3
+    return PROFILE_CUSTOM
+
+
+def profile_env_updates(profile: str) -> dict[str, str]:
+    """Legacy-compatible env updates for an explicit profile write.
+
+    The reconciler understands `JASPER_AUDIO_INPUT_PROFILE`, but these
+    updates keep rollback behavior unsurprising: an older daemon that
+    ignores the profile key still lands on the nearest safe legacy
+    AEC/leg configuration.
+    """
+
+    normalized = normalize_audio_input_profile(profile, default=PROFILE_CUSTOM)
+    updates = {"JASPER_AUDIO_INPUT_PROFILE": normalized}
+    if normalized == PROFILE_AUTO:
+        updates.update({
+            "JASPER_AEC_MODE": "auto",
+            "JASPER_WAKE_LEG_RAW": "1",
+            "JASPER_WAKE_LEG_DTLN": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC": "0",
+        })
+    elif normalized == PROFILE_XVF_CHIP_AEC:
+        updates.update({
+            "JASPER_AEC_MODE": "auto",
+            "JASPER_WAKE_LEG_RAW": "0",
+            "JASPER_WAKE_LEG_DTLN": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC": "1",
+        })
+    elif normalized == PROFILE_XVF_SOFTWARE_AEC3:
+        updates.update({
+            "JASPER_AEC_MODE": "auto",
+            "JASPER_WAKE_LEG_RAW": "1",
+            "JASPER_WAKE_LEG_DTLN": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC": "0",
+        })
+    elif normalized == PROFILE_DIRECT_MIC:
+        updates.update({
+            "JASPER_AEC_MODE": "disabled",
+            "JASPER_WAKE_LEG_RAW": "0",
+            "JASPER_WAKE_LEG_DTLN": "0",
+            "JASPER_WAKE_LEG_CHIP_AEC": "0",
+        })
+    return updates
+
+
+def resolve_audio_input_intent(
+    intent: AecIntent,
+    *,
+    chip_available: bool,
+) -> AecIntent:
+    """Resolve selected profile into the concrete AEC/leg intent."""
+
+    selection = normalize_audio_input_profile(
+        intent.profile_selection,
+        default=infer_audio_input_profile(intent),
+    )
+    if selection == PROFILE_AUTO:
+        if chip_available:
+            return AecIntent(
+                mode="auto",
+                raw_enabled=False,
+                dtln_enabled=False,
+                chip_aec_enabled=True,
+                profile_selection=selection,
+            )
+        return AecIntent(
+            mode="auto",
+            raw_enabled=True,
+            dtln_enabled=False,
+            chip_aec_enabled=False,
+            profile_selection=selection,
+        )
+    if selection == PROFILE_XVF_CHIP_AEC:
+        return AecIntent(
+            mode="auto",
+            raw_enabled=False,
+            dtln_enabled=False,
+            chip_aec_enabled=True,
+            profile_selection=selection,
+        )
+    if selection == PROFILE_XVF_SOFTWARE_AEC3:
+        return AecIntent(
+            mode="auto",
+            raw_enabled=True,
+            dtln_enabled=False,
+            chip_aec_enabled=False,
+            profile_selection=selection,
+        )
+    if selection == PROFILE_DIRECT_MIC:
+        return AecIntent(
+            mode="disabled",
+            raw_enabled=False,
+            dtln_enabled=False,
+            chip_aec_enabled=False,
+            profile_selection=selection,
+        )
+    return AecIntent(
+        mode=intent.mode,
+        raw_enabled=intent.raw_enabled,
+        dtln_enabled=intent.dtln_enabled,
+        chip_aec_enabled=intent.chip_aec_enabled,
+        profile_selection=PROFILE_CUSTOM,
+    )
 
 
 def env_value(
@@ -171,6 +332,14 @@ def build_audio_profile_status(
     shared vocabulary future status surfaces should consume.
     """
 
+    selection = normalize_audio_input_profile(
+        intent.profile_selection,
+        default=infer_audio_input_profile(intent),
+    )
+    effective_intent = resolve_audio_input_intent(
+        intent,
+        chip_available=chip_available,
+    )
     direct_mic_configured = _direct_mic_configured(runtime)
     if mic.xvf_present:
         mic_name = mic.display_name
@@ -182,7 +351,7 @@ def build_audio_profile_status(
         mic_name = "No supported mic detected"
 
     chip_runtime_active = bool(
-        intent.mode == "auto"
+        effective_intent.mode == "auto"
         and bridge_active
         and chip_available
         and runtime.chip_enabled
@@ -191,15 +360,15 @@ def build_audio_profile_status(
     )
     warnings: list[str] = []
 
-    if intent.mode != "auto":
+    if effective_intent.mode != "auto":
         processing_mode = "Direct mic"
         session_source = mic_source_label(runtime.primary_device)
         wake_legs = ["Direct mic"]
-        requested_profile = "direct_mic"
-        active_profile = "direct_mic"
+        requested_profile = PROFILE_DIRECT_MIC
+        active_profile = PROFILE_DIRECT_MIC
         profile_state = "disabled"
         profile_reason = "AEC mode is disabled."
-    elif intent.chip_aec_enabled:
+    elif effective_intent.chip_aec_enabled:
         processing_mode = "Chip-AEC" if chip_runtime_active else "Chip-AEC pending"
         if chip_runtime_active:
             session_source = (
@@ -208,7 +377,7 @@ def build_audio_profile_status(
                 else "Chip AEC 150 beam via :9876"
             )
             profile_state = "active"
-            active_profile = "xvf_chip_aec"
+            active_profile = PROFILE_XVF_CHIP_AEC
             profile_reason = "Chip-AEC runtime env is applied."
         elif not chip_available:
             session_source = "waiting for AEC bridge"
@@ -226,42 +395,46 @@ def build_audio_profile_status(
             active_profile = None
             profile_reason = "Chip-AEC selected but runtime env is not applied."
         wake_legs = ["Primary chip beam", "Chip AEC 150", "Chip AEC 210"]
-        requested_profile = "xvf_chip_aec"
+        requested_profile = PROFILE_XVF_CHIP_AEC
     else:
         processing_mode = "Software AEC3"
         session_source = "WebRTC AEC3 via :9876" if bridge_active else "waiting for AEC bridge"
         wake_legs = ["AEC3"]
-        if intent.raw_enabled:
+        if effective_intent.raw_enabled:
             wake_legs.append("Chip-direct raw")
-        if intent.dtln_enabled:
+        if effective_intent.dtln_enabled:
             wake_legs.append("DTLN")
-        requested_profile = "xvf_software_aec3"
-        active_profile = "xvf_software_aec3" if bridge_active else None
+        requested_profile = PROFILE_XVF_SOFTWARE_AEC3
+        active_profile = PROFILE_XVF_SOFTWARE_AEC3 if bridge_active else None
         profile_state = "active" if bridge_active else "waiting_bridge"
         profile_reason = (
             "Software AEC3 bridge is active."
             if bridge_active else "AEC bridge is not active yet."
         )
 
-    if intent.mode == "auto" and not bridge_active:
+    if effective_intent.mode == "auto" and not bridge_active:
         warnings.append("AEC bridge is not active yet.")
-    if intent.chip_aec_enabled and not chip_available:
+    if effective_intent.chip_aec_enabled and not chip_available:
         warnings.append("Chip-AEC needs the XVF3800 6-channel firmware.")
     if (
-        intent.chip_aec_enabled
+        effective_intent.chip_aec_enabled
         and chip_available
         and bridge_active
         and not chip_runtime_active
     ):
         warnings.append("Chip-AEC is selected but the reconciler has not applied it yet.")
-    if not mic.xvf_present and (intent.mode == "auto" or intent.chip_aec_enabled):
+    if not mic.xvf_present and (
+        effective_intent.mode == "auto" or effective_intent.chip_aec_enabled
+    ):
         warnings.append("XVF3800 mic is not detected.")
     if mic.probe_error:
         warnings.append(f"Microphone probe failed: {mic.probe_error}")
 
     return {
         "audio_profile": {
+            "selection": selection,
             "requested": requested_profile,
+            "resolved": requested_profile,
             "active": active_profile,
             "state": profile_state,
             "reason": profile_reason,

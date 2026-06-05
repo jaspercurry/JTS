@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 
 import pytest
 
@@ -121,6 +122,7 @@ def _make_conn(
     model: str = "gpt-realtime-2",
     voice: str = "marin",
     reasoning_effort: str = "low",
+    noise_reduction: str = "off",
 ) -> tuple[OpenAIRealtimeConnection, _FakeConnectFactory]:
     factory = _FakeConnectFactory()
     conn = OpenAIRealtimeConnection(
@@ -128,6 +130,7 @@ def _make_conn(
         model=model,
         voice=voice,
         reasoning_effort=reasoning_effort,
+        noise_reduction=noise_reduction,
         backoff_schedule=backoff_schedule,
         connect_factory=factory,
     )
@@ -203,6 +206,11 @@ def test_is_transient_classifies_correctly():
     # Local-validation errors: never retry.
     assert _is_transient(ValueError("bad config")) is False
     assert _is_transient(TypeError("wrong shape")) is False
+
+
+def test_invalid_noise_reduction_rejected_at_construction():
+    with pytest.raises(RuntimeError, match="OpenAI noise_reduction"):
+        _make_conn(noise_reduction="potato")
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +436,44 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
         assert chunks == [b"audio_chunk_1"]
         assert turn.server_turn_complete() is True
         assert turn.usage_tokens() == {"input_tokens": 12, "output_tokens": 34}
+    finally:
+        await conn.stop()
+
+
+async def test_output_audio_transcript_logged_at_turn_release(caplog):
+    """Production journals should show what the assistant actually said.
+
+    OpenAI's deployed Realtime stream emits
+    ``response.output_audio_transcript.delta`` for assistant speech. The
+    adapter used to ignore that event in production, leaving only the
+    user transcript and tool-call lines for incident debugging."""
+    caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        sess.feed({
+            "type": "response.output_audio_transcript.delta",
+            "delta": "Transport ",
+        })
+        sess.feed({
+            "type": "response.output_audio_transcript.delta",
+            "delta": "error.",
+        })
+        sess.feed({
+            "type": "response.done",
+            "response": {"usage": {"input_tokens": 1, "output_tokens": 2}},
+        })
+
+        await _wait_until(lambda: turn.server_turn_complete(), timeout=2.0)
+        assert turn.assistant_transcript() == "Transport error."
+        await turn.release()
+        assert (
+            "event=openai.assistant_transcript transcript='Transport error.'"
+            in caplog.text
+        )
     finally:
         await conn.stop()
 
@@ -1778,10 +1824,22 @@ async def test_proactive_watchdog_disabled_when_buffer_exceeds_cap():
 # ---------------------------------------------------------------------------
 
 
-async def test_noise_reduction_in_session_payload():
-    """noise_reduction: far_field is always present in the initial
-    session.update for speaker-mic configurations."""
+async def test_noise_reduction_omitted_by_default_in_session_payload():
+    """Bare adapter construction omits provider denoising by default."""
     conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        upd = _find_event(factory.conns[0].sent, "session.update")
+        assert upd is not None
+        assert "noise_reduction" not in upd["session"]["audio"]["input"]
+    finally:
+        await conn.stop()
+
+
+async def test_noise_reduction_far_field_in_session_payload_when_requested():
+    """The resolved provider policy can still request far_field explicitly."""
+    conn, factory = _make_conn(noise_reduction="far_field")
     registry = ToolRegistry()
     await conn.start(registry, "")
     try:
@@ -1789,6 +1847,19 @@ async def test_noise_reduction_in_session_payload():
         assert upd is not None
         nr = upd["session"]["audio"]["input"].get("noise_reduction")
         assert nr == {"type": "far_field"}
+    finally:
+        await conn.stop()
+
+
+async def test_noise_reduction_can_be_disabled_in_session_payload():
+    """Chip-AEC streams can opt out of OpenAI-side denoising."""
+    conn, factory = _make_conn(noise_reduction="off")
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        upd = _find_event(factory.conns[0].sent, "session.update")
+        assert upd is not None
+        assert "noise_reduction" not in upd["session"]["audio"]["input"]
     finally:
         await conn.stop()
 

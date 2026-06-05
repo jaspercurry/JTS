@@ -61,9 +61,9 @@ def test_wake_input_legs_in_priority_order():
 
 def test_chip_aec_beam_legs_are_wake_inputs():
     # The chip-AEC promotion: the XVF3800 fixed 150°/210° ASR beams are now
-    # opt-in, hardware-conditional wake inputs (default-OFF at the config
-    # layer, but wake_input=True at the registry layer). Their tokens +
-    # ports stay frozen so the historical corpus + analysis tooling hold.
+    # hardware-conditional wake inputs selected by the chip-AEC profile.
+    # Their tokens + ports stay frozen so the historical corpus + analysis
+    # tooling hold.
     for token, port in (("chip_aec_150", 9887), ("chip_aec_210", 9888)):
         leg = wake_legs.by_token(token)
         assert leg.wake_input is True

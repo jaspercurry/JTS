@@ -739,7 +739,7 @@ fighting Trixie's libwebrtc surface area.
 | 7 | **NS / AGC tuning sweep** | NS=low, AGC1 on (target=9, max=18) | hours per knob | **Low-medium** — likely diminishing returns vs Phase 1/2 | Already swept extensively (HANDOFF-aec.md "2026-05-20 findings") |
 | 8 | **Speaker ID** (Picovoice Eagle, household member attribution) | None | 1 day to wire | **Low** for mic quality; **medium** for downstream UX | Unblocks per-user routing, doesn't fix mic |
 | 9 | **MIC_GAIN_DB** | 0 (set today, distortion gone) | minutes | **Already done** | Closed |
-| 10 | **Chip-side AEC** (XVF3800 hardware AEC) | Default off; positive lab result with outputd direct fanout, now an opt-in production wake path under validation | Mostly on-device validation + telemetry review | **Promising but gated** | The old no-USB-IN rejection no longer applies. See HANDOFF-aec.md "Option D" and [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md): chip-AEC mode uses outputd's final-buffer producer, a volatile fixed-beam profile, and bridge `:9876` repoint. Keep default off until fresh wake/FA telemetry justifies it. |
+| 10 | **Chip-side AEC** (XVF3800 hardware AEC) | Positive lab result with outputd direct fanout; now the `xvf_chip_aec` production profile selected by `auto` on 6-channel XVF3800 hardware | Mostly on-device validation + telemetry review for tuning | **Recommended on matching XVF hardware; still needs wake/FA telemetry for per-beam thresholds** | The old no-USB-IN rejection no longer applies. See HANDOFF-aec.md "Option D" and [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md): chip-AEC mode uses outputd's final-buffer producer, a volatile fixed-beam profile, and bridge `:9876` repoint. Keep software AEC3 as the explicit fallback profile and use fresh telemetry to tune the chip beams rather than stacking AEC paths. |
 
 **Highest-leverage sequence:** Lever 2 (DTLN-aec spike) → Lever 1 (wake-word
 personalization), in parallel with Lever 3 (TTS routing). Lever 4 (AEC3 RS
@@ -1226,4 +1226,6 @@ distribute JTS to other operators (different rooms, mics, voices)
 and want to automate the per-environment configuration that we're
 doing manually here.
 
-Last verified: 2026-06-01
+Last verified: 2026-06-05 (targeted recheck of the chip-side AEC row
+against the profile-first input policy; broader mic-quality roadmap
+remains from the prior pass.)

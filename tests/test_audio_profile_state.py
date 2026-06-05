@@ -3,6 +3,8 @@ from jasper.audio_profile_state import (
     MicProbe,
     RuntimeAecEnv,
     build_audio_profile_status,
+    profile_env_updates,
+    resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
 
@@ -35,7 +37,9 @@ def test_chip_aec_active_requires_bridge_firmware_and_runtime_env():
     )
 
     assert status["audio_profile"] == {
+        "selection": "xvf_chip_aec",
         "requested": "xvf_chip_aec",
+        "resolved": "xvf_chip_aec",
         "active": "xvf_chip_aec",
         "state": "active",
         "reason": "Chip-AEC runtime env is applied.",
@@ -75,6 +79,7 @@ def test_software_aec3_profile_reports_optional_legs():
     )
 
     assert status["audio_profile"]["requested"] == "xvf_software_aec3"
+    assert status["audio_profile"]["selection"] == "custom"
     assert status["audio_profile"]["active"] == "xvf_software_aec3"
     assert status["microphone"]["wake_legs"] == ["AEC3", "Chip-direct raw", "DTLN"]
 
@@ -89,7 +94,43 @@ def test_disabled_mode_reports_direct_mic_profile():
     )
 
     assert status["audio_profile"]["requested"] == "direct_mic"
+    assert status["audio_profile"]["selection"] == "direct_mic"
     assert status["audio_profile"]["active"] == "direct_mic"
     assert status["audio_profile"]["state"] == "disabled"
     assert status["microphone"]["detected"] is True
     assert status["microphone"]["name"] == "Direct mic (USB PnP Sound Device)"
+
+
+def test_auto_profile_resolves_to_chip_aec_when_available():
+    intent = resolve_audio_input_intent(
+        AecIntent(profile_selection="auto", raw_enabled=True),
+        chip_available=True,
+    )
+
+    assert intent.mode == "auto"
+    assert intent.raw_enabled is False
+    assert intent.dtln_enabled is False
+    assert intent.chip_aec_enabled is True
+
+
+def test_auto_profile_falls_back_to_software_aec3_when_chip_unavailable():
+    intent = resolve_audio_input_intent(
+        AecIntent(profile_selection="auto", chip_aec_enabled=True),
+        chip_available=False,
+    )
+
+    assert intent.mode == "auto"
+    assert intent.raw_enabled is True
+    assert intent.dtln_enabled is False
+    assert intent.chip_aec_enabled is False
+
+
+def test_profile_env_updates_stamp_rollback_safe_legacy_keys():
+    assert profile_env_updates("xvf_chip_aec") == {
+        "JASPER_AUDIO_INPUT_PROFILE": "xvf_chip_aec",
+        "JASPER_AEC_MODE": "auto",
+        "JASPER_WAKE_LEG_RAW": "0",
+        "JASPER_WAKE_LEG_DTLN": "0",
+        "JASPER_WAKE_LEG_CHIP_AEC": "1",
+    }
+    assert profile_env_updates("auto")["JASPER_WAKE_LEG_CHIP_AEC"] == "0"

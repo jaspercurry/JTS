@@ -8,9 +8,9 @@ import { h } from "./dom.js";
 import { sparkline, cpuBars } from "./charts.js";
 import {
   fmtBytes, fmtAgo, fmtEpochAgo, fmtDur, fmtMsAge, fmtRatePerHour,
-  baseName, fmtUSD, toneForPercent, capacityPercent, fanStepInfo, FAN_STEPS,
+  baseName, toneForPercent, capacityPercent, fanStepInfo, FAN_STEPS,
 } from "./format.js";
-import { statCard, defList, badge, table } from "./components.js";
+import { statCard, defList, badge } from "./components.js";
 
 export const AUDIO_OPTIONS = [
   {
@@ -152,43 +152,6 @@ export function softwareList(snap, cur) {
     ["Uptime", fmtDur(cur.uptime_sec)],
     ["Voice provider", snap.voice_provider || "—"],
   ]);
-}
-
-// ---- cloud ---------------------------------------------------------------
-
-export function cloudBody(cloud) {
-  cloud = cloud || { available: false };
-  const summary = defList([
-    ["Sessions today", cloud.available && cloud.sessions_today != null ? String(cloud.sessions_today) : "—"],
-    ["Last 24h spend", cloud.available ? fmtUSD(cloud.spend_last_24h_usd) : "—"],
-    ["Month to date", cloud.available ? fmtUSD(cloud.spend_month_to_date_usd) : "—"],
-    ["Last cloud call", cloud.available && cloud.last_successful_turn_at
-      ? fmtAgo(cloud.last_successful_turn_at) : (cloud.available ? "never" : "—")],
-  ]);
-  const rows = (cloud.available && cloud.by_provider) || [];
-  if (!rows.length) {
-    return [summary, h("p.info-card__note", null, "No sessions this month yet.")];
-  }
-  return [summary, table({
-    modifier: "cloud",
-    columns: [
-      { key: "provider", label: "Provider" },
-      { key: "sessions", label: "Sessions", align: "right" },
-      { key: "input_tokens", label: "In tokens", align: "right" },
-      { key: "output_tokens", label: "Out tokens", align: "right" },
-      { key: "cost_usd", label: "Est. cost", align: "right" },
-      { key: "last_session_at", label: "Last call", align: "right" },
-    ],
-    rows,
-    renderCell(row, col) {
-      if (col.key === "provider") return row.provider || "—";
-      if (col.key === "input_tokens") return (row.input_tokens || 0).toLocaleString();
-      if (col.key === "output_tokens") return (row.output_tokens || 0).toLocaleString();
-      if (col.key === "cost_usd") return fmtUSD(row.cost_usd);
-      if (col.key === "last_session_at") return fmtAgo(row.last_session_at);
-      return String(row[col.key] == null ? "—" : row[col.key]);
-    },
-  })];
 }
 
 // ---- home assistant ------------------------------------------------------

@@ -72,6 +72,10 @@ from .usage import (
     load_pricing_overrides,
     pricing_for_model,
 )
+from .voice.input_policy import (
+    EffectiveSpeechInputPolicy,
+    build_effective_speech_input_policy,
+)
 from .voice.session import AudioOutChunk, LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
 from .volume_observers import VolumeObserver
@@ -720,7 +724,11 @@ def _tts_ready_detail(cfg: Config) -> str:
     return f"tts_transport={cfg.tts_transport} unsupported=true"
 
 
-def _make_connection(cfg: Config) -> LiveConnection:
+def _make_connection(
+    cfg: Config,
+    *,
+    speech_policy: EffectiveSpeechInputPolicy | None = None,
+) -> LiveConnection:
     """Construct the long-lived voice connection for the active provider.
 
     Single switch point — `JASPER_VOICE_PROVIDER` selects which adapter
@@ -732,6 +740,8 @@ def _make_connection(cfg: Config) -> LiveConnection:
     `gemini_session` pulls in `google.genai` (~49 MB resident); loading
     `openai_session`/`grok_session` skips that cost when the active
     provider isn't Gemini. Symmetric for the OpenAI/Grok branches."""
+    if speech_policy is None:
+        speech_policy = build_effective_speech_input_policy(cfg)
     if cfg.voice_provider == "gemini":
         from .voice.gemini_session import GeminiLiveConnection
         return GeminiLiveConnection(
@@ -747,6 +757,7 @@ def _make_connection(cfg: Config) -> LiveConnection:
             model=cfg.openai_model,
             voice=cfg.openai_voice,
             reasoning_effort=cfg.openai_reasoning_effort,
+            noise_reduction=speech_policy.openai_noise_reduction,
             context_reset_sec=float(cfg.openai_context_reset_sec),
             session_max_sec=float(cfg.openai_session_max_sec),
             proactive_buffer_sec=float(cfg.openai_proactive_buffer_sec),
@@ -2076,8 +2087,8 @@ class WakeLoop:
           - 'dtln' → DTLN-aec output (the triple-stream tertiary leg
                      added 2026-05-23 per the triple-stream plan)
           - 'chip_aec_150' / 'chip_aec_210' → the XVF3800 hardware-AEC ASR
-                     beams (opt-in, hardware-conditional; the chip-AEC
-                     promotion). Scored exactly like the software legs —
+                     beams (profile-selected and hardware-conditional).
+                     Scored exactly like the software legs —
                      this method is leg-agnostic via self._legs.
 
         Always tracks the leg's recent peak. If the threshold is crossed
@@ -3485,6 +3496,21 @@ async def run() -> None:
     pricing = pricing_for_model(
         active_model, overrides=load_pricing_overrides(),
     )
+    speech_policy = build_effective_speech_input_policy(cfg)
+    logger.info(
+        "event=voice.input_policy provider=%s profile=%s source=%s "
+        "endpointing=%s openai_noise_reduction=%s "
+        "openai_noise_reduction_source=%s contract=%s",
+        cfg.voice_provider,
+        speech_policy.input_contract.profile,
+        speech_policy.input_contract.source,
+        speech_policy.endpointing,
+        speech_policy.openai_noise_reduction_label,
+        speech_policy.openai_noise_reduction_source,
+        speech_policy.input_contract.provenance,
+    )
+    for warning in speech_policy.warnings:
+        logger.warning("event=voice.input_policy.warning warning=%s", warning)
     logger.info(
         "spend cap: provider=%s model=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
         cfg.voice_provider, active_model, pricing.label,
@@ -3738,7 +3764,7 @@ async def run() -> None:
     # resets and reconnects — the connection re-renders on every
     # fresh open. The location is captured at startup; if you change
     # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
-    connection = _make_connection(cfg)
+    connection = _make_connection(cfg, speech_policy=speech_policy)
     # Time-billed providers (Grok: flat $/hour) price their per-turn token
     # rows to $0; their real cost is connection uptime. Wire a meter —
     # before start() so the initial connect's interval is captured — that

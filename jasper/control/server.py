@@ -61,7 +61,11 @@ from ..audio_profile_state import (
     AecIntent,
     MicProbe,
     build_audio_profile_status,
+    infer_audio_input_profile,
+    normalize_audio_input_profile,
     parse_env_bool as _parse_audio_profile_bool,
+    profile_env_updates,
+    resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
 from ..audio_validation import (
@@ -381,6 +385,7 @@ _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 _LEG_DEFAULT_RAW = True
 _LEG_DEFAULT_DTLN = False
 _LEG_DEFAULT_CHIP_AEC = False
+_PROFILE_DEFAULT = "custom"
 
 # Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). Values
 # are tuples because one operator toggle can arm more than one leg: the
@@ -418,9 +423,12 @@ def _read_aec_state() -> dict:
         "leg_raw": _LEG_DEFAULT_RAW,
         "leg_dtln": _LEG_DEFAULT_DTLN,
         "leg_chip_aec": _LEG_DEFAULT_CHIP_AEC,
+        "profile": "",
     }
+    file_found = False
     try:
         with open(_AEC_MODE_FILE) as f:
+            file_found = True
             for line in f:
                 line = line.strip()
                 if line.startswith("JASPER_AEC_MODE="):
@@ -438,8 +446,25 @@ def _read_aec_state() -> dict:
                     state["leg_chip_aec"] = _parse_env_bool(
                         line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC,
                     )
+                elif line.startswith("JASPER_AUDIO_INPUT_PROFILE="):
+                    state["profile"] = normalize_audio_input_profile(
+                        line.split("=", 1)[1],
+                        default=_PROFILE_DEFAULT,
+                    )
     except OSError:
         pass
+    if not state["profile"]:
+        if file_found:
+            state["profile"] = infer_audio_input_profile(
+                AecIntent(
+                    mode=state["mode"],
+                    raw_enabled=bool(state["leg_raw"]),
+                    dtln_enabled=bool(state["leg_dtln"]),
+                    chip_aec_enabled=bool(state["leg_chip_aec"]),
+                ),
+            )
+        else:
+            state["profile"] = "auto"
     return state
 
 
@@ -452,7 +477,13 @@ def _write_aec_mode(mode: str) -> None:
     """Atomic write of the AEC mode key, preserving leg keys."""
     if mode not in ("auto", "disabled"):
         raise ValueError(f"invalid mode: {mode!r}")
-    _atomic_rewrite_env(_AEC_MODE_FILE, {"JASPER_AEC_MODE": mode})
+    _atomic_rewrite_env(
+        _AEC_MODE_FILE,
+        {
+            "JASPER_AEC_MODE": mode,
+            "JASPER_AUDIO_INPUT_PROFILE": "custom",
+        },
+    )
 
 
 def _write_aec_leg(leg: str, enabled: bool) -> None:
@@ -465,7 +496,22 @@ def _write_aec_leg(leg: str, enabled: bool) -> None:
     if leg not in _TOGGLE_TO_TOKEN:
         raise ValueError(f"invalid leg: {leg!r}")
     key = f"JASPER_WAKE_LEG_{leg.upper()}"
-    _atomic_rewrite_env(_AEC_MODE_FILE, {key: "1" if enabled else "0"})
+    _atomic_rewrite_env(
+        _AEC_MODE_FILE,
+        {
+            key: "1" if enabled else "0",
+            "JASPER_AUDIO_INPUT_PROFILE": "custom",
+        },
+    )
+
+
+def _write_audio_input_profile(profile: str) -> None:
+    """Write a canonical audio input profile plus rollback-safe leg keys."""
+
+    normalized = normalize_audio_input_profile(profile, default="")
+    if not normalized or normalized == "custom":
+        raise ValueError(f"invalid profile: {profile!r}")
+    _atomic_rewrite_env(_AEC_MODE_FILE, profile_env_updates(normalized))
 
 
 def _atomic_rewrite_env(path: str, updates: dict) -> None:
@@ -603,6 +649,7 @@ def _audio_profile_status(
             raw_enabled=bool(state["leg_raw"]),
             dtln_enabled=bool(state["leg_dtln"]),
             chip_aec_enabled=bool(state["leg_chip_aec"]),
+            profile_selection=str(state.get("profile") or ""),
         ),
         runtime,
         MicProbe(
@@ -661,6 +708,16 @@ def _aec_full_status() -> dict:
     # card is absent or on the 2-ch variant; wrap defensively so a probe
     # failure can never 500 a status GET the /wake/ page polls every 3 s.
     chip_available = _chip_aec_available()
+    effective = resolve_audio_input_intent(
+        AecIntent(
+            mode=state["mode"],
+            raw_enabled=bool(state["leg_raw"]),
+            dtln_enabled=bool(state["leg_dtln"]),
+            chip_aec_enabled=bool(state["leg_chip_aec"]),
+            profile_selection=str(state.get("profile") or ""),
+        ),
+        chip_available=chip_available,
+    )
     profile_status = _audio_profile_status(
         state,
         bridge_active=bridge_active,
@@ -672,13 +729,20 @@ def _aec_full_status() -> dict:
         system_env=_fresh_jasper_env(),
     )
     return {
-        "mode": state["mode"],
+        "mode": effective.mode,
+        "profile": state["profile"],
+        "raw_intent": {
+            "mode": state["mode"],
+            "leg_raw": state["leg_raw"],
+            "leg_dtln": state["leg_dtln"],
+            "leg_chip_aec": state["leg_chip_aec"],
+        },
         "bridge_active": bridge_active,
         "legs": {
-            "raw": {"configured": state["leg_raw"]},
-            "dtln": {"configured": state["leg_dtln"]},
+            "raw": {"configured": effective.raw_enabled},
+            "dtln": {"configured": effective.dtln_enabled},
             "chip_aec": {
-                "configured": state["leg_chip_aec"],
+                "configured": effective.chip_aec_enabled,
                 "available": chip_available,
             },
         },
@@ -688,36 +752,6 @@ def _aec_full_status() -> dict:
         "microphone": profile_status["microphone"],
         "validation": _audio_validation_summary(**validation_filters),
     }
-
-
-def _read_cloud_activity() -> dict[str, Any]:
-    """Roll up cloud LLM activity for the /system dashboard.
-
-    Queries the UsageStore SQLite for per-provider session/token/cost
-    aggregates this month + last successful turn timestamp. Returns
-    {"available": False, ...} when the DB hasn't been created yet
-    (fresh install, daemon never opened a session). All queries are
-    local SQLite, sub-millisecond on a Pi 5.
-    """
-    db_path = os.environ.get(
-        "JASPER_USAGE_DB", "/var/lib/jasper/usage.db",
-    )
-    if not os.path.exists(db_path):
-        return {"available": False, "reason": "no usage.db yet"}
-    try:
-        from ..usage import UsageStore
-        store = UsageStore(db_path)
-        return {
-            "available": True,
-            "spend_month_to_date_usd": round(store.spend_month_to_date_usd(), 4),
-            "spend_last_24h_usd": round(store.spend_last_24h_usd(), 4),
-            "sessions_today": store.session_count_today_utc(),
-            "last_successful_turn_at": store.last_successful_turn_at(),
-            "by_provider": store.aggregate_by_provider(),
-        }
-    except Exception as e:  # noqa: BLE001
-        logger.warning("cloud-activity read failed: %s", e)
-        return {"available": False, "reason": str(e)}
 
 
 def _build_spotify_router_or_none():
@@ -1825,9 +1859,7 @@ def _make_handler(
                 return
             if self.path == "/system/snapshot":
                 # Snapshot for the /system dashboard. Current values +
-                # 60-min ring buffers for the sparklines + build info
-                # + cloud activity rolled up from UsageStore (per-
-                # provider sessions/tokens/cost month-to-date) +
+                # 60-min ring buffers for the sparklines + build info +
                 # home_assistant connection status.
                 # Sampler may be None in tests / direct CLI invocation;
                 # surface an empty history rather than 500.
@@ -1880,7 +1912,6 @@ def _make_handler(
                     "airplay_health": airplay_health,
                     "outputd": outputd_status,
                     "audio_quality": _safe_audio_quality_state(),
-                    "cloud": _read_cloud_activity(),
                     "voice_provider": read_active_provider(),
                     "speaker_name": _read_speaker_name_state().__dict__,
                     "home_assistant": ha_status,
@@ -2343,6 +2374,49 @@ def _make_handler(
                 logger.info(
                     "event=aec.leg leg=%s enabled=%s client=%s",
                     leg, enabled_val, self.address_string(),
+                )
+                self._send_json(_aec_full_status())
+                return
+
+            if self.path == "/aec/profile":
+                # Set the canonical mic/AEC input profile. This is the
+                # preferred surface for households and onboarding: it writes
+                # one high-level choice plus rollback-safe legacy leg keys.
+                # The older /aec/toggle and /aec/leg routes remain as custom
+                # expert controls and stamp JASPER_AUDIO_INPUT_PROFILE=custom.
+                try:
+                    body = self._read_json()
+                except (ValueError, OSError) as e:
+                    self._send_json(
+                        {"error": f"invalid request body: {e}"}, status=400,
+                    )
+                    return
+                profile = body.get("profile")
+                if not isinstance(profile, str):
+                    self._send_json(
+                        {"error": "profile must be a string"}, status=400,
+                    )
+                    return
+                try:
+                    _write_audio_input_profile(profile)
+                except (OSError, ValueError) as e:
+                    self._send_json(
+                        {"error": f"write aec_mode.env failed: {e}"},
+                        status=400 if isinstance(e, ValueError) else 502,
+                    )
+                    return
+                try:
+                    _kick_aec_reconciler()
+                except (OSError, subprocess.SubprocessError) as e:
+                    self._send_json(
+                        {"error": f"reconciler restart failed: {e}"},
+                        status=502,
+                    )
+                    return
+                logger.info(
+                    "event=aec.profile profile=%s client=%s",
+                    normalize_audio_input_profile(profile, default=""),
+                    self.address_string(),
                 )
                 self._send_json(_aec_full_status())
                 return

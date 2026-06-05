@@ -33,6 +33,7 @@ URL surface (after nginx strips the /voice/ prefix):
   POST /save-test                 save, run one silent voice-level test, restart
   POST /clear-credentials         clear one provider's key/model/voice
   POST /refresh-models            refresh one provider's cached model list
+  POST /spend-cap                 save daily spend cap settings
   POST /pricing                   save one provider's pricing overrides
   POST /pricing-import            import pricing overrides from pasted JSON
 """
@@ -42,6 +43,7 @@ import argparse
 import html
 import json
 import logging
+import math
 import os
 import re
 import urllib.parse
@@ -72,7 +74,11 @@ from jasper.voice.model_discovery import (
     refresh_provider_cache,
 )
 from jasper.usage import (
+    DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
+    DEFAULT_DAILY_SPEND_CAP_USD,
     DEFAULT_PRICING_FILE,
+    DEFAULT_USAGE_DB,
+    UsageStore,
     default_pricing_as_of,
     load_pricing_overrides,
     pricing_for_model,
@@ -275,6 +281,179 @@ def _active_radio_html(state: dict[str, str]) -> str:
       Paste a key below to enable a provider before saving.</p>
       {''.join(rows)}
     </div>"""
+
+
+def _float_from_state(
+    state: dict[str, str],
+    env_var: str,
+    default: float,
+) -> tuple[float, str, str | None]:
+    raw = _value_for(state, env_var, f"{default:g}").strip()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default, raw, f"{env_var} is not numeric; showing default {default:g}."
+    if not math.isfinite(value):
+        return default, raw, f"{env_var} is not finite; showing default {default:g}."
+    return value, raw, None
+
+
+def _fmt_usd(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"${value:.4f}"
+
+
+def _fmt_env_money(value: float) -> str:
+    if value == 0:
+        return "0"
+    return f"{value:.2f}"
+
+
+def _fmt_env_float(value: float) -> str:
+    return f"{value:g}"
+
+
+def _badge_html(label: str, tone: str) -> str:
+    return (
+        f'<span class="badge" style="--tone:var(--status-{tone})">'
+        f'{html.escape(label)}</span>'
+    )
+
+
+def _read_spend_cap_status(state: dict[str, str]) -> dict[str, Any]:
+    cap_usd, cap_raw, cap_error = _float_from_state(
+        state,
+        "JASPER_DAILY_SPEND_CAP_USD",
+        DEFAULT_DAILY_SPEND_CAP_USD,
+    )
+    safety_multiplier, multiplier_raw, multiplier_error = _float_from_state(
+        state,
+        "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER",
+        DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
+    )
+    errors = [e for e in (cap_error, multiplier_error) if e]
+    if cap_usd < 0:
+        errors.append("JASPER_DAILY_SPEND_CAP_USD is below 0; showing 0.")
+    if safety_multiplier < 1:
+        errors.append(
+            "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER is below 1; showing 1.",
+        )
+    cap_usd = max(0.0, cap_usd)
+    safety_multiplier = max(1.0, safety_multiplier)
+    usage_db = _value_for(state, "JASPER_USAGE_DB", DEFAULT_USAGE_DB)
+    usage_available = os.path.exists(usage_db)
+    usage_error = ""
+    spend_last_24h = 0.0
+    month_to_date = 0.0
+    sessions_today = 0
+    if usage_available:
+        try:
+            store = UsageStore(usage_db)
+            spend_last_24h = store.spend_last_24h_usd()
+            month_to_date = store.spend_month_to_date_usd()
+            sessions_today = store.session_count_today_utc()
+        except Exception as e:  # noqa: BLE001
+            usage_available = False
+            usage_error = str(e)
+            logger.warning("spend-cap status read failed: %s", e)
+    disabled = cap_usd == 0
+    padded_spend = spend_last_24h * safety_multiplier
+    return {
+        "cap_usd": cap_usd,
+        "cap_raw": cap_raw,
+        "safety_multiplier": safety_multiplier,
+        "multiplier_raw": multiplier_raw,
+        "errors": errors,
+        "usage_db": usage_db,
+        "usage_available": usage_available,
+        "usage_error": usage_error,
+        "disabled": disabled,
+        "spend_last_24h_usd": spend_last_24h,
+        "padded_spend_usd": padded_spend,
+        "month_to_date_usd": month_to_date,
+        "sessions_today": sessions_today,
+        "remaining_usd": None if disabled else max(0.0, cap_usd - padded_spend),
+        "allowed": disabled or not usage_available or padded_spend < cap_usd,
+    }
+
+
+def _spend_cap_section_html(state: dict[str, str], csrf_token: str) -> str:
+    status = _read_spend_cap_status(state)
+    disabled = bool(status["disabled"])
+    if disabled:
+        status_badge = _badge_html("disabled", "idle")
+        compare = "disabled"
+        remaining = "disabled"
+    elif not status["usage_available"]:
+        status_badge = _badge_html("no usage yet", "idle")
+        compare = "—"
+        remaining = _fmt_usd(status["cap_usd"])
+    elif status["allowed"]:
+        status_badge = _badge_html("available", "ok")
+        compare = (
+            f'{_fmt_usd(status["padded_spend_usd"])} / '
+            f'{_fmt_usd(status["cap_usd"])}'
+        )
+        remaining = _fmt_usd(status["remaining_usd"])
+    else:
+        status_badge = _badge_html("blocked", "danger")
+        compare = (
+            f'{_fmt_usd(status["padded_spend_usd"])} / '
+            f'{_fmt_usd(status["cap_usd"])}'
+        )
+        remaining = "$0.0000"
+    notes = []
+    if status["errors"]:
+        notes.extend(status["errors"])
+    if status["usage_error"]:
+        notes.append(f'Could not read usage ledger: {status["usage_error"]}')
+    elif not status["usage_available"]:
+        notes.append("No usage ledger exists yet; the first voice turn creates one.")
+    note_html = "".join(
+        f'<p class="form-hint">{html.escape(note)}</p>' for note in notes
+    )
+    cap_value = html.escape(_fmt_env_money(status["cap_usd"]), quote=True)
+    multiplier_value = html.escape(
+        _fmt_env_float(status["safety_multiplier"]),
+        quote=True,
+    )
+    return f"""
+  <section class="section">
+    <h2 class="section__title">Voice spend cap</h2>
+    <div class="info-card spend-cap-card">
+      <dl class="deflist spend-cap__stats">
+        <dt>Status</dt><dd>{status_badge}</dd>
+        <dt>Rolling 24h spend</dt><dd>{_fmt_usd(status["spend_last_24h_usd"]) if status["usage_available"] else "—"}</dd>
+        <dt>Cap comparison</dt><dd>{compare}</dd>
+        <dt>Remaining</dt><dd>{remaining}</dd>
+        <dt>Month to date</dt><dd>{_fmt_usd(status["month_to_date_usd"]) if status["usage_available"] else "—"}</dd>
+        <dt>Turns today</dt><dd>{html.escape(str(status["sessions_today"])) if status["usage_available"] else "—"}</dd>
+      </dl>
+      {note_html}
+      <form method="post" action="spend-cap" class="spend-cap__form">
+        {csrf_field_html(csrf_token)}
+        <div class="field">
+          <label for="daily_spend_cap_usd">Rolling 24h cap (USD)</label>
+          <input id="daily_spend_cap_usd" name="daily_spend_cap_usd"
+                 type="number" min="0" step="0.01" inputmode="decimal"
+                 value="{cap_value}" required>
+          <p class="form-hint">Set to 0 to disable the cap.</p>
+        </div>
+        <div class="field">
+          <label for="daily_spend_cap_safety_multiplier">Safety multiplier</label>
+          <input id="daily_spend_cap_safety_multiplier"
+                 name="daily_spend_cap_safety_multiplier"
+                 type="number" min="1" step="0.05" inputmode="decimal"
+                 value="{multiplier_value}" required>
+          <p class="form-hint">The breaker compares rolling spend times this multiplier to the cap.</p>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn--default" type="submit">Save spend cap</button>
+        </div>
+      </form>
+    </div>
+  </section>"""
 
 
 def _model_select_html(
@@ -492,8 +671,8 @@ def _pricing_section_html(
     <details class="pricing-disclosure">
       <summary>Pricing rates</summary>
       <div class="pricing-disclosure__body">
-        <p class="form-hint">{as_of_txt}Used to estimate spend on the /system
-        dashboard. Blank = use the bundled default; clear a box to reset.
+        <p class="form-hint">{as_of_txt}Used by the /voice spend cap status
+        and circuit breaker. Blank = use the bundled default; clear a box to reset.
         Edits apply to future sessions after the daemon restarts.</p>
         <form method="post" action="pricing">
           {csrf_field_html(csrf_token)}
@@ -770,6 +949,8 @@ def _index_html(
     {_active_radio_html(state)}
   </form>
 
+  {_spend_cap_section_html(state, csrf_token)}
+
   <section class="section">
     <h2 class="section__title">Provider keys</h2>
     <p class="form-hint">Pasted keys are stored on this speaker only, written
@@ -896,6 +1077,47 @@ def _apply_clear(form: dict[str, str], current: dict[str, str]) -> tuple[dict[st
     for spec in p.extras:
         new.pop(spec.env, None)
     return new, None
+
+
+def _parse_spend_float(raw: str, *, label: str, minimum: float) -> tuple[float, str | None]:
+    text = (raw or "").strip()
+    if not text:
+        return 0.0, f"{label} is required."
+    try:
+        value = float(text)
+    except ValueError:
+        return 0.0, f"{label} must be a number."
+    if not math.isfinite(value):
+        return 0.0, f"{label} must be a finite number."
+    if value < minimum:
+        return 0.0, f"{label} must be at least {minimum:g}."
+    return value, None
+
+
+def _apply_spend_cap(
+    form: dict[str, str],
+    current: dict[str, str],
+) -> tuple[dict[str, str], str | None]:
+    cap_usd, cap_err = _parse_spend_float(
+        form.get("daily_spend_cap_usd") or "",
+        label="Rolling 24h cap",
+        minimum=0.0,
+    )
+    if cap_err is not None:
+        return current, cap_err
+    safety_multiplier, multiplier_err = _parse_spend_float(
+        form.get("daily_spend_cap_safety_multiplier") or "",
+        label="Safety multiplier",
+        minimum=1.0,
+    )
+    if multiplier_err is not None:
+        return current, multiplier_err
+    new = dict(current)
+    new["JASPER_DAILY_SPEND_CAP_USD"] = _fmt_env_money(cap_usd)
+    new["JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER"] = _fmt_env_float(
+        safety_multiplier,
+    )
+    return {k: v for k, v in new.items() if v}, None
 
 
 def _provider_key_for_discovery(
@@ -1039,7 +1261,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             path = url.path.rstrip("/") or "/"
             if path not in (
                 "/save", "/save-test", "/clear-credentials",
-                "/refresh-models", "/pricing", "/pricing-import",
+                "/refresh-models", "/spend-cap", "/pricing", "/pricing-import",
             ):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -1058,6 +1280,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/refresh-models":
                 self._handle_refresh_models(form)
+                return
+            if path == "/spend-cap":
+                self._handle_spend_cap(form)
                 return
             if path == "/pricing":
                 self._handle_pricing(form)
@@ -1229,6 +1454,25 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     f"Refreshed {provider.label} models. "
                     "Newly discovered models are experimental until tested."
                 ),
+            )
+
+        def _handle_spend_cap(self, form: dict[str, str]) -> None:
+            current = _load_state(cfg["state_path"])
+            new, err = _apply_spend_cap(form, current)
+            if err is not None:
+                send_see_other(self, "./", flash=err)
+                return
+            try:
+                write_env_file(cfg["state_path"], new)
+            except OSError as e:
+                logger.exception("could not write spend-cap env settings")
+                send_see_other(self, "./", flash=f"Could not save spend cap: {e}")
+                return
+            restart_voice_daemon()
+            send_see_other(
+                self,
+                "./",
+                flash="Saved spend cap. Voice daemon restarting.",
             )
 
         def _handle_pricing(self, form: dict[str, str]) -> None:

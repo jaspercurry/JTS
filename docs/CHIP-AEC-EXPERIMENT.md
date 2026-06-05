@@ -1,7 +1,7 @@
 # Chip-AEC experiment — conclusive test plan
 
-**Status: 2026-05-29 positive lab result; opt-in production path shipped
-and deployed on 2026-05-31.**
+**Status: 2026-05-29 positive lab result; production profile shipped
+and deployed on 2026-06-04.**
 The experiment is no longer a shelved negative. A same-day lab pass
 proved that the XVF3800's on-chip AEC can produce useful cancellation
 in JTS's external-DAC topology when the chip receives a clean USB-IN
@@ -10,12 +10,13 @@ comparison profile that can enter/exit the needed test state and label
 the `150°` / `210°` ASR beam outputs explicitly. That profile uses
 outputd's direct final-output fanout: a 48 kHz UDP reference for
 software AEC/corpus analysis plus a 16 kHz downsampled XVF3800 USB-IN
-reference PCM for chip AEC. The `chip_aec_150` / `chip_aec_210` beams
-are now **opt-in, hardware-conditional, scored production wake legs**
+reference PCM for chip AEC. The production speaker is now
+**profile-first**: fresh installs seed `JASPER_AUDIO_INPUT_PROFILE=auto`,
+which resolves to the XVF chip-AEC profile on 6-channel XVF3800 hardware
+and falls back to software AEC3/direct mic when that path is unavailable
 (see [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
-§2.4). They stay default-OFF on fresh installs and are only armed when
-the 6-channel XVF firmware is present and the operator enables chip-AEC
-via `/wake/`.
+§2.4). The `chip_aec_150` / `chip_aec_210` beams remain
+hardware-conditional scored wake legs inside that profile.
 
 **Current production state (verified on Pi, 2026-05-31, build
 `c95bfdd`).**
@@ -81,7 +82,7 @@ renderer path) and let the profile observe outputd counters during that
 window. Fixed-delay and long-window drift evidence remain `not_run`
 until an explicit operator-confirmed playback/capture probe lands, so
 clean passive evidence still produces a partial validation result rather
-than default-on chip-AEC approval: a `status=warn` artifact with
+than full chip-AEC profile validation: a `status=warn` artifact with
 `recommendation=run_drift_delay_validation`.
 
 For the DAC8x/outputd xrun workstream, use the separate outputd-only
@@ -339,20 +340,21 @@ continue, and exiting corpus mode explicitly restores the production
 `SHF_BYPASS=1` + OP_L/OP_R routing overlay. A failed chip write is a
 mode-transition failure, not a best-effort warning, because mislabeled
 corpus audio is worse than no corpus audio.
-The chip-AEC beams have been promoted from corpus-only to opt-in,
-**default-OFF** production wake legs (see
+The chip-AEC beams have been promoted from corpus-only to the
+hardware-conditional XVF chip-AEC production profile (see
 [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
-§2.4). They stay default-OFF: gate any default-ON flip on a ~1-week
-telemetry review of each beam's recall / false-accept contribution
+§2.4). The remaining validation question is not whether the beam
+infrastructure is enabled, but whether each fixed beam's recall /
+false-accept contribution warrants per-leg threshold or fusion changes
 against a fresh corpus window (`scripts/analyze-three-leg.sh`).
 
 ### Plug-in contract — what you measure off-box and where it lands
 
-The leg *infrastructure* (registry → config → reconciler → bridge/init
-producer → voice wiring → telemetry columns/WAVs → `/wake/` toggle/status)
-is built and default-OFF. To tune how the chip beams perform, measure the
-values below and plug them into the existing slots. Nothing here needs the
-leg infrastructure to change — these are values, not new code paths.
+The profile infrastructure (registry → config → reconciler → bridge/init
+producer → voice wiring → telemetry columns/WAVs → `/wake/` status) is
+built. To tune how the chip beams perform, measure the values below and
+plug them into the existing slots. Nothing here needs the leg
+infrastructure to change — these are values, not new code paths.
 
 | # | Tunable (what you measure) | Plug-in point | Shape | "Good" = |
 |---|---|---|---|---|
@@ -1209,6 +1211,7 @@ saved `aec-chip-aec-150` / `aec-chip-aec-210` WAVs, but no fresh
 music-active wake event was captured during the later AirPlay attempt;
 music-under-wake telemetry remains inconclusive. Fixed acoustic
 drift/delay and a labeled music-active wake window remain the next
-gates before any default-on chip-AEC decision. This doc still preserves
-a dmix-era experiment snapshot in places; current production topology
-lives in `docs/audio-paths.md`.
+gates for tuning the active chip-AEC profile and any future per-leg
+threshold/fusion changes. This doc still preserves a dmix-era experiment
+snapshot in places; current production topology lives in
+`docs/audio-paths.md`.

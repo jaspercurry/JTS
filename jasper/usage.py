@@ -30,13 +30,13 @@ Time-billed providers (``grok``): Grok Voice bills a flat hourly rate,
 not per-token, so its token rows price to $0. ``ConnectionUptimeMeter``
 records connect/disconnect intervals into the ``connection_intervals``
 table; the spend queries fold that uptime cost in at the flat rate, so
-Grok's cost shows up on the dashboard and counts against the cap. See
+Grok's cost shows up in spend-cap status and counts against the cap. See
 ``ConnectionUptimeMeter`` and ``UsageStore._time_billed_spend_by_provider``.
 
 Display vs. circuit-breaker: the stored ``cost_usd`` is a best-effort
 TRUE estimate (provider list rates). The spend cap stays conservative
 without inflating the displayed number by applying a read-time
-``safety_multiplier`` in ``SpendCap`` — so the dashboard reads honest
+``safety_multiplier`` in ``SpendCap`` — so the status card reads honest
 while the breaker keeps headroom.
 
 Override file: the bundled rates are defaults. An optional
@@ -56,6 +56,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_DAILY_SPEND_CAP_USD = 1.0
+DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER = 1.25
+DEFAULT_USAGE_DB = "/var/lib/jasper/usage.db"
 
 
 @dataclass(frozen=True)
@@ -557,9 +561,9 @@ class UsageStore:
 
     def spend_month_to_date_usd(self) -> float:
         """Cumulative cost since the start of the current calendar
-        month (UTC). Used by the /system dashboard's cloud-activity
-        card to surface a stable monthly figure (the 24h rolling
-        number bounces too much for an at-a-glance view)."""
+        month (UTC). Used by the /voice spend-cap status card to surface
+        a stable monthly figure (the 24h rolling number bounces too much
+        for an at-a-glance view)."""
         now = datetime.now(timezone.utc)
         month_start = now.replace(
             day=1, hour=0, minute=0, second=0, microsecond=0,
@@ -576,9 +580,9 @@ class UsageStore:
     def aggregate_by_provider(
         self, since_utc: datetime | None = None,
     ) -> list[dict]:
-        """Per-provider session/token/cost rollup. Used by the
-        dashboard's "Cloud activity" card. Default window is the
-        current calendar month.
+        """Per-provider session/token/cost rollup. Useful for diagnostics
+        and future spend details. Default window is the current calendar
+        month.
 
         Returns rows like::
           {"provider": "gemini", "sessions": 12, "input_tokens": 1234,
@@ -653,8 +657,8 @@ class UsageStore:
 
     def last_successful_turn_at(self) -> str | None:
         """ISO timestamp of the most recently-ended session, or None
-        if no session has ever closed. The dashboard renders this as
-        '8 min ago' for the cloud-activity card."""
+        if no session has ever closed. Status surfaces can render this
+        as relative time when they need recent-provider-call context."""
         cur = self._conn.execute(
             "SELECT ended_at FROM sessions "
             "WHERE ended_at IS NOT NULL "

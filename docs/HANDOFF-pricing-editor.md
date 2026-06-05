@@ -313,6 +313,10 @@ per-provider price integrations.
   `_pricing_research_prompt`, `_pricing_refresh_html`, `_apply_pricing_paste`,
   `_sparsify_overrides`, `POST /pricing-import` (MERGES into existing —
   preserves models the paste omits — and keeps the sparse invariant).
+  Also owns the `/voice` spend-cap status/settings surface
+  (`_spend_cap_section_html`, `_apply_spend_cap`, `POST /spend-cap`);
+  canonical spend-accounting behavior remains in
+  [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md).
 - `jasper/web/_common.py` — `write_json_file` (atomic, mode 0644).
 - `tests/test_usage.py`, `tests/test_voice_setup.py`, `tests/test_doctor.py`
   — coverage incl. the import-merge route test.

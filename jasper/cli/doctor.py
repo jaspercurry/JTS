@@ -39,6 +39,7 @@ from ..audio_profile_state import (
     AecIntent,
     MicProbe,
     build_audio_profile_status,
+    resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
 from ..audio_validation import (
@@ -720,6 +721,15 @@ def check_nqptp_running() -> CheckResult:
     )
 
 
+def _active_audio_dac_id() -> str:
+    env = _shared_parse_env_file("/etc/jasper/jasper.env")
+    return (
+        os.environ.get("JASPER_AUDIO_DAC_ID")
+        or env.get("JASPER_AUDIO_DAC_ID")
+        or "apple_usb_c_dongle"
+    )
+
+
 def check_apple_dongle_audio() -> CheckResult:
     """Apple's USB-C → 3.5mm Headphone Jack Adapter only exposes its
     USB Audio class interfaces when something is plugged into the
@@ -736,6 +746,13 @@ def check_apple_dongle_audio() -> CheckResult:
         actionable message (plug in speakers/headphones)
       - dongle audio active: card visible → ok
     """
+    dac_id = _active_audio_dac_id()
+    if dac_id != "apple_usb_c_dongle":
+        return CheckResult(
+            "Apple dongle", "ok",
+            f"skipped — active output DAC is {dac_id}",
+        )
+
     p = _run(["lsusb"])
     has_apple_dongle = bool(re.search(r"05ac:110a", p.stdout))
     if not has_apple_dongle:
@@ -769,6 +786,13 @@ def check_dongle_headphone_at_max() -> CheckResult:
     this check catches it. -36 dB at 40% was the historical "safe test"
     setting and is what triggered the audible-loudness gap that led to
     this check existing."""
+    dac_id = _active_audio_dac_id()
+    if dac_id != "apple_usb_c_dongle":
+        return CheckResult(
+            "Dongle headphone gain", "ok",
+            f"skipped — active output DAC is {dac_id}",
+        )
+
     p = _run(["amixer", "-c", "A", "sget", "Headphone"])
     if p.returncode != 0:
         return CheckResult(
@@ -1928,6 +1952,26 @@ def _aec_mode_setting() -> str:
     return "auto"
 
 
+def _aec_profile_setting() -> str:
+    """Read JASPER_AUDIO_INPUT_PROFILE from aec_mode.env.
+
+    Empty string means pre-profile config; audio_profile_state infers the
+    nearest legacy profile from JASPER_AEC_MODE + leg booleans.
+    """
+
+    p = Path("/var/lib/jasper/aec_mode.env")
+    if not p.exists():
+        return ""
+    try:
+        for line in p.read_text().split("\n"):
+            line = line.strip()
+            if line.startswith("JASPER_AUDIO_INPUT_PROFILE="):
+                return line.split("=", 1)[1].strip().strip("'\"")
+    except OSError:
+        pass
+    return ""
+
+
 def _wake_leg_setting(key: str, default: bool) -> bool:
     """Read a JASPER_WAKE_LEG_* boolean from aec_mode.env, with the
     same normalization the bash reconciler does. Defaults applied when
@@ -1951,6 +1995,14 @@ def _wake_leg_setting(key: str, default: bool) -> bool:
     except OSError:
         pass
     return default
+
+
+def _chip_aec_available_for_doctor() -> bool:
+    try:
+        from ..mics import xvf3800
+        return xvf3800.is_recommended_firmware()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _voice_wake_legs_runtime() -> "set[str] | None":
@@ -2052,13 +2104,27 @@ def check_wake_legs_configured() -> CheckResult:
     raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
     dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)
     chip_aec = _wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC", False)
+    effective = resolve_audio_input_intent(
+        AecIntent(
+            mode=aec_mode,
+            raw_enabled=raw,
+            dtln_enabled=dtln,
+            chip_aec_enabled=chip_aec,
+            profile_selection=_aec_profile_setting(),
+        ),
+        chip_available=_chip_aec_available_for_doctor(),
+    )
     # Only worth a control-plane round-trip when AEC (and thus the legs)
     # is actually on; _assess_wake_legs returns n/a otherwise.
     armed_runtime = (
-        _voice_wake_legs_runtime() if aec_mode == "auto" else None
+        _voice_wake_legs_runtime() if effective.mode == "auto" else None
     )
     return _assess_wake_legs(
-        aec_mode, raw, dtln, armed_runtime, chip_aec=chip_aec,
+        effective.mode,
+        effective.raw_enabled,
+        effective.dtln_enabled,
+        armed_runtime,
+        chip_aec=effective.chip_aec_enabled,
     )
 
 
@@ -2117,6 +2183,7 @@ def _audio_profile_status_for_doctor(
             chip_aec_enabled=_wake_leg_setting(
                 "JASPER_WAKE_LEG_CHIP_AEC", False,
             ),
+            profile_selection=_aec_profile_setting(),
         ),
         runtime,
         mic_probe,

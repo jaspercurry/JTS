@@ -39,7 +39,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     for var in [
         "JASPER_GEMINI_MODEL", "JASPER_GEMINI_VOICE",
         "JASPER_OPENAI_MODEL", "JASPER_OPENAI_VOICE",
-        "JASPER_OPENAI_REASONING_EFFORT",
+        "JASPER_OPENAI_REASONING_EFFORT", "JASPER_OPENAI_NOISE_REDUCTION",
         "JASPER_GROK_MODEL", "JASPER_GROK_VOICE",
         "JASPER_WAKE_MODEL",
         "JASPER_DUCK_DB", "JASPER_DAILY_SPEND_CAP_USD",
@@ -65,6 +65,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.openai_reasoning_effort == catalog.default_extra_value(
         "openai", "reasoning_effort",
     )
+    assert cfg.openai_noise_reduction == "auto"
     assert cfg.grok_model == catalog.default_model_id("grok")
     assert cfg.grok_voice == catalog.default_voice_id("grok")
     assert cfg.wake_model == "hey_jarvis"
@@ -87,6 +88,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.mic_device == "Array"
     assert cfg.mic_capture_rate == 16000
     assert cfg.mic_capture_channels == 1
+    assert cfg.aec_chip_aec_enabled is False
     assert cfg.tts_device == "jasper_out"
     assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == "/run/jasper-outputd/tts.sock"
@@ -118,6 +120,23 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.bus_stops == ()
     assert cfg.bus_enabled is False
     assert cfg.spotify_enabled is False
+
+
+def test_openai_noise_reduction_env(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_OPENAI_NOISE_REDUCTION", "off")
+
+    cfg = Config.from_env()
+
+    assert cfg.openai_noise_reduction == "off"
+
+
+def test_invalid_openai_noise_reduction_env_rejected(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_OPENAI_NOISE_REDUCTION", "potato")
+
+    with pytest.raises(RuntimeError, match="JASPER_OPENAI_NOISE_REDUCTION"):
+        Config.from_env()
 
 
 def test_missing_voice_provider_raises_setup_exception(monkeypatch):

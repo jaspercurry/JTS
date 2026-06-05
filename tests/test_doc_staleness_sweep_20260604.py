@@ -97,7 +97,7 @@ def test_wake_telemetry_doc_uses_1gb_not_500mb(monkeypatch):
     doc = _read("docs/HANDOFF-wake-telemetry.md")
     assert "500 MB" not in doc
     assert "once per hour" not in doc
-    assert "Last verified: 2026-06-04" in doc
+    assert "Last verified: 2026-06-05" in doc
 
 
 def test_correction_init_points_at_real_apply_path():

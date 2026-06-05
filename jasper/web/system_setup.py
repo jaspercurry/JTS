@@ -1,12 +1,12 @@
 """System dashboard at /system/.
 
 Read-only(ish) view of what the speaker is doing — RAM/CPU/temp/disk
-with 60-min sparklines, software version, cloud activity (per-provider
-sessions/tokens/cost), network + renderer state, and a few action
-buttons (restart voice / audio / reboot, run diagnostics).
+with 60-min sparklines, software version, network + renderer state,
+and a few action buttons (restart voice / audio / reboot, run
+diagnostics). Voice spend status and cap settings live on /voice/.
 
 Data comes from jasper-control:
-  GET  /system/snapshot     metrics + cloud + build (5 s ring buffer)
+  GET  /system/snapshot     metrics + build (5 s ring buffer)
   GET  /system/diagnostics  runs jasper-doctor --json (~3-5 s)
   POST /system/restart/*    restart voice / audio chain
   POST /system/reboot       full Pi reboot
