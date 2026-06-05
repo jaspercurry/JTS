@@ -12,6 +12,7 @@ INFO logging)::
     JASPER_DEBUG_VOICE=1            # one per subsystem id (see SUBSYSTEMS)
     JASPER_DEBUG_AEC=1
     JASPER_DEBUG_CONTROL=1
+    JASPER_DEBUG_USBSINK=1
     JASPER_DEBUG_EXPIRES_AT=1717000000   # unix epoch; shared auto-expiry
 
 **Design invariant — additive only.** This module can only *raise*
@@ -25,15 +26,16 @@ whole debug session (default 2 h, re-armed on each toggle change). Once
 it passes, :func:`resolve_debug_state` reports everything inactive even
 if the per-subsystem flags are still ``1`` — so a daemon that reads the
 file after expiry comes up at normal INFO. ``jasper-control`` owns the
-timer that actually rewrites the file + restarts the affected daemons
-at expiry; this module just makes the *read* honest in the meantime.
+timer that clears the file at expiry; each daemon owns its in-process
+self-quiet timer so expiry does not restart anything.
 
 **Why a fresh file read, not ``os.environ``.** Mirrors
 :mod:`jasper.voice.provider_state`: long-lived daemons freeze their
 env at process start, so the apply path reads the file directly. A
 daemon's logging level is set once at startup (``apply_for`` is called
-right after ``logging.basicConfig``), so a toggle takes effect when
-``jasper-control`` restarts that daemon — the restart-to-apply MVP.
+right after ``logging.basicConfig``). A toggle applies according to the
+subsystem policy: in process, by restarting an always-on unit, or by
+deferring until an optional inactive unit next starts.
 """
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 from .env_load import parse_env_file
 
@@ -57,18 +60,23 @@ DEFAULT_TTL_SEC = 2 * 60 * 60
 EXPIRES_KEY = "JASPER_DEBUG_EXPIRES_AT"
 
 
+ApplyPolicy = Literal["in_process", "restart", "restart_if_active"]
+
+
 @dataclass(frozen=True)
 class Subsystem:
     """One togglable subsystem. ``unit`` is the systemd unit
-    ``jasper-control`` restarts to apply a change; ``loggers`` are the
-    logger names raised to DEBUG inside that daemon's process (each
-    daemon is one process, so the daemon's whole ``jasper`` tree is the
-    natural unit)."""
+    ``jasper-control`` touches to apply a change; ``apply_policy`` says
+    whether that is an in-process apply, an unconditional restart, or a
+    restart only when the unit is already active. ``loggers`` are the logger
+    names raised to DEBUG inside that daemon's process (each daemon is one
+    process, so the daemon's whole ``jasper`` tree is the natural unit)."""
 
     id: str
     unit: str
     label: str
     loggers: tuple[str, ...]
+    apply_policy: ApplyPolicy = "restart"
 
 
 # The subsystems the Debug card exposes. Extensible: add a row here, wire
@@ -84,6 +92,11 @@ SUBSYSTEMS: dict[str, Subsystem] = {
     ),
     "control": Subsystem(
         "control", "jasper-control.service", "Control", ("jasper",),
+        apply_policy="in_process",
+    ),
+    "usbsink": Subsystem(
+        "usbsink", "jasper-usbsink.service", "USB input", ("jasper",),
+        apply_policy="restart_if_active",
     ),
 }
 
@@ -259,9 +272,9 @@ def apply_for(
                 logging.getLogger(name).setLevel(logging.DEBUG)
         set_console_debug(active)
         # Arm an in-process self-quiet: drop the journal handler back to INFO
-        # when the session's TTL elapses — no restart. (voice/aec quiet
+        # when the session's TTL elapses — no restart. Daemons quiet
         # themselves this way; jasper-control is only needed to clear the
-        # debug.env SSOT at expiry.)
+        # debug.env SSOT at expiry.
         if active and state.remaining_sec > 0:
             _arm_self_quiet(state.remaining_sec)
         else:

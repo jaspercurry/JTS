@@ -8,7 +8,7 @@ top of that resilience ladder and does not restate it.
 
 > **Status: current-state reference + approved design.** The
 > "Current state" section is operational truth (verified
-> 2026-06-02). Tier A/B/C are built; Tier D was removed in review.
+> 2026-06-04). Tier A/B/C are built; Tier D was removed in review.
 > New observability work should preserve the three-plane boundary
 > below: cheap production truth, temporary debug verbosity, and
 > explicit bounded diagnostic artifacts.
@@ -17,7 +17,7 @@ top of that resilience ladder and does not restate it.
 
 ## Current state (operational truth)
 
-**Three-plane boundary (load-bearing, verified 2026-06-02).**
+**Three-plane boundary (load-bearing, verified 2026-06-04).**
 JTS intentionally separates:
 
 1. **Production health:** always-on, cheap, fixed-shape truth:
@@ -137,7 +137,7 @@ decision telemetry and remains INFO.
 
 **Tier B — done (2026-05-30; pending on-device verification).** A
 collapsed **Debug logging** card on `/system` expands to one
-checkbox per subsystem (**voice**, **aec**, **control** — the
+checkbox per subsystem (**voice**, **aec**, **control**, **USB input** — the
 daemons with a clean `basicConfig` seam; shairport's config-file
 `log_verbosity` and mux's `--log-level` are a different mechanism,
 deferred). Each toggle raises that daemon's `jasper` logger to
@@ -155,9 +155,12 @@ DEBUG. As built:
   lives in **jasper-control** (long-lived) — it *must*, because the
   `/system` page server (:8772) idle-exits after 30 min and can't
   own the auto-expiry timer. `set_debug` writes `debug.env`
-  atomically, then **restarts voice/aec to apply** but applies
-  **control in-process** (a self-restart would drop the request +
-  the timer).
+  atomically, then applies according to each subsystem's policy:
+  always-on daemons such as voice and AEC restart, optional daemons
+  such as USB input restart **only if already active** (otherwise the
+  flag is deferred until the source's next legitimate start), and
+  control applies **in-process** (a self-restart would drop the request
+  + the timer).
 - **Endpoints:** `GET`/`POST /debug` on jasper-control (:8780),
   reachable from the card via a dedicated `location /debug` nginx
   block (mirroring `/mic`, `/volume`); the card fetches the absolute
@@ -188,7 +191,10 @@ by `tests/test_debug_mode.py` + `tests/test_debug_control.py`.
 and its toggles trigger real daemon restarts, so after a deploy open
 `http://jts.local/system/`, toggle **voice**, and confirm
 `journalctl -u jasper-voice` shows DEBUG lines + the countdown and
-auto-quiet fire.
+auto-quiet fire. Also verify USB input while inactive: toggling debug
+must leave `jasper-usbsink.service` stopped and log
+`event=debug.apply_deferred`; with USB input active, the toggle should
+restart `jasper-usbsink.service` normally.
 
 **Tier C — flight recorder (built 2026-05-30; pending on-device
 verification).** A bounded in-RAM verbose ring per daemon,
@@ -237,7 +243,7 @@ class RingFlushHandler(logging.Handler):                   # level = DEBUG
   hazard if the handler were ever missing. The SIGUSR1 handler is
   installed *unconditionally* so an unhandled signal can't terminate
   a daemon.)
-- **Scope (v1):** voice + aec + control.
+- **Scope (v1):** voice + aec + control + usbsink.
 
 *Tier-B integration (done).* `apply_for` now also flips the journal
 *handler* level via `set_console_debug` (the logger is held at DEBUG
@@ -256,8 +262,9 @@ unless they become steady-state spam.
 *Cost (measured).* The ring stores **formatted strings**, not
 `LogRecord` objects, so RAM is bounded by line length and never pins a
 large object passed as a log arg. At the default N=1000: ~0.3 MB/daemon,
-~0.9 MB across voice+aec+control — under ~0.1% of a 1 GB Pi. Tunable
-(capacity) and off-switchable (`JASPER_FLIGHT_RECORDER=disabled`). (An
+~1.2 MB across voice + aec + control + usbsink — around 0.1% of a
+1 GB Pi. Tunable (capacity) and off-switchable
+(`JASPER_FLIGHT_RECORDER=disabled`). (An
 earlier draft stored `LogRecord` objects — ~1.3 MB/daemon and an
 unbounded tail if a hot DEBUG line logged a big object; the string store
 removed both.)
@@ -266,10 +273,10 @@ removed both.)
 `logger.isEnabledFor(DEBUG)` is **always True** for `jasper.*` — so the
 usual cheap-guard idiom no longer short-circuits a per-frame
 `logger.debug(...)` on a hot audio path (it builds a record + a string
-every frame). There is none today (checked: `aec_bridge.py` /
-`voice_daemon.py` only log DEBUG on error/status-change paths), and a
-comment at the `install()` site flags it — keep hot-loop logging
-coarser than DEBUG or rate-limit it.
+every frame). There is none today (checked: `aec_bridge.py`,
+`voice_daemon.py`, and `usbsink/audio_bridge.py` only log DEBUG on
+error/status-change paths), and a comment at the `install()` site flags
+it — keep hot-loop logging coarser than DEBUG or rate-limit it.
 
 *Honest grounding.* A small custom `logging.Handler` (stdlib
 `MemoryHandler` evaluated — see Mechanism) + the general pattern
@@ -283,8 +290,9 @@ it to logs.
 
 *As built.* [`jasper/flight_recorder.py`](../jasper/flight_recorder.py)
 (`RingFlushHandler` + `install()` + `dump()` + a SIGUSR1 handler)
-wired into voice/aec/control startup; `debug_mode.apply_for` gained
-`set_console_debug` so the toggle moves the journal handler; explicit
+wired into voice, AEC, control, and usbsink startup;
+`debug_mode.apply_for` gained `set_console_debug` so the toggle moves
+the journal handler; explicit
 `dump()` from the `flag_recent_issue` voice tool, plus a manual
 `systemctl kill -s USR1 <unit>` for an operator (supervisor restarts
 auto-flush — they already log ERROR). The handler is installed
@@ -356,4 +364,4 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-06-02
+Last verified: 2026-06-04

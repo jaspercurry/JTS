@@ -113,15 +113,20 @@ def test_capture_callback_smaller_block_uses_prefix_only():
 
 def test_capture_callback_increments_frame_counter():
     """Every callback increments stats.frames_captured by `frames`.
-    The diagnostic loop uses this to pat the watchdog."""
+    The diagnostic loop uses callback counters for source-idle telemetry."""
     bridge = _make_bridge()
     assert bridge.stats.frames_captured == 0
+    assert bridge.stats.capture_callbacks == 0
+    assert bridge.stats.last_capture_callback_mono == 0.0
 
     bridge._capture_callback(_silence_block(), BLOCK_FRAMES, None, None)
     assert bridge.stats.frames_captured == BLOCK_FRAMES
+    assert bridge.stats.capture_callbacks == 1
+    assert bridge.stats.last_capture_callback_mono > 0.0
 
     bridge._capture_callback(_silence_block(), BLOCK_FRAMES, None, None)
     assert bridge.stats.frames_captured == 2 * BLOCK_FRAMES
+    assert bridge.stats.capture_callbacks == 2
 
 
 def test_capture_callback_status_increments_error_counter():
@@ -196,7 +201,7 @@ def test_capture_callback_drops_on_queue_full():
 
 def test_playback_callback_normal_path_writes_block_from_queue():
     """When not preempted and queue has data, playback writes the
-    dequeued bytes into outdata and increments frames_played."""
+    dequeued bytes into outdata and increments output counters."""
     bridge = _make_bridge()
     # Stage a block in the queue
     payload = b"\x11\x22" * (BLOCK_FRAMES * CHANNELS)
@@ -207,12 +212,15 @@ def test_playback_callback_normal_path_writes_block_from_queue():
 
     assert bytes(out) == payload
     assert bridge.stats.frames_played == BLOCK_FRAMES
+    assert bridge.stats.frames_output == BLOCK_FRAMES
+    assert bridge.stats.playback_callbacks == 1
+    assert bridge.stats.last_playback_callback_mono > 0.0
 
 
 def test_playback_callback_preempt_silences_output_and_drains_queue():
     """When preempted, the playback callback writes zeros regardless
-    of queue contents AND drains one queue entry so backlogged frames
-    don't cause an ever-growing latency after un-preempt."""
+    of queue contents, drains one queue entry, and still records output
+    progress so idle/preempted USB does not look like a daemon wedge."""
     bridge = _make_bridge()
     bridge.set_preempted(True)
     # Backlog a noisy block
@@ -227,6 +235,11 @@ def test_playback_callback_preempt_silences_output_and_drains_queue():
     assert all(b == 0 for b in out), "preempted output must be silenced"
     # Queue was drained to prevent backlog buildup
     assert bridge._queue.qsize() == 0
+    assert bridge.stats.frames_output == BLOCK_FRAMES
+    assert bridge.stats.playback_callbacks == 1
+    # Preempt discards queued host audio, so frames_played keeps its
+    # "content from capture queue" meaning.
+    assert bridge.stats.frames_played == 0
 
 
 def test_playback_callback_underrun_silences_and_increments_counter():
@@ -242,6 +255,8 @@ def test_playback_callback_underrun_silences_and_increments_counter():
 
     assert all(b == 0 for b in out)
     assert bridge.stats.frames_underrun == BLOCK_FRAMES
+    assert bridge.stats.frames_output == BLOCK_FRAMES
+    assert bridge.stats.playback_callbacks == 1
 
 
 def test_playback_callback_status_increments_error_counter():
@@ -251,6 +266,8 @@ def test_playback_callback_status_increments_error_counter():
     out = bytearray(BLOCK_FRAMES * CHANNELS * 2)
     bridge._playback_callback(out, BLOCK_FRAMES, None, "any-status")
     assert bridge.stats.playback_errors == 1
+    assert bridge.stats.frames_output == BLOCK_FRAMES
+    assert bridge.stats.playback_callbacks == 1
 
 
 def test_playback_callback_partial_block_truncates_and_zeros_rest():

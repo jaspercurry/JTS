@@ -68,8 +68,15 @@ QUEUE_MAXBLOCKS = 8
 class BridgeStats:
     """Lightweight counters for diagnostics. Reads are not locked —
     a torn read is benign (only used for logging snapshots)."""
+    capture_callbacks: int = 0
+    playback_callbacks: int = 0
     frames_captured: int = 0
+    # Frames of queued host audio written into the renderer lane.
     frames_played: int = 0
+    # Frames written by the playback callback regardless of source:
+    # queued audio, preempt silence, or underrun silence. This is the
+    # liveness counter for "the output stream is still being serviced."
+    frames_output: int = 0
     frames_dropped_full: int = 0
     frames_underrun: int = 0
     capture_errors: int = 0
@@ -82,6 +89,8 @@ class BridgeStats:
     last_capture_status: int = 0
     last_playback_status: int = 0
     started_at_mono: float = field(default_factory=time.monotonic)
+    last_capture_callback_mono: float = 0.0
+    last_playback_callback_mono: float = 0.0
 
 
 class AudioBridge:
@@ -293,6 +302,8 @@ class AudioBridge:
     # ------------------------------------------------------------------
 
     def _capture_callback(self, indata, frames, time_info, status) -> None:
+        self.stats.capture_callbacks += 1
+        self.stats.last_capture_callback_mono = time.monotonic()
         if status:
             # ALSA underruns / overflows on the gadget side. Counted,
             # not logged per-frame — too chatty AND the audio thread
@@ -354,6 +365,9 @@ class AudioBridge:
             self.stats.frames_dropped_full += frames
 
     def _playback_callback(self, outdata, frames, time_info, status) -> None:
+        self.stats.playback_callbacks += 1
+        self.stats.last_playback_callback_mono = time.monotonic()
+        self.stats.frames_output += frames
         if status:
             self.stats.playback_errors += 1
             try:

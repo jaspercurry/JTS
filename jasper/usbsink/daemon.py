@@ -12,12 +12,12 @@ Lifecycle (Phase 2):
     [signal]
     daemon.request_stop()             # graceful shutdown
 
-The watchdog heartbeat reflects forward progress in the audio bridge:
-if the capture callback stops being invoked (PortAudio thread wedged,
-the way jasper-aec-bridge wedged on 2026-05-11), the heartbeat stops
-patting, systemd's `WatchdogSec=` fires, and `Restart=on-failure`
-revives us with a fresh process. See jasper.watchdog for the
-sentinel pattern.
+The watchdog heartbeat reflects forward progress in the audio bridge's
+playback/output callback. That side is expected to keep emitting either
+host audio or explicit silence while the feature is enabled. Capture
+progress is *not* a health requirement: a USB host can be unplugged,
+plugged in but paused, or using another source, and all of those are
+normal idle states. See jasper.watchdog for the sentinel pattern.
 """
 from __future__ import annotations
 
@@ -51,15 +51,18 @@ logger = logging.getLogger(__name__)
 # observation.
 DIAG_INTERVAL_SEC = 30.0
 
-# Watchdog progress-stale threshold. If the capture callback's
-# `frames_captured` counter hasn't moved in this long while the
-# bridge is supposed to be running, we stop patting the systemd
-# watchdog and systemd restarts us. 8 s tolerates a host-side
-# stall (Mac suspend, sleep wake) without triggering — UAC2 endpoint
-# silence is normal during host pauses, so RMS / playing-state is
-# the right "is the user using USB" signal, not watchdog timeout.
-# This watchdog is purely for "the daemon itself is wedged".
+# Watchdog progress-stale threshold. If the playback/output callback
+# has not fired in this long while the bridge is supposed to be running,
+# we stop patting the systemd watchdog and systemd restarts us. Capture
+# silence is normal for an optional USB source; playback silence is
+# still useful work because it proves the renderer lane is being serviced.
 WATCHDOG_STALE_SEC = 8.0
+
+# Capture-idle transition log threshold. Uses the same window as the
+# watchdog stale threshold so the operator sees "USB host idle" around
+# the time the old implementation used to begin failing, but this is
+# INFO-only state, not a recovery decision.
+CAPTURE_IDLE_LOG_SEC = WATCHDOG_STALE_SEC
 
 
 @dataclass
@@ -149,7 +152,7 @@ class DaemonConfig:
 
 class UsbSinkDaemon:
     """Runs the audio bridge under systemd, with watchdog patting tied
-    to forward progress in the capture callback.
+    to forward progress in the playback/output callback.
 
     Phase 2 scope: bridge lifecycle + watchdog + periodic diagnostic
     log. Later phases extend `run()` with the state publisher, preempt
@@ -185,8 +188,13 @@ class UsbSinkDaemon:
             control_url=config.control_url,
         )
         self._stop = asyncio.Event()
-        self._last_captured_seen = 0
-        self._last_progress_mono = time.monotonic()
+        now = time.monotonic()
+        self._last_capture_callbacks_seen = 0
+        self._last_playback_callbacks_seen = 0
+        self._last_capture_progress_mono = now
+        self._last_playback_progress_mono = now
+        self._capture_idle_logged = False
+        self._playback_stale_logged = False
 
     @classmethod
     def from_env(cls) -> "UsbSinkDaemon":
@@ -295,33 +303,22 @@ class UsbSinkDaemon:
     # ------------------------------------------------------------------
 
     async def _diagnostic_loop(self, heartbeat) -> None:
-        """1 Hz loop: pats the systemd watchdog when the capture
+        """1 Hz loop: pats the systemd watchdog when the playback
         callback shows forward progress, logs stats every
         DIAG_INTERVAL_SEC. Cancelled at shutdown.
 
         The watchdog isn't bumped on a fixed timer — that would mask
-        the very wedges we want to catch. We bump only when
-        `frames_captured` has moved since the last tick.
+        the very wedges we want to catch. We bump only when the
+        playback callback has moved since the last tick. Capture
+        callback stalls are logged as idle state because an optional
+        USB source can legitimately have no inbound stream.
         """
         last_log_mono = time.monotonic()
         while True:
             await asyncio.sleep(1.0)
             stats: BridgeStats = self._bridge.stats
             now = time.monotonic()
-            if stats.frames_captured > self._last_captured_seen:
-                self._last_captured_seen = stats.frames_captured
-                self._last_progress_mono = now
-                heartbeat.bump()
-            elif now - self._last_progress_mono > WATCHDOG_STALE_SEC:
-                # Don't bump; let the systemd watchdog fire if the
-                # bridge has truly wedged. `Heartbeat` won't notify
-                # systemd because its `bump()` hasn't been called, so
-                # the kernel-side WatchdogSec timer expires.
-                logger.warning(
-                    "event=usbsink.no_progress stale_sec=%.1f "
-                    "frames_captured=%d (watchdog will fire)",
-                    now - self._last_progress_mono, stats.frames_captured,
-                )
+            self._observe_bridge_progress(stats, heartbeat, now)
 
             # Surface non-zero PortAudio CallbackFlags stashed by the
             # audio thread. The callback itself can't log (would risk
@@ -344,24 +341,103 @@ class UsbSinkDaemon:
                 stats.last_playback_status = 0
 
             if now - last_log_mono >= DIAG_INTERVAL_SEC:
+                capture_idle_sec = now - self._last_capture_progress_mono
+                playback_idle_sec = now - self._last_playback_progress_mono
                 logger.info(
                     "event=usbsink.diag rms_dbfs=%.1f "
-                    "captured=%d played=%d underrun=%d dropped_full=%d "
-                    "capture_errs=%d playback_errs=%d preempted=%s",
+                    "captured=%d played=%d output=%d underrun=%d "
+                    "dropped_full=%d capture_callbacks=%d "
+                    "playback_callbacks=%d capture_idle_sec=%.1f "
+                    "playback_idle_sec=%.1f capture_errs=%d "
+                    "playback_errs=%d preempted=%s",
                     self._bridge.last_rms_dbfs,
                     stats.frames_captured, stats.frames_played,
-                    stats.frames_underrun, stats.frames_dropped_full,
-                    stats.capture_errors, stats.playback_errors,
+                    stats.frames_output, stats.frames_underrun,
+                    stats.frames_dropped_full, stats.capture_callbacks,
+                    stats.playback_callbacks, capture_idle_sec,
+                    playback_idle_sec, stats.capture_errors,
+                    stats.playback_errors,
                     "true" if self._bridge.is_preempted else "false",
                 )
                 last_log_mono = now
+
+    def _observe_bridge_progress(
+        self, stats: BridgeStats, heartbeat, now: float,
+    ) -> None:
+        """Translate bridge counters into watchdog and idle-state signals.
+
+        Playback callback progress is the daemon-health sentinel. Capture
+        callback progress is source activity evidence only; lack of it is a
+        normal idle state for a USB gadget source.
+        """
+        if stats.playback_callbacks > self._last_playback_callbacks_seen:
+            if self._playback_stale_logged:
+                logger.info(
+                    "event=usbsink.playback_resumed stale_sec=%.1f "
+                    "playback_callbacks=%d output=%d",
+                    now - self._last_playback_progress_mono,
+                    stats.playback_callbacks, stats.frames_output,
+                )
+            self._last_playback_callbacks_seen = stats.playback_callbacks
+            self._last_playback_progress_mono = now
+            self._playback_stale_logged = False
+            heartbeat.bump()
+        elif now - self._last_playback_progress_mono > WATCHDOG_STALE_SEC:
+            # Don't bump; let systemd's WatchdogSec fire if the output
+            # callback has truly stopped. Log only once per stale episode;
+            # Heartbeat will add its standard suppression breadcrumb.
+            if not self._playback_stale_logged:
+                logger.warning(
+                    "event=usbsink.playback_no_progress stale_sec=%.1f "
+                    "playback_callbacks=%d output=%d (watchdog will fire)",
+                    now - self._last_playback_progress_mono,
+                    stats.playback_callbacks, stats.frames_output,
+                )
+                self._playback_stale_logged = True
+
+        if stats.capture_callbacks > self._last_capture_callbacks_seen:
+            if self._capture_idle_logged:
+                logger.info(
+                    "event=usbsink.capture_resumed idle_sec=%.1f "
+                    "capture_callbacks=%d captured=%d",
+                    now - self._last_capture_progress_mono,
+                    stats.capture_callbacks, stats.frames_captured,
+                )
+            self._last_capture_callbacks_seen = stats.capture_callbacks
+            self._last_capture_progress_mono = now
+            self._capture_idle_logged = False
+        elif now - self._last_capture_progress_mono > CAPTURE_IDLE_LOG_SEC:
+            if not self._capture_idle_logged:
+                logger.info(
+                    "event=usbsink.capture_idle idle_sec=%.1f "
+                    "capture_callbacks=%d captured=%d host_card_present=%s",
+                    now - self._last_capture_progress_mono,
+                    stats.capture_callbacks, stats.frames_captured,
+                    "true" if self._host_card_present() else "false",
+                )
+                self._capture_idle_logged = True
+
+    def _host_card_present(self) -> bool:
+        return os.path.isdir(f"/proc/asound/{self._config.mixer_card}")
 
     def _setup_logging(self) -> None:
         # Avoid reconfiguring if logging is already set up (e.g. in
         # tests that import the daemon).
         if logging.getLogger().handlers:
             return
+        configured_level = getattr(
+            logging, self._config.log_level.upper(), logging.INFO,
+        )
         logging.basicConfig(
-            level=getattr(logging, self._config.log_level.upper(), logging.INFO),
+            level=configured_level,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
+        # Standard JTS observability path: keep the live journal at INFO,
+        # buffer DEBUG in RAM, and dump context on WARNING+/SIGUSR1. If an
+        # operator explicitly set the legacy usbsink log level to DEBUG,
+        # preserve that live-journal verbosity after installing the ring.
+        from .. import debug_mode, flight_recorder
+
+        flight_recorder.install("usbsink")
+        if configured_level <= logging.DEBUG:
+            debug_mode.set_console_debug(True)

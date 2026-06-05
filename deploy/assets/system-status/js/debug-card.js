@@ -22,7 +22,7 @@ export function buildDebugCard() {
   const body = h("div.info-card", null,
     h("p.info-card__note", null,
       "Raise one subsystem's logging to DEBUG for troubleshooting. " +
-      "Voice and AEC restart briefly to apply; it auto-expires on its own."),
+      "Most daemons restart briefly to apply; it auto-expires on its own."),
     rows,
     countdown);
   const card = collapsible({ title: "Debug logging", open: false, body });
@@ -47,11 +47,14 @@ export function buildDebugCard() {
 
   async function toggle(s, cb, status) {
     const on = cb.checked;
+    const applyText = s.apply_policy === "in_process"
+      ? "Applies immediately."
+      : s.apply_policy === "restart_if_active"
+        ? "Applies now if it is running; otherwise applies next time it starts."
+        : "This restarts " + s.label + " briefly to apply.";
     const msg = on
       ? "Turn on DEBUG logging for " + s.label + "? " +
-        (s.id === "control"
-          ? "Applies immediately."
-          : "This restarts " + s.label + " briefly to apply.")
+        applyText
       : "Turn off DEBUG logging for " + s.label + "?";
     if (!await jtsConfirm(msg)) { cb.checked = !on; return; }
     cb.disabled = true;

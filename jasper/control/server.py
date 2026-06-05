@@ -2410,8 +2410,8 @@ def _make_handler(
             if self.path == "/debug":
                 # /system Debug card: raise one subsystem to DEBUG
                 # logging. Additive-only + auto-expiring (jasper/
-                # debug_mode.py). voice/aec restart to apply; control
-                # applies in-process. Non-blocking — the card's
+                # debug_mode.py). Daemon subsystems restart to apply;
+                # control applies in-process. Non-blocking — the card's
                 # "Applying…" state is just UX.
                 try:
                     body = self._read_json()

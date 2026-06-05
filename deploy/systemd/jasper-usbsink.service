@@ -24,11 +24,12 @@ PartOf=jasper-usbsink-init.service
 [Service]
 # Tier 1 + 2 of the resilience ladder (see docs/HANDOFF-resilience.md).
 # Type=notify with WatchdogSec=15s: the daemon's diagnostic loop pats
-# the watchdog only when the capture callback has shown forward
-# progress recently (sentinel pattern via jasper.watchdog.Heartbeat).
-# If the PortAudio thread wedges — the 2026-05-11 jasper-aec-bridge
-# failure mode — pats stop, systemd kills + restarts within
-# WatchdogSec.
+# the watchdog only when the playback/output callback has shown
+# forward progress recently (sentinel pattern via
+# jasper.watchdog.Heartbeat). Capture may be idle for hours when a host
+# is paused, unplugged, or using another source; output silence is still
+# useful work. If the output callback wedges, pats stop and systemd
+# kills + restarts within WatchdogSec.
 #
 # TimeoutStopSec=5s matches the AEC bridge's shorter SIGTERM grace
 # period. We'd rather hit SIGKILL+restart fast than accumulate wedge
