@@ -1600,6 +1600,10 @@ PY
     sed -i \
         -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
         -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
+        -e '/^SPOTIFY_CLIENT_ID=/d' \
+        -e '/^SPOTIFY_OAUTH_MODE=/d' \
+        -e '/^SPOTIFY_REDIRECT_URI=/d' \
+        -e '/^SPOTIPY_REDIRECT_URI=/d' \
         "${ENV_DIR}/jasper.env"
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
         sed -i.bak '/^JASPER_AUDIO_DAC_ID=/d' "${ENV_DIR}/jasper.env"

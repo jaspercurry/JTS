@@ -748,13 +748,13 @@ def _build_spotify_router_or_none():
         # the clients dict only — but still pass statuses through to the
         # Router so /state can introspect them if a future endpoint adds
         # a Spotify health probe.
+        default_redirect_uri = (
+            f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}"
+        )
         result = build_clients(
             registry,
             client_id=client_id,
-            redirect_uri=os.environ.get(
-                "SPOTIFY_REDIRECT_URI",
-                f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
-            ),
+            redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri,
         )
         if not result.clients:
             return None
@@ -1511,10 +1511,10 @@ async def _dispatch_transport(action: str) -> dict:
             "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache",
         )
         hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-        redirect_uri = os.environ.get(
-            "SPOTIFY_REDIRECT_URI",
-            f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
+        default_redirect_uri = (
+            f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}"
         )
+        redirect_uri = os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
         accounts = Registry.load(accounts_path)
         maybe_migrate_legacy(accounts, legacy_cache, default_name="default")
         # build_clients returns BuildResult (clients + statuses). Dial

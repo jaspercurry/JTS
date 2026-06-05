@@ -813,13 +813,23 @@ validation-artifact status from
 valid/current/matching, with a fallback to the newest matching
 timestamped schema-v1 artifact in that directory, after the bounded
 readiness producer (`jasper-audio-validate`) or a future full
-hardware-validation runner writes it. Each new clip also stores its
-session `selected_legs`
-and the same `audio_context` snapshot beside `capture_health`, so a clip
-copied out of band still carries enough profile truth to interpret it.
+hardware-validation runner writes it. As of 2026-06-04, new sidecars
+also include an additive `capture_plan` snapshot at session level and
+per clip. The plan is the recorder's layered interpretation of the
+operator request: detected/assumed physical mic, native stream/channel,
+software transform (`webrtc_aec3`, `dtln`, `hardware_aec`, raw, or
+reference), selected legs, bridge-output requirements, and a coarse
+resource-load level (`low`, `medium`, `high`, `unsafe`) with warnings for
+multi-mic or multi-DTLN captures. The frozen `on` token remains the
+primary `:9876` carrier, so `capture_plan.legs` is the authority for
+whether it currently carries WebRTC AEC3 or the selected chip-AEC primary
+beam. Each new clip also stores its session
+`selected_legs`, `capture_plan`, and the same `audio_context` snapshot
+beside `capture_health`, so a clip copied out of band still carries
+enough profile truth to interpret it.
 Old sessions without these fields remain valid; loaders and the audit
-script treat missing `audio_context` as historical metadata, not a
-failure.
+script treat missing `audio_context` or `capture_plan` as historical
+metadata, not a failure.
 
 **Reference-quality follow-up.** The current `ref` leg is intentionally
 the exact 16 kHz mono frame the live AEC consumes. A future
@@ -1806,7 +1816,6 @@ and DAC/reference validation status once that validation stream exists.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-06-02 (v32 — chip-AEC corpus profile rechecked
-against `jasper/web/wake_corpus_setup.py` and
-`scripts/_audit_wake_corpus.py`; reference remains part of the chip
-profile while cheap USB mic legs are optional.)
+Last verified: 2026-06-04 (v33 — wake-corpus capture-plan metadata
+rechecked against `jasper/web/wake_corpus_setup.py`; reference remains
+part of the chip profile while cheap USB mic legs are optional.)

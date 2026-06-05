@@ -36,6 +36,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
 const $ = id => document.getElementById(id);
 let elapsedTimer = null;
 let latestStatus = null;
+let capturePlanRefreshSeq = 0;
 
 // Server-injected config (leg labels + ordering + USB AEC3 labels). Read from
 // the JSON island the page renders; falls back to empty so a missing block
@@ -65,7 +66,15 @@ const LEG_LABELS = {
 Object.assign(LEG_LABELS, _config.aec3_sweep_labels || {});
 const USB_AEC3_SWEEP_BASELINE_LABEL =
   _config.usb_aec3_sweep_baseline_label || '';
+function planLegLabel(plan, leg) {
+  for (const detail of plan?.legs || []) {
+    if (detail?.token === leg && detail?.label) return detail.label;
+  }
+  return '';
+}
 function legLabel(leg, session = latestStatus) {
+  const planned = planLegLabel(session?.capture_plan, leg);
+  if (planned) return planned;
   if (
     leg === 'usb_webrtc' &&
     session?.include_aec3_sweep &&
@@ -143,6 +152,101 @@ async function api(method, path, body) {
     throw err;
   }
   return r.json();
+}
+
+function currentSessionPayload() {
+  const includeAec3Sweep = $('include-aec3-sweep').checked;
+  return {
+    member: $('member').value.trim(),
+    corpus_profile: $('include-chip-aec-profile').checked
+      ? 'chip_aec_comparison_v1'
+      : 'standard',
+    include_raw_mic_0: $('include-raw-mic-0').checked,
+    include_dtln: $('include-dtln').checked,
+    include_usb_mic: $('include-usb-mic').checked || includeAec3Sweep,
+    include_usb_dtln: $('include-usb-dtln').checked,
+    include_xvf_raw0_dtln: $('include-xvf-raw0-dtln').checked,
+    include_aec3_sweep: includeAec3Sweep,
+    aec3_sweep_source: includeAec3Sweep ? 'usb' : 'xvf',
+  };
+}
+
+function renderCapturePlan(plan) {
+  const root = $('capture-plan-preview');
+  if (!root) return;
+  root.replaceChildren();
+  if (!plan) {
+    const empty = document.createElement('span');
+    empty.className = 'hint';
+    empty.textContent = 'No capture plan yet.';
+    root.appendChild(empty);
+    return;
+  }
+
+  const header = document.createElement('div');
+  header.className = 'capture-plan-header';
+  const title = document.createElement('strong');
+  title.textContent = 'Capture plan';
+  const resource = document.createElement('span');
+  const level = plan.resource?.level || 'unknown';
+  resource.className = `pill tiny load-${level}`;
+  resource.textContent = `load: ${level}`;
+  header.append(title, resource);
+  root.appendChild(header);
+
+  const devices = document.createElement('div');
+  devices.className = 'capture-plan-devices';
+  for (const device of plan.devices || []) {
+    const block = document.createElement('div');
+    block.className = 'capture-plan-device';
+    const label = document.createElement('span');
+    label.className = 'capture-plan-device-label';
+    label.textContent = device.label || device.device_id || 'Unknown device';
+    const legs = document.createElement('span');
+    legs.className = 'capture-plan-legs';
+    const names = (device.legs || []).map(leg => (
+      planLegLabel(plan, leg) || legLabel(leg)
+    )).join(', ');
+    legs.textContent = names || 'no legs';
+    block.append(label, legs);
+    devices.appendChild(block);
+  }
+  root.appendChild(devices);
+
+  if ((plan.warnings || []).length) {
+    const warnings = document.createElement('ul');
+    warnings.className = 'capture-plan-warnings';
+    for (const warning of plan.warnings) {
+      const item = document.createElement('li');
+      item.textContent = warning;
+      warnings.appendChild(item);
+    }
+    root.appendChild(warnings);
+  }
+}
+
+async function refreshCapturePlan() {
+  if (latestStatus?.session_id) {
+    renderCapturePlan(latestStatus.capture_plan);
+    return null;
+  }
+  const seq = ++capturePlanRefreshSeq;
+  try {
+    const r = await api('POST', 'api/capture-plan', currentSessionPayload());
+    if (seq === capturePlanRefreshSeq) renderCapturePlan(r.capture_plan);
+    return r.capture_plan;
+  } catch (e) {
+    if (seq !== capturePlanRefreshSeq) return null;
+    const root = $('capture-plan-preview');
+    if (root) {
+      root.replaceChildren();
+      const err = document.createElement('span');
+      err.className = 'err';
+      err.textContent = `capture plan: ${e.message}`;
+      root.appendChild(err);
+    }
+    return null;
+  }
 }
 
 function showErr(msg) {
@@ -289,6 +393,7 @@ async function refreshStatus() {
       $('record-card').style.display = 'block';
       $('counts-card').style.display = 'block';
       $('clips-card').style.display = 'block';
+      renderCapturePlan(s.capture_plan);
     } else {
       $('record-card').style.display = 'none';
       $('counts-card').style.display = 'none';
@@ -365,32 +470,30 @@ async function beginSession() {
     }
   }
   const member = $('member').value.trim();
-  const corpusProfile = $('include-chip-aec-profile').checked
-    ? 'chip_aec_comparison_v1'
-    : 'standard';
-  const includeRawMic0 = $('include-raw-mic-0').checked;
-  const includeDtln = $('include-dtln').checked;
-  const includeXvfRaw0Dtln = $('include-xvf-raw0-dtln').checked;
-  const includeAec3Sweep = $('include-aec3-sweep').checked;
-  const includeUsbMic = $('include-usb-mic').checked || includeAec3Sweep;
-  const includeUsbDtln = $('include-usb-dtln').checked;
   if (!member) { showErr('member is required'); return; }
-  const payload = {
-    member,
-    corpus_profile: corpusProfile,
-    include_raw_mic_0: includeRawMic0,
-    include_dtln: includeDtln,
-    include_usb_mic: includeUsbMic,
-    include_usb_dtln: includeUsbDtln,
-    include_xvf_raw0_dtln: includeXvfRaw0Dtln,
-    include_aec3_sweep: includeAec3Sweep,
-    aec3_sweep_source: includeAec3Sweep ? 'usb' : 'xvf',
-  };
+  const payload = currentSessionPayload();
   try {
+    const plan = await refreshCapturePlan();
+    if (plan && ['high', 'unsafe'].includes(plan.resource?.level)) {
+      const warnings = (plan.warnings || []).join('\n\n');
+      const ok = await jtsConfirm(
+        `This recording plan is marked ${plan.resource.level} load.\n\n` +
+        `${warnings}\n\nContinue?`,
+        {danger: plan.resource.level === 'unsafe'},
+      );
+      if (!ok) {
+        showErr('begin session: capture plan not confirmed');
+        return;
+      }
+    }
     await enterCorpusTestMode({
-      corpusProfile, includeDtln, includeUsbMic, includeUsbDtln,
-      includeXvfRaw0Dtln, includeAec3Sweep,
-      aec3SweepSource: includeAec3Sweep ? 'usb' : 'xvf',
+      corpusProfile: payload.corpus_profile,
+      includeDtln: payload.include_dtln,
+      includeUsbMic: payload.include_usb_mic,
+      includeUsbDtln: payload.include_usb_dtln,
+      includeXvfRaw0Dtln: payload.include_xvf_raw0_dtln,
+      includeAec3Sweep: payload.include_aec3_sweep,
+      aec3SweepSource: payload.aec3_sweep_source,
     });
     await api('POST', 'api/session', payload);
     showErr('');
@@ -562,7 +665,7 @@ async function refreshClips() {
       const fileLegs = orderedLegs(c.files || {});
       const firstLeg = fileLegs.includes('on') ? 'on' : fileLegs[0];
       const options = fileLegs.map(leg => (
-        `<option value="${leg}" ${leg === firstLeg ? 'selected' : ''}>${legLabel(leg)}</option>`
+        `<option value="${leg}" ${leg === firstLeg ? 'selected' : ''}>${legLabel(leg, c)}</option>`
       )).join('');
       const audioHtml = firstLeg
         ? `<div class="clip-audio">
@@ -639,6 +742,7 @@ $('session-unload').onclick = unloadSession;
 $('record-btn').onclick = toggleRecord;
 $('include-chip-aec-profile').onchange = () => {
   syncCorpusProfileControls(false);
+  refreshCapturePlan();
 };
 $('include-aec3-sweep').onchange = () => {
   if ($('include-aec3-sweep').checked) {
@@ -648,14 +752,17 @@ $('include-aec3-sweep').onchange = () => {
     $('include-usb-mic').checked = true;
   }
   syncCorpusProfileControls(false);
+  refreshCapturePlan();
 };
 $('include-dtln').onchange = () => {
   if ($('include-dtln').checked) $('include-aec3-sweep').checked = false;
   syncCorpusProfileControls(false);
+  refreshCapturePlan();
 };
 $('include-usb-dtln').onchange = () => {
   if ($('include-usb-dtln').checked) $('include-aec3-sweep').checked = false;
   syncCorpusProfileControls(false);
+  refreshCapturePlan();
 };
 $('include-usb-mic').onchange = () => {
   if (!$('include-usb-mic').checked && (
@@ -664,7 +771,10 @@ $('include-usb-mic').onchange = () => {
     $('include-usb-mic').checked = true;
   }
   syncCorpusProfileControls(false);
+  refreshCapturePlan();
 };
+$('include-raw-mic-0').onchange = refreshCapturePlan;
+$('include-xvf-raw0-dtln').onchange = refreshCapturePlan;
 
 // Spacebar toggles recording when a session is active + we're not
 // typing in an input. Convenient for hands-on-room workflows.
@@ -721,6 +831,7 @@ try {
 } catch (_) { /* EventSource unsupported — skip the meter */ }
 
 syncCorpusProfileControls(false);
+refreshCapturePlan();
 refreshStatus();
 refreshClips();
 refreshSessions();

@@ -671,9 +671,12 @@ class Config:
             # external infrastructure), override to
             # "http://127.0.0.1:8888/callback" — the loopback exception
             # Spotify still allows.
-            spotify_redirect_uri=_env(
-                "SPOTIFY_REDIRECT_URI",
-                f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
+            spotify_redirect_uri=(
+                _env(
+                    "SPOTIFY_REDIRECT_URI",
+                    f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
+                )
+                or f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}"
             ),
             # Legacy single-user cache. Read once at startup for the
             # one-shot migration into the new multi-account layout

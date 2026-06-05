@@ -395,6 +395,36 @@ def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
     assert data["clips"][0]["distance"] == "near"
     assert data["clips"][0]["capture_health"]["status"] == "unknown"
     assert data["clips"][0]["capture_health"]["legs"]["on"]["packets"] > 0
+    assert data["capture_plan"]["recipe"] == "single_mic_comparison"
+    assert data["clips"][0]["capture_plan"]["selected_legs"] == [
+        "on", "off", "dtln",
+    ]
+
+
+def test_metadata_capture_plan_persists_missing_bridge_outputs(
+    backend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_tmp_bridge_env(monkeypatch, tmp_path)
+
+    backend.begin_session("jasper", include_dtln=True, include_usb_mic=True)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
+    data = json.loads(json_files[0].read_text())
+    missing = set(data["capture_plan"]["bridge"]["missing_outputs"])
+    assert {"dtln", "ref", "usb"} <= missing
+    assert any(
+        "bridge is not currently emitting" in warning
+        for warning in data["capture_plan"]["warnings"]
+    )
+    assert (
+        data["clips"][0]["capture_plan"]["bridge"]["missing_outputs"]
+        == data["capture_plan"]["bridge"]["missing_outputs"]
+    )
 
 
 def test_metadata_records_audio_context_snapshot(
@@ -520,6 +550,56 @@ def test_metadata_records_audio_context_snapshot(
         clip["audio_context"]["production_audio_profile"]["active"]
         == "xvf_chip_aec"
     )
+
+
+def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
+    backend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env=(
+            "JASPER_AEC_CHIP_AEC_ENABLED=1\n"
+            "JASPER_AEC_CHIP_AEC_PRIMARY_LEG=chip_aec_210\n"
+            "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887\n"
+            "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888\n"
+        ),
+    )
+    aec_mode_path = tmp_path / "aec_mode.env"
+    aec_mode_path.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=0\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n",
+    )
+    monkeypatch.setattr(wake_corpus_setup, "AEC_MODE_PATH", aec_mode_path)
+    monkeypatch.setattr(wake_corpus_setup, "aec_bridge_active", lambda: True)
+
+    from jasper.mics import xvf3800
+
+    monkeypatch.setattr(xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(xvf3800, "capture_channels", lambda: 6)
+
+    backend.begin_session("jasper", include_dtln=False)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
+    data = json.loads(json_files[0].read_text())
+    by_token = {leg["token"]: leg for leg in data["capture_plan"]["legs"]}
+    assert by_token["on"]["label"] == "Chip AEC ASR 210 primary"
+    assert by_token["on"]["processing"] == "hardware_aec"
+    assert by_token["on"]["runtime_primary_leg"] == "chip_aec_210"
+    assert "on" not in data["capture_plan"]["software_transforms"]["webrtc_aec3"]
+
+    context_by_token = {
+        leg["token"]: leg
+        for leg in data["audio_context"]["corpus"]["leg_details"]
+    }
+    assert context_by_token["on"]["processing"] == "hardware_aec"
 
 
 def test_validation_artifact_summary_rejects_wrong_current_dac(
@@ -1729,6 +1809,63 @@ def test_begin_session_chip_profile_records_usb_legs_when_requested(
     )
 
 
+def test_capture_plan_describes_chip_profile_layers(backend) -> None:
+    plan = wake_corpus_setup.build_capture_plan(
+        backend.ports(),
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        include_usb_mic=False,
+        include_usb_dtln=False,
+        include_bridge_readiness=False,
+    )
+
+    assert plan["schema_version"] == wake_corpus_setup.CAPTURE_PLAN_SCHEMA_VERSION
+    assert plan["recipe"] == "chip_aec_comparison"
+    assert plan["selected_physical_mics"] == ["xvf3800"]
+    by_token = {leg["token"]: leg for leg in plan["legs"]}
+    assert by_token["chip_aec_150"]["processing"] == "hardware_aec"
+    assert by_token["xvf_raw0_webrtc_aec3"]["native_stream"] == "raw_mic_0"
+    assert by_token["xvf_raw0_webrtc_aec3"]["processing"] == "webrtc_aec3"
+    assert by_token["ref"]["device_id"] == "speaker_reference"
+
+
+def test_capture_plan_describes_on_leg_runtime_overlay(backend) -> None:
+    plan = wake_corpus_setup.build_capture_plan(
+        backend.ports(),
+        include_dtln=False,
+        include_bridge_readiness=False,
+        active_audio_profile={
+            "requested": "xvf_chip_aec",
+            "active": "xvf_chip_aec",
+            "state": "active",
+        },
+        runtime_audio_env={"chip_primary_leg": "chip_aec_210"},
+    )
+
+    by_token = {leg["token"]: leg for leg in plan["legs"]}
+    assert by_token["on"]["label"] == "Chip AEC ASR 210 primary"
+    assert by_token["on"]["kind"] == "hardware_aec"
+    assert by_token["on"]["processing"] == "hardware_aec"
+    assert by_token["on"]["source_channel"] == "fixed_beam_210"
+    assert by_token["on"]["runtime_role"] == "production_primary"
+    assert "on" not in plan["software_transforms"]["webrtc_aec3"]
+
+
+def test_capture_plan_warns_for_heavy_two_mic_dtln(backend) -> None:
+    plan = wake_corpus_setup.build_capture_plan(
+        backend.ports(),
+        corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+        include_usb_mic=True,
+        include_usb_dtln=True,
+        include_xvf_raw0_dtln=True,
+        include_bridge_readiness=False,
+    )
+
+    assert plan["recipe"] == "chip_aec_comparison_extended"
+    assert set(plan["selected_physical_mics"]) == {"xvf3800", "usb_mic"}
+    assert plan["resource"]["level"] in {"high", "unsafe"}
+    assert any("Multiple DTLN legs" in warning for warning in plan["warnings"])
+
+
 def test_begin_session_with_aec3_sweep_records_variant_legs(
     backend, tmp_path: Path,
 ) -> None:
@@ -2859,6 +2996,17 @@ def test_html_has_aec3_sweep_checkbox() -> None:
         assert variant.label in html_text
 
 
+def test_html_has_capture_plan_preview() -> None:
+    html_text = wake_corpus_setup._render_index_html("t")
+    js = _module_js()
+    css = _page_css()
+
+    assert 'id="capture-plan-preview"' in html_text
+    assert "api/capture-plan" in js
+    assert "renderCapturePlan" in js
+    assert ".capture-plan-preview" in css
+
+
 def test_html_test_mode_button_follows_capture_leg_choices() -> None:
     """The operator chooses capture legs before entering test mode. The leg
     checkboxes + Begin button live in the body; the corpus-test-mode call
@@ -3130,6 +3278,47 @@ def test_api_status_includes_include_usb_mic(
             assert body["enabled_legs"] == [
                 "on", "off", "dtln", "ref", "usb_raw", "usb_webrtc",
             ]
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_capture_plan_previews_selected_layers(
+    backend,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    _use_tmp_bridge_env(monkeypatch, tmp_path)
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/capture-plan",
+            json.dumps({
+                "corpus_profile": wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
+                "include_usb_mic": True,
+                "include_usb_dtln": True,
+                "include_xvf_raw0_dtln": True,
+            }),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            plan = body["capture_plan"]
+            assert plan["recipe"] == "chip_aec_comparison_extended"
+            assert set(plan["selected_physical_mics"]) == {"xvf3800", "usb_mic"}
+            assert "usb_dtln" in plan["software_transforms"]["dtln"]
+            assert plan["resource"]["level"] in {"high", "unsafe"}
         finally:
             conn.close()
     finally:

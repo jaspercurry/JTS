@@ -136,7 +136,14 @@ what a clip represents. The context includes the production audio
 profile classification, AEC intent/runtime env, XVF3800 mic identity and
 firmware channel state, selected leg details from `jasper/wake_legs.py`,
 outputd/DAC/reference env, and optional validation-artifact status.
-Older sessions without `audio_context` remain valid historical data;
+As of 2026-06-04, sidecars also add `capture_plan` at session level and
+per clip. Prefer `capture_plan.legs` for source interpretation because
+it explicitly records the layered graph: physical mic, native stream,
+source channel, software/hardware transform, required reference outputs,
+wake/corpus role, and coarse resource load. The frozen `on` token remains
+the primary `:9876` carrier; use `capture_plan.legs` to distinguish
+WebRTC AEC3 from the selected chip-AEC primary beam. Older sessions
+without `audio_context` or `capture_plan` remain valid historical data;
 quality tools should display the absence but not fail the corpus because
 of it.
 
@@ -307,8 +314,9 @@ Cross-leg analysis should be a first-class object in the JSON output.
 Minimum plan:
 
 1. Group files by utterance/session metadata, not filename guessing.
-   Prefer `audio_context.corpus.selected_legs` and
-   `audio_context.corpus.leg_details` when present; fall back to legacy
+   Prefer `capture_plan.legs` when present, then
+   `audio_context.corpus.selected_legs` and
+   `audio_context.corpus.leg_details`; fall back to legacy
    `enabled_legs` / `files` maps for old sessions.
 2. Resample only if needed; the corpus target is 16 kHz mono int16.
 3. Align sibling legs with GCC-PHAT or normalized cross-correlation.
@@ -522,6 +530,9 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-06-04 (v14):** Added the `capture_plan` metadata contract:
+  per-session/per-clip physical mic, native stream, source channel,
+  transform, role, bridge requirements, and resource-load interpretation.
 - **2026-06-02 (v13):** Clarified chip-AEC corpus profile semantics:
   `ref` remains part of the profile; cheap USB mic legs are optional and
   should not be expected when no USB mic is connected.
@@ -560,6 +571,6 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-06-02 (v13 - chip-AEC profile leg expectations
-rechecked against the recorder and audit script; audio quality analyzer
-remains offline/future work.)
+Last verified: 2026-06-04 (v14 - capture-plan metadata expectations
+rechecked against the recorder; audio quality analyzer remains
+offline/future work.)

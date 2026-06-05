@@ -235,6 +235,17 @@ def test_spotify_enabled_when_client_id_present(monkeypatch):
     assert cfg.spotify_enabled is True
 
 
+def test_blank_spotify_redirect_uri_uses_hostname_default(monkeypatch):
+    """A stale empty /etc/jasper value must not suppress the default."""
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
+    monkeypatch.setenv("SPOTIFY_REDIRECT_URI", "")
+    cfg = Config.from_env()
+    assert cfg.spotify_redirect_uri == (
+        "https://jaspercurry.github.io/spotify-oauth-callback/?host=jts3.local"
+    )
+
+
 @pytest.mark.parametrize(
     ("name", "value", "expected"),
     [

@@ -19,6 +19,7 @@ from pathlib import Path
 
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
+_ENV_EXAMPLE = Path(__file__).parent.parent / ".env.example"
 
 
 def _compute_min_free_kbytes(memtotal_kb: int) -> int:
@@ -185,6 +186,19 @@ def test_optional_firmware_builds_are_install_opt_in():
         r'"jasper-satellite-amoled\.bin"',
         text,
     )
+
+
+def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
+    """Fresh installs must not write stale empty Spotify overrides."""
+    env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "\nSPOTIFY_CLIENT_ID=" not in env_example
+    assert "\nSPOTIFY_REDIRECT_URI=" not in env_example
+
+    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
+    assert "/^SPOTIFY_CLIENT_ID=/d" in install_sh
+    assert "/^SPOTIFY_OAUTH_MODE=/d" in install_sh
+    assert "/^SPOTIFY_REDIRECT_URI=/d" in install_sh
+    assert "/^SPOTIPY_REDIRECT_URI=/d" in install_sh
 
 
 def test_firmware_staleness_includes_platformio_inputs(tmp_path):

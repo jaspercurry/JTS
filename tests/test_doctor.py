@@ -77,6 +77,19 @@ def test_load_env_files_wizard_overrides_operator(monkeypatch, tmp_path: Path):
     assert os_environ_get("JASPER_VOICE_PROVIDER") == "openai"
 
 
+def test_default_env_files_include_spotify_credentials_in_systemd_order():
+    from jasper.env_load import ENV_FILES
+
+    assert "/etc/jasper/jasper.env" in ENV_FILES
+    assert "/var/lib/jasper/spotify_credentials.env" in ENV_FILES
+    assert ENV_FILES.index("/etc/jasper/jasper.env") < ENV_FILES.index(
+        "/var/lib/jasper/spotify_credentials.env",
+    )
+    assert ENV_FILES.index("/var/lib/jasper/spotify_credentials.env") < ENV_FILES.index(
+        "/var/lib/jasper/voice_provider.env",
+    )
+
+
 def test_load_env_files_shell_wins_over_files(monkeypatch, tmp_path: Path):
     """A var already in the calling shell must NOT be overwritten by
     the env files. Lets an operator probe with `FOO=bar jasper-doctor`."""
