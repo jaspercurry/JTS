@@ -265,6 +265,7 @@ AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
 ))
 METADATA_SCHEMA_VERSION = 2
 AUDIO_CONTEXT_SCHEMA_VERSION = 1
+CAPTURE_PLAN_SCHEMA_VERSION = 1
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 AEC_INIT_UNIT = "jasper-aec-init.service"
@@ -778,6 +779,7 @@ def build_session_audio_context(
     include_aec3_sweep: bool,
     aec3_sweep_source: str,
     chip_aec_config: dict[str, object] | None,
+    capture_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Snapshot production profile truth beside the corpus leg choice.
 
@@ -785,6 +787,12 @@ def build_session_audio_context(
     files, or alter production wake detection.
     """
     captured_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    capture_plan_legs = (
+        list(capture_plan.get("legs", []))
+        if isinstance(capture_plan, dict)
+        and isinstance(capture_plan.get("legs"), list)
+        else None
+    )
     fallback = {
         "schema_version": AUDIO_CONTEXT_SCHEMA_VERSION,
         "captured_at": captured_at,
@@ -792,12 +800,13 @@ def build_session_audio_context(
         "corpus": {
             "profile": corpus_profile,
             "selected_legs": list(enabled_legs),
-            "leg_details": [
+            "leg_details": capture_plan_legs or [
                 _leg_detail(
                     leg, ports, aec3_sweep_source=aec3_sweep_source,
                 )
                 for leg in enabled_legs
             ],
+            "capture_plan": capture_plan,
         },
     }
     try:
@@ -853,13 +862,14 @@ def build_session_audio_context(
             "include_aec3_sweep": include_aec3_sweep,
             "aec3_sweep_source": aec3_sweep_source,
             "selected_legs": list(enabled_legs),
-            "leg_details": [
+            "leg_details": capture_plan_legs or [
                 _leg_detail(
                     leg, ports, aec3_sweep_source=aec3_sweep_source,
                 )
                 for leg in enabled_legs
             ],
             "chip_aec_config": chip_aec_config,
+            "capture_plan": capture_plan,
         },
         "dac_reference": _dac_reference_context(
             merged_env,
@@ -1542,6 +1552,499 @@ def _metadata_flag(
     return requested and leg in enabled_legs
 
 
+_LEG_PLAN_INFO: dict[str, dict[str, Any]] = {
+    "on": {
+        "device_id": "xvf3800",
+        "device_label": "ReSpeaker XVF3800",
+        "native_stream": "chip_asr_beam",
+        "source_channel": "asr",
+        "processing": "webrtc_aec3",
+        "processing_label": "WebRTC AEC3",
+        "cost": 2,
+        "requires": ("reference",),
+    },
+    "off": {
+        "device_id": "xvf3800",
+        "device_label": "ReSpeaker XVF3800",
+        "native_stream": "chip_direct_asr",
+        "source_channel": "asr",
+        "processing": "chip_dsp",
+        "processing_label": "chip DSP, no software AEC",
+        "cost": 1,
+        "requires": (),
+    },
+    "dtln": {
+        "device_id": "xvf3800",
+        "device_label": "ReSpeaker XVF3800",
+        "native_stream": "chip_direct_asr",
+        "source_channel": "asr",
+        "processing": "dtln",
+        "processing_label": "DTLN neural AEC",
+        "cost": 4,
+        "requires": ("reference",),
+    },
+    "raw0": {
+        "device_id": "xvf3800",
+        "device_label": "ReSpeaker XVF3800",
+        "native_stream": "raw_mic_0",
+        "source_channel": "chip_channel_2",
+        "processing": "none",
+        "processing_label": "raw",
+        "cost": 1,
+        "requires": (),
+    },
+    "ref": {
+        "device_id": "speaker_reference",
+        "device_label": "Speaker reference",
+        "native_stream": "aec_reference",
+        "source_channel": "mono_16khz",
+        "processing": "reference",
+        "processing_label": "final speaker reference",
+        "cost": 1,
+        "requires": (),
+    },
+    "usb_raw": {
+        "device_id": "usb_mic",
+        "device_label": "USB microphone",
+        "native_stream": "usb_raw",
+        "source_channel": "mono_capture",
+        "processing": "none",
+        "processing_label": "raw",
+        "cost": 1,
+        "requires": ("usb_mic",),
+    },
+    "usb_webrtc": {
+        "device_id": "usb_mic",
+        "device_label": "USB microphone",
+        "native_stream": "usb_raw",
+        "source_channel": "mono_capture",
+        "processing": "webrtc_aec3",
+        "processing_label": "WebRTC AEC3",
+        "cost": 2,
+        "requires": ("usb_mic", "reference"),
+    },
+    "usb_dtln": {
+        "device_id": "usb_mic",
+        "device_label": "USB microphone",
+        "native_stream": "usb_raw",
+        "source_channel": "mono_capture",
+        "processing": "dtln",
+        "processing_label": "DTLN neural AEC",
+        "cost": 4,
+        "requires": ("usb_mic", "reference"),
+    },
+    "chip_aec_150": {
+        "device_id": "xvf3800",
+        "device_label": "ReSpeaker XVF3800",
+        "native_stream": "chip_aec_asr_150",
+        "source_channel": "fixed_beam_150",
+        "processing": "hardware_aec",
+        "processing_label": "chip AEC beam 150",
+        "cost": 1,
+        "requires": ("outputd_reference",),
+    },
+    "chip_aec_210": {
+        "device_id": "xvf3800",
+        "device_label": "ReSpeaker XVF3800",
+        "native_stream": "chip_aec_asr_210",
+        "source_channel": "fixed_beam_210",
+        "processing": "hardware_aec",
+        "processing_label": "chip AEC beam 210",
+        "cost": 1,
+        "requires": ("outputd_reference",),
+    },
+    "xvf_raw0_webrtc_aec3": {
+        "device_id": "xvf3800",
+        "device_label": "ReSpeaker XVF3800",
+        "native_stream": "raw_mic_0",
+        "source_channel": "chip_channel_2",
+        "processing": "webrtc_aec3",
+        "processing_label": "WebRTC AEC3",
+        "cost": 2,
+        "requires": ("reference",),
+    },
+    "xvf_raw0_dtln": {
+        "device_id": "xvf3800",
+        "device_label": "ReSpeaker XVF3800",
+        "native_stream": "raw_mic_0",
+        "source_channel": "chip_channel_2",
+        "processing": "dtln",
+        "processing_label": "DTLN neural AEC",
+        "cost": 4,
+        "requires": ("reference",),
+    },
+}
+
+
+def _normalize_chip_primary_leg(value: object) -> str:
+    leg = str(value or "").strip()
+    return leg if leg in CHIP_AEC_LEGS else "chip_aec_150"
+
+
+def _primary_on_leg_overlay(
+    *,
+    active_audio_profile: Mapping[str, Any] | None,
+    runtime_audio_env: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Describe what the stable `on`/`:9876` stream carries today.
+
+    The `on` token is frozen for historical corpus/wake-event compatibility.
+    In the default profile it is WebRTC AEC3; in production chip-AEC mode the
+    bridge forwards the selected chip beam into the same UDP carrier.
+    """
+    if not isinstance(active_audio_profile, Mapping):
+        return None
+    if (
+        active_audio_profile.get("active") != "xvf_chip_aec"
+        or active_audio_profile.get("state") != "active"
+    ):
+        return None
+    primary_leg = _normalize_chip_primary_leg(
+        runtime_audio_env.get("chip_primary_leg")
+        if isinstance(runtime_audio_env, Mapping) else None,
+    )
+    angle = "210" if primary_leg == "chip_aec_210" else "150"
+    return {
+        "label": f"Chip AEC ASR {angle} primary",
+        "kind": wake_legs.LegKind.HARDWARE_AEC.value,
+        "native_stream": f"chip_aec_asr_{angle}",
+        "source_channel": f"fixed_beam_{angle}",
+        "processing": "hardware_aec",
+        "processing_label": f"chip AEC beam {angle}",
+        "requires": ["outputd_reference"],
+        "resource_weight": 1,
+        "runtime_role": "production_primary",
+        "runtime_primary_leg": primary_leg,
+    }
+
+
+def _capture_plan_runtime_context() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Best-effort runtime overlay for capture-plan labels.
+
+    This is metadata-only. It mirrors the audio-context probe path and must not
+    block recording when local env/hardware probes are unavailable.
+    """
+    try:
+        intent = _read_aec_intent()
+        system_env = read_env_file(str(SYSTEM_ENV_PATH))
+        runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
+        mic_probe, _ = _mic_probe_and_identity()
+        profile_status = build_audio_profile_status(
+            intent,
+            runtime,
+            mic_probe,
+            bridge_active=aec_bridge_active(),
+            chip_available=(
+                mic_probe.xvf_present
+                and mic_probe.capture_channels == mic_probe.recommended_channels
+            ),
+        )
+    except Exception as e:  # noqa: BLE001 - advisory metadata only
+        logger.debug(
+            "event=wake_corpus.capture_plan_runtime_snapshot_failed error=%s",
+            e,
+        )
+        return None, None
+    return profile_status["audio_profile"], asdict(runtime)
+
+
+def _capture_plan_leg_detail(
+    leg: str,
+    ports: dict[str, int],
+    *,
+    aec3_sweep_source: str,
+    active_audio_profile: Mapping[str, Any] | None = None,
+    runtime_audio_env: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if leg in AEC3_SWEEP_LEGS or leg in LEGACY_AEC3_SWEEP_LEGS:
+        source_device = (
+            "usb_mic" if aec3_sweep_source == AEC3_SWEEP_SOURCE_USB else "xvf3800"
+        )
+        source_label = (
+            "USB microphone" if source_device == "usb_mic" else "ReSpeaker XVF3800"
+        )
+        source_channel = (
+            "mono_capture" if source_device == "usb_mic" else "chip_asr_beam"
+        )
+        return {
+            **_leg_detail(leg, ports, aec3_sweep_source=aec3_sweep_source),
+            "device_id": source_device,
+            "device_label": source_label,
+            "native_stream": f"{source_device}_aec3_sweep_source",
+            "source_channel": source_channel,
+            "processing": "webrtc_aec3_sweep",
+            "processing_label": "WebRTC AEC3 sweep variant",
+            "requires": ["reference"] + (
+                ["usb_mic"] if source_device == "usb_mic" else []
+            ),
+            "resource_weight": 2,
+        }
+
+    info = _LEG_PLAN_INFO.get(leg, {})
+    detail = _leg_detail(leg, ports, aec3_sweep_source=aec3_sweep_source)
+    if leg == "on":
+        overlay = _primary_on_leg_overlay(
+            active_audio_profile=active_audio_profile,
+            runtime_audio_env=runtime_audio_env,
+        )
+        if overlay is not None:
+            return {
+                **detail,
+                "device_id": info.get("device_id", "unknown"),
+                "device_label": info.get("device_label", "Unknown source"),
+                **overlay,
+            }
+    return {
+        **detail,
+        "device_id": info.get("device_id", "unknown"),
+        "device_label": info.get("device_label", "Unknown source"),
+        "native_stream": info.get("native_stream", "unknown"),
+        "source_channel": info.get("source_channel", "unknown"),
+        "processing": info.get("processing", detail["kind"]),
+        "processing_label": info.get("processing_label", detail["kind"]),
+        "requires": list(info.get("requires", ())),
+        "resource_weight": int(info.get("cost", 1)),
+    }
+
+
+def _resource_level(total_weight: int) -> str:
+    if total_weight <= 6:
+        return "low"
+    if total_weight <= 10:
+        return "medium"
+    if total_weight <= 15:
+        return "high"
+    return "unsafe"
+
+
+def _capture_plan_recipe(
+    *,
+    corpus_profile: str,
+    include_aec3_sweep: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool,
+) -> str:
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        if include_usb_mic or include_usb_dtln or include_xvf_raw0_dtln:
+            return "chip_aec_comparison_extended"
+        return "chip_aec_comparison"
+    if include_aec3_sweep:
+        return "software_aec3_sweep"
+    if include_usb_mic or include_usb_dtln:
+        return "two_mic_comparison"
+    return "single_mic_comparison"
+
+
+def _capture_plan_from_legs(
+    *,
+    corpus_profile: str,
+    enabled_legs: tuple[str, ...],
+    ports: dict[str, int],
+    include_raw_mic_0: bool,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+    include_xvf_raw0_dtln: bool,
+    include_aec3_sweep: bool,
+    aec3_sweep_source: str,
+    missing_bridge_outputs: list[str] | None = None,
+    active_audio_profile: Mapping[str, Any] | None = None,
+    runtime_audio_env: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    leg_details = [
+        _capture_plan_leg_detail(
+            leg,
+            ports,
+            aec3_sweep_source=aec3_sweep_source,
+            active_audio_profile=active_audio_profile,
+            runtime_audio_env=runtime_audio_env,
+        )
+        for leg in enabled_legs
+    ]
+    grouped: dict[str, dict[str, Any]] = {}
+    for detail in leg_details:
+        device_id = str(detail["device_id"])
+        device = grouped.setdefault(
+            device_id,
+            {
+                "device_id": device_id,
+                "label": detail["device_label"],
+                "kind": (
+                    "reference" if device_id == "speaker_reference" else "microphone"
+                ),
+                "legs": [],
+            },
+        )
+        device["legs"].append(detail["token"])
+
+    mic_ids = [
+        device_id for device_id, device in grouped.items()
+        if device.get("kind") == "microphone"
+    ]
+    total_weight = sum(int(detail["resource_weight"]) for detail in leg_details)
+    resource_level = _resource_level(total_weight)
+    dtln_legs = [
+        detail["token"] for detail in leg_details
+        if detail.get("processing") == "dtln"
+    ]
+    software_aec_legs = [
+        detail["token"] for detail in leg_details
+        if str(detail.get("processing", "")).startswith("webrtc_aec3")
+    ]
+    warnings: list[str] = []
+    if len(mic_ids) > 1:
+        warnings.append(
+            "Recording multiple microphones is useful for comparison, but "
+            "it increases bridge fan-out and file count.",
+        )
+    if len(dtln_legs) > 1:
+        warnings.append(
+            "Multiple DTLN legs are CPU/RAM heavy on small Pis; review "
+            "capture_health before using these clips for training.",
+        )
+    if include_aec3_sweep:
+        warnings.append(
+            "AEC3 sweep records several software-AEC variants from one "
+            "source; leave DTLN off unless you are intentionally stress-testing.",
+        )
+    if resource_level == "high":
+        warnings.append(
+            "This is a high-load capture plan. Watch for warnings or "
+            "compromised capture_health before trusting the session.",
+        )
+    elif resource_level == "unsafe":
+        warnings.append(
+            "This capture plan is likely too heavy for a 1 GB Pi. Prefer "
+            "a smaller comparison set or record in separate sessions.",
+        )
+    if missing_bridge_outputs:
+        labels = [BRIDGE_OUTPUT_LABELS.get(key, key) for key in missing_bridge_outputs]
+        warnings.append(
+            "The bridge is not currently emitting required output(s): "
+            + ", ".join(labels),
+        )
+
+    return {
+        "schema_version": CAPTURE_PLAN_SCHEMA_VERSION,
+        "recipe": _capture_plan_recipe(
+            corpus_profile=corpus_profile,
+            include_aec3_sweep=include_aec3_sweep,
+            include_usb_mic=include_usb_mic,
+            include_usb_dtln=include_usb_dtln,
+            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+        ),
+        "corpus_profile": corpus_profile,
+        "selected_legs": list(enabled_legs),
+        "selected_physical_mics": mic_ids,
+        "devices": list(grouped.values()),
+        "legs": leg_details,
+        "software_transforms": {
+            "webrtc_aec3": software_aec_legs,
+            "dtln": dtln_legs,
+        },
+        "resource": {
+            "weight": total_weight,
+            "level": resource_level,
+            "warning_count": len(warnings),
+        },
+        "bridge": {
+            "missing_outputs": list(missing_bridge_outputs or []),
+        },
+        "flags": {
+            "include_raw_mic_0": include_raw_mic_0,
+            "include_dtln": include_dtln,
+            "include_usb_mic": include_usb_mic,
+            "include_usb_dtln": include_usb_dtln,
+            "include_xvf_raw0_dtln": include_xvf_raw0_dtln,
+            "include_aec3_sweep": include_aec3_sweep,
+            "aec3_sweep_source": aec3_sweep_source,
+        },
+        "warnings": warnings,
+    }
+
+
+def build_capture_plan(
+    ports: dict[str, int],
+    *,
+    corpus_profile: str = PROFILE_STANDARD,
+    include_dtln: bool = True,
+    include_raw_mic_0: bool = False,
+    include_usb_mic: bool = False,
+    include_usb_dtln: bool = False,
+    include_xvf_raw0_dtln: bool = False,
+    include_aec3_sweep: bool = False,
+    aec3_sweep_source: str | None = None,
+    include_bridge_readiness: bool = True,
+    include_runtime_profile: bool = False,
+    active_audio_profile: Mapping[str, Any] | None = None,
+    runtime_audio_env: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the layered mic/channel/transform plan for a session request.
+
+    This is the authoritative interpretation layer for the web UI and
+    metadata: physical microphones expose native streams, JTS optionally
+    derives software-AEC/DTLN legs, and the plan records resource cost
+    plus bridge-output readiness without starting any capture.
+    """
+    if corpus_profile not in CORPUS_PROFILES:
+        raise ValueError(f"unknown corpus_profile: {corpus_profile!r}")
+    if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
+        include_raw_mic_0 = True
+        include_aec3_sweep = False
+        sweep_source = AEC3_SWEEP_SOURCE_XVF
+    else:
+        sweep_source = (
+            _session_aec3_sweep_source(aec3_sweep_source)
+            if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+        )
+    effective_include_usb_mic = include_usb_mic or (
+        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+    )
+    enabled_legs = _session_legs(
+        ports,
+        corpus_profile=corpus_profile,
+        include_dtln=include_dtln,
+        include_raw_mic_0=include_raw_mic_0,
+        include_usb_mic=effective_include_usb_mic,
+        include_usb_dtln=include_usb_dtln,
+        include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+        include_aec3_sweep=include_aec3_sweep,
+        aec3_sweep_source=sweep_source,
+    )
+    missing = (
+        missing_bridge_outputs_for_session(
+            corpus_profile=corpus_profile,
+            include_dtln=include_dtln,
+            include_usb_mic=effective_include_usb_mic,
+            include_usb_dtln=include_usb_dtln,
+            include_xvf_raw0_dtln=include_xvf_raw0_dtln,
+            include_aec3_sweep=include_aec3_sweep,
+            aec3_sweep_source=sweep_source,
+        )
+        if include_bridge_readiness else []
+    )
+    if include_runtime_profile and (
+        active_audio_profile is None or runtime_audio_env is None
+    ):
+        active_audio_profile, runtime_audio_env = _capture_plan_runtime_context()
+    return _capture_plan_from_legs(
+        corpus_profile=corpus_profile,
+        enabled_legs=enabled_legs,
+        ports=ports,
+        include_raw_mic_0=RAW0_LEG in enabled_legs,
+        include_dtln=DTLN_LEG in enabled_legs,
+        include_usb_mic=effective_include_usb_mic,
+        include_usb_dtln=USB_DTLN_LEG in enabled_legs,
+        include_xvf_raw0_dtln=XVF_RAW0_DTLN_LEG in enabled_legs,
+        include_aec3_sweep=include_aec3_sweep,
+        aec3_sweep_source=sweep_source,
+        missing_bridge_outputs=missing,
+        active_audio_profile=active_audio_profile,
+        runtime_audio_env=runtime_audio_env,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Data shapes
 # ---------------------------------------------------------------------------
@@ -1567,6 +2070,7 @@ class ClipMetadata:
     auto_stopped: bool = False
     notes: str = ""
     selected_legs: list[str] = field(default_factory=list)
+    capture_plan: dict[str, Any] = field(default_factory=dict)
     audio_context: dict[str, Any] = field(default_factory=dict)
     capture_health: dict[str, Any] = field(default_factory=dict)
 
@@ -1788,6 +2292,7 @@ class RecordingBackend:
         self._aec3_sweep_variants: list[dict[str, object]] = []
         self._aec3_sweep_config: dict[str, object] | None = None
         self._enabled_legs: tuple[str, ...] = _default_enabled_legs(self._ports)
+        self._capture_plan: dict[str, Any] | None = None
         self._audio_context: dict[str, Any] | None = None
         self._clips: list[ClipMetadata] = []
         self._current: RecordingTask | None = None
@@ -1851,6 +2356,10 @@ class RecordingBackend:
     def session_id(self) -> str | None:
         with self._lock:
             return self._session_id
+
+    def ports(self) -> dict[str, int]:
+        """Configured UDP ports this recorder process can subscribe to."""
+        return dict(self._ports)
 
     def member(self) -> str | None:
         with self._lock:
@@ -1928,6 +2437,7 @@ class RecordingBackend:
         self._aec3_sweep_variants = []
         self._aec3_sweep_config = None
         self._enabled_legs = _default_enabled_legs(self._ports)
+        self._capture_plan = None
         self._audio_context = None
 
     def _find_session_metadata(self, session_id: str) -> Path | None:
@@ -2003,6 +2513,9 @@ class RecordingBackend:
         audio_context = data.get("audio_context")
         if not isinstance(audio_context, dict):
             audio_context = None
+        capture_plan = data.get("capture_plan")
+        if not isinstance(capture_plan, dict):
+            capture_plan = None
         with self._lock:
             self._session_id = session_id
             self._member = member
@@ -2019,6 +2532,7 @@ class RecordingBackend:
             self._aec3_sweep_variants = saved_variants
             self._aec3_sweep_config = saved_config
             self._enabled_legs = enabled_legs
+            self._capture_plan = capture_plan
             self._audio_context = audio_context
         return {
             "session_id": session_id,
@@ -2033,6 +2547,7 @@ class RecordingBackend:
             "corpus_profile": corpus_profile,
             "aec3_sweep_source": aec3_sweep_source,
             "enabled_legs": list(enabled_legs),
+            "has_capture_plan": capture_plan is not None,
             "has_audio_context": audio_context is not None,
         }
 
@@ -2197,6 +2712,19 @@ class RecordingBackend:
                 chip_aec_config_metadata()
                 if corpus_profile == PROFILE_CHIP_AEC_COMPARISON else None
             )
+            capture_plan = build_capture_plan(
+                self._ports,
+                corpus_profile=corpus_profile,
+                include_raw_mic_0=RAW0_LEG in enabled_legs,
+                include_dtln=DTLN_LEG in enabled_legs,
+                include_usb_mic=effective_include_usb_mic,
+                include_usb_dtln=USB_DTLN_LEG in enabled_legs,
+                include_xvf_raw0_dtln=XVF_RAW0_DTLN_LEG in enabled_legs,
+                include_aec3_sweep=include_aec3_sweep,
+                aec3_sweep_source=sweep_source,
+                include_bridge_readiness=True,
+                include_runtime_profile=True,
+            )
             self._session_id = session_id
             self._member = safe_member
             self._clips = []
@@ -2212,6 +2740,7 @@ class RecordingBackend:
             self._aec3_sweep_variants = sweep_variants
             self._aec3_sweep_config = sweep_config
             self._enabled_legs = enabled_legs
+            self._capture_plan = capture_plan
             self._audio_context = None
         audio_context = build_session_audio_context(
             corpus_profile=corpus_profile,
@@ -2225,6 +2754,7 @@ class RecordingBackend:
             include_aec3_sweep=include_aec3_sweep,
             aec3_sweep_source=sweep_source,
             chip_aec_config=chip_config,
+            capture_plan=capture_plan,
         )
         with self._lock:
             if self._session_id == session_id:
@@ -2295,6 +2825,11 @@ class RecordingBackend:
         """The active session's leg set, in recording/playback order."""
         with self._lock:
             return self._enabled_legs
+
+    def capture_plan(self) -> dict[str, Any] | None:
+        """Layered mic/channel/transform plan for the active session."""
+        with self._lock:
+            return dict(self._capture_plan) if self._capture_plan else None
 
     def audio_context(self) -> dict[str, Any] | None:
         """Production-profile/corpus-context snapshot for the active session."""
@@ -2395,6 +2930,7 @@ class RecordingBackend:
             session_id = self._session_id
             member = self._member
             selected_legs = list(self._enabled_legs)
+            capture_plan = dict(self._capture_plan or {})
             audio_context = dict(self._audio_context or {})
             # Cancel the auto-stop timer if it hasn't fired yet.
             if self._auto_stop_handle is not None and not auto:
@@ -2454,6 +2990,7 @@ class RecordingBackend:
             deleted=False,
             auto_stopped=auto,
             selected_legs=selected_legs,
+            capture_plan=capture_plan,
             audio_context=audio_context,
             capture_health=capture_health,
         )
@@ -2543,6 +3080,7 @@ class RecordingBackend:
                 "aec3_sweep_variants": list(self._aec3_sweep_variants),
                 "aec3_sweep_config": self._aec3_sweep_config,
                 "enabled_legs": list(self._enabled_legs),
+                "capture_plan": self._capture_plan,
                 "audio_context": self._audio_context,
                 "clips": [c.to_json() for c in self._clips],
             }
@@ -2593,6 +3131,12 @@ class RecordingBackend:
             audio_context = data.get("audio_context")
             if not isinstance(audio_context, dict):
                 audio_context = {}
+            capture_plan = data.get("capture_plan")
+            if not isinstance(capture_plan, dict):
+                capture_plan = {}
+            resource = capture_plan.get("resource")
+            if not isinstance(resource, dict):
+                resource = {}
             audio_profile = audio_context.get("production_audio_profile")
             if not isinstance(audio_profile, dict):
                 audio_profile = {}
@@ -2632,6 +3176,8 @@ class RecordingBackend:
                 "audio_profile_active": audio_profile.get("active"),
                 "audio_profile_state": audio_profile.get("state"),
                 "audio_validation_status": validation.get("status"),
+                "capture_plan_recipe": capture_plan.get("recipe"),
+                "capture_plan_resource_level": resource.get("level"),
                 "conditions": conds,
                 "is_active": (
                     self._session_id is not None
@@ -2932,6 +3478,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
                 "aec3_sweep_config": self.backend.aec3_sweep_config(),
                 "enabled_legs": list(self.backend.enabled_legs()),
+                "capture_plan": self.backend.capture_plan(),
                 "audio_context": self.backend.audio_context(),
                 "bridge_outputs": bridge_output_status(),
                 "is_recording": self.backend.is_recording(),
@@ -3186,9 +3733,35 @@ class _Handler(BaseHTTPRequestHandler):
                 "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
                 "aec3_sweep_config": self.backend.aec3_sweep_config(),
                 "enabled_legs": list(self.backend.enabled_legs()),
+                "capture_plan": self.backend.capture_plan(),
                 "audio_context": self.backend.audio_context(),
                 "bridge_outputs": bridge_output_status(),
             })
+            return
+
+        if path == "/api/capture-plan":
+            corpus_profile = str(body.get("corpus_profile") or PROFILE_STANDARD)
+            try:
+                plan = build_capture_plan(
+                    self.backend.ports(),
+                    corpus_profile=corpus_profile,
+                    include_dtln=bool(body.get("include_dtln", True)),
+                    include_raw_mic_0=bool(body.get("include_raw_mic_0", False)),
+                    include_usb_mic=bool(body.get("include_usb_mic", False)),
+                    include_usb_dtln=bool(body.get("include_usb_dtln", False)),
+                    include_xvf_raw0_dtln=bool(
+                        body.get("include_xvf_raw0_dtln", False),
+                    ),
+                    include_aec3_sweep=bool(
+                        body.get("include_aec3_sweep", False),
+                    ),
+                    aec3_sweep_source=body.get("aec3_sweep_source"),
+                    include_runtime_profile=True,
+                )
+            except (ValueError, Aec3SweepConfigError) as e:
+                self._send_error_json(400, str(e))
+                return
+            self._send_json({"capture_plan": plan})
             return
 
         if path == "/api/session/load":
@@ -3564,6 +4137,9 @@ _INDEX_BODY_TEMPLATE = """{header}
         <span class="hint">— cheap USB raw through neural AEC. This also
         records the USB raw and reference companion legs.</span>
       </label>
+    </div>
+    <div id="capture-plan-preview" class="capture-plan-preview">
+      <span class="hint">Planning capture graph…</span>
     </div>
     <div class="session-primary-actions">
       <button id="session-begin" class="primary">

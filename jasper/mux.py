@@ -914,13 +914,13 @@ class Mux:
             # build_clients returns BuildResult (clients dict + per-account
             # statuses). mux only needs the clients dict — it doesn't read
             # statuses or surface revoked-vs-needs-oauth distinctions.
+            default_redirect_uri = (
+                f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}"
+            )
             result = build_clients(
                 registry,
                 client_id=client_id,
-                redirect_uri=os.environ.get(
-                    "SPOTIFY_REDIRECT_URI",
-                    f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
-                ),
+                redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri,
             )
             if not result.clients:
                 logger.debug("spotify Web API: no accounts authorized")
