@@ -14,11 +14,10 @@ supporting documentation in `BRINGUP.md` and
 chip-side canonical reference — full parameter space, firmware
 variants, DFU flow, ALSA mixer invariants, ranked hypothesis ladder
 for raw-mic-silence symptoms, and diagnostic cookbook. This doc
-(HANDOFF-aec.md) explains the *engine* and the *why* (why software
-AEC is still production default, plus Option D — the chip-AEC variant
-that became a positive lab result on 2026-05-29 and now exists as an
-opt-in production wake path under validation, see
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)).
+(HANDOFF-aec.md) explains the *engine* and the *why*: WebRTC AEC3 as
+fallback, plus Option D — the chip-AEC variant that became a positive
+lab result on 2026-05-29 and now backs the recommended XVF3800 input
+profile, see [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md).
 HANDOFF-xvf3800.md explains the *chip*.
 The `jasper/mics/xvf3800.py` profile module is the canonical
 source for chip-specific constants consumed at runtime.
@@ -40,40 +39,36 @@ pick up the work without re-doing the investigation.
 
 ## TL;DR / current state
 
-**The software AEC bridge is shipped and auto-enabled when the chip
-is on the 6-channel firmware variant.** `install.sh` seeds
-`/var/lib/jasper/aec_mode.env` with `JASPER_AEC_MODE=auto`, enables
-`jasper-aec-reconcile.service`, and runs the reconciler once. The
-reconciler flips `JASPER_MIC_DEVICE` to `udp:9876` only when the
-configured AEC mic is actually present with 6-channel firmware, then
-enables / starts `jasper-aec-init` + `jasper-aec-bridge`. The default
-path remains WebRTC AEC3. The chip's on-board AEC is available only
-through the opt-in chip-AEC wake leg: `JASPER_WAKE_LEG_CHIP_AEC=1`
-drives `JASPER_AEC_CHIP_AEC_ENABLED=1`, outputd's direct final-output
-fanout to the XVF USB-IN reference, the volatile 150°/210° ASR beam
-profile, and the bridge's `:9876` chip-beam repoint plus
-`:9887`/`:9888` scoring legs.
+**Input selection is profile-first.** `install.sh` seeds
+`/var/lib/jasper/aec_mode.env` with `JASPER_AUDIO_INPUT_PROFILE=auto`,
+enables `jasper-aec-reconcile.service`, and runs the reconciler once.
+On the recommended 6-channel XVF3800 shape, `auto` resolves to
+`xvf_chip_aec`: `jasper-outputd` fans out the final speaker buffer to
+the XVF USB-IN reference, `jasper-aec-init` applies the volatile
+150°/210° ASR beam profile, and `jasper-aec-bridge` forwards the chip
+beam to `:9876` while exposing `:9887`/`:9888` scoring legs. Software
+AEC3 remains the fallback profile (`xvf_software_aec3`) when chip-AEC
+is unavailable or explicitly selected.
 
-In the default software-AEC3 path, the bridge still consumes the
-content/reference path used by the software canceller, and TTS/cues are
-not part of that AEC reference. The opt-in chip-AEC path is the shipped
-exception: `jasper-outputd` fans out the final speaker buffer to the
-XVF USB-IN reference while it writes the physical DAC, so the chip sees
-the same source timeline as the speaker output. Do not route TTS through
-CamillaDSP or add another ad-hoc ALSA tap to solve reference alignment.
+In the software-AEC3 path, the bridge consumes the content/reference
+path used by the software canceller, and TTS/cues are not part of that
+AEC reference. In the chip-AEC path, outputd's direct final-output
+fanout is the reference source, so the chip sees the same source
+timeline as the physical DAC. Do not route TTS through CamillaDSP or
+add another ad-hoc ALSA tap to solve reference alignment.
 
 To turn the bridge OFF (or back to chip-direct mic for A/B testing),
 set the state file to disabled and run the reconciler:
 
 ```sh
-printf 'JASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
+printf 'JASPER_AUDIO_INPUT_PROFILE=direct_mic\nJASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
 sudo systemctl start jasper-aec-reconcile
 ```
 
 To return to auto mode:
 
 ```sh
-printf 'JASPER_AEC_MODE=auto\n' | sudo tee /var/lib/jasper/aec_mode.env
+printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' | sudo tee /var/lib/jasper/aec_mode.env
 sudo systemctl start jasper-aec-reconcile
 ```
 
@@ -1106,15 +1101,15 @@ worst-case FP cost.
 
 ### D — Chip-AEC with USB-in reference topology
 
-> **Status: positive lab result; corpus-recorder pilot integration
-> exists, production wake path unchanged.** On 2026-05-29
+> **Status: positive lab result; production profile shipped.** On 2026-05-29
 > we proved the XVF3800's on-chip AEC can do useful cancellation in
 > JTS's external-DAC topology when JTS feeds the chip a clean USB-IN
-> reference. The current production default remains software AEC3
-> (BEST_A). The wake-corpus recorder can now enter a reversible chip-AEC
-> comparison profile that uses outputd direct source fanout, applies the
-> volatile chip profile, and captures explicit `chip_aec_150` /
-> `chip_aec_210` legs for validation.
+> reference. Fresh installs use `JASPER_AUDIO_INPUT_PROFILE=auto`, which
+> resolves to chip-AEC on 6-channel XVF3800 hardware and falls back to
+> software AEC3 when chip-AEC is unavailable. The wake-corpus recorder can
+> still enter reversible chip-AEC comparison profiles that use outputd
+> direct source fanout, apply the volatile chip profile, and capture
+> explicit `chip_aec_150` / `chip_aec_210` legs for validation.
 > Full test record and current lab recipe live in
 > [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md). The checked-in
 > `scripts/chip-aec-*` helpers are still lab infrastructure; teardown
@@ -1345,13 +1340,14 @@ Realistic bring-up sequence:
 | Risk: PLL loop bandwidth on the chip's USB Adaptive Mode could introduce timing jitter that pushes the AEC peak past tap 40 intermittently. If so, the fallback is making the host-side ALSA period smaller (already in the bring-up plan above). No CamillaDSP-side SRC bypass possible since USB-IN is 16 kHz only — see correction note above. | — |
 
 **Verdict for future scoping:** feasibility is confirmed in lab, and the
-opt-in production path now exists. The next decision is empirical:
-record and score wake events across chip AEC, WebRTC AEC3, raw, USB
-corpus legs, and optional DTLN legs. Current best chip settings:
+production profile path now exists. Fresh installs use `auto`, which
+resolves to chip-AEC on 6-channel XVF3800 hardware and falls back when
+that path is unavailable. Continue recording and scoring wake events
+across chip AEC, WebRTC AEC3, raw, USB corpus legs, and optional DTLN
+legs. Current best chip settings:
 `AEC_ASROUTONOFF=1`, fixed gated `150°/210°`, `AEC_AECEMPHASISONOFF=2`,
-`AEC_FAR_EXTGAIN=0 dB`. Keep WebRTC AEC3 as the production default until
-the wake/corpus validation says the chip leg actually improves model
-recall / fusion.
+`AEC_FAR_EXTGAIN=0 dB`. Keep WebRTC AEC3 available as the explicit
+fallback profile and avoid stacking it under chip-AEC.
 
 **Sources** (verified URLs as of 2026-05-21):
 - [XMOS XVF3800 User Guide v3.2.1 — Tuning the Application](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/user_guide/04_tuning_the_application.html) — `AUDIO_MGR_SYS_DELAY` definition, 40-sample target, causality / coefficient-inspection workflow
@@ -2581,4 +2577,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-02.
+Last verified: 2026-06-04.

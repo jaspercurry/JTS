@@ -13,7 +13,7 @@
   line-height: 1.5;
 }
 
-/* ----- Detection layers + sensitivity ------------------------------------ */
+/* ----- Input profile + detection layers ---------------------------------- */
 
 .mic-status-card .info-card {
   padding-bottom: 1rem;
@@ -52,9 +52,61 @@
   line-height: 1.4;
 }
 
+.profile-card .info-card {
+  padding-bottom: 0.85rem;
+}
+.profile-status {
+  color: var(--foreground);
+  font-size: 0.92rem;
+  margin-bottom: 0.75rem;
+}
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+.profile-row.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.profile-row input[type="radio"] {
+  width: auto;
+  flex: none;
+  margin: 0;
+  accent-color: var(--primary);
+}
+.profile-copy {
+  min-width: 0;
+  flex: 1;
+}
+.profile-name {
+  display: block;
+  color: var(--foreground);
+  font-weight: 600;
+}
+.profile-desc {
+  display: block;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+  margin-top: 0.12rem;
+}
+.profile-row.is-active .profile-name {
+  color: var(--primary);
+}
+
 @media (max-width: 620px) {
   .mic-status-grid {
     grid-template-columns: 1fr;
+  }
+  .profile-row {
+    align-items: flex-start;
+  }
+  .profile-row .badge {
+    margin-top: 0.05rem;
   }
 }
 

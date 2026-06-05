@@ -82,7 +82,7 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .cpu-bars__fill { width: 100%; background: var(--tone, var(--status-ok)); transition: height 200ms ease; }
 .cpu-bars__label { font-size: 10px; color: var(--muted); }
 
-/* Tables (cloud + per-service + diagnostics) */
+/* Tables (per-service + diagnostics) */
 .table-wrap { overflow-x: auto; }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th {
@@ -93,7 +93,6 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .table td { padding: 8px 0; vertical-align: top; border-top: 1px solid var(--border); }
 .table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .table--services { min-width: 420px; }
-.table--cloud { min-width: 520px; }
 .table--services tr.totals td { font-weight: 600; border-top: 1px solid var(--border-strong); }
 .table--services tr.totals td:first-child { font-weight: 400; color: var(--muted); }
 .service-name { font-weight: 500; line-height: 1.25; }

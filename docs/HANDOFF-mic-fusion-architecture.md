@@ -4,13 +4,14 @@
 > 2026-05-29; prior-art sweep folded in 2026-05-31). Phase 0 (leg
 > registry + `LegRuntime`, #366/#369/#381), Phase 1.0–1.3a (condition
 > taxonomy, per-fire telemetry, the `WakeFuser` seam, live-condition
-> refresh — #385/#390), and the opt-in chip-AEC producer/wake legs
-> (#395/#397/#403 plus the `c95bfdd` telemetry/status follow-up) are
-> merged and deployed. Remaining near-term work is empirical: validate
-> the chip-AEC legs on a fresh wake-event window before making any
-> default-on call. Phase 2 pluggable-mic / cheap-USB production support
-> remains planned, but is intentionally sequenced after chip-AEC
-> validation so we do not split the next testing pass.** This
+> refresh — #385/#390), chip-AEC producer/wake legs
+> (#395/#397/#403 plus the `c95bfdd` telemetry/status follow-up), and the
+> profile-first input policy are merged and deployed. Remaining
+> near-term work is empirical: capture fresh wake/false-accept telemetry
+> to tune the active chip-AEC profile and per-leg thresholds. Phase 2
+> pluggable-mic / cheap-USB production support remains planned, but is
+> intentionally sequenced after the XVF profile stabilizes so we do not
+> split the next testing pass.** This
 > doc owns the *architecture* of the mic-swap boundary and the
 > leg-count-agnostic wake-fusion layer: the interfaces, the staging,
 > and the named decisions. It is the architectural companion to the
@@ -65,7 +66,7 @@
    `mics/README.md` already names).
 
 5. **What's already shipped (don't re-pitch it):** the registry-backed
-   detector fleet (baseline AEC3/raw/DTLN plus opt-in chip beams), a
+   detector fleet (baseline AEC3/raw/DTLN plus profile-selected chip beams), a
    lock-race+refractory OR-gate better than naive `any()`, and per-leg
    telemetry with per-leg WAVs and `analyze-three-leg.sh`. The real
    unbuilt delta is **per-leg + per-condition thresholds** (today: one
@@ -448,10 +449,11 @@ same supervisor/health-probe pattern as the shipped T5.2
 | Corpus pull + audit + reset + `analyze-three-leg.sh` (incl. a threshold-tuning hint engine) | **Shipped** | `scripts/` |
 | Operator visibility for active mic/topology | **Shipped** | `/wake/` mic status card, backed by `jasper-control` `/aec` |
 | Mic-independent AEC reference | **Shipped** | `_ref_thread` / asoundrc |
-| Opt-in chip-AEC producer path: `/wake/` intent → reconciler → outputd reference fanout → `aec-init` profile → bridge `:9876` repoint + `:9887`/`:9888` beams | **Shipped, default-OFF; telemetry validation pending** | `deploy/bin/jasper-aec-reconcile`, `jasper/cli/aec_init.py`, `jasper/cli/aec_bridge.py` |
+| Profile-first input policy: `/wake/` profile → reconciler → outputd reference fanout / AEC3 fallback / direct mic as appropriate | **Shipped** (`auto`, `xvf_chip_aec`, `xvf_software_aec3`, `direct_mic`, `custom`) | `jasper/audio_profile_state.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/control/server.py` |
+| Chip-AEC producer path: profile intent → outputd reference fanout → `aec-init` profile → bridge `:9876` repoint + `:9887`/`:9888` beams | **Shipped; used by `auto` on 6-channel XVF3800** | `deploy/bin/jasper-aec-reconcile`, `jasper/cli/aec_init.py`, `jasper/cli/aec_bridge.py` |
 | Cheap-USB capture (resample + AEC3 + DTLN) | **Prototype** (corpus-only legs `usb_*`) | `_usb_mic_thread` |
 | Per-leg / per-condition thresholds | **Missing** (one global threshold) | — |
-| Profile-derived leg policy | **Missing** (registry exists; mic profiles do not yet choose leg sets) | — |
+| Profile-derived leg policy | **Shipped for current XVF/direct profiles** | `jasper/audio_profile_state.py` + reconciler |
 | Mic capability model / second profile | **Missing** | — |
 | Automatic condition class (quiet/music/noise) + SNR | **Missing** (manual `label` + a same-chain music proxy) | — |
 
@@ -928,7 +930,6 @@ the wake cluster before each daemon-touching PR.
 
 ---
 
-Last verified: 2026-05-31 (post-`c95bfdd`: chip-AEC producer path,
-per-beam wake-event WAVs, `/wake/` mic status card, and the decision to
-validate chip-AEC before starting Phase 2 pluggable-mic production work
-were checked against current `main`.)
+Last verified: 2026-06-04 (profile-first input policy, `auto` default,
+chip-AEC producer path, per-beam wake-event WAVs, and `/wake/` mic/profile
+status were checked against current code.)

@@ -202,9 +202,9 @@ when the configured AEC mic is present with 6-channel firmware — see
   [docs/HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md)
 - ✅ Web setup wizard at `http://jts.local/voice/` — paste API keys,
   pick the active provider, choose tested/fallback models, manually
-  refresh provider model lists for experimental trials, save. Writes
-  `/var/lib/jasper/voice_provider.env` at mode 0600 and restarts
-  `jasper-voice`
+  refresh provider model lists for experimental trials, manage pricing
+  and spend cap settings, save. Writes `/var/lib/jasper/voice_provider.env`
+  at mode 0600 and restarts `jasper-voice`
 - ✅ Tools: volume, transport (play/pause/skip/now-playing), Spotify
   search & queue, weather (now including daily sunrise/sunset),
   NYC subway times, NYC MTA bus arrivals, NYC Citi Bike availability
@@ -272,11 +272,12 @@ when the configured AEC mic is present with 6-channel firmware — see
   <previous>` on non-zero exit). WPA-Enterprise deferred — home-network
   case only.
 - ✅ Persistent live session with sustained-speech VAD
-- ✅ Hardware AEC investigation: software AEC3 remains the default, but
-  the 2026-05-29 Option D lab pass has been promoted into an opt-in,
-  default-off XVF3800 chip-AEC production path with USB-IN reference +
-  direct source fanout. Default-on remains gated on wake telemetry plus
-  measured drift/delay validation; current findings live at
+- ✅ Hardware AEC investigation: the 2026-05-29 Option D lab pass has
+  been promoted into the recommended XVF3800 input profile. Fresh
+  installs seed `JASPER_AUDIO_INPUT_PROFILE=auto`: on 6-channel XVF3800
+  hardware this resolves to chip-AEC with USB-IN reference + direct
+  source fanout; otherwise it falls back to software AEC3/direct mic as
+  hardware allows. Current findings live at
   [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
 - ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
@@ -497,9 +498,9 @@ reference. Currently:
 - [`HANDOFF-pricing-editor.md`](docs/HANDOFF-pricing-editor.md) —
   Per-model voice pricing: model-ID-keyed rates with dated defaults in
   `jasper/data/model_pricing.json`, the `/voice` "Pricing rates" editor
-  writing per-model overrides, unknown-model handling, and a
-  chatbot-research prompt + JSON import for refreshing rates. Why provider
-  APIs can't supply voice prices
+  writing per-model overrides, the `/voice` spend cap status/settings,
+  unknown-model handling, and a chatbot-research prompt + JSON import for
+  refreshing rates. Why provider APIs can't supply voice prices
 - [`HANDOFF-prompting.md`](docs/HANDOFF-prompting.md) — The voice
   prompting playbook. Cross-provider principles (conditional over
   absolute, positive framing for tool calls, brevity vs. structure),
@@ -533,14 +534,15 @@ reference. Currently:
   discovery substrate. First deliverable is a P0 measurement spike.
   **Start here for any multi-room / stereo-pair / wireless-sub work.**
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
-  investigation (engine: why software AEC, why not chip AEC)
+  investigation (engine choices, chip-AEC profile, software fallback)
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —
   2026-05-29 chip-AEC lab findings and next-productionization plan.
   Option D is now a positive lab result, not a closed negative:
   direct source fanout to the DAC + XVF3800 USB-IN reference made the
   split-DAC topology clock-stable, and ASR fixed gated `150°/210°`
-  beams were the best tested output. The opt-in production path is
-  shipped and default-off/hardware-conditional; the checked-in
+  beams were the best tested output. The production path now ships
+  behind the profile selector and is used by `auto` on 6-channel
+  XVF3800 hardware; the checked-in
   `scripts/chip-aec-*.sh` scripts +
   `jasper/chip_aec_experiment.py` are lab infrastructure, and
   `chip-aec-teardown.sh` fully reverts. **Read the doc before running.**
@@ -829,46 +831,27 @@ There are three places to address this:
 
 ### What this project does
 
-**Hardware AEC is default-off**, deliberately. Earlier chip-AEC
-variants were rejected because they did not feed the chip's USB-IN as
-the AEC reference and measured ≤2 dB attenuation in this topology.
-Option D in [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) fixed that on
-2026-05-29: direct source fanout to the external DAC and the XVF3800
-USB-IN reference was clock-stable, and the chip's ASR fixed-beam path
-produced useful echo reduction.
-
-Software AEC3 remains the default shipped path. The XVF3800 chip-AEC
-path now exists as an opt-in production mode, gated by 6-channel
-firmware and operator intent. Default-on remains gated on wake telemetry
-plus measured drift/delay validation.
+Fresh installs default to `JASPER_AUDIO_INPUT_PROFILE=auto`. On the
+recommended 6-channel XVF3800 hardware, `auto` resolves to the chip-AEC
+profile: `jasper-outputd` fans out the final speaker buffer to the
+XVF3800 USB-IN reference, the chip emits fixed 150°/210° AEC beams, and
+the bridge forwards the selected chip beam to `jasper-voice`. If that
+hardware path is unavailable, `auto` falls back to software AEC3 or a
+direct mic path rather than stacking incompatible processing.
 
 The chip is still useful — its **beamforming, noise suppression,
-and AGC** all run on the ASR beam channel (channel 1 of the
-USB capture endpoint). We use that processed channel; just not
-the chip's on-chip AEC.
+and AGC** all run in the XVF processing pipeline. The key rule is not
+to double-process: chip-AEC profiles do not also arm software raw/DTLN
+wake legs; software AEC3 is the fallback for hardware that cannot use
+chip-AEC.
 
-**Software AEC ships ON by default when the chip is on the 6-channel
-firmware variant.** A Python daemon (`jasper-aec-bridge`) runs
-WebRTC AEC3 echo cancellation between the host's music chain
-(tapped via `pcm.jasper_capture` dsnoop) and the chip's ASR beam
-(channel 1 of the 6-channel firmware). It sends an AEC'd mono signal
-over UDP localhost (`127.0.0.1:9876`) to `jasper-voice`'s
-`UdpMicCapture` instead of the chip's processed mic. The engine is
-the `jasper_aec3` pybind11 binding around Trixie's
-`libwebrtc-audio-processing-1` v1.3-3 — delivers −15 to −18 dB on
-music with the production REF_GAIN/MIC_GAIN tunings, at ~3-8% of
-one Pi 5 core and ~95 MB RAM.
-
-**Wake detection runs as up to three OR-gated layers** the user
-controls from the `/system/` Wake detection card: AEC3 (the
-master, always-on when the bridge is up), plus two additive
-sub-layers. Defaults out of the box: AEC3 on, raw chip-direct on
-(dual-stream — cheap, ~5 MB), DTLN neural off (heavy, ~75 MB / ~25%
-one core — opt-in for 2 GB Pis). Toggle any of them at
-[http://jts.local/system](http://jts.local/system); the reconciler
-restarts the bridge + voice and the change takes effect in ~15 s.
-Sensitivity slider lives on the same card. Full lever set in
-[AGENTS.md "AEC bridge — reconciler toggle"](AGENTS.md#aec-bridge--reconciler-toggle).
+**Wake/input configuration is profile-first.** The `/wake/` page exposes
+the canonical choices (`auto`, `xvf_chip_aec`, `xvf_software_aec3`,
+`direct_mic`) and keeps individual AEC/raw/DTLN/chip-leg toggles as
+advanced custom controls for corpus tests and nonstandard hardware.
+Changing a profile or custom layer runs `jasper-aec-reconcile`, which
+restarts the affected bridge/voice services and updates `/state`,
+doctor, and the dashboard.
 
 The transport is UDP (not snd-aloop's `LoopbackAEC` card, which is
 what the original design used) because snd-aloop's kernel-side

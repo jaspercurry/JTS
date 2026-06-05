@@ -139,7 +139,6 @@ def upstream_control():
                     "dropped_audio_frames": 0,
                 },
             },
-            "cloud": {"available": False, "reason": "no usage.db yet"},
             "voice_provider": "gemini",
         },
         "/system/diagnostics": {

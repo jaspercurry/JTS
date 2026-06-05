@@ -1140,8 +1140,9 @@ persist them to flash via that command.
 - The active provider lives in `/var/lib/jasper/voice_provider.env`
   (the only place since PR #166): `grep JASPER_VOICE_PROVIDER
   /var/lib/jasper/voice_provider.env`.
-- Daily spend cap might be hit. Check
-  `cat /var/lib/jasper/usage.db` via sqlite3.
+- Daily spend cap might be hit. Visit `http://jts.local/voice/` for the
+  spend-cap status/settings; the underlying ledger is
+  `/var/lib/jasper/usage.db` if you need to inspect it with sqlite3.
 
 **Music plays but voice TTS is silent (or vice versa).**
 - On the outputd cutover branch, both converge inside

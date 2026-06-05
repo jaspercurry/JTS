@@ -34,10 +34,11 @@ plus opt-in `raw0` (`:9879`) for future cheap-mic portability. It can
 also opt into cheap USB mic legs (`:9881`/`:9882`) while always keeping
 the reference leg (`:9880`) available for selected AEC experiments, and
 the XVF chip-AEC beams (`:9887`/`:9888`) for testing hardware AEC
-against software AEC on the same utterance. As of 2026-05-31,
+against software AEC on the same utterance. As of 2026-06-04,
 `chip_aec_150` / `chip_aec_210` are no longer corpus-only: they are
-default-OFF, 6-channel-firmware-gated production wake legs when chip-AEC
-mode is enabled. Build an offline test harness and
+hardware-conditional production wake legs inside the `xvf_chip_aec`
+input profile, which `auto` selects on 6-channel XVF3800 hardware.
+Build an offline test harness and
 scoring runner around that corpus. Train per-leg specialized Jarvis
 models (one for raw, one for AEC ON, one for DTLN) using
 `livekit-wakeword` + PR #69 (vendored), with Piper
@@ -397,8 +398,8 @@ written into per-leg quadrant directories at
 | `aec3_variant_1` | UDP `:9884` | parallel SW AEC3 slot 1. The input source is explicit metadata: legacy/manual source is `xvf`; new recorder AEC3-sweep sessions default to `usb`. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=80`. |
 | `aec3_variant_2` | UDP `:9885` | parallel SW AEC3 slot 2. Same source rule as slot 1. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=120`. |
 | `aec3_variant_3` | UDP `:9886` | parallel SW AEC3 slot 3. Same source rule as slot 1. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=160`. |
-| `chip_aec_150` | UDP `:9887` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `150°` (default-OFF production wake leg when chip-AEC mode is enabled; also a corpus comparison leg) |
-| `chip_aec_210` | UDP `:9888` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `210°` (paired default-OFF production wake leg; keep because orientation shifts can swap the winner) |
+| `chip_aec_150` | UDP `:9887` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `150°` (production wake leg under the hardware-conditional `xvf_chip_aec` profile; also a corpus comparison leg) |
+| `chip_aec_210` | UDP `:9888` | XVF3800 on-chip AEC, category-7 ASR fixed gated beam at `210°` (paired production wake leg under `xvf_chip_aec`; keep because orientation shifts can swap the winner) |
 | `xvf_raw0_webrtc_aec3` | UDP `:9889` | chip ch2 raw0 → SW WebRTC AEC3 using the same outputd final-output reference as chip AEC |
 | `xvf_raw0_dtln` | UDP `:9890` | chip ch2 raw0 → SW DTLN-aec (optional, high resource risk) |
 
@@ -1816,6 +1817,8 @@ and DAC/reference validation status once that validation stream exists.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-06-04 (v33 — wake-corpus capture-plan metadata
-rechecked against `jasper/web/wake_corpus_setup.py`; reference remains
-part of the chip profile while cheap USB mic legs are optional.)
+Last verified: 2026-06-05 (profile-selected chip-AEC wake legs and the
+corpus leg table were rechecked against the current profile-first input
+policy; v33 capture-plan metadata still matches
+`jasper/web/wake_corpus_setup.py`, with reference capture part of the
+chip profile and cheap USB mic legs optional.)

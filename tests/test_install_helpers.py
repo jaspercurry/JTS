@@ -78,6 +78,28 @@ def _render_install_asound_template(
     return dest.read_text(encoding="utf-8"), result.stderr
 
 
+def _run_install_helper(
+    helper_name: str,
+    tmp_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir(exist_ok=True)
+    state_dir.mkdir(exist_ok=True)
+    script = (
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+        f"ENV_DIR={shlex.quote(str(env_dir))} && "
+        f"STATE_DIR={shlex.quote(str(state_dir))} && "
+        f"{helper_name}"
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+
 # Pi 5 SKU memory sizes (real values from /proc/meminfo on each
 # variant — approximate; actual values vary by ~5 MB per board).
 _PI5_1GB_MEMTOTAL_KB = 1014768   # 991 MB
@@ -290,6 +312,47 @@ def test_install_dry_run_env_alias_and_plan_flag_match():
     assert by_flag.returncode == 0
     assert by_env.returncode == 0
     assert by_flag.stdout == by_env.stdout
+
+
+def test_migrate_openai_noise_reduction_old_default_to_auto(tmp_path):
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir()
+    jasper_env = env_dir / "jasper.env"
+    jasper_env.write_text(
+        "JASPER_OPENAI_NOISE_REDUCTION=far_field\n"
+        "JASPER_SERVER_VAD_ENABLED=0\n",
+        encoding="utf-8",
+    )
+
+    result = _run_install_helper(
+        "migrate_openai_noise_reduction_default",
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = jasper_env.read_text(encoding="utf-8")
+    assert "JASPER_OPENAI_NOISE_REDUCTION=auto" in body
+    assert "JASPER_SERVER_VAD_ENABLED=0" in body
+
+
+def test_migrate_openai_noise_reduction_preserves_non_default_override(tmp_path):
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir()
+    jasper_env = env_dir / "jasper.env"
+    jasper_env.write_text(
+        "JASPER_OPENAI_NOISE_REDUCTION=off\n",
+        encoding="utf-8",
+    )
+
+    result = _run_install_helper(
+        "migrate_openai_noise_reduction_default",
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert jasper_env.read_text(encoding="utf-8") == (
+        "JASPER_OPENAI_NOISE_REDUCTION=off\n"
+    )
 
 
 def test_model_downloads_are_bounded_and_split_by_runtime_need():

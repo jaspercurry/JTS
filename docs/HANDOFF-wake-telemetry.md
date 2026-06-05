@@ -238,9 +238,9 @@ ALTER TABLE wake_events ADD COLUMN audio_chip_aec_150_path TEXT;
 ALTER TABLE wake_events ADD COLUMN audio_chip_aec_210_path TEXT;
 
 -- Per-beam peak score / peak offset / fire-time mic RMS, one set per
--- fixed ASR beam (150° and 210°). NULL on every install until the
--- household enables the chip leg via /wake/ (default OFF), so the
--- columns are byte-cost-only until then.
+-- fixed ASR beam (150° and 210°). NULL until the hardware-conditional
+-- xvf_chip_aec profile is active (or a corpus profile captures the beam),
+-- so installs without the 6-channel XVF path pay only the byte cost.
 ALTER TABLE wake_events ADD COLUMN peak_score_chip_aec_150     REAL;
 ALTER TABLE wake_events ADD COLUMN peak_score_chip_aec_210     REAL;
 ALTER TABLE wake_events ADD COLUMN peak_offset_ms_chip_aec_150 INTEGER;
@@ -665,11 +665,9 @@ listens on 9877 until PR 2 ships. PR 2 alone (without PR 3) gives
 dual-stream wake triggering with no persistence — still useful
 but loses the funnel data. The full value lands with PR 3.
 
-Last verified: 2026-06-04 (audio ring-buffer cap corrected to the 1 GB
-production default — `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824` in
-`jasper/config.py` / `.env.example` — and the retention-cadence claim
-corrected: `_retention_sweep` in `jasper.wake_events` is invoked only
-from the audio-attach path, with no hourly timer. Earlier
-2026-05-31 verification of the Schema and File-layout sections against
-the chip-AEC capture code still stands; other sections spot-checked,
-not fully re-verified.)
+Last verified: 2026-06-05 (chip-AEC telemetry language rechecked
+against the profile-first input policy; audio ring-buffer cap still
+matches the 1 GB production default,
+`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824`, and `_retention_sweep`
+still runs from the audio-attach path with no hourly timer. Prior
+schema/file-layout checks still apply.)

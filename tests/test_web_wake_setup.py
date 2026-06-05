@@ -104,6 +104,13 @@ def test_render_uses_canonical_toggle_for_each_layer():
     assert 'class="toggle"' in html
 
 
+def test_render_has_input_profile_choices():
+    html = _render()
+    assert "Input profile" in html
+    for profile in ("auto", "xvf_chip_aec", "xvf_software_aec3", "direct_mic"):
+        assert f'id="profile-{profile}"' in html
+
+
 def test_render_form_posts_to_save_with_primary_button():
     html = _render()
     assert '<form method="post" action="save"' in html
@@ -253,6 +260,36 @@ def test_get_detection_json_proxies_aec(tmp_path, monkeypatch):
     assert captured["path"] == "/aec"
     assert cap["status"] == 200
     assert b'"mode":"auto"' in cap["body"]
+
+
+def test_post_profile_proxies_aec_profile(tmp_path, monkeypatch):
+    _make_request.state_path = str(tmp_path / "wake_model.env")
+    captured = {}
+
+    def fake_verify(handler, form=None):
+        return True
+
+    def fake_proxy_post(path, *, control_base, timeout, body=b""):
+        captured["path"] = path
+        captured["body"] = json.loads(body.decode())
+        return 200, b'{"profile":"xvf_chip_aec"}'
+
+    monkeypatch.setattr(wake_setup, "verify_csrf", fake_verify)
+    monkeypatch.setattr(wake_setup, "proxy_post", fake_proxy_post)
+    h, cap = _make_request(
+        "POST",
+        "/profile",
+        body=b'{"profile":"xvf_chip_aec"}',
+        headers={"Content-Type": "application/json"},
+    )
+    h.do_POST()
+
+    assert captured == {
+        "path": "/aec/profile",
+        "body": {"profile": "xvf_chip_aec"},
+    }
+    assert cap["status"] == 200
+    assert b'"profile":"xvf_chip_aec"' in cap["body"]
 
 
 def test_get_unknown_path_404(tmp_path):

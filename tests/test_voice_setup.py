@@ -17,10 +17,12 @@ Spotify wizard would be tested if it had its own test file.
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -374,6 +376,85 @@ def test_apply_clear_unknown_provider_errors():
     assert new == {"X": "y"}
 
 
+# ---------- Spend cap ------------------------------------------------------
+
+
+def _usage_db_with_cost(tmp_path: Path, cost_usd: float) -> Path:
+    db = tmp_path / "usage.db"
+    voice_setup.UsageStore(str(db))
+    con = sqlite3.connect(db)
+    now = datetime.now(timezone.utc).isoformat()
+    con.execute(
+        "INSERT INTO sessions "
+        "(started_at, ended_at, input_tokens, output_tokens, cost_usd, provider) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (now, now, 1000, 200, cost_usd, "openai"),
+    )
+    con.commit()
+    con.close()
+    return db
+
+
+def test_read_spend_cap_status_uses_rolling_spend_and_multiplier(tmp_path: Path):
+    db = _usage_db_with_cost(tmp_path, 0.81)
+    status = voice_setup._read_spend_cap_status({
+        "JASPER_USAGE_DB": str(db),
+        "JASPER_DAILY_SPEND_CAP_USD": "1.00",
+        "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.25",
+    })
+
+    assert status["usage_available"] is True
+    assert status["spend_last_24h_usd"] == pytest.approx(0.81)
+    assert status["padded_spend_usd"] == pytest.approx(1.0125)
+    assert status["allowed"] is False
+    assert status["remaining_usd"] == 0
+
+
+def test_index_renders_spend_cap_status_and_save_form(tmp_path: Path):
+    db = _usage_db_with_cost(tmp_path, 0.25)
+    page = voice_setup._index_html(
+        {"JASPER_USAGE_DB": str(db), "JASPER_DAILY_SPEND_CAP_USD": "2.00"},
+        "csrf-token-for-test-" + "x" * 32,
+    ).decode()
+
+    assert "Voice spend cap" in page
+    assert 'action="spend-cap"' in page
+    assert 'name="daily_spend_cap_usd"' in page
+    assert "Rolling 24h spend" in page
+    assert "$0.2500" in page
+
+
+def test_apply_spend_cap_writes_env_keys_and_preserves_provider_state():
+    current = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
+    new, err = voice_setup._apply_spend_cap({
+        "daily_spend_cap_usd": "5",
+        "daily_spend_cap_safety_multiplier": "1.1",
+    }, current)
+
+    assert err is None
+    assert new["JASPER_VOICE_PROVIDER"] == "openai"
+    assert new["OPENAI_API_KEY"] == "sk-x"
+    assert new["JASPER_DAILY_SPEND_CAP_USD"] == "5.00"
+    assert new["JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER"] == "1.1"
+
+
+def test_apply_spend_cap_rejects_negative_or_weak_multiplier():
+    current = {"JASPER_VOICE_PROVIDER": "openai"}
+    new, err = voice_setup._apply_spend_cap({
+        "daily_spend_cap_usd": "-1",
+        "daily_spend_cap_safety_multiplier": "1.25",
+    }, current)
+    assert err is not None
+    assert new == current
+
+    new, err = voice_setup._apply_spend_cap({
+        "daily_spend_cap_usd": "1",
+        "daily_spend_cap_safety_multiplier": "0.5",
+    }, current)
+    assert err is not None
+    assert new == current
+
+
 # ---------- Page rendering -------------------------------------------------
 
 
@@ -687,6 +768,36 @@ def test_e2e_save_writes_file_and_redirects(
         assert loaded["OPENAI_API_KEY"] == "sk-fresh"
         assert loaded["JASPER_VOICE_PROVIDER"] == "openai"
         # Restart was invoked.
+        assert called == [True]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_spend_cap_save_writes_voice_env_and_restarts(
+    tmp_path: Path, monkeypatch,
+):
+    called = []
+    monkeypatch.setattr(
+        voice_setup, "restart_voice_daemon", lambda: called.append(True),
+    )
+    state_path = tmp_path / "voice_provider.env"
+    _common.write_env_file(str(state_path), {
+        "JASPER_VOICE_PROVIDER": "openai",
+        "OPENAI_API_KEY": "sk-keep",
+    })
+    server, base, _ = _start_server(tmp_path)
+    try:
+        status, location, _ = _post(f"{base}/spend-cap", {
+            "daily_spend_cap_usd": "5",
+            "daily_spend_cap_safety_multiplier": "1.1",
+        })
+        assert status == 303
+        assert "Saved spend cap" in urllib.parse.unquote(location)
+        loaded = voice_setup._load_state(str(state_path))
+        assert loaded["OPENAI_API_KEY"] == "sk-keep"
+        assert loaded["JASPER_DAILY_SPEND_CAP_USD"] == "5.00"
+        assert loaded["JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER"] == "1.1"
         assert called == [True]
     finally:
         server.shutdown()

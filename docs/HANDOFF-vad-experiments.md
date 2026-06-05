@@ -206,7 +206,7 @@ turned on from an empty STT input.
 
 **The model hallucinates tool calls with confident arguments on empty
 STT input.** Observed across Cells 0, 1, 1c, and 3. When
-`openai user transcript: ''` returns empty, the model still picks a tool
+`event=openai.user_transcript transcript=''` returns empty, the model still picks a tool
 and invents arguments — examples seen:
 
 - `set_volume(percent=60)`

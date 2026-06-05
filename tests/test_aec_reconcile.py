@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.audio_profile_state import profile_env_updates
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 
 
@@ -80,6 +81,13 @@ def _write_env(
 
 def _write_mode(tmp_path: Path, mode: str = "auto") -> None:
     (tmp_path / "aec_mode.env").write_text(f"JASPER_AEC_MODE={mode}\n")
+
+
+def _write_profile_mode(tmp_path: Path, profile: str) -> None:
+    updates = profile_env_updates(profile)
+    (tmp_path / "aec_mode.env").write_text(
+        "".join(f"{key}={value}\n" for key, value in updates.items())
+    )
 
 
 def _write_card(tmp_path: Path, card: str = "Array", channels: int = 6) -> None:
@@ -287,6 +295,7 @@ def test_ensure_mode_file_seeds_default_leg_keys(tmp_path: Path) -> None:
     _write_env(tmp_path, "Array")
     _run_reconcile(tmp_path, "--reason", "test")
     body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_AUDIO_INPUT_PROFILE=auto" in body
     assert "JASPER_AEC_MODE=auto" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body
     assert "JASPER_WAKE_LEG_DTLN=0" in body
@@ -303,6 +312,110 @@ def test_ensure_mode_file_appends_missing_leg_keys(tmp_path: Path) -> None:
     assert "JASPER_AEC_MODE=disabled" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body
     assert "JASPER_WAKE_LEG_DTLN=0" in body
+    assert "JASPER_AUDIO_INPUT_PROFILE=direct_mic" in body
+
+
+def test_fresh_auto_profile_uses_chip_aec_on_6ch_xvf(tmp_path: Path) -> None:
+    """A truly fresh aec_mode.env defaults to the canonical auto profile.
+    On the recommended 6-channel XVF3800 shape that resolves to chip-AEC,
+    not stacked software AEC/raw/DTLN."""
+    _write_env(tmp_path, "Array")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    mode = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_AUDIO_INPUT_PROFILE=auto" in mode
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
+
+
+@pytest.mark.parametrize(
+    ("profile", "channels", "expected"),
+    [
+        (
+            "auto", 6,
+            {
+                "mic": "udp:9876",
+                "raw_udp": False,
+                "dtln_udp": False,
+                "chip_enabled": "1",
+                "ref_source": "outputd_udp",
+            },
+        ),
+        (
+            "xvf_chip_aec", 6,
+            {
+                "mic": "udp:9876",
+                "raw_udp": False,
+                "dtln_udp": False,
+                "chip_enabled": "1",
+                "ref_source": "outputd_udp",
+            },
+        ),
+        (
+            "xvf_software_aec3", 6,
+            {
+                "mic": "udp:9876",
+                "raw_udp": True,
+                "dtln_udp": False,
+                "chip_enabled": "0",
+                "ref_source": "alsa",
+            },
+        ),
+        (
+            "direct_mic", 6,
+            {
+                "mic": "Array",
+                "raw_udp": False,
+                "dtln_udp": False,
+                "chip_enabled": "0",
+                "ref_source": "alsa",
+            },
+        ),
+        (
+            "auto", 2,
+            {
+                "mic": "Array",
+                "raw_udp": False,
+                "dtln_udp": False,
+                "chip_enabled": "0",
+                "ref_source": "alsa",
+            },
+        ),
+    ],
+)
+def test_profile_env_updates_are_consumed_by_reconciler(
+    tmp_path: Path,
+    profile: str,
+    channels: int,
+    expected: dict[str, object],
+) -> None:
+    """Pin the Python profile writer to the Bash runtime policy.
+
+    `jasper.audio_profile_state.profile_env_updates()` is what the control
+    API writes, while `jasper-aec-reconcile` is what applies the runtime
+    env. This test catches drift between the two implementations before a
+    new profile or alias ships with mismatched Python/Bash behavior.
+    """
+    env_file = _write_env(tmp_path, "Array")
+    _write_profile_mode(tmp_path, profile)
+    _write_card(tmp_path, channels=channels)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert f"JASPER_MIC_DEVICE={expected['mic']}" in body
+    assert ("JASPER_MIC_DEVICE_RAW=udp:9877" in body) is expected["raw_udp"]
+    assert ("JASPER_MIC_DEVICE_DTLN=udp:9878" in body) is expected["dtln_udp"]
+    assert f"JASPER_AEC_CHIP_AEC_ENABLED={expected['chip_enabled']}" in body
+    assert f"JASPER_AEC_REF_SOURCE={expected['ref_source']}" in body
 
 
 def test_aec_on_dual_stream_writes_raw_clears_dtln(tmp_path: Path) -> None:
@@ -435,6 +548,7 @@ def test_ensure_mode_file_appends_missing_chip_aec_key(tmp_path: Path) -> None:
     body = (tmp_path / "aec_mode.env").read_text()
     assert "JASPER_WAKE_LEG_DTLN=1" in body            # preserved
     assert "JASPER_WAKE_LEG_CHIP_AEC=0" in body        # appended
+    assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body  # raw+DTLN is custom
 
 
 def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:

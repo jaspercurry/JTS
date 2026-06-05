@@ -490,6 +490,7 @@ def _intent_from_env(env: Mapping[str, str]) -> AecIntent:
         chip_aec_enabled=parse_env_bool(
             env.get("JASPER_WAKE_LEG_CHIP_AEC", "0"), False,
         ),
+        profile_selection=env.get("JASPER_AUDIO_INPUT_PROFILE", ""),
     )
 
 

@@ -1,14 +1,13 @@
-// main.js — /wake/ detection-layers card + model-form submit affordance.
+// main.js — /wake/ input-profile/detection card + model-form affordance.
 //
 // The page is server-rendered. Two pieces of behaviour ride on top:
 //
-//   1. The "Wake detection" card is live: it polls jasper-control's /aec state
-//      (proxied through this page's /detection.json) every few seconds and
-//      reconciles the layer toggles (AEC master, raw leg, DTLN leg, and the
-//      hardware-conditional chip-AEC beams — mutually exclusive with raw +
-//      DTLN) plus a sensitivity slider. User interaction POSTs back to
-//      /layer/<name> and
-//      /sensitivity, which proxy on to jasper-control. This mirrors the
+//   1. The input-profile + "Wake detection" cards are live: they poll
+//      jasper-control's /aec state (proxied through this page's
+//      /detection.json) every few seconds and reconcile the profile radios,
+//      layer toggles, and sensitivity slider. User interaction POSTs back to
+//      /profile, /layer/<name>, and /sensitivity, which proxy on to
+//      jasper-control. This mirrors the
 //      optimistic-flip-with-reconcile pattern used elsewhere: a per-control
 //      `dirty` flag keeps an in-flight click from being clobbered by a poll.
 //
@@ -26,6 +25,7 @@
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 
+const PROFILES = ["auto", "xvf_chip_aec", "xvf_software_aec3", "direct_mic"];
 const LAYERS = ["aec", "raw", "dtln", "chip_aec"];
 const POLL_MS = 3000;
 
@@ -45,6 +45,62 @@ function statusLine(active, layerOn, mode) {
 function setText(id, value) {
   const node = el(id);
   if (node) node.textContent = value || "—";
+}
+
+function profileLabel(id) {
+  switch (id) {
+    case "auto":
+      return "Automatic";
+    case "xvf_chip_aec":
+      return "XVF chip-AEC";
+    case "xvf_software_aec3":
+      return "XVF software AEC3";
+    case "direct_mic":
+      return "Direct mic";
+    case "custom":
+      return "Custom";
+    default:
+      return id || "Unknown";
+  }
+}
+
+function applyProfileStatus(s) {
+  const profile = s.audio_profile || {};
+  const legs = s.legs || {};
+  const chipAvailable = !!(legs.chip_aec && legs.chip_aec.available);
+  const selection = profile.selection || s.profile || profile.requested || "custom";
+  const requested = profile.requested || profile.resolved || selection;
+  const active = profile.active || "pending";
+  const state = profile.state || "unknown";
+  const status = el("profile-status");
+  if (status) {
+    const bits = [profileLabel(selection)];
+    if (requested && requested !== selection) bits.push("resolves to " + profileLabel(requested));
+    bits.push(state === "active" ? "active" : state.replace(/_/g, " "));
+    if (active && active !== "pending" && active !== requested) {
+      bits.push("running " + profileLabel(active));
+    }
+    status.textContent = bits.join(" · ");
+  }
+
+  PROFILES.forEach((id) => {
+    const input = el("profile-" + id);
+    const row = el("profile-row-" + id);
+    if (!input || !row) return;
+    if (!dirty.profile) {
+      input.checked = selection === id;
+      input.disabled = id === "xvf_chip_aec" && !chipAvailable && selection !== id;
+    }
+    row.classList.toggle("is-active", selection === id);
+    row.classList.toggle("is-disabled", input.disabled);
+  });
+
+  const custom = el("profile-custom-warning");
+  if (custom) {
+    custom.hidden = selection !== "custom";
+    custom.textContent =
+      "Custom profile active. The layer switches below now own the low-level AEC/wake-leg configuration.";
+  }
 }
 
 function wakePhraseText(wakeWord, threshold) {
@@ -92,6 +148,7 @@ function applyState(s) {
   // Hardware gate: the chip-AEC beams only exist on the 6-ch firmware.
   const chipAvailable = !!(legs.chip_aec && legs.chip_aec.available);
 
+  applyProfileStatus(s);
   applyMicStatus(s);
 
   // AEC master row.
@@ -174,6 +231,7 @@ async function pollDetection() {
     LAYERS.forEach((name) => {
       el("layer-status-" + name).textContent = "Disconnected";
     });
+    setText("profile-status", "Disconnected");
     setText("mic-status-name", "Disconnected");
     setText("mic-status-firmware", "—");
     setText("mic-status-mode", "—");
@@ -185,6 +243,26 @@ async function pollDetection() {
       warning.hidden = false;
       warning.textContent = "Could not reach jasper-control.";
     }
+  }
+}
+
+async function postProfile(profile) {
+  dirty.profile = true;
+  ignorePollUntil = Date.now() + 1500;
+  try {
+    const r = await fetch("profile", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ profile }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    dirty.profile = false;
+    applyState(body);
+  } catch (err) {
+    await jtsAlert("Profile change failed: " + err.message);
+    dirty.profile = false;
+    setTimeout(pollDetection, 250);
   }
 }
 
@@ -209,6 +287,36 @@ async function postLayer(name, wanted) {
     el("layer-" + name).checked = !wanted; // roll back the optimistic flip
   }
 }
+
+PROFILES.forEach((profile) => {
+  const input = el("profile-" + profile);
+  if (!input) return;
+  input.addEventListener("change", async () => {
+    if (!input.checked) return;
+    if (
+      profile === "direct_mic" &&
+      !(await jtsConfirm(
+        "Use direct mic input?\n\n" +
+          "This disables the AEC bridge. Wake while music is playing may be unreliable until you choose an AEC profile again.",
+        { danger: true },
+      ))
+    ) {
+      setTimeout(pollDetection, 0);
+      return;
+    }
+    if (
+      profile === "xvf_chip_aec" &&
+      !(await jtsConfirm(
+        "Use the XVF chip-AEC profile?\n\n" +
+          "This uses the mic array's hardware echo-cancelled 150°/210° beams and disables the software raw/DTLN wake legs.",
+      ))
+    ) {
+      setTimeout(pollDetection, 0);
+      return;
+    }
+    postProfile(profile);
+  });
+});
 
 // Wire each toggle. AEC-off and DTLN-on get an extra confirm because both carry
 // a real cost (restart + RAM); the others apply immediately.

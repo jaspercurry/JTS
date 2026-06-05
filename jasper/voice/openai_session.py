@@ -125,6 +125,30 @@ DEFAULT_REASONING_EFFORT = "low"
 # default, matching the Gemini adapter's 0.3 spirit (tight responses,
 # low creative drift).
 DEFAULT_TEMPERATURE = 0.7
+DEFAULT_NOISE_REDUCTION = "off"
+# ``auto`` is resolved by voice.input_policy before production constructs
+# this adapter. If a bare test/tool instantiates the adapter with auto, omit
+# provider denoising rather than sending an invalid OpenAI wire value.
+_NOISE_REDUCTION_DISABLED = frozenset((
+    "", "auto", "off", "none", "disabled", "false", "0",
+))
+_NOISE_REDUCTION_WIRE_VALUES = frozenset(("near_field", "far_field"))
+
+
+def _normalize_noise_reduction(value: str | None) -> str:
+    normalized = (value or "").strip().lower()
+    if (
+        normalized
+        and normalized not in _NOISE_REDUCTION_DISABLED
+        and normalized not in _NOISE_REDUCTION_WIRE_VALUES
+    ):
+        allowed = sorted(
+            (_NOISE_REDUCTION_DISABLED | _NOISE_REDUCTION_WIRE_VALUES) - {""}
+        )
+        raise RuntimeError(
+            "OpenAI noise_reduction must be one of: " + ", ".join(allowed)
+        )
+    return normalized
 
 
 class ConnectionState(Enum):
@@ -228,6 +252,11 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._released = False
         self._turn_lost = False
         self._server_turn_complete = False
+        # Text transcript of the assistant audio streamed by Realtime.
+        # This is diagnostic only: production still plays audio, but the
+        # journal needs a durable "what did it say?" line next to the
+        # user transcript and tool-call logs.
+        self._assistant_transcript_parts: list[str] = []
         # Polyphase resampler state, persists across send_audio calls.
         # Reset to None at turn start so the first frame doesn't carry
         # tail samples from the previous turn.
@@ -403,6 +432,12 @@ class OpenAIRealtimeTurn(LiveTurn):
                     type(e).__name__, e,
                 )
         await self._conn._on_turn_released(self)
+        assistant_text = self.assistant_transcript().strip()
+        if assistant_text:
+            logger.info(
+                "event=openai.assistant_transcript transcript=%r",
+                assistant_text,
+            )
         if self._chunks_received > 0:
             avg = self._chunk_bytes_total // self._chunks_received
             logger.info(
@@ -454,6 +489,9 @@ class OpenAIRealtimeTurn(LiveTurn):
 
     def turn_lost(self) -> bool:
         return self._turn_lost
+
+    def assistant_transcript(self) -> str:
+        return "".join(self._assistant_transcript_parts)
 
     def interrupted(self) -> bool:
         return self._interrupted
@@ -596,6 +634,25 @@ class OpenAIRealtimeTurn(LiveTurn):
         if item_id:
             self._last_assistant_item_id = item_id
 
+    def _on_assistant_text_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        self._assistant_transcript_parts.append(delta)
+        self._note_activity()
+
+    def _on_assistant_text_done(self, text: str) -> None:
+        if not text:
+            return
+        current = self.assistant_transcript()
+        if current:
+            # Some providers send both deltas and a final text field.
+            # Trust the deltas unless the final text clearly contains
+            # more content, in which case replace the aggregate.
+            if len(text) > len(current) and text.startswith(current):
+                self._assistant_transcript_parts = [text]
+            return
+        self._assistant_transcript_parts = [text]
+
     def _on_connection_lost(self) -> None:
         if self._released or self._turn_lost:
             return
@@ -625,6 +682,7 @@ class OpenAIRealtimeConnection(LiveConnection):
         voice: str = "marin",
         context_reset_sec: float = 0.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
+        noise_reduction: str = DEFAULT_NOISE_REDUCTION,
         temperature: float = DEFAULT_TEMPERATURE,
         # Proactive pre-cap reconnect — see `_proactive_reconnect_watchdog`.
         # Both default to 0 (disabled) so tests and bare-construction don't
@@ -669,6 +727,7 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._voice = voice
         self._context_reset_sec = context_reset_sec
         self._reasoning_effort = reasoning_effort
+        self._noise_reduction = _normalize_noise_reduction(noise_reduction)
         self._temperature = temperature
         self._session_max_sec = session_max_sec
         self._proactive_buffer_sec = proactive_buffer_sec
@@ -1065,48 +1124,51 @@ class OpenAIRealtimeConnection(LiveConnection):
             if self._registry is not None
             else []
         )
+        input_audio: dict = {
+            # 24 kHz is the only PCM rate OpenAI accepts on
+            # ``audio/pcm``; we upsample from 16 kHz inside the
+            # turn. ``turn_detection: None`` puts us in manual
+            # VAD mode — the daemon owns commit() and
+            # response.create().
+            "format": {
+                "type": "audio/pcm",
+                "rate": OPENAI_AUDIO_RATE_HZ,
+            },
+            "turn_detection": None,
+            # Input transcription for diagnostics — emits one
+            # ``conversation.item.input_audio_transcription.
+            # completed`` event per user utterance so we can
+            # see what STT actually heard, separate from the
+            # model's tool choice. Without this, every "why
+            # didn't my phrase work?" debug is guesswork
+            # (e.g. "kitchen medium" routed to set_volume(50)
+            # on 2026-05-24 — STT mishearing or model
+            # mis-routing? Could not tell). The model's
+            # decisions still come from the raw audio, not
+            # this transcript — STT here is observability,
+            # not the input path.
+            #
+            # gpt-4o-mini-transcribe: OpenAI's recommended
+            # successor to whisper-1 (~$0.003/min audio, less
+            # than whisper-1's $0.006, and more accurate per
+            # their docs). ``language: "en"`` is a hint that
+            # improves accuracy on the speech-through-music
+            # case our AEC chain has to navigate.
+            "transcription": {
+                "model": "gpt-4o-mini-transcribe",
+                "language": "en",
+            },
+        }
+        if self._noise_reduction not in _NOISE_REDUCTION_DISABLED:
+            input_audio["noise_reduction"] = {"type": self._noise_reduction}
+
         session: dict = {
             "type": "realtime",
             "model": self._model,
             "output_modalities": ["audio"],
             "instructions": instruction or "",
             "audio": {
-                "input": {
-                    # 24 kHz is the only PCM rate OpenAI accepts on
-                    # ``audio/pcm``; we upsample from 16 kHz inside the
-                    # turn. ``turn_detection: None`` puts us in manual
-                    # VAD mode — the daemon owns commit() and
-                    # response.create().
-                    "format": {
-                        "type": "audio/pcm",
-                        "rate": OPENAI_AUDIO_RATE_HZ,
-                    },
-                    "turn_detection": None,
-                    # Input transcription for diagnostics — emits one
-                    # ``conversation.item.input_audio_transcription.
-                    # completed`` event per user utterance so we can
-                    # see what STT actually heard, separate from the
-                    # model's tool choice. Without this, every "why
-                    # didn't my phrase work?" debug is guesswork
-                    # (e.g. "kitchen medium" routed to set_volume(50)
-                    # on 2026-05-24 — STT mishearing or model
-                    # mis-routing? Could not tell). The model's
-                    # decisions still come from the raw audio, not
-                    # this transcript — STT here is observability,
-                    # not the input path.
-                    #
-                    # gpt-4o-mini-transcribe: OpenAI's recommended
-                    # successor to whisper-1 (~$0.003/min audio, less
-                    # than whisper-1's $0.006, and more accurate per
-                    # their docs). ``language: "en"`` is a hint that
-                    # improves accuracy on the speech-through-music
-                    # case our AEC chain has to navigate.
-                    "transcription": {
-                        "model": "gpt-4o-mini-transcribe",
-                        "language": "en",
-                    },
-                    "noise_reduction": {"type": "far_field"},
-                },
+                "input": input_audio,
                 "output": {
                     # Voice belongs HERE in Realtime 2 — at session
                     # top-level it errors with `Unknown parameter:
@@ -1575,21 +1637,34 @@ class OpenAIRealtimeConnection(LiveConnection):
             return
 
         # Assistant audio transcript — the text version of the audio
-        # the model is speaking. Production daemon ignores text (it
-        # plays audio); the eval harness consumes these via the
-        # `text_out` trace event. No-op when no trace is active.
-        # Both event names handled: `response.audio_transcript.delta`
-        # is OpenAI Realtime's GA name for transcript-during-audio;
-        # `response.output_text.delta` is OpenAI's text-modality event
-        # AND the Grok adapter's normalized name for `response.text.delta`.
+        # the model is speaking. Production plays the audio, but we
+        # also persist the transcript at turn release so operational
+        # investigations can line up what it heard, what tool it used,
+        # and what it actually said. The eval harness also consumes
+        # these via the `text_out` trace event.
         if etype in (
             "response.audio_transcript.delta",
+            "response.output_audio_transcript.delta",
             "response.output_text.delta",
         ):
             delta = _event_field(event, "delta")
             if isinstance(delta, str) and delta:
+                if turn is not None:
+                    turn._on_assistant_text_delta(delta)
                 from .trace import emit as _trace_emit
                 _trace_emit("text_out", {"delta": delta})
+            return
+
+        if etype in (
+            "response.audio_transcript.done",
+            "response.output_audio_transcript.done",
+            "response.output_text.done",
+        ):
+            text = _event_field(event, "transcript")
+            if not isinstance(text, str):
+                text = _event_field(event, "text")
+            if isinstance(text, str) and turn is not None:
+                turn._on_assistant_text_done(text)
             return
 
         # Track the assistant audio item id for future barge-in support.
@@ -1626,13 +1701,14 @@ class OpenAIRealtimeConnection(LiveConnection):
             transcript = _event_field(event, "transcript")
             if isinstance(transcript, str):
                 logger.info(
-                    "openai user transcript: %r", transcript.strip()
+                    "event=openai.user_transcript transcript=%r",
+                    transcript.strip(),
                 )
             return
         if etype == "conversation.item.input_audio_transcription.failed":
             err = _event_field(event, "error") or {}
             logger.warning(
-                "openai user transcription failed: %s",
+                "event=openai.user_transcription_failed error=%s",
                 err.get("message") if isinstance(err, dict) else err,
             )
             return

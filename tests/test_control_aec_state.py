@@ -78,6 +78,7 @@ def test_read_aec_state_defaults_when_file_missing(aec_mode_file):
         "leg_raw": True,
         "leg_dtln": False,
         "leg_chip_aec": False,
+        "profile": "auto",
     }
 
 
@@ -87,6 +88,7 @@ def test_read_aec_state_parses_all_leg_keys(aec_mode_file):
         "JASPER_WAKE_LEG_RAW=0\n"
         "JASPER_WAKE_LEG_DTLN=1\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n"
+        "JASPER_AUDIO_INPUT_PROFILE=custom\n"
     )
     state = server._read_aec_state()
     assert state == {
@@ -94,6 +96,7 @@ def test_read_aec_state_parses_all_leg_keys(aec_mode_file):
         "leg_raw": False,
         "leg_dtln": True,
         "leg_chip_aec": True,
+        "profile": "custom",
     }
 
 
@@ -107,6 +110,7 @@ def test_read_aec_state_chip_aec_defaults_off_when_absent(aec_mode_file):
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
     assert server._read_aec_state()["leg_chip_aec"] is False
+    assert server._read_aec_state()["profile"] == "xvf_software_aec3"
 
 
 def test_read_aec_state_partial_file_uses_defaults_for_missing(aec_mode_file):
@@ -119,6 +123,7 @@ def test_read_aec_state_partial_file_uses_defaults_for_missing(aec_mode_file):
     assert state["mode"] == "auto"
     assert state["leg_raw"] is True   # default
     assert state["leg_dtln"] is False  # default
+    assert state["profile"] == "xvf_software_aec3"
 
 
 def test_read_aec_state_ignores_comments_and_blanks(aec_mode_file):
@@ -133,6 +138,7 @@ def test_read_aec_state_ignores_comments_and_blanks(aec_mode_file):
     assert state["mode"] == "auto"
     assert state["leg_raw"] is True   # default (commented line ignored)
     assert state["leg_dtln"] is True
+    assert state["profile"] == "custom"
 
 
 # ---------- _write_aec_leg --------------------------------------------------
@@ -151,6 +157,7 @@ def test_write_aec_leg_preserves_other_keys(aec_mode_file):
     assert "JASPER_AEC_MODE=disabled" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body
     assert "JASPER_WAKE_LEG_DTLN=1" in body
+    assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body
 
 
 def test_write_aec_leg_creates_file_when_missing(aec_mode_file):
@@ -161,6 +168,7 @@ def test_write_aec_leg_creates_file_when_missing(aec_mode_file):
     server._write_aec_leg("raw", False)
     state = server._read_aec_state()
     assert state["leg_raw"] is False
+    assert state["profile"] == "custom"
 
 
 def test_write_aec_leg_rejects_invalid_leg(aec_mode_file):
@@ -176,6 +184,27 @@ def test_write_aec_leg_writes_zero_for_off(aec_mode_file):
     server._write_aec_leg("dtln", False)
     body = aec_mode_file.read_text()
     assert "JASPER_WAKE_LEG_DTLN=0" in body
+    assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body
+
+
+def test_write_audio_input_profile_writes_profile_and_legacy_keys(aec_mode_file):
+    aec_mode_file.write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=1\n"
+    )
+    server._write_audio_input_profile("xvf_chip_aec")
+    body = aec_mode_file.read_text()
+    assert "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec" in body
+    assert "JASPER_AEC_MODE=auto" in body
+    assert "JASPER_WAKE_LEG_RAW=0" in body
+    assert "JASPER_WAKE_LEG_DTLN=0" in body
+    assert "JASPER_WAKE_LEG_CHIP_AEC=1" in body
+
+
+def test_write_audio_input_profile_rejects_custom(aec_mode_file):
+    with pytest.raises(ValueError, match="invalid profile"):
+        server._write_audio_input_profile("custom")
 
 
 def test_toggle_to_token_maps_to_real_wake_input_legs():
@@ -339,13 +368,15 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     status = server._aec_full_status()
     assert status["mode"] == "disabled"
+    assert status["profile"] == "direct_mic"
     assert status["bridge_active"] is False
     assert status["legs"] == {
-        "raw": {"configured": True},   # boolean stays even with mode=disabled
+        "raw": {"configured": False},
         "dtln": {"configured": False},
         # chip default off; not available off the 6-ch firmware.
         "chip_aec": {"configured": False, "available": False},
     }
+    assert status["raw_intent"]["leg_raw"] is True
     assert status["threshold"] == 0.5
     assert status["microphone"]["processing_mode"] == "Direct mic"
     assert status["microphone"]["firmware"]["state"] == "absent"
@@ -380,6 +411,45 @@ def test_aec_full_status_chip_available_tracks_firmware(
     )
     monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
     assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
+
+
+def test_aec_full_status_auto_profile_resolves_chip_when_available(
+    aec_mode_file, wake_model_file, monkeypatch,
+):
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=auto\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
+    )
+    monkeypatch.setattr(server, "_aec_bridge_active", lambda: True)
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    monkeypatch.setattr(
+        "jasper.mics.xvf3800.is_recommended_firmware", lambda: True,
+    )
+    monkeypatch.setattr("jasper.mics.xvf3800.is_present", lambda: True)
+    monkeypatch.setattr("jasper.mics.xvf3800.capture_channels", lambda: 6)
+    monkeypatch.setattr(
+        server,
+        "_fresh_jasper_env",
+        lambda: {
+            "JASPER_MIC_DEVICE": "udp:9876",
+            "JASPER_AEC_MIC_DEVICE": "Array",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "1",
+            "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
+            "JASPER_MIC_DEVICE_CHIP_AEC_210": "udp:9888",
+        },
+    )
+
+    status = server._aec_full_status()
+
+    assert status["profile"] == "auto"
+    assert status["legs"]["raw"]["configured"] is False
+    assert status["legs"]["chip_aec"]["configured"] is True
+    assert status["raw_intent"]["leg_raw"] is True
+    assert status["audio_profile"]["selection"] == "auto"
+    assert status["audio_profile"]["requested"] == "xvf_chip_aec"
 
 
 def test_aec_full_status_chip_aec_pending_when_runtime_env_not_applied(
@@ -486,4 +556,5 @@ def test_write_aec_leg_chip_aec_writes_boolean(aec_mode_file):
     body = aec_mode_file.read_text()
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body   # preserved
+    assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body
     assert server._read_aec_state()["leg_chip_aec"] is True

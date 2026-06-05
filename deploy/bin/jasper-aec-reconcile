@@ -84,10 +84,14 @@ ensure_mode_file() {
         if ! grep -q '^JASPER_WAKE_LEG_CHIP_AEC=' "$MODE_FILE"; then
             printf 'JASPER_WAKE_LEG_CHIP_AEC=0\n' >> "$MODE_FILE"
         fi
+        if ! grep -q '^JASPER_AUDIO_INPUT_PROFILE=' "$MODE_FILE"; then
+            printf 'JASPER_AUDIO_INPUT_PROFILE=%s\n' \
+                "$(infer_audio_input_profile_from_mode_file)" >> "$MODE_FILE"
+        fi
         return
     fi
     install -d -m 0755 "$(dirname "$MODE_FILE")"
-    printf 'JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' > "$MODE_FILE"
+    printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\n' > "$MODE_FILE"
     chmod 0644 "$MODE_FILE"
 }
 
@@ -173,6 +177,108 @@ normalize_bool() {
         *)
             log "unknown bool ${value}; treating as 0"
             echo "0"
+            ;;
+    esac
+}
+
+normalize_audio_input_profile() {
+    local profile="${1:-custom}"
+    profile="$(printf '%s' "$profile" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
+    case "$profile" in
+        auto|automatic)
+            echo "auto"
+            ;;
+        xvf_chip_aec|xvf_chip|chip_aec|chip|hardware_aec)
+            echo "xvf_chip_aec"
+            ;;
+        xvf_software_aec3|xvf_software|software_aec3|aec3|software)
+            echo "xvf_software_aec3"
+            ;;
+        direct_mic|direct|raw|off|disabled)
+            echo "direct_mic"
+            ;;
+        custom|manual|"")
+            echo "custom"
+            ;;
+        *)
+            log "unknown JASPER_AUDIO_INPUT_PROFILE=${profile}; treating as custom"
+            echo "custom"
+            ;;
+    esac
+}
+
+mode_file_value() {
+    local key="$1"
+    local default="$2"
+    local line
+    if [[ -f "$MODE_FILE" ]]; then
+        line="$(grep -E "^${key}=" "$MODE_FILE" | tail -n 1 || true)"
+        if [[ -n "$line" ]]; then
+            printf '%s\n' "${line#*=}"
+            return
+        fi
+    fi
+    printf '%s\n' "$default"
+}
+
+infer_audio_input_profile_from_values() {
+    local mode="$1"
+    local raw="$2"
+    local dtln="$3"
+    local chip_aec="$4"
+    if [[ "$mode" != "auto" ]]; then
+        echo "direct_mic"
+    elif [[ "$chip_aec" == "1" ]]; then
+        echo "xvf_chip_aec"
+    elif [[ "$raw" == "1" && "$dtln" == "0" ]]; then
+        echo "xvf_software_aec3"
+    else
+        echo "custom"
+    fi
+}
+
+infer_audio_input_profile_from_mode_file() {
+    local mode raw dtln chip_aec
+    mode="$(normalize_mode "$(mode_file_value JASPER_AEC_MODE auto)")"
+    raw="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_RAW 1)")"
+    dtln="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_DTLN 0)")"
+    chip_aec="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC 0)")"
+    infer_audio_input_profile_from_values "$mode" "$raw" "$dtln" "$chip_aec"
+}
+
+apply_audio_input_profile() {
+    case "$AUDIO_INPUT_PROFILE" in
+        auto)
+            AEC_MODE="auto"
+            if aec_ready "$AEC_MIC_DEVICE"; then
+                LEG_RAW="0"
+                LEG_DTLN="0"
+                LEG_CHIP_AEC="1"
+            else
+                LEG_RAW="1"
+                LEG_DTLN="0"
+                LEG_CHIP_AEC="0"
+            fi
+            ;;
+        xvf_chip_aec)
+            AEC_MODE="auto"
+            LEG_RAW="0"
+            LEG_DTLN="0"
+            LEG_CHIP_AEC="1"
+            ;;
+        xvf_software_aec3)
+            AEC_MODE="auto"
+            LEG_RAW="1"
+            LEG_DTLN="0"
+            LEG_CHIP_AEC="0"
+            ;;
+        direct_mic)
+            AEC_MODE="disabled"
+            LEG_RAW="0"
+            LEG_DTLN="0"
+            LEG_CHIP_AEC="0"
+            ;;
+        custom)
             ;;
     esac
 }
@@ -525,6 +631,8 @@ LEG_DTLN="$(normalize_bool "${JASPER_WAKE_LEG_DTLN:-0}")"
 # write_leg_env). Default off; only applied on the 6-channel-present
 # (bridge-running) path, so it's structurally gated on the firmware.
 LEG_CHIP_AEC="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC:-0}")"
+AUDIO_INPUT_PROFILE="$(normalize_audio_input_profile "${JASPER_AUDIO_INPUT_PROFILE:-custom}")"
+apply_audio_input_profile
 
 if [[ "$CHECK_ONLY" == "1" ]]; then
     if [[ "$AEC_MODE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
@@ -541,7 +649,7 @@ else
     PRESENT_MIC=""
 fi
 
-log "mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC}"
+log "profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC}"
 
 if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
     log "custom JASPER_MIC_DEVICE=${CURRENT_MIC}; leaving voice config untouched"

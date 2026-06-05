@@ -188,7 +188,7 @@ it on future migrated pages:
 | Tier | Element | Style | Examples |
 |---|---|---|---|
 | Region header | label for a region with no card chrome | EYEBROW — `.eyebrow` (font-display, 11px, 600, uppercase, muted) | "Rooms"/"Scenes" on `/`; "Per-service usage" on `/system/` |
-| Card title | the name of a contained panel | cased display — `.section__title` (font-display, 14px, 600, tracking-tight, foreground) | "Software", "Cloud activity", "AirPlay" |
+| Card title | the name of a contained panel | cased display — `.section__title` (font-display, 14px, 600, tracking-tight, foreground) | "Software", "Voice spend cap", "AirPlay" |
 | Row label | a field label inside a card | EYEBROW — `.deflist dt` | "Version", "Branch", "Uptime" |
 | Value | data / content | plain — `.deflist dd` (normal weight, `tabular-nums`, foreground) | "13a8d65-dirty", "4h ago" |
 
@@ -369,19 +369,18 @@ reordering better than the prior flat enumeration):
 |---|---|
 | **Sources** | Playback sources → `/sources/` · Spotify accounts → `/spotify/` · Bluetooth devices → `/bluetooth/` · AirPlay sync → `/airplay/` |
 | **Sound** | Sound profile → `/sound/` · Room correction → `https://…/correction/` (HTTPS, preflight first) · Advanced DSP → CamillaGUI `:5005/` (external, new tab) |
-| **Assistant** | Voice → `/voice/` · Wake detection → `/wake/` |
+| **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Wake detection → `/wake/` |
 | **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
 | **Network** | Wi-Fi → `/wifi/` · Peering → `/peers/` |
 | **Accessories** | Dial → `/dial/` |
 | **System** | Status → `/system/` · Speaker name → `/speaker/` · Software → `/system/` · Developer tools (operator) → `/wake-corpus/` |
 
-### 3.2 `/system/` dashboard — ~12 sub-cards
+### 3.2 `/system/` dashboard — ~11 sub-cards
 
 - Status line (sampler health)
 - 6 metric tiles: Memory, Load, CPU, Temp, Fan (if present), Disk —
   sparklines where history is useful
 - Software (sha · branch · install date · uptime · voice provider)
-- Cloud activity (sessions today, 24h spend, MTD spend, per-provider table)
 - Home Assistant connection status
 - AirPlay health (status, recent drop/xrun summary, fan-in/outputd/Camilla
   state, including outputd cgroup memory)
@@ -404,7 +403,7 @@ still have their own service/socket wrappers.
 |---|---|---|---|
 | `/spotify/` | `spotify_setup.py` | 8765 | Per-household OAuth |
 | `/dial/` | `dial_setup.py` | 8766 | ESP32 dial onboarding |
-| `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice + per-model pricing |
+| `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice + per-model pricing + spend cap |
 | `/google/` | `google_setup.py` | 8768 | Calendar + Gmail OAuth |
 | `/bluetooth/` | `bluetooth_setup.py` | 8769 | Adapter + pairing |
 | `/correction/` | `correction_setup.py` | 8770 | Room measurement (HTTPS) |
@@ -1354,8 +1353,12 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-02 (`/system/` per-service table now surfaces cached
-systemd service lifecycle state/restarts alongside cgroup CPU/memory; prior
+Last verified: 2026-06-04 (`/voice/` owns spend-cap status/settings and the
+`/system/` Cloud activity card was removed from the dashboard; verified by
+`tests/test_voice_setup.py`, `tests/test_system_setup.py`, and the static
+web design/convention tests. Prior pass 2026-06-02: `/system/` per-service
+table now surfaces cached systemd service lifecycle state/restarts alongside
+cgroup CPU/memory; prior
 pass 2026-05-31: all 16 remaining wizard surfaces landed on the
 canonical design system; correction plain-HTTP preflight migrated to the
 canonical look; `/assets` static-asset routing mirrored into the HTTPS (443)

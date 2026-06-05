@@ -476,6 +476,37 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
     ]
 
 
+def test_aec_profile_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    mode_file = tmp_path / "aec_mode.env"
+    mode_file.write_text("JASPER_AEC_MODE=auto\n")
+    popens: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, cmd):
+            popens.append(cmd)
+
+    monkeypatch.setattr(srv_mod, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"profile": "xvf_chip_aec"})
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+
+    status, body = _post(
+        f"{base}/aec/profile",
+        {"profile": "xvf_chip_aec"},
+    )
+
+    assert status == 200
+    assert body == {"profile": "xvf_chip_aec"}
+    text = mode_file.read_text()
+    assert "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec" in text
+    assert "JASPER_WAKE_LEG_CHIP_AEC=1" in text
+    assert popens == [
+        ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
+    ]
+
+
 def test_system_snapshot_audio_quality_fails_soft(
     monkeypatch,
 ):

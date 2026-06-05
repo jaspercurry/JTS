@@ -6,13 +6,14 @@ now run USB-fed AEC3 sweep variants, but USB production work remains
 separate from the main XVF wake path until the delay/alignment questions
 below are answered.
 
-**Current priority (2026-05-31): not the next active build.** The
+**Current priority (2026-06-04): not the next active build.** The
 generic USB mic path remains strategically important for open-source
-accessibility and BOM reduction, but the near-term product work is to
-validate the newly deployed opt-in XVF chip-AEC wake legs. Do not treat
-this file as an abandoned thread; treat it as the next hardware
-accessibility track after chip-AEC telemetry answers whether the XVF
-hardware beams should be the recommended XVF mode.
+accessibility and BOM reduction, but the active product path now uses
+profile-first input selection: `auto` resolves to the XVF chip-AEC
+profile on 6-channel XVF3800 hardware and falls back when that profile
+is unavailable. Do not treat this file as an abandoned thread; treat it
+as the next hardware-accessibility track after the current XVF profile
+and corpus instrumentation are stable.
 
 ## Current State
 
@@ -127,6 +128,7 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
 - Do not promote waveform-mixed USB outputs without hard-negative
   validation; the first mix result is interesting but not decisive.
 
-Last verified: 2026-05-31 (re-read against current `main`: USB legs are
-still corpus-only; pluggable USB production support remains a deliberate
-Phase 2 follow-up after chip-AEC validation, not abandoned work).
+Last verified: 2026-06-05 (re-read against the profile-first input
+policy: USB legs remain corpus-only; pluggable USB production support
+remains a deliberate Phase 2 follow-up after the XVF profile stabilizes,
+not abandoned work).

@@ -14,7 +14,7 @@ import {
   header, livePill, titledCard, choiceCard, actionButton, collapsible,
 } from "./components.js";
 import {
-  AUDIO_OPTIONS, vitalsCards, softwareList, cloudBody, haBody, airplayBody,
+  AUDIO_OPTIONS, vitalsCards, softwareList, haBody, airplayBody,
   networkList, servicesTable, updateAudioQuality, waitingNote,
 } from "./sections.js";
 import { buildDebugCard } from "./debug-card.js";
@@ -25,7 +25,6 @@ export function buildPage(root, handlers) {
   // Data sections: title built once, body re-rendered (when changed) per poll.
   const vitals = h("section.stat-grid");
   const software = titledCard("Software");
-  const cloud = titledCard("Cloud activity");
   const ha = titledCard("Home Assistant");
   const airplay = titledCard("AirPlay");
   const network = titledCard("Network");
@@ -107,7 +106,7 @@ export function buildPage(root, handlers) {
   root.replaceChildren(
     header({ title: "System", backHref: "/" }),
     h("main.app-main", null,
-      live.el, vitals, software.section, cloud.section, ha.section,
+      live.el, vitals, software.section, ha.section,
       airplay.section, audio.section, network.section, actions.section,
       diag.section, debugCard, services),
   );
@@ -115,7 +114,7 @@ export function buildPage(root, handlers) {
 
   return {
     staleness: live.label,
-    vitals, software: software.body, cloud: cloud.body, ha: ha.body,
+    vitals, software: software.body, ha: ha.body,
     airplay: airplay.body, network: network.body, svc: svcBody,
     actionsStatus,
     aq: { requested: aqRequested, active: aqActive, status: aqStatus, buttons: aqButtons },
@@ -177,7 +176,6 @@ export function update(refs, snap) {
   // Top-level cards: render with or without metrics.
   renderSection(refs, "software", refs.software,
     { b: snap.build, u: cur.uptime_sec, p: snap.voice_provider }, () => softwareList(snap, cur));
-  renderSection(refs, "cloud", refs.cloud, snap.cloud, () => cloudBody(snap.cloud));
   renderSection(refs, "ha", refs.ha, snap.home_assistant, () => haBody(snap.home_assistant));
   renderSection(refs, "airplay", refs.airplay,
     { a: snap.airplay_health, o: snap.outputd, s: services },

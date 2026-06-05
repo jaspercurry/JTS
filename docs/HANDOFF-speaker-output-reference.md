@@ -124,10 +124,11 @@ Rechecked against the current tree on 2026-06-01:
   as the pre-outputd rollback config that writes to `jasper_out`.
 - `jasper/cli/aec_bridge.py` opens `jasper_ref`, downsamples the 48 kHz
   stereo content reference to 16 kHz mono, and tracks reference
-  starvation/queue drops. In opt-in chip-AEC mode and the wake-corpus
-  chip-AEC comparison profile it receives outputd's final-buffer UDP
-  tap via `JASPER_AEC_REF_SOURCE=outputd_udp` while outputd also feeds
-  the XVF USB-IN reference PCM. Default software AEC still uses
+  starvation/queue drops. Under the hardware-conditional
+  `xvf_chip_aec` profile and the wake-corpus chip-AEC comparison
+  profile it receives outputd's final-buffer UDP tap via
+  `JASPER_AEC_REF_SOURCE=outputd_udp` while outputd also feeds the XVF
+  USB-IN reference PCM. The software-AEC profile still uses
   `jasper_ref`.
 - `rust/jasper-fanin` is already a good model for the Rust service
   style: blocking ALSA output as timing owner, non-blocking inputs,
@@ -173,7 +174,10 @@ What exists:
   is detected) plus `JASPER_AUDIO_DAC_CARD` into
   `/etc/jasper/jasper.env` so validation artifacts and status surfaces
   have stable hardware identity instead of only the generic
-  `outputd_dac` PCM name. For recognized DAC8x hardware only,
+  `outputd_dac` PCM name. `jasper-doctor` uses that same role identity:
+  Apple-dongle USB/headphone-gain checks are active only when
+  `JASPER_AUDIO_DAC_ID=apple_usb_c_dongle`, and are skipped for DAC8x
+  or other selected output roles. For recognized DAC8x hardware only,
   `JASPER_OUTPUT_DAC_ROUTE=mono:N` renders a stereo-to-mono sum onto
   one 1-indexed physical DAC8x output, and
   `JASPER_OUTPUT_DAC_ROUTE=stereo:L,R` maps stereo left/right to two
@@ -789,5 +793,9 @@ datum: how much assistant audio was actually heard.
   artifact-first topology channel-test slice. Default installs still verify
   artifacts only; an explicit lab `aplay` backend can emit short, clamped
   non-tweeter tests after readiness passes.
+- 2026-06-04: `jasper-doctor` now gates Apple-dongle-specific USB and
+  headphone-gain checks on `JASPER_AUDIO_DAC_ID=apple_usb_c_dongle`, so
+  HiFiBerry/DAC8x systems report the selected output role instead of false
+  Apple-dongle failures.
 
 Last verified: 2026-06-04

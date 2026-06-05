@@ -1466,20 +1466,40 @@ actually bites.
 
 ---
 
-## AEC bridge — reconciler toggle
+## AEC bridge — input profile and reconciler
 
-Software AEC is **built by default and managed by the reconciler**:
-it runs automatically only when `JASPER_AEC_MODE=auto` and the
-configured AEC mic is present with 6-channel firmware.
+Input selection is **profile-first** and managed by the reconciler.
+`/var/lib/jasper/aec_mode.env` carries
+`JASPER_AUDIO_INPUT_PROFILE`, plus rollback-safe legacy
+`JASPER_AEC_MODE` / `JASPER_WAKE_LEG_*` keys. Fresh installs seed:
 
-### Wake-detection legs — per-layer sub-toggles
+```
+JASPER_AUDIO_INPUT_PROFILE=auto
+JASPER_AEC_MODE=auto
+JASPER_WAKE_LEG_RAW=1
+JASPER_WAKE_LEG_DTLN=0
+JASPER_WAKE_LEG_CHIP_AEC=0
+```
 
-The bridge fans out up to three parallel mic streams the voice
-daemon OR-gates for wake detection: AEC3 (the bridge's primary
-output on `:9876`), raw chip-direct (`:9877`), and DTLN neural
-AEC (`:9878`). Two **additive** sub-toggles live in the same
-`/var/lib/jasper/aec_mode.env` file as the AEC master mode, owned
-by the **/wake/ Wake detection card**:
+`auto` resolves to the XVF3800 chip-AEC profile when the configured
+AEC mic is present with 6-channel firmware. In that profile the
+bridge forwards the chip-AEC beam to `:9876`, emits fixed
+150°/210° chip beams on `:9887`/`:9888`, and does **not** stack
+software raw/DTLN wake legs. When chip-AEC is unavailable, `auto`
+falls back to `xvf_software_aec3` (AEC3 on `:9876`, raw wake
+fallback on `:9877`, DTLN off). `direct_mic` disables the bridge.
+`custom` preserves the low-level leg booleans exactly for corpus
+tests and nonstandard hardware.
+
+### Wake-detection legs — custom sub-toggles
+
+The `/wake/` page exposes profile choices first. Its advanced layer
+toggles (`raw`, `dtln`, `chip_aec`, and the AEC master) are custom
+controls: changing one stamps `JASPER_AUDIO_INPUT_PROFILE=custom`.
+In custom software-AEC mode the bridge can fan out AEC3 (`:9876`),
+raw chip-direct (`:9877`), and DTLN neural AEC (`:9878`). In custom
+chip-AEC mode it emits the chip beams and clears raw/DTLN because the
+single chip cannot do both modes at once.
 
 > **Corpus-only 4th UDP leg (`:9879`) since PR #323.** The bridge
 > also always emits chip channel 2 (truly raw — no chip OR software
@@ -1493,45 +1513,16 @@ by the **/wake/ Wake detection card**:
 > signal is acoustically different from what the production legs'
 > models were trained on, and would degrade OR-gate precision.
 
-```
-JASPER_AEC_MODE=auto            # master — bridge on/off
-JASPER_WAKE_LEG_RAW=1           # additive raw leg (~5 MB / negligible)
-JASPER_WAKE_LEG_DTLN=0          # additive DTLN leg (~75 MB / 25% one core)
-JASPER_WAKE_LEG_CHIP_AEC=0      # XVF3800 chip-AEC beam legs (opt-in,
-                                # 6-ch-only, mutually exclusive w/ raw+DTLN)
-```
-
-Defaults (universal — no RAM-conditional logic):
-
-- **`JASPER_WAKE_LEG_RAW=1`** on fresh installs. Dual-stream is
-  the OSS baseline — cheap and gives OR-fusion wake-rate recovery.
-- **`JASPER_WAKE_LEG_DTLN=0`** on fresh installs. Opt-in for 2 GB
-  Pis where the user has a wake-event corpus to evaluate.
-- **`JASPER_WAKE_LEG_CHIP_AEC=0`** on fresh installs. The chip-AEC
-  promotion (the XVF3800's fixed 150°/210° hardware-AEC ASR beams as
-  scored wake legs — see
-  [`docs/HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md)
-  §2.4). **In progress:** the leg registry/config/telemetry + this
-  control surface have landed (default OFF), but the production
-  `jasper-aec-init` chip profile + the bridge Option-A `:9876` repoint
-  are pending on-device validation, so flipping it on today leaves the
-  chip legs *inert* (nothing emits on `:9887`/`:9888`) **and** clears
-  raw/DTLN (mutual exclusion) — i.e. it degrades wake until the bridge
-  half ships. Do not enable in production before that lands + validates.
-
 The reconciler ([`deploy/bin/jasper-aec-reconcile`](deploy/bin/jasper-aec-reconcile))
 is the single writer of the underlying env vars the daemons read.
-It maps booleans → `JASPER_MIC_DEVICE_RAW=udp:9877`,
-`JASPER_MIC_DEVICE_DTLN=udp:9878`, `JASPER_AEC_DTLN_ENABLED=1`
-(empty/`0` when the boolean is off), then restarts the bridge and
-voice. For chip-AEC it maps `JASPER_WAKE_LEG_CHIP_AEC=1` (only on the
-6-channel-present path) → `JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887` +
-`JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888` + `JASPER_AEC_CHIP_AEC_ENABLED=1`,
-and **clears `JASPER_MIC_DEVICE_RAW`/`_DTLN`** (single chip can't emit
-the software legs and the chip beams at once — Option-A). Sub-toggles are
-only meaningful when the bridge is running; the reconciler clears the
-underlying vars when AEC is disabled so a stale leg config doesn't leave
-voice listening on a port nobody talks to.
+It maps the selected profile / custom booleans to
+`JASPER_MIC_DEVICE_RAW`, `JASPER_MIC_DEVICE_DTLN`,
+`JASPER_AEC_DTLN_ENABLED`, `JASPER_MIC_DEVICE_CHIP_AEC_150`,
+`JASPER_MIC_DEVICE_CHIP_AEC_210`, `JASPER_AEC_CHIP_AEC_ENABLED`, and
+the outputd USB-IN reference producer, then restarts the bridge and
+voice as needed. The reconciler clears underlying vars when a profile
+does not use them so stale UDP devices never leave voice listening on
+ports nobody feeds.
 
 **Wake-word sensitivity slider** — lives on the same /wake/ Wake
 detection card as the model picker and the leg toggles (they share a
@@ -1542,24 +1533,30 @@ picker, which preserves the threshold on model save). Edit point is
 [`jasper/control/server.py`](jasper/control/server.py).
 
 **HTTP API** ([`jasper/control/server.py`](jasper/control/server.py)):
-- `GET /aec` → `{mode, bridge_active, legs:{raw:{configured}, dtln:{configured}}, threshold}`
-- `POST /aec/toggle` → existing AEC master flip
-- `POST /aec/leg` body `{leg: "raw"|"dtln", enabled: bool}` → flip one leg
+- `GET /aec` → profile selection, resolved/active audio profile,
+  bridge state, effective legs, raw legacy intent, threshold, mic
+  status, and validation summary.
+- `POST /aec/profile` body `{profile: "auto"|"xvf_chip_aec"|"xvf_software_aec3"|"direct_mic"}` → set canonical profile.
+- `POST /aec/toggle` → custom AEC master flip
+- `POST /aec/leg` body `{leg: "raw"|"dtln"|"chip_aec", enabled: bool}` → flip one custom leg
 - `POST /aec/threshold` body `{threshold: float}` (0.0..1.0) → set sensitivity
 
 **Migration on upgrade**: `migrate_wake_legs_config` in
 [`deploy/install.sh`](deploy/install.sh) moves any hand-set
-`JASPER_MIC_DEVICE_RAW` / `_DTLN` / `JASPER_AEC_DTLN_ENABLED` from
-`/etc/jasper/jasper.env` into `aec_mode.env` as booleans, then
-strips the underlying vars. A user previously running triple-stream
-via AGENTS.md's old "echo into jasper.env" instructions keeps
-their setup. A user previously running single-stream (no opt-in
-vars set) gets bumped to dual-stream (RAW=1) on next deploy — a
-documented OSS-default change; toggle RAW off via /system if on a
-1 GB Pi and need the ~5 MB back.
+`JASPER_MIC_DEVICE_RAW` / `_DTLN` / `JASPER_AEC_DTLN_ENABLED` /
+chip-AEC device vars from `/etc/jasper/jasper.env` into
+`aec_mode.env`, infers the nearest profile (`xvf_chip_aec`,
+`xvf_software_aec3`, or `custom`), then strips the underlying vars.
+Existing pre-profile `aec_mode.env` files keep behavior: software
+defaults infer `xvf_software_aec3`, chip-AEC booleans infer
+`xvf_chip_aec`, unusual leg mixes infer `custom`. Only a truly fresh
+file seeds `auto`.
 
-**Restart blast radius** per toggle:
-- AEC master flip → bridge + voice restart (existing behavior)
+**Restart blast radius** per profile/toggle:
+- Profile change → reconciler decides bridge + voice + outputd restart
+  needs; chip-AEC profile changes can restart outputd for USB-IN
+  reference fanout.
+- AEC master flip → custom bridge + voice restart
 - DTLN flip → bridge + voice restart (DTLN model loads at startup
   in the bridge; voice opens `:9878` socket at startup)
 - RAW flip → voice restart only (bridge already emits to `:9877`
@@ -1576,26 +1573,28 @@ HTTP endpoints write the config file and kick
 ### Engine architecture — do not re-architect
 
  README's
-"Acoustic echo cancellation" section covers the engine (WebRTC
-AEC3 via the `jasper_aec3` pybind11 binding; BEST_A tuning since
-2026-05, with prior REF_GAIN/MIC_GAIN measurements showing −15 to
-−18 dB on music). Resource cost is ~+85 MB Pss and ~+3% of one Pi
-5 core (per the resource table at the bottom of the README). The
-full investigation is in
+"Acoustic echo cancellation" section covers the engines: XVF3800
+chip-AEC for the recommended profile, and WebRTC AEC3 via the
+`jasper_aec3` pybind11 binding as fallback/custom software profile
+(BEST_A tuning since 2026-05, with prior REF_GAIN/MIC_GAIN
+measurements showing −15 to −18 dB on music). The WebRTC path costs
+~+85 MB Pss and ~+3% of one Pi 5 core (per the resource table at the
+bottom of the README). The full investigation is in
 [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md); the chip-side
 canonical reference (firmware variants, mixer state, failure
 modes, diagnostic cookbook) is
 [`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md).
 
-**Architecture is fixed; swap the engine, not the topology.** When
-working on AEC, default to engine-internal changes inside
+**Architecture is fixed; swap the engine/profile, not the topology.** When
+working on software AEC, default to engine-internal changes inside
 [`jasper/cli/aec_bridge.py`](jasper/cli/aec_bridge.py) and the
 `jasper_aec3` binding. Do **not** propose PipeWire
 `module-echo-cancel`, replacing snd-aloop with PipeWire fanout,
 dual-USB-sink hardware-AEC retry, or custom XVF firmware — the
-current architecture (dsnoop tap → AEC3 → UDP → voice daemon) is
-the result of a deliberate decision rejecting those paths
-(rationale in [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md)).
+current architecture (outputd/reference fanout or dsnoop tap → selected
+AEC profile → UDP → voice daemon) is the result of a deliberate
+decision rejecting those paths (rationale in
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md)).
 Targeted single-knob OS-layer fixes (a specific ALSA
 `rate_converter` setting, a kernel module parameter) ARE
 acceptable when measurement has localized the root cause to that
@@ -1610,18 +1609,18 @@ clocks sharing the chip's USB Adaptive Mode PLL) was measured in a
 2026-05-29 lab pass and works. Its infrastructure lives at
 [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) +
 `scripts/chip-aec-*.sh` + `jasper/chip_aec_experiment.py`. **The chip's
-fixed 150°/210° ASR beams (`chip_aec_150`/`chip_aec_210`) are now being
-promoted from corpus-only capture to opt-in, hardware-conditional,
-scored production wake legs** — see
+fixed 150°/210° ASR beams (`chip_aec_150`/`chip_aec_210`) are now the
+recommended 6-channel XVF3800 production profile and remain
+hardware-conditional scored wake legs** — see
 [`docs/HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md)
-§2.4 and the `JASPER_WAKE_LEG_CHIP_AEC` toggle above. The leg
-registry/config/telemetry + control surface have landed (default OFF);
-the production `jasper-aec-init` chip profile + the bridge Option-A
-repoint + on-device validation are the remaining halves. The carve-out
+§2.4 and the `JASPER_AUDIO_INPUT_PROFILE` policy above. The leg
+registry/config/telemetry, production `jasper-aec-init` chip profile,
+bridge Option-A `:9876` repoint, and profile selector have landed.
+The carve-out
 stays **narrow**: it does not re-open PipeWire, dual-USB-sink, or custom
 firmware, and the "architecture is fixed; swap the engine, not the
-topology" rule still binds everywhere else — the chip-AEC leg rides the
-existing dsnoop→engine→UDP→voice topology (it adds scored beam legs and
+topology" rule still binds everywhere else — the chip-AEC profile rides
+the existing reference→engine→UDP→voice topology (it adds scored beam legs and
 forwards the chip beam into the existing `:9876` carrier; it does not
 re-architect the bridge).
 
