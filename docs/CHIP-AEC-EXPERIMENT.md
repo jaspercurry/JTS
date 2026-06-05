@@ -83,7 +83,11 @@ window. Fixed-delay and long-window drift evidence remain `not_run`
 until an explicit operator-confirmed playback/capture probe lands, so
 clean passive evidence still produces a partial validation result rather
 than full chip-AEC profile validation: a `status=warn` artifact with
-`recommendation=run_drift_delay_validation`.
+`recommendation=run_drift_delay_validation`. For the known-good
+XVF3800 + HiFiBerry DAC8x `xvf_chip_aec` path, that artifact is still
+enough for `jasper-doctor` to report operator health as OK when the
+required passive checks pass. Unknown or new DAC paths still need the
+future acoustic drift/delay probe before chip-AEC should be recommended.
 
 For the DAC8x/outputd xrun workstream, use the separate outputd-only
 profile:
@@ -1204,14 +1208,17 @@ During that window, AirPlay content was observed flowing in `/state`
 passage near -77 dBFS), `content_xrun_delta=0`, `dac_xrun_delta=0`,
 `reference_sequence_delta=42283`, bridge frames advanced by 45096, and
 queue drops, UDP send drops, and ref-starved frame deltas stayed zero.
-The artifact remains `warn` because fixed acoustic delay / long-window
-drift are not directly measured by the passive runner. Wake-event rows
+The artifact remains raw `warn` because fixed acoustic delay /
+long-window drift are not directly measured by the passive runner, but
+current doctor behavior treats this known XVF3800 + HiFiBerry DAC8x
+passive pass as OK rather than an operator warning. Wake-event rows
 from the chip-AEC transition show chip-beam fires and
 saved `aec-chip-aec-150` / `aec-chip-aec-210` WAVs, but no fresh
 music-active wake event was captured during the later AirPlay attempt;
 music-under-wake telemetry remains inconclusive. Fixed acoustic
-drift/delay and a labeled music-active wake window remain the next
-gates for tuning the active chip-AEC profile and any future per-leg
-threshold/fusion changes. This doc still preserves a dmix-era experiment
-snapshot in places; current production topology lives in
+drift/delay remains an optional advanced probe for new DAC qualification
+or deeper tuning, while a labeled music-active wake window remains the
+next useful gate for active chip-AEC threshold/fusion changes. This doc
+still preserves a dmix-era experiment snapshot in places; current
+production topology lives in
 `docs/audio-paths.md`.
