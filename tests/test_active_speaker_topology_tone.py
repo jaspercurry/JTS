@@ -116,6 +116,10 @@ def test_topology_tone_plan_uses_saved_physical_output_map() -> None:
     assert plan["tone"]["frequency_hz"] == 120.0
     assert plan["tone"]["level_dbfs"] == -60.0
     assert plan["safety"]["safe_session_id"] == "safe-1"
+    assert plan["safety"]["audible_test"]["target_role_allowed"] is True
+    assert plan["safety"]["audible_test"]["policy_version"] == (
+        "woofer_mid_low_level_v1"
+    )
 
 
 def test_topology_tone_plan_can_prepare_artifact_without_audio_authority() -> None:

@@ -12,6 +12,7 @@ from typing import Any
 
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
+from .audible_policy import audible_policy_payload
 from .calibration_level import calibration_level_payload, clamp_test_level_dbfs
 from .tone_plan import (
     DEFAULT_TONE_DURATION_MS,
@@ -219,6 +220,7 @@ def build_topology_tone_plan(
             "requires_emergency_stop": True,
             "artifact_verification_available": True,
             "audible_playback_allowed": playback_allowed,
+            "audible_test": audible_policy_payload(role_id),
         },
         "issues": issues,
         "next_step": (

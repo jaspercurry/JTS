@@ -25,6 +25,12 @@ from .calibration_level import (
     MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
 )
+from .audible_policy import (
+    audible_policy_payload,
+    audible_role_allowed,
+    audible_role_block_code,
+    audible_role_block_message,
+)
 from .camilla_yaml import _forbidden_playback_token
 from .tone_plan import (
     DEFAULT_TONE_DURATION_MS,
@@ -536,6 +542,7 @@ def _metadata_for_result(
 ) -> dict[str, Any]:
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
     tone = _tone_fields(plan)
+    safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": TONE_PLAYBACK_ARTIFACT_KIND,
@@ -549,6 +556,11 @@ def _metadata_for_result(
             "label": target.get("label"),
         },
         "tone": tone,
+        "audible_test": audible_policy_payload(target.get("driver_role") or target.get("role")),
+        "safety": {
+            "protected_startup_loaded": bool(safety.get("protected_startup_loaded")),
+            "safe_session_id": safety.get("safe_session_id"),
+        },
         "wav": {
             key: value
             for key, value in wav.items()
@@ -782,7 +794,6 @@ def start_tone_playback(
     safe_session: dict[str, Any],
     backend: TonePlaybackBackend | None = None,
     allow_audio: bool = False,
-    allow_tweeter_audio: bool = False,
     now: Any = _now,
 ) -> dict[str, Any]:
     """Run a tone plan through a bounded playback backend."""
@@ -797,6 +808,7 @@ def start_tone_playback(
     bounded_plan = _plan_with_bounded_tone(plan, tone)
     audio_backend = bool(getattr(selected, "audio_backend", False))
     driver_role = str(target.get("driver_role") or target.get("role") or "")
+    audible_policy = audible_policy_payload(driver_role)
     if audio_backend and not allow_audio:
         issues.append(
             _issue(
@@ -824,12 +836,12 @@ def start_tone_playback(
                 ),
             )
         )
-    if audio_backend and driver_role == "tweeter" and not allow_tweeter_audio:
+    if audio_backend and not audible_role_allowed(driver_role):
         issues.append(
             _issue(
                 "blocker",
-                "tweeter_audio_not_enabled",
-                "tweeter/compression-driver playback is disabled for this slice",
+                audible_role_block_code(driver_role),
+                audible_role_block_message(driver_role),
             )
         )
     if issues:
@@ -850,6 +862,7 @@ def start_tone_playback(
                 "label": target.get("label"),
             },
             "tone": tone,
+            "audible_test": audible_policy,
             "artifact": None,
             "issues": issues,
         }
@@ -878,6 +891,7 @@ def start_tone_playback(
                 "label": target.get("label"),
             },
             "tone": tone,
+            "audible_test": audible_policy,
             "artifact": None,
             "issues": [
                 _issue(
@@ -907,6 +921,7 @@ def start_tone_playback(
             "label": target.get("label"),
         },
         "tone": tone,
+        "audible_test": audible_policy,
         "artifact": backend_result.get("artifact"),
         "issues": [
             issue for issue in backend_result.get("issues", [])

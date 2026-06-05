@@ -18,6 +18,13 @@ from jasper.output_topology import (
     clock_domain_report,
 )
 
+from .audible_policy import (
+    audible_policy_payload,
+    audible_role_allowed,
+    audible_role_block_code,
+    audible_role_block_message,
+)
+
 SCHEMA_VERSION = 1
 PLAYBACK_READINESS_KIND = "jts_active_speaker_playback_readiness"
 
@@ -130,7 +137,6 @@ def build_playback_readiness(
     startup_load_state: dict[str, Any] | None = None,
     tone_backend: dict[str, Any] | None = None,
     stop_control_available: bool = True,
-    allow_tweeter_playback: bool = False,
 ) -> dict[str, Any]:
     """Return a versioned readiness checklist for one physical output target."""
 
@@ -305,8 +311,8 @@ def build_playback_readiness(
         if isinstance(issue, dict)
     ]
     audio_backend_enabled = bool(backend.get("audio_enabled"))
-    target_is_tweeter = bool(channel and channel.role == "tweeter")
-    target_role_allowed = not target_is_tweeter or allow_tweeter_playback
+    target_role = channel.role if channel else role
+    target_role_allowed = bool(channel) and audible_role_allowed(target_role)
     playback_allowed = (
         preconditions_passed
         and audio_backend_enabled
@@ -317,8 +323,8 @@ def build_playback_readiness(
         issues.append(
             _issue(
                 "blocker",
-                "tweeter_audio_not_enabled",
-                "tweeter/compression-driver playback is disabled for this slice",
+                audible_role_block_code(target_role),
+                audible_role_block_message(target_role),
             )
         )
     target_label = None
@@ -399,6 +405,7 @@ def build_playback_readiness(
             "test_pcm": backend.get("test_pcm"),
             "issues": backend_issues,
         },
+        "audible_test": audible_policy_payload(target_role),
         "required_gates": gates,
         "issues": issues,
         "next_step": (

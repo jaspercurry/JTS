@@ -148,6 +148,16 @@ def test_wav_artifact_backend_renders_only_target_output_channel(
     metadata = json.loads(Path(artifact["metadata_path"]).read_text())
     assert metadata["audio_emitted"] is False
     assert metadata["target"]["output_index"] == 1
+    assert metadata["audible_test"] == {
+        "policy_version": "woofer_mid_low_level_v1",
+        "allowed_roles": ["mid", "subwoofer", "woofer"],
+        "target_role": "tweeter",
+        "target_role_allowed": False,
+    }
+    assert metadata["safety"] == {
+        "protected_startup_loaded": False,
+        "safe_session_id": "session-test",
+    }
     assert metadata["wav"]["channel_count"] == 2
 
 
@@ -421,6 +431,12 @@ def test_aplay_backend_runs_generated_artifact_when_audio_is_authorized(
     assert result["backend"] == "aplay"
     assert result["audio_emitted"] is True
     assert result["audio_device"] == {"pcm": "hw:Active", "command": "aplay"}
+    assert result["audible_test"] == {
+        "policy_version": "woofer_mid_low_level_v1",
+        "allowed_roles": ["mid", "subwoofer", "woofer"],
+        "target_role": "woofer",
+        "target_role_allowed": True,
+    }
     assert result["artifact"]["wav_basename"].startswith("tone_")
     assert calls
     assert calls[0][0][:4] == ["/usr/bin/aplay", "-q", "-D", "hw:Active"]
@@ -451,6 +467,41 @@ def test_audio_backend_refuses_tweeter_in_first_audible_slice(
 
     assert result["status"] == "blocked"
     assert "tweeter_audio_not_enabled" in {
+        issue["code"] for issue in result["issues"]
+    }
+    assert result["audible_test"]["target_role_allowed"] is False
+
+
+def test_audio_backend_refuses_unlisted_role_in_first_audible_slice(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        **_with_loaded_startup(_plan()),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+        "target": {
+            **_plan()["target"],
+            "driver_role": "full_range",
+            "output_index": 0,
+        },
+    }
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["audio_emitted"] is False
+    assert "audible_role_not_enabled" in {
         issue["code"] for issue in result["issues"]
     }
 
