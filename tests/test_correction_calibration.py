@@ -224,3 +224,53 @@ def test_fetch_vendor_calibration_stores_known_mic_record(tmp_path: Path):
     assert "7001234" not in str(public)
     assert record.serial_hash
     assert Path(record.raw_path).exists()
+
+
+# --- F1: registry-driven label inference -----------------------------------
+def test_model_label_aliases_default_and_unknown():
+    assert calibration.model_label_aliases("dayton_imm6") == ["iMM-6"]
+    assert calibration.model_label_aliases("minidsp_umik2") == ["umik-2"]
+    assert calibration.model_label_aliases("nope") == []  # no crash on unknown
+
+
+# --- F2: repeat lookup re-uses the stored calibration (no vendor round-trip)
+def test_fetch_vendor_calibration_reuses_stored_record(tmp_path: Path):
+    calls = {"n": 0}
+
+    def fake_open(req, timeout):
+        calls["n"] += 1
+        if isinstance(req, urllib.request.Request):
+            return (
+                b'<html><a href="/MicrophoneCalibrationTool/Download?'
+                b"CalibrationFileName=cmm31555.txt&amp;"
+                b'CalibrationFilePath=~%2Fx%2Fcmm31555.txt">dl</a></html>'
+            )
+        return b"*1000Hz\t-38.2\n\n20.00\t-0.1\n1000\t0.0\n20000\t-2.5\n"
+
+    r1 = calibration.fetch_vendor_calibration(
+        model_key="dayton_imm6", serial="cmm31555", root=tmp_path, opener=fake_open,
+    )
+    after_first = calls["n"]
+    assert after_first > 0  # first lookup hit the vendor
+    r2 = calibration.fetch_vendor_calibration(
+        model_key="dayton_imm6", serial="cmm31555", root=tmp_path, opener=fake_open,
+    )
+    assert calls["n"] == after_first  # repeat lookup did NOT hit the vendor
+    assert r2.calibration_id == r1.calibration_id
+
+
+def test_find_stored_calibration_respects_orientation(tmp_path: Path):
+    # miniDSP ships 0deg + 90deg files; a 0deg store must not satisfy 90deg.
+    calibration.store_calibration(
+        text="20 -1\n1000 0\n20000 1\n", provider="minidsp",
+        model="minidsp_umik1", label="UMIK-1", source="vendor",
+        serial="7001234", orientation="0deg", root=tmp_path,
+    )
+    assert calibration.find_stored_calibration(
+        provider="minidsp", model_key="minidsp_umik1", serial="7001234",
+        orientation="0deg", root=tmp_path,
+    ) is not None
+    assert calibration.find_stored_calibration(
+        provider="minidsp", model_key="minidsp_umik1", serial="7001234",
+        orientation="90deg", root=tmp_path,
+    ) is None
