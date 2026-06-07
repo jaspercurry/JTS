@@ -360,16 +360,27 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     return /iphone|ipad|ipod|macbook|built[- ]?in|^\s*default/i.test(label || '');
   }
 
+  function normalizeMicToken(s) {
+    return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
   // The OS already names the mic — infer its calibration model from the label
-  // so the user doesn't re-identify it. Returns a mic-model-select value
-  // (matching the keys the server renders from calibration.SUPPORTED_MODELS)
-  // or null. Check the more specific UMIK-2 before UMIK-1.
+  // so the user doesn't re-identify it. Registry-driven: matches the device
+  // label against the aliases the server emits from calibration.SUPPORTED_MODELS
+  // (the data-aliases attribute on each model option), so adding a mic to the
+  // registry teaches inference automatically — no model map lives here.
   function inferCalibrationModelFromLabel(label) {
-    var l = (label || '').toLowerCase();
-    if (/imm-?6/.test(l)) return 'dayton_imm6';   // iMM-6 / iMM-6C share this
-    if (/umm-?6/.test(l)) return 'dayton_umm6';
-    if (/umik-?2/.test(l)) return 'minidsp_umik2';
-    if (/umik/.test(l)) return 'minidsp_umik1';
+    var norm = normalizeMicToken(label);
+    if (!norm) return null;
+    for (var i = 0; i < micModelSelect.options.length; i++) {
+      var opt = micModelSelect.options[i];
+      if (!opt.value || opt.value === 'other') continue;
+      var aliases = (opt.dataset.aliases || '').split(',');
+      for (var j = 0; j < aliases.length; j++) {
+        var token = normalizeMicToken(aliases[j]);
+        if (token && norm.indexOf(token) !== -1) return opt.value;
+      }
+    }
     return null;
   }
 

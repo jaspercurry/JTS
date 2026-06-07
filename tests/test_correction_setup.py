@@ -828,3 +828,12 @@ def test_calibration_device_mismatch_ignores_manual_and_absent():
     assert correction_setup._calibration_device_mismatch(
         _cal("dayton_audio"), None
     ) is None
+
+
+def test_render_page_emits_registry_model_aliases():
+    # Inference is registry-driven: each model option carries data-aliases
+    # from SUPPORTED_MODELS so the frontend has no hardcoded mic map to drift.
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'value="dayton_imm6"' in body
+    assert 'data-aliases="iMM-6"' in body
+    assert 'data-aliases="umik-2"' in body

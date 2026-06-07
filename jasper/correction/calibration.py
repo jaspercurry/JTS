@@ -33,7 +33,12 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_CALIBRATION_DIR = Path("/var/lib/jasper/correction/calibration_mics")
-SUPPORTED_MODELS: dict[str, dict[str, str]] = {
+# Single source of truth for supported measurement mics. Adding a mic here
+# wires the vendor lookup, the model picker, the wrong-mic guard, AND the
+# wizard's label-based auto-inference (see model_label_aliases). Optional
+# `label_aliases` overrides the default (the vendor_model) when a mic's OS
+# device label doesn't contain its vendor model string.
+SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
     "dayton_imm6": {
         "provider": "dayton_audio",
         "vendor_model": "iMM-6",
@@ -55,6 +60,19 @@ SUPPORTED_MODELS: dict[str, dict[str, str]] = {
         "label": "miniDSP UMIK-2",
     },
 }
+
+
+def model_label_aliases(model_key: str) -> list[str]:
+    """OS device-label tokens that identify this mic for the wizard's
+    label-based auto-inference (e.g. ``iMM-6`` matches a browser-reported
+    label of ``iMM-6C``). Defaults to the vendor model; a registry entry may
+    set ``label_aliases`` for mics whose OS label differs from the model name.
+    The wizard matches case- and punctuation-insensitively, so aliases need
+    only be a distinctive substring of the device label.
+    """
+    spec = SUPPORTED_MODELS.get(model_key, {})
+    aliases = spec.get("label_aliases") or [spec.get("vendor_model", "")]
+    return [str(a) for a in aliases if a]
 
 
 @dataclass(frozen=True)
@@ -576,6 +594,44 @@ def fetch_minidsp_calibration_text(
     )
 
 
+def find_stored_calibration(
+    *,
+    provider: str,
+    model_key: str,
+    serial: str,
+    orientation: str = "unknown",
+    root: Path = DEFAULT_CALIBRATION_DIR,
+) -> CalibrationRecord | None:
+    """Return a previously-stored vendor calibration matching this
+    serial + model + orientation, or None. A measurement mic's calibration is
+    fixed per unit, so the stored copy is authoritative — this lets a repeat
+    lookup skip the vendor round-trip (resilient to the vendor being down, and
+    faster). Returns the most recently fetched match. Corrupt records are
+    skipped, not fatal.
+    """
+    sh = serial_hash(serial)
+    if not sh:
+        return None
+    model_dir = root / _slug(provider) / _slug(model_key)
+    best: CalibrationRecord | None = None
+    for path in model_dir.glob("*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if data.get("serial_hash") != sh:
+            continue
+        if str(data.get("orientation") or "unknown") != orientation:
+            continue
+        try:
+            rec = CalibrationRecord.from_dict(data)
+        except (KeyError, ValueError, TypeError):
+            continue
+        if best is None or rec.fetched_at > best.fetched_at:
+            best = rec
+    return best
+
+
 def fetch_vendor_calibration(
     *,
     model_key: str,
@@ -594,6 +650,19 @@ def fetch_vendor_calibration(
     # serial_hash, never the raw serial — the serial identifies a user's
     # hardware and is treated as private metadata everywhere else.
     log_id = f"provider={provider} model={model_key} serial_hash={serial_hash(serial)}"
+    # Re-use a previously-stored calibration for this serial so a repeat lookup
+    # (e.g. the wizard auto-fetching a remembered serial) never depends on the
+    # vendor being reachable.
+    cached = find_stored_calibration(
+        provider=provider, model_key=model_key, serial=serial,
+        orientation=orientation, root=root,
+    )
+    if cached is not None:
+        logger.info(
+            "event=correction_calibration_lookup %s outcome=cache_hit point_count=%d",
+            log_id, cached.point_count,
+        )
+        return cached
     try:
         if provider == "dayton_audio":
             text, source = fetch_dayton_calibration_text(

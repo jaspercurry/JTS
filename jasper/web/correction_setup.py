@@ -444,7 +444,10 @@ __HEADER__
 
 
 def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
-    from jasper.correction.calibration import SUPPORTED_MODELS
+    from jasper.correction.calibration import (
+        SUPPORTED_MODELS,
+        model_label_aliases,
+    )
     from jasper.correction.strategy import (
         DEFAULT_CORRECTION_STRATEGY_ID,
         DEFAULT_TARGET_PROFILE_ID,
@@ -452,9 +455,12 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         target_profile_options,
     )
 
+    # data-aliases carries the registry's label tokens to the wizard so it can
+    # infer the model from a device label without a hardcoded client-side map.
     mic_model_options = "\n        ".join(
-        '<option value="{key}">{label}</option>'.format(
+        '<option value="{key}" data-aliases="{aliases}">{label}</option>'.format(
             key=html.escape(key, quote=True),
+            aliases=html.escape(",".join(model_label_aliases(key)), quote=True),
             label=html.escape(spec["label"]),
         )
         for key, spec in SUPPORTED_MODELS.items()
