@@ -8,9 +8,8 @@
 // reconfiguration, and systemctl side effects — this module only talks to
 // it over the same api/* JSON endpoints it always did.
 //
-// Relocated VERBATIM from the page's old inline <script> when /wake-corpus/
-// moved onto the canonical design system. Only three behaviour-neutral seams
-// changed:
+// Moved from the page's old inline <script> when /wake-corpus/ moved onto the
+// canonical design system. The important ownership seams are:
 //   * api() now builds its headers via jsonHeaders() from the shared http.js
 //     module (was a hand-rolled {'Content-Type': 'application/json'} +
 //     X-CSRF-Token). jsonHeaders() reads the token from the <meta name=
@@ -25,6 +24,8 @@
 //     <script type="application/json" id="wake-corpus-config"> block the page
 //     renders, read once below. A cached ES module can't carry per-deploy
 //     Python data, so it's injected via the (no-store) HTML instead.
+//   * capture-option state rules live in ./controls.js so they can be tested
+//     directly without loading this full recorder module.
 //
 // All api/* paths stay RELATIVE ('api/...' not '/api/...') so the same module
 // works standalone (http://host:8782/) AND behind nginx
@@ -32,6 +33,10 @@
 
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import {
+  currentSessionPayload as buildCurrentSessionPayload,
+  syncCorpusProfileControls as syncCaptureOptionControls,
+} from "./controls.js";
 
 const $ = id => document.getElementById(id);
 let elapsedTimer = null;
@@ -111,15 +116,22 @@ function resetSessionForm() {
   $('include-usb-dtln').checked = false;
   syncCorpusProfileControls(false);
 }
+
+function captureOptionElements() {
+  return {
+    member: $('member'),
+    chipProfile: $('include-chip-aec-profile'),
+    rawMic0: $('include-raw-mic-0'),
+    dtln: $('include-dtln'),
+    xvfRaw0Dtln: $('include-xvf-raw0-dtln'),
+    aec3Sweep: $('include-aec3-sweep'),
+    usbMic: $('include-usb-mic'),
+    usbDtln: $('include-usb-dtln'),
+  };
+}
+
 function syncCorpusProfileControls(sessionLoaded = false) {
-  const chipProfile = $('include-chip-aec-profile').checked;
-  if (chipProfile) {
-    $('include-raw-mic-0').checked = true;
-    $('include-aec3-sweep').checked = false;
-  }
-  $('include-raw-mic-0').disabled = sessionLoaded || chipProfile;
-  $('include-usb-mic').disabled = sessionLoaded;
-  $('include-aec3-sweep').disabled = sessionLoaded || chipProfile;
+  syncCaptureOptionControls(captureOptionElements(), sessionLoaded);
 }
 function orderedLegs(files) {
   const present = files || {};
@@ -155,20 +167,7 @@ async function api(method, path, body) {
 }
 
 function currentSessionPayload() {
-  const includeAec3Sweep = $('include-aec3-sweep').checked;
-  return {
-    member: $('member').value.trim(),
-    corpus_profile: $('include-chip-aec-profile').checked
-      ? 'chip_aec_comparison_v1'
-      : 'standard',
-    include_raw_mic_0: $('include-raw-mic-0').checked,
-    include_dtln: $('include-dtln').checked,
-    include_usb_mic: $('include-usb-mic').checked || includeAec3Sweep,
-    include_usb_dtln: $('include-usb-dtln').checked,
-    include_xvf_raw0_dtln: $('include-xvf-raw0-dtln').checked,
-    include_aec3_sweep: includeAec3Sweep,
-    aec3_sweep_source: includeAec3Sweep ? 'usb' : 'xvf',
-  };
+  return buildCurrentSessionPayload(captureOptionElements());
 }
 
 function renderCapturePlan(plan) {

@@ -434,7 +434,7 @@ only while the recorder-owned env file requests it; exiting corpus test
 mode removes those overrides and returns the chip to production bypass.
 
 **AEC3 sweep policy.** The recorder has a corpus-only **USB AEC3
-sweep** checkbox for pilot tuning before the gold corpus is recorded.
+sweep** toggle for pilot tuning before the gold corpus is recorded.
 When selected, `jasper-aec-bridge` runs three additional warmed WebRTC
 AEC3 instances in parallel with the baseline XVF `on` leg. As of
 2026-05-28, new recorder-created sweep sessions set
@@ -485,14 +485,14 @@ variants do not always cover.
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
 turns on XVF DTLN inference in the bridge, and the recorder has a
-per-session XVF DTLN checkbox for choosing whether to subscribe to
+per-session XVF DTLN toggle for choosing whether to subscribe to
 that leg. In chip-AEC comparison mode, `xvf_raw0_dtln` is the cleaner
 "DTLN on the same raw XVF element" experiment and is controlled by
 `JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED`. Cheap-USB DTLN is a separate
 experiment: the bridge only runs the USB neural engine when
 `JASPER_AEC_CORPUS_USB_ENABLED=1` and
 `JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1`; the recorder's USB DTLN
-checkbox subscribes to `usb_dtln` and records its `ref` + `usb_raw`
+toggle subscribes to `usb_dtln` and records its `ref` + `usb_raw`
 companion legs. Treat XVF raw0 DTLN and USB DTLN as high resource risk
 on a 1 GB Pi; use them only when their comparison value is worth the
 neural-engine cost.
@@ -609,15 +609,15 @@ sessions on different days):**
   variation + slight mic position shift between sessions is the
   point; we want the test corpus to be in-distribution but not
   identically-captured.
-- Both sessions: **opt into raw mic 0** via the recorder's "Also
-  capture raw mic 0" checkbox at session start. Per-session
+- Both sessions: **opt into raw mic 0** via the recorder's "Raw mic 0"
+  toggle at session start. Per-session
   property — every clip in the session inherits it.
 - Cheap-USB comparison sessions: plug in the USB mic, enable bridge
-  corpus legs, then check "Also capture USB mic + reference" at
+  corpus legs, then enable "USB mic + reference" at
   session start. This adds `ref`, `usb_raw`, and `usb_webrtc` WAVs
   per clip and makes the clip-row playback selector show all recorded
   legs.
-- USB AEC3 sweep sessions: check "USB AEC3 sweep". The UI also keeps
+- USB AEC3 sweep sessions: enable "USB AEC3 sweep". The UI also keeps
   USB mic + reference selected because the variant engines are fed
   from the USB mic in this mode. Leave XVF/USB DTLN off during this
   sweep unless explicitly doing a neural-AEC side test; the Pi budget
@@ -720,7 +720,7 @@ into the volatile chip profile before recording.
 If the bridge cannot restart with the requested optional outputs
 (for example, the USB mic is missing), the recorder rolls that env
 file back and restarts the bridge with the prior config. The selected
-checkboxes are the desired test-mode state: stale optional outputs from
+toggles are the desired test-mode state: stale optional outputs from
 an earlier session are removed unless they are selected again.
 
 When testing is done, use the wake-corpus page's **Exit corpus test
@@ -1705,7 +1705,7 @@ and DAC/reference validation status once that validation stream exists.
     (`:9881`), and `usb_webrtc` (`:9882`), gated by
     `JASPER_AEC_CORPUS_REF_ENABLED` / `JASPER_AEC_CORPUS_USB_ENABLED`.
   - Added optional `usb_dtln` (`:9883`), gated by
-    `JASPER_AEC_CORPUS_USB_DTLN_ENABLED`, plus session checkboxes for
+    `JASPER_AEC_CORPUS_USB_DTLN_ENABLED`, plus session toggles for
     XVF DTLN and USB DTLN capture.
   - Recorder now persists a session-level `enabled_legs` list instead
     of relying only on the raw0 boolean; legacy metadata still reads
@@ -1734,7 +1734,7 @@ and DAC/reference validation status once that validation stream exists.
     → #323 are the lineage; full list in §12.
   - 4th leg added: raw mic 0 (chip ch2, UDP `:9879`) — truly raw,
     no chip OR software DSP, captures what a cheap USB mic would
-    deliver. Per-session opt-in via recorder checkbox. Stored under
+    deliver. Per-session opt-in via recorder toggle. Stored under
     `aec_raw0_<condition>/`. Iteration 1 captures but does not
     train on it; value compounds for future iterations (cheap-mic
     portability test + `jarvis_jts_raw0_v1` model later).
@@ -1817,8 +1817,9 @@ and DAC/reference validation status once that validation stream exists.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-06-05 (profile-selected chip-AEC wake legs and the
+Last verified: 2026-06-07 (profile-selected chip-AEC wake legs and the
 corpus leg table were rechecked against the current profile-first input
 policy; v33 capture-plan metadata still matches
 `jasper/web/wake_corpus_setup.py`, with reference capture part of the
-chip profile and cheap USB mic legs optional.)
+chip profile, cheap USB mic legs optional, and capture controls rendered
+as canonical toggles.)

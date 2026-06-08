@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import logging
 import os
@@ -131,10 +132,63 @@ from jasper.web._common import (
     canonical_page,
     delete_env_file,
     read_env_file,
+    toggle_html,
     write_env_file,
 )
 
 logger = logging.getLogger("jasper-wake-corpus-web")
+
+
+@dataclass(frozen=True)
+class CaptureOption:
+    control_id: str
+    title: str
+    hint: str
+    checked: bool = False
+    hidden: bool = False
+
+
+CAPTURE_OPTIONS: tuple[CaptureOption, ...] = (
+    CaptureOption(
+        "include-chip-aec-profile",
+        "Chip AEC comparison",
+        "150/210 beams, raw0, AEC3, reference.",
+        checked=True,
+    ),
+    CaptureOption(
+        "include-raw-mic-0",
+        "Raw mic 0",
+        "Unprocessed chip channel.",
+        hidden=True,
+    ),
+    CaptureOption(
+        "include-xvf-raw0-dtln",
+        "XVF raw0 DTLN",
+        "Neural cleanup on raw0.",
+    ),
+    CaptureOption(
+        "include-dtln",
+        "XVF DTLN",
+        "Neural cleanup on ASR beam.",
+        hidden=True,
+    ),
+    CaptureOption(
+        "include-aec3-sweep",
+        "USB AEC3 sweep",
+        "Delay variants for USB mic.",
+        hidden=True,
+    ),
+    CaptureOption(
+        "include-usb-mic",
+        "USB mic + reference",
+        "Raw USB, AEC3, reference.",
+    ),
+    CaptureOption(
+        "include-usb-dtln",
+        "USB DTLN",
+        "Neural cleanup on USB mic.",
+    ),
+)
 
 
 # Default bind. Loopback by default for safety; CLI flag opens to LAN.
@@ -1219,7 +1273,7 @@ def set_bridge_outputs_for_session(
 ) -> bool:
     """Make recorder-owned bridge output overrides match a session.
 
-    Unlike the legacy enable helper, this treats the checkbox selection
+    Unlike the legacy enable helper, this treats the session toggle selection
     as the desired test-mode bridge state. Production-owned settings in
     /etc or the reconciler env are left alone; the recorder file only
     carries the additional outputs needed for the selected corpus legs.
@@ -1454,7 +1508,7 @@ def _session_legs(
     if include_usb_dtln and USB_DTLN_LEG in ports:
         # DTLN only makes sense when compared to the same raw USB mic
         # and reference signal, so include those companion legs even if
-        # the caller didn't tick the broader USB/WebRTC checkbox.
+        # the caller didn't turn on the broader USB/WebRTC toggle.
         legs.extend(leg for leg in ("ref", "usb_raw", USB_DTLN_LEG) if leg in ports)
     if include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB:
         legs.extend(leg for leg in AEC3_SWEEP_LEGS if leg in ports)
@@ -1547,7 +1601,7 @@ def _metadata_flag(
     leg: str,
     enabled_legs: tuple[str, ...],
 ) -> bool:
-    """Return a saved checkbox flag, capped to legs this process can record."""
+    """Return a saved capture flag, capped to legs this process can record."""
     requested = bool(data.get(key, leg in enabled_legs))
     return requested and leg in enabled_legs
 
@@ -4052,6 +4106,24 @@ def make_server(
 # the behaviour lives in /assets/wake-corpus/js/main.js.
 
 
+def _capture_option_row(option: CaptureOption) -> str:
+    hidden_attr = " hidden" if option.hidden else ""
+    return (
+        f'    <div class="capture-option"{hidden_attr}>\n'
+        f'      <label class="capture-option__text" '
+        f'for="{html.escape(option.control_id, quote=True)}">\n'
+        f"        <strong>{html.escape(option.title)}</strong>\n"
+        f'        <span class="hint">{html.escape(option.hint)}</span>\n'
+        "      </label>\n"
+        f"      {toggle_html(option.control_id, checked=option.checked)}\n"
+        "    </div>"
+    )
+
+
+def _capture_options_html() -> str:
+    return "\n".join(_capture_option_row(option) for option in CAPTURE_OPTIONS)
+
+
 _INDEX_BODY_TEMPLATE = """{header}
 <main class="page">
   <div class="card" id="status-card">
@@ -4080,64 +4152,7 @@ _INDEX_BODY_TEMPLATE = """{header}
       <label for="member">Name:</label>
       <input type="text" id="member" value="jasper" maxlength="20">
     </div>
-    <div class="row checkbox">
-      <input type="checkbox" id="include-chip-aec-profile" checked>
-      <label for="include-chip-aec-profile">
-        Use <strong>chip AEC comparison profile</strong>
-        <span class="hint">— captures chip AEC ASR 150/210, XVF raw0,
-        XVF raw0 WebRTC AEC3, and the final speaker reference. USB mic
-        legs are optional.</span>
-      </label>
-    </div>
-    <div class="row checkbox">
-      <input type="checkbox" id="include-raw-mic-0">
-      <label for="include-raw-mic-0">
-        Also capture <strong>raw mic 0</strong>
-        <span class="hint">— chip channel 2, no DSP. Useful for
-        future-proofing against cheaper mics; adds one WAV per clip.</span>
-      </label>
-    </div>
-    <div class="row checkbox">
-      <input type="checkbox" id="include-xvf-raw0-dtln">
-      <label for="include-xvf-raw0-dtln">
-        Also capture <strong>XVF raw0 DTLN</strong>
-        <span class="hint">— neural AEC on the same raw XVF mic element;
-        useful but heavier than the WebRTC AEC3 path.</span>
-      </label>
-    </div>
-    <div class="row checkbox">
-      <input type="checkbox" id="include-dtln" checked>
-      <label for="include-dtln">
-        Capture <strong>XVF DTLN</strong>
-        <span class="hint">— chip ASR-beam raw through the neural AEC
-        comparison path; requires the bridge DTLN env to be enabled.</span>
-      </label>
-    </div>
-    <div class="row checkbox">
-      <input type="checkbox" id="include-aec3-sweep">
-      <label for="include-aec3-sweep">
-        Capture <strong>USB AEC3 sweep</strong>
-        <span class="hint">— USB edge-combo WebRTC AEC3 at 40/80/120/160 ms
-        delay hints, with the XVF AEC3 leg kept for comparison. Use this
-        as a pilot tuning mode; leave DTLN off while comparing these legs.</span>
-      </label>
-    </div>
-    <div class="row checkbox">
-      <input type="checkbox" id="include-usb-mic">
-      <label for="include-usb-mic">
-        Also capture <strong>USB mic + reference</strong>
-        <span class="hint">— corpus-only cheap mic raw, cheap mic WebRTC AEC3,
-        and the 16 kHz reference the bridge feeds into AEC.</span>
-      </label>
-    </div>
-    <div class="row checkbox">
-      <input type="checkbox" id="include-usb-dtln">
-      <label for="include-usb-dtln">
-        Also capture <strong>USB DTLN</strong>
-        <span class="hint">— cheap USB raw through neural AEC. This also
-        records the USB raw and reference companion legs.</span>
-      </label>
-    </div>
+{capture_options}
     <div id="capture-plan-preview" class="capture-plan-preview">
       <span class="hint">Planning capture graph…</span>
     </div>
@@ -4250,6 +4265,8 @@ def _render_index_html(csrf_token: str = "") -> str:
     header = canonical_header("Wake-word corpus")
     body = _INDEX_BODY_TEMPLATE.replace("{header}", header).replace(
         "{config_json}", config_json,
+    ).replace(
+        "{capture_options}", _capture_options_html(),
     )
     return canonical_page(
         "Wake-word corpus",
