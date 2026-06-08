@@ -7,7 +7,6 @@ activation belongs behind later channel-identity and path-safety gates.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -24,6 +23,12 @@ from jasper.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
     DEFAULT_VOLUME_LIMIT_DB,
+)
+from jasper.camilla_emit import (
+    emit_gain_filter,
+    emit_linkwitz_riley,
+    emit_mixer,
+    fmt,
 )
 
 from .profile import (
@@ -47,10 +52,6 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
 )
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
-
-
-def _fmt(value: float) -> str:
-    return f"{value:.4f}"
 
 
 def _name_token(value: str) -> str:
@@ -95,24 +96,12 @@ def _positive_int(value: int, field_name: str) -> int:
     return out
 
 
-def _emit_gain_filter(name: str, gain_db: float, *, mute: bool = False) -> list[str]:
-    mute_s = "true" if mute else "false"
-    return [
-        f"  {name}:",
-        "    type: Gain",
-        (
-            "    parameters: "
-            f"{{ gain: {_fmt(gain_db)}, inverted: false, mute: {mute_s} }}"
-        ),
-    ]
-
-
 def _emit_delay_filter(name: str, delay_ms: float = 0.0) -> list[str]:
     return [
         f"  {name}:",
         "    type: Delay",
         "    parameters:",
-        f"      delay: {_fmt(delay_ms)}",
+        f"      delay: {fmt(delay_ms)}",
         "      unit: ms",
     ]
 
@@ -129,25 +118,7 @@ def _emit_limiter_filter(
         "    type: Limiter",
         "    parameters:",
         f"      soft_clip: {soft_clip_s}",
-        f"      clip_limit: {_fmt(clip_limit_db)}",
-    ]
-
-
-def _emit_linkwitz_riley_filter(
-    name: str,
-    *,
-    highpass: bool,
-    freq_hz: float,
-    order: int,
-) -> list[str]:
-    kind = "LinkwitzRileyHighpass" if highpass else "LinkwitzRileyLowpass"
-    return [
-        f"  {name}:",
-        "    type: BiquadCombo",
-        "    parameters:",
-        f"      type: {kind}",
-        f"      freq: {_fmt(freq_hz)}",
-        f"      order: {order}",
+        f"      clip_limit: {fmt(clip_limit_db)}",
     ]
 
 
@@ -205,32 +176,33 @@ def _mixer_sources(
 
 def _emit_split_mixer(preset: ActiveSpeakerPreset) -> str:
     polarity = _role_polarity(preset)
-    output_count = len(preset.channel_map.outputs)
-    labels = [
-        output.label
-        for output in sorted(preset.channel_map.outputs, key=lambda item: item.index)
+    outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
+    output_count = len(outputs)
+    # Active-speaker policy: build the (dest -> L/R-sum sources) map from
+    # the preset's driver layout + per-driver polarity. The YAML spelling
+    # is the shared emit_mixer; this routing is the assembly concern.
+    mapping = [
+        (
+            output.index,
+            _mixer_sources(
+                output.side,
+                preset.channel_map.layout,
+                inverted=polarity[output.driver_role],
+            ),
+        )
+        for output in outputs
     ]
-    lines = [
-        f"  split_active_{preset.way_count}way:",
-        f'    description: "{preset.channel_map.layout} source -> {output_count} protected active outputs"',
-        f"    labels: {json.dumps(labels)}",
-        f"    channels: {{ in: 2, out: {output_count} }}",
-        "    mapping:",
-    ]
-    for output in sorted(preset.channel_map.outputs, key=lambda item: item.index):
-        lines.append(f"      - dest: {output.index}")
-        lines.append("        sources:")
-        for channel, gain, inverted in _mixer_sources(
-            output.side,
-            preset.channel_map.layout,
-            inverted=polarity[output.driver_role],
-        ):
-            inverted_s = "true" if inverted else "false"
-            lines.append(
-                f"          - {{ channel: {channel}, gain: {_fmt(gain)}, "
-                f"inverted: {inverted_s} }}"
-            )
-    return "\n".join(lines)
+    return emit_mixer(
+        f"split_active_{preset.way_count}way",
+        channels_in=2,
+        channels_out=output_count,
+        mapping=mapping,
+        description=(
+            f"{preset.channel_map.layout} source -> "
+            f"{output_count} protected active outputs"
+        ),
+        labels=[output.label for output in outputs],
+    )
 
 
 def _crossover_filter_name(
@@ -298,15 +270,15 @@ def _emit_filter_definitions(
     limiter_clip_limit_db: float,
 ) -> str:
     lines: list[str] = []
-    lines.extend(_emit_gain_filter("active_startup_headroom", -startup_headroom_db))
+    lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
     for region in _ordered_regions(preset):
-        lines.extend(_emit_linkwitz_riley_filter(
+        lines.extend(emit_linkwitz_riley(
             _crossover_filter_name(region.lower_driver, region, highpass=False),
             highpass=False,
             freq_hz=region.fc_hz,
             order=region.order,
         ))
-        lines.extend(_emit_linkwitz_riley_filter(
+        lines.extend(emit_linkwitz_riley(
             _crossover_filter_name(region.upper_driver, region, highpass=True),
             highpass=True,
             freq_hz=region.fc_hz,
@@ -315,14 +287,14 @@ def _emit_filter_definitions(
     for role in required_driver_roles(preset.way_count):
         protective_freq = _protective_tweeter_hp_frequency(preset, role)
         if protective_freq is not None:
-            lines.extend(_emit_linkwitz_riley_filter(
+            lines.extend(emit_linkwitz_riley(
                 _protective_tweeter_hp_name(role),
                 highpass=True,
                 freq_hz=protective_freq,
                 order=4,
             ))
         lines.extend(_emit_delay_filter(_driver_delay_name(role)))
-        lines.extend(_emit_gain_filter(
+        lines.extend(emit_gain_filter(
             _driver_mute_name(role),
             STARTUP_MUTE_GAIN_DB,
             mute=True,

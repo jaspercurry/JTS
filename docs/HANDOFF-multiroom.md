@@ -35,16 +35,29 @@ yet** and the gating spike has not been run. What exists:
 - **`jasper/multiroom/state.py`** — `read_grouping_state()`, fresh-read
   (never `os.environ`); wired into `jasper-control` `/state.grouping`
   (fail-soft).
+- **`jasper/camilla_emit.py`** — shared CamillaDSP YAML *emission*
+  primitives (`fmt`, `emit_gain_filter`, `emit_peaking_biquad`,
+  `emit_linkwitz_riley`, `emit_mixer`): the single home for *how* a
+  gain/biquad/crossover/mixer is spelled in YAML. Extracted from the
+  correction / sound / active-speaker / multi-room generators, which had
+  each hand-rolled (and re-derived) these — 3 copies of `_fmt`, 4 mixer
+  emitters. All four now consume it; high-level config *assembly* stays
+  per-subsystem. The shipped generators are byte-identical post-migration
+  (golden-diffed); multi-room's sub crossover upgraded to CamillaDSP's
+  native `BiquadCombo LinkwitzRileyLowpass`.
 - **`jasper/multiroom/channel_split.py`** — pure channel-split DSP
   fragment generator (P1.2). `build_channel_split(channel)` emits the
   CamillaDSP `channel_select` Mixer (left/right route; mono/sub L+R sum
   at a clip-safe −6.02 dB so identical L==R hits exactly 0 dBFS) and,
-  for `sub`, an LR4 (two cascaded Butterworth) 80 Hz lowpass crossover.
-  Host-agnostic recipe: the same fragment runs *locally* on a brainy
-  stereo-pair member or *on the leader* to pre-bake a dumb endpoint's
-  stream (§4). Never names `master_gain` (preserves the Ducker's
-  identity-mixer contract) and emits no positive gain — every generated
-  mixer holds the signal ≤ 0 dBFS under `volume_limit: 0.0`. Pure /
+  for `sub`, a native LR4 `BiquadCombo` 80 Hz lowpass crossover — all via
+  the shared `camilla_emit` primitives. Host-agnostic recipe: the same
+  fragment runs *locally* on a brainy stereo-pair member or *on the
+  leader* to pre-bake a dumb endpoint's stream (§4). Never names
+  `master_gain` (preserves the Ducker's identity-mixer contract) and
+  emits no positive gain — every generated mixer holds the signal ≤ 0
+  dBFS under `volume_limit: 0.0`. The `channel` axis is inter-speaker and
+  composes with `output_topology.SpeakerChannel`'s intra-speaker driver
+  axis because channel-select is interface-preserving 2→2 (§4). Pure /
   hardware-free; live weaving into the active config is P1.3.
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
@@ -328,9 +341,29 @@ sum for mono/sub) plus the sub's LR4 80 Hz lowpass. It is the *same*
 recipe whether a brainy stereo-pair member applies it locally or the
 leader applies it to pre-bake a dumb endpoint's stream (the dumb box
 runs no CamillaDSP, §1). It keeps `master_gain` identity (the Ducker
-contract) and `volume_limit: 0.0`, and emits no positive gain. Deferred
-to P1.3: weaving it into the live config (the `target_channels` /
-per-side-config path noted above) and validating the sound on hardware.
+contract) and `volume_limit: 0.0`, and emits no positive gain. The
+crossover and channel-select mixer are emitted through the shared
+[`jasper/camilla_emit.py`](../jasper/camilla_emit.py) primitives (the
+single home for CamillaDSP YAML emission, also used by the correction /
+sound / active-speaker generators), so the sub crossover is CamillaDSP's
+native `BiquadCombo LinkwitzRileyLowpass` — the same primitive the
+active-speaker driver crossovers use. Deferred to P1.3: weaving it into
+the live config (the `target_channels` / per-side-config path noted
+above) and validating the sound on hardware.
+
+**Two "channel" vocabularies — don't conflate them.** This module's
+`channel` (left/right/sub/mono/stereo) is the **inter-speaker** axis —
+which channel of the stereo *program* a whole speaker plays in a bond.
+`output_topology.SpeakerChannel.role` (woofer/tweeter/…) is the
+**intra-speaker** axis — which *driver* a DAC output feeds. They compose
+rather than compete: on a multi-way active speaker that is also a bond
+member, channel-select runs **first** (pick the L/R/mono program), then
+the active-speaker crossover splits that program across the drivers.
+They never need to know about each other because channel-select is
+**interface-preserving** — a 2→2 transform that changes only *what* is
+on the two channels, so per-channel correction and the active-speaker
+2→N driver split both still receive two channels. The live weave of the
+channel-select fragment into an active-speaker config is P1.3.
 
 ---
 
@@ -708,12 +741,20 @@ resolving):
 
 ---
 
-Last verified: 2026-06-08 (P1.2 channel-split:
+Last verified: 2026-06-08 (shared CamillaDSP emission layer +
+channel boundary: extracted `jasper/camilla_emit.py` (`fmt`,
+`emit_gain_filter`, `emit_peaking_biquad`, `emit_linkwitz_riley`,
+`emit_mixer`) and migrated all four DSP generators (correction / sound /
+active-speaker / multi-room) onto it — shipped subsystems golden-diffed
+byte-identical, multi-room crossover upgraded to native `BiquadCombo`;
+documented + tested the inter-speaker `channel` vs intra-speaker
+`SpeakerChannel` boundary (channel-select is interface-preserving 2→2).
+746 hardware-free tests green. Earlier 2026-06-08 (P1.2 channel-split):
 `jasper/multiroom/channel_split.py` emits the pure, host-agnostic
-`channel_select` Mixer + sub LR4 80 Hz crossover fragment — clip-safe
+`channel_select` Mixer + sub crossover fragment — clip-safe
 −6.02 dB L+R sum, `master_gain` left identity for the Ducker, no
-positive gain; 51 hardware-free tests incl. a weave into the real
-`outputd-cutover.yml`; §0/§4 updated; live weaving deferred to P1.3.
+positive gain; hardware-free tests incl. a weave into the real
+`outputd-cutover.yml`; live weaving deferred to P1.3.
 Earlier 2026-06-08: combined `/rooms` "Speakers" surface: the
 wake-response (peering) toggle + Primary checkbox folded out of the old
 `/peers/` page into `/rooms`, which is now canonical; `/peers/`

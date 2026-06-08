@@ -5,13 +5,12 @@ jasper/multiroom/channel_split.py:
   - master_gain is never touched (Ducker contract);
   - no positive source gains (clip safety);
   - mono/sub sums are exactly -6.02 dB (identical L==R -> 0 dBFS);
-  - the LR4 sub crossover is two Butterworth lowpasses at the corner;
+  - the LR4 sub crossover is CamillaDSP's native BiquadCombo;
   - stereo is a true passthrough;
   - the emitted YAML parses and composes into the real base config.
 """
 from __future__ import annotations
 
-import math
 import re
 from pathlib import Path
 
@@ -189,24 +188,21 @@ def test_sub_sums_then_lowpasses_lr4():
         for s in m["sources"]:
             assert s["gain"] == pytest.approx(MONO_SUM_GAIN_DB, abs=1e-3)
 
-    # ...plus a 2-section (LR4) Butterworth lowpass crossover.
-    assert split.filter_chain_names == ("sub_lp_1", "sub_lp_2")
+    # ...plus the native LR4 (BiquadCombo) lowpass crossover.
+    assert split.filter_chain_names == ("sub_crossover",)
     filters = _parse_filters(split.filter_block)
-    assert set(filters) == {"sub_lp_1", "sub_lp_2"}
-    for name in ("sub_lp_1", "sub_lp_2"):
-        f = filters[name]
-        assert f["type"] == "Biquad"
-        assert f["parameters"]["type"] == "Lowpass"
-        assert f["parameters"]["freq"] == pytest.approx(DEFAULT_CROSSOVER_HZ)
-        # Butterworth Q = 1/sqrt(2); two cascaded == LR4 (24 dB/oct).
-        assert f["parameters"]["q"] == pytest.approx(1.0 / math.sqrt(2.0), abs=1e-3)
+    assert set(filters) == {"sub_crossover"}
+    f = filters["sub_crossover"]
+    assert f["type"] == "BiquadCombo"
+    assert f["parameters"]["type"] == "LinkwitzRileyLowpass"
+    assert f["parameters"]["freq"] == pytest.approx(DEFAULT_CROSSOVER_HZ)
+    assert f["parameters"]["order"] == 4  # LR4 == 24 dB/oct
 
 
 def test_sub_crossover_hz_is_tunable():
     split = build_channel_split("sub", crossover_hz=120.0)
     filters = _parse_filters(split.filter_block)
-    for name in ("sub_lp_1", "sub_lp_2"):
-        assert filters[name]["parameters"]["freq"] == pytest.approx(120.0)
+    assert filters["sub_crossover"]["parameters"]["freq"] == pytest.approx(120.0)
 
 
 # --------------------------- invariants ------------------------------
@@ -262,8 +258,8 @@ def test_weave_sub_pipeline_order_mixer_then_filters_with_crossover_last():
     assert pipeline[1] == {"type": "Mixer", "name": CHANNEL_SELECT_MIXER}
     for step in pipeline[2:]:
         assert step["type"] == "Filter"
-        # crossover sections run LAST, after `flat` (room correction / EQ).
-        assert step["names"][-2:] == ["sub_lp_1", "sub_lp_2"]
+        # crossover runs LAST, after `flat` (room correction / EQ).
+        assert step["names"][-1] == "sub_crossover"
 
 
 def test_weave_sub_crossover_appends_after_existing_correction_chain():
@@ -277,7 +273,7 @@ def test_weave_sub_crossover_appends_after_existing_correction_chain():
     for step in cfg["pipeline"]:
         if step.get("type") == "Filter":
             assert step["names"] == [
-                "room_peq_1", "room_peq_2", "flat", "sub_lp_1", "sub_lp_2",
+                "room_peq_1", "room_peq_2", "flat", "sub_crossover",
             ]
 
 
@@ -294,7 +290,7 @@ def test_weave_into_real_runtime_base_config(channel):
     else:
         assert "channel_select" in cfg["mixers"]
     if channel == "sub":
-        assert {"sub_lp_1", "sub_lp_2"} <= set(cfg["filters"])
+        assert "sub_crossover" in cfg["filters"]
 
 
 @pytest.mark.parametrize("channel", ALLOWED_CHANNELS)
@@ -317,7 +313,46 @@ def test_sub_mixer_is_mono_mixer_plus_crossover():
     sub = build_channel_split("sub")
     assert sub.mixer_block == mono.mixer_block
     assert mono.filter_block == "" and mono.filter_chain_names == ()
-    assert sub.filter_chain_names == ("sub_lp_1", "sub_lp_2")
+    assert sub.filter_chain_names == ("sub_crossover",)
+
+
+# ---- boundary: inter-speaker channel-select vs intra-speaker drivers ----
+# `multiroom.channel` (this module) is which PROGRAM channel a whole
+# speaker plays in a bond. `output_topology.SpeakerChannel.role` is which
+# DRIVER a DAC output feeds. They compose because channel-select is
+# interface-preserving (2->2); these tests pin that contract.
+
+@pytest.mark.parametrize("channel", ["left", "right", "mono", "sub"])
+def test_channel_select_is_interface_preserving_2x2(channel):
+    # Always 2->2: changes WHAT is on the two channels, never the channel
+    # COUNT. This is why every downstream stage (per-channel correction,
+    # the active-speaker 2->N driver split) still receives two channels.
+    split = build_channel_split(channel)
+    mixer = _parse_mixers(split.mixer_block)[CHANNEL_SELECT_MIXER]
+    assert mixer["channels"] == {"in": 2, "out": 2}
+
+
+def test_channel_select_chains_into_active_speaker_driver_split():
+    # Compose the two axes: inter-speaker channel-select (2->2) feeding an
+    # active-speaker-style driver split (intra-speaker, 2->N). The
+    # interface lines up — channel-select OUT == driver-split IN == 2 — so
+    # a multi-way speaker in a bond plays its bond channel, split across
+    # drivers. (Live weaving into an active-speaker config is P1.3; this
+    # pins the channel-count contract that makes that weave sound.)
+    from jasper.camilla_emit import emit_mixer
+
+    sel = build_channel_split("left").mixer_block
+    driver_split = emit_mixer(
+        "split_active_2way",
+        channels_in=2,
+        channels_out=2,
+        mapping=[(0, [(0, 0.0, False)]), (1, [(1, 0.0, False)])],
+        description="stereo source -> 2 protected active outputs",
+        labels=["Woofer", "Tweeter"],
+    )
+    sel_m = _parse_mixers(sel)[CHANNEL_SELECT_MIXER]
+    split_m = _parse_mixers(driver_split)["split_active_2way"]
+    assert sel_m["channels"]["out"] == split_m["channels"]["in"] == 2
 
 
 # --------------------------- error path ------------------------------

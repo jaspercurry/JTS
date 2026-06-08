@@ -24,6 +24,21 @@ Which host applies it is the P1.3 integration decision (design doc §4).
 This module only emits the correct fragment for a channel; it does not
 choose where it runs.
 
+Two "channel" vocabularies — keep them straight. This module's
+``channel`` (left/right/sub/mono/stereo) is the INTER-speaker axis:
+which channel of the stereo PROGRAM a whole speaker plays in a bond.
+It is distinct from ``output_topology.SpeakerChannel`` (``role`` =
+woofer/tweeter/…), the INTRA-speaker axis: which DRIVER a physical DAC
+output feeds. They compose, they do not compete — on a multi-way active
+speaker that is also a bond member, this channel-select runs FIRST
+(pick the L/R/mono program), then the active-speaker crossover splits
+that program across the drivers. Neither layer needs to know about the
+other because channel-select is INTERFACE-PRESERVING: a 2→2 transform
+that changes only WHAT is on the two channels. Everything downstream —
+per-channel room correction on channels ``[0]``/``[1]``, the
+active-speaker 2→N driver split — still consumes two channels, so it
+composes unchanged. (Live weaving into an active-speaker config is P1.3.)
+
 Design invariants (each has a regression test):
 
   - NEVER touches `master_gain`. The Ducker (jasper/camilla.py) drives
@@ -48,8 +63,9 @@ Design invariants (each has a regression test):
     byte-for-byte what it would be without grouping.
 
 Subwoofer crossover is a fixed Linkwitz-Riley 4th-order lowpass
-(two cascaded Butterworth biquads), default 80 Hz — the de-facto
-consumer-AVR sub corner. Main-speaker bass-management highpass (to
+(CamillaDSP's native ``BiquadCombo`` ``LinkwitzRileyLowpass`` at
+``order: 4``, via the shared ``emit_linkwitz_riley``), default 80 Hz —
+the de-facto consumer-AVR sub corner. Main-speaker bass-management highpass (to
 unload <80 Hz from the L/R speakers) is a deliberate V1 non-goal: the
 mains stay full-range and the sub ADDS low end, so 20–80 Hz is
 reproduced by BOTH — expect an audible low-end lift and a phase-overlap
@@ -61,6 +77,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from jasper.camilla_emit import emit_linkwitz_riley, emit_mixer
 from jasper.multiroom.config import ALLOWED_CHANNELS
 
 # The split mixer's name. Distinct from `master_gain` on purpose — see
@@ -71,10 +88,13 @@ CHANNEL_SELECT_MIXER = "channel_select"
 # most AV receivers default here). Tunable via build_channel_split(...).
 DEFAULT_CROSSOVER_HZ = 80.0
 
-# Butterworth Q for one 2nd-order section. Two cascaded Butterworth
-# lowpasses at the same corner == a Linkwitz-Riley 4th-order crossover
-# (-6 dB at fc, 24 dB/octave) — the standard sub lowpass slope.
-_BUTTERWORTH_Q = 1.0 / math.sqrt(2.0)  # 0.70710678…
+# A 4th-order Linkwitz-Riley lowpass (-6 dB at fc, 24 dB/octave) is the
+# standard sub slope. Emitted as CamillaDSP's NATIVE BiquadCombo
+# LinkwitzRileyLowpass (jasper.camilla_emit.emit_linkwitz_riley) — the
+# same primitive the active-speaker crossovers use, not a hand-cascaded
+# pair of Biquad Lowpass sections.
+_CROSSOVER_ORDER = 4
+SUB_CROSSOVER_FILTER = "sub_crossover"
 
 # Per-source gain for a 2-channel mono sum. 20*log10(0.5) = -6.0206 dB:
 # identical L==R inputs sum to exactly 0 dBFS, so a mono track played
@@ -84,11 +104,6 @@ MONO_SUM_GAIN_DB = 20.0 * math.log10(0.5)  # -6.020599913…
 # Unity route gain (dB). Selecting a channel onto an output is a plain
 # copy — no attenuation, no boost.
 _ROUTE_GAIN_DB = 0.0
-
-
-def _fmt(value: float) -> str:
-    """Match jasper.sound.camilla_yaml._fmt — 4 decimal places."""
-    return f"{value:.4f}"
 
 
 @dataclass(frozen=True)
@@ -130,57 +145,21 @@ class ChannelSplit:
         return self.mixer_name is None
 
 
-def _source_line(channel_index: int, gain_db: float) -> str:
-    """One block-list mixer source (10-space indent, under `sources:`)."""
-    return (
-        f"          - {{ channel: {channel_index}, "
-        f"gain: {_fmt(gain_db)}, inverted: false }}"
-    )
+def _channel_sources(channel: str) -> list[tuple[int, float, bool]]:
+    """The (input_channel, gain_db, inverted) sources mixed onto EACH
+    output channel for a non-stereo assignment.
 
-
-def _select_mixer_block(sources_per_dest: list[tuple[int, float]]) -> str:
-    """Emit the `channel_select` 2->2 mixer.
-
-    `sources_per_dest` is the (input_channel, gain_db) list mixed onto
-    EACH of the two output channels — one source for a left/right route,
-    two for a mono/sub sum. Both outputs always carry the same content,
-    so the assigned channel reaches the driver regardless of how the
-    physical speaker taps the stereo DAC (output 0, output 1, or a
-    passive L+R sum). One block-list emission path for every case keeps
-    the indentation uniform.
+    One source for a left/right route; two clip-safe -6.02 dB sources for
+    a mono/sub L+R sum. Both outputs get the SAME content, so the assigned
+    channel reaches the driver regardless of how the physical speaker taps
+    the stereo DAC (output 0, output 1, or a passive L+R sum).
     """
-    lines = [
-        f"  {CHANNEL_SELECT_MIXER}:",
-        "    channels: { in: 2, out: 2 }",
-        "    mapping:",
-    ]
-    for dest in (0, 1):
-        lines.append(f"      - dest: {dest}")
-        lines.append("        sources:")
-        for channel_index, gain_db in sources_per_dest:
-            lines.append(_source_line(channel_index, gain_db))
-    return "\n".join(lines)
-
-
-def _crossover_filter_block(crossover_hz: float) -> tuple[str, tuple[str, ...]]:
-    """Emit the LR4 (two cascaded Butterworth) lowpass for a subwoofer.
-
-    Returns (yaml_block_for_`filters:`, names_to_append_to_each_channel).
-    """
-    names = ("sub_lp_1", "sub_lp_2")
-    blocks: list[str] = []
-    for name in names:
-        blocks.extend(
-            [
-                f"  {name}:",
-                "    type: Biquad",
-                "    parameters:",
-                "      type: Lowpass",
-                f"      freq: {_fmt(crossover_hz)}",
-                f"      q: {_fmt(_BUTTERWORTH_Q)}",
-            ]
-        )
-    return "\n".join(blocks), names
+    if channel == "left":
+        return [(0, _ROUTE_GAIN_DB, False)]
+    if channel == "right":
+        return [(1, _ROUTE_GAIN_DB, False)]
+    # mono / sub: clip-safe L+R sum
+    return [(0, MONO_SUM_GAIN_DB, False), (1, MONO_SUM_GAIN_DB, False)]
 
 
 def _pipeline_mixer_step() -> str:
@@ -219,14 +198,14 @@ def build_channel_split(
             pipeline_mixer_step="",
         )
 
-    if channel == "left":
-        mixer_block = _select_mixer_block([(0, _ROUTE_GAIN_DB)])
-    elif channel == "right":
-        mixer_block = _select_mixer_block([(1, _ROUTE_GAIN_DB)])
-    else:  # "mono" or "sub" — both outputs are the clip-safe L+R sum
-        mixer_block = _select_mixer_block(
-            [(0, MONO_SUM_GAIN_DB), (1, MONO_SUM_GAIN_DB)]
-        )
+    # Both output channels carry the same content (see _channel_sources).
+    sources = _channel_sources(channel)
+    mixer_block = emit_mixer(
+        CHANNEL_SELECT_MIXER,
+        channels_in=2,
+        channels_out=2,
+        mapping=[(0, sources), (1, sources)],
+    )
 
     filter_block = ""
     filter_chain_names: tuple[str, ...] = ()
@@ -235,7 +214,15 @@ def build_channel_split(
             raise ValueError(
                 f"crossover_hz must be positive, got {crossover_hz!r}"
             )
-        filter_block, filter_chain_names = _crossover_filter_block(crossover_hz)
+        filter_block = "\n".join(
+            emit_linkwitz_riley(
+                SUB_CROSSOVER_FILTER,
+                highpass=False,
+                freq_hz=crossover_hz,
+                order=_CROSSOVER_ORDER,
+            )
+        )
+        filter_chain_names = (SUB_CROSSOVER_FILTER,)
 
     return ChannelSplit(
         channel=channel,
