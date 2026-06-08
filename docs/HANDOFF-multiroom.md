@@ -448,11 +448,12 @@ doctor" half of "make it visible" is live: `read_grouping_state` carries
 a `runtime` health block and `jasper-doctor`'s `check_grouping` warns
 when a configured-valid bond's units aren't actually up — both derived by
 the one pure `derive_grouping_runtime(cfg, unit_states)`, which reuses
-`reconcile.plan` for "what should be running." A `/system/`-or-`/rooms`
-dashboard card rendering that block is the remaining thin UI follow-on
-(the data is there for it). Until the P1.3 producer ships, an enabled
-leader correctly reads as `degraded` (snapserver has no FIFO to read
-yet) — the honest state, not a false green.
+`reconcile.plan` for "what should be running." The **`/rooms` page renders
+that block** too (an amber **Degraded** badge + the reason, vs green
+**Grouped**), completing the `/state` + doctor + dashboard triad. Until
+the P1.3 producer ships, an enabled leader correctly reads as `degraded`
+(snapserver has no FIFO to read yet) — the honest state, not a false
+green.
 
 ### Networked loud-output safety (critical for the dumb tier)
 
@@ -766,8 +767,10 @@ gained a pure `derive_grouping_runtime` + injectable `systemctl is-active`
 probe, so `/state.grouping` carries a live `runtime` health block
 (off/invalid/ok/degraded) and `jasper-doctor`'s `check_grouping` warns on
 a configured-but-degraded bond — §7 "make it visible, not invisible";
-zero probe + no runtime key when solo; dashboard-card render is the thin
-UI follow-on. Earlier 2026-06-08 — shared CamillaDSP emission layer +
+zero probe + no runtime key when solo. The `/rooms` ES module renders the
+block too (amber **Degraded** badge + reason), completing the /state +
+doctor + dashboard triad. Earlier 2026-06-08 — shared CamillaDSP emission
+layer +
 channel boundary: extracted `jasper/camilla_emit.py` (`fmt`,
 `emit_gain_filter`, `emit_peaking_biquad`, `emit_linkwitz_riley`,
 `emit_mixer`) and migrated all four DSP generators (correction / sound /
