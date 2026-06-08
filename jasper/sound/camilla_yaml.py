@@ -26,6 +26,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
 )
+from jasper.camilla_emit import emit_gain_filter, emit_peaking_biquad, fmt
 
 from .profile import (
     FilterSpec,
@@ -44,47 +45,26 @@ _JTS_GENERATED_RE = re.compile(
 )
 
 
-def _fmt(value: float) -> str:
-    return f"{value:.4f}"
-
-
-def _emit_gain_filter(name: str, gain_db: float) -> list[str]:
-    return [
-        f"  {name}:",
-        "    type: Gain",
-        f"    parameters: {{ gain: {_fmt(gain_db)}, inverted: false, mute: false }}",
-    ]
-
-
-def _emit_peq_filter(name: str, peq: PeqFilter) -> list[str]:
-    return [
-        f"  {name}:",
-        "    type: Biquad",
-        "    parameters:",
-        "      type: Peaking",
-        f"      freq: {_fmt(peq.freq)}",
-        f"      q: {_fmt(peq.q)}",
-        f"      gain: {_fmt(peq.gain)}",
-    ]
-
-
 def _emit_filter_spec(spec: FilterSpec) -> list[str]:
+    # Sound-specific: maps a FilterSpec (shelf / gainless / peaking) to a
+    # Biquad. Leaf `fmt`/Peaking emission is shared (jasper.camilla_emit);
+    # this shelf/gainless dispatch is sound's own assembly concern.
     lines = [
         f"  {spec.name}:",
         "    type: Biquad",
         "    parameters:",
         f"      type: {spec.biquad_type}",
-        f"      freq: {_fmt(spec.freq)}",
+        f"      freq: {fmt(spec.freq)}",
     ]
     if spec.biquad_type in {"Lowshelf", "Highshelf"}:
-        lines.append(f"      slope: {_fmt(spec.slope or 6.0)}")
-        lines.append(f"      gain: {_fmt(spec.gain)}")
+        lines.append(f"      slope: {fmt(spec.slope or 6.0)}")
+        lines.append(f"      gain: {fmt(spec.gain)}")
     elif spec.biquad_type in GAINLESS_BIQUAD_TYPES:
         # Highpass/Lowpass/Notch shape the response without a gain term.
-        lines.append(f"      q: {_fmt(spec.q or 1.0)}")
+        lines.append(f"      q: {fmt(spec.q or 1.0)}")
     else:
-        lines.append(f"      q: {_fmt(spec.q or 1.0)}")
-        lines.append(f"      gain: {_fmt(spec.gain)}")
+        lines.append(f"      q: {fmt(spec.q or 1.0)}")
+        lines.append(f"      gain: {fmt(spec.gain)}")
     return lines
 
 
@@ -97,12 +77,12 @@ def _emit_filter_definitions(
     lines: list[str] = []
     chain_names: list[str] = []
 
-    lines.extend(_emit_gain_filter("flat", 0.0))
+    lines.extend(emit_gain_filter("flat", 0.0))
 
     room_list = list(room_peqs)
     for i, peq in enumerate(room_list, start=1):
         name = f"room_peq_{i}"
-        lines.extend(_emit_peq_filter(name, peq))
+        lines.extend(emit_peaking_biquad(name, freq=peq.freq, q=peq.q, gain=peq.gain))
         chain_names.append(name)
 
     # Preference boosts apply at unity: a +N dB band raises only that band
@@ -116,7 +96,7 @@ def _emit_filter_definitions(
     sound_filters = build_sound_filters(profile)
     trim_db = max(0.0, float(output_trim_db)) if sound_filters else 0.0
     if trim_db > 0.0:
-        lines.extend(_emit_gain_filter("sound_preamp", -trim_db))
+        lines.extend(emit_gain_filter("sound_preamp", -trim_db))
         chain_names.append("sound_preamp")
     for spec in sound_filters:
         lines.extend(_emit_filter_spec(spec))

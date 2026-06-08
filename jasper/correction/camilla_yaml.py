@@ -33,6 +33,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_TARGET_LEVEL,
     DEFAULT_VOLUME_LIMIT_DB,
 )
+from jasper.camilla_emit import emit_peaking_biquad
 
 from .peq import PEQ
 
@@ -51,7 +52,10 @@ def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:
     # Preserve the existing `flat` identity filter so base ↔
     # correction.yml diff stays minimal and any other code paths
     # that referenced `flat` (none today, but stay open to future
-    # composability) continue to work.
+    # composability) continue to work. Kept INLINE (not via
+    # emit_gain_filter) on purpose: it is byte-matched to the base
+    # cutover config's `gain: 0.0`, where the shared emitter would
+    # write the 4-decimal `gain: 0.0000` and widen that diff.
     lines.append("  flat:")
     lines.append("    type: Gain")
     lines.append(
@@ -59,14 +63,9 @@ def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:
     )
 
     for i, peq in enumerate(peqs, start=1):
-        name = f"peq_{i}"
-        lines.append(f"  {name}:")
-        lines.append("    type: Biquad")
-        lines.append("    parameters:")
-        lines.append("      type: Peaking")
-        lines.append(f"      freq: {peq.freq:.4f}")
-        lines.append(f"      q: {peq.q:.4f}")
-        lines.append(f"      gain: {peq.gain:.4f}")
+        lines.extend(
+            emit_peaking_biquad(f"peq_{i}", freq=peq.freq, q=peq.q, gain=peq.gain)
+        )
     return "\n".join(lines)
 
 
