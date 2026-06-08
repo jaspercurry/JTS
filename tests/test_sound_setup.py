@@ -222,6 +222,9 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "function renderActiveSpeakerStartupLoad(startupLoad)" in js
     assert "Startup load" in js
     assert "Check protected path" in js
+    assert "Safe bring-up sequence" in js
+    assert "Verify artifact before audio" in js
+    assert "Artifact-only verification remains the default" in js
     assert "function checkActivePathSafety()" in js
     assert "var environment = await fetchActiveSpeakerEnvironment()" in js
     assert "payload: environment" in js
@@ -272,6 +275,14 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "software_guard_requested" in js
     assert "Check readiness" in js
     assert "Playback readiness" in js
+    assert "function renderOutputReadinessSummary(readiness)" in js
+    assert "function renderOutputReadinessBlockers(readiness)" in js
+    assert "function readinessTargetLocked(readiness)" in js
+    assert "Why sound is blocked" in js
+    assert "Tweeter and horn audible tests are intentionally locked in this slice." in js
+    assert "Audible and artifact test actions stay locked for tweeter/horn targets in this slice." in js
+    assert "Role policy" in js
+    assert "artifact-only" in js
     assert "Preconditions passed" in js
     assert "Verify artifact" in js
     assert "Play quiet " in js

@@ -1063,6 +1063,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<div class="output-card output-card--active-status">' +
           '<div class="output-card__head"><div><p class="output-card__title">Environment and safe-session state</p>' +
           '<p class="setting-row__hint">These controls do not play sound unless the explicit lab backend is enabled and readiness passes.</p></div></div>' +
+          renderOutputBringupSequence() +
           renderActiveSpeakerStatus() +
         '</div>' +
         renderOutputReadinessCard() +
@@ -1275,6 +1276,157 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (unverified > 0 ? '<p class="setting-row__hint">Use this only after wiring inspection, dummy-load/DMM checks, or a future low-level channel test confirms the driver.</p>' : '') +
     '</div>';
   }
+  function sequenceStep(label, done, active, blocked, detail) {
+    var state = done ? 'done' : (blocked ? 'blocked' : (active ? 'active' : 'todo'));
+    var marker = done ? 'Done' : (blocked ? 'Blocked' : (active ? 'Now' : 'Next'));
+    return '<li class="output-sequence__item output-sequence__item--' + escapeHtml(state) + '">' +
+      '<span class="output-sequence__marker">' + escapeHtml(marker) + '</span>' +
+      '<span class="output-sequence__text"><strong>' + escapeHtml(label) + '</strong>' +
+        '<small>' + escapeHtml(detail || '') + '</small></span>' +
+    '</li>';
+  }
+  function renderOutputBringupSequence() {
+    var env = activeSpeaker.payload || {};
+    var staged = activeSpeaker.stagedConfig || {};
+    var startup = activeSpeaker.startupLoad || {};
+    var startupState = startup.state || {};
+    var startupPreflight = startup.preflight || {};
+    var pathSafety = startupPreflight.path_safety || {};
+    var session = activeSpeaker.session || {};
+    var readiness = outputTopology.readiness || {};
+    var level = activeSpeakerLevelConfig();
+    var envChecked = !!activeSpeaker.payload;
+    var envReady = !!env.ok_to_load_active_config;
+    var stagedReady = staged.status === 'staged';
+    var pathReady = pathSafety.load_gate === 'ready';
+    var startupReady = startupState.status === 'loaded' &&
+      !!startupState.rollback_available &&
+      !!startupState.current_config_matches_loaded;
+    var armed = session.status === 'armed';
+    var readinessChecked = !!outputTopology.readiness;
+    var readinessReady = !!readiness.preconditions_passed;
+    var atFloor = Math.abs(Number(level.value) - Number(level.min)) < 0.001;
+    var artifactReady = !!(outputTopology.readinessPlayback && outputTopology.readinessPlayback.artifact);
+    var rows = [
+      sequenceStep(
+        'Check environment',
+        envReady,
+        !envChecked,
+        envChecked && !envReady,
+        envReady ? 'Output path and config are load-gate ready.' :
+          (envChecked ? 'Resolve environment blockers before loading DSP.' : 'Run Check environment first.')
+      ),
+      sequenceStep(
+        'Stage protected startup',
+        stagedReady,
+        envReady && !stagedReady,
+        false,
+        stagedReady ? 'Muted, limited startup config is staged.' : 'Build a protected startup config for review.'
+      ),
+      sequenceStep(
+        'Check protected path',
+        pathReady,
+        stagedReady && !pathReady,
+        startupPreflight.status === 'blocked',
+        pathReady ? 'Path-safety evidence is bound to this startup load.' : 'Verify renderer/cue paths before loading.'
+      ),
+      sequenceStep(
+        'Load protected startup',
+        startupReady,
+        pathReady && !startupReady,
+        startupState.status === 'blocked',
+        startupReady ? 'CamillaDSP is on the protected graph with rollback.' : 'Reloads DSP only; it does not play sound.'
+      ),
+      sequenceStep(
+        'Arm safe session',
+        armed,
+        startupReady && !armed,
+        false,
+        armed ? 'Stop is available and the session is time-bounded.' : 'Arming records safety state only.'
+      ),
+      sequenceStep(
+        'Select target and check readiness',
+        readinessReady,
+        armed && !readinessChecked,
+        readinessChecked && !readinessReady,
+        readinessChecked ? (readiness.next_step || 'Review target readiness below.') : 'Use Check readiness on a saved output lane.'
+      ),
+      sequenceStep(
+        'Start at the floor',
+        atFloor,
+        readinessReady && !atFloor,
+        false,
+        atFloor ? 'Calibration level is at the quiet floor.' : 'Reset or lower test level before preparing tone.'
+      ),
+      sequenceStep(
+        'Verify artifact before audio',
+        artifactReady,
+        readinessReady && atFloor,
+        false,
+        'Artifact-only verification remains the default; audible playback needs explicit lab enablement.'
+      )
+    ];
+    return '<div class="output-sequence">' +
+      '<p class="setting-row__title">Safe bring-up sequence</p>' +
+      '<ol class="output-sequence__list">' + rows.join('') + '</ol>' +
+    '</div>';
+  }
+  function readinessTargetLocked(readiness) {
+    var target = readiness && readiness.target || {};
+    var audible = readiness && readiness.audible_test || {};
+    return target.role === 'tweeter' || audible.target_role_allowed === false;
+  }
+  function readinessBlockedReasons(readiness) {
+    var reasons = [];
+    var gates = Array.isArray(readiness.required_gates) ? readiness.required_gates : [];
+    var issues = Array.isArray(readiness.issues) ? readiness.issues : [];
+    gates.forEach(function(gate) {
+      if (!gate || gate.passed) return;
+      reasons.push(gate.message || gate.label || gate.id || 'Readiness gate is blocked.');
+    });
+    issues.forEach(function(issue) {
+      if (!issue) return;
+      reasons.push(issue.message || issue.code || 'Readiness issue requires review.');
+    });
+    if (readinessTargetLocked(readiness)) {
+      reasons.unshift('Tweeter and horn audible tests are intentionally locked in this slice.');
+    }
+    return reasons.filter(function(reason, index, arr) {
+      return reason && arr.indexOf(reason) === index;
+    }).slice(0, 6);
+  }
+  function renderOutputReadinessSummary(readiness) {
+    var target = readiness.target || {};
+    var startup = readiness.startup_load || {};
+    var backend = readiness.tone_backend || {};
+    var level = readiness.calibration_level && readiness.calibration_level.test_signal || {};
+    var audible = readiness.audible_test || {};
+    var rows = [
+      ['Target', target.label || target.role || 'unknown'],
+      ['DAC output', target.physical_output_index == null ? 'unknown' : 'Output ' + (Number(target.physical_output_index) + 1)],
+      ['Role policy', audible.target_role_allowed === false ? 'Locked in this slice' : 'Eligible after gates'],
+      ['Backend', (backend.audio_enabled ? 'audible lab backend' : 'artifact-only') + (backend.test_pcm ? ' · ' + backend.test_pcm : '')],
+      ['Rollback', startup.rollback_available ? 'available' : 'not ready'],
+      ['Test level', level.requested_level_dbfs == null ? fmtDbfs(activeSpeakerLevelConfig().value) : fmtDbfs(level.requested_level_dbfs)]
+    ];
+    return '<dl class="active-speaker-facts output-readiness-summary">' + rows.map(function(row) {
+      return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+    }).join('') + '</dl>';
+  }
+  function renderOutputReadinessBlockers(readiness) {
+    var reasons = readinessBlockedReasons(readiness);
+    if (!reasons.length) {
+      return '<p class="setting-row__hint">' + escapeHtml(readiness.playback_allowed ?
+        'No blocking readiness reasons; the audible lab backend is enabled for this target.' :
+        'No blocking readiness reasons for artifact verification. Audible playback still requires explicit backend enablement.') + '</p>';
+    }
+    return '<div class="output-readiness-blockers">' +
+      '<p class="setting-row__title">Why sound is blocked</p>' +
+      '<ul class="active-speaker-issues">' + reasons.map(function(reason) {
+        return '<li>' + escapeHtml(reason) + '</li>';
+      }).join('') + '</ul>' +
+    '</div>';
+  }
   function renderOutputReadinessCard() {
     if (outputTopology.dirty) {
       return '<div class="output-card output-card--readiness">' +
@@ -1321,6 +1473,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<p class="setting-row__hint">' + escapeHtml(target.label || 'Selected channel') + '</p></div>' +
         '<span class="status-pill' + (readiness.preconditions_passed ? ' status-pill--ready' : ' status-pill--blocked') + '">' +
           escapeHtml(statusValue) + '</span></div>' +
+      renderOutputReadinessSummary(readiness) +
+      renderOutputReadinessBlockers(readiness) +
       '<ul class="output-safety-list">' + rows.slice(0, 10).map(function(row) {
         return '<li class="output-safety-list__item output-safety-list__item--' + escapeHtml(row[0]) + '">' +
           '<span>' + escapeHtml(row[1]) + '</span>' +
@@ -1335,7 +1489,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderOutputReadinessActions(readiness) {
     var target = readiness && readiness.target || {};
-    var disabled = !readiness || !readiness.preconditions_passed ||
+    var locked = readinessTargetLocked(readiness);
+    var disabled = !readiness || !readiness.preconditions_passed || locked ||
       outputTopology.readinessPlaybackChecking;
     var attrs = 'data-group-id="' + escapeHtml(target.speaker_group_id || '') + '" ' +
       'data-role="' + escapeHtml(target.role || '') + '" ' +
@@ -1345,7 +1500,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var roleLabel = humanRole(target.role || 'channel').toLowerCase();
     var playLabel = outputTopology.readinessPlaybackChecking === 'audio' ?
       'Playing' : 'Play quiet ' + roleLabel + ' test';
-    return '<div class="active-speaker-actions">' +
+    return (locked ? '<p class="setting-row__hint">Audible and artifact test actions stay locked for tweeter/horn targets in this slice.</p>' : '') +
+      '<div class="active-speaker-actions">' +
       '<button type="button" class="btn btn--ghost" data-act="play-output-readiness-tone" ' +
         attrs + ' data-audio="false"' + (disabled ? ' disabled' : '') + '>' +
         escapeHtml(artifactLabel) + '</button>' +
