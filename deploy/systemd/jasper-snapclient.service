@@ -35,13 +35,21 @@ Type=simple
 TimeoutStopSec=5s
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/grouping.env
-# NOTE (P1, pending on-hardware): JASPER_SNAPCLIENT_ARGS is NOT yet
-# written by the reconciler — snapclient_argv() is spec'd + unit-tested
-# but jasper.multiroom.reconcile.main() currently only start/stops
-# units, it does not yet assemble + persist the args. Until P1 wires
-# that round-trip, $JASPER_SNAPCLIENT_ARGS is empty and snapclient
-# would start with its own defaults. Harmless today: off-by-default
-# means nothing starts this unit yet.
+# Derived args, written by jasper-grouping-reconcile (the single writer).
+# Layered AFTER grouping.env so the reconciler's computed
+# JASPER_SNAPCLIENT_ARGS overrides the bare wizard intent. The reconciler
+# owns this /run file (NOT a unit RuntimeDirectory, which would be reaped
+# when a sibling unit stops); it writes it before starting this unit, so
+# ExecStart reads fresh args. Set for BOTH roles — a leader's client
+# targets 127.0.0.1, a follower's targets cfg.leader_addr.
+EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
+# NOTE (P1.3, pending on-hardware): the reconciler now assembles +
+# persists JASPER_SNAPCLIENT_ARGS (snapclient_argv → this file), so a
+# started snapclient targets the configured host with the configured
+# latency. Audio only FLOWS once the leader's snapserver has a producer
+# feeding its FIFO (the pending jasper-outputd reference consumer).
+# Harmless today: off-by-default means nothing starts this unit until a
+# bond is configured AND the producer ships.
 ExecStart=/usr/bin/snapclient $JASPER_SNAPCLIENT_ARGS
 Restart=on-failure
 RestartSec=2s

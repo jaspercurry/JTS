@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import logging
 import argparse
+import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 from .config import GroupingConfig, load_config
@@ -54,6 +56,25 @@ SNAPCLIENT_UNIT = "jasper-snapclient.service"
 # stopping destroy the voice/peering sockets. tmpfs-backed, recreated
 # each boot.
 SNAPFIFO = "/run/jasper-snapserver/snapfifo"
+
+# Reconciler-owned runtime env file holding the DERIVED snapcast args
+# (the argv after argv[0], space-joined). The snapserver/snapclient
+# units pick it up via a third `EnvironmentFile=` layered AFTER
+# grouping.env, so the derived args override the bare wizard intent.
+#
+# Deliberately NOT a unit RuntimeDirectory: a unit's RuntimeDirectory is
+# reaped the moment that unit stops, which would erase the args a sibling
+# unit (or a restart) still needs. This dir is owned by the reconciler
+# and persists for the boot. tmpfs-backed (/run), recreated each boot —
+# the reconciler runs at boot and on every wizard change, so it is always
+# rewritten before the units start.
+ARGS_DIR = "/run/jasper-grouping"
+ARGS_FILE = ARGS_DIR + "/snapcast-args.env"
+
+# The two derived keys the units read. Mirrors the aec-reconcile
+# derived-env contract (one line per key, empty-string to clear).
+_SERVER_ARGS_KEY = "JASPER_SNAPSERVER_ARGS"
+_CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 
 
 # ---------- Plan types ----------
@@ -180,6 +201,51 @@ def snapclient_argv(cfg: GroupingConfig) -> list[str]:
     ]
 
 
+def _assemble_args(cfg: GroupingConfig) -> dict[str, str]:
+    """Derive the {key: value} the units read, from a GroupingConfig.
+
+    PURE: a deterministic function of `cfg`. Returns the two derived
+    keys (``JASPER_SNAPSERVER_ARGS`` / ``JASPER_SNAPCLIENT_ARGS``) whose
+    values are the argv AFTER argv[0] (the binary name, already in the
+    unit's ExecStart), space-joined. Both keys are always present; a key
+    is the EMPTY STRING when its unit should NOT carry derived args:
+
+      - disabled / cfg.error  => both empty (the units won't start in
+                                 these states, but clearing the derived
+                                 args means a started unit can never pick
+                                 up stale values — mirrors aec-reconcile's
+                                 disable-clears-stale idiom).
+      - enabled, valid leader => server + client set.
+      - enabled, valid follower => server EMPTY, client set
+        (a follower runs no server).
+
+    Word-splitting safety: snapcast args are space-free (a pipe URL and
+    host/latency). We assert that here — if a builder ever emits a
+    space-containing arg, the units' unquoted ``$JASPER_SNAP*_ARGS``
+    word-splitting would mangle it, and that is a separate quoting task.
+    """
+    if not cfg.enabled or cfg.error is not None:
+        return {_SERVER_ARGS_KEY: "", _CLIENT_ARGS_KEY: ""}
+
+    # argv[0] is the binary name (already in the unit's ExecStart); the
+    # units invoke `/usr/bin/snap* $ARGS`, so persist only argv[1:].
+    server = "" if cfg.role != "leader" else _join_args(snapserver_argv(cfg))
+    client = _join_args(snapclient_argv(cfg))
+    return {_SERVER_ARGS_KEY: server, _CLIENT_ARGS_KEY: client}
+
+
+def _join_args(argv: list[str]) -> str:
+    """Space-join argv[1:] (drop the binary name), asserting no element
+    contains whitespace — the units word-split the unquoted env var."""
+    tail = argv[1:]
+    for a in tail:
+        assert a == a.strip() and " " not in a and "\t" not in a, (
+            f"snapcast arg {a!r} contains whitespace; unquoted "
+            "$JASPER_SNAP*_ARGS word-splitting would mangle it"
+        )
+    return " ".join(tail)
+
+
 # ============================================================
 # I/O entrypoint — NOT unit-tested (validated on hardware).
 # Everything above is pure; everything below does real systemctl
@@ -225,20 +291,79 @@ def _apply(plan_: ReconcilePlan) -> int:
     return rc
 
 
+def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
+    """Atomically write the derived snapcast args to ``path``. Fail-soft.
+
+    Mirrors the in-repo atomic-write idiom (mic_mute_persistence.write_mic_muted)
+    and the aec-reconcile `set_env_var` shape: makedirs the parent (mode
+    0755), write a temp file in the SAME dir, ``chmod 0644`` the temp
+    file BEFORE the rename (so the published file never has a wider
+    permission window), then ``os.replace`` (atomic on a same-FS POSIX
+    rename). One ``KEY=value`` line per key, order preserved.
+
+    Returns True on success, False on any failure. NEVER raises — a lost
+    args write must not crash the reconcile path (the plan still
+    start/stops units; the units would fall back to their own defaults).
+    The file carries no secrets, so mode 0644 (matches grouping.env).
+    """
+    body = "".join(f"{k}={v}\n" for k, v in keys.items())
+    # Derive the dir from `path` (not the module ARGS_DIR) so the temp
+    # file lands on the SAME filesystem as the final path — os.replace is
+    # only atomic within one FS — and so a test passing a tmp path writes
+    # there, not into /run. In production `path` is ARGS_FILE, so this is
+    # ARGS_DIR; the 0755 mode matches the reconciler-owned-dir contract.
+    parent = os.path.dirname(path) or "."
+    try:
+        os.makedirs(parent, mode=0o755, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            prefix=".snapcast-args.", suffix=".tmp", dir=parent,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        logger.warning(
+            "event=multiroom.reconcile.args_failed path=%s error=%s",
+            path, e,
+        )
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     """systemd ExecStart entrypoint for jasper-grouping-reconcile.service.
 
-    Loads the wizard-owned config fresh, computes the pure plan, logs the
-    decision, and applies it via systemctl. Returns a process exit code.
+    Loads the wizard-owned config fresh, computes the pure plan, ASSEMBLES
+    and PERSISTS the derived snapcast args, logs the decision, and applies
+    the plan via systemctl. Returns a process exit code.
 
-    SCOPE (P0/P1 boundary): this entrypoint only START/STOPs units. It
-    does NOT yet assemble the snapserver/snapclient argv (the pure
-    ``snapserver_argv`` / ``snapclient_argv`` builders below are spec'd
-    and unit-tested but not yet wired) nor persist them as
-    ``JASPER_SNAPSERVER_ARGS`` / ``JASPER_SNAPCLIENT_ARGS`` for the
-    units to read. Arg application + the live snapcast lifecycle land in
-    P1, validated on hardware (the codec/buffer come from the §8 spike).
-    Off-by-default means nothing triggers this path yet.
+    Order matters: the args file is written BEFORE `_apply`, so a unit
+    that `_apply` starts reads fresh args (its `EnvironmentFile=` is read
+    at unit start). The args persistence mirrors jasper-aec-reconcile's
+    derived-env pattern — assemble the concrete `JASPER_SNAPSERVER_ARGS`
+    / `JASPER_SNAPCLIENT_ARGS` from the config (argv after the binary
+    name, space-joined), atomically write them to a reconciler-owned
+    runtime env file (``ARGS_FILE``) the units layer on top of
+    grouping.env, and clear (empty-string, not delete the key) the args
+    when a producer should not run — so a started unit can never pick up
+    stale args.
+
+    SCOPE: arg-application is now DONE. What is still pending is the
+    snapfifo PRODUCER (the P1.3 jasper-outputd reference consumer that
+    feeds the mixed program into ``SNAPFIFO``). Until that lands,
+    snapserver reads an EMPTY fifo: this increment fully CONFIGURES a
+    bond (a started snapserver reads the fifo with the right codec/buffer,
+    a started snapclient targets the right host/latency) but does NOT yet
+    make audio FLOW. Off-by-default means nothing starts these units until
+    a bond is configured via the wizard AND the P1.3 producer ships.
 
     `--reason` is a free-text trigger source (systemd / wizard / manual)
     echoed into the structured log for correlation, mirroring
@@ -259,6 +384,19 @@ def main(argv: list[str] | None = None) -> int:
         "event=multiroom.reconcile.start reason=%s enabled=%s role=%s error=%s summary=%r",
         args.reason, cfg.enabled, cfg.role or "(none)", cfg.error or "(none)", decision.summary,
     )
+
+    # Derive + persist the snapcast args BEFORE applying the plan, so any
+    # unit `_apply` starts reads fresh args from its EnvironmentFile=. The
+    # write is fail-soft: a failure here is logged and the reconcile still
+    # start/stops units (the units fall back to their own defaults).
+    derived = _assemble_args(cfg)
+    wrote = _write_args_file(derived)
+    set_keys = [k for k, v in derived.items() if v]
+    logger.info(
+        "event=multiroom.reconcile.args path=%s ok=%s set=%s",
+        ARGS_FILE, wrote, ",".join(set_keys) or "(none)",
+    )
+
     rc = _apply(decision)
     logger.info("event=multiroom.reconcile.done rc=%d", rc)
     return rc
