@@ -93,7 +93,7 @@ from ._common import (
     send_proxy_json,
     send_see_other,
     toggle_html,
-    verify_csrf,
+    guard_mutating_request,
     write_env_file,
 )
 
@@ -734,25 +734,25 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # bodied state-set requests use the X-CSRF-Token header.
             if path == "/save":
                 form = read_form(self)
-                if not verify_csrf(self, form):
+                if not guard_mutating_request(self, form):
                     reject_csrf(self)
                     return
                 self._handle_save(form)
                 return
             if path.startswith("/layer/"):
-                if not verify_csrf(self):
+                if not guard_mutating_request(self):
                     reject_csrf(self)
                     return
                 self._handle_layer(path[len("/layer/"):])
                 return
             if path == "/profile":
-                if not verify_csrf(self):
+                if not guard_mutating_request(self):
                     reject_csrf(self)
                     return
                 self._handle_profile()
                 return
             if path == "/sensitivity":
-                if not verify_csrf(self):
+                if not guard_mutating_request(self):
                     reject_csrf(self)
                     return
                 self._handle_sensitivity()

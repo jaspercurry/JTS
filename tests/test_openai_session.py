@@ -1722,7 +1722,7 @@ async def test_proactive_watchdog_fires_before_cap_when_idle():
 
 async def test_proactive_watchdog_defers_when_turn_active():
     """If the watchdog fires mid-turn, it does NOT tear down — it sets
-    `_proactive_reconnect_pending` and lets `_on_turn_released` fire
+    `_deferred_reconnect` pending and lets `_on_turn_released` fire
     the reconnect after the user's turn ends. We don't want to yank a
     live conversation when we have 5 min of safety margin to wait."""
     factory = _FakeConnectFactory()
@@ -1741,12 +1741,12 @@ async def test_proactive_watchdog_defers_when_turn_active():
         await asyncio.sleep(0.12)
         # No new session yet — fire was deferred.
         assert len(factory.conns) == 1
-        assert conn._proactive_reconnect_pending is True
+        assert conn._deferred_reconnect.pending is True
         # Release the turn → deferred reconnect fires, supervisor opens
         # session 2.
         await turn.release()
         await _wait_until(lambda: len(factory.conns) >= 2, timeout=2.0)
-        assert conn._proactive_reconnect_pending is False
+        assert conn._deferred_reconnect.pending is False
     finally:
         await conn.stop()
 

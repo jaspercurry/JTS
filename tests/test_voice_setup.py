@@ -671,7 +671,7 @@ def _post(url: str, form: dict[str, str]) -> tuple[int, str, str]:
     just the redirect target. Returns (status, location_header, body).
 
     Mints the CSRF cookie via a GET to the wizard root first so the
-    POST passes verify_csrf."""
+    POST passes guard_mutating_request."""
     import http.cookiejar
     from ._web_test_helpers import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
 

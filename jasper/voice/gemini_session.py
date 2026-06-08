@@ -15,6 +15,7 @@ from ._supervisor import (
     ESCALATION_CUE_SLUG,
     ESCALATION_RATE_LIMIT_SEC,
     ESCALATION_REPEAT_THRESHOLD,
+    DeferredReconnect,
     FailureFingerprint,
     reconnect_backoff_delay,
 )
@@ -568,9 +569,10 @@ class GeminiLiveConnection(LiveConnection):
         self._stopping = asyncio.Event()
         # Set when a GoAway lands mid-turn with ample time_left: the
         # reconnect is deferred and fired from `_on_turn_released` so the
-        # in-flight turn isn't torn down mid-reply (mirrors OpenAI's
-        # proactive-watchdog deferral). See _receive_loop's GoAway branch.
-        self._goaway_reconnect_pending: bool = False
+        # in-flight turn isn't torn down mid-reply. Same shared mechanism
+        # OpenAI uses for its proactive-watchdog deferral — here the
+        # trigger is the GoAway branch in _receive_loop (see _supervisor).
+        self._deferred_reconnect = DeferredReconnect()
         # Pause turn acquisition while a reconnect is in progress so
         # the daemon doesn't try to send audio into a half-open WS.
         self._connected_event: asyncio.Event = asyncio.Event()
@@ -862,13 +864,11 @@ class GeminiLiveConnection(LiveConnection):
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
         # Fire any reconnect a mid-turn GoAway deferred for this turn.
-        if self._goaway_reconnect_pending:
-            self._goaway_reconnect_pending = False
+        if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
             logger.info(
                 "live connection: GoAway reconnect — turn just ended, "
                 "firing the deferred reconnect",
             )
-            self._reconnect_event.set()
 
     def _note_cumulative_usage(
         self, input_tokens: int, output_tokens: int,
@@ -1226,7 +1226,7 @@ class GeminiLiveConnection(LiveConnection):
         # A reconnect is now underway — any GoAway-deferred reconnect is
         # subsumed by this one; clear the flag so a later turn release
         # doesn't fire a spurious second reconnect.
-        self._goaway_reconnect_pending = False
+        self._deferred_reconnect.clear()
         # Mark the active turn (if any) as lost AND detach it. The
         # daemon's idle watchdog will pick up `turn_lost()` and call
         # `release()`, but in the meantime the connection's slot is free
@@ -1421,7 +1421,7 @@ class GeminiLiveConnection(LiveConnection):
                             "until turn release",
                             time_left, secs, GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
                         )
-                        self._goaway_reconnect_pending = True
+                        self._deferred_reconnect.request()
                         continue
                     logger.warning(
                         "live connection: GoAway received, time_left=%s, will reconnect",

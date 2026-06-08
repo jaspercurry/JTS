@@ -118,7 +118,8 @@ def test_security_doc_scopes_dns_rebinding_to_control_api():
 
     (Originally this asserted the wizards had NO guard. The mutating-POST
     gap was since closed by wiring `mutating_request_allowed` into the
-    shared `verify_csrf()` chokepoint, so the invariant moved with it.)"""
+    shared `guard_mutating_request()` chokepoint, so the invariant moved
+    with it.)"""
     server = _read("jasper/control/server.py")
     assert "from ..http_security import" in server
     # The wizard mutating chokepoint now applies the same guard.

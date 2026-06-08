@@ -503,6 +503,7 @@ docs = [
   "docs/HANDOFF-source-capabilities.md",
   "docs/HANDOFF-volume-control-redesign.md",
   "docs/HANDOFF-persistent-live-session.md",
+  "docs/PROPOSAL-dac-profile-registry.md",
 ]
 requires_docs_when = [
   "A roadmap item becomes implementation work, a future integration lands, or a historical transition brief is superseded by shipped behavior.",

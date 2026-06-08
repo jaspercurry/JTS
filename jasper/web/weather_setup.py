@@ -41,7 +41,7 @@ from ._common import (
     restart_voice_daemon,
     send_html_response,
     send_see_other,
-    verify_csrf,
+    guard_mutating_request,
     write_env_file,
 )
 
@@ -392,7 +392,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = read_form(self)
-            if not verify_csrf(self, form):
+            if not guard_mutating_request(self, form):
                 reject_csrf(self)
                 return
             if path == "/save":

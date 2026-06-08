@@ -2,14 +2,15 @@
 
 The nginx-fronted setup wizards under `jasper/web/` write WiFi PSKs, HA
 tokens, and API keys and can trigger reboots. They all funnel mutating
-(POST) requests through `verify_csrf()` in `jasper/web/_common.py`. This
-module asserts that `verify_csrf` now also applies the same
-DNS-rebinding / cross-site Host/Origin allowlist that the control daemon
-(`jasper/control/server.py:_guard_mutating_request`) already enforces —
-so a hostile Host/Origin is rejected BEFORE any state change, while a
-legitimate LAN client (configured hostname, `.local`, raw RFC1918 IP)
-keeps working. Lockout safety: it must accept exactly the hosts the
-control daemon accepts. Style mirrors tests/test_http_security.py.
+(POST) requests through `guard_mutating_request()` in
+`jasper/web/_common.py`. This module asserts that `guard_mutating_request`
+applies the same DNS-rebinding / cross-site Host/Origin allowlist that the
+control daemon (`jasper/control/server.py:_guard_mutating_request`)
+already enforces — so a hostile Host/Origin is rejected BEFORE any state
+change, while a legitimate LAN client (configured hostname, `.local`, raw
+RFC1918 IP) keeps working. Lockout safety: it must accept exactly the
+hosts the control daemon accepts. Style mirrors
+tests/test_http_security.py.
 """
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ _GOOD_TOKEN = "g" * 64
 
 def _csrf_handler(**headers: str) -> _FakeHandler:
     """A handler that already passes the CSRF double-submit check, so any
-    verify_csrf failure is attributable to the Host/Origin guard."""
+    guard_mutating_request failure is attributable to the Host/Origin guard."""
     return _FakeHandler(cookies=f"jts_csrf={_GOOD_TOKEN}", **headers)
 
 
@@ -87,47 +88,48 @@ def test_guard_rejects_cross_site_fetch_metadata():
     assert _common.guard_mutating_host(h) is False
 
 
-# --- verify_csrf inherits the guard (the chokepoint every wizard uses) ---
+# --- guard_mutating_request composes the guard (the chokepoint every
+#     wizard uses) ---
 
 
-def test_verify_csrf_rejects_disallowed_host_even_with_valid_token():
+def test_guard_mutating_request_rejects_disallowed_host_even_with_valid_token():
     # Token is perfectly valid; the request must still be refused because
     # the Host is a DNS-rebinding shape. This is the security regression.
     h = _csrf_handler(Host="attacker.example")
     h.headers["X-CSRF-Token"] = _GOOD_TOKEN
-    assert _common.verify_csrf(h) is False
+    assert _common.guard_mutating_request(h) is False
 
 
-def test_verify_csrf_rejects_cross_origin_even_with_valid_token():
+def test_guard_mutating_request_rejects_cross_origin_even_with_valid_token():
     h = _csrf_handler(Host="jts.local", Origin="http://attacker.example")
     h.headers["X-CSRF-Token"] = _GOOD_TOKEN
-    assert _common.verify_csrf(h) is False
+    assert _common.guard_mutating_request(h) is False
 
 
-def test_verify_csrf_accepts_legit_lan_hostname(monkeypatch):
+def test_guard_mutating_request_accepts_legit_lan_hostname(monkeypatch):
     monkeypatch.setenv("JASPER_HOSTNAME", "jts.local")
     h = _csrf_handler(Host="jts.local", Origin="http://jts.local")
     h.headers["X-CSRF-Token"] = _GOOD_TOKEN
-    assert _common.verify_csrf(h) is True
+    assert _common.guard_mutating_request(h) is True
 
 
-def test_verify_csrf_accepts_legit_dot_local(monkeypatch):
+def test_guard_mutating_request_accepts_legit_dot_local(monkeypatch):
     monkeypatch.setenv("JASPER_HOSTNAME", "speaker.local")
     h = _csrf_handler(Host="speaker.local")
     h.headers["X-CSRF-Token"] = _GOOD_TOKEN
-    assert _common.verify_csrf(h) is True
+    assert _common.guard_mutating_request(h) is True
 
 
-def test_verify_csrf_accepts_legit_raw_rfc1918_ip():
+def test_guard_mutating_request_accepts_legit_raw_rfc1918_ip():
     # A household reaching the wizard by raw LAN IP (e.g. mDNS down) must
     # not be locked out of their own setup pages.
     h = _csrf_handler(Host="192.168.1.42", Origin="http://192.168.1.42")
     h.headers["X-CSRF-Token"] = _GOOD_TOKEN
-    assert _common.verify_csrf(h) is True
+    assert _common.guard_mutating_request(h) is True
 
 
-def test_verify_csrf_still_rejects_bad_token_on_allowed_host():
+def test_guard_mutating_request_still_rejects_bad_token_on_allowed_host():
     # Host guard passes, but the CSRF check must still fire.
     h = _csrf_handler(Host="jts.local")
     h.headers["X-CSRF-Token"] = "b" * 64
-    assert _common.verify_csrf(h) is False
+    assert _common.guard_mutating_request(h) is False

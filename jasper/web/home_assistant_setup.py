@@ -78,7 +78,7 @@ from ._common import (
     restart_voice_daemon,
     send_html_response,
     send_see_other,
-    verify_csrf,
+    guard_mutating_request,
     write_env_file,
 )
 
@@ -1130,7 +1130,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # connected-state page already renders the token in a
                 # hidden input for the Disconnect form, so the JS reads
                 # it from there and forwards as the X-CSRF-Token header.
-                if not verify_csrf(self):
+                if not guard_mutating_request(self):
                     reject_csrf(self)
                     return
                 state = read_env_file(cfg["state_path"])
@@ -1149,7 +1149,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = read_form(self)
-            if not verify_csrf(self, form):
+            if not guard_mutating_request(self, form):
                 reject_csrf(self)
                 return
             if path == "/save":

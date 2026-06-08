@@ -212,7 +212,7 @@ primitive layer:
 - Send mutating JSON POSTs with `jsonHeaders()`.
 - Send mutating non-JSON POSTs, such as `audio/wav`, with
   `csrfHeaders({...})`.
-- Route-check unknown POST paths before `verify_csrf()` so bogus
+- Route-check unknown POST paths before `guard_mutating_request()` so bogus
   paths return 404 without revealing CSRF state.
 - Use `send_html_response()` / `send_see_other()` rather than
   hand-rolled response helpers.

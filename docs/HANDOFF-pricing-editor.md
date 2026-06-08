@@ -233,8 +233,9 @@ not in scope.
 
 ### Save path
 - New route **`POST /pricing`** (decoupled from `/save` so pricing edits
-  don't require touching keys/model/voice). CSRF: `verify_csrf` before
-  any work, `reject_csrf` on failure (per `_common`).
+  don't require touching keys/model/voice). Guard:
+  `guard_mutating_request` (host-allowlist + CSRF) before any work,
+  `reject_csrf` on failure (per `_common`).
 - Pure builder `_apply_pricing_save(form, overrides_defaults) -> dict`:
   parse `price__*` fields, coerce to float, clamp `>= 0`, **keep only
   values differing from the built-in default**, group into the model-ID

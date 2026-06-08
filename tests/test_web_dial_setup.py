@@ -229,7 +229,7 @@ def test_get_unknown_route_404() -> None:
 
 def test_post_onboard_rejects_missing_csrf(monkeypatch: pytest.MonkeyPatch) -> None:
     # No CSRF cookie/header → reject before doing anything.
-    monkeypatch.setattr(dial_setup, "verify_csrf", lambda h: False)
+    monkeypatch.setattr(dial_setup, "guard_mutating_request", lambda h: False)
     called = mock.Mock()
     monkeypatch.setattr(dial_setup, "_run_onboard", called)
     status, _ = _drive(
@@ -241,7 +241,7 @@ def test_post_onboard_rejects_missing_csrf(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_post_onboard_rejects_bad_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dial_setup, "verify_csrf", lambda h: True)
+    monkeypatch.setattr(dial_setup, "guard_mutating_request", lambda h: True)
     called = mock.Mock()
     monkeypatch.setattr(dial_setup, "_run_onboard", called)
     status, resp = _drive(
@@ -256,7 +256,7 @@ def test_post_onboard_rejects_bad_port(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_post_onboard_rejects_unplugged_port(monkeypatch: pytest.MonkeyPatch) -> None:
     # Valid-looking /dev path, but not in the currently-plugged set — the
     # crafted-POST guard must reject before running esptool.
-    monkeypatch.setattr(dial_setup, "verify_csrf", lambda h: True)
+    monkeypatch.setattr(dial_setup, "guard_mutating_request", lambda h: True)
     monkeypatch.setattr(dial_setup, "_list_esp32_s3_ports", lambda: [])
     called = mock.Mock()
     monkeypatch.setattr(dial_setup, "_run_onboard", called)
@@ -270,7 +270,7 @@ def test_post_onboard_rejects_unplugged_port(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_post_onboard_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dial_setup, "verify_csrf", lambda h: True)
+    monkeypatch.setattr(dial_setup, "guard_mutating_request", lambda h: True)
     monkeypatch.setattr(
         dial_setup, "_list_esp32_s3_ports",
         lambda: [{"port": "/dev/ttyACM0", "vid": "0x303a",
@@ -290,7 +290,7 @@ def test_post_onboard_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_post_onboard_failure_returns_502(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dial_setup, "verify_csrf", lambda h: True)
+    monkeypatch.setattr(dial_setup, "guard_mutating_request", lambda h: True)
     monkeypatch.setattr(
         dial_setup, "_list_esp32_s3_ports",
         lambda: [{"port": "/dev/ttyACM0", "vid": "0x303a",

@@ -191,12 +191,12 @@ def patched_common():
          mock.patch.object(google_setup, "send_html_response") as shr, \
          mock.patch.object(google_setup, "send_see_other") as sso, \
          mock.patch.object(google_setup, "read_form", return_value={}) as rf, \
-         mock.patch.object(google_setup, "verify_csrf", return_value=True) as vc, \
+         mock.patch.object(google_setup, "guard_mutating_request", return_value=True) as vc, \
          mock.patch.object(google_setup, "reject_csrf") as rc, \
          mock.patch.object(google_setup, "restart_voice_daemon") as rvd:
         yield SimpleNamespace(
             begin_request=br, send_html_response=shr, send_see_other=sso,
-            read_form=rf, verify_csrf=vc, reject_csrf=rc, restart_voice_daemon=rvd,
+            read_form=rf, guard_mutating_request=vc, reject_csrf=rc, restart_voice_daemon=rvd,
         )
 
 
@@ -265,12 +265,12 @@ def test_unknown_post_404s_before_csrf(patched_common):
     fake = _make_bound_handler(_cfg(), "/bogus")
     fake.do_POST()
     assert 404 in fake.errors
-    # verify_csrf must NOT be consulted for an unknown path.
-    assert not patched_common.verify_csrf.called
+    # guard_mutating_request must NOT be consulted for an unknown path.
+    assert not patched_common.guard_mutating_request.called
 
 
 def test_post_bad_csrf_rejected(patched_common):
-    patched_common.verify_csrf.return_value = False
+    patched_common.guard_mutating_request.return_value = False
     fake = _make_bound_handler(_cfg(), "/setup-credentials")
     fake.do_POST()
     assert patched_common.reject_csrf.called
