@@ -18,9 +18,10 @@ from jasper.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
 from jasper.web import speaker_setup
 
 
-def _render(current_name: str = "Kitchen", flash: str = "") -> str:
+def _render(current_name: str = "Kitchen", current_room: str = "", flash: str = "") -> str:
     return speaker_setup._index_html(
         current_name=current_name,
+        current_room=current_room,
         csrf_token="tok-abcdefghijklmnopqrstuvwx",
         status_msg=flash,
     ).decode()
@@ -143,7 +144,7 @@ def test_public_surface_is_stable():
 def test_get_root_renders_canonical_page(monkeypatch):
     monkeypatch.setattr(
         speaker_setup, "read_state",
-        lambda path: types.SimpleNamespace(name="Kitchen"),
+        lambda path: types.SimpleNamespace(name="Kitchen", room=""),
     )
     handler = _handler_cls()
     h = _FakeHandler("/")
@@ -183,14 +184,17 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
     calls = {"apply": [], "write": []}
 
     monkeypatch.setattr(speaker_setup, "validate_name", lambda n: n.strip())
+    monkeypatch.setattr(speaker_setup, "validate_room", lambda r: r.strip())
     monkeypatch.setattr(
         speaker_setup, "read_state",
-        lambda path: types.SimpleNamespace(name="OldName"),
+        lambda path: types.SimpleNamespace(name="OldName", room=""),
     )
     monkeypatch.setattr(speaker_setup, "_find_conflicts", lambda name: [])
     monkeypatch.setattr(
         speaker_setup, "write_state",
-        lambda name, path, mode=0o644: calls["write"].append(name) or name,
+        lambda name, room, path, mode=0o644: (
+            calls["write"].append((name, room)) or name
+        ),
     )
     monkeypatch.setattr(
         speaker_setup, "_apply_name",
@@ -199,12 +203,12 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
 
     handler = _handler_cls()
     # csrf_token = form field (CSRF_FORM_FIELD); jts_csrf = double-submit cookie.
-    body = ("csrf_token=" + token + "&name=NewName").encode()
+    body = ("csrf_token=" + token + "&name=NewName&room=Kitchen").encode()
     h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     handler.do_POST(h)
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
-    assert calls["write"] == ["NewName"]
+    assert calls["write"] == [("NewName", "Kitchen")]
     assert calls["apply"] == ["NewName"]
 
 

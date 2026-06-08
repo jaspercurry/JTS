@@ -1,0 +1,150 @@
+/* /rooms/ — page-specific styling for the read-only speaker directory.
+ *
+ * Only what app.css does not already cover. The "this speaker" card and the
+ * grouping-status rows reuse the shared .info-card / .section / .deflist /
+ * .badge vocabulary; this sheet styles the per-peer click-through rows (a
+ * small list layout that is genuinely single-page) and the empty / forward-
+ * note states.
+ *
+ * Loaded via canonical_page(page_css_href="/assets/rooms/rooms.css"). nginx
+ * serves /assets/ immutable; the ?v=<build-sha> cache-bust is added by
+ * canonical_page. Tokens (--surface, --border, --muted, --radius-sm,
+ * --primary, --status-ok, etc.) come from app.css :root — do not redefine
+ * them here; the var() fallbacks below are belt-and-suspenders only. */
+
+/* The directory: a stack of peer rows, one per discovered sibling speaker. */
+.room-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One peer = a full-row anchor that click-throughs to its /system/ page on
+ * its own address. An <a> (not a button) so it's a real link: middle-click /
+ * open-in-new-tab / copy-link-address all work, and there is no inline JS. */
+.room-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0.7rem 0.9rem;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e6e6e6);
+  border-radius: var(--radius-sm, 6px);
+  color: inherit;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+a.room-row:hover {
+  background: var(--surface-hover, color-mix(in oklab, var(--foreground) 4%, transparent));
+  border-color: var(--border-strong, var(--foreground-015));
+}
+
+/* Name + address stack on the left, grows to fill. */
+.room-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
+}
+.room-row__name {
+  font-family: var(--font-display, inherit);
+  font-weight: 600;
+  word-break: break-word;
+}
+.room-row__addr {
+  color: var(--muted, #888);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82em;
+  word-break: break-all;
+}
+
+/* Chevron at the right edge — the affordance that this row is a click-through.
+ * Uses the shared #icon-chevron sprite that canonical_page() injects. */
+.room-row__go {
+  flex: 0 0 auto;
+  color: var(--muted, #888);
+  transition: color 150ms ease, transform 150ms ease;
+}
+a.room-row:hover .room-row__go {
+  color: var(--text, inherit);
+  transform: translateX(2px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .room-row,
+  .room-row__go { transition: none; }
+  a.room-row:hover .room-row__go { transform: none; }
+}
+
+/* Empty state — no siblings found on the LAN yet. */
+.room-empty {
+  color: var(--muted, #666);
+  font-style: italic;
+  padding: 0.7rem 0.9rem;
+  background: var(--surface-quiet, var(--foreground-005));
+  border: 1px dashed var(--border, #ddd);
+  border-radius: var(--radius-sm, 6px);
+}
+
+/* The honest forward-looking note about bond setup (stereo pair / 2.1 / sub).
+ * Reuses the .info-card__hint left-rule treatment from app.css; this only
+ * adds the link styling so the docs pointer reads as a link without a focus
+ * ring (the design system suppresses those globally). */
+.room-note a {
+  color: var(--accent-strong, var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* "Change in Speaker settings" link beside the self-card Room value — room is
+ * shown here but edited in the identity home (/speaker/). Same link treatment
+ * as the forward note; the value + link sit on one line. */
+.room-self__edit {
+  color: var(--accent-strong, var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-size: 0.85em;
+  margin-left: 0.35rem;
+  white-space: nowrap;
+}
+
+/* Wake-response card rows: a control on the left, a label (+ optional hint)
+ * filling the rest. The toggle/checkbox come from app.css (.toggle / native
+ * checkbox); this only lays out the row. */
+.wake-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  margin-top: 0.9rem;
+  cursor: pointer;
+}
+.wake-row--sub {
+  /* The Primary sub-row indents slightly under the main toggle and is hidden
+   * by inline style when arbitration is off. */
+  margin-left: 0.2rem;
+}
+.wake-row__text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.wake-row__label {
+  font-weight: 600;
+  word-break: break-word;
+}
+.wake-row__hint {
+  color: var(--muted, #888);
+  font-size: 0.85em;
+}
+
+/* Save status line ("Saving…" / "Saved. Restarting…" / "Couldn't save: …").
+ * aria-live=polite (set in JS) so a screen reader announces the outcome. */
+.wake-status:empty {
+  display: none;
+}
+.wake-status {
+  margin-top: 0.7rem;
+}

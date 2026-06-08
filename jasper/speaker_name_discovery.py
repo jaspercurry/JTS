@@ -1,4 +1,24 @@
-"""Best-effort duplicate checks for speaker display names."""
+"""Best-effort duplicate checks for speaker display names.
+
+Deliberately NOT routed through ``jasper.mdns.browse_once``. The one-shot
+primitive is the right tool for "resolve a single service type into live,
+addressable instances" (e.g. ``/rooms/``, the HA wizard). This module needs
+the opposite shape on two axes:
+
+  - **Names-only across MULTIPLE service types.** It browses
+    ``_spotify-connect._tcp``, ``_airplay._tcp``, and ``_raop._tcp`` together
+    and only cares about the instance *name* (to flag a display-name
+    collision), not the address/port/TXT. ``browse_once`` is single-type and
+    resolves the full record.
+  - **Must include instances that don't resolve to an address.** A name
+    conflict is real even if the advertising device currently has no A record
+    — the friendly name still collides on the network. ``browse_once``
+    intentionally DROPS address-less instances, which would hide exactly the
+    conflicts this check exists to surface.
+
+So this stays a purpose-built multi-type, name-only, resolve-optional browser.
+This is a documented distinction, not un-migrated duplication.
+"""
 from __future__ import annotations
 
 import asyncio

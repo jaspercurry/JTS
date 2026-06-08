@@ -29,6 +29,7 @@ from ..speaker_name import (
     SpeakerNameError,
     read_state,
     validate_name,
+    validate_room,
     write_state,
 )
 from ..speaker_name_discovery import NameConflict, find_name_conflicts
@@ -156,6 +157,13 @@ def _apply_name(name: str) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("event=speaker_name.bluetooth_alias name=%r result=failed error=%s", name, e)
 
+    try:
+        from ..control_advert import render_control_advert
+        ok = render_control_advert(name)
+        logger.info("event=speaker_name.avahi name=%r result=%s", name, "ok" if ok else "soft_fail")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("event=speaker_name.avahi name=%r result=failed error=%s", name, e)
+
     logger.info("event=speaker_name.restart units=%s", ",".join(units))
     _restart_units(units)
 
@@ -163,10 +171,12 @@ def _apply_name(name: str) -> None:
 def _index_html(
     *,
     current_name: str,
+    current_room: str,
     csrf_token: str,
     status_msg: str = "",
 ) -> bytes:
     value = html.escape(current_name, quote=True)
+    room_value = html.escape(current_room, quote=True)
     default_attr = html.escape(DEFAULT_SPEAKER_NAME, quote=True)
     default_text = html.escape(DEFAULT_SPEAKER_NAME)
     body = f"""
@@ -186,6 +196,14 @@ def _index_html(
              autocomplete="off" autocapitalize="words" spellcheck="false">
       <p class="form-hint">Default: {default_text}. Use {MAX_SPEAKER_NAME_CHARS}
       characters or fewer.</p>
+    </div>
+    <div class="field">
+      <label for="speaker-room">Room (optional)</label>
+      <input id="speaker-room" type="text" name="room" value="{room_value}"
+             maxlength="{MAX_SPEAKER_NAME_CHARS}"
+             autocomplete="off" autocapitalize="words" spellcheck="false">
+      <p class="form-hint">Which room this speaker is in, e.g. Kitchen.
+      Leave blank to clear.</p>
     </div>
     <div class="form-actions">
       <button type="submit" class="btn btn--primary">Save and restart</button>
@@ -210,6 +228,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 state = read_state(cfg["state_path"])
                 send_html_response(self, _index_html(
                     current_name=state.name,
+                    current_room=state.room,
                     csrf_token=ctx["csrf_token"],
                     status_msg=ctx["flash"],
                 ))
@@ -233,31 +252,46 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=str(e))
                 return
 
-            current = read_state(cfg["state_path"]).name
-            if requested == current:
+            try:
+                # Room is optional; "" is a valid "unset" answer, not an error.
+                requested_room = validate_room(form.get("room", ""))
+            except SpeakerNameError as e:
+                send_see_other(self, "./", flash=str(e))
+                return
+
+            state = read_state(cfg["state_path"])
+            current = state.name
+            if requested == current and requested_room == state.room:
                 send_see_other(self, "./", flash="Name unchanged.")
                 return
 
-            conflicts = _find_conflicts(requested)
-            if conflicts:
-                logger.info(
-                    "event=speaker_name.conflict requested=%r conflicts=%s",
-                    requested,
-                    ",".join(f"{c.protocol}:{c.detail}" for c in conflicts),
-                )
-                send_see_other(self, "./", flash=_format_conflicts(conflicts))
-                return
+            # Conflict-check only the renderer-visible name. The room label
+            # is local-only (no AirPlay/Bluetooth collision), so a room-only
+            # edit skips the network probe.
+            if requested != current:
+                conflicts = _find_conflicts(requested)
+                if conflicts:
+                    logger.info(
+                        "event=speaker_name.conflict requested=%r conflicts=%s",
+                        requested,
+                        ",".join(f"{c.protocol}:{c.detail}" for c in conflicts),
+                    )
+                    send_see_other(self, "./", flash=_format_conflicts(conflicts))
+                    return
 
             try:
-                saved = write_state(requested, cfg["state_path"], mode=0o644)
+                saved = write_state(
+                    requested, requested_room,
+                    path=cfg["state_path"], mode=0o644,
+                )
             except (OSError, SpeakerNameError) as e:
                 logger.exception("speaker name save failed")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
 
             logger.info(
-                "event=speaker_name.save previous=%r requested=%r saved=%r",
-                current, requested, saved,
+                "event=speaker_name.save previous=%r requested=%r saved=%r room=%r",
+                current, requested, saved, requested_room,
             )
             _apply_name(saved)
             send_see_other(

@@ -465,6 +465,20 @@ title = "Multi-room speaker grouping (stereo pair / 2.1 / wireless sub)"
 safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
+  "jasper/web/rooms_setup.py",
+  "jasper/control_advert.py",
+  # Shared primitives the /rooms/ directory + friendly-name advert ride on:
+  # the one-shot mDNS browse, the one Avahi *.service renderer, and the
+  # single speaker-identity reader (name + room + hostname + peer_id).
+  # identity.py + speaker_name.py are cross-cutting (control_advert, future
+  # bond code also read them); a coarse add here is fine — this is the
+  # subsystem that consumes them for the directory.
+  "jasper/mdns.py",
+  "jasper/avahi_service.py",
+  "jasper/identity.py",
+  "jasper/speaker_name.py",
+  "deploy/assets/rooms/**",
+  "deploy/avahi/jasper-control.service.template",
   "deploy/systemd/jasper-snapserver.service",
   "deploy/systemd/jasper-snapclient.service",
   "deploy/systemd/jasper-grouping-reconcile.service",
@@ -476,9 +490,11 @@ docs = [
 ]
 requires_docs_when = [
   "Grouping roles, the snapcast sync transport, channel/leader assignment, the grouping env contract, off-by-default behaviour, or the sync/RAM spike methodology change.",
+  "The /rooms/ directory, its discovery service, or the friendly-name advert (the name= TXT on _jasper-control._tcp rendered by control_advert from the service template) changes.",
+  "The shared mDNS browse (jasper/mdns.py), the Avahi *.service renderer (jasper/avahi_service.py), the speaker-identity reader (jasper/identity.py), or where the room label lives (jasper/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
 ]
 verification = [
-  "pytest tests/test_multiroom_config.py tests/test_multiroom_reconcile.py tests/test_multiroom_state.py",
+  "pytest tests/test_multiroom_config.py tests/test_multiroom_reconcile.py tests/test_multiroom_state.py tests/test_mdns.py tests/test_avahi_service.py tests/test_identity.py tests/test_speaker_name.py tests/test_web_rooms_setup.py",
 ]
 
 [[subsystem]]

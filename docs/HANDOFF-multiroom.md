@@ -45,11 +45,46 @@ yet** and the gating spike has not been run. What exists:
   on-invalid).
 - **spike harness** — `scripts/multiroom-spike.sh` +
   `multiroom-spike-measure.py` (§8 P0; run on hardware).
+- **`/rooms/` — the combined "Speakers" surface** —
+  `jasper/web/rooms_setup.py` + `deploy/assets/rooms/` (port 8785,
+  `JASPER_ROOMS_WEB_PORT`, route `/rooms/`; `/peers/` 301-redirects here).
+  Directory + wake-response toggle on one page ("my other speakers" is one
+  household concern). Lists every JTS speaker on the LAN via the always-on
+  `_jasper-control._tcp` mDNS service (NOT the wake-peering-gated
+  `_jasper-peer._udp`, so it works regardless of peering state), each a
+  click-through to that speaker's own `http://<addr>/system/`, plus this
+  speaker's grouping status (off/solo, or role/channel/bond/buffer/codec,
+  fail-loud `error` when on-but-invalid). `GET /` is a static
+  `canonical_page()` shell + ES module; `GET /rooms.json` carries the data
+  (self block now includes a `peering: {enabled, primary}` wake-response
+  block, read fresh via the reused `peering_setup` readers); self is
+  excluded from `peers`. **One POST — `/peering`, the wake-response toggle**
+  (CSRF via `X-CSRF-Token`; read-modify-writes `peering.env` through the
+  reused `peering_setup` constant, preserving `JASPER_PEER_ROOM`; restarts
+  voice + control). **No bond-forming controls** — those write config that
+  no-ops until the P1 sync engine exists (§8). Untrusted mDNS fields never
+  enter the server HTML (the shell is data-free; data ships as
+  `application/json` and the module renders it via DOM/text APIs). **Friendly names + identity:** each speaker
+  advertises its `/speaker` display name as a `name=` TXT on
+  `_jasper-control._tcp`, rendered by `jasper/control_advert.py` from
+  `deploy/avahi/jasper-control.service.template` (purely additive vs. the
+  static service; XML-escaped; fail-soft). The directory renders peers and
+  self by that name. The self block now resolves name/room/hostname through
+  the single identity reader `jasper/identity.py` (`read_identity()`); the
+  shared one-shot browse is `jasper/mdns.py` (`browse_once`) and the one
+  Avahi `*.service` renderer is `jasper/avahi_service.py` (`render_service`,
+  used by both control_advert and peering). **The room label now lives in the
+  speaker-identity home** (`jasper/speaker_name.py`, `JASPER_SPEAKER_ROOM`;
+  `/speaker` writes it; `install.sh migrate_speaker_room` seeds it from the
+  legacy peering room) — peering still reads its own `JASPER_PEER_ROOM` for
+  wake-arb, with full consolidation flagged as a follow-up. See §8 "Friendly
+  names + identity".
 
 Not yet built (P1+, post-spike): the `BondedSet` entity, channel-split
-+ leader-side LFE crossover, satellite calibration, the `/rooms/`
-wizard, the `jasper-outputd` snapfifo reference consumer, and live
-validation of the snapcast process lifecycle.
++ leader-side LFE crossover, satellite calibration, the **bond-forming
+controls on `/rooms/`** (role/leader/channel assignment, stereo-pair /
+2.1 / sub setup), the `jasper-outputd` snapfifo reference consumer, and
+live validation of the snapcast process lifecycle.
 
 ---
 
@@ -436,21 +471,170 @@ ownership, no payoff yet); negative L/R balance trim; native
 PTP-for-AirPlay carve-out (only if sample-perfect AirPlay multi-room
 becomes a hard requirement).
 
-### Web UX (P1)
+### Web UX
 
-A `/rooms/` page rendered with `canonical_page()` (page CSS in
-`/assets/rooms/`, never `app.css`), shared icon sprite, CSRF meta.
-It is a **directory, not a config aggregator**: each sibling row
-links to that peer's own `http://<address>/system/`, so you
-configure each speaker on its own UI (sidesteps cross-Pi write/auth;
-home-LAN trust). This Pi's own `room`/`role`/`leader` are editable
-in place; sibling fields are read-only. Live refresh, if wanted,
-ships as a static ES module polling `GET /rooms.json` (mirror
-`system_setup.py`'s `/data.json`). Escape all untrusted strings
-(`room`, mDNS names, `address`) — escaped `data-*` + delegated
-handler, never inline `onclick`. New wizard socket port →
-`install.sh` must `systemctl restart` (not `start`) the wizard
-socket (PR #118 502 failure mode).
+`/rooms/` is the combined **"Speakers"** surface — to the household,
+"my other speakers" is *one* concern, so the read-only multi-room
+directory and the wake-arbitration (peering) toggle live on the same
+page. It is rendered with `canonical_page()` (page title "Speakers";
+page CSS in `/assets/rooms/`, never `app.css`), shared icon sprite,
+CSRF meta. For the **directory** part it is a **directory, not a config
+aggregator**: each sibling row links to that peer's own
+`http://<address>/system/`, so you configure each speaker on its own UI
+(sidesteps cross-Pi write/auth; home-LAN trust). Live refresh ships as a
+static ES module polling `GET /rooms.json` (mirror `system_setup.py`'s
+`/data.json`). Escape all untrusted strings (`room`, mDNS names,
+`address`): on the server they never enter the HTML at all (the shell is
+data-free), and the module renders every value via DOM/text APIs — never
+`innerHTML`, never inline `onclick` with interpolated strings. New wizard
+socket port → `install.sh` must `systemctl restart` (not `start`) the
+wizard socket (PR #118 502 failure mode).
+
+**`/peers/` 301-redirects here; `/rooms` is canonical.** The wake-response
+toggle folded out of the old `/peers/` page into this surface. nginx
+replaces the `/peers/` `proxy_pass` with `return 301 /rooms/;` (the old
+URL keeps working). The `/peers/` `peering_setup` module + its `:8776`
+socket stay wired — `rooms_setup` now **reuses** its readers/writers
+(`_load_state`/`_is_on`/`_primary`, `PEERING_ENV_FILE`) and restart
+helpers (`restart_voice_daemon` + `_restart_jasper_control`) rather than
+re-deriving the env parse, and the peering daemon still serves its
+helpers/status — we only stop routing *users* to its page. This is reuse,
+not retirement.
+
+**Room stays in the identity home — NOT edited here.** Room lives at
+`/speaker/` (the identity home; `JASPER_SPEAKER_ROOM`). The self card
+*shows* the room (read via `identity.read_identity()`, already in
+`/rooms.json`) with a small "Change in Speaker settings" link to
+`/speaker/`. There is deliberately no room editor on `/rooms/` — adding
+one would reopen the two-homes drift this increment closed. (The
+peering → identity room consolidation remains a flagged follow-up; see
+below.)
+
+**Shipped: directory + wake-response toggle.** The directory —
+discovery + click-through + this speaker's grouping status — and the
+**wake-response card** (a toggle: "when multiple speakers hear 'Hey
+Jarvis', only one answers", plus a "Primary" checkbox to prefer this
+speaker in ties) landed behind port 8785 / `JASPER_ROOMS_WEB_PORT`,
+sourcing siblings from the always-on `_jasper-control._tcp` service so it
+works whether or not wake-peering is on (see §0). The wake-response card
+is the **one working write surface**: `POST /peering` (CSRF-verified via
+the `X-CSRF-Token` header) read-modify-writes `/var/lib/jasper/peering.env`
+through the reused `peering_setup` constant — flipping `JASPER_PEERING`
+on/off and setting/clearing `JASPER_PEER_PRIMARY` while **preserving**
+`JASPER_PEER_ROOM` (owned by `/speaker/`) and operator tuning knobs — then
+restarts voice + `jasper-control` and returns `{ok, peering:{enabled,
+primary}}`. **Bond-forming controls stay deferred:** making this Pi's own
+`role`/`leader` editable in place and forming stereo-pair / 2.1 / sub
+bonds waits on the on-hardware sync spike (§8 P0) validating the engine —
+a toggle that writes grouping config which silently no-ops (no
+`BondedSet`, no Snapcast path yet) would be dishonest. Sibling fields stay
+read-only by design (configure each speaker on its own UI).
+
+#### Friendly names + identity on the directory (shared primitives)
+
+The directory shows each speaker by its **friendly display name**, not a
+bare hostname or the verbose mDNS instance string. The name reuses the
+speaker's existing user-facing display name (the `/speaker` identity; the
+same name shown on Spotify Connect / AirPlay / Bluetooth / USB).
+
+**The room label now lives in the speaker-identity home.** The earlier
+increment shipped with *no* room concept; the identity refactor adds one
+without inventing a separate subsystem. [`jasper/speaker_name.py`](../jasper/speaker_name.py)
+— already the canonical home for the display name — gained a `room` field
+(`JASPER_SPEAKER_ROOM` in `/var/lib/jasper/speaker_name.env`; empty = unset,
+no non-empty default). `validate_room` reuses the name's
+printable-ASCII/normalize rules; `runtime_room` mirrors `runtime_name`'s
+env→state→"" precedence; `write_state(name, room)` persists both atomically
+and `write_state(name)` preserves the stored room (back-compat). The
+`/speaker` wizard now renders a Room text input and writes both. `install.sh`'s
+`migrate_speaker_room` seeds `JASPER_SPEAKER_ROOM` once from peering's legacy
+`JASPER_PEER_ROOM` so existing rooms carry into the identity home.
+
+**Three shared primitives back this (extracted, not re-grown per caller):**
+
+- [`jasper/identity.py`](../jasper/identity.py) — **the single
+  speaker-identity reader.** `read_identity()` composes
+  `name + room + hostname + peer_id` and is TOTAL (never raises). Room
+  precedence is the point: the **identity home wins**
+  (`speaker_name.runtime_room()`), then a legacy fallback to peering's
+  `JASPER_PEER_ROOM`, then `peering.config.default_room()` — so older
+  `/peers/`-configured installs still surface a room while the identity home
+  becomes the source of truth. `/rooms/`'s self block (`_self_name` /
+  `_self_hostname` / `_self_room`) now resolves through this reader, so the
+  directory agrees with `control_advert` and the rest of the speaker on "who
+  is this speaker." (control_advert and future bond/grouping code are meant
+  to read identity too — see the consolidation follow-up below.)
+- [`jasper/mdns.py`](../jasper/mdns.py) — **the one one-shot mDNS-SD browse
+  primitive.** `browse_once(service_type)` is the fail-soft
+  AsyncZeroconf browse+resolve+TXT/address parse moved verbatim out of
+  `rooms_setup._discover_speakers`; it returns raw, parsed
+  `DiscoveredService` facts (full instance name, SRV host, addresses, port,
+  decoded TXT) and lets each consumer apply its own policy. Any failure (no
+  zeroconf, a resolve error, a total browse failure) degrades to dropping
+  that entry / returning `[]` — never raises. `rooms_setup` keeps only the
+  rooms-display policy on top (`_peer_label`, port defaulting, the TTL cache).
+- [`jasper/avahi_service.py`](../jasper/avahi_service.py) — **the one Avahi
+  `*.service` renderer.** `render_service(template, out, substitutions, *,
+  escape, reload)` is the shared render+stray-placeholder-guard+idempotent
+  atomic-write+`reload_avahi` body that both `control_advert.py`
+  (`__SPEAKER_NAME__`, free-form → `escape=True`) and `peering/avahi.py`
+  (`__PEER_ID__`/`__ROOM__`/`__PRIMARY__`, mDNS-safe → `escape=True`,
+  byte-identical) now call. It is fail-soft (missing template / stray token /
+  write failure → `False`, never raises) and idempotent (a byte-stable render
+  skips the write+reload, so a long-lived advert never tears down its
+  service-group).
+
+How a peer's name reaches the directory: each speaker advertises its
+display name as a `name=` TXT record on the always-on
+`_jasper-control._tcp` service.
+[`rooms_setup._peer_label`](../jasper/web/rooms_setup.py) already prefers a
+`name=` TXT over the SRV hostname, so once advertised, peers render by
+their friendly name automatically — no client change. The **self** card
+reads the same identity directly (`_self_name()` →
+`jasper/speaker_name.runtime_name`, with hostname/room via
+`identity.read_identity()`), so it shows the same name peers see;
+`/rooms.json`'s `self` block carries `name` / `hostname` / `room`.
+
+> **Follow-up (flagged, NOT this change): peering → identity room
+> consolidation.** Peering still reads its **own** `JASPER_PEER_ROOM` for
+> wake-arbitration display, and `identity.read_identity()` keeps the legacy
+> fallback so `/rooms/` stays consistent across both. The full consolidation
+> — peering reading the identity room instead of its own var, and the
+> `/peers/` room field being removed — is deliberately deferred. The scope
+> guard here is narrow: room moved *into* the identity home and `/rooms/`
+> reads from it; nothing yet *removed* the peering-side room.
+
+Coverage for the shared primitives is hardware-free:
+`tests/test_avahi_service.py` (render/escape/stray-guard/idempotence/
+fail-soft), `tests/test_mdns.py` (fail-soft when zeroconf is absent +
+`DiscoveredService` parse mapping against a fake `AsyncServiceInfo`),
+`tests/test_identity.py` (field composition + room precedence + totality),
+and the room half of `tests/test_speaker_name.py`.
+
+The advert is rendered, not static. `deploy/install.sh` installs
+[`deploy/avahi/jasper-control.service.template`](../deploy/avahi/jasper-control.service.template)
+to `/etc/jasper/avahi-templates/` and renders the live
+`/etc/avahi/services/jasper-control.service` via
+[`render_control_advert`](../jasper/control_advert.py); the `/speaker`
+save (`speaker_setup._apply_name`) re-renders + reloads Avahi on every
+name change. Safety contract (the dial depends on this service
+resolving):
+
+- **Purely additive vs. the historical static service** — same
+  `<service>`/`<type>`/`<port>` byte-for-byte, only the one
+  `<txt-record>name=…</txt-record>` added. The dial keys off service type
+  + address; a TXT record cannot affect discovery. (Pinned by
+  `tests/test_control_advert.py`'s byte-equivalence check.)
+- **XML-escaped before substitution** — a free-form name with `&`, `<`,
+  or `>` would otherwise make Avahi reject the whole `<service-group>` and
+  drop `_jasper-control._tcp`, breaking the dial. A hostile-name test
+  asserts the rendered file is still valid XML and round-trips.
+- **Fail-soft, never raises** — a missing template, unreadable name, or
+  failed Avahi reload logs `event=control_advert.*` and returns; the
+  `/speaker` save and `install.sh` never break on a render failure
+  (backstop: the next `jasper-control` restart re-renders). An unset/empty
+  name falls back to the hostname so the TXT is never empty and the
+  service always advertises.
 
 ---
 
@@ -499,6 +683,35 @@ socket (PR #118 502 failure mode).
 
 ---
 
-Last verified: 2026-06-04 (off-by-default plumbing landed + staff
-review — see §0 for what shipped; the §8 sync/RAM numbers remain
-unmeasured until the spike runs on hardware)
+Last verified: 2026-06-08 (combined `/rooms` "Speakers" surface: the
+wake-response (peering) toggle + Primary checkbox folded out of the old
+`/peers/` page into `/rooms`, which is now canonical; `/peers/`
+301-redirects there (`deploy/nginx-jasper.conf`). `rooms_setup` **reuses**
+`peering_setup`'s readers/`PEERING_ENV_FILE`/restart helpers — `POST
+/peering` (CSRF via `X-CSRF-Token`) read-modify-writes `peering.env`
+preserving `JASPER_PEER_ROOM`, and the self block in `/rooms.json` gains a
+`peering: {enabled, primary}` block read fresh from the SSOT. Room is NOT
+edited on `/rooms` — it stays at `/speaker/` (the self card links there).
+Bond-forming controls remain deferred (§8 P0). Coverage added in
+`tests/test_web_rooms_setup.py` (POST happy path / bad-CSRF reject /
+unknown-path-404-before-CSRF / `peering`-block shape / `/peers/`→`/rooms/`
+301 redirect string-assert). The peering → identity room consolidation is
+still a **flagged follow-up, not done** (below). Earlier 2026-06-07
+(identity/discovery refactor): extracted three
+shared primitives — the one mDNS-SD browse `jasper/mdns.py` (`browse_once`),
+the one Avahi `*.service` renderer `jasper/avahi_service.py`
+(`render_service`, now used by both `control_advert` and `peering/avahi`),
+and the single speaker-identity reader `jasper/identity.py`
+(`read_identity()`). The **room label moved into the speaker-identity home**
+(`jasper/speaker_name.py`, `JASPER_SPEAKER_ROOM`; `/speaker` writes it;
+`install.sh migrate_speaker_room` seeds it from the legacy peering room);
+`/rooms/`'s self block reads name/room/hostname through `read_identity()`.
+The peering → identity room consolidation (peering reads identity; `/peers/`
+room field removed) is a **flagged follow-up, not done** — see §8 "Friendly
+names + identity". Hardware-free coverage: `tests/test_mdns.py`,
+`tests/test_avahi_service.py`, `tests/test_identity.py`, the room half of
+`tests/test_speaker_name.py`, and `tests/test_web_rooms_setup.py`. Earlier
+2026-06-07: friendly-name advertising (`name=` TXT on `_jasper-control._tcp`).
+Off-by-default plumbing + the read-only `/rooms/` directory previously landed
+2026-06-04; bond-forming controls and the §8 sync/RAM numbers remain
+deferred/unmeasured until the spike runs on hardware.)
