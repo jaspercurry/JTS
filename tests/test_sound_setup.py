@@ -249,7 +249,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
 
     assert "function renderOutputTopologySetup()" in js
     assert "function refreshOutputTopology(options)" in js
-    assert "function saveOutputTopology()" in js
+    assert "function saveOutputTopology(options)" in js
     assert "function updateOutputChannelIdentity(button)" in js
     assert "function updateOutputChannelProtection(button)" in js
     assert "function checkOutputPlaybackReadiness(button)" in js
@@ -278,10 +278,38 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "The last readiness check failed" in js
     assert "Save this output setup draft before recording physical verification evidence." in js
     assert "Sound tests remain disabled for this setup surface." in js
+    assert "Choose speaker layout" in js
+    assert "Research drivers" in js
+    assert "Map and verify outputs" in js
+    assert "Stage, load, and start quiet" in js
+    assert "data-act=\"output-step-next\"" in js
     assert "Setup template" in js
     assert "Mono active 2-way" in js
+    assert "2 amp channels: woofer/mid + tweeter" in js
+    assert "4 amp channels: L/R woofer + L/R tweeter" in js
     assert "Stereo active 3-way" in js
+    assert "Subwoofer add-on" in js
+    assert "data-act=\"toggle-output-subwoofer\"" in js
+    assert "Optional. This composes with any mono or stereo layout" in js
+    assert "Add subwoofer" in js
+    assert "Remove subwoofer" in js
+    assert "function addSubwooferToTopology(topology)" in js
+    assert "function removeSubwooferFromTopology(topology)" in js
+    assert "if (role && roles.indexOf(role) < 0) roles.push(role);" in js
+    assert "role !== 'full_range'" not in js
     assert "Output setup template is a draft." in js
+    assert "Driver research helper" in js
+    assert "data-act=\"copy-driver-research-prompt\"" in js
+    assert "data-act=\"parse-driver-research\"" in js
+    assert "id=\"driver-research-import\"" in js
+    assert "id=\"driver-research-summary\"" in js
+    assert "function updateDriverResearchImportSummary()" in js
+    assert "updateDriverResearchImportSummary();" in js
+    assert "jts_active_crossover_driver_research" in js
+    assert "JTS will not apply it automatically." in js
+    assert "Could not copy automatically." in js
+    assert "if (!outputIdentityComplete())" in js
+    assert "Save a speaker map with assigned physical outputs" in js
     assert "Starter stereo" not in js
     assert "Starter 2-way" not in js
     assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
