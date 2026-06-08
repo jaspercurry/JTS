@@ -405,7 +405,17 @@ clearly marked as advisory.
 
 ## 11. Implementation Plan
 
-Phase 0: promote this methodology into tests and fixtures.
+**Status (2026-06-07): Phase 0 + Phase 1 shipped, plus Phase 2's cross-leg
+analysis.** The deterministic first-pass analyzer is
+[`scripts/analyze-wake-corpus-quality.sh`](../scripts/analyze-wake-corpus-quality.sh)
+(→ `scripts/_analyze_wake_corpus_quality.py`): a laptop-side pass over an
+rsynced corpus that emits `metrics.csv` / `cross_leg.csv` / `events.json` /
+`summary.md`, computes the Tier A + selected Tier B metrics, and confirms
+transient damage via LPC residual + cross-leg coincidence. Synthetic detector
+fixtures live in `tests/test_analyze_wake_corpus_quality.py`. The HTML review
+packages (rest of Phase 2) and the neural/AGC work (Phases 3-4) remain future.
+
+Phase 0 ✅ — methodology promoted into tests and fixtures.
 
 - Add synthetic fixtures for hard clipping, soft clipping, isolated
   click, click burst, dropout, repeated samples, DC offset, AGC pumping,
@@ -413,7 +423,7 @@ Phase 0: promote this methodology into tests and fixtures.
   only artifact.
 - Lock expected detector behavior before running on the real corpus.
 
-Phase 1: deterministic analyzer.
+Phase 1 ✅ — deterministic analyzer (shipped; see status above).
 
 - Build a laptop-side script that reads `data/enrollment_positives/`.
 - Emit JSON and CSV.
@@ -421,7 +431,7 @@ Phase 1: deterministic analyzer.
 - Keep dependencies small: Python stdlib WAV reading plus numpy/scipy is
   the right first shape.
 
-Phase 2: cross-leg analyzer and HTML review.
+Phase 2 (cross-leg analysis ✅, HTML review pending): cross-leg analyzer and HTML review.
 
 - Group utterances by metadata.
 - Align sibling legs.
@@ -530,6 +540,10 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-06-07 (v15):** The deterministic first-pass analyzer shipped —
+  `scripts/analyze-wake-corpus-quality.sh` (§11 Phase 0 + Phase 1, plus
+  Phase 2's cross-leg deltas/alignment). Methodology unchanged; this records
+  that the offline tool now exists.
 - **2026-06-04 (v14):** Added the `capture_plan` metadata contract:
   per-session/per-clip physical mic, native stream, source channel,
   transform, role, bridge requirements, and resource-load interpretation.
@@ -571,6 +585,7 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-06-04 (v14 - capture-plan metadata expectations
-rechecked against the recorder; audio quality analyzer remains
-offline/future work.)
+Last verified: 2026-06-07 (v15 - deterministic offline quality analyzer
+shipped as scripts/analyze-wake-corpus-quality.sh; §11 Phase 0/1 and
+Phase 2 cross-leg analysis now done, HTML review + neural metrics still
+future.)

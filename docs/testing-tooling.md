@@ -22,7 +22,7 @@
 |---|---|
 | Capture the AEC bridge's three streams (raw mic / AEC ON / reference) | [Capture: 3-stream bridge captures](#capture-3-stream-bridge-captures) |
 | Audit the deliberate wake-corpus recorder output after rsync | [Wake-corpus audit (deliberate recordings)](#wake-corpus-audit-deliberate-recordings) |
-| Analyze wake-corpus audio artifacts / quality | [`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md) |
+| Analyze wake-corpus audio artifacts / quality | [Wake-corpus quality analyzer](#wake-corpus-quality-analyzer) |
 | Count wake-word detections on captured audio offline | [Wake-word scoring (offline)](#wake-word-scoring-offline) |
 | Pull production wake events + clips from the Pi | [Wake-event telemetry (production)](#wake-event-telemetry-production) |
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
@@ -226,12 +226,45 @@ read `wake-events.sqlite3` and does not score wake-word models; it is
 the quick "did the gold corpus record what we think it recorded?"
 gate before Phase 0a/0c work.
 
-For deeper signal-quality analysis of artifacts, tears/clicks, AGC
-pumping, clipping, cross-leg event coincidence, and human review
-packages, use [`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md).
-That doc is the source of truth for the future analyzer; extend the
-existing corpus audit only when the new check still belongs in the
-quick integrity gate.
+For deeper signal-quality analysis — artifacts, tears/clicks, AGC pumping,
+clipping, cross-leg event coincidence, and review prioritization — use the
+[Wake-corpus quality analyzer](#wake-corpus-quality-analyzer) below; its
+methodology + metric definitions live in
+[`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md). Extend the
+quick corpus audit above only when a new check belongs in the fast integrity
+gate rather than the deeper analyzer.
+
+---
+
+## Wake-corpus quality analyzer
+
+Laptop-side, offline. Deterministic first-pass signal-quality analysis of a
+fetched wake corpus (the deliberate recorder's `enrollment_positives/` and its
+per-leg WAVs). It does NOT score wake-word models — it surfaces *artifacts*
+(clipping, transients/clicks, AGC pumping, spectral damage) and prioritizes
+clips for human listening review.
+
+```sh
+bash scripts/analyze-wake-corpus-quality.sh data/enrollment_positives --latest
+# → writes metrics.csv, cross_leg.csv, events.json, summary.md to an output dir
+```
+
+Outputs:
+- `metrics.csv` — one row per WAV/leg: spectral, envelope, true-peak, clipping,
+  transient, LPC-confirmed transient-damage, and flag metrics, plus a bounded
+  `review_priority`.
+- `cross_leg.csv` — sibling-leg deltas + FFT-alignment confidence + event
+  coincidence (processed-minus-baseline).
+- `events.json` — flagged per-leg events + the exact analyzer config used (a
+  run is reproducible from it).
+- `summary.md` — human triage, newest sessions first, sorted by review
+  priority, with explicit "these are review hints, not auto-reject gates"
+  caveats.
+
+Transient damage is **two-stage confirmed** (a local-MAD sample-delta candidate
+AND an LPC-residual outlier within a few ms), which suppresses the
+plosive/fricative false-positive mode that plain sample-delta detectors hit.
+Pure stdlib + numpy/scipy; covered by `tests/test_analyze_wake_corpus_quality.py`.
 
 ---
 
