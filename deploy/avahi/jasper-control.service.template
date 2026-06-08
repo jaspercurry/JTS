@@ -14,9 +14,12 @@
 
   This file is a TEMPLATE — `deploy/install.sh` copies it to
   /etc/jasper/avahi-templates/jasper-control.service. At runtime,
-  jasper/control_advert.py renders the __SPEAKER_NAME__ token (the
-  user-facing display name from jasper/speaker_name.py) and writes
-  the rendered XML to /etc/avahi/services/jasper-control.service.
+  jasper/control_advert.py substitutes the speaker's display name
+  (from jasper/speaker_name.py) into the name= TXT record below and
+  writes the rendered XML to /etc/avahi/services/jasper-control.service.
+  (The placeholder token is intentionally not written in this comment:
+  the renderer does a blind text replace, so a literal token here would
+  be substituted too and the deployed comment would read oddly.)
   The `name=` TXT record lets the /rooms/ directory show the same
   friendly name peers see on Spotify / AirPlay / Bluetooth. The
   rendered value is XML-escaped before substitution (a stray `&` or
