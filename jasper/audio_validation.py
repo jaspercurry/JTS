@@ -19,8 +19,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +31,7 @@ from .audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
+from .control import client as control
 from .env_load import parse_env_file
 
 
@@ -589,15 +588,8 @@ def _read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
 
 def _read_voice_wake_legs(timeout: float = 1.0) -> set[str] | None:
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8780/state", timeout=timeout) as r:
-            data = json.loads(r.read())
-    except (
-        urllib.error.URLError,
-        OSError,
-        ValueError,
-        TimeoutError,
-        json.JSONDecodeError,
-    ) as e:
+        data = control.get_state(timeout=timeout)
+    except (control.ControlError, ValueError) as e:
         logger.debug("event=audio_validation.voice_state_unavailable error=%s", e)
         return None
     voice = data.get("voice") if isinstance(data, dict) else None
