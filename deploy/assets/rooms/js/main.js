@@ -165,7 +165,8 @@ function defRow(label, value) {
 // ---------------------------------------------------------------------------
 // Grouping status → a key/value list (or a single "off (solo)" line).
 // Shape from jasper.multiroom.state.read_grouping_state():
-//   {enabled, role, channel, bond_id, leader_addr, buffer_ms, codec, error}
+//   {enabled, role, channel, bond_id, leader_addr, buffer_ms, codec, error,
+//    runtime?: {health, detail, units}}  -- runtime present only when enabled
 // ---------------------------------------------------------------------------
 function groupingBody(g) {
   if (!g || typeof g !== "object") {
@@ -198,12 +199,26 @@ function groupingBody(g) {
   }
   if (g.buffer_ms != null) rows.push(defRow("Buffer", g.buffer_ms + " ms"));
   if (g.codec) rows.push(defRow("Codec", g.codec));
-  const badge = h("span.badge", null, "Grouped");
-  badge.style.setProperty("--tone", "var(--status-ok)");
-  return h("div", null,
+  // Runtime health (jasper.multiroom.state.derive_grouping_runtime):
+  //   {health: "ok"|"degraded"|…, detail}. Present when grouping is on.
+  // A degraded bond — a follower that can't reach its leader, or (until the
+  // producer ships) a leader with no FIFO — shows amber + the reason, not a
+  // green "Grouped" hiding silent breakage. The detail (which may contain a
+  // leader address) is rendered as a TEXT node, which h() escapes.
+  const rt = g.runtime && typeof g.runtime === "object" ? g.runtime : null;
+  const degraded = rt && rt.health === "degraded";
+  const badge = h("span.badge", null, degraded ? "Degraded" : "Grouped");
+  badge.style.setProperty(
+    "--tone", degraded ? "var(--status-warn)" : "var(--status-ok)",
+  );
+  const out = [
     h("div.badge-row", null, badge),
     h("dl.deflist", null, rows.flat()),
-  );
+  ];
+  if (rt && rt.detail) {
+    out.push(h("p.info-card__note", null, String(rt.detail)));
+  }
+  return h("div", null, ...out);
 }
 
 // ---------------------------------------------------------------------------
