@@ -43,13 +43,21 @@ Type=simple
 TimeoutStopSec=5s
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/grouping.env
-# NOTE (P1, pending on-hardware): JASPER_SNAPSERVER_ARGS is NOT yet
-# written by the reconciler — snapserver_argv() is spec'd + unit-tested
-# but jasper.multiroom.reconcile.main() currently only start/stops
-# units, it does not yet assemble + persist the args. Until P1 wires
-# that round-trip, $JASPER_SNAPSERVER_ARGS is empty and snapserver
-# would start with its own defaults (not reading the FIFO). Harmless
-# today: off-by-default means nothing starts this unit yet.
+# Derived args, written by jasper-grouping-reconcile (the single writer).
+# Layered AFTER grouping.env so the reconciler's computed
+# JASPER_SNAPSERVER_ARGS overrides the bare wizard intent. The reconciler
+# owns this /run file (NOT a unit RuntimeDirectory, which would be reaped
+# when a sibling unit stops); it writes it before starting this unit, so
+# ExecStart reads fresh args.
+EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
+# NOTE (P1.3, pending on-hardware): the reconciler now assembles +
+# persists JASPER_SNAPSERVER_ARGS (snapserver_argv → this file), so a
+# started snapserver reads the FIFO with the configured codec/buffer.
+# What is still pending is the snapfifo PRODUCER (the jasper-outputd
+# reference consumer that feeds the mixed program into the FIFO). Until
+# that lands snapserver reads an EMPTY FIFO — fully configured, no audio
+# flowing yet. Harmless today: off-by-default means nothing starts this
+# unit until a bond is configured AND the producer ships.
 ExecStart=/usr/bin/snapserver $JASPER_SNAPSERVER_ARGS
 Restart=on-failure
 RestartSec=2s

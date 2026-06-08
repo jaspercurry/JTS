@@ -1,0 +1,10 @@
+=== snapserver/snapclient processes ===
+    PID COMMAND         %CPU   RSS
+3453644 snapserver       1.5 14832
+=== Pss (KB) from smaps_rollup ===
+pid=3453644 comm=snapserver pss_kb=6535
+=== per-core load (mpstat 1 2 if present) ===
+0.34 0.36 0.33 1/278 3454321
+=== meminfo ===
+MemTotal:        2059008 kB
+MemAvailable:    1121984 kB

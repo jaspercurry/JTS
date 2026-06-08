@@ -1,0 +1,28 @@
+{
+  "buffer_ms": 800,
+  "codec": "flac",
+  "mode": "software",
+  "polls": 20,
+  "n_clients": 2,
+  "per_client": {
+    "2c:cf:67:ad:ac:7f": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "n": 20
+    },
+    "88:a2:9e:2a:ba:cc": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "n": 20
+    }
+  },
+  "inter_client_spread_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0,
+    "n": 20
+  },
+  "note": "software-mode reported latency is a NECESSARY-not-SUFFICIENT proxy; confirm with acoustic mode before trusting a PASS."
+}
