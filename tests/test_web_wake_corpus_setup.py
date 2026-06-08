@@ -71,6 +71,10 @@ def test_render_leaves_no_template_placeholders() -> None:
         "{nav_back_css}", "{nav_back_html}", "{dialog_helpers_js}",
         "{aec3_sweep_js_labels}", "{aec3_sweep_js_order}",
         "{usb_aec3_corpus_label}", "{usb_aec3_sweep_baseline_label}",
+        "{capture_options}",
+        "{toggle_chip_aec_profile}", "{toggle_raw_mic_0}",
+        "{toggle_xvf_raw0_dtln}", "{toggle_dtln}",
+        "{toggle_aec3_sweep}", "{toggle_usb_mic}", "{toggle_usb_dtln}",
     ):
         assert stale not in html_text, stale
 
@@ -102,6 +106,18 @@ def test_render_preserves_recorder_body_ids() -> None:
     # Condition + distance radios stay selectable.
     for value in ("quiet", "ambient", "music", "near", "mid", "far"):
         assert f'value="{value}"' in html_text, value
+
+
+def test_render_uses_canonical_toggles_for_capture_options() -> None:
+    html_text = wc._render_index_html("t")
+    assert 'class="switch"' not in html_text
+    assert html_text.count('class="toggle"') == 7
+    for el_id in (
+        "include-chip-aec-profile", "include-raw-mic-0",
+        "include-xvf-raw0-dtln", "include-dtln",
+        "include-aec3-sweep", "include-usb-mic", "include-usb-dtln",
+    ):
+        assert f'id="{el_id}" type="checkbox"' in html_text
 
 
 def test_config_island_carries_python_leg_data() -> None:

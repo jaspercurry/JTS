@@ -100,7 +100,7 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
    `usb_dtln`, `ref`, and XVF control legs in the same utterance.
    The 2026-05-29 chip-AEC comparison profile keeps `usb_raw` and
    `usb_webrtc` in the main comparison set; `usb_dtln` remains an
-   optional resource-sensitive checkbox. Keep collecting USB legs in
+   optional resource-sensitive toggle. Keep collecting USB legs in
    the gold corpus, but do not let USB tuning block XVF model training.
 3. **Hardware processing check.** Confirm the USB mic's hardware AGC
    and capture gain state before each test session. Record the state in
@@ -128,7 +128,7 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
 - Do not promote waveform-mixed USB outputs without hard-negative
   validation; the first mix result is interesting but not decisive.
 
-Last verified: 2026-06-05 (re-read against the profile-first input
+Last verified: 2026-06-07 (re-read against the profile-first input
 policy: USB legs remain corpus-only; pluggable USB production support
 remains a deliberate Phase 2 follow-up after the XVF profile stabilizes,
-not abandoned work).
+not abandoned work. Wake-corpus USB capture controls are toggles.)

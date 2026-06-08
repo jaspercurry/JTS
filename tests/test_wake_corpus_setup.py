@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -37,10 +38,19 @@ from jasper.web import wake_corpus_setup
 # ---------------------------------------------------------------------------
 
 _ASSETS = Path(__file__).resolve().parents[1] / "deploy" / "assets" / "wake-corpus"
+_NODE = shutil.which("node")
 
 
 def _module_js() -> str:
     return (_ASSETS / "js" / "main.js").read_text()
+
+
+def _controls_js_path() -> Path:
+    return _ASSETS / "js" / "controls.js"
+
+
+def _controls_js() -> str:
+    return _controls_js_path().read_text()
 
 
 def _page_css() -> str:
@@ -2947,49 +2957,50 @@ def test_html_labels_speaker_as_name_not_member() -> None:
     assert '<label for="member">Member:</label>' not in html_text
 
 
-def test_html_has_include_raw_mic_0_checkbox() -> None:
+def test_html_has_include_raw_mic_0_toggle() -> None:
     """Begin-a-new-session form has the raw-mic-0 toggle."""
     html_text = wake_corpus_setup._render_index_html("t")
     assert 'id="include-raw-mic-0"' in html_text
-    assert 'raw mic 0' in html_text
+    assert 'class="toggle"' in html_text
+    assert 'Raw mic 0' in html_text
 
 
-def test_html_has_include_usb_mic_checkbox() -> None:
-    """Begin-a-new-session form has the corpus USB/ref toggle. The checkbox
+def test_html_has_include_usb_mic_toggle() -> None:
+    """Begin-a-new-session form has the corpus USB/ref toggle. The switch
     + label live in the page body; the include_usb_mic payload key lives in
-    the behaviour module."""
+    the capture option module."""
     html_text = wake_corpus_setup._render_index_html("t")
-    module_js = _module_js()
+    controls_js = _controls_js()
     assert 'id="include-usb-mic"' in html_text
     assert 'USB mic + reference' in html_text
-    assert '16 kHz reference' in html_text
+    assert 'Raw USB, AEC3, reference.' in html_text
     assert 'id="usb-mic-note"' not in html_text
-    assert 'include_usb_mic' in module_js
-    assert "$('include-usb-mic').disabled = sessionLoaded;" in module_js
-    assert "|| corpusProfile === 'chip_aec_comparison_v1'" not in module_js
+    assert 'include_usb_mic' in controls_js
+    assert "elements.usbMic.disabled = sessionLoaded;" in controls_js
+    assert "|| corpusProfile === 'chip_aec_comparison_v1'" not in controls_js
 
 
-def test_html_has_dtln_session_checkboxes() -> None:
-    """Begin-a-new-session form exposes XVF and USB DTLN toggles. Checkboxes
+def test_html_has_dtln_session_toggles() -> None:
+    """Begin-a-new-session form exposes XVF and USB DTLN toggles. Switches
     in the body, payload keys in the module."""
     html_text = wake_corpus_setup._render_index_html("t")
     assert 'id="include-dtln"' in html_text
     assert 'id="include-usb-dtln"' in html_text
     assert 'USB DTLN' in html_text
-    js = _module_js()
+    js = _controls_js()
     assert 'include_dtln' in js
     assert 'include_usb_dtln' in js
 
 
-def test_html_has_aec3_sweep_checkbox() -> None:
+def test_html_has_aec3_sweep_toggle() -> None:
     """Begin-a-new-session form exposes the bounded AEC3 sweep mode. The
-    checkbox is in the body; the sweep variant legs + labels ride in the
-    JSON config island (so they're in the rendered page) and the
+    toggle is in the body; the sweep variant legs + labels ride in the JSON
+    config island (so they're in the rendered page) and the
     include_aec3_sweep payload key is in the module."""
     html_text = wake_corpus_setup._render_index_html("t")
     assert 'id="include-aec3-sweep"' in html_text
     assert "AEC3 sweep" in html_text
-    assert "include_aec3_sweep" in _module_js()
+    assert "include_aec3_sweep" in _controls_js()
     for variant in wake_corpus_setup.AEC3_SWEEP_VARIANTS:
         # Both leg + label are serialized into the wake-corpus-config island.
         assert variant.leg in html_text
@@ -3009,7 +3020,7 @@ def test_html_has_capture_plan_preview() -> None:
 
 def test_html_test_mode_button_follows_capture_leg_choices() -> None:
     """The operator chooses capture legs before entering test mode. The leg
-    checkboxes + Begin button live in the body; the corpus-test-mode call
+    toggles + Begin button live in the body; the corpus-test-mode call
     lives in the module."""
     html_text = wake_corpus_setup._render_index_html("t")
     button_idx = html_text.index('id="session-begin"')
@@ -3021,6 +3032,143 @@ def test_html_test_mode_button_follows_capture_leg_choices() -> None:
     assert "voice-toggle" not in html_text
     assert "bridge-output-disable" not in html_text
     assert "api/corpus-test-mode" in _module_js()
+
+
+def test_capture_option_controls_enforce_chip_profile_rules() -> None:
+    if _NODE is None:
+        pytest.skip("node is required for the wake-corpus controls harness")
+
+    harness = f"""
+        import {{
+          currentSessionPayload,
+          syncCorpusProfileControls,
+        }} from {json.dumps(_controls_js_path().as_uri())};
+
+        function input({{ checked = false, value = '', row = null }} = {{}}) {{
+          return {{
+            checked,
+            value,
+            disabled: false,
+            closest(selector) {{
+              if (selector !== '.capture-option') throw new Error(selector);
+              return row;
+            }},
+          }};
+        }}
+        function row() {{
+          return {{ hidden: false }};
+        }}
+
+        const chipRows = {{
+          raw: row(),
+          dtln: row(),
+          sweep: row(),
+        }};
+        const chip = {{
+          member: input({{ value: ' jasper ' }}),
+          chipProfile: input({{ checked: true }}),
+          rawMic0: input({{ checked: false, row: chipRows.raw }}),
+          dtln: input({{ checked: true, row: chipRows.dtln }}),
+          xvfRaw0Dtln: input({{ checked: true }}),
+          aec3Sweep: input({{ checked: true, row: chipRows.sweep }}),
+          usbMic: input({{ checked: false }}),
+          usbDtln: input({{ checked: false }}),
+        }};
+        syncCorpusProfileControls(chip, false);
+        const chipPayload = currentSessionPayload(chip);
+
+        const standardRows = {{
+          raw: row(),
+          dtln: row(),
+          sweep: row(),
+        }};
+        const standard = {{
+          member: input({{ value: ' test ' }}),
+          chipProfile: input({{ checked: false }}),
+          rawMic0: input({{ checked: false, row: standardRows.raw }}),
+          dtln: input({{ checked: true, row: standardRows.dtln }}),
+          xvfRaw0Dtln: input({{ checked: false }}),
+          aec3Sweep: input({{ checked: true, row: standardRows.sweep }}),
+          usbMic: input({{ checked: false }}),
+          usbDtln: input({{ checked: true }}),
+        }};
+        syncCorpusProfileControls(standard, false);
+        const standardPayload = currentSessionPayload(standard);
+
+        console.log(JSON.stringify({{
+          chip: {{
+            rawChecked: chip.rawMic0.checked,
+            dtlnChecked: chip.dtln.checked,
+            sweepChecked: chip.aec3Sweep.checked,
+            rawHidden: chipRows.raw.hidden,
+            dtlnHidden: chipRows.dtln.hidden,
+            sweepHidden: chipRows.sweep.hidden,
+            rawDisabled: chip.rawMic0.disabled,
+            dtlnDisabled: chip.dtln.disabled,
+            sweepDisabled: chip.aec3Sweep.disabled,
+            usbDisabled: chip.usbMic.disabled,
+            payload: chipPayload,
+          }},
+          standard: {{
+            rawHidden: standardRows.raw.hidden,
+            dtlnHidden: standardRows.dtln.hidden,
+            sweepHidden: standardRows.sweep.hidden,
+            rawDisabled: standard.rawMic0.disabled,
+            dtlnDisabled: standard.dtln.disabled,
+            sweepDisabled: standard.aec3Sweep.disabled,
+            payload: standardPayload,
+          }},
+        }}));
+    """
+    proc = subprocess.run(
+        [_NODE, "--input-type=module"],
+        input=harness,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert out["chip"]["rawChecked"] is True
+    assert out["chip"]["dtlnChecked"] is False
+    assert out["chip"]["sweepChecked"] is False
+    assert out["chip"]["rawHidden"] is True
+    assert out["chip"]["dtlnHidden"] is True
+    assert out["chip"]["sweepHidden"] is True
+    assert out["chip"]["rawDisabled"] is True
+    assert out["chip"]["dtlnDisabled"] is True
+    assert out["chip"]["sweepDisabled"] is True
+    assert out["chip"]["usbDisabled"] is False
+    assert out["chip"]["payload"] == {
+        "member": "jasper",
+        "corpus_profile": "chip_aec_comparison_v1",
+        "include_raw_mic_0": True,
+        "include_dtln": False,
+        "include_usb_mic": False,
+        "include_usb_dtln": False,
+        "include_xvf_raw0_dtln": True,
+        "include_aec3_sweep": False,
+        "aec3_sweep_source": "xvf",
+    }
+
+    assert out["standard"]["rawHidden"] is False
+    assert out["standard"]["dtlnHidden"] is False
+    assert out["standard"]["sweepHidden"] is False
+    assert out["standard"]["rawDisabled"] is False
+    assert out["standard"]["dtlnDisabled"] is False
+    assert out["standard"]["sweepDisabled"] is False
+    assert out["standard"]["payload"] == {
+        "member": "test",
+        "corpus_profile": "standard",
+        "include_raw_mic_0": False,
+        "include_dtln": True,
+        "include_usb_mic": True,
+        "include_usb_dtln": True,
+        "include_xvf_raw0_dtln": False,
+        "include_aec3_sweep": True,
+        "aec3_sweep_source": "usb",
+    }
 
 
 def test_html_loaded_session_enters_test_mode_without_new_session() -> None:

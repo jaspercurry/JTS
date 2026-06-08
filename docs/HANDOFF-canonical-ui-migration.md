@@ -212,7 +212,7 @@ at your request.
    - `/bluetooth/` — scan → pair → connect → forget.
    - `/correction/` — load over **HTTPS** (`https://jts.local/correction/`),
      mic level meter moves (getUserMedia), a measurement sweep runs.
-   - `/wake-corpus/` — "Begin a session" incl. "Also capture raw mic 0".
+   - `/wake-corpus/` — "Begin a session" with capture-option toggles.
    - `/dial/`, `/voice/`, `/sources/`, `/wake/` — provision, provider
      save, source toggles, sensitivity slider.
    - `sudo /opt/jasper/.venv/bin/jasper-doctor` — confirm
@@ -253,5 +253,6 @@ plus `deploy/assets/shared/js/http.js`.
 
 ---
 
-Last verified: 2026-06-02 (historical snapshot only; current
-operational truth lives in `docs/HANDOFF-management-ui.md`).
+Last verified: 2026-06-07 (historical snapshot only; current
+operational truth lives in `docs/HANDOFF-management-ui.md`; wake-corpus
+smoke wording rechecked after canonical toggle cleanup).
