@@ -2895,11 +2895,18 @@ install_systemd_units() {
     # Restart it after fan-in/asound wiring changes so it cannot keep
     # an old capture fd across topology updates.
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
-    # outputd owns the final DAC loop on current main. This is mandatory:
-    # if outputd is not active and answering STATUS, the voice daemon's
-    # outputd TTS socket would point at a silent path. Fail the install
-    # before the AEC reconciler restarts voice into a broken output path.
-    require_outputd_ready
+    # outputd owns the final DAC loop on current main. If it is not active
+    # and answering STATUS, the voice daemon's outputd TTS socket points at a
+    # silent path. Surface that LOUDLY, but do NOT abort the install: nginx,
+    # TLS, cues, and the doctor summary are the operator's recovery surface
+    # and must always be set up. A transient 3 s STATUS-probe miss or a slow
+    # service settle on a loaded 1 GB Pi must not strand the box with no web
+    # UI to diagnose it through. The systemd Wants=/After=jasper-outputd
+    # dependency is the real runtime guard, and run_doctor_summary re-checks
+    # outputd (check_outputd_service) at the end of the install. Mirrors the
+    # non-fatal jasper-audio-hardware-reconcile handling a few lines above.
+    require_outputd_ready || \
+        echo "  WARN: jasper-outputd is not ready (see the STATUS-probe error above). Voice TTS may be silent until outputd recovers; check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing install so the web UI and doctor remain available."
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service
