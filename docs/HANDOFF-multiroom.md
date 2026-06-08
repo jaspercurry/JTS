@@ -35,6 +35,17 @@ yet** and the gating spike has not been run. What exists:
 - **`jasper/multiroom/state.py`** — `read_grouping_state()`, fresh-read
   (never `os.environ`); wired into `jasper-control` `/state.grouping`
   (fail-soft).
+- **`jasper/multiroom/channel_split.py`** — pure channel-split DSP
+  fragment generator (P1.2). `build_channel_split(channel)` emits the
+  CamillaDSP `channel_select` Mixer (left/right route; mono/sub L+R sum
+  at a clip-safe −6.02 dB so identical L==R hits exactly 0 dBFS) and,
+  for `sub`, an LR4 (two cascaded Butterworth) 80 Hz lowpass crossover.
+  Host-agnostic recipe: the same fragment runs *locally* on a brainy
+  stereo-pair member or *on the leader* to pre-bake a dumb endpoint's
+  stream (§4). Never names `master_gain` (preserves the Ducker's
+  identity-mixer contract) and emits no positive gain — every generated
+  mixer holds the signal ≤ 0 dBFS under `volume_limit: 0.0`. Pure /
+  hardware-free; live weaving into the active config is P1.3.
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -80,11 +91,13 @@ yet** and the gating spike has not been run. What exists:
   wake-arb, with full consolidation flagged as a follow-up. See §8 "Friendly
   names + identity".
 
-Not yet built (P1+, post-spike): the `BondedSet` entity, channel-split
-+ leader-side LFE crossover, satellite calibration, the **bond-forming
-controls on `/rooms/`** (role/leader/channel assignment, stereo-pair /
-2.1 / sub setup), the `jasper-outputd` snapfifo reference consumer, and
-live validation of the snapcast process lifecycle.
+Not yet built (P1+, post-spike): the `BondedSet` entity, **live weaving
+of the channel-split fragment into the active CamillaDSP config** (P1.3;
+the pure generator landed — `channel_split.py` above), satellite
+calibration, the **bond-forming controls on `/rooms/`** (role/leader/
+channel assignment, stereo-pair / 2.1 / sub setup), the `jasper-outputd`
+snapfifo reference consumer, and live validation of the snapcast process
+lifecycle.
 
 ---
 
@@ -306,6 +319,18 @@ possible, co-located with the physical speaker that plays them.**
 - **Inter-speaker time alignment** is Snapcast's job
   (`Client.SetLatency`), not correction's. Correction flattens each
   side's magnitude at its seat.
+
+**P1.2 (2026-06-08):** the channel-split DSP itself is now codified,
+pure and tested, in
+[`jasper/multiroom/channel_split.py`](../jasper/multiroom/channel_split.py)
+— the `channel_select` Mixer (an L/R route, or a clip-safe −6.02 dB L+R
+sum for mono/sub) plus the sub's LR4 80 Hz lowpass. It is the *same*
+recipe whether a brainy stereo-pair member applies it locally or the
+leader applies it to pre-bake a dumb endpoint's stream (the dumb box
+runs no CamillaDSP, §1). It keeps `master_gain` identity (the Ducker
+contract) and `volume_limit: 0.0`, and emits no positive gain. Deferred
+to P1.3: weaving it into the live config (the `target_channels` /
+per-side-config path noted above) and validating the sound on hardware.
 
 ---
 
@@ -683,7 +708,13 @@ resolving):
 
 ---
 
-Last verified: 2026-06-08 (combined `/rooms` "Speakers" surface: the
+Last verified: 2026-06-08 (P1.2 channel-split:
+`jasper/multiroom/channel_split.py` emits the pure, host-agnostic
+`channel_select` Mixer + sub LR4 80 Hz crossover fragment — clip-safe
+−6.02 dB L+R sum, `master_gain` left identity for the Ducker, no
+positive gain; 51 hardware-free tests incl. a weave into the real
+`outputd-cutover.yml`; §0/§4 updated; live weaving deferred to P1.3.
+Earlier 2026-06-08: combined `/rooms` "Speakers" surface: the
 wake-response (peering) toggle + Primary checkbox folded out of the old
 `/peers/` page into `/rooms`, which is now canonical; `/peers/`
 301-redirects there (`deploy/nginx-jasper.conf`). `rooms_setup` **reuses**
