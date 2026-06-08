@@ -43,7 +43,7 @@ import re
 import subprocess
 from typing import Optional
 
-import httpx
+from jasper.control.client import AsyncControlClient, ControlError
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,11 @@ class VolumeBridge:
         # work but None is clearer for "no observation yet".
         self._last_published_pct: Optional[int] = None
 
-        self._http: Optional[httpx.AsyncClient] = None
+        # Bound once `run()` clears mixer discovery (mirrors where the old
+        # httpx client was opened). None means the bridge never started —
+        # `_post` no-ops in that disabled state. The client carries no
+        # connection pool, so there's nothing to close on shutdown.
+        self._control: Optional[AsyncControlClient] = None
 
     async def run(self) -> None:
         """Discover the gadget mixer's numids + range, then poll for
@@ -142,32 +146,33 @@ class VolumeBridge:
             # init.service level is broken and that's where to fix it.
             return
 
-        async with httpx.AsyncClient(timeout=self._http_timeout) as client:
-            self._http = client
-            logger.info(
-                "event=usbsink.volume_bridge_started "
-                "card=%s vol_numid=%d switch_numid=%d range=%d..%d",
-                self._card_name, self._vol_numid, self._switch_numid,
-                self._vol_min, self._vol_max,
-            )
-            try:
-                while True:
-                    await asyncio.sleep(self._poll_interval)
-                    try:
-                        await self._tick()
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:  # noqa: BLE001
-                        # One bad poll shouldn't kill the loop — log
-                        # and continue. Persistent failures get caught
-                        # by the daemon's diagnostic log.
-                        logger.debug(
-                            "event=usbsink.volume_tick_error error=%s",
-                            e,
-                        )
-            except asyncio.CancelledError:
-                logger.info("event=usbsink.volume_bridge_stopping")
-                raise
+        self._control = AsyncControlClient(
+            self._control_url, timeout=self._http_timeout,
+        )
+        logger.info(
+            "event=usbsink.volume_bridge_started "
+            "card=%s vol_numid=%d switch_numid=%d range=%d..%d",
+            self._card_name, self._vol_numid, self._switch_numid,
+            self._vol_min, self._vol_max,
+        )
+        try:
+            while True:
+                await asyncio.sleep(self._poll_interval)
+                try:
+                    await self._tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    # One bad poll shouldn't kill the loop — log
+                    # and continue. Persistent failures get caught
+                    # by the daemon's diagnostic log.
+                    logger.debug(
+                        "event=usbsink.volume_tick_error error=%s",
+                        e,
+                    )
+        except asyncio.CancelledError:
+            logger.info("event=usbsink.volume_bridge_stopping")
+            raise
 
     # ------------------------------------------------------------------
     # Discovery: find numids + range
@@ -281,23 +286,20 @@ class VolumeBridge:
     # ------------------------------------------------------------------
 
     async def _post(self, pct: int) -> None:
-        if self._http is None:
+        if self._control is None:
             return
-        url = f"{self._control_url}/volume/set"
         try:
-            resp = await self._http.post(
-                url, json={"percent": pct, "source": "usbsink"},
-            )
-        except httpx.HTTPError as e:
+            resp = await self._control.set_volume(pct, source="usbsink")
+        except ControlError as e:
             logger.warning(
                 "event=usbsink.volume_post_failed pct=%d error=%s",
                 pct, e,
             )
             return
-        if resp.status_code != 200:
+        if not resp.ok:
             logger.warning(
                 "event=usbsink.volume_post_bad_status pct=%d status=%d",
-                pct, resp.status_code,
+                pct, resp.status,
             )
             return
         logger.info(

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import urllib.parse
 
@@ -159,34 +158,12 @@ def _cmd_play(args) -> int:
         print(f"error: unknown cue slug: {args.slug!r}", file=sys.stderr)
         return 2
 
-    import json as _json
-    import urllib.error
-    import urllib.request
+    from ..control import client as control
 
-    host = os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CONTROL_PORT", "8780"))
-    url = f"http://{host}:{port}/cue/play"
-    body = _json.dumps({"slug": args.slug}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    url = f"{control.DEFAULT_BASE_URL}/cue/play"
     try:
-        with urllib.request.urlopen(req, timeout=35) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try:
-            data = _json.loads(e.read().decode("utf-8"))
-        except Exception:  # noqa: BLE001
-            data = {"error": str(e)}
-        print(
-            f"play request returned HTTP {e.code}: {data}",
-            file=sys.stderr,
-        )
-        return 1
-    except (urllib.error.URLError, ConnectionError) as e:
+        resp = control.post("/cue/play", {"slug": args.slug}, timeout=35)
+    except control.ControlError as e:
         print(
             f"could not reach jasper-control at {url}: {e}\n"
             f"is jasper-control running? "
@@ -194,7 +171,18 @@ def _cmd_play(args) -> int:
             file=sys.stderr,
         )
         return 1
-    if data.get("result") != "ok":
+    if not resp.ok:
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {"error": f"HTTP {resp.status}"}
+        print(
+            f"play request returned HTTP {resp.status}: {data}",
+            file=sys.stderr,
+        )
+        return 1
+    data = resp.json()
+    if not isinstance(data, dict) or data.get("result") != "ok":
         print(f"play failed: {data}", file=sys.stderr)
         return 1
     print(f"played {args.slug}")

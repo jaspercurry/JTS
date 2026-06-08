@@ -3,9 +3,9 @@
 We exercise `_TapCounter` directly with a fake async poster so the test
 runs in milliseconds (real-time `asyncio.sleep` calls aside, which we
 trim by giving the action a small window_ms). No real network, no httpx
-— the bridge now posts to jasper-control via stdlib http.client, and the
-unit under test only depends on the poster callable's contract:
-`async post(method, path, body) -> status`.
+— the bridge now posts to jasper-control via the typed control client, and
+the unit under test only depends on the poster callable's contract:
+`async post(method, path, body) -> ControlResponse`.
 
 The shape of `_TapCounter` matters: the bridge daemon depends on it
 to translate every VK-01 click into the right transport action, and
@@ -21,6 +21,7 @@ import pytest
 
 from jasper.accessories.bridge import _TapCounter
 from jasper.accessories.registry import KeyAction, TapAction
+from jasper.control.client import ControlError, ControlResponse
 
 
 # Window short enough that tests finish quickly but long enough that
@@ -32,9 +33,9 @@ WINDOW_SEC = WINDOW_MS / 1000.0
 def _recording_poster(calls: List[str]):
     """A poster that records every request's path into `calls`."""
 
-    async def post(method: str, path: str, body: Optional[dict]) -> int:
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
         calls.append(path)
-        return 200
+        return ControlResponse(200, b"")
 
     return post
 
@@ -178,21 +179,21 @@ async def test_unmapped_tap_count_is_silent():
 
 @pytest.mark.asyncio
 async def test_http_error_does_not_break_subsequent_taps():
-    """If one dispatch fails (jasper-control down → ConnectionRefusedError,
-    an OSError), the counter must keep working for later taps. We've been
-    bitten by "one failure poisons the supervisor" in async code before."""
+    """If one dispatch fails (jasper-control down → ControlError), the
+    counter must keep working for later taps. We've been bitten by "one
+    failure poisons the supervisor" in async code before."""
     calls: List[str] = []
     state = {"fail_next": True}
 
-    async def post(method: str, path: str, body: Optional[dict]) -> int:
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
         calls.append(path)
         if state["fail_next"]:
             state["fail_next"] = False
-            # jasper-control is down: stdlib http.client raises this when
-            # the localhost connect is refused. The bridge catches it via
-            # _POST_ERRORS (OSError). Must not crash the reader task.
-            raise ConnectionRefusedError("simulated: jasper-control down")
-        return 200
+            # jasper-control is down: the control client raises ControlError
+            # when the localhost connect is refused. The bridge catches it
+            # via `except ControlError`. Must not crash the reader task.
+            raise ControlError("simulated: jasper-control down")
+        return ControlResponse(200, b"")
 
     action = TapAction(
         on_single=KeyAction("POST", "/transport/toggle", {}),

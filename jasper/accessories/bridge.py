@@ -19,11 +19,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import http.client
-import json as _json
 import logging
 from typing import Awaitable, Callable, Optional
-from urllib.parse import urlsplit
+
+from jasper.control.client import AsyncControlClient, ControlError, ControlResponse
 
 # pyudev is Linux-only (Pi runtime). Imported lazily inside _supervise
 # so the rest of the module (registry types, _TapCounter, _Coalescer)
@@ -48,58 +47,8 @@ DEFAULT_CONTROL_URL = "http://127.0.0.1:8780"
 COALESCE_WINDOW_SEC = 0.08
 
 
-# Async poster signature: (method, path, body-dict-or-None) -> HTTP status.
-Poster = Callable[[str, str, Optional[dict]], Awaitable[int]]
-
-
-def _make_localhost_poster(control_url: str, *, timeout: float = 2.0) -> Poster:
-    """Build an async poster that does one blocking stdlib HTTP round-trip
-    per call against `control_url` (localhost, http only).
-
-    Replaces httpx.AsyncClient: jasper-control is always on localhost with
-    no TLS, so httpx's connection pooling / HTTP2 / TLS machinery is pure
-    RAM tax (~13 MB Pss on jasper-input). A localhost TCP connect is
-    microseconds, so no pooling is needed — each call opens a fresh
-    HTTPConnection and closes it in `finally`, keeping the file-descriptor
-    count flat regardless of outcome (success, HTTP error, refused, timeout).
-
-    The blocking request runs in `asyncio.to_thread` so the bridge event
-    loop stays responsive (~50 us thread-handoff cost, invisible at the
-    bridge's max ~12 calls/sec after coalescing). Caveat: a to_thread call
-    cannot be cancelled mid-flight, so if a reader task is cancelled while
-    a request is blocked, the worker thread runs until the socket `timeout`
-    (2 s) expires — bounded and only on shutdown.
-    """
-    parts = urlsplit(control_url)
-    host = parts.hostname or "127.0.0.1"
-    port = parts.port or 80
-
-    def _request(method: str, path: str, body: Optional[dict]) -> int:
-        conn = http.client.HTTPConnection(host, port, timeout=timeout)
-        try:
-            payload = _json.dumps(body).encode() if body is not None else None
-            headers = (
-                {"Content-Type": "application/json"} if payload is not None else {}
-            )
-            conn.request(method, path, body=payload, headers=headers)
-            resp = conn.getresponse()
-            resp.read()  # drain so the socket can close cleanly
-            return resp.status
-        finally:
-            conn.close()
-
-    async def post(method: str, path: str, body: Optional[dict]) -> int:
-        return await asyncio.to_thread(_request, method, path, body)
-
-    return post
-
-
-# Network/protocol errors the poster can raise. OSError covers
-# ConnectionRefusedError (jasper-control down) and no-route; TimeoutError
-# fires on socket timeout; HTTPException covers protocol oddities. Catching
-# all three keeps a transient jasper-control restart from crashing a
-# reader task.
-_POST_ERRORS = (OSError, TimeoutError, http.client.HTTPException)
+# Async poster signature: (method, path, body-dict-or-None) -> ControlResponse.
+Poster = Callable[[str, str, Optional[dict]], Awaitable[ControlResponse]]
 
 
 class _Coalescer:
@@ -137,14 +86,14 @@ class _Coalescer:
         delta = self._pending
         self._pending = 0
         try:
-            status = await self._post(
+            resp = await self._post(
                 "POST", self._path, {"delta_percent": delta},
             )
             logger.info(
                 "event=knob.adjust device=%s delta=%+d status=%d",
-                self._device_name, delta, status,
+                self._device_name, delta, resp.status,
             )
-        except _POST_ERRORS as e:
+        except ControlError as e:
             logger.warning(
                 "event=knob.adjust.failed device=%s delta=%+d err=%s",
                 self._device_name, delta, e,
@@ -159,16 +108,16 @@ async def _post_once(
 ) -> None:
     """Fire-once HTTP call for a non-coalescing key (mute, etc.)."""
     try:
-        status = await post(
+        resp = await post(
             action.method,
             action.path,
             action.body or None,
         )
         logger.info(
             "event=knob.action device=%s key=%s path=%s status=%d",
-            device_name, key_name, action.path, status,
+            device_name, key_name, action.path, resp.status,
         )
-    except _POST_ERRORS as e:
+    except ControlError as e:
         logger.warning(
             "event=knob.action.failed device=%s key=%s err=%s",
             device_name, key_name, e,
@@ -259,7 +208,7 @@ class _TapCounter:
             )
             return
         try:
-            status = await self._post(
+            resp = await self._post(
                 target.method,
                 target.path,
                 target.body or None,
@@ -267,9 +216,9 @@ class _TapCounter:
             logger.info(
                 "event=knob.tap device=%s key=%s count=%d path=%s status=%d",
                 self._device_name, self._key_name, count, target.path,
-                status,
+                resp.status,
             )
-        except _POST_ERRORS as e:
+        except ControlError as e:
             logger.warning(
                 "event=knob.tap.failed device=%s key=%s count=%d path=%s err=%s",
                 self._device_name, self._key_name, count, target.path, e,
@@ -374,7 +323,7 @@ async def _supervise(control_url: str) -> None:
     monitor.filter_by("input")
 
     active: dict[str, asyncio.Task] = {}
-    post = _make_localhost_poster(control_url)
+    post = AsyncControlClient(control_url).request
 
     def _maybe_start(path: str) -> None:
         try:

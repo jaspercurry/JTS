@@ -138,59 +138,62 @@ def test_play_unknown_slug_returns_2(cli_env, capsys):
     assert "unknown" in captured.err.lower()
 
 
-class _FakeResponse:
-    """Minimal context-manager stand-in for urllib's HTTP response."""
-
-    def __init__(self, payload: bytes) -> None:
-        self._payload = payload
-
-    def read(self) -> bytes:
-        return self._payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-
 def test_play_valid_slug_routes_to_control_endpoint(cli_env, capsys):
-    """Happy path: a valid slug must POST to jasper-control and report
-    success — exercising the code past find_cue() that used to raise
-    NameError on the undefined `_env`. Mocks the HTTP POST so no
-    network is touched."""
-    captured_url = {}
+    """Happy path: a valid slug must POST to jasper-control's /cue/play
+    and report success — exercising the code past find_cue() that used
+    to raise NameError on the undefined `_env`. Mocks the typed control
+    client's POST so no network is touched."""
+    from jasper.control import client as control
 
-    def _fake_urlopen(req, timeout=None):
-        captured_url["url"] = req.full_url
-        captured_url["data"] = req.data
-        return _FakeResponse(b'{"result": "ok"}')
+    captured = {}
 
-    with patch("urllib.request.urlopen", _fake_urlopen):
+    def _fake_post(path, body=None, *, timeout=None, **kw):
+        captured["path"] = path
+        captured["body"] = body
+        captured["timeout"] = timeout
+        return control.ControlResponse(200, b'{"result": "ok"}')
+
+    with patch.object(control, "post", _fake_post):
         code = cli.main(["play", "cant_connect"])
 
     assert code == 0
     out = capsys.readouterr().out
     assert "played cant_connect" in out
-    # Default control host/port came from os.environ.get fallbacks.
-    assert captured_url["url"] == "http://127.0.0.1:8780/cue/play"
-    assert b"cant_connect" in captured_url["data"]
+    assert captured["path"] == "/cue/play"
+    assert captured["body"] == {"slug": "cant_connect"}
+    # The play call uses the cue endpoint's generous 35 s timeout.
+    assert captured["timeout"] == 35
 
 
-def test_play_valid_slug_honors_control_env_overrides(cli_env, monkeypatch):
-    """The os.environ.get fallbacks are overridable — confirms the
-    env lookups (formerly the broken `_env` calls) read the live
-    environment."""
-    monkeypatch.setenv("JASPER_CONTROL_HOST", "10.0.0.5")
-    monkeypatch.setenv("JASPER_CONTROL_PORT", "9999")
-    captured_url = {}
+def test_play_reports_failure_on_non_ok_result(cli_env, capsys):
+    """If jasper-control answers but the body's result isn't 'ok', the
+    CLI reports failure and exits non-zero (the `result == 'ok'` check
+    survived the migration to the typed client)."""
+    from jasper.control import client as control
 
-    def _fake_urlopen(req, timeout=None):
-        captured_url["url"] = req.full_url
-        return _FakeResponse(b'{"result": "ok"}')
+    def _fake_post(path, body=None, *, timeout=None, **kw):
+        return control.ControlResponse(200, b'{"result": "error"}')
 
-    with patch("urllib.request.urlopen", _fake_urlopen):
+    with patch.object(control, "post", _fake_post):
         code = cli.main(["play", "cant_connect"])
 
-    assert code == 0
-    assert captured_url["url"] == "http://10.0.0.5:9999/cue/play"
+    assert code == 1
+    assert "play failed" in capsys.readouterr().err
+
+
+def test_play_reports_unreachable_on_control_error(cli_env, capsys):
+    """When jasper-control is down the client raises ControlError; the
+    CLI surfaces the 'could not reach jasper-control' guidance and exits
+    non-zero rather than crashing."""
+    from jasper.control import client as control
+
+    def _fake_post(path, body=None, *, timeout=None, **kw):
+        raise control.ControlError("connection refused")
+
+    with patch.object(control, "post", _fake_post):
+        code = cli.main(["play", "cant_connect"])
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "could not reach jasper-control" in err
+    assert "/cue/play" in err

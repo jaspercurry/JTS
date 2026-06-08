@@ -2029,14 +2029,10 @@ def _voice_wake_legs_runtime() -> "set[str] | None":
     None when jasper-control is unreachable or the field is absent (older
     daemon / voice down) — callers treat None as "can't tell", not "no
     legs", and fall back to reporting configured intent."""
-    import urllib.error
-    import urllib.request
+    from ..control import client as control
     try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:8780/state", timeout=2,
-        ) as r:
-            state = json.loads(r.read())
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        state = control.get_state(timeout=2)
+    except (control.ControlError, ValueError):
         return None
     voice = state.get("voice")
     if not isinstance(voice, dict):
@@ -3525,9 +3521,9 @@ def probe_aec_ref_path() -> list[CheckResult]:
     import datetime
     import math
     import struct
-    import urllib.error
-    import urllib.request
     import wave
+
+    from ..control import client as control
 
     results: list[CheckResult] = []
 
@@ -3550,10 +3546,7 @@ def probe_aec_ref_path() -> list[CheckResult]:
     # but it still emerges from the speaker and would mix with active
     # music for 5 s.
     try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:8780/state", timeout=3,
-        ) as r:
-            state = json.loads(r.read())
+        state = control.get_state(timeout=3)
         active = state.get("active_source", "idle")
         # "voice" is fine — voice TTS goes to jasper_out, not the
         # loopback. "spotify" / "airplay" would compete with us.
@@ -3576,7 +3569,7 @@ def probe_aec_ref_path() -> list[CheckResult]:
             "probe — renderers idle", "ok",
             f"active_source={active!r}",
         ))
-    except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+    except (control.ControlError, json.JSONDecodeError) as e:
         # correction_substream is a private fan-in input, so aplay won't
         # necessarily get EBUSY just because AirPlay/Spotify is active.
         # If /state is down, fall back to /proc/asound ownership before
@@ -5729,14 +5722,11 @@ def check_dial_heartbeat() -> CheckResult:
     idle dial is indistinguishable from an offline one. We can only
     flag "never seen since the daemon started"; an old age is expected
     and not a warning."""
-    import urllib.request
+    from ..control import client as control
     label = "dial activity"
     try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:8780/dial/status", timeout=3,
-        ) as r:
-            data = json.loads(r.read())
-    except Exception as e:  # noqa: BLE001
+        data = control.get_dial_status(timeout=3)
+    except (control.ControlError, ValueError) as e:
         return CheckResult(
             label, "warn",
             f"jasper-control /dial/status unreachable: {e}. "
