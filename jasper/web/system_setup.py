@@ -46,7 +46,7 @@ from ._common import (
     reject_csrf,
     send_html_response,
     send_proxy_json,
-    verify_csrf,
+    guard_mutating_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ def _make_handler(
             if path not in POST_ROUTES:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if not verify_csrf(self):
+            if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
             body = None

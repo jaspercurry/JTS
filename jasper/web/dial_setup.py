@@ -44,7 +44,7 @@ from ._common import (
     canonical_page,
     reject_csrf,
     send_html_response,
-    verify_csrf,
+    guard_mutating_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -412,7 +412,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/onboard":
-                if not verify_csrf(self):
+                if not guard_mutating_request(self):
                     reject_csrf(self)
                     return
                 body = self._read_json()

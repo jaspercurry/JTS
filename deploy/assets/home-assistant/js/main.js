@@ -40,7 +40,7 @@ function setLoading(el, label) {
 async function postForm(path) {
   // Mutating-but-bodyless POSTs (./discover, ./ready, ./verify,
   // ./credentials-for-copy). csrfHeaders() adds X-CSRF-Token from the meta
-  // tag; the server's verify_csrf() accepts the header like a form field.
+  // tag; the server's guard_mutating_request() accepts the header like a form field.
   return fetch(path, { method: "POST", headers: csrfHeaders({}) });
 }
 

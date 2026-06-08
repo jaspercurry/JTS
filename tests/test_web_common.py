@@ -182,38 +182,38 @@ def test_begin_request_loads_flash_into_context():
     assert ctx["_flash_set"] is True
 
 
-def test_verify_csrf_returns_true_for_matching_pair():
+def test_guard_mutating_request_returns_true_for_matching_pair():
     token = "a" * 64
     h = _FakeHandler(cookies=f"jts_csrf={token}")
-    assert _common.verify_csrf(h, {_common.CSRF_FORM_FIELD: token}) is True
+    assert _common.guard_mutating_request(h, {_common.CSRF_FORM_FIELD: token}) is True
 
 
-def test_verify_csrf_returns_false_for_mismatch():
+def test_guard_mutating_request_returns_false_for_mismatch():
     token_a = "a" * 64
     token_b = "b" * 64
     h = _FakeHandler(cookies=f"jts_csrf={token_a}")
-    assert _common.verify_csrf(h, {_common.CSRF_FORM_FIELD: token_b}) is False
+    assert _common.guard_mutating_request(h, {_common.CSRF_FORM_FIELD: token_b}) is False
 
 
-def test_verify_csrf_returns_false_when_cookie_missing():
+def test_guard_mutating_request_returns_false_when_cookie_missing():
     h = _FakeHandler()
-    assert _common.verify_csrf(h, {_common.CSRF_FORM_FIELD: "a" * 64}) is False
+    assert _common.guard_mutating_request(h, {_common.CSRF_FORM_FIELD: "a" * 64}) is False
 
 
-def test_verify_csrf_returns_false_when_form_field_missing():
+def test_guard_mutating_request_returns_false_when_form_field_missing():
     token = "a" * 64
     h = _FakeHandler(cookies=f"jts_csrf={token}")
-    assert _common.verify_csrf(h, {}) is False
+    assert _common.guard_mutating_request(h, {}) is False
 
 
-def test_verify_csrf_returns_false_when_both_invalid():
+def test_guard_mutating_request_returns_false_when_both_invalid():
     # Two short strings happen to compare_digest-equal but they shouldn't
     # pass our shape gate.
     h = _FakeHandler(cookies="jts_csrf=abc")
-    assert _common.verify_csrf(h, {_common.CSRF_FORM_FIELD: "abc"}) is False
+    assert _common.guard_mutating_request(h, {_common.CSRF_FORM_FIELD: "abc"}) is False
 
 
-def test_verify_csrf_accepts_token_via_x_csrf_token_header():
+def test_guard_mutating_request_accepts_token_via_x_csrf_token_header():
     """For JS-driven POSTs (fetch with no body / JSON body) where a
     hidden form field is awkward, the token can ride on the
     X-CSRF-Token header. Same constant-time compare against the
@@ -221,16 +221,16 @@ def test_verify_csrf_accepts_token_via_x_csrf_token_header():
     token = "z" * 64
     h = _FakeHandler(cookies=f"jts_csrf={token}")
     h.headers["X-CSRF-Token"] = token
-    assert _common.verify_csrf(h) is True
-    assert _common.verify_csrf(h, {}) is True
+    assert _common.guard_mutating_request(h) is True
+    assert _common.guard_mutating_request(h, {}) is True
 
 
-def test_verify_csrf_rejects_mismatched_header_token():
+def test_guard_mutating_request_rejects_mismatched_header_token():
     cookie_token = "a" * 64
     bad_header_token = "b" * 64
     h = _FakeHandler(cookies=f"jts_csrf={cookie_token}")
     h.headers["X-CSRF-Token"] = bad_header_token
-    assert _common.verify_csrf(h) is False
+    assert _common.guard_mutating_request(h) is False
 
 
 def test_csrf_meta_html_escapes_token():

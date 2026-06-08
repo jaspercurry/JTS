@@ -257,7 +257,7 @@ def test_post_unknown_route_404s():
 
 
 def test_post_scan_rejects_bad_csrf():
-    # No cookie / no header -> verify_csrf fails -> 403, and the scan never runs.
+    # No cookie / no header -> guard_mutating_request fails -> 403, and the scan never runs.
     h, cap = _make_request("/scan", body=b"{}")
     h.do_POST()
     assert cap["status"] == int(http.HTTPStatus.FORBIDDEN)

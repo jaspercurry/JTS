@@ -274,7 +274,7 @@ def test_post_profile_proxies_aec_profile(tmp_path, monkeypatch):
         captured["body"] = json.loads(body.decode())
         return 200, b'{"profile":"xvf_chip_aec"}'
 
-    monkeypatch.setattr(wake_setup, "verify_csrf", fake_verify)
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", fake_verify)
     monkeypatch.setattr(wake_setup, "proxy_post", fake_proxy_post)
     h, cap = _make_request(
         "POST",
@@ -322,10 +322,10 @@ def test_post_save_bad_csrf_rejected(tmp_path):
 def test_post_layer_proxies_to_control(tmp_path, monkeypatch):
     """A valid /layer/raw POST reaches _apply_layer with the parsed flag.
 
-    CSRF is bypassed (verify_csrf mocked True) so the test stays focused on
+    CSRF is bypassed (guard_mutating_request mocked True) so the test stays focused on
     routing + body parsing + the proxy call shape."""
     _make_request.state_path = str(tmp_path / "wake_model.env")
-    monkeypatch.setattr(wake_setup, "verify_csrf", lambda *a, **k: True)
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
     captured = {}
 
     def fake_apply_layer(layer, enabled, *, control_base):
@@ -346,7 +346,7 @@ def test_post_layer_proxies_to_control(tmp_path, monkeypatch):
 
 def test_post_layer_unknown_layer_400(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
-    monkeypatch.setattr(wake_setup, "verify_csrf", lambda *a, **k: True)
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
     h, cap = _make_request(
         "POST", "/layer/bogus",
         body=json.dumps({"enabled": True}).encode(),
@@ -358,7 +358,7 @@ def test_post_layer_unknown_layer_400(tmp_path, monkeypatch):
 
 def test_post_sensitivity_validates_range(tmp_path, monkeypatch):
     _make_request.state_path = str(tmp_path / "wake_model.env")
-    monkeypatch.setattr(wake_setup, "verify_csrf", lambda *a, **k: True)
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
     h, cap = _make_request(
         "POST", "/sensitivity",
         body=json.dumps({"value": 5.0}).encode(),
@@ -372,7 +372,7 @@ def test_post_save_writes_env_and_restarts(tmp_path, monkeypatch):
     """Happy path: a valid (bundled) model selection writes wake_model.env
     and kicks the voice daemon, then redirects with a flash."""
     _make_request.state_path = str(tmp_path / "wake_model.env")
-    monkeypatch.setattr(wake_setup, "verify_csrf", lambda *a, **k: True)
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *a, **k: True)
     _stage_bundled_assets(monkeypatch, tmp_path)
     restarted = {"n": 0}
     monkeypatch.setattr(

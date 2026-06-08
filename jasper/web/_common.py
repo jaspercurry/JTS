@@ -24,7 +24,7 @@ Every wizard's request handler should look like this:
         if path not in ("/save", "/clear", …):
             self.send_error(HTTPStatus.NOT_FOUND); return
         form = read_form(self)
-        if not verify_csrf(self, form):
+        if not guard_mutating_request(self, form):
             reject_csrf(self); return
         # ... handle ...
         send_see_other(self, "./", flash="Saved.")
@@ -1017,8 +1017,8 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
     `jasper.http_security.mutating_request_allowed` — the same allowlist
     the control daemon already runs in production (configured hostname,
     `.local`, RFC1918/ULA/loopback IPs, missing Host for non-browser
-    clients). Folded into `verify_csrf` so every wizard inherits it at
-    its single mutating chokepoint without per-page edits.
+    clients). Composed into `guard_mutating_request` so every wizard
+    inherits it at its single mutating chokepoint without per-page edits.
 
     Returns False (so the caller rejects with 403) on a disallowed
     Host/Origin and logs one structured `event=http.reject` line."""
@@ -1034,32 +1034,21 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
     return ok
 
 
-def verify_csrf(
+def _csrf_token_valid(
     handler: BaseHTTPRequestHandler, form: dict[str, str] | None = None,
 ) -> bool:
-    """Return True iff the request is allowed to mutate: its Host/Origin
-    passes the management allowlist AND it carries a CSRF token that
-    matches the cookie. `secrets.compare_digest` for constant-time
-    comparison.
-
-    The Host/Origin check (`guard_mutating_host`) runs first so a
-    DNS-rebinding / cross-site browser request is rejected before any
-    state change — mirroring jasper-control's `_guard_mutating_request`.
-    Both must pass; a failure of either returns False, and the wizard's
-    POST handler turns that into a 403 via `reject_csrf`.
+    """Return True iff the request carries a CSRF token matching the
+    double-submit cookie. `secrets.compare_digest` for constant-time
+    comparison. Pure token check — no Host/Origin guarding here (that's
+    `guard_mutating_host`'s single job; `guard_mutating_request` composes
+    the two).
 
     Accepts the token via either:
       * `form[CSRF_FORM_FIELD]` — the form-rendered case
       * `X-CSRF-Token` request header — for JS-driven POSTs (fetch() with
         empty body, JSON bodies, etc.) where embedding a hidden input is
         awkward. JS reads the token from a `<meta name="jts-csrf">` tag
-        the page renders and sends it as a header.
-
-    Use at the top of every state-changing POST handler. Pair with
-    `csrf_field_html()` on form-render sites and `csrf_meta_html()` on
-    pages whose JS calls fetch."""
-    if not guard_mutating_host(handler):
-        return False
+        the page renders and sends it as a header."""
     cookies = _read_request_cookies(handler)
     cookie_token = cookies.get(CSRF_COOKIE_NAME, "")
     candidates: list[str] = []
@@ -1076,6 +1065,32 @@ def verify_csrf(
         if _is_valid_token(token) and secrets.compare_digest(cookie_token, token):
             return True
     return False
+
+
+def guard_mutating_request(
+    handler: BaseHTTPRequestHandler, form: dict[str, str] | None = None,
+) -> bool:
+    """Return True iff a state-changing request is allowed to proceed:
+    its Host/Origin passes the management allowlist AND it carries a CSRF
+    token that matches the cookie.
+
+    This is the single mutating chokepoint every wizard's POST handler
+    calls. It composes two single-responsibility checks — keeping the
+    name honest about doing both — rather than burying the host guard
+    inside a "csrf" function:
+      * `guard_mutating_host(handler)` — the DNS-rebinding / cross-site
+        Host/Origin allowlist, run FIRST so a hostile request is rejected
+        before any token work (mirrors jasper-control's
+        `_guard_mutating_request`).
+      * `_csrf_token_valid(handler, form)` — the double-submit token
+        compare.
+    Both must pass; a failure of either returns False, and the wizard's
+    POST handler turns that into a 403 via `reject_csrf`.
+
+    Use at the top of every state-changing POST handler. Pair with
+    `csrf_field_html()` on form-render sites and `csrf_meta_html()` on
+    pages whose JS calls fetch."""
+    return guard_mutating_host(handler) and _csrf_token_valid(handler, form)
 
 
 def csrf_field_html(token: str) -> str:

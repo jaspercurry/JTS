@@ -8,7 +8,7 @@
 // renders into the (no-store) HTML; we read it at call time so the cacheable
 // module never bakes in a secret. Same X-CSRF-Token contract as the inline
 // wizards (jasper.web._common.csrf_fetch_helpers_js / jsonHeaders) — the
-// server's verify_csrf() accepts the header just like a hidden form field.
+// server's guard_mutating_request() accepts the header just like a hidden form field.
 
 function csrfToken() {
   const meta = document.querySelector("meta[name=jts-csrf]");

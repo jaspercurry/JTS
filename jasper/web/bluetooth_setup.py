@@ -41,7 +41,7 @@ from ._common import (
     reject_csrf,
     send_html_response,
     toggle_html,
-    verify_csrf,
+    guard_mutating_request,
 )
 from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
@@ -320,7 +320,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if not verify_csrf(self):
+            if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
             body = self._read_json()

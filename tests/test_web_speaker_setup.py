@@ -170,7 +170,7 @@ def test_post_save_validation_error_redirects_with_flash(monkeypatch):
     monkeypatch.setattr(speaker_setup, "validate_name", boom)
     handler = _handler_cls()
     # csrf_token is the form field (_common.CSRF_FORM_FIELD); jts_csrf is the
-    # double-submit cookie. They must carry the same token to pass verify_csrf.
+    # double-submit cookie. They must carry the same token to pass guard_mutating_request.
     body = ("csrf_token=" + token + "&name=waytoolong").encode()
     h = _FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
     handler.do_POST(h)

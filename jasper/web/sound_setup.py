@@ -103,7 +103,7 @@ from ._common import (
     canonical_page,
     reject_csrf,
     send_html_response,
-    verify_csrf,
+    guard_mutating_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -1474,7 +1474,7 @@ def _make_handler(
             }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if not verify_csrf(self):
+            if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
             try:

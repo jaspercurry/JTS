@@ -6,7 +6,7 @@
 // behaviour:
 //
 //   * jsonHeaders() (CSRF X-CSRF-Token + Content-Type) from the shared http.js
-//     — same contract verify_csrf() accepts as a hidden form field. The token
+//     — same contract guard_mutating_request() accepts as a hidden form field. The token
 //     rides in the <meta name="jts-csrf"> tag canonical_page() renders.
 //   * jtsConfirm / jtsAlert (accessible <dialog>, never window.confirm/alert,
 //     which the browser can suppress) from the shared dialog.js.
