@@ -34,7 +34,16 @@ yet** and the gating spike has not been run. What exists:
   on hardware, not in pytest).
 - **`jasper/multiroom/state.py`** — `read_grouping_state()`, fresh-read
   (never `os.environ`); wired into `jasper-control` `/state.grouping`
-  (fail-soft).
+  (fail-soft). Now also carries a **`runtime` health block** when grouping
+  is enabled: the pure `derive_grouping_runtime(cfg, unit_states)` compares
+  the reconciler plan's expected units against their live `systemctl
+  is-active` state and reports `off` / `invalid` / `ok` / `degraded` — a
+  follower whose snapclient can't reach its leader shows `degraded` with
+  the leader addr, not a green-looking config. The `systemctl` probe is
+  the thin injectable I/O edge; on a solo speaker there is NO probe and NO
+  `runtime` key (zero added cost). The same pure derive feeds
+  `jasper-doctor`'s `check_grouping` (warn on degraded). §7 "make it
+  visible, not invisible".
 - **`jasper/camilla_emit.py`** — shared CamillaDSP YAML *emission*
   primitives (`fmt`, `emit_gain_filter`, `emit_peaking_biquad`,
   `emit_linkwitz_riley`, `emit_mixer`): the single home for *how* a
@@ -434,6 +443,17 @@ behavior**, not a regression (a sub *should* be quiet when the system
 is off; a satellite's room depends on the leader anyway). We make it
 *visible*, not invisible.
 
+**Visible-failure surface (built 2026-06-08).** The "/state flag +
+doctor" half of "make it visible" is live: `read_grouping_state` carries
+a `runtime` health block and `jasper-doctor`'s `check_grouping` warns
+when a configured-valid bond's units aren't actually up — both derived by
+the one pure `derive_grouping_runtime(cfg, unit_states)`, which reuses
+`reconcile.plan` for "what should be running." A `/system/`-or-`/rooms`
+dashboard card rendering that block is the remaining thin UI follow-on
+(the data is there for it). Until the P1.3 producer ships, an enabled
+leader correctly reads as `degraded` (snapserver has no FIFO to read
+yet) — the honest state, not a false green.
+
 ### Networked loud-output safety (critical for the dumb tier)
 
 A dumb endpoint has none of JTS's software safety floors, so safety
@@ -741,7 +761,13 @@ resolving):
 
 ---
 
-Last verified: 2026-06-08 (shared CamillaDSP emission layer +
+Last verified: 2026-06-08 (grouping runtime observability: `state.py`
+gained a pure `derive_grouping_runtime` + injectable `systemctl is-active`
+probe, so `/state.grouping` carries a live `runtime` health block
+(off/invalid/ok/degraded) and `jasper-doctor`'s `check_grouping` warns on
+a configured-but-degraded bond — §7 "make it visible, not invisible";
+zero probe + no runtime key when solo; dashboard-card render is the thin
+UI follow-on. Earlier 2026-06-08 — shared CamillaDSP emission layer +
 channel boundary: extracted `jasper/camilla_emit.py` (`fmt`,
 `emit_gain_filter`, `emit_peaking_biquad`, `emit_linkwitz_riley`,
 `emit_mixer`) and migrated all four DSP generators (correction / sound /

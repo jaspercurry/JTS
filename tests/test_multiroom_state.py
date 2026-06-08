@@ -8,12 +8,18 @@ immediately, (c) returns a JSON-able dict mirroring GroupingConfig, and
 without raising.
 
 Mirrors the house style in tests/test_multiroom_config.py: tmp_path-written
-env file, no network/subprocess, plain asserts.
+env file, no network/subprocess, plain asserts. Runtime-health tests inject
+a fake unit-state reader (``unit_state_reader=``) so they never shell out to
+``systemctl`` and stay deterministic; the pure ``derive_grouping_runtime`` is
+tested directly with synthetic unit states.
 """
 from __future__ import annotations
 
-from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC
-from jasper.multiroom.state import read_grouping_state
+from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, load_config
+from jasper.multiroom.state import (
+    derive_grouping_runtime,
+    read_grouping_state,
+)
 
 
 # ---------- helpers ----------
@@ -25,6 +31,12 @@ def _write_env(tmp_path, body: str) -> str:
     return str(p)
 
 
+def _stub(units):
+    """Fake unit-state reader: pretend every probed unit is active. Lets
+    config-focused tests exercise the enabled path without a subprocess."""
+    return {u: "active" for u in units}
+
+
 def _leader_env() -> str:
     return (
         "JASPER_GROUPING=on\n"
@@ -33,6 +45,24 @@ def _leader_env() -> str:
         "JASPER_GROUPING_BOND_ID=living-room\n"
         "JASPER_GROUPING_CODEC=opus\n"
     )
+
+
+def _follower_env() -> str:
+    return (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=right\n"
+        "JASPER_GROUPING_BOND_ID=living-room\n"
+        "JASPER_GROUPING_LEADER_ADDR=192.168.1.50\n"
+    )
+
+
+SNAPSERVER = "jasper-snapserver.service"
+SNAPCLIENT = "jasper-snapclient.service"
+
+
+def _cfg(tmp_path, body):
+    return load_config(_write_env(tmp_path, body))
 
 
 _EXPECTED_KEYS = {
@@ -71,7 +101,7 @@ def test_state_has_exactly_the_expected_keys(tmp_path):
 
 def test_valid_enabled_full_dict_includes_codec(tmp_path):
     path = _write_env(tmp_path, _leader_env())
-    state = read_grouping_state(path)
+    state = read_grouping_state(path, unit_state_reader=_stub)
     assert state["enabled"] is True
     assert state["role"] == "leader"
     assert state["channel"] == "left"
@@ -89,7 +119,7 @@ def test_valid_enabled_codec_defaults_to_flac(tmp_path):
         "JASPER_GROUPING_BOND_ID=kitchen\n"
     )
     path = _write_env(tmp_path, body)
-    state = read_grouping_state(path)
+    state = read_grouping_state(path, unit_state_reader=_stub)
     assert state["codec"] == DEFAULT_CODEC
 
 
@@ -98,8 +128,8 @@ def test_state_dict_is_json_able(tmp_path):
     import json
 
     path = _write_env(tmp_path, _leader_env())
-    state = read_grouping_state(path)
-    # Should not raise; round-trips to an equal dict.
+    state = read_grouping_state(path, unit_state_reader=_stub)
+    # Should not raise; round-trips to an equal dict (incl. runtime block).
     assert json.loads(json.dumps(state)) == state
 
 
@@ -145,12 +175,12 @@ def test_re_reads_file_fresh_each_call(tmp_path):
     p.write_text("JASPER_GROUPING=off\n")
     path = str(p)
 
-    first = read_grouping_state(path)
+    first = read_grouping_state(path, unit_state_reader=_stub)
     assert first["enabled"] is False
 
     # Mutate the SSOT file in place — simulating a wizard save.
     p.write_text(_leader_env())
-    second = read_grouping_state(path)
+    second = read_grouping_state(path, unit_state_reader=_stub)
     assert second["enabled"] is True
     assert second["role"] == "leader"
     assert second["codec"] == "opus"
@@ -162,7 +192,137 @@ def test_re_read_picks_up_codec_change(tmp_path):
     p = tmp_path / "grouping.env"
     p.write_text(_leader_env())  # codec=opus
     path = str(p)
-    assert read_grouping_state(path)["codec"] == "opus"
+    assert read_grouping_state(path, unit_state_reader=_stub)["codec"] == "opus"
 
     p.write_text(_leader_env().replace("CODEC=opus", "CODEC=flac"))
-    assert read_grouping_state(path)["codec"] == "flac"
+    assert read_grouping_state(path, unit_state_reader=_stub)["codec"] == "flac"
+
+
+# ---------- runtime health: derive_grouping_runtime (pure) ----------
+
+
+def test_runtime_off_when_disabled(tmp_path):
+    rt = derive_grouping_runtime(_cfg(tmp_path, "JASPER_GROUPING=off\n"), {})
+    assert rt["health"] == "off"
+    assert rt["units"] == {}
+
+
+def test_runtime_invalid_carries_error(tmp_path):
+    body = (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=leader\n"
+        "JASPER_GROUPING_CHANNEL=left\n"  # no bond id => invalid
+    )
+    rt = derive_grouping_runtime(_cfg(tmp_path, body), {})
+    assert rt["health"] == "invalid"
+    assert "BOND_ID" in rt["detail"]
+
+
+def test_runtime_leader_ok_when_both_active(tmp_path):
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "active", SNAPCLIENT: "active"},
+    )
+    assert rt["health"] == "ok"
+    assert rt["units"][SNAPSERVER] == {"expected": "start", "actual": "active"}
+    assert rt["units"][SNAPCLIENT] == {"expected": "start", "actual": "active"}
+
+
+def test_runtime_leader_degraded_when_server_down(tmp_path):
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "failed", SNAPCLIENT: "active"},
+    )
+    assert rt["health"] == "degraded"
+    assert "leader degraded" in rt["detail"]
+    assert SNAPSERVER in rt["detail"]
+
+
+def test_runtime_follower_ok_when_client_active(tmp_path):
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _follower_env()),
+        {SNAPSERVER: "inactive", SNAPCLIENT: "active"},
+    )
+    assert rt["health"] == "ok"
+    # a follower runs NO server (expected stop), only the client
+    assert rt["units"][SNAPSERVER]["expected"] == "stop"
+    assert rt["units"][SNAPCLIENT] == {"expected": "start", "actual": "active"}
+
+
+def test_runtime_follower_degraded_surfaces_unreachable_leader(tmp_path):
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _follower_env()),
+        {SNAPSERVER: "inactive", SNAPCLIENT: "failed"},
+    )
+    assert rt["health"] == "degraded"
+    assert "follower not connected" in rt["detail"]
+    assert "192.168.1.50" in rt["detail"]  # the leader addr, for diagnosis
+    assert "failed" in rt["detail"]
+
+
+def test_runtime_missing_unit_state_is_not_active(tmp_path):
+    # The reader returned nothing for a unit -> treated as not-active.
+    rt = derive_grouping_runtime(_cfg(tmp_path, _follower_env()), {})
+    assert rt["health"] == "degraded"
+    assert rt["units"][SNAPCLIENT]["actual"] == "unknown"
+
+
+# ---------- read_grouping_state runtime wiring ----------
+
+
+def test_disabled_has_no_runtime_block_and_never_probes(tmp_path):
+    probed = []
+
+    def spy(units):
+        probed.append(list(units))
+        return _stub(units)
+
+    state = read_grouping_state(
+        _write_env(tmp_path, "JASPER_GROUPING=off\n"), unit_state_reader=spy
+    )
+    assert "runtime" not in state
+    assert probed == []  # zero subprocess on a solo speaker
+
+
+def test_enabled_valid_probes_the_planned_units(tmp_path):
+    probed = []
+
+    def spy(units):
+        probed.append(list(units))
+        return {u: "active" for u in units}
+
+    state = read_grouping_state(
+        _write_env(tmp_path, _follower_env()), unit_state_reader=spy
+    )
+    assert state["runtime"]["health"] == "ok"
+    assert SNAPCLIENT in probed[0]
+
+
+def test_enabled_invalid_does_not_probe(tmp_path):
+    probed = []
+
+    def spy(units):
+        probed.append(list(units))
+        return _stub(units)
+
+    body = (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=leader\n"
+        "JASPER_GROUPING_CHANNEL=left\n"  # no bond id => invalid
+    )
+    state = read_grouping_state(_write_env(tmp_path, body), unit_state_reader=spy)
+    assert state["runtime"]["health"] == "invalid"
+    assert probed == []  # an invalid bond starts nothing -> nothing to probe
+
+
+def test_real_reader_is_failsoft_without_systemctl(monkeypatch):
+    # The real systemctl reader must never raise — a wedged/absent systemd
+    # resolves every unit to "unknown", keeping /state alive.
+    from jasper.multiroom import state as state_mod
+
+    def boom(*a, **k):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(state_mod.subprocess, "run", boom)
+    out = state_mod.read_unit_active_states([SNAPSERVER, SNAPCLIENT])
+    assert out == {SNAPSERVER: "unknown", SNAPCLIENT: "unknown"}

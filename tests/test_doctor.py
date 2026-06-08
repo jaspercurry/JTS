@@ -141,6 +141,78 @@ def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
     assert "jasper-voice.service NRestarts=2" in r.detail
 
 
+# ----------------------------------------------------------------- grouping
+
+
+def _grouping_cfg(**kw):
+    from jasper.multiroom.config import (
+        DEFAULT_BUFFER_MS,
+        DEFAULT_CODEC,
+        GroupingConfig,
+    )
+
+    defaults = dict(
+        enabled=False, role="", channel="stereo", bond_id="", leader_addr="",
+        buffer_ms=DEFAULT_BUFFER_MS, codec=DEFAULT_CODEC, error=None,
+    )
+    defaults.update(kw)
+    return GroupingConfig(**defaults)
+
+
+def _patch_grouping(monkeypatch, cfg, is_active_stdout):
+    import jasper.multiroom.config as mr_config
+
+    monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
+
+    class FakeRun:
+        stdout = is_active_stdout
+
+    monkeypatch.setattr(doctor, "_run", lambda *a, **kw: FakeRun())
+
+
+def test_check_grouping_off_is_ok(monkeypatch):
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    r = doctor.check_grouping()
+    assert r.status == "ok"
+    assert "single-speaker" in r.detail
+
+
+def test_check_grouping_invalid_config_warns(monkeypatch):
+    cfg = _grouping_cfg(
+        enabled=True, role="leader", channel="left",
+        error="JASPER_GROUPING_BOND_ID is empty (grouping is on)",
+    )
+    _patch_grouping(monkeypatch, cfg, "")
+    r = doctor.check_grouping()
+    assert r.status == "warn"
+    assert "BOND_ID" in r.detail
+
+
+def test_check_grouping_leader_running_is_ok(monkeypatch):
+    cfg = _grouping_cfg(
+        enabled=True, role="leader", channel="left", bond_id="living-room",
+    )
+    # plan units order = [snapserver, snapclient]; both active.
+    _patch_grouping(monkeypatch, cfg, "active\nactive\n")
+    r = doctor.check_grouping()
+    assert r.status == "ok"
+    assert "leader streaming" in r.detail
+
+
+def test_check_grouping_follower_unreachable_leader_warns(monkeypatch):
+    cfg = _grouping_cfg(
+        enabled=True, role="follower", channel="right",
+        bond_id="living-room", leader_addr="192.168.1.50",
+    )
+    # follower plan units = [snapserver(stop), snapclient(start)];
+    # snapclient failed => degraded, leader unreachable.
+    _patch_grouping(monkeypatch, cfg, "inactive\nfailed\n")
+    r = doctor.check_grouping()
+    assert r.status == "warn"
+    assert "follower not connected" in r.detail
+    assert "192.168.1.50" in r.detail
+
+
 def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple USB probe should not run")
