@@ -277,6 +277,48 @@ def test_rooms_json_shape(monkeypatch):
     assert p["system_url"] == "http://192.168.1.9/system/"
 
 
+def test_self_exclusion_uses_exact_hostname_not_substring(monkeypatch):
+    """Regression (found on hardware): a speaker whose hostname is a SUBSTRING
+    of a peer's must NOT drop that peer. `jts` was excluding `jts3` because
+    "jts" is a substring of "jts3" — and asymmetrically (jts3 kept jts), which
+    is the tell. Self-exclusion must be an EXACT hostname-label match, not a
+    substring of the free-form display name."""
+    _patch_discovery(
+        monkeypatch,
+        self_hostname="jts.local",            # our hostname label is "jts"
+        self_addrs=frozenset({"192.168.1.74"}),
+        speakers=[
+            {"name": "JTS3", "hostname": "jts3", "room": "",
+             "address": "192.168.1.92", "port": 8780},
+        ],
+    )
+    data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
+    names = [p["name"] for p in data["peers"]]
+    assert names == ["JTS3"], f"jts must not exclude jts3 as self; got {names}"
+
+
+def test_self_excluded_by_exact_hostname_when_address_missed(monkeypatch):
+    """The hostname fallback still catches self when the route trick missed our
+    address (e.g. a loopback/secondary advert): an EXACT hostname-label match
+    on a peer not in our address set is dropped."""
+    _patch_discovery(
+        monkeypatch,
+        self_hostname="jts.local",
+        self_addrs=frozenset({"192.168.1.74"}),
+        speakers=[
+            # Same hostname "jts", different address (our own advert the route
+            # trick didn't list) -> must be excluded as self.
+            {"name": "JTS", "hostname": "jts", "room": "",
+             "address": "127.0.1.1", "port": 8780},
+            {"name": "JTS3", "hostname": "jts3", "room": "",
+             "address": "192.168.1.92", "port": 8780},
+        ],
+    )
+    data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
+    names = [p["name"] for p in data["peers"]]
+    assert names == ["JTS3"], f"exact-hostname self must drop, jts3 stays; got {names}"
+
+
 def test_rooms_json_self_has_name_key(monkeypatch):
     """The self block carries a `name` field — the speaker's friendly display
     name (the SAME jasper/speaker_name identity now advertised as the `name=`
@@ -351,21 +393,25 @@ def test_rooms_json_excludes_self_by_address(monkeypatch):
 
 
 def test_rooms_json_excludes_self_by_hostname_label(monkeypatch):
-    """When the route trick missed our own address, self is still dropped by
-    matching the instance-name label against our hostname's leading label."""
+    """When the route trick missed our own address, self is still dropped by an
+    EXACT match of the advert's SRV hostname label against ours — and crucially
+    by hostname, NOT by the free-form display name (which here is "Living Room",
+    nothing like the hostname)."""
     _patch_discovery(
         monkeypatch,
         speakers=[
-            # Same hostname label "jts-living", different (e.g. v6-derived) addr.
-            {"name": "jts-living-2", "room": "", "address": "192.168.1.99", "port": 8780},
-            {"name": "jts-bedroom", "room": "bedroom", "address": "192.168.1.9", "port": 8780},
+            # Our OWN advert on an address the route trick didn't list: same
+            # hostname "jts-living", a friendly display name -> excluded as self.
+            {"name": "Living Room", "hostname": "jts-living", "room": "",
+             "address": "192.168.1.99", "port": 8780},
+            {"name": "jts-bedroom", "hostname": "jts-bedroom", "room": "bedroom",
+             "address": "192.168.1.9", "port": 8780},
         ],
         self_hostname="jts-living.local",
         self_addrs=frozenset({"192.168.1.5"}),  # does NOT include .99
     )
     data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
     names = [p["name"] for p in data["peers"]]
-    assert "jts-living-2" not in names
     assert names == ["jts-bedroom"]
 
 

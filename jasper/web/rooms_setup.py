@@ -226,6 +226,11 @@ def _discover_speakers(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict]:
         out.append(
             {
                 "name": _peer_label(svc.txt, svc.server, svc.name),
+                # The SRV hostname label (e.g. "jts3"), kept so self-exclusion
+                # can match on the stable HOSTNAME (exact) rather than the
+                # free-form display name — a speaker named "jts" must not drop
+                # a peer named "jts3".
+                "hostname": _hostname_label(svc.server),
                 "room": (svc.txt.get("room") or "").strip(),
                 "address": str(svc.addresses[0]),
                 "port": int(svc.port or CONTROL_HTTP_PORT),
@@ -327,13 +332,18 @@ def _build_rooms_payload() -> dict:
     self_hostname_label = me.hostname.split(".")[0].casefold()
     for s in _discover_speakers_cached():
         addr = s.get("address") or ""
-        # Drop self: by address (reliable — our own NIC IPs) or by the
-        # instance-name label matching our hostname (catches the case where
-        # the route trick missed our address).
+        # Drop self two ways:
+        #   1. by address — reliable when our own NIC IP is in `own`.
+        #   2. by EXACT hostname-label match — catches the case where the
+        #      UDP-route trick missed our address (e.g. a loopback/secondary
+        #      advert). This MUST be an exact match on the SRV hostname, not
+        #      a substring of the display name: a speaker "jts" once dropped a
+        #      peer "jts3" because "jts" is a substring of "jts3" (and the
+        #      display name is free-form, unrelated to identity).
         if addr and addr in own:
             continue
-        label = (s.get("name") or "").casefold()
-        if self_hostname_label and self_hostname_label in label:
+        peer_host = (s.get("hostname") or "").casefold()
+        if self_hostname_label and peer_host == self_hostname_label:
             continue
         peers.append(
             {
