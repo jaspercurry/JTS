@@ -1017,8 +1017,14 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
     `jasper.http_security.mutating_request_allowed` — the same allowlist
     the control daemon already runs in production (configured hostname,
     `.local`, RFC1918/ULA/loopback IPs, missing Host for non-browser
-    clients). Composed into `guard_mutating_request` so every wizard
+    clients). Used by the shared mutating request guard so every wizard
     inherits it at its single mutating chokepoint without per-page edits.
+
+    Some form-rendered handlers parse the small POST form before calling
+    `guard_mutating_request(handler, form)` so they can pass the parsed
+    token. The load-bearing ordering invariant is: route-check unknown
+    POST paths first, then call this host guard before any mutation or
+    token compare.
 
     Returns False (so the caller rejects with 403) on a disallowed
     Host/Origin and logs one structured `event=http.reject` line."""
@@ -1079,9 +1085,11 @@ def guard_mutating_request(
     name honest about doing both — rather than burying the host guard
     inside a "csrf" function:
       * `guard_mutating_host(handler)` — the DNS-rebinding / cross-site
-        Host/Origin allowlist, run FIRST so a hostile request is rejected
-        before any token work (mirrors jasper-control's
-        `_guard_mutating_request`).
+        Host/Origin allowlist. It runs before token comparison inside
+        this function, but some form handlers parse the small request
+        body before this call so they can pass `form`. That is acceptable
+        only because route checks happen first and mutation happens after
+        this function returns True.
       * `_csrf_token_valid(handler, form)` — the double-submit token
         compare.
     Both must pass; a failure of either returns False, and the wizard's

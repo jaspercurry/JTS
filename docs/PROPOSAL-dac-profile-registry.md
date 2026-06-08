@@ -1,179 +1,200 @@
-# Proposal: a DAC profile registry (make "add a DAC" one entry, not a 20-file edit)
+# Proposal: DAC Profile Registry
 
-> **Status: proposal / design hand-off (2026-06-04).** This is a scoped
-> design for a *future* session to implement, not shipped behavior. It
-> builds on the in-flight `dac_id` work (codex audio PRs #447–#452) —
-> **coordinate with whoever is driving that** before starting; this doc
-> deliberately extends their direction rather than forking a parallel one.
-> Current operational truth for audio output lives in
-> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
-> and [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md).
+> **Status: proposal / design handoff, updated 2026-06-08.** This is not
+> shipped behavior. It supersedes the narrower 2026-06-04 sketch that modeled
+> only a single Apple dongle and a HiFiBerry DAC8x. Current operational truth
+> for output ownership lives in
+> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
+> [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md), and
+> [audio-paths.md](audio-paths.md).
 
-## TL;DR
+## Summary
 
-JTS hardcodes the **Apple USB-C dongle** as *the* DAC in ~151 places across
-20 files. Supporting a second DAC (the HifiBerry **DAC8x** on the JTS3 lab
-unit; future DACs) today means editing all of them, and getting it wrong is
-silent (e.g. `jasper-doctor` reports two false "failures" on a DAC8x Pi
-because its dongle checks don't apply). The fix is the same pattern the repo
-already uses for transit providers and wake models: a **data-driven DAC
-profile registry** where adding a DAC is *one `DacProfile` entry*, and every
-audio surface reads the active profile instead of assuming the dongle.
+JTS is moving from "the Apple USB-C dongle is the DAC" toward explicit output
+hardware profiles:
 
-The goal is **not** a grand abstraction. It is: pick the smallest durable
-shape that lets "add the Nth DAC" be a registry entry, and migrate the
-existing hardcoding into it **incrementally and non-breakingly**, keeping the
-Apple dongle as just the first profile.
+- `apple_usb_c_dongle`: one Apple USB-C adapter, two physical outputs.
+- `hifiberry_dac8x` / DAC8x-family: one coherent multichannel DAC, eight
+  physical outputs.
+- `dual_apple_usb_c_dac_4ch`: two Apple USB-C adapters treated as one
+  four-output composite profile for active crossover work.
 
-## Why now
+The right product shape is a small data-driven DAC registry that describes
+hardware identity, physical output shape, mixer/headphone policy, validation
+expectations, and runtime constraints. Adding another DAC should normally add
+one profile plus any genuinely new deploy artifact it needs, not scatter
+device-specific branches through doctor, topology, ALSA rendering, outputd,
+commissioning, and docs.
 
-- **Stated roadmap:** more DACs (and the identical story for mics — the
-  XVF3800 is hardcoded the same way; this proposal is the template for a
-  parallel `MicProfile` registry).
-- **Concrete symptom:** deploying current `main` to the DAC8x unit (jts3)
-  makes `jasper-doctor` emit `check_apple_dongle_audio` failures that are
-  meaningless on that hardware. The doctor has *started* gating on `dac_id`
-  (`doctor.py` ~`if dac_id != "apple_usb_c_dongle": ... ok`) — proof the seam
-  is needed and emerging, but only partially threaded.
-- **Tax:** ~151 dongle references (`grep -riE 'apple dongle|05ac:110a|usb-c to 3.5|dongle' jasper/ deploy/`)
-  across `config.py`, `audio_io.py`, `output_topology.py`, `correction/*`,
-  `doctor.py`, `cues/generator.py`, `install.sh`, the `jasper-dac-init`
-  service + script, `udev/99-jasper-apple-dongle.rules`,
-  `jasper-voice.service`, `shairport-sync.conf.template`, `camilladsp/v1.yml`.
+This registry must build on the current boundaries rather than replacing
+them:
 
-## What already exists (build on this, don't replace it)
+- `jasper.output_hardware` observes live hardware and can identify composite
+  states such as dual Apple.
+- `jasper.output_topology` owns user-facing speaker groups, physical output
+  assignment, role identity, and safety evidence.
+- `jasper-audio-hardware-reconcile` owns observed-hardware-to-runtime
+  activation, including fail-closed parking and outputd env writes.
+- `jasper-outputd` owns the final DAC write loop and speaker monitor/reference.
 
-The codex audio-validation work has introduced the *beginning* of the
-abstraction — credit it and extend it:
+## Why This Is Needed
 
-- A **`dac_id`** identity concept with real values: `apple_usb_c_dongle`,
-  `hifiberry_dac8x` (`audio_validation.py:48` `DAC8X_DAC_ID`).
-- **Per-DAC validation profiles** (`DAC8X_OUTPUTD_STABILITY_PROFILE`), a
-  `_dac_identity_check(expected_id=...)`, and validation artifacts that carry
-  `dac_id`.
-- Overrides: **`JASPER_AUDIO_DAC_ID`** (`audio_validation.py:720`) and
-  **`JASPER_AUDIO_DAC_CARD`** (`output_topology.py:608`).
-- `jasper-doctor` gating its dongle check on `dac_id`.
+The repo still has many Apple-dongle-specific references: USB IDs, card names,
+headphone mixer checks, udev rules, doctor messages, validation assumptions,
+and topology defaults. That was acceptable when the Apple dongle was the only
+supported output path. It does not scale once JTS supports DAC8x, DAC8x Studio,
+dual Apple, and later other DACs or subwoofer-oriented output devices.
 
-What's missing: this `dac_id` is **threaded through validation + doctor only**,
-there is **no single module that owns a DAC's full definition**, and the rest
-of the stack (ALSA I/O, mixer init, deploy, correction) still assumes the
-dongle. So `dac_id` is a string passed around, not yet a *profile* the system
-resolves once and reads everywhere.
+The failure mode is not only maintenance cost. It is safety and observability:
+a DAC8x or dual-Apple system should not show false Apple-dongle failures, skip
+the wrong mixer guard, render the wrong output alias, or imply a physical
+output shape that does not match the hardware actually present.
 
-## Target contract
+## Current Building Blocks
 
-A `jasper/audio_hardware/dac.py` (name TBD) with a frozen-dataclass registry,
-mirroring [`jasper/transit/__init__.py`](../jasper/transit/__init__.py)'s
-`REGISTRY` and [`jasper/wake_models.py`](../jasper/wake_models.py)'s
-`WakeModelEntry`:
+Use these instead of creating a parallel hardware stack:
+
+- `JASPER_AUDIO_DAC_ID` and `JASPER_AUDIO_DAC_CARD` are reconciler-owned runtime
+  facts for the active final-output role.
+- `/run/jasper/output_hardware.json` records observed output hardware,
+  including composite dual-Apple readiness and partial states.
+- `/var/lib/jasper/output_topology.json` records the operator's physical output
+  mapping, speaker groups, role identity, and safety state.
+- `/var/lib/jasper/outputd.env` selects outputd runtime mode, including
+  `JASPER_OUTPUTD_SINK=dual_apple` and pinned child PCMs only after the active
+  four-channel Camilla graph is loaded.
+- `jasper-doctor` and `/state` should report both observed hardware and active
+  runtime role when they differ.
+
+## Target Contract
+
+The registry should be an IO-light Python module, likely under
+`jasper/audio_hardware/dac.py` or a similar `audio_hardware` package. Keep it
+small and data-first.
 
 ```python
 @dataclass(frozen=True)
 class DacProfile:
-    id: str                       # "apple_usb_c_dongle", "hifiberry_dac8x"
-    label: str                    # human/UI name
-    # Identity / detection — how to recognize this DAC at runtime:
-    usb_id: str | None            # "05ac:110a" for the dongle; None for HAT DACs
-    alsa_card_match: tuple[str, ...]  # card short-names ("A"; "sndrpihifiberry")
-    # Output topology:
-    output_pcm: str               # the ALSA pcm the renderer/outputd targets
-    # Mixer init (jasper-dac-init owns this; some DACs have a fixed-gain
-    # analog ceiling pinned at 100%, others expose a hardware volume):
-    mixer_controls: tuple[MixerControl, ...]
-    headphone_pinned_100: bool    # dongle=True (software never touches it)
-    # Safety + calibration:
-    safe_start_main_gain_db: float
-    validation_profile: str | None   # the existing audio_validation profile id
-    # Deploy:
-    needs_dtoverlay: str | None      # HAT DACs need a config.txt dtoverlay
-    udev_rule: str | None
+    id: str
+    label: str
+    kind: Literal["single", "composite"]
+    physical_output_count: int
+    coherent_clock_domain: bool
+    outputd_sink: str
+    supported_card_matches: tuple[str, ...]
+    usb_ids: tuple[str, ...] = ()
+    child_profile_ids: tuple[str, ...] = ()
+    requires_same_usb_bus: bool = False
+    supports_active_outputd_lane: bool = False
+    mixer_controls: tuple[MixerControl, ...] = ()
+    headphone_pinned_100: bool = False
+    validation_profile: str | None = None
+    deploy_hint: str | None = None
 ```
 
-Plus:
+Initial profiles should include at least:
 
-```python
-DAC_PROFILES: tuple[DacProfile, ...] = (APPLE_DONGLE, HIFIBERRY_DAC8X)
+- `APPLE_USB_C_DONGLE`
+- `HIFIBERRY_DAC8X`
+- `HIFIBERRY_DAC8X_STUDIO` if the runtime treats Studio distinctly
+- `DUAL_APPLE_USB_C_DAC_4CH`
 
-def by_id(dac_id: str) -> DacProfile | None: ...
-def resolve_active(env) -> DacProfile:
-    """JASPER_AUDIO_DAC_ID override → else detect from present ALSA cards /
-    USB ids → else the documented default. One resolver, used everywhere."""
-```
+The dual-Apple profile is not just "two dongles in a list." It needs explicit
+metadata:
 
-**One resolver, read everywhere.** Every current hardcoded site becomes
-"resolve the active `DacProfile`, read the field it needs." Adding a DAC =
-one `DacProfile` literal + (rarely) one deploy artifact it references.
+- `kind="composite"`
+- four physical outputs
+- two Apple child devices
+- same USB controller/bus requirement for Pi 5
+- stable child ordering via saved topology/serial evidence
+- partial-state behavior: observed profile can exist while runtime remains
+  parked or single-Apple fallback
+- active-output requirement: outputd dual sink is allowed only after the active
+  four-channel Camilla graph is loaded
 
-## Migration plan (incremental, each phase shippable, non-breaking)
+## Boundary Rules
 
-The order matters: consolidate the *identity* first so nothing regresses,
-then migrate consumers layer by layer. The Apple dongle stays the default
-throughout, so existing single-DAC installs never change behavior.
+The registry owns static capabilities and detection hints. It should not own
+runtime mutation.
 
-- **Phase 0 — Registry + resolver, dongle-only.** Create the module with the
-  two profiles and `resolve_active`. Re-express the existing `dac_id` /
-  `JASPER_AUDIO_DAC_ID` / `JASPER_AUDIO_DAC_CARD` logic in terms of it. No
-  consumer changes yet → pure addition, behavior-identical. Ship + test.
-- **Phase 1 — Doctor.** Replace `check_apple_dongle_audio`'s hardcoding with
-  "resolve profile; run the profile's identity/mixer checks." A DAC8x Pi gets
-  *DAC8x* checks, not skipped dongle checks. (This finishes what the `dac_id`
-  gating started.) This alone fixes the jts3 false-failures.
-- **Phase 2 — Mixer init.** `jasper-dac-init` + `headphone-monitor` read
-  `mixer_controls` / `headphone_pinned_100` from the profile instead of the
-  dongle-specific `amixer -c A sget Headphone` path.
-- **Phase 3 — Output I/O + topology.** `audio_io.py`, `output_topology.py`,
-  renderer device resolution read `output_pcm` from the profile.
-- **Phase 4 — Deploy.** `install.sh` / udev / systemd select the profile's
-  `udev_rule` / `needs_dtoverlay`. Generalize
-  `udev/99-jasper-apple-dongle.rules`.
-- **Phase 5 — Correction + cues.** Anything assuming dongle gain/topology.
+`output_hardware` owns live observation: what is plugged in, card IDs, serials,
+USB bus/controller, endpoint sync mode, partial/ready status, and child PCM
+facts.
 
-Each phase: convert a layer, delete the dongle-specific branch, add a test
-asserting both profiles resolve correctly. `grep -c` of the dongle refs is the
-burn-down metric (151 → 0).
+`output_topology` owns operator intent: which physical output goes to which
+speaker driver, which identities are verified, and which safety gates are
+complete.
 
-## Design principles (avoid astronaut engineering)
+`jasper-audio-hardware-reconcile` owns runtime activation: write env files,
+render ALSA aliases, enable or disable Apple helper services, park output on
+unknown/partial states, and defer dual Apple until graph evidence exists.
 
-- **Smallest durable shape.** Two real DACs justify the registry now (the
-  review's bar: "does adding the Nth DAC mean one entry or many files?").
-  Don't model DACs that don't exist; add fields when a second DAC needs them.
-- **Mirror existing patterns.** `transit.REGISTRY` (data-driven, IO-free
-  helpers) and `wake_models.WakeModelEntry` are the proven in-repo template —
-  same frozen-dataclass + `by_id` + `resolve` shape. A contributor who has
-  added a transit provider already knows this pattern.
-- **The Apple dongle is just `DAC_PROFILES[0]`.** No special-casing survives;
-  if the dongle needs a quirk, it's a field on its profile.
-- **Hardware-safety stays first-class.** The dongle's "headphone pinned at
-  100%, software volume only via CamillaDSP master_gain" invariant (see the
-  memory + `jasper-dac-init`) becomes `headphone_pinned_100` — preserved, not
-  lost, and other DACs declare their own ceiling.
-- **Non-breaking.** Default resolves to the dongle; existing installs are
-  byte-identical until they set `JASPER_AUDIO_DAC_ID`.
+`jasper-outputd` owns final samples: single ALSA or dual Apple sink selection,
+xrun handling, delay divergence behavior, and the speaker monitor/reference.
 
-## Concrete first PR (for the implementing session)
+Do not put speaker-role mapping, Camilla config loading, udev side effects, or
+outputd process control inside the registry.
 
-1. Add `jasper/audio_hardware/dac.py` with `DacProfile`, the two literals
-   (`apple_usb_c_dongle`, `hifiberry_dac8x` — copy values from the existing
-   `audio_validation.py` constants + the dongle udev/init scripts), `by_id`,
-   `resolve_active`.
-2. Hardware-free tests: both ids resolve; `JASPER_AUDIO_DAC_ID` override wins;
-   detection from a fake ALSA card list picks the right profile; unknown id →
-   documented default.
-3. Re-point `audio_validation.py`'s `dac_id` resolution at `resolve_active`
-   (Phase 0 consumer swap — small, behavior-identical, proves the seam).
-4. Leave Phases 1–5 as follow-ups; link this doc from the PR.
+## Migration Plan
 
-## Coordinate / open questions
+1. Add the registry module and tests, with no behavior change. It should expose
+   `by_id`, `all_profiles`, and pure helpers for validating known IDs and
+   output counts.
+2. Replace duplicated labels/output counts in `output_topology` and doctor with
+   registry lookups.
+3. Replace hardcoded Apple/DAC8x identity checks in `audio_validation` and
+   `jasper-doctor` with profile-derived expectations.
+4. Move mixer/headphone policy into profile data, but keep mutation in
+   `jasper-dac-init` and `jasper-headphone-monitor`.
+5. Teach `output_hardware` to emit profile IDs from the registry, including
+   composite dual-Apple states.
+6. Keep `jasper-audio-hardware-reconcile` as the runtime owner, but have it
+   consume profile metadata rather than duplicating every device string.
+7. Burn down remaining hardcoded Apple/DAC8x references only when each consumer
+   moves to the profile boundary. Do not do a broad mechanical rewrite without
+   tests.
 
-- **Who owns the in-flight `dac_id` work?** Align on the module name + field
-  set before Phase 0 so this lands *with* their direction.
-- **Mic registry** is the identical shape for the XVF3800 → other mics; do DAC
-  first as the template, then mirror it for mics.
-- Add this doc to the README documentation atlas and `docs/doc-map.toml`
-  (`aec-and-mic` / a new `audio-hardware` subsystem) when the first PR lands.
+Each phase should be independently shippable and hardware-free tests should
+cover Apple, DAC8x, and dual-Apple shapes. Pi/hardware validation is still
+required for deploy, ALSA, mixer, and outputd behavior.
 
----
-Last verified: 2026-06-04 (proposal; reflects `main` at the time of the
-2026-06-04 staff review — `dac_id` is emerging in `audio_validation.py` +
-`doctor.py`, not yet a consolidated registry).
+## Design Principles
+
+- Keep the registry simple: data plus pure lookup helpers.
+- Do not model future DACs that do not exist yet.
+- Treat composite devices as first-class profiles, not exceptions.
+- Preserve fail-closed behavior for partial, unknown, or unsafe states.
+- Expose observed vs runtime role clearly. A system can observe dual Apple but
+  safely run the single-Apple output path until the active graph is ready.
+- Keep hardware safety in the profile data, but keep actual safety enforcement
+  in the existing runtime owners.
+
+## Response For Agent Review
+
+This section is intentionally appended as review guidance for the next agent.
+
+The original PR 454 proposal was directionally correct, but too narrow for the
+current architecture. Do not implement the two-profile, env-only version
+verbatim. The production-grade version must include dual Apple as a composite
+profile and must respect the existing observed-hardware, topology, reconcile,
+and outputd boundaries.
+
+Specific follow-up from review:
+
+- Keep the proposal in README/doc-map. That is already handled by this update
+  in branches that include this file; do not leave a TODO saying to add it.
+- Update any implementation plan that says only `APPLE_DONGLE` and
+  `HIFIBERRY_DAC8X`. The minimum set now includes dual Apple, and may include
+  DAC8x Studio if runtime behavior distinguishes it.
+- A DAC profile registry is useful, but it is not the runtime graph owner.
+  `jasper-audio-hardware-reconcile` still decides whether outputd may switch to
+  dual Apple based on both live hardware and active Camilla graph evidence.
+- The first implementation PR should be boring: add profile data and pure tests,
+  then move one low-risk consumer such as labels/output counts. Do not combine
+  registry creation with outputd, Camilla, or udev behavior changes.
+- The UI should eventually present dual Apple as a normal four-output DAC when
+  observed and graph-ready, while still warning on bad physical topology or
+  partial hardware states.
+
+Last verified: 2026-06-08 (proposal updated against the dual-Apple
+active-output architecture and PR 454 review feedback).
