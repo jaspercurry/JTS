@@ -107,6 +107,7 @@ docs = [
   "docs/HANDOFF-source-capabilities.md",
   "docs/HANDOFF-audio-capability-platform.md",
   "docs/HANDOFF-airplay.md",
+  "docs/HANDOFF-dlna.md",
 ]
 requires_docs_when = [
   "A source lane, fan-in buffer, ALSA PCM, mux arbitration rule, renderer device, or source-selection behavior changes.",
