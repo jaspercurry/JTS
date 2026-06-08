@@ -129,13 +129,13 @@ async def test_goaway_mid_turn_with_ample_time_defers_reconnect():
     await _run_receive_loop_with(conn, [_GoAwayResp(go_away=_GoAway(ample))])
 
     # Deferred: pending flag set, reconnect NOT triggered, turn intact.
-    assert conn._goaway_reconnect_pending is True
+    assert conn._deferred_reconnect.pending is True
     assert not conn._reconnect_event.is_set()
     assert conn._active_turn is turn
 
     # Releasing the turn fires the deferred reconnect.
     await conn._on_turn_released(turn)
-    assert conn._goaway_reconnect_pending is False
+    assert conn._deferred_reconnect.pending is False
     assert conn._reconnect_event.is_set()
 
 
@@ -152,7 +152,7 @@ async def test_goaway_with_no_active_turn_reconnects_immediately():
     )
     await _run_receive_loop_with(conn, [_GoAwayResp(go_away=_GoAway(ample))])
 
-    assert conn._goaway_reconnect_pending is False
+    assert conn._deferred_reconnect.pending is False
     assert conn._reconnect_event.is_set()
 
 
@@ -173,7 +173,7 @@ async def test_goaway_mid_turn_with_little_time_reconnects_immediately():
     )
     await _run_receive_loop_with(conn, [_GoAwayResp(go_away=_GoAway(little))])
 
-    assert conn._goaway_reconnect_pending is False
+    assert conn._deferred_reconnect.pending is False
     assert conn._reconnect_event.is_set()
 
 
@@ -192,7 +192,7 @@ async def test_goaway_mid_turn_with_unparseable_time_reconnects_immediately():
         conn, [_GoAwayResp(go_away=_GoAway(object()))]
     )
 
-    assert conn._goaway_reconnect_pending is False
+    assert conn._deferred_reconnect.pending is False
     assert conn._reconnect_event.is_set()
 
 

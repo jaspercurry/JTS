@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from typing import Callable
 
 
 # Reconnect backoff: never give up. A smart speaker that goes
@@ -105,3 +106,54 @@ class FailureFingerprint:
             close_code=close_code,
             reason=str(reason)[:200],
         )
+
+
+class DeferredReconnect:
+    """Defer a mid-turn reconnect until the in-flight turn releases.
+
+    Both real-time providers need to reconnect *during* a session but
+    must not tear down the WebSocket while a turn is actively replying —
+    doing so cuts the user off mid-sentence. The shared MECHANISM is a
+    pending flag set by some trigger and fired from ``_on_turn_released``
+    once the turn ends. Only the TRIGGER differs per provider:
+
+      * OpenAI: the proactive pre-cap watchdog fires inside the 5-minute
+        buffer before the 60-minute hard cap.
+      * Gemini: a ``GoAway`` lands mid-turn with ample ``time_left``.
+
+    This class owns the flag and its lifecycle so a future fourth
+    provider reuses it instead of re-deriving the same three-state dance
+    (request → defer → fire-on-release, plus clear-when-reconnect-starts
+    so a later turn release can't fire a spurious second reconnect)."""
+
+    def __init__(self) -> None:
+        self._pending = False
+
+    @property
+    def pending(self) -> bool:
+        """Whether a reconnect is currently deferred."""
+        return self._pending
+
+    def request(self) -> None:
+        """A trigger fired mid-turn: mark a reconnect as deferred."""
+        self._pending = True
+
+    def clear(self) -> None:
+        """A reconnect is now underway: drop any deferred request so a
+        later turn release cannot fire a spurious second reconnect."""
+        self._pending = False
+
+    def fire_if_pending(self, fire: Callable[[], object]) -> bool:
+        """Fire a deferred reconnect, if one is pending.
+
+        Called from ``_on_turn_released``. If a reconnect was deferred,
+        clear the flag, invoke ``fire`` (which sets the connection's
+        reconnect event), and return ``True`` so the caller can log. The
+        flag is cleared BEFORE ``fire`` so a re-entrant turn release
+        can't double-fire. Returns ``False`` (and does nothing) when no
+        reconnect is pending."""
+        if not self._pending:
+            return False
+        self._pending = False
+        fire()
+        return True

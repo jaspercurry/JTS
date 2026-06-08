@@ -64,6 +64,7 @@ from ._supervisor import (
     ESCALATION_CUE_SLUG,
     ESCALATION_RATE_LIMIT_SEC,
     ESCALATION_REPEAT_THRESHOLD,
+    DeferredReconnect,
     FailureFingerprint,
     reconnect_backoff_delay,
 )
@@ -796,9 +797,11 @@ class OpenAIRealtimeConnection(LiveConnection):
         # by `_open_session`, cancelled by `_teardown_session`.
         self._proactive_watchdog_task: asyncio.Task | None = None
         # When the watchdog fires mid-turn we defer the reconnect to
-        # avoid tearing down the user's in-flight conversation; this flag
-        # is checked in `_on_turn_released` to fire the deferred reconnect.
-        self._proactive_reconnect_pending: bool = False
+        # avoid tearing down the user's in-flight conversation; the
+        # shared primitive is checked in `_on_turn_released` to fire the
+        # deferred reconnect (provider-agnostic mechanism; OpenAI's
+        # trigger is the proactive pre-cap watchdog — see _supervisor).
+        self._deferred_reconnect = DeferredReconnect()
         self._server_vad_active: bool = False
 
         # Tight-retry-loop detection — same logic as Gemini, lifted into
@@ -1086,13 +1089,11 @@ class OpenAIRealtimeConnection(LiveConnection):
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
         # Fire any reconnect the proactive watchdog deferred for this turn.
-        if self._proactive_reconnect_pending:
-            self._proactive_reconnect_pending = False
+        if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
             logger.info(
                 "openai connection: proactive reconnect — turn just ended, "
                 "firing the watchdog-deferred reconnect",
             )
-            self._reconnect_event.set()
 
     # ------------------------------------------------------------------
     # Internal — connection lifecycle
@@ -1369,7 +1370,7 @@ class OpenAIRealtimeConnection(LiveConnection):
             self._conn_cm = None
             raise
         self._reconnect_event.clear()
-        self._proactive_reconnect_pending = False
+        self._deferred_reconnect.clear()
         self._receive_task = asyncio.create_task(self._receive_loop(conn))
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTED)
@@ -1395,7 +1396,7 @@ class OpenAIRealtimeConnection(LiveConnection):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._proactive_watchdog_task
             self._proactive_watchdog_task = None
-        self._proactive_reconnect_pending = False
+        self._deferred_reconnect.clear()
         if self._receive_task is not None:
             self._receive_task.cancel()
             try:
@@ -1490,7 +1491,7 @@ class OpenAIRealtimeConnection(LiveConnection):
                 "(uptime≈%.0fs, buffer=%.0fs)",
                 delay_sec, self._proactive_buffer_sec,
             )
-            self._proactive_reconnect_pending = True
+            self._deferred_reconnect.request()
             return
         logger.info(
             "openai connection: proactive reconnect — preempting "
