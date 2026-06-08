@@ -1257,15 +1257,16 @@ def mask_secret(value: str) -> str:
 # ---------------------------------------------------------------------------
 #
 # Several wizards (today: /system, /wake) forward a handful of read +
-# write endpoints to the jasper-control daemon on 127.0.0.1:8780. Pulled
-# out here so each wizard doesn't carry its own copy of the
-# urllib-error-to-502 plumbing.
+# write endpoints to the jasper-control daemon on 127.0.0.1:8780. These
+# are thin wrappers over jasper.control.client (the one owner of the base
+# URL / transport / error model); they keep the `(status, body)` tuple +
+# unreachable-to-502 contract the wizard callers depend on.
 
 import json as _json  # noqa: E402  (lazy: only imported by proxy helpers)
-import urllib.error  # noqa: E402
-import urllib.request  # noqa: E402
 
-DEFAULT_CONTROL_BASE = "http://127.0.0.1:8780"
+from ..control import client as control  # noqa: E402
+
+DEFAULT_CONTROL_BASE = control.DEFAULT_BASE_URL
 
 
 def proxy_get(
@@ -1275,20 +1276,17 @@ def proxy_get(
     timeout: float = 30.0,
 ) -> tuple[int, bytes]:
     """Proxy a GET to jasper-control. Returns `(status, body)`. On
-    connection failure, returns `(502, {"error": "..."} JSON)` so the
+    transport failure, returns `(502, {"error": "..."} JSON)` so the
     caller can write it straight through to its own JSON client without
-    branching on transport errors vs HTTP errors."""
-    url = control_base.rstrip("/") + path
+    branching on transport errors vs HTTP errors. A non-2xx upstream
+    status is forwarded verbatim as `(status, body)`."""
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read() or b'{"error":"upstream HTTP error"}'
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        body = _json.dumps(
+        r = control.get(path, base_url=control_base, timeout=timeout)
+        return r.status, r.body
+    except control.ControlError as e:
+        return 502, _json.dumps(
             {"error": f"jasper-control unreachable: {e}"},
         ).encode()
-        return 502, body
 
 
 def proxy_post(
@@ -1301,25 +1299,15 @@ def proxy_post(
     """Proxy a POST to jasper-control. `body` defaults to empty (for
     parameterless action endpoints); pass JSON bytes for endpoints that
     take parameters. Same `(status, body)` contract as `proxy_get`."""
-    url = control_base.rstrip("/") + path
-    data = body if body is not None else b""
-    req = urllib.request.Request(
-        url, data=data, method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Content-Length": str(len(data)),
-        },
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read() or b'{"error":"upstream HTTP error"}'
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        err_body = _json.dumps(
+        r = control.post(
+            path, data=(body or b""), base_url=control_base, timeout=timeout,
+        )
+        return r.status, r.body
+    except control.ControlError as e:
+        return 502, _json.dumps(
             {"error": f"jasper-control unreachable: {e}"},
         ).encode()
-        return 502, err_body
 
 
 def send_proxy_json(
