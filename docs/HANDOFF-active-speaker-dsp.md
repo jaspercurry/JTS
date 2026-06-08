@@ -79,7 +79,14 @@
 > enablement plus a loaded/current protected startup config can turn it true
 > for woofer, mid, and subwoofer topology targets. If CamillaDSP is no longer
 > running the loaded startup config path, readiness blocks before the playback
-> backend is reached.
+> backend is reached. The `/sound/` safety card now presents those same
+> gates as an operator sequence — check environment, stage protected
+> startup, check protected path, load protected startup, arm safe session,
+> check one target, reset to the level floor, then verify an artifact before
+> any audible test. The readiness card also summarizes the selected target,
+> backend, rollback state, test level, and "why sound is blocked" reasons;
+> tweeter/horn target actions stay locked in this UI slice even when a lab
+> backend is enabled.
 > `/sound/` also includes a driver-research helper for active-crossover
 > planning. It generates a prompt from the current output roles and accepts a
 > pasted JSON object with kind `jts_active_crossover_driver_research`.
