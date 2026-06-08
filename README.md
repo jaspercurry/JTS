@@ -376,6 +376,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
   HANDOFF-apple-music.md   Apple Music integration research + plan (no code yet)
+  HANDOFF-dlna.md          DLNA/UPnP media-input design (no code yet)
   HANDOFF-peering.md            Multi-Pi wake arbitration (off by default)
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
@@ -679,6 +680,17 @@ reference. Currently:
   build plan, and the prior-art survey across Cider, pyatv,
   Volumio, Sonos SMAPI, etc. **Start here before any
   `jasper/apple_music/` work.**
+- [`HANDOFF-dlna.md`](docs/HANDOFF-dlna.md) — **Research / design
+  only, not yet implemented.** Design for DLNA/UPnP media input as
+  a network-only music source via gmrender-resurrect: why DLNA
+  rather than Google Cast (hardware-fused Cast auth no OSS project
+  has solved), the gmrender vs upmpdcli renderer analysis, the
+  Python state/preemption sidecar, and the decision records (GENA
+  eventing vs polling, Pause+disarm preemption, sidecar-owned
+  preempt proxy). The audio-path section is written against the
+  current per-source fan-in lane / `jasper-outputd` topology —
+  DLNA adds one private snd-aloop lane (allocation is full, so it
+  must reuse one). **Start here before any `jasper/dlna/` work.**
 - [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
   Research only, no implementation yet. Design space for an OTA
   "Check for updates" button on the management dashboard: option

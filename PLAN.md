@@ -71,6 +71,7 @@ Starting points:
 | ~~**v8**~~ | ~~**USB gadget** (UAC2) inline DSP mode~~ | **Shipped 2026-05-23** as a fourth music source: host plugs into Pi USB-C, JTS exposes itself as a USB audio output via the 8086 splitter. ~22 MB RAM on, 0 off, disabled by default. Adapts the PiCorrect ConfigFS gadget stack into a fourth source under `jasper-mux`. The original "inline DSP mode" interpretation (Pi replacing PiCorrect's role entirely) is a deeper follow-up; same gadget descriptor, would require CamillaDSP topology changes. See [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md). |
 | ~~**v9**~~ | ~~Home Assistant bridge tool (single proxy function)~~ | **Shipped in v1** (May 2026) via `home_assistant` voice tool wrapping HA's `/api/conversation/process`. JTS is first-of-kind for xAI Grok Voice + HA. Wizard at `http://jts.local/ha/`. Full architecture in [docs/HANDOFF-homeassistant.md](docs/HANDOFF-homeassistant.md). |
 | **v10** | **Apple Music** voice-controlled source (fifth mux source) | Vendors [Music Assistant](https://github.com/music-assistant/server)'s streaming pipeline (Apache-2.0): MusicKit JS auth → Apple's private `webPlayback` API → Widevine L3 key exchange via `pywidevine` → ffmpeg `-decryption_key` CENC decryption → `hw:Loopback,0,0` (same ALSA path as librespot). 256 kbps AAC ceiling, 180-day token re-auth, user-supplied CDM credentials. Wizard at `http://jts.local/apple-music/`. Opt-in — requires Apple Developer account ($99/yr) + CDM blobs. Pre-implementation gate: MA spike on Pi 5 to validate the full chain. See [docs/HANDOFF-apple-music.md](docs/HANDOFF-apple-music.md). |
+| **DLNA/UPnP** *(new-sources cluster, alongside Apple Music — no fixed ordinal)* | **DLNA/UPnP media input** — an additional **network-only** music source via gmrender-resurrect | Fills the Android "cast audio to speaker" gap (Google Cast needs hardware-fused auth no OSS project has solved). Network-only, no hardware dependency; ~13–20 MB on, 0 off. Adds **one private snd-aloop fan-in lane** (the per-source lane pattern), so it touches no other source. Phase 1: gmrender C binary + Python state/preempt sidecar. Phase 2: A/B upmpdcli for OpenHome + gapless. Sidecar-owns-preemption keeps a future renderer swap cheap. **Substream allocation is full — DLNA must reuse a lane (design decision first).** Sits in the post-USB-sink new-sources cluster, peer to Apple Music; not sequenced before Snapcast (v5). See [docs/HANDOFF-dlna.md](docs/HANDOFF-dlna.md) (design-only). |
 
 The v1 architecture decisions that protect this sequence:
 - **Always-on CamillaDSP** is the pre-req for ducking *and* room
@@ -79,6 +80,12 @@ The v1 architecture decisions that protect this sequence:
   and v9's HA bridge.
 - **48 kHz everywhere** keeps resampling out of the hot path now and
   through Snapcast later.
+- **Per-source fan-in substream lanes** (each renderer writes its own
+  private snd-aloop lane; the Rust `jasper-fanin` daemon sums them
+  into substream 7 for CamillaDSP, then `jasper-outputd` owns the DAC)
+  let a new source — Apple Music, DLNA — add **one private lane**
+  without touching the other sources or a shared mixer. (This replaced
+  the retired shared-renderer-dmix topology.)
 - **Systemd-managed services in `/opt/jasper`** keep the install
   survivable.
 
