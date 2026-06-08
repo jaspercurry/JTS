@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
+import json as _json
 import logging
-
-import httpx
+from typing import Awaitable, Callable, Optional
+from urllib.parse import urlsplit
 
 # pyudev is Linux-only (Pi runtime). Imported lazily inside _supervise
 # so the rest of the module (registry types, _TapCounter, _Coalescer)
@@ -46,6 +48,60 @@ DEFAULT_CONTROL_URL = "http://127.0.0.1:8780"
 COALESCE_WINDOW_SEC = 0.08
 
 
+# Async poster signature: (method, path, body-dict-or-None) -> HTTP status.
+Poster = Callable[[str, str, Optional[dict]], Awaitable[int]]
+
+
+def _make_localhost_poster(control_url: str, *, timeout: float = 2.0) -> Poster:
+    """Build an async poster that does one blocking stdlib HTTP round-trip
+    per call against `control_url` (localhost, http only).
+
+    Replaces httpx.AsyncClient: jasper-control is always on localhost with
+    no TLS, so httpx's connection pooling / HTTP2 / TLS machinery is pure
+    RAM tax (~13 MB Pss on jasper-input). A localhost TCP connect is
+    microseconds, so no pooling is needed — each call opens a fresh
+    HTTPConnection and closes it in `finally`, keeping the file-descriptor
+    count flat regardless of outcome (success, HTTP error, refused, timeout).
+
+    The blocking request runs in `asyncio.to_thread` so the bridge event
+    loop stays responsive (~50 us thread-handoff cost, invisible at the
+    bridge's max ~12 calls/sec after coalescing). Caveat: a to_thread call
+    cannot be cancelled mid-flight, so if a reader task is cancelled while
+    a request is blocked, the worker thread runs until the socket `timeout`
+    (2 s) expires — bounded and only on shutdown.
+    """
+    parts = urlsplit(control_url)
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or 80
+
+    def _request(method: str, path: str, body: Optional[dict]) -> int:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            payload = _json.dumps(body).encode() if body is not None else None
+            headers = (
+                {"Content-Type": "application/json"} if payload is not None else {}
+            )
+            conn.request(method, path, body=payload, headers=headers)
+            resp = conn.getresponse()
+            resp.read()  # drain so the socket can close cleanly
+            return resp.status
+        finally:
+            conn.close()
+
+    async def post(method: str, path: str, body: Optional[dict]) -> int:
+        return await asyncio.to_thread(_request, method, path, body)
+
+    return post
+
+
+# Network/protocol errors the poster can raise. OSError covers
+# ConnectionRefusedError (jasper-control down) and no-route; TimeoutError
+# fires on socket timeout; HTTPException covers protocol oddities. Catching
+# all three keeps a transient jasper-control restart from crashing a
+# reader task.
+_POST_ERRORS = (OSError, TimeoutError, http.client.HTTPException)
+
+
 class _Coalescer:
     """Per-keycode accumulator: sums `delta_percent` over a short
     window, fires one HTTP POST when the window quiets.
@@ -56,13 +112,12 @@ class _Coalescer:
 
     def __init__(
         self,
-        client: httpx.AsyncClient,
-        control_url: str,
+        post: Poster,
         action: KeyAction,
         device_name: str,
     ) -> None:
-        self._client = client
-        self._url = control_url + action.path
+        self._post = post
+        self._path = action.path
         self._per_hit_delta = int(action.body.get("delta_percent", 0))
         self._device_name = device_name
         self._pending = 0
@@ -82,14 +137,14 @@ class _Coalescer:
         delta = self._pending
         self._pending = 0
         try:
-            r = await self._client.post(
-                self._url, json={"delta_percent": delta}, timeout=2.0,
+            status = await self._post(
+                "POST", self._path, {"delta_percent": delta},
             )
             logger.info(
                 "event=knob.adjust device=%s delta=%+d status=%d",
-                self._device_name, delta, r.status_code,
+                self._device_name, delta, status,
             )
-        except httpx.HTTPError as e:
+        except _POST_ERRORS as e:
             logger.warning(
                 "event=knob.adjust.failed device=%s delta=%+d err=%s",
                 self._device_name, delta, e,
@@ -97,25 +152,23 @@ class _Coalescer:
 
 
 async def _post_once(
-    client: httpx.AsyncClient,
-    control_url: str,
+    post: Poster,
     action: KeyAction,
     device_name: str,
     key_name: str,
 ) -> None:
     """Fire-once HTTP call for a non-coalescing key (mute, etc.)."""
     try:
-        r = await client.request(
+        status = await post(
             action.method,
-            control_url + action.path,
-            json=action.body or None,
-            timeout=2.0,
+            action.path,
+            action.body or None,
         )
         logger.info(
             "event=knob.action device=%s key=%s path=%s status=%d",
-            device_name, key_name, action.path, r.status_code,
+            device_name, key_name, action.path, status,
         )
-    except httpx.HTTPError as e:
+    except _POST_ERRORS as e:
         logger.warning(
             "event=knob.action.failed device=%s key=%s err=%s",
             device_name, key_name, e,
@@ -142,14 +195,12 @@ class _TapCounter:
 
     def __init__(
         self,
-        client: httpx.AsyncClient,
-        control_url: str,
+        post: Poster,
         action: TapAction,
         device_name: str,
         key_name: str,
     ) -> None:
-        self._client = client
-        self._control_url = control_url
+        self._post = post
         self._action = action
         self._device_name = device_name
         self._key_name = key_name
@@ -208,18 +259,17 @@ class _TapCounter:
             )
             return
         try:
-            r = await self._client.request(
+            status = await self._post(
                 target.method,
-                self._control_url + target.path,
-                json=target.body or None,
-                timeout=2.0,
+                target.path,
+                target.body or None,
             )
             logger.info(
                 "event=knob.tap device=%s key=%s count=%d path=%s status=%d",
                 self._device_name, self._key_name, count, target.path,
-                r.status_code,
+                status,
             )
-        except httpx.HTTPError as e:
+        except _POST_ERRORS as e:
             logger.warning(
                 "event=knob.tap.failed device=%s key=%s count=%d path=%s err=%s",
                 self._device_name, self._key_name, count, target.path, e,
@@ -239,8 +289,7 @@ def _key_name(code: int) -> str:
 async def _read_device(
     device_path: str,
     device: Device,
-    client: httpx.AsyncClient,
-    control_url: str,
+    post: Poster,
 ) -> None:
     """Translate key events from one matched device into HTTP calls.
     Exits cleanly on unplug (OSError) or cancellation."""
@@ -284,23 +333,19 @@ async def _read_device(
                 tc = tap_counters.get(ev.code)
                 if tc is None:
                     tc = _TapCounter(
-                        client, control_url, action, device.name,
-                        _key_name(ev.code),
+                        post, action, device.name, _key_name(ev.code),
                     )
                     tap_counters[ev.code] = tc
                 tc.hit()
             elif action.coalesce:
                 cz = coalescers.get(ev.code)
                 if cz is None:
-                    cz = _Coalescer(
-                        client, control_url, action, device.name,
-                    )
+                    cz = _Coalescer(post, action, device.name)
                     coalescers[ev.code] = cz
                 cz.hit()
             else:
                 t = asyncio.create_task(_post_once(
-                    client, control_url, action, device.name,
-                    _key_name(ev.code),
+                    post, action, device.name, _key_name(ev.code),
                 ))
                 tasks.add(t)
                 t.add_done_callback(tasks.discard)
@@ -329,8 +374,9 @@ async def _supervise(control_url: str) -> None:
     monitor.filter_by("input")
 
     active: dict[str, asyncio.Task] = {}
+    post = _make_localhost_poster(control_url)
 
-    def _maybe_start(client: httpx.AsyncClient, path: str) -> None:
+    def _maybe_start(path: str) -> None:
         try:
             dev = InputDevice(path)
         except OSError:
@@ -351,50 +397,47 @@ async def _supervise(control_url: str) -> None:
         existing = active.get(path)
         if existing is not None and not existing.done():
             return
-        task = asyncio.create_task(
-            _read_device(path, entry, client, control_url),
-        )
+        task = asyncio.create_task(_read_device(path, entry, post))
         active[path] = task
 
-    async with httpx.AsyncClient() as client:
-        for path in list_devices():
-            _maybe_start(client, path)
+    for path in list_devices():
+        _maybe_start(path)
 
-        if not active:
-            logger.info(
-                "event=knob.bridge.idle (no known accessories attached; "
-                "waiting for hot-plug; known=%s)",
-                ", ".join(d.name for d in KNOWN_DEVICES),
-            )
+    if not active:
+        logger.info(
+            "event=knob.bridge.idle (no known accessories attached; "
+            "waiting for hot-plug; known=%s)",
+            ", ".join(d.name for d in KNOWN_DEVICES),
+        )
 
-        loop = asyncio.get_running_loop()
-        events: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    events: asyncio.Queue = asyncio.Queue()
 
-        def _udev_cb(action: str, dev: pyudev.Device) -> None:
-            node = dev.device_node
-            if node and node.startswith("/dev/input/event"):
-                loop.call_soon_threadsafe(events.put_nowait, (action, node))
+    def _udev_cb(action: str, dev: pyudev.Device) -> None:
+        node = dev.device_node
+        if node and node.startswith("/dev/input/event"):
+            loop.call_soon_threadsafe(events.put_nowait, (action, node))
 
-        observer = pyudev.MonitorObserver(monitor, _udev_cb)
-        observer.start()
+    observer = pyudev.MonitorObserver(monitor, _udev_cb)
+    observer.start()
 
-        try:
-            while True:
-                # Reap completed reader tasks.
-                for p in list(active.keys()):
-                    if active[p].done():
-                        del active[p]
-                action, node = await events.get()
-                if action == "add":
-                    # udev fires before the kernel finishes wiring up
-                    # /dev/input/event* sometimes — a short sleep
-                    # avoids racing the device-open.
-                    await asyncio.sleep(0.1)
-                    _maybe_start(client, node)
-        finally:
-            observer.stop()
-            for task in active.values():
-                task.cancel()
+    try:
+        while True:
+            # Reap completed reader tasks.
+            for p in list(active.keys()):
+                if active[p].done():
+                    del active[p]
+            action, node = await events.get()
+            if action == "add":
+                # udev fires before the kernel finishes wiring up
+                # /dev/input/event* sometimes — a short sleep
+                # avoids racing the device-open.
+                await asyncio.sleep(0.1)
+                _maybe_start(node)
+    finally:
+        observer.stop()
+        for task in active.values():
+            task.cancel()
 
 
 def main() -> int:

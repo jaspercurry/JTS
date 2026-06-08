@@ -44,8 +44,6 @@ import logging
 import re
 from typing import Optional
 
-import httpx
-
 from . import librespot_state
 from .volume_coordinator import (
     AIRPLAY_DB_MAX,
@@ -76,15 +74,9 @@ class VolumeObserver:
         coordinator: VolumeCoordinator,
         *,
         librespot_state_path: str = librespot_state.DEFAULT_PATH,
-        http_client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         self._coord = coordinator
         self._librespot_state_path = librespot_state_path
-        # HTTP client is no longer used for Spotify (librespot has no
-        # control HTTP API), but kept around in case future observers
-        # need it (e.g. an MPRIS-over-HTTP probe).
-        self._http = http_client or httpx.AsyncClient(timeout=2.0)
-        self._owns_http = http_client is None
         # Last value seen per source (in source-native units), so we
         # only fire `observe_source_volume` on actual change. None
         # means "haven't observed this source yet" → first observed
@@ -120,8 +112,6 @@ class VolumeObserver:
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
         self._task = None
-        if self._owns_http:
-            await self._http.aclose()
 
     async def _run(self) -> None:
         while True:
