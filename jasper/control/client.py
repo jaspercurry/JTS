@@ -30,11 +30,13 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
-import logging
 import os
 from urllib.parse import urlsplit
 
-logger = logging.getLogger(__name__)
+# No module logger by design: the client's failure surface is the ControlError
+# it raises (which carries method + path + cause); callers log it with their
+# own context (event=knob.adjust.failed, event=usbsink.volume_post_failed, …).
+# A client-side log would just duplicate that without the caller's context.
 
 DEFAULT_HOST = os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("JASPER_CONTROL_PORT") or "8780")
@@ -177,6 +179,12 @@ class AsyncControlClient:
     transport in ``asyncio.to_thread`` so the event loop stays responsive.
     Bind the base URL once (e.g. from ``--control-url``) and reuse it; inject
     a fake in tests. Raises :class:`ControlError` on transport failure.
+
+    Caveat: ``asyncio.to_thread`` cannot be cancelled mid-flight, so if the
+    calling task is cancelled while a request is in progress, the worker
+    thread runs until the socket ``timeout`` expires. This is bounded (the
+    per-request timeout) and only matters on shutdown — the alternative
+    (a cancellable transport) means httpx, the RAM cost this avoids.
     """
 
     def __init__(
