@@ -5557,13 +5557,24 @@ def _local_peer_id() -> str:
 
 
 def check_grouping() -> CheckResult:
-    """Verify /var/lib/jasper/grouping.env is internally consistent.
+    """Verify /var/lib/jasper/grouping.env is consistent AND actually up.
 
     Off by default; the user opts in via the grouping web wizard. We
-    return `ok` for both OFF (deliberate) and ON-and-valid (configured)
-    — the `warn` case surfaces the fail-LOUD "enabled but broken" state
-    that jasper.multiroom.config carries on GroupingConfig.error."""
+    return `ok` for OFF (deliberate). For ON we `warn` on two failure
+    classes:
+      - **config invalid** — the fail-LOUD "enabled but broken" state
+        that jasper.multiroom.config carries on GroupingConfig.error;
+      - **runtime degraded** — configured-valid but a snap unit the
+        reconciler's plan wants running is not `active` (e.g. a follower
+        whose snapclient can't reach its leader, or — until the P1.3
+        producer ships — a leader whose snapserver has no FIFO to read).
+        This is §7's "make it visible, not invisible": a green config
+        with silent breakage underneath is exactly what we refuse to
+        show. Runtime health is derived by the same pure
+        `derive_grouping_runtime` the /state surface uses."""
     from ..multiroom.config import load_config as _load_grouping_config
+    from ..multiroom.reconcile import plan as _grouping_plan
+    from ..multiroom.state import derive_grouping_runtime
 
     label = "grouping: mode"
     cfg = _load_grouping_config()
@@ -5571,13 +5582,27 @@ def check_grouping() -> CheckResult:
         return CheckResult(label, "ok", "single-speaker (grouping off)")
     if cfg.error is not None:
         return CheckResult(label, "warn", cfg.error)
-    detail = (
+
+    # Enabled + valid: probe the units the plan wants running and derive
+    # runtime health through the shared pure function.
+    units = [it.unit for it in _grouping_plan(cfg).intents]
+    out = _run(["systemctl", "is-active", *units]).stdout.splitlines()
+    states = (
+        {u: (out[i].strip() or "unknown") for i, u in enumerate(units)}
+        if len(out) == len(units)
+        else {u: "unknown" for u in units}
+    )
+    runtime = derive_grouping_runtime(cfg, states)
+
+    base = (
         f"on — role={cfg.role} channel={cfg.channel} "
         f"bond_id={cfg.bond_id} buffer_ms={cfg.buffer_ms}"
     )
     if cfg.role == "follower":
-        detail += f" leader_addr={cfg.leader_addr}"
-    return CheckResult(label, "ok", detail)
+        base += f" leader_addr={cfg.leader_addr}"
+
+    status = "warn" if runtime["health"] == "degraded" else "ok"
+    return CheckResult(label, status, f"{base} — {runtime['detail']}")
 
 
 def check_avahi_daemon() -> CheckResult:
