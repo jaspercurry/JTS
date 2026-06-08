@@ -148,6 +148,9 @@ Run for real from a Pi-local checkout:
      /var/lib/jasper/* env files for voice provider, transit, weather,
      wake detection legs, multi-room grouping, and WiFi guardian
      recovery.
+   - Seed JASPER_SPEAKER_ROOM in /var/lib/jasper/speaker_name.env from
+     the legacy peering room (JASPER_PEER_ROOM in peering.env) when the
+     identity room is unset; one-time, never overwrites a set room.
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, and correction TLS CA/cert files.
@@ -1626,6 +1629,7 @@ PY
     migrate_wifi_guardian
     migrate_wake_legs_config
     migrate_grouping
+    migrate_speaker_room
 }
 
 render_voice_provider_ids_manifest() {
@@ -1907,6 +1911,80 @@ migrate_grouping() {
         sed -i.bak "/^${k}=/d" "${jasper_env}"
         rm -f "${jasper_env}.bak"
     done
+}
+
+# Seed the speaker's room label into the speaker-identity home
+# (/var/lib/jasper/speaker_name.env, JASPER_SPEAKER_ROOM) from the
+# legacy peering room (/var/lib/jasper/peering.env, JASPER_PEER_ROOM)
+# so an existing household that already picked a room at /peers/ carries
+# that room into the identity home where /rooms and control_advert now
+# read it. One-time, non-destructive:
+#
+#   - If speaker_name.env already has a NON-EMPTY JASPER_SPEAKER_ROOM,
+#     leave it untouched (don't overwrite an operator-set room).
+#   - Otherwise (line absent OR present-but-empty), copy the explicit
+#     JASPER_PEER_ROOM value from peering.env, if any.
+#   - If peering.env has no explicit room (auto-derived default), do
+#     nothing — the identity reader's legacy peering fallback keeps
+#     /rooms consistent at runtime, so there is nothing to persist.
+#
+# SCOPE: peering keeps reading its own JASPER_PEER_ROOM for wake-arb
+# display; this only mirrors the value into the identity home. The full
+# peering->identity room consolidation is a separate flagged follow-up.
+#
+# Fail-soft: any read/write hiccup is a warn-and-continue, never an
+# install failure. Idempotent — a second run finds the room already set
+# and no-ops. The value is written quoted to match the format
+# jasper.speaker_name.write_state emits and read_state parses.
+migrate_speaker_room() {
+    local speaker_env="${STATE_DIR}/speaker_name.env"
+    local peering_env="${STATE_DIR}/peering.env"
+
+    # Nothing to seed into if the identity file isn't there yet. The
+    # fresh-install seed in seed_env_defaults creates it before this
+    # runs, so this guard only fires on an odd partial state.
+    [[ -f "${speaker_env}" ]] || return 0
+
+    # Already set (non-empty) -> respect the operator's choice, no-op.
+    local cur_line cur_room
+    cur_line=$(grep -E '^JASPER_SPEAKER_ROOM=' "${speaker_env}" 2>/dev/null || true)
+    if [[ -n "${cur_line}" ]]; then
+        cur_room="${cur_line#JASPER_SPEAKER_ROOM=}"
+        cur_room="${cur_room%$'\r'}"
+        cur_room="${cur_room%$'\n'}"
+        # Strip surrounding double quotes (write_state quotes the value).
+        cur_room="${cur_room#\"}"
+        cur_room="${cur_room%\"}"
+        if [[ -n "${cur_room}" ]]; then
+            return 0
+        fi
+    fi
+
+    # No legacy peering room to carry over -> no-op.
+    [[ -f "${peering_env}" ]] || return 0
+    local peer_line peer_room
+    peer_line=$(grep -E '^JASPER_PEER_ROOM=' "${peering_env}" 2>/dev/null || true)
+    [[ -z "${peer_line}" ]] && return 0
+    peer_room="${peer_line#JASPER_PEER_ROOM=}"
+    peer_room="${peer_room%$'\r'}"
+    peer_room="${peer_room%$'\n'}"
+    # peering.env writes the value bare, but tolerate quotes defensively.
+    peer_room="${peer_room#\"}"
+    peer_room="${peer_room%\"}"
+    [[ -z "${peer_room}" ]] && return 0
+
+    # Replace any present-but-empty room line, then append the seeded
+    # value so a stale `JASPER_SPEAKER_ROOM=""` doesn't leave a duplicate.
+    if ! sed -i.bak '/^JASPER_SPEAKER_ROOM=/d' "${speaker_env}" 2>/dev/null; then
+        rm -f "${speaker_env}.bak"
+        echo "  migrate_speaker_room: could not update ${speaker_env} (left unchanged)"
+        return 0
+    fi
+    rm -f "${speaker_env}.bak"
+    printf 'JASPER_SPEAKER_ROOM="%s"\n' "${peer_room}" >> "${speaker_env}"
+    chmod 0644 "${speaker_env}" 2>/dev/null || true
+    echo "  migrate_speaker_room: seeded JASPER_SPEAKER_ROOM=${peer_room}"
+    echo "    into ${speaker_env} from ${peering_env}"
 }
 
 # Migrate stale weather env vars from /etc/jasper/jasper.env into the
@@ -3107,17 +3185,66 @@ install_avahi_jasper_control() {
     # us via service discovery instead of a hardcoded hostname. See
     # deploy/avahi/jasper-control.service for the rationale and the
     # firmware-side counterpart in firmware/dial/src/discovery.cpp.
-    install -d -m 0755 /etc/avahi/services
+    #
+    # The advertised file now also carries a name= TXT record with the
+    # speaker's friendly display name (the /speaker identity), so the
+    # /rooms directory shows friendly names. Because the name is a
+    # per-runtime value, the file is RENDERED from a TEMPLATE rather
+    # than copied statically: install the template OUT of
+    # /etc/avahi/services/ (Avahi must not parse its __SPEAKER_NAME__
+    # placeholder as XML — same reasoning as install_peering_template),
+    # then let jasper.control_advert.render_control_advert substitute
+    # the (XML-escaped) name, atomic-write the live file, and reload
+    # Avahi. The /speaker save path re-renders on a name change.
+    install -d -m 0755 /etc/jasper/avahi-templates
     install -m 0644 \
-        "${REPO_DIR}/deploy/avahi/jasper-control.service" \
-        /etc/avahi/services/jasper-control.service
-    # Reload — avahi-daemon picks up new service files via inotify
-    # but a SIGHUP is more deterministic on first install. Best
-    # effort: avahi-daemon may not be running yet on a fresh image.
-    systemctl reload avahi-daemon 2>/dev/null \
-        || systemctl restart avahi-daemon 2>/dev/null \
-        || true
-    echo "  Advertised _jasper-control._tcp via avahi (port 8780)"
+        "${REPO_DIR}/deploy/avahi/jasper-control.service.template" \
+        /etc/jasper/avahi-templates/jasper-control.service
+
+    install -d -m 0755 /etc/avahi/services
+    # Render the live service from the template via the Python module
+    # (it does the XML-escape, atomic write, and Avahi reload). The
+    # package is already pip-installed by install_jasper above, so the
+    # import resolves here. render_control_advert is fail-soft (returns
+    # False, never raises); we still guard the whole call with `|| true`
+    # plus a static-file fallback so a render failure can never leave
+    # _jasper-control._tcp un-advertised — the dial (and jasper-doctor's
+    # "avahi: _jasper-control._tcp" check) depend on it always existing.
+    local rendered=0
+    if [[ -x "${INSTALL_DIR}/.venv/bin/python" ]] \
+       && "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import sys
+
+from jasper.control_advert import render_control_advert
+
+# name=None -> read the current /speaker name (env-first then
+# /var/lib/jasper/speaker_name.env), empty -> hostname default, so the
+# TXT is never empty. render_control_advert handles the reload itself.
+sys.exit(0 if render_control_advert() else 1)
+PY
+    then
+        rendered=1
+        echo "  Advertised _jasper-control._tcp via avahi (port 8780, name= TXT)"
+    fi
+
+    if [[ "${rendered}" != "1" ]]; then
+        # Fallback: the render didn't run (no venv yet) or failed. Drop
+        # the static, name-less service file so the speaker still
+        # advertises and the doctor check stays green. The friendly
+        # name TXT is lost until the next successful render (e.g. the
+        # next /speaker save or deploy), but discovery itself is intact.
+        echo "  WARNING: control-advert render unavailable; installing static jasper-control.service (no name= TXT)"
+        install -m 0644 \
+            "${REPO_DIR}/deploy/avahi/jasper-control.service" \
+            /etc/avahi/services/jasper-control.service
+        # Reload — avahi-daemon picks up new service files via inotify
+        # but a SIGHUP is more deterministic on first install. Best
+        # effort: avahi-daemon may not be running yet on a fresh image.
+        systemctl reload avahi-daemon 2>/dev/null \
+            || systemctl restart avahi-daemon 2>/dev/null \
+            || true
+        echo "  Advertised _jasper-control._tcp via avahi (port 8780)"
+    fi
 }
 
 install_peering_template() {

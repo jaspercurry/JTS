@@ -215,118 +215,54 @@ def _push_recent_url(existing: list[str], url: str) -> list[str]:
 
 # ---- mDNS discovery ---------------------------------------------------------
 
-async def _discover_async(timeout: float) -> list[dict[str, str]]:
-    """Browse the LAN for `_home-assistant._tcp.local.` instances and
-    resolve each one to {name, host, port, location_name, version, url}.
-
-    Returns at most one entry per mDNS service name. Cross-subnet
-    households return [] (mDNS is link-local). Lazy zeroconf import
-    keeps module load cheap when this endpoint isn't hit."""
-    # Lazy import — same pattern as jasper/peering/discovery.py
-    from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
-
-    found: dict[str, dict[str, str]] = {}
-    resolve_tasks: list[asyncio.Task] = []
-    aiozc = AsyncZeroconf()
-
-    async def _resolve(service_type: str, name: str) -> None:
-        info = AsyncServiceInfo(service_type, name)
-        try:
-            ok = await info.async_request(aiozc.zeroconf, 3000)
-        except Exception:  # noqa: BLE001
-            logger.debug("ha discover: resolve failed for %s", name, exc_info=True)
-            return
-        if not ok:
-            return
-        props_raw = info.properties or {}
-        props: dict[str, str] = {}
-        for k, v in props_raw.items():
-            try:
-                key = k.decode() if isinstance(k, bytes) else str(k)
-                val = (v.decode() if isinstance(v, bytes) else str(v)) if v else ""
-                props[key] = val
-            except Exception:  # noqa: BLE001
-                continue
-        addrs = []
-        try:
-            addrs = list(info.parsed_addresses())
-        except Exception:  # noqa: BLE001
-            pass
-        # SRV record is the reliable source for host:port — TXT fields
-        # like internal_url / external_url / base_url are often empty
-        # strings in practice.
-        host = (info.server or "").rstrip(".") if info.server else ""
-        port = info.port or 8123
-        # Prefer an IPv4 address if available; falls back to mDNS host.
-        # python-zeroconf returns IPv4 addrs first when both are present,
-        # so addrs[0] biases toward v4 — important because some HA
-        # installs advertise both and v4 is the LAN-default-friendly
-        # path. If only v6 is available we use it AND bracket it per
-        # RFC 3986 — `http://fe80::1:8123` is not a valid URL.
-        target_host = _bracket_ipv6(addrs[0]) if addrs else host
-        if not target_host:
-            return
-        url = _normalize_url(f"http://{target_host}:{port}")
-        found[name] = {
-            "name": name,
-            "host": host,
-            "port": str(port),
-            "location_name": props.get("location_name", "") or "Home Assistant",
-            "version": props.get("version", ""),
-            "url": url,
-        }
-
-    def _on_change(zeroconf, service_type, name, state_change):  # noqa: ANN001
-        # zeroconf calls us from its own thread; create_task schedules on
-        # the running loop. We don't care about Removed events for a
-        # one-shot scan.
-        from zeroconf import ServiceStateChange
-        if state_change in (ServiceStateChange.Added, ServiceStateChange.Updated):
-            try:
-                task = asyncio.get_running_loop().create_task(_resolve(service_type, name))
-                resolve_tasks.append(task)
-            except RuntimeError:
-                # Loop may have closed already — fine, just drop the event.
-                pass
-
-    browser = AsyncServiceBrowser(
-        aiozc.zeroconf,
-        [HA_SERVICE_TYPE],
-        handlers=[_on_change],
-    )
-    try:
-        await asyncio.sleep(timeout)
-    finally:
-        try:
-            await browser.async_cancel()
-        except Exception:  # noqa: BLE001
-            pass
-        # Drain pending resolves so we collect everything the browser
-        # surfaced before the timeout fired.
-        if resolve_tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*resolve_tasks, return_exceptions=True),
-                    timeout=2.0,
-                )
-            except asyncio.TimeoutError:
-                pass
-        try:
-            await aiozc.async_close()
-        except Exception:  # noqa: BLE001
-            pass
-
-    return list(found.values())
-
-
 def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]]:
-    """Sync wrapper around _discover_async — used by the (sync)
-    BaseHTTPRequestHandler. Each call spins up its own event loop;
-    /discover is rare enough that the loop-startup cost (~10 ms) is
-    fine."""
+    """Browse the LAN for `_home-assistant._tcp.local.` instances and map
+    each to {name, host, port, location_name, version, url}.
+
+    The browse/resolve/parse mechanics are the shared one-shot primitive
+    `jasper.mdns.browse_once` (lazy zeroconf import, fail-soft → [] on any
+    failure, drops address-less instances). This function keeps the
+    HA-specific *policy*: SRV host as `host`, port defaulting to 8123,
+    IPv4-preferred `target_host`, base_url construction via `_normalize_url`,
+    and location_name/version from the TXT records.
+
+    `browse_once` is V4Only — that's fine here: HA already prefers an IPv4
+    address for the base URL (the old hand-rolled browse picked addrs[0],
+    which python-zeroconf orders v4-first), so a v4-only resolve matches the
+    address we'd have used anyway. `_bracket_ipv6` is kept on the
+    target_host purely as defensive parity with the old code; V4Only means
+    it's effectively a passthrough.
+
+    Returns at most one entry per mDNS service name (browse_once de-dupes by
+    instance name). Cross-subnet households return [] (mDNS is link-local).
+    Synchronous: browse_once runs its own event loop internally."""
     try:
-        return asyncio.run(_discover_async(timeout))
-    except Exception:  # noqa: BLE001
+        from ..mdns import browse_once
+
+        out: list[dict[str, str]] = []
+        for svc in browse_once(HA_SERVICE_TYPE, timeout=timeout):
+            # SRV record is the reliable source for host:port — TXT fields
+            # like internal_url / external_url / base_url are often empty
+            # strings in practice.
+            host = (svc.server or "").rstrip(".")
+            port = svc.port or 8123
+            # Prefer a resolved address (browse_once drops address-less
+            # instances, so svc.addresses is non-empty); fall back to the
+            # mDNS host only defensively. V4Only → addresses are IPv4.
+            target_host = _bracket_ipv6(svc.addresses[0]) if svc.addresses else host
+            if not target_host:
+                continue
+            url = _normalize_url(f"http://{target_host}:{port}")
+            out.append({
+                "name": svc.name,
+                "host": host,
+                "port": str(port),
+                "location_name": svc.txt.get("location_name", "") or "Home Assistant",
+                "version": svc.txt.get("version", ""),
+                "url": url,
+            })
+        return out
+    except Exception:  # noqa: BLE001 — discovery is best-effort; never 500 /discover
         logger.exception("ha discover: scan failed")
         return []
 

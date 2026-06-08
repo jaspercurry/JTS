@@ -1,0 +1,38 @@
+<?xml version="1.0" standalone='no'?>
+<!--
+  Advertise jasper-control over mDNS so the rotary dial can find the
+  Pi without hardcoding a hostname. The dial does
+    MDNS.queryService("jasper-control", "tcp")
+  at every WiFi-up and posts to whichever Pi answers; if no Pi
+  answers it falls back to the dial's compile-time JASPER_HOST.
+  This file lets us swap the Pi underneath the dial without
+  re-flashing firmware.
+
+  Survives Pi rename and IP change. avahi auto-substitutes %h
+  with the system hostname so the friendly name in the browse
+  output is informative.
+
+  This file is a TEMPLATE — `deploy/install.sh` copies it to
+  /etc/jasper/avahi-templates/jasper-control.service. At runtime,
+  jasper/control_advert.py renders the __SPEAKER_NAME__ token (the
+  user-facing display name from jasper/speaker_name.py) and writes
+  the rendered XML to /etc/avahi/services/jasper-control.service.
+  The `name=` TXT record lets the /rooms/ directory show the same
+  friendly name peers see on Spotify / AirPlay / Bluetooth. The
+  rendered value is XML-escaped before substitution (a stray `&` or
+  `<` would drop the whole service-group and break dial discovery).
+  Unlike _jasper-peer, this service is ALWAYS advertised — it is the
+  always-on control-plane advert the dial depends on — so the
+  rendered file always exists (never removed).
+
+  jasper-doctor's "avahi: _jasper-control._tcp" check confirms it.
+-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">JTS jasper-control on %h</name>
+  <service>
+    <type>_jasper-control._tcp</type>
+    <port>8780</port>
+    <txt-record>name=__SPEAKER_NAME__</txt-record>
+  </service>
+</service-group>

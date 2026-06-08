@@ -22,13 +22,10 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import subprocess
-from pathlib import Path
 
-# Detector for any unresolved __FOO__ placeholder. Catches template
-# drift (new token added without updating _TOKENS).
-_PLACEHOLDER_RE = re.compile(r"__[A-Z][A-Z0-9_]*__")
+from jasper import avahi_service
+from jasper.avahi_service import RenderResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +37,6 @@ DEFAULT_TEMPLATE_PATH = "/etc/jasper/avahi-templates/jasper-peer.service"
 
 # Where the rendered file goes for Avahi to pick up.
 DEFAULT_RENDERED_PATH = "/etc/avahi/services/jasper-peer.service"
-
-# Token-substitution markers in the template. Keep these conspicuous so
-# a partially-rendered file is obvious to humans staring at the disk.
-_TOKENS = {
-    "__PEER_ID__": "peer_id",
-    "__ROOM__": "room",
-    "__PRIMARY__": "primary",
-}
 
 
 def render_and_install(
@@ -66,68 +55,38 @@ def render_and_install(
     False if the template is missing or unreadable (in which case the
     caller should log + fall back to running without advertising —
     still browses + arbitrates, just won't be visible to others).
+
+    The render/guard/atomic-write body is delegated to the shared
+    ``jasper.avahi_service.render_service``, which now OWNS the reload: we
+    pass ``reload=reload_avahi`` and it reloads avahi-daemon only when it
+    actually wrote the file (``RenderResult.WROTE``). The peer metadata
+    values (UUID peer_id, constrained room, ``0``|``1`` primary) are
+    mDNS-safe, so ``escape=True`` is byte-identical to no escaping. Because
+    ``render_service`` reports WROTE vs UNCHANGED vs FAILED directly, we no
+    longer read the rendered file before/after to detect a write — a
+    byte-stable re-render returns ``UNCHANGED`` and skips both the write
+    and the reload.
     """
     substitutions = {
-        "peer_id": peer_id,
-        "room": room,
-        "primary": "1" if primary else "0",
+        "__PEER_ID__": peer_id,
+        "__ROOM__": room,
+        "__PRIMARY__": "1" if primary else "0",
     }
-    try:
-        template = Path(template_path).read_text()
-    except FileNotFoundError:
-        logger.warning(
-            "peering: avahi template missing at %s; advertising disabled. "
-            "Re-run deploy/install.sh to install it.",
-            template_path,
-        )
-        return False
-    except OSError as e:
-        logger.warning("peering: avahi template unreadable (%s); advertising disabled", e)
-        return False
 
-    rendered = template
-    for token, key in _TOKENS.items():
-        rendered = rendered.replace(token, substitutions[key])
-    # Sanity check — refuse to install a half-rendered file. Catches
-    # template edits that introduce a new placeholder we don't know
-    # about, rather than letting Avahi reject the XML.
-    stray = _PLACEHOLDER_RE.search(rendered)
-    if stray:
-        logger.error(
-            "peering: avahi template still has unresolved placeholder %r after "
-            "substitution — refusing to install. Edit _TOKENS in jasper/peering/avahi.py "
-            "to add the substitution.", stray.group(0),
-        )
-        return False
-
-    # If the rendered output matches what's already on disk, skip the
-    # write + reload. Avoids spamming Avahi reloads on every restart.
-    try:
-        existing = Path(rendered_path).read_text()
-        if existing == rendered:
-            return True
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
-
-    try:
-        os.makedirs(os.path.dirname(rendered_path), exist_ok=True)
-        tmp = rendered_path + ".tmp"
-        with open(tmp, "w") as f:
-            f.write(rendered)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, rendered_path)
-    except OSError as e:
-        logger.error("peering: could not write %s: %s", rendered_path, e)
-        return False
-
-    logger.info(
-        "event=peering.avahi.installed path=%s peer_id=%s room=%s primary=%d",
-        rendered_path, peer_id, room, int(primary),
+    result = avahi_service.render_service(
+        template_path,
+        rendered_path,
+        substitutions,
+        escape=True,
+        reload=reload_avahi,
     )
-    if reload_avahi:
-        _reload_avahi()
+    if result is RenderResult.FAILED:
+        return False
+    if result is RenderResult.WROTE:
+        logger.info(
+            "event=peering.avahi.installed path=%s peer_id=%s room=%s primary=%d",
+            rendered_path, peer_id, room, int(primary),
+        )
     return True
 
 

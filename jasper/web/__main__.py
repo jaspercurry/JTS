@@ -20,6 +20,7 @@ unit per wizard. nginx routes:
   /wake-corpus/ → 127.0.0.1:8782  (lazy jasper.web.wake_corpus_setup)
   /speaker/  →  127.0.0.1:8783  (jasper.web.speaker_setup)
   /sound/    →  127.0.0.1:8784  (jasper.web.sound_setup)
+  /rooms/    →  127.0.0.1:8785  (jasper.web.rooms_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -56,6 +57,7 @@ from . import (
     google_setup,
     home_assistant_setup,
     peering_setup,
+    rooms_setup,
     sound_setup,
     speaker_setup,
     sources_setup,
@@ -320,6 +322,13 @@ def _make_peers_server(target: object) -> object:
     )
 
 
+def _make_rooms_server(target: object) -> object:
+    # Read-only speaker directory + grouping status (no env file /
+    # POST this increment), so unlike /peers/ there is no state_path
+    # to thread through. See jasper/web/rooms_setup.py.
+    return rooms_setup.make_server(target)
+
+
 def _transit_state_path() -> str:
     return os.environ.get("JASPER_TRANSIT_FILE", transit_setup.TRANSIT_FILE)
 
@@ -411,6 +420,7 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
     ),
     WizardSpec("/speaker", "JASPER_SPEAKER_WEB_PORT", 8783, _make_speaker_server),
     WizardSpec("/sound", "JASPER_SOUND_WEB_PORT", 8784, _make_sound_server),
+    WizardSpec("/rooms", "JASPER_ROOMS_WEB_PORT", 8785, _make_rooms_server),
 )
 
 
