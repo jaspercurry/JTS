@@ -68,6 +68,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     readinessPlayback: null, readinessPlaybackChecking: '',
     error: '', dirty: false, touched: false
   };
+  var outputStepOverride = '';
+  var driverResearch = {
+    inputs: {woofer: '', mid: '', tweeter: '', subwoofer: '', notes: ''},
+    importText: '',
+    parsed: null,
+    error: ''
+  };
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
@@ -511,7 +518,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     '</section>';
   }
   function renderActiveSpeakerSetup() {
-    var body = renderActiveSpeakerStatus();
     var open = activeSpeaker.loading || activeSpeaker.payload ||
       activeSpeaker.session || activeSpeaker.stagedConfig ||
       activeSpeaker.plan || activeSpeaker.playback ||
@@ -527,9 +533,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             '<p class="setting-row__title">Active crossover commissioning</p>' +
             '<p class="setting-row__hint">For speakers with separate woofer, mid, or tweeter amplifier channels. ' +
               'Environment checks and staging will not play tones, reload CamillaDSP, or load active crossover configs.</p>' +
-          '</div>' +
-          '<div class="active-speaker-status">' + body + '</div>' +
-        '</div>' +
+          '</div></div>' +
         renderOutputTopologySetup() +
       '</details>' +
     '</section>';
@@ -594,6 +598,177 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       subwoofer: 'Subwoofer'
     }[role] || role || 'Channel';
   }
+  function outputRoleSummary(topology) {
+    var roles = [];
+    outputGroups(topology).forEach(function(group) {
+      (group.channels || []).forEach(function(channel) {
+        var role = channel.role || '';
+        if (role && roles.indexOf(role) < 0) roles.push(role);
+      });
+    });
+    if (!roles.length) roles = ['woofer', 'tweeter'];
+    return roles.sort(function(a, b) {
+      var order = {full_range: 0, woofer: 1, mid: 2, tweeter: 3, subwoofer: 4};
+      return (order[a] || 99) - (order[b] || 99);
+    });
+  }
+  function assignedOutputIndices(topology) {
+    var used = {};
+    outputGroups(topology).forEach(function(group) {
+      (group.channels || []).forEach(function(channel) {
+        if (channel.physical_output_index != null) {
+          used[String(channel.physical_output_index)] = true;
+        }
+      });
+    });
+    return used;
+  }
+  function firstUnusedOutputIndex(topology) {
+    var hardware = outputHardware(topology) || {};
+    var count = Number(hardware.physical_output_count || 0);
+    var used = assignedOutputIndices(topology);
+    for (var index = 0; index < count; index += 1) {
+      if (!used[String(index)]) return index;
+    }
+    return null;
+  }
+  function outputSubwooferGroup(topology) {
+    return outputGroups(topology).find(function(group) {
+      return group.kind === 'subwoofer' || group.mode === 'subwoofer';
+    }) || null;
+  }
+  function outputHasSubwoofer(topology) {
+    return !!outputSubwooferGroup(topology);
+  }
+  function nextSubwooferGroupId(topology) {
+    var existing = {};
+    outputGroups(topology).forEach(function(group) { existing[group.id] = true; });
+    if (!existing.sub) return 'sub';
+    var i = 2;
+    while (existing['sub_' + i]) i += 1;
+    return 'sub_' + i;
+  }
+  function addSubwooferToTopology(topology) {
+    var next = baseOutputDraft(topology);
+    if (!next || outputHasSubwoofer(next)) return next;
+    var outputIndex = firstUnusedOutputIndex(next);
+    if (outputIndex == null) return next;
+    var groupId = nextSubwooferGroupId(next);
+    next.speaker_groups = (next.speaker_groups || []).concat([{
+      id: groupId,
+      label: 'Subwoofer',
+      kind: 'subwoofer',
+      mode: 'subwoofer',
+      position: {x: 0, y: -0.72, rotation_degrees: 0},
+      channels: [outputChannel('subwoofer', outputIndex)]
+    }]);
+    next.routing = Object.assign({}, next.routing || {}, {
+      subwoofer_group_ids: (next.routing && next.routing.subwoofer_group_ids || []).concat([groupId])
+    });
+    return next;
+  }
+  function removeSubwooferFromTopology(topology) {
+    var next = baseOutputDraft(topology);
+    if (!next) return next;
+    var subIds = {};
+    next.speaker_groups = (next.speaker_groups || []).filter(function(group) {
+      var isSub = group.kind === 'subwoofer' || group.mode === 'subwoofer';
+      if (isSub) subIds[group.id] = true;
+      return !isSub;
+    });
+    next.routing = Object.assign({}, next.routing || {}, {
+      subwoofer_group_ids: (next.routing && next.routing.subwoofer_group_ids || [])
+        .filter(function(id) { return !subIds[id]; })
+    });
+    return next;
+  }
+  function driverResearchRoleLabel(role) {
+    return {
+      woofer: 'Woofer / midbass',
+      mid: 'Midrange',
+      tweeter: 'Tweeter / compression driver / horn',
+      subwoofer: 'Subwoofer'
+    }[role] || humanRole(role);
+  }
+  function driverResearchPrompt(topology) {
+    var roles = outputRoleSummary(topology);
+    var lines = roles.map(function(role) {
+      var name = (driverResearch.inputs[role] || '').trim();
+      return '- ' + role + ': ' + (name || '[user has not entered a model yet]');
+    });
+    var notes = (driverResearch.inputs.notes || '').trim();
+    return [
+      'You are helping configure a safe active crossover for a JTS Raspberry Pi speaker.',
+      '',
+      'Driver list:',
+      lines.join('\n'),
+      notes ? '\nUser notes:\n' + notes : '',
+      '',
+      'Research manufacturer datasheets and reputable measurements. Prefer primary manufacturer data.',
+      'Do not invent missing facts. Use null when a value is unknown. Include source URLs for every non-obvious claim.',
+      'Focus on safe starting points, not final tuning. Assume JTS will start test signals extremely quiet and the human must approve any listening result.',
+      '',
+      'Return only JSON with this shape:',
+      '{',
+      '  "artifact_schema_version": 1,',
+      '  "kind": "jts_active_crossover_driver_research",',
+      '  "drivers": [',
+      '    {',
+      '      "role": "full_range|woofer|mid|tweeter|subwoofer",',
+      '      "model": "string",',
+      '      "manufacturer": "string|null",',
+      '      "nominal_impedance_ohm": 8,',
+      '      "sensitivity_db_2v83_1m": 90,',
+      '      "usable_frequency_range_hz": [80, 5000],',
+      '      "recommended_highpass_hz": 80,',
+      '      "recommended_lowpass_hz": 2200,',
+      '      "do_not_test_below_hz": 1200,',
+      '      "notes": "short safety-relevant notes",',
+      '      "sources": ["https://..."]',
+      '    }',
+      '  ],',
+      '  "crossover_candidates": [',
+      '    {',
+      '      "between_roles": ["woofer", "tweeter"],',
+      '      "frequency_hz": 1800,',
+      '      "filter_type": "Linkwitz-Riley",',
+      '      "slope_db_per_octave": 24,',
+      '      "confidence": "low|medium|high",',
+      '      "rationale": "why this is a safe starting point",',
+      '      "warnings": ["short warnings"]',
+      '    }',
+      '  ],',
+      '  "human_review": {',
+      '    "must_verify_wiring": true,',
+      '    "must_start_quiet": true,',
+      '    "needs_measurement_before_final": true',
+      '  }',
+      '}'
+    ].filter(Boolean).join('\n');
+  }
+  function summarizeDriverResearchPayload(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('Driver research must be a JSON object.');
+    }
+    if (payload.kind !== 'jts_active_crossover_driver_research') {
+      throw new Error('Driver research kind must be jts_active_crossover_driver_research.');
+    }
+    if (Number(payload.artifact_schema_version) !== 1) {
+      throw new Error('Driver research artifact_schema_version must be 1.');
+    }
+    var drivers = Array.isArray(payload.drivers) ? payload.drivers : [];
+    var candidates = Array.isArray(payload.crossover_candidates) ? payload.crossover_candidates : [];
+    if (!drivers.length) throw new Error('Driver research must include at least one driver.');
+    return {
+      driverCount: drivers.length,
+      candidateCount: candidates.length,
+      roles: drivers.map(function(driver) { return driver.role || 'unknown'; })
+        .filter(function(role, index, arr) { return arr.indexOf(role) === index; }),
+      warnings: candidates.reduce(function(out, candidate) {
+        return out.concat(Array.isArray(candidate.warnings) ? candidate.warnings : []);
+      }, []).slice(0, 4)
+    };
+  }
   function toneSummary(tone) {
     var frequency = Number(tone.frequency_hz);
     var level = Number(tone.level_dbfs);
@@ -645,10 +820,69 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       outputTopology.saving || outputTopology.loading;
     return '<div class="output-setup__actions">' +
       '<button type="button" class="btn btn--ghost" data-act="refresh-output-topology"' +
-        (outputTopology.loading ? ' disabled' : '') + '>' + (topology ? 'Reload' : 'Load') + '</button>' +
+        (outputTopology.loading ? ' disabled' : '') + '>' + (topology ? 'Reload hardware' : 'Load hardware') + '</button>' +
       '<button type="button" class="btn btn--primary" data-act="save-output-topology"' +
-        (saveDisabled ? ' disabled' : '') + '>' + (outputTopology.saving ? 'Saving' : 'Save') + '</button>' +
+        (saveDisabled ? ' disabled' : '') + '>' + (outputTopology.saving ? 'Saving' : 'Save output map') + '</button>' +
     '</div>';
+  }
+  function outputIdentityComplete() {
+    if (outputTopology.dirty) return false;
+    var report = outputIdentityReport();
+    if (!report) return false;
+    return Number(report.assigned_channel_count || 0) > 0 &&
+      Number(report.unverified_channel_count || 0) === 0;
+  }
+  function outputStartupLoaded() {
+    var startup = activeSpeaker.startupLoad || {};
+    var state = startup.state || {};
+    return state.status === 'loaded';
+  }
+  function outputStepState(step, topology) {
+    var groups = outputGroups(topology);
+    var hasLayout = groups.length > 0;
+    if (step === 'layout') return hasLayout && !outputTopology.dirty ? 'done' : 'active';
+    if (step === 'research') return hasLayout && !outputTopology.dirty ?
+      (driverResearch.parsed ? 'done' : 'active') : 'todo';
+    if (step === 'map') return outputIdentityComplete() ? 'done' :
+      (hasLayout && !outputTopology.dirty ? 'active' : 'todo');
+    if (step === 'safety') return outputStartupLoaded() ? 'done' :
+      (outputIdentityComplete() ? 'active' : 'todo');
+    return 'todo';
+  }
+  function defaultOutputStep(topology) {
+    if (!topology || !outputGroups(topology).length || outputTopology.dirty) return 'layout';
+    if (!driverResearch.parsed) return 'research';
+    if (!outputIdentityComplete()) return 'map';
+    return 'safety';
+  }
+  function outputStepIsOpen(step, topology) {
+    return (outputStepOverride || defaultOutputStep(topology)) === step;
+  }
+  function openOutputStep(step) {
+    outputStepOverride = step;
+    render();
+  }
+  function renderOutputStepCard(step, title, hint, topology, bodyHtml, footerHtml) {
+    var state = outputStepState(step, topology);
+    var open = outputStepIsOpen(step, topology);
+    var stateLabel = open ? 'Now' : (state === 'done' ? 'Done' : 'Next');
+    return '<details class="output-step output-step--' + escapeHtml(state) + '"' +
+      ' data-output-step="' + escapeHtml(step) + '"' +
+      (open ? ' open' : '') + '>' +
+      '<summary class="output-step__summary">' +
+        '<span class="output-step__marker">' + escapeHtml(stateLabel) + '</span>' +
+        '<span class="output-step__text"><strong>' + escapeHtml(title) + '</strong>' +
+          '<span>' + escapeHtml(hint) + '</span></span>' +
+      '</summary>' +
+      '<div class="output-step__body">' + bodyHtml +
+        (footerHtml ? '<div class="output-step__footer">' + footerHtml + '</div>' : '') +
+      '</div>' +
+    '</details>';
+  }
+  function renderOutputStepButton(step, label, primary) {
+    return '<button type="button" class="btn ' + escapeHtml(primary ? 'btn--primary' : 'btn--ghost') +
+      '" data-act="output-step-next" data-step="' + escapeHtml(step) + '">' +
+      escapeHtml(label) + '</button>';
   }
   function outputSetupTemplateButton(template, count) {
     var disabled = count < template.minOutputs;
@@ -681,6 +915,97 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }).join('') + '</div>' +
     '</div>';
   }
+  function renderOutputSubwooferCard(topology) {
+    var hasLayout = outputGroups(topology).length > 0;
+    var hasSub = outputHasSubwoofer(topology);
+    var nextOutput = firstUnusedOutputIndex(topology);
+    var disabled = !hasLayout || (!hasSub && nextOutput == null);
+    var nextOutputLabel = null;
+    var outputs = outputHardware(topology) && Array.isArray(outputHardware(topology).outputs)
+      ? outputHardware(topology).outputs : [];
+    outputs.forEach(function(output) {
+      if (Number(output.index) === Number(nextOutput)) nextOutputLabel = output.human_label;
+    });
+    var hint = hasSub
+      ? 'Subwoofer is included in this draft. Remove it to free that output lane.'
+      : (!hasLayout
+        ? 'Choose a speaker layout first, then add a subwoofer if you have a spare amplifier channel.'
+        : (nextOutput == null
+        ? 'No unused physical output is available for a subwoofer in this layout.'
+        : 'Adds one subwoofer group on ' + (nextOutputLabel || ('DAC output ' + (Number(nextOutput) + 1)))));
+    return '<div class="output-card output-card--subwoofer">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Subwoofer add-on</p>' +
+        '<p class="setting-row__hint">Optional. This composes with any mono or stereo layout instead of duplicating templates.</p></div>' +
+        '<span class="status-pill' + (hasSub ? ' status-pill--ready' : '') + '">' + escapeHtml(hasSub ? 'added' : 'optional') + '</span></div>' +
+      '<p class="setting-row__hint">' + escapeHtml(hint) + '</p>' +
+      '<button type="button" class="btn btn--ghost" data-act="toggle-output-subwoofer" data-mode="' +
+        escapeHtml(hasSub ? 'remove' : 'add') + '"' + (disabled ? ' disabled' : '') + '>' +
+        escapeHtml(hasSub ? 'Remove subwoofer' : 'Add subwoofer') + '</button>' +
+    '</div>';
+  }
+  function renderDriverResearchSummary() {
+    if (driverResearch.error) {
+      return '<p class="setting-row__hint driver-research__error">' + escapeHtml(driverResearch.error) + '</p>';
+    }
+    if (!driverResearch.parsed) {
+      return '<p class="setting-row__hint">Paste JSON from the assistant to sanity-check the shape. JTS will not apply it automatically.</p>';
+    }
+    var summary = driverResearch.parsed;
+    return '<div class="driver-research__summary">' +
+      '<span class="status-pill status-pill--ready">import parsed</span>' +
+      '<p class="setting-row__hint">' + escapeHtml(
+        summary.driverCount + ' driver' + (summary.driverCount === 1 ? '' : 's') +
+        ', ' + summary.candidateCount + ' crossover candidate' + (summary.candidateCount === 1 ? '' : 's') +
+        '. Roles: ' + summary.roles.join(', ')
+      ) + '</p>' +
+      (summary.warnings.length ? '<ul class="active-speaker-issues">' + summary.warnings.map(function(warning) {
+        return '<li>' + escapeHtml(String(warning)) + '</li>';
+      }).join('') + '</ul>' : '') +
+    '</div>';
+  }
+  function renderDriverResearchCard(topology) {
+    var roles = outputRoleSummary(topology);
+    var fields = roles.map(function(role) {
+      return '<label class="driver-research__field">' +
+        '<span>' + escapeHtml(driverResearchRoleLabel(role)) + '</span>' +
+        '<input type="text" data-driver-field="' + escapeHtml(role) + '" value="' +
+          escapeHtml(driverResearch.inputs[role] || '') + '" placeholder="Manufacturer and model">' +
+      '</label>';
+    }).join('');
+    return '<div class="output-card output-card--driver-research">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Driver research helper</p>' +
+        '<p class="setting-row__hint">Generate a precise prompt for an external assistant, then paste bounded JSON back for review.</p></div></div>' +
+      '<div class="driver-research__grid">' +
+        '<div class="driver-research__fields">' +
+          fields +
+          '<label class="driver-research__field driver-research__field--wide">' +
+            '<span>Build notes</span>' +
+            '<textarea rows="3" data-driver-field="notes" placeholder="Horn, enclosure, intended use, amplifier, measurement constraints">' +
+              escapeHtml(driverResearch.inputs.notes || '') + '</textarea>' +
+          '</label>' +
+        '</div>' +
+        '<div class="driver-research__panel">' +
+          '<div class="row-between active-speaker-level__head">' +
+            '<p class="setting-row__title">Research prompt</p>' +
+            '<button type="button" class="btn btn--ghost" data-act="copy-driver-research-prompt">Copy prompt</button>' +
+          '</div>' +
+          '<textarea id="driver-research-prompt" class="driver-research__textarea" readonly rows="10" ' +
+            'aria-label="Driver research prompt">' +
+            escapeHtml(driverResearchPrompt(topology)) + '</textarea>' +
+        '</div>' +
+        '<div class="driver-research__panel">' +
+          '<div class="row-between active-speaker-level__head">' +
+            '<p class="setting-row__title">Paste JSON result</p>' +
+            '<button type="button" class="btn btn--ghost" data-act="parse-driver-research">Check JSON</button>' +
+          '</div>' +
+          '<textarea id="driver-research-import" class="driver-research__textarea" data-driver-import ' +
+            'rows="7" placeholder="{...}" aria-label="Driver research JSON result">' +
+            escapeHtml(driverResearch.importText || '') + '</textarea>' +
+          '<div id="driver-research-summary">' + renderDriverResearchSummary() + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
   function renderOutputTopologyBody() {
     if (outputTopology.loading && !currentOutputTopology()) {
       return '<p class="setting-row__hint">Loading output topology…</p>';
@@ -700,13 +1025,50 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var evaluation = outputEvaluation(topology);
     var statusValue = outputTopology.dirty ? 'draft' : (evaluation.status || topology.status || 'draft');
     return '<div class="output-layout">' +
-      renderOutputSetupTemplates(topology) +
-      renderOutputHardwareCard(topology, statusValue) +
-      renderOutputStageCard(topology) +
-      renderOutputGroupsCard(topology) +
-      renderOutputIdentityCard() +
-      renderOutputReadinessCard() +
-      renderOutputSafetyCard(topology, statusValue) +
+      renderOutputStepCard(
+        'layout',
+        'Choose speaker layout',
+        'Pick mono or stereo, active or passive, then optionally add a subwoofer.',
+        topology,
+        renderOutputHardwareCard(topology, statusValue) +
+          renderOutputSetupTemplates(topology) +
+          renderOutputSubwooferCard(topology),
+        renderOutputStepButton('layout',
+          outputTopology.dirty ? 'Save and continue' : 'Next: research drivers',
+          true)
+      ) +
+      renderOutputStepCard(
+        'research',
+        'Research drivers',
+        'Generate a precise external-assistant prompt, then paste bounded JSON back for review.',
+        topology,
+        renderDriverResearchCard(topology),
+        renderOutputStepButton('research', 'Next: map outputs', true)
+      ) +
+      renderOutputStepCard(
+        'map',
+        'Map and verify outputs',
+        'Review speaker groups, DAC lanes, and physical verification evidence.',
+        topology,
+        renderOutputStageCard(topology) +
+          renderOutputGroupsCard(topology) +
+          renderOutputIdentityCard(),
+        renderOutputStepButton('map', 'Next: safety checks', true)
+      ) +
+      renderOutputStepCard(
+        'safety',
+        'Stage, load, and start quiet',
+        'Check environment, stage protected startup, then use bounded readiness and level controls.',
+        topology,
+        '<div class="output-card output-card--active-status">' +
+          '<div class="output-card__head"><div><p class="output-card__title">Environment and safe-session state</p>' +
+          '<p class="setting-row__hint">These controls do not play sound unless the explicit lab backend is enabled and readiness passes.</p></div></div>' +
+          renderActiveSpeakerStatus() +
+        '</div>' +
+        renderOutputReadinessCard() +
+        renderOutputSafetyCard(topology, statusValue),
+        ''
+      ) +
     '</div>';
   }
   function renderOutputHardwareCard(topology, statusValue) {
@@ -1790,7 +2152,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'refresh-active-speaker') { refreshActiveSpeakerStatus(); }
     else if (act === 'refresh-output-topology') { refreshOutputTopology(); }
     else if (act === 'output-template') { setOutputTemplate(t.getAttribute('data-template') || ''); }
+    else if (act === 'toggle-output-subwoofer') { toggleOutputSubwoofer(t.getAttribute('data-mode') || 'add'); }
+    else if (act === 'output-step-next') { advanceOutputStep(t.getAttribute('data-step') || ''); }
     else if (act === 'save-output-topology') { saveOutputTopology(); }
+    else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(); }
+    else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
     else if (act === 'mark-output-protection') { updateOutputChannelProtection(t); }
     else if (act === 'check-output-readiness') { checkOutputPlaybackReadiness(t); }
@@ -1843,6 +2209,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
   });
   el('view-body').addEventListener('input', function(ev) {
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-field')) {
+      var driverField = ev.target.getAttribute('data-driver-field');
+      driverResearch.inputs[driverField] = ev.target.value;
+      driverResearch.error = '';
+      updateDriverResearchPromptPreview();
+      return;
+    }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-import')) {
+      driverResearch.importText = ev.target.value;
+      driverResearch.error = '';
+      driverResearch.parsed = null;
+      updateDriverResearchImportSummary();
+      return;
+    }
     var field = ev.target.getAttribute('data-field');
     var range = ev.target.getAttribute('data-range');
     if (field) {
@@ -1910,6 +2290,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
     else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
   });
+  el('view-body').addEventListener('toggle', function(ev) {
+    if (ev.target && ev.target.classList && ev.target.classList.contains('output-step') &&
+        ev.target.open) {
+      outputStepOverride = ev.target.getAttribute('data-output-step') || outputStepOverride;
+    }
+  }, true);
   el('view-body').addEventListener('keydown', function(ev) {
     if (ev.target.id !== 'name-input') return;
     if (ev.key === 'Enter') { ev.preventDefault(); finalizeName(); }
@@ -2084,8 +2470,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       protection_status: tweeter ? 'required_missing' : 'not_required'
     };
   }
-  function baseOutputDraft() {
-    var topology = currentOutputTopology();
+  function baseOutputDraft(topology) {
+    topology = topology || currentOutputTopology();
     if (!topology) return null;
     var next = clone(topology);
     next.status = 'draft';
@@ -2112,7 +2498,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       mono_active_2way: {
         id: 'mono_active_2way',
         label: 'Mono active 2-way',
-        hint: 'Woofer + tweeter',
+        hint: '2 amp channels: woofer/mid + tweeter',
         minOutputs: 2,
         name: 'Mono active 2-way output',
         groups: [{
@@ -2126,7 +2512,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       mono_active_3way: {
         id: 'mono_active_3way',
         label: 'Mono active 3-way',
-        hint: 'Woofer + mid + tweeter',
+        hint: '3 amp channels: woofer + mid + tweeter',
         minOutputs: 3,
         name: 'Mono active 3-way output',
         groups: [{
@@ -2166,7 +2552,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       stereo_active_2way: {
         id: 'stereo_active_2way',
         label: 'Stereo active 2-way',
-        hint: 'Two channels per speaker',
+        hint: '4 amp channels: L/R woofer + L/R tweeter',
         minOutputs: 4,
         name: 'Stereo active 2-way outputs',
         groups: [
@@ -2188,7 +2574,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       stereo_active_3way: {
         id: 'stereo_active_3way',
         label: 'Stereo active 3-way',
-        hint: 'Three channels per speaker',
+        hint: '6 amp channels: L/R woofer + mid + tweeter',
         minOutputs: 6,
         name: 'Stereo active 3-way outputs',
         groups: [
@@ -2249,7 +2635,125 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     setOutputDraft(next);
     status('Output setup template is a draft. Save to validate; no sound will play.');
   }
-  async function saveOutputTopology() {
+  function toggleOutputSubwoofer(modeValue) {
+    var topology = currentOutputTopology();
+    if (!topology) {
+      status('Load output hardware before editing the speaker map.', true);
+      return;
+    }
+    var next = modeValue === 'remove'
+      ? removeSubwooferFromTopology(topology)
+      : addSubwooferToTopology(topology);
+    if (!next) {
+      status('Could not update subwoofer draft.', true);
+      return;
+    }
+    if (modeValue !== 'remove' && !outputHasSubwoofer(next)) {
+      status('No unused physical output is available for a subwoofer.', true);
+      return;
+    }
+    setOutputDraft(next);
+    status(modeValue === 'remove' ?
+      'Removed subwoofer from the output setup draft.' :
+      'Added subwoofer to the output setup draft. Save before verification.');
+  }
+  function updateDriverResearchPromptPreview() {
+    var prompt = el('driver-research-prompt');
+    if (prompt) prompt.value = driverResearchPrompt(currentOutputTopology());
+  }
+  function updateDriverResearchImportSummary() {
+    var summary = el('driver-research-summary');
+    if (summary) summary.innerHTML = renderDriverResearchSummary();
+  }
+  async function copyDriverResearchPrompt() {
+    var prompt = el('driver-research-prompt');
+    if (!prompt) return;
+    var copied = false;
+    try {
+      await navigator.clipboard.writeText(prompt.value);
+      copied = true;
+    } catch (e) {
+      try {
+        prompt.select();
+        copied = document.execCommand('copy');
+      } catch (fallbackError) {
+        copied = false;
+      }
+    }
+    status(copied ? 'Copied driver research prompt.' :
+      'Could not copy automatically. Select the prompt text and copy it manually.', !copied);
+  }
+  function parseDriverResearchImport() {
+    try {
+      var payload = JSON.parse(driverResearch.importText || '');
+      driverResearch.parsed = summarizeDriverResearchPayload(payload);
+      driverResearch.error = '';
+      status('Driver research JSON parsed. Review it before using any values.');
+    } catch (e) {
+      driverResearch.parsed = null;
+      driverResearch.error = e.message;
+      status('Driver research JSON needs review: ' + e.message, true);
+    }
+    render();
+  }
+  async function advanceOutputStep(step) {
+    var topology = currentOutputTopology();
+    if (step === 'layout') {
+      if (!topology || !outputGroups(topology).length) {
+        outputStepOverride = 'layout';
+        status('Choose a speaker layout before continuing.', true);
+        render();
+        return;
+      }
+      if (outputTopology.dirty) {
+        await saveOutputTopology({nextStep: 'research'});
+        return;
+      }
+      openOutputStep('research');
+      status('Output map is already saved. Continue with driver research or skip ahead.');
+      return;
+    }
+    if (step === 'research') {
+      if (driverResearch.importText.trim() && !driverResearch.parsed) {
+        parseDriverResearchImport();
+        if (!driverResearch.parsed) return;
+      }
+      openOutputStep('map');
+      status(driverResearch.parsed ?
+        'Driver research JSON parsed. Review values before using them.' :
+        'Driver research is optional in this slice; continuing without applying values.');
+      return;
+    }
+    if (step === 'map') {
+      if (outputTopology.dirty) {
+        outputStepOverride = 'map';
+        status('Save the output map before recording or relying on physical verification.', true);
+        render();
+        return;
+      }
+      if (!outputIdentityComplete()) {
+        var report = outputIdentityReport();
+        var assigned = Number(report && report.assigned_channel_count || 0);
+        outputStepOverride = 'map';
+        status(assigned > 0 ?
+          'Verify every assigned physical output before continuing to safety checks.' :
+          'Save a speaker map with assigned physical outputs before continuing to safety checks.', true);
+        render();
+        return;
+      }
+      openOutputStep('safety');
+      status('Output identity is complete. Continue with protected staging and readiness checks.');
+      return;
+    }
+    if (step === 'safety') {
+      outputStepOverride = 'safety';
+      status('Use this card to check environment, stage the protected config, load only when allowed, and start quiet.');
+      render();
+      return;
+    }
+  }
+  async function saveOutputTopology(options) {
+    options = options || {};
     if (!outputTopology.draft) return;
     outputTopology.saving = true;
     outputTopology.touched = true;
@@ -2265,6 +2769,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'output setup save failed');
       ingestOutputTopology(payload);
+      if (options.nextStep) outputStepOverride = options.nextStep;
       status('Saved output setup. No sound was played.');
     } catch (e) {
       outputTopology.saving = false;

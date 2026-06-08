@@ -26,9 +26,17 @@
 > `/sound/output-topology`; it can render detected physical outputs,
 > speaker groups, assigned/unassigned lanes, safety evidence, and
 > no-audio setup templates for mono/stereo passive, mono/stereo active
-> 2-way, and mono/stereo active 3-way wiring. Saving that map only
-> persists the output topology JSON and runs backend validation; it
-> does not load CamillaDSP or emit sound.
+> 2-way, and mono/stereo active 3-way wiring. Subwoofer is an optional
+> add-on to the current draft rather than a duplicated template matrix:
+> when an unused physical output exists, the UI adds one `subwoofer`
+> group and records it in `routing.subwoofer_group_ids`. Saving that map
+> only persists the output topology JSON and runs backend validation; it
+> does not load CamillaDSP or emit sound. The UI organizes this work as
+> collapsible task cards — choose layout, research drivers, map and verify
+> outputs, then stage/load/start quiet. The open card is derived from existing
+> output/topology/startup state plus transient browser intent; it does not
+> create a separate persisted wizard-progress source of truth, and earlier
+> cards remain editable.
 > `/sound/active-speaker/channel-identity` now exposes and updates
 > operator-confirmed physical channel identity evidence for the saved
 > topology. The UI can mark or clear an assigned channel as physically
@@ -72,6 +80,12 @@
 > for woofer, mid, and subwoofer topology targets. If CamillaDSP is no longer
 > running the loaded startup config path, readiness blocks before the playback
 > backend is reached.
+> `/sound/` also includes a driver-research helper for active-crossover
+> planning. It generates a prompt from the current output roles and accepts a
+> pasted JSON object with kind `jts_active_crossover_driver_research`.
+> That JSON is only shape-checked and summarized client-side in this slice;
+> it is not persisted, trusted as measurement evidence, translated into
+> CamillaDSP filters, or applied.
 > `jasper.active_speaker.staging` now provides the first build-specific
 > protected startup staging slice. The default preset is
 > `jasper/active_speaker/presets/epique_e150he44_eminence_f110m8_safe_v1.json`
@@ -225,6 +239,10 @@ The existing deployed audio topology is not yet active 2-way ready:
   tweeter protection status. It deliberately has no audio side effects;
   active-speaker tone playback and active CamillaDSP loading must still
   pass through their own safety gates.
+- The current `/sound/` UI composes one optional subwoofer add-on with
+  any mono/stereo draft when a spare physical output exists. Keep that
+  compositional model; do not add separate `stereo_active_2way_plus_sub`
+  template families unless the topology contract itself changes.
 - The topology substrate now has a separate channel-identity report and
   update route (`/sound/active-speaker/channel-identity`). Treat that
   evidence as an operator-confirmed fact about physical wiring, not as

@@ -214,21 +214,36 @@ passive speakers, and subwoofer outputs now have a no-audio backend contract:
 tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
 tones, or authorizes playback; the audible safe-session path remains separate.
 The same `/sound/` card renders a lightweight **Output setup** surface over
-that endpoint: it shows detected hardware, a top-down speaker sketch, assigned
-and unassigned physical outputs, backend safety evidence, and no-audio setup
-templates for mono/stereo passive, mono/stereo active 2-way, and mono/stereo
-active 3-way wiring. Saving a setup template is a complete topology JSON
+that endpoint as collapsible task cards: **Choose speaker layout**, **Research
+drivers**, **Map and verify outputs**, and **Stage, load, and start quiet**.
+The open card is derived from existing output/topology/startup state plus
+transient browser intent; no persisted wizard-progress state exists, and users
+can reopen earlier cards to edit them. The layout card shows detected hardware,
+no-audio setup templates for mono/stereo passive, mono/stereo active 2-way, and
+mono/stereo active 3-way wiring, plus the subwoofer add-on. Subwoofer is not a
+duplicated template family: the UI offers it as an optional add-on that composes
+with the current mono/stereo draft when an unused physical output is available,
+adds a `subwoofer` group, and records it in `routing.subwoofer_group_ids`.
+Saving a setup template or subwoofer add-on is a complete topology JSON
 replacement and only runs backend validation; it does not play sound or change
 the live DSP graph. The same payload carries a clock-domain report that records
-the current single final-output device assumption; aggregating multiple USB
-DACs is explicitly not enabled for product active-crossover playback yet. The
-same card now shows **Channel identity** progress from
+the current single final-output device assumption; aggregating multiple USB DACs
+is explicitly not enabled for product active-crossover playback yet. The map
+card shows a top-down speaker sketch, assigned and unassigned physical outputs,
+speaker groups, and **Channel identity** progress from
 `/sound/active-speaker/channel-identity`;
 users can mark or clear an assigned output as physically verified only after
 external wiring inspection, dummy-load/DMM checks, or a future low-level
 channel test confirms the driver. Identity evidence is stored in the topology
 contract, but it is not playback permission and it does not satisfy tweeter
 protection or path-safety blockers by itself.
+The same card includes a **Driver research helper** for active-crossover
+planning. It derives the expected driver-role fields from the current output
+map, generates a precise prompt for an external assistant, and accepts a
+bounded JSON response with kind
+`jts_active_crossover_driver_research`. The browser only shape-checks and
+summarizes the pasted JSON; JTS does not persist, apply, or translate those
+values into filters in this slice.
 The same saved-channel rows can now **Check readiness** through
 `/sound/active-speaker/playback-readiness`. That route returns a versioned,
 no-audio checklist for one selected topology target by combining safe-session
