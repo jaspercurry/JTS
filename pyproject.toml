@@ -41,7 +41,7 @@ dependencies = [
     # voice-daemon RAM first. ≥1.13 because we use scipy.signal.iirpeak
     # and the numpy 2.0 ABI compatibility is patched.
     "scipy>=1.13,<2",
-    "spotipy==2.24.0",
+    "spotipy==2.26.0",
     "httpx==0.28.1",
     "onnxruntime>=1.17",
     "nyct-gtfs==2.0.0",
