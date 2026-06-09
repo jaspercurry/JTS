@@ -159,8 +159,9 @@ def _grouping_cfg(**kw):
     return GroupingConfig(**defaults)
 
 
-def _patch_grouping(monkeypatch, cfg, is_active_stdout):
+def _patch_grouping(monkeypatch, cfg, is_active_stdout, tap_path="/run/jasper-snapserver/snapfifo"):
     import jasper.multiroom.config as mr_config
+    import jasper.multiroom.reconcile as mr_reconcile
 
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
 
@@ -168,6 +169,13 @@ def _patch_grouping(monkeypatch, cfg, is_active_stdout):
         stdout = is_active_stdout
 
     monkeypatch.setattr(doctor, "_run", lambda *a, **kw: FakeRun())
+    # check_grouping reads the leader's outputd tap via the reconcile I/O
+    # edge; stub it so tests never touch a real /run file. Default to a
+    # tapping leader (non-empty path) so the unit-only tests stay green;
+    # pass tap_path="" to exercise the "outputd not tapping" degraded path.
+    monkeypatch.setattr(
+        mr_reconcile, "_read_outputd_snapfifo_path", lambda *a, **k: tap_path
+    )
 
 
 def test_check_grouping_off_is_ok(monkeypatch):
@@ -211,6 +219,40 @@ def test_check_grouping_follower_unreachable_leader_warns(monkeypatch):
     assert r.status == "warn"
     assert "follower not connected" in r.detail
     assert "192.168.1.50" in r.detail
+
+
+def test_check_grouping_leader_not_tapping_warns(monkeypatch):
+    """Leader with both snap units active but outputd NOT tapping the
+    snapfifo => degraded (snapserver reads an empty FIFO). The staff-review
+    gap: a green-looking bond that silently delivers no audio."""
+    cfg = _grouping_cfg(
+        enabled=True, role="leader", channel="left", bond_id="living-room",
+    )
+    # Units up, but the tap path is empty => outputd is not tapping.
+    _patch_grouping(monkeypatch, cfg, "active\nactive\n", tap_path="")
+    r = doctor.check_grouping()
+    assert r.status == "warn"
+    assert "not tapping" in r.detail
+
+
+def test_check_grouping_follower_does_not_probe_the_tap(monkeypatch):
+    """A follower has no tap concept: check_grouping must NOT consult the
+    outputd tap reader, and a missing tap can never push it to degraded."""
+    cfg = _grouping_cfg(
+        enabled=True, role="follower", channel="right",
+        bond_id="living-room", leader_addr="192.168.1.50",
+    )
+    import jasper.multiroom.reconcile as mr_reconcile
+
+    def boom(*a, **k):
+        raise AssertionError("tap reader must not be called for a follower")
+
+    # Connected follower (snapclient active) => ok; tap reader untouched.
+    _patch_grouping(monkeypatch, cfg, "inactive\nactive\n")
+    monkeypatch.setattr(mr_reconcile, "_read_outputd_snapfifo_path", boom)
+    r = doctor.check_grouping()
+    assert r.status == "ok"
+    assert "follower connected" in r.detail
 
 
 def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):

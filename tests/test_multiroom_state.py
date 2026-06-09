@@ -37,6 +37,15 @@ def _stub(units):
     return {u: "active" for u in units}
 
 
+# Fake outputd-tap reader: pretend the leader IS tapping. Lets config-focused
+# leader tests exercise the enabled path without touching a real /run file.
+_SNAPFIFO = "/run/jasper-snapserver/snapfifo"
+
+
+def _tap_set():
+    return _SNAPFIFO
+
+
 def _leader_env() -> str:
     return (
         "JASPER_GROUPING=on\n"
@@ -101,7 +110,9 @@ def test_state_has_exactly_the_expected_keys(tmp_path):
 
 def test_valid_enabled_full_dict_includes_codec(tmp_path):
     path = _write_env(tmp_path, _leader_env())
-    state = read_grouping_state(path, unit_state_reader=_stub)
+    state = read_grouping_state(
+        path, unit_state_reader=_stub, tap_path_reader=_tap_set
+    )
     assert state["enabled"] is True
     assert state["role"] == "leader"
     assert state["channel"] == "left"
@@ -119,7 +130,9 @@ def test_valid_enabled_codec_defaults_to_flac(tmp_path):
         "JASPER_GROUPING_BOND_ID=kitchen\n"
     )
     path = _write_env(tmp_path, body)
-    state = read_grouping_state(path, unit_state_reader=_stub)
+    state = read_grouping_state(
+        path, unit_state_reader=_stub, tap_path_reader=_tap_set
+    )
     assert state["codec"] == DEFAULT_CODEC
 
 
@@ -128,7 +141,9 @@ def test_state_dict_is_json_able(tmp_path):
     import json
 
     path = _write_env(tmp_path, _leader_env())
-    state = read_grouping_state(path, unit_state_reader=_stub)
+    state = read_grouping_state(
+        path, unit_state_reader=_stub, tap_path_reader=_tap_set
+    )
     # Should not raise; round-trips to an equal dict (incl. runtime block).
     assert json.loads(json.dumps(state)) == state
 
@@ -180,7 +195,9 @@ def test_re_reads_file_fresh_each_call(tmp_path):
 
     # Mutate the SSOT file in place — simulating a wizard save.
     p.write_text(_leader_env())
-    second = read_grouping_state(path, unit_state_reader=_stub)
+    second = read_grouping_state(
+        path, unit_state_reader=_stub, tap_path_reader=_tap_set
+    )
     assert second["enabled"] is True
     assert second["role"] == "leader"
     assert second["codec"] == "opus"
@@ -192,10 +209,14 @@ def test_re_read_picks_up_codec_change(tmp_path):
     p = tmp_path / "grouping.env"
     p.write_text(_leader_env())  # codec=opus
     path = str(p)
-    assert read_grouping_state(path, unit_state_reader=_stub)["codec"] == "opus"
+    assert read_grouping_state(
+        path, unit_state_reader=_stub, tap_path_reader=_tap_set
+    )["codec"] == "opus"
 
     p.write_text(_leader_env().replace("CODEC=opus", "CODEC=flac"))
-    assert read_grouping_state(path, unit_state_reader=_stub)["codec"] == "flac"
+    assert read_grouping_state(
+        path, unit_state_reader=_stub, tap_path_reader=_tap_set
+    )["codec"] == "flac"
 
 
 # ---------- runtime health: derive_grouping_runtime (pure) ----------
@@ -218,14 +239,56 @@ def test_runtime_invalid_carries_error(tmp_path):
     assert "BOND_ID" in rt["detail"]
 
 
-def test_runtime_leader_ok_when_both_active(tmp_path):
+def test_runtime_leader_ok_when_both_active_and_tapping(tmp_path):
     rt = derive_grouping_runtime(
         _cfg(tmp_path, _leader_env()),
         {SNAPSERVER: "active", SNAPCLIENT: "active"},
+        leader_tap_path="/run/jasper-snapserver/snapfifo",
     )
     assert rt["health"] == "ok"
     assert rt["units"][SNAPSERVER] == {"expected": "start", "actual": "active"}
     assert rt["units"][SNAPCLIENT] == {"expected": "start", "actual": "active"}
+
+
+def test_runtime_leader_degraded_when_units_up_but_not_tapping(tmp_path):
+    """The staff-review gap: snap units active but outputd not tapping the
+    snapfifo (empty leader_tap_path) => degraded, snapserver reads an empty
+    FIFO and followers get silence while /state would otherwise look ok."""
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "active", SNAPCLIENT: "active"},
+        leader_tap_path="",
+    )
+    assert rt["health"] == "degraded"
+    assert "not tapping" in rt["detail"]
+    assert "empty FIFO" in rt["detail"]
+    # Units themselves are still reported active — the failure is the dry
+    # stream source, not a down unit.
+    assert rt["units"][SNAPSERVER] == {"expected": "start", "actual": "active"}
+
+
+def test_runtime_leader_default_tap_is_empty_so_degraded(tmp_path):
+    """Tap defaults to "" so a caller that does not inject it gets the
+    safe-degraded reading for a leader (cannot silently look ok)."""
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "active", SNAPCLIENT: "active"},
+    )
+    assert rt["health"] == "degraded"
+    assert "not tapping" in rt["detail"]
+
+
+def test_runtime_leader_down_unit_wins_over_tap_check(tmp_path):
+    """A down snap unit is the more fundamental failure; its detail wins
+    over the tap check even when the tap is also empty."""
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _leader_env()),
+        {SNAPSERVER: "failed", SNAPCLIENT: "active"},
+        leader_tap_path="",
+    )
+    assert rt["health"] == "degraded"
+    assert "leader degraded" in rt["detail"]
+    assert "not tapping" not in rt["detail"]
 
 
 def test_runtime_leader_degraded_when_server_down(tmp_path):
@@ -247,6 +310,18 @@ def test_runtime_follower_ok_when_client_active(tmp_path):
     # a follower runs NO server (expected stop), only the client
     assert rt["units"][SNAPSERVER]["expected"] == "stop"
     assert rt["units"][SNAPCLIENT] == {"expected": "start", "actual": "active"}
+
+
+def test_runtime_follower_tap_argument_is_ignored(tmp_path):
+    """A follower has no tap concept: an empty leader_tap_path must NOT
+    push it to degraded (the tap check is leader-only)."""
+    rt = derive_grouping_runtime(
+        _cfg(tmp_path, _follower_env()),
+        {SNAPSERVER: "inactive", SNAPCLIENT: "active"},
+        leader_tap_path="",
+    )
+    assert rt["health"] == "ok"
+    assert "not tapping" not in rt["detail"]
 
 
 def test_runtime_follower_degraded_surfaces_unreachable_leader(tmp_path):
@@ -296,6 +371,83 @@ def test_enabled_valid_probes_the_planned_units(tmp_path):
     )
     assert state["runtime"]["health"] == "ok"
     assert SNAPCLIENT in probed[0]
+
+
+def test_leader_tap_set_is_ok(tmp_path):
+    """Valid leader, units active, outputd tapping => ok. The tap is read
+    through the injected reader, never a real file."""
+    tapped = []
+
+    def tap_spy():
+        tapped.append(True)
+        return _SNAPFIFO
+
+    state = read_grouping_state(
+        _write_env(tmp_path, _leader_env()),
+        unit_state_reader=_stub,
+        tap_path_reader=tap_spy,
+    )
+    assert state["runtime"]["health"] == "ok"
+    assert "leader streaming" in state["runtime"]["detail"]
+    assert tapped == [True]  # leader DOES probe the tap
+
+
+def test_leader_tap_empty_is_degraded(tmp_path):
+    """Valid leader, units active, outputd NOT tapping (empty tap) =>
+    degraded with the "not tapping" reason — the staff-review gap."""
+    state = read_grouping_state(
+        _write_env(tmp_path, _leader_env()),
+        unit_state_reader=_stub,
+        tap_path_reader=lambda: "",
+    )
+    assert state["runtime"]["health"] == "degraded"
+    assert "not tapping" in state["runtime"]["detail"]
+
+
+def test_follower_does_not_probe_the_tap(tmp_path):
+    """A follower has no tap concept: read_grouping_state must NOT call the
+    tap reader (zero extra work), and stays ok with the client active."""
+    def boom():
+        raise AssertionError("tap reader must not be called for a follower")
+
+    state = read_grouping_state(
+        _write_env(tmp_path, _follower_env()),
+        unit_state_reader=_stub,
+        tap_path_reader=boom,
+    )
+    assert state["runtime"]["health"] == "ok"
+
+
+def test_solo_does_not_probe_the_tap(tmp_path):
+    """Grouping off => no runtime block and the tap reader is never called."""
+    def boom():
+        raise AssertionError("tap reader must not be called when grouping off")
+
+    state = read_grouping_state(
+        _write_env(tmp_path, "JASPER_GROUPING=off\n"),
+        unit_state_reader=_stub,
+        tap_path_reader=boom,
+    )
+    assert "runtime" not in state
+
+
+def test_invalid_leader_does_not_probe_the_tap(tmp_path):
+    """An invalid (enabled-but-broken) leader starts nothing and taps
+    nothing: the tap reader must not be consulted."""
+    def boom():
+        raise AssertionError("tap reader must not be called for invalid bond")
+
+    body = (
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=leader\n"
+        "JASPER_GROUPING_CHANNEL=left\n"  # no bond id => invalid
+    )
+    state = read_grouping_state(
+        _write_env(tmp_path, body),
+        unit_state_reader=_stub,
+        tap_path_reader=boom,
+    )
+    assert state["runtime"]["health"] == "invalid"
 
 
 def test_enabled_invalid_does_not_probe(tmp_path):

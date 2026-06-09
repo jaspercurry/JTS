@@ -40,7 +40,11 @@ import subprocess
 from typing import Any, Callable
 
 from .config import GROUPING_ENV_FILE, GroupingConfig, load_config
-from .reconcile import plan
+from .reconcile import (
+    _read_outputd_snapfifo_path,
+    desired_snapfifo_path,
+    plan,
+)
 
 # How long to wait on the `systemctl is-active` probe before giving up
 # and reporting "unknown". Bounded so a wedged systemd can't stall the
@@ -82,6 +86,8 @@ def read_unit_active_states(units: list[str]) -> dict[str, str]:
 def derive_grouping_runtime(
     cfg: GroupingConfig,
     unit_states: dict[str, str],
+    *,
+    leader_tap_path: str = "",
 ) -> dict[str, Any]:
     """Combine the declared config with actual unit states into a runtime
     health verdict. PURE and total — no I/O, no clock.
@@ -92,16 +98,29 @@ def derive_grouping_runtime(
     :func:`jasper.multiroom.reconcile.plan`, so this never re-derives the
     leader/follower→units mapping — there is one definition of it.
 
+    ``leader_tap_path`` is the LEADER's CURRENT outputd snapfifo tap (the
+    value the reconciler wrote to ``OUTPUTD_SNAPFIFO_ENV_FILE``; "" means
+    "outputd is not tapping the stream"). It is INJECTED, never read here,
+    so this function stays pure — the I/O edge lives in
+    :func:`read_grouping_state` (and the doctor). It is only consulted for
+    a valid leader, the one role that taps; a follower / solo / invalid
+    config has no tap concept and the argument is ignored.
+
     ``health``:
       - ``off``      — grouping disabled (solo).
       - ``invalid``  — enabled but ``cfg.error`` (fail-LOUD; the bond is
                        misconfigured and the reconciler refuses to start
                        it). ``detail`` is the error.
-      - ``degraded`` — a unit that SHOULD be running is not ``active``.
-                       The §7 visible-failure case: a follower whose
-                       snapclient is ``failed``/``inactive`` (leader
-                       unreachable), or a leader whose snapserver is down.
-      - ``ok``       — every unit the plan wants up is ``active``.
+      - ``degraded`` — a unit that SHOULD be running is not ``active``,
+                       OR (leader only) the snap units are up but outputd
+                       is not tapping the stream — snapserver reads a green
+                       ``active`` while the FIFO is empty and followers get
+                       silence. Both are §7 visible-failure cases: a
+                       follower whose snapclient is ``failed``/``inactive``
+                       (leader unreachable), a leader whose snapserver is
+                       down, or a leader whose stream source is dry.
+      - ``ok``       — every unit the plan wants up is ``active`` (and, for
+                       a leader, outputd is tapping the stream).
 
     Always reports per-unit ``{expected, actual}`` so a dashboard can
     show exactly which leg is down.
@@ -133,6 +152,21 @@ def derive_grouping_runtime(
             )
         return {"health": "degraded", "detail": detail, "units": units}
 
+    # Snap units are up. For a leader, the stream source must ALSO be live:
+    # if the role wants a tap (``desired_snapfifo_path``) but outputd is not
+    # tapping (``leader_tap_path`` empty), snapserver streams an empty FIFO
+    # and followers get silence while every unit reads "active". Surface
+    # that as degraded rather than a green-looking-but-dry bond.
+    if cfg.role == "leader" and desired_snapfifo_path(cfg) and not leader_tap_path:
+        return {
+            "health": "degraded",
+            "detail": (
+                "leader configured but outputd is not tapping the stream "
+                "(snapserver will read an empty FIFO)"
+            ),
+            "units": units,
+        }
+
     detail = (
         f"leader streaming (bond {cfg.bond_id})"
         if cfg.role == "leader"
@@ -145,6 +179,7 @@ def read_grouping_state(
     path: str = GROUPING_ENV_FILE,
     *,
     unit_state_reader: Callable[[list[str]], dict[str, str]] | None = None,
+    tap_path_reader: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     """Read the grouping config fresh from the SSOT file and return a
     JSON-able snapshot dict for ``/state`` and the dashboard.
@@ -167,8 +202,16 @@ def read_grouping_state(
     contract. The units are only probed for a valid bond (an INVALID
     bond's plan starts nothing, so there is nothing to probe).
 
-    ``unit_state_reader`` is injectable for tests; production uses
-    :func:`read_unit_active_states`.
+    For a VALID LEADER only, the outputd snapfifo tap is also read through
+    the thin I/O edge (:func:`jasper.multiroom.reconcile._read_outputd_snapfifo_path`)
+    and injected into the pure derive, so a leader whose snapserver is
+    ``active`` but whose FIFO is dry (outputd not tapping) shows
+    ``degraded`` instead of a healthy-looking-but-silent bond. A
+    follower / solo / invalid config does zero extra work — no tap probe.
+
+    ``unit_state_reader`` and ``tap_path_reader`` are injectable for tests;
+    production uses :func:`read_unit_active_states` and
+    :func:`jasper.multiroom.reconcile._read_outputd_snapfifo_path`.
     """
     cfg = load_config(path)
     snapshot: dict[str, Any] = {
@@ -183,8 +226,15 @@ def read_grouping_state(
     }
     if cfg.enabled:
         states: dict[str, str] = {}
+        tap = ""
         if cfg.error is None:
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])
-        snapshot["runtime"] = derive_grouping_runtime(cfg, states)
+            # Only a valid leader taps — skip the I/O entirely otherwise.
+            if cfg.role == "leader":
+                tap_reader = tap_path_reader or _read_outputd_snapfifo_path
+                tap = tap_reader()
+        snapshot["runtime"] = derive_grouping_runtime(
+            cfg, states, leader_tap_path=tap
+        )
     return snapshot
