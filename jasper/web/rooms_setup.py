@@ -81,7 +81,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
 from ..mdns import browse_once
-from ..multiroom.state import read_grouping_state
+from ..multiroom.state import parse_grouping_response, read_grouping_state
 from . import peering_setup
 from ._common import (
     begin_request,
@@ -651,13 +651,10 @@ def _get_member_grouping(addr: str) -> dict | None:
     except (urllib.error.URLError, OSError, http.client.HTTPException,
             UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if not isinstance(parsed, dict):
-        return None
-    # GET /grouping nests the snapshot under a "grouping" key; unwrap to the
-    # flat dict the caller compares bond_id against. A missing/null/non-dict
-    # grouping block reads as "unknown" → None (so it won't match any bond).
-    grouping = parsed.get("grouping")
-    return grouping if isinstance(grouping, dict) else None
+    # Unwrap the {"grouping": …} envelope via the shared parser — the paired
+    # inverse of jasper-control's grouping_response (one home for the shape,
+    # so producer and consumer can't drift). None when absent/null/not-a-dict.
+    return parse_grouping_response(parsed)
 
 
 def _save_bond(handler: BaseHTTPRequestHandler) -> None:
@@ -722,6 +719,16 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         results[slot] = {"addr": addr, "role": body["role"], "ok": ok, "detail": detail}
 
     all_ok = all(r["ok"] for r in results)
+    # Name each failed member in the journal (not just the aggregate) — on a
+    # headless speaker the HTTP response isn't a diagnostic surface, so a
+    # half-formed bond must say WHICH member failed and WHY. Failures only
+    # (a healthy pair logs nothing here — no journal spam).
+    for r in results:
+        if not r["ok"]:
+            logger.warning(
+                "event=rooms.bond.member_failed bond=%s addr=%s role=%s detail=%s",
+                bond_id, r.get("addr") or "?", r.get("role") or "?", r["detail"],
+            )
     logger.info(
         "event=rooms.bond.save bond=%s members=%d ok=%s",
         bond_id, len(members), all_ok,
@@ -784,6 +791,16 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     dissolved = [r["addr"] for r in results if r["ok"]]
     self_ok = results[0]["ok"]  # self is always targets[0]
 
+    # Name each member we couldn't disable (self shows as "(self)") so a
+    # half-dissolved bond — e.g. a follower offline at dissolve time, left
+    # stranded — is visible in the journal, not just the aggregate. Failures
+    # only; the empty-addr target is self.
+    for r in results:
+        if not r["ok"]:
+            logger.warning(
+                "event=rooms.unbond.member_failed bond=%s addr=%s detail=%s",
+                bond_id, r["addr"] or "(self)", r["detail"],
+            )
     logger.info(
         "event=rooms.unbond bond=%s peers=%d self_ok=%s dissolved=%d",
         bond_id, len(peer_addrs), self_ok, len(dissolved),

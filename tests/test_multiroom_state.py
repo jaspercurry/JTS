@@ -17,7 +17,10 @@ from __future__ import annotations
 
 from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, load_config
 from jasper.multiroom.state import (
+    GROUPING_RESPONSE_KEY,
     derive_grouping_runtime,
+    grouping_response,
+    parse_grouping_response,
     read_grouping_state,
 )
 
@@ -478,3 +481,33 @@ def test_real_reader_is_failsoft_without_systemctl(monkeypatch):
     monkeypatch.setattr(state_mod.subprocess, "run", boom)
     out = state_mod.read_unit_active_states([SNAPSERVER, SNAPCLIENT])
     assert out == {SNAPSERVER: "unknown", SNAPCLIENT: "unknown"}
+
+
+# ---------- GET /grouping wire contract (producer/consumer can't drift) ----
+
+
+def test_grouping_response_parse_roundtrip():
+    """parse(build(x)) == x. This is the guard that keeps jasper-control (the
+    producer) and the /rooms /unbond consumer from drifting — both go through
+    these paired functions sharing GROUPING_RESPONSE_KEY. The C4 regression
+    (2026-06-09) was exactly this contract drifting: the producer nested under
+    a 'grouping' key while the consumer read bond_id at the top level."""
+    snap = {
+        "enabled": True, "role": "follower", "channel": "right",
+        "bond_id": "bond-1", "leader_addr": "jts.local",
+    }
+    built = grouping_response(snap)
+    assert built == {GROUPING_RESPONSE_KEY: snap}
+    assert parse_grouping_response(built) == snap
+
+
+def test_parse_grouping_response_unknown_cases_are_none():
+    """Absent / null / non-dict grouping reads as None ('unknown'), so a
+    failed read can never spuriously match a bond_id. Mirrors the fail-soft
+    {'grouping': null} the producer emits when read_grouping_state() raises."""
+    assert parse_grouping_response(grouping_response(None)) is None  # fail-soft read
+    assert parse_grouping_response({}) is None                       # key absent
+    assert parse_grouping_response({GROUPING_RESPONSE_KEY: None}) is None   # explicit null
+    assert parse_grouping_response({GROUPING_RESPONSE_KEY: "x"}) is None    # not a dict
+    assert parse_grouping_response("not a dict") is None             # body not a dict
+    assert parse_grouping_response(None) is None

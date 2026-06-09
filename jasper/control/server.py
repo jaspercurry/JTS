@@ -52,7 +52,7 @@ from ..audio_quality import (
 )
 from . import debug_control, shairport_supervisor, system_supervisor, wifi_guardian_state
 from ..multiroom.config import GROUPING_ENV_FILE, validate_grouping
-from ..multiroom.state import read_grouping_state
+from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
@@ -1903,7 +1903,11 @@ def _make_handler(
                 except Exception:  # noqa: BLE001
                     logger.exception("grouping state read failed")
                     grouping = None
-                self._send_json({"grouping": grouping})
+                # grouping_response is the ONE home for the envelope shape; the
+                # /rooms /unbond consumer parses it via the paired
+                # parse_grouping_response (jasper/multiroom/state.py), so the
+                # two daemons can't drift (the C4 regression).
+                self._send_json(grouping_response(grouping))
                 return
             if self.path == "/dial/status":
                 # Heartbeat snapshot — used by jasper-doctor's

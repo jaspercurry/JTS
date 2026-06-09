@@ -627,6 +627,13 @@ def test_grouping_get_returns_grouping_block(
 
     assert status == 200
     assert body["grouping"] == snapshot
+    # Cross-boundary contract: the /rooms /unbond CONSUMER must extract the
+    # snapshot from the PRODUCER's actual body via the shared parser. Running
+    # the real emitted body through parse_grouping_response here is what would
+    # have caught the C4 drift (the two daemons no longer test only their own
+    # half of the contract in isolation).
+    from jasper.multiroom.state import parse_grouping_response
+    assert parse_grouping_response(body) == snapshot
 
 
 def test_grouping_get_requires_no_csrf(monkeypatch, server_with_coordinator):

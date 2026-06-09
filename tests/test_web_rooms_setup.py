@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
@@ -1299,3 +1300,45 @@ def test_post_unbond_unknown_path_404s_before_csrf(monkeypatch):
     h.rfile = BytesIO(b"{}")
     handler_cls.do_POST(h)
     assert h.status == 404
+
+
+# ----------------------------------------------------------------------
+# Per-member fan-out failure observability — a half-formed/half-dissolved
+# bond must NAME the failed member in the journal (the HTTP response isn't a
+# diagnostic surface on a headless speaker). Failures only (no journal spam).
+# ----------------------------------------------------------------------
+
+
+def test_post_bond_logs_per_member_failure_only(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="jasper.web.rooms_setup")
+    _post_bond(
+        {"members": _stereo_pair_members()},
+        monkeypatch=monkeypatch,
+        member_results={"192.168.1.9": (False, "Connection refused")},
+    )
+    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    # The failed follower is named with its addr + reason...
+    assert any(
+        "event=rooms.bond.member_failed" in m
+        and "192.168.1.9" in m and "Connection refused" in m
+        for m in warns
+    )
+    # ...and the succeeding leader is NOT logged (failures only).
+    assert not any("member_failed" in m and "192.168.1.5" in m for m in warns)
+
+
+def test_post_unbond_logs_per_member_failure(monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="jasper.web.rooms_setup")
+    _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "bond_id": "bond-1"},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={"192.168.1.9": {"enabled": True, "bond_id": "bond-1"}},
+        member_results={"192.168.1.9": (False, "Connection refused")},
+    )
+    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "event=rooms.unbond.member_failed" in m
+        and "192.168.1.9" in m and "Connection refused" in m
+        for m in warns
+    )
