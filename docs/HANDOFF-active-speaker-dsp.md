@@ -90,7 +90,14 @@
 > any audible test, confirm floor audio, then raise slowly. The readiness card
 > also summarizes the selected target, backend, rollback state, test level, and
 > "why sound is blocked" reasons; tweeter/horn target actions stay locked in
-> this UI slice even when a lab backend is enabled.
+> this UI slice even when a lab backend is enabled. The safety card now also
+> includes a read-only **Commissioning rehearsal** packet from
+> `jasper.active_speaker.commissioning` and
+> `/sound/active-speaker/commissioning-rehearsal`. It rehearses the durable
+> sequence from saved output map through safe-session/floor readiness without
+> playing sound, reloading CamillaDSP, or storing wizard progress; target
+> readiness, artifact verification, and floor-audio confirmation remain
+> explicit operator-selected actions.
 > `/sound/` also includes a driver-research helper for active-crossover
 > planning. It generates a prompt from the current output roles and accepts a
 > pasted JSON object with kind `jts_active_crossover_driver_research`.

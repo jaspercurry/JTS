@@ -174,6 +174,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/calibration-level'" in js
     assert "fetch('./active-speaker/bringup-preflight'" in js
     assert "fetch('./active-speaker/startup-load'" in js
+    assert "fetch('./active-speaker/commissioning-rehearsal'" in js
     assert "fetch('./active-speaker/tone-targets'" in js
     assert "fetch('./active-speaker/stage-config'" in js
     assert "fetch('./active-speaker/check-path-safety'" in js
@@ -221,6 +222,11 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "manual guarded bring-up stays available" in js
     assert "function renderActiveSpeakerStartupLoad(startupLoad)" in js
     assert "Startup load" in js
+    assert "function renderOutputCommissioningRehearsal()" in js
+    assert "Commissioning rehearsal" in js
+    assert "rehearse the durable safety sequence without sound" in js
+    assert "No sound is played by this rehearsal" in js
+    assert "function fetchActiveSpeakerCommissioningRehearsal()" in js
     assert "Check protected path" in js
     assert "Safe bring-up sequence" in js
     assert "Verify artifact before audio" in js
@@ -624,6 +630,123 @@ def test_active_speaker_playback_readiness_payload_is_no_audio(
     assert "audio_backend_not_enabled" in {
         issue["code"] for issue in blocked_audio["playback"]["issues"]
     }
+
+
+def test_active_speaker_commissioning_rehearsal_payload_is_no_audio(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_mono",
+        "name": "Bench mono",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "mono",
+                "label": "Mono speaker",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "software_guard_requested",
+                    },
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "mono"},
+    })
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_safe_playback_payload",
+        lambda: {
+            "status": "armed",
+            "session_id": "safe-1",
+            "expires_at": "2026-06-09T12:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_calibration_level_payload",
+        lambda raw=None: {
+            "test_signal": {
+                "requested_level_dbfs": -80.0,
+                "min_level_dbfs": -80.0,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_bringup_preflight_payload",
+        lambda: {
+            "status": "manual_ready",
+            "software_guard": {"status": "software_guard_ready"},
+            "modes": {
+                "manual_guarded_bringup": {
+                    "required_gates": [
+                        {"id": "output_topology_present", "passed": True},
+                        {"id": "topology_has_no_unhandled_blockers", "passed": True},
+                        {"id": "physical_identity_verified", "passed": True},
+                        {"id": "protected_startup_config_staged", "passed": True},
+                        {"id": "compression_driver_guard_accepted", "passed": True},
+                    ]
+                }
+            },
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_startup_load_payload",
+        lambda: {
+            "state": {
+                "status": "loaded",
+                "loaded": True,
+                "rollback_available": True,
+                "current_config_matches_loaded": True,
+            },
+            "preflight": {
+                "status": "ready",
+                "path_safety": {"load_gate": "ready"},
+                "required_gates": [
+                    {"id": "path_safety_ready", "passed": True},
+                    {
+                        "id": "path_safety_matches_current_startup_load",
+                        "passed": True,
+                    },
+                ],
+                "issues": [],
+            },
+        },
+    )
+
+    payload = sound_setup._active_speaker_commissioning_rehearsal_payload()
+
+    assert payload["kind"] == "jts_active_speaker_commissioning_rehearsal"
+    assert payload["status"] == "ready_for_target_check"
+    assert payload["no_audio"] is True
+    assert payload["steps"][7]["id"] == "target_readiness_checked"
+    assert payload["steps"][7]["status"] == "next"
 
 
 def test_active_speaker_protection_and_stage_config_payloads_are_no_load(

@@ -59,7 +59,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var activeSpeaker = {
     loading: false, action: '', payload: null, session: null, targets: null,
     stagedConfig: null, calibrationLevel: null, plan: null, playback: null,
-    bringup: null, startupLoad: null, error: '', levelDbfs: null
+    bringup: null, startupLoad: null, rehearsal: null, error: '', levelDbfs: null
   };
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
@@ -1060,6 +1060,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Stage, load, and start quiet',
         'Check environment, stage protected startup, then use bounded readiness and level controls.',
         topology,
+        renderOutputCommissioningRehearsal() +
         '<div class="output-card output-card--active-status">' +
           '<div class="output-card__head"><div><p class="output-card__title">Environment and safe-session state</p>' +
           '<p class="setting-row__hint">These controls do not play sound unless the explicit lab backend is enabled and readiness passes.</p></div></div>' +
@@ -1387,6 +1388,32 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return '<div class="output-sequence">' +
       '<p class="setting-row__title">Safe bring-up sequence</p>' +
       '<ol class="output-sequence__list">' + rows.join('') + '</ol>' +
+    '</div>';
+  }
+  function renderOutputCommissioningRehearsal() {
+    var rehearsal = activeSpeaker.rehearsal || {};
+    var steps = Array.isArray(rehearsal.steps) ? rehearsal.steps : [];
+    var statusValue = rehearsal.status || 'not_checked';
+    if (!steps.length) {
+      return '<div class="output-card output-card--rehearsal">' +
+        '<div class="output-card__head"><div><p class="output-card__title">Commissioning rehearsal</p>' +
+        '<p class="setting-row__hint">Refresh active-speaker status to rehearse the durable safety sequence without sound.</p></div>' +
+        '<span class="status-pill">not checked</span></div>' +
+      '</div>';
+    }
+    return '<div class="output-card output-card--rehearsal">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Commissioning rehearsal</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(rehearsal.next_step || 'No sound is played by this rehearsal.') + '</p></div>' +
+        '<span class="status-pill' + outputStatusClass(statusValue === 'blocked' ? 'blocked' : 'valid') + '">' +
+          escapeHtml(statusValue.replace(/_/g, ' ')) + '</span></div>' +
+      '<ol class="output-sequence__list">' + steps.map(function(step) {
+        var stepStatus = step.status || 'pending';
+        return '<li class="output-sequence__item output-sequence__item--' + escapeHtml(stepStatus) + '">' +
+          '<span>' + escapeHtml(stepStatus.replace(/_/g, ' ')) + '</span>' +
+          '<strong>' + escapeHtml(step.label || step.id || 'Step') + '</strong>' +
+          '<p>' + escapeHtml(step.message || '') + '</p>' +
+        '</li>';
+      }).join('') + '</ol>' +
     '</div>';
   }
   function outputCurrentLevelAtFloor() {
@@ -3188,11 +3215,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: result.plan || activeSpeaker.plan,
         playback: result.playback || activeSpeaker.playback,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       status(audio ? 'Played quiet channel test.' : 'Verified channel test artifact. No sound was played.');
     } catch (e) {
       outputTopology.readinessPlaybackChecking = '';
@@ -3221,6 +3250,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -3250,6 +3280,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       status(payload.status === 'staged' ?
         'Staged protected startup config. No DSP graph was loaded.' :
         'Protected startup config is blocked; review the staging evidence.',
@@ -3264,6 +3295,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3288,6 +3320,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3319,6 +3352,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : cfg.value
       };
+      await refreshActiveSpeakerRehearsal();
       status(payload.issues && payload.issues.length ?
         'Level raised one guarded step; larger upward move was limited.' :
         'Calibration level updated.');
@@ -3332,6 +3366,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3345,6 +3380,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var resp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
     if (!resp.ok) throw new Error('startup load status failed');
     return await resp.json();
+  }
+  async function fetchActiveSpeakerCommissioningRehearsal() {
+    var resp = await fetch('./active-speaker/commissioning-rehearsal', {cache: 'no-store'});
+    if (!resp.ok) throw new Error('commissioning rehearsal failed');
+    return await resp.json();
+  }
+  async function refreshActiveSpeakerRehearsal() {
+    try {
+      activeSpeaker.rehearsal = await fetchActiveSpeakerCommissioningRehearsal();
+    } catch (e) {
+      activeSpeaker.rehearsal = activeSpeaker.rehearsal || null;
+    }
   }
   async function fetchActiveSpeakerEnvironment() {
     var resp = await fetch('./active-speaker/environment', {cache: 'no-store'});
@@ -3361,6 +3408,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3391,6 +3439,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       status(ready ?
         'Protected path check passed. No sound was played.' :
         'Protected path check found blockers. No sound was played.',
@@ -3405,6 +3454,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3430,6 +3480,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3461,6 +3512,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       var loaded = payload.load && payload.load.status === 'loaded';
       status(loaded ?
         'Protected startup config loaded. No sound was played.' :
@@ -3476,6 +3528,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: e.message,
@@ -3501,6 +3554,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3533,6 +3587,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       var rolledBack = payload.rollback && payload.rollback.status === 'rolled_back';
       status(rolledBack ?
         'Rolled back to the prior config. No sound was played.' :
@@ -3548,6 +3603,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: e.message,
@@ -3567,6 +3623,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3586,11 +3643,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!bringupResp.ok) throw new Error('bring-up preflight failed');
       var startupLoadResp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
       if (!startupLoadResp.ok) throw new Error('startup load status failed');
+      var rehearsalResp = await fetch('./active-speaker/commissioning-rehearsal', {cache: 'no-store'});
+      if (!rehearsalResp.ok) throw new Error('commissioning rehearsal failed');
       var targetsResp = await fetch('./active-speaker/tone-targets', {cache: 'no-store'});
       if (!targetsResp.ok) throw new Error('tone targets failed');
       var nextLevel = await levelResp.json();
       var nextBringup = await bringupResp.json();
       var nextStartupLoad = await startupLoadResp.json();
+      var nextRehearsal = await rehearsalResp.json();
       var nextTargets = await targetsResp.json();
       activeSpeaker = {
         loading: false, action: '',
@@ -3601,6 +3661,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: nextLevel,
         bringup: nextBringup,
         startupLoad: nextStartupLoad,
+        rehearsal: nextRehearsal,
         plan: null,
         playback: null,
         error: '',
@@ -3614,6 +3675,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: null, playback: null, error: e.message, levelDbfs: activeSpeaker.levelDbfs
       };
     }
@@ -3629,6 +3691,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3665,6 +3728,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: nextLevel && nextLevel.test_signal ?
           Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       outputTopology.readiness = null;
       outputTopology.readinessChecking = '';
       outputTopology.readinessError = '';
@@ -3680,6 +3744,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3698,6 +3763,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -3726,6 +3792,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: nextPlan.calibration_level || activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: nextPlan,
         playback: null,
         error: '',
@@ -3741,6 +3808,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3760,6 +3828,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -3788,12 +3857,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: result.plan && result.plan.calibration_level || activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: result.plan || activeSpeaker.plan,
         playback: playback,
         error: '',
         levelDbfs: playback && playback.tone && isFinite(Number(playback.tone.level_dbfs)) ?
           Number(playback.tone.level_dbfs) : activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
     } catch (e) {
       activeSpeaker = {
         loading: false, action: '',
@@ -3804,6 +3875,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
