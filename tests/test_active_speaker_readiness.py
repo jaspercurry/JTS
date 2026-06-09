@@ -4,6 +4,7 @@ from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.playback import tone_backend_status
 from jasper.active_speaker.readiness import (
+    HORN_FLOOR_TEST_PREVIEW_KIND,
     PLAYBACK_READINESS_KIND,
     build_playback_readiness,
 )
@@ -287,6 +288,15 @@ def test_playback_readiness_reports_horn_guided_readiness_without_audio() -> Non
     assert horn["manual_floor_test_candidate"] is True
     assert horn["guided_floor_test_candidate"] is True
     assert horn["microphone"]["status"] == "usable"
+    assert horn["floor_test_preview"]["kind"] == HORN_FLOOR_TEST_PREVIEW_KIND
+    assert horn["floor_test_preview"]["would_play"] is False
+    assert horn["floor_test_preview"]["audio_allowed"] is False
+    assert horn["floor_test_preview"]["tone"]["level_dbfs"] == -80.0
+    assert horn["floor_test_preview"]["tone"]["frequency_hz"] == 3000.0
+    assert horn["floor_test_preview"]["tone"]["band_limit"] == {
+        "type": "highpass",
+        "highpass_hz": 2000.0,
+    }
 
 
 def test_playback_readiness_blocks_horn_guidance_on_clipping() -> None:
@@ -310,6 +320,8 @@ def test_playback_readiness_blocks_horn_guidance_on_clipping() -> None:
     assert horn["manual_floor_test_candidate"] is False
     assert horn["guided_floor_test_candidate"] is False
     assert horn["microphone"]["status"] == "clipping"
+    assert horn["floor_test_preview"]["status"] == "blocked"
+    assert horn["floor_test_preview"]["would_play"] is False
     assert "mic_not_too_loud" in codes
 
 

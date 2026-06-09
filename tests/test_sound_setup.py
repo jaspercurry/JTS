@@ -243,6 +243,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Horn bring-up readiness" in js
     assert "No horn audio is enabled here" in js
     assert "horn.audio_allowed ? 'Yes' : 'No'" in js
+    assert "Floor-test preview" in js
+    assert "Preview only:" in js
     assert "function checkActivePathSafety()" in js
     assert "var environment = await fetchActiveSpeakerEnvironment()" in js
     assert "payload: environment" in js

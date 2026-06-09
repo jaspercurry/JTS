@@ -268,7 +268,9 @@ no-audio **Horn bring-up readiness** section. It summarizes whether the saved
 target is blocked, only a manual floor-test candidate, or a guided floor-test
 candidate based on protection mode, loaded protected startup DSP, Stop/session
 state, calibration floor, and operator-observed mic status. It always reports
-`audio_allowed: false`. The safe session now also records quiet-start evidence:
+`audio_allowed: false` and includes a preview-only floor-test intent: a short
+high-passed 3 kHz sine at the calibration floor, tied to the selected output,
+with `would_play: false`. The safe session now also records quiet-start evidence:
 every armed session starts at
 `floor_required`; the backend rejects raised audible tests until a successful
 floor-level audible result has been recorded for the same saved target and

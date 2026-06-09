@@ -1532,6 +1532,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var horn = readiness && readiness.compression_driver;
     if (!horn || !horn.applies) return '';
     var mic = horn.microphone || {};
+    var preview = horn.floor_test_preview || {};
+    var previewTone = preview.tone || {};
     var gates = Array.isArray(horn.required_gates) ? horn.required_gates : [];
     var statusLabel = {
       guided_ready_no_audio: 'Guided evidence ready',
@@ -1544,7 +1546,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ['Manual floor test', horn.manual_floor_test_candidate ? 'candidate' : 'blocked'],
       ['Guided floor test', horn.guided_floor_test_candidate ? 'candidate' : 'blocked'],
       ['Mic status', mic.status || 'unknown'],
-      ['Mic reading', mic.observed_dbfs == null ? 'none' : fmtDbfs(Number(mic.observed_dbfs))]
+      ['Mic reading', mic.observed_dbfs == null ? 'none' : fmtDbfs(Number(mic.observed_dbfs))],
+      ['Floor-test preview', previewTone.frequency_hz ?
+        fmtFreq(previewTone.frequency_hz) + ' at ' + fmtDbfs(Number(previewTone.level_dbfs)) :
+        'not ready']
     ];
     return '<div class="active-speaker-plan output-horn-readiness">' +
       '<div class="row-between active-speaker-level__head">' +
@@ -1561,6 +1566,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<p>' + escapeHtml(gate.message || (gate.passed ? 'Passed' : 'Blocked')) + '</p>' +
         '</li>';
       }).join('') + '</ul>' +
+      (preview.kind ? '<p class="setting-row__hint">Preview only: ' +
+        escapeHtml(preview.next_step || 'No audio will play from this preview.') + '</p>' : '') +
       '<p class="setting-row__hint">' + escapeHtml(horn.next_step || 'Horn audio remains disabled.') + '</p>' +
     '</div>';
   }

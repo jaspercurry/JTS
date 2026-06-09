@@ -27,6 +27,11 @@ from .audible_policy import (
 
 SCHEMA_VERSION = 1
 PLAYBACK_READINESS_KIND = "jts_active_speaker_playback_readiness"
+HORN_FLOOR_TEST_PREVIEW_KIND = "jts_active_speaker_horn_floor_test_preview"
+HORN_FLOOR_TEST_FREQUENCY_HZ = 3000.0
+HORN_FLOOR_TEST_HIGHPASS_HZ = 2000.0
+HORN_FLOOR_TEST_DURATION_MS = 100
+HORN_FLOOR_TEST_RAMP_MS = 20
 
 
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
@@ -94,6 +99,15 @@ def _level_at_floor(calibration_level: dict[str, Any]) -> bool:
     return math.isfinite(requested) and math.isfinite(minimum) and (
         requested <= minimum + 1e-6
     )
+
+
+def _floor_level_dbfs(calibration_level: dict[str, Any]) -> float:
+    test_signal = calibration_level.get("test_signal") or {}
+    try:
+        level = float(test_signal.get("min_level_dbfs"))
+    except (TypeError, ValueError):
+        return -80.0
+    return level if math.isfinite(level) else -80.0
 
 
 def _mic_guidance(calibration_level: dict[str, Any]) -> dict[str, Any]:
@@ -296,6 +310,45 @@ def _compression_driver_readiness(
         for gate in gates
         if not gate["passed"]
     ]
+    floor_level = _floor_level_dbfs(calibration_level)
+    preview_status = "preview_ready" if manual_passed else "blocked"
+    floor_test_preview = {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": HORN_FLOOR_TEST_PREVIEW_KIND,
+        "status": preview_status,
+        "would_play": False,
+        "audio_allowed": False,
+        "target": {
+            "speaker_group_id": group.id if group else None,
+            "speaker_label": group.label if group else None,
+            "role": channel.role,
+            "physical_output_index": channel.physical_output_index,
+        },
+        "tone": {
+            "waveform": "sine",
+            "frequency_hz": HORN_FLOOR_TEST_FREQUENCY_HZ,
+            "level_dbfs": floor_level,
+            "duration_ms": HORN_FLOOR_TEST_DURATION_MS,
+            "ramp_ms": HORN_FLOOR_TEST_RAMP_MS,
+            "band_limit": {
+                "type": "highpass",
+                "highpass_hz": HORN_FLOOR_TEST_HIGHPASS_HZ,
+            },
+        },
+        "safety": {
+            "requires_stop_control": True,
+            "requires_level_floor": True,
+            "requires_protected_startup_loaded": True,
+            "requires_operator_target_identity": True,
+            "requires_mic_not_too_loud": True,
+        },
+        "issues": issues,
+        "next_step": (
+            "This is a preview only; the future audible horn slice must explicitly enable playback."
+            if manual_passed
+            else "Resolve horn readiness blockers before using this floor-test preview."
+        ),
+    }
     return {
         "applies": True,
         "status": status,
@@ -316,6 +369,7 @@ def _compression_driver_readiness(
             "physical_output_index": channel.physical_output_index,
         },
         "microphone": mic,
+        "floor_test_preview": floor_test_preview,
         "required_gates": gates,
         "issues": issues,
         "next_step": (

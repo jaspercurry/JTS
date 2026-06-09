@@ -93,7 +93,10 @@
 > also includes a no-audio **Horn bring-up readiness** packet that distinguishes
 > blocked, manual floor-test candidate, and guided floor-test candidate states
 > from topology/protection/startup-load/Stop/level/mic evidence; it still
-> reports `audio_allowed: false`. Tweeter/horn target actions stay locked in
+> reports `audio_allowed: false`. The same packet includes an inert floor-test
+> preview (`jts_active_speaker_horn_floor_test_preview`) with the target, short
+> high-passed sine intent, and calibration-floor level so a future audible slice
+> has an explicit contract to implement. Tweeter/horn target actions stay locked in
 > this UI slice even when a lab backend is enabled. The safety card now also
 > includes a read-only **Commissioning rehearsal** packet from
 > `jasper.active_speaker.commissioning` and
@@ -660,7 +663,10 @@ compression-driver target, the report includes a `compression_driver` section
 with `audio_allowed: false` that distinguishes blocked evidence, manual
 floor-test candidate evidence, and guided floor-test candidate evidence from
 the saved output map, protection mode, loaded protected DSP, Stop/session
-state, calibration floor, and operator-observed mic status.
+state, calibration floor, and operator-observed mic status. That section also
+includes a no-audio `floor_test_preview` object: a 100 ms high-passed 3 kHz
+sine at the calibration floor, tied to the selected physical output and marked
+`would_play: false`.
 
 `jasper.active_speaker.safe_playback` is the first no-audio session substrate
 for that future work. It writes
