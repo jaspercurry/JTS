@@ -89,7 +89,11 @@
 > check one target, reset to the level floor, then verify an artifact before
 > any audible test, confirm floor audio, then raise slowly. The readiness card
 > also summarizes the selected target, backend, rollback state, test level, and
-> "why sound is blocked" reasons; tweeter/horn target actions stay locked in
+> "why sound is blocked" reasons. For tweeter/compression-driver targets it
+> also includes a no-audio **Horn bring-up readiness** packet that distinguishes
+> blocked, manual floor-test candidate, and guided floor-test candidate states
+> from topology/protection/startup-load/Stop/level/mic evidence; it still
+> reports `audio_allowed: false`. Tweeter/horn target actions stay locked in
 > this UI slice even when a lab backend is enabled. The safety card now also
 > includes a read-only **Commissioning rehearsal** packet from
 > `jasper.active_speaker.commissioning` and
@@ -648,7 +652,12 @@ CamillaDSP config with a rollback anchor. The playback backend requires the
 same role policy and loaded-startup proof before allowing `aplay`; the
 readiness route remains the layer that reads live startup/CamillaDSP state. The
 probe still does not perform physical channel verification or generate
-hardware-probe-backed path-safety evidence by itself.
+hardware-probe-backed path-safety evidence by itself. For a tweeter/
+compression-driver target, the report includes a `compression_driver` section
+with `audio_allowed: false` that distinguishes blocked evidence, manual
+floor-test candidate evidence, and guided floor-test candidate evidence from
+the saved output map, protection mode, loaded protected DSP, Stop/session
+state, calibration floor, and operator-observed mic status.
 
 `jasper.active_speaker.safe_playback` is the first no-audio session substrate
 for that future work. It writes

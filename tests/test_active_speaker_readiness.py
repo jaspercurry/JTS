@@ -222,6 +222,58 @@ def test_playback_readiness_keeps_software_guard_request_blocked() -> None:
     assert report["playback_allowed"] is False
 
 
+def test_playback_readiness_reports_horn_guided_readiness_without_audio() -> None:
+    report = build_playback_readiness(
+        _topology(protection="software_guard_requested"),
+        speaker_group_id="left",
+        role="tweeter",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(observed_mic_dbfs=-32),
+        startup_load_state=_startup_load(),
+        tone_backend=tone_backend_status({
+            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+        }),
+    )
+
+    horn = report["compression_driver"]
+
+    assert report["preconditions_passed"] is False
+    assert report["playback_allowed"] is False
+    assert horn["status"] == "guided_ready_no_audio"
+    assert horn["audio_allowed"] is False
+    assert horn["protection_mode"] == "software_guarded"
+    assert horn["manual_floor_test_candidate"] is True
+    assert horn["guided_floor_test_candidate"] is True
+    assert horn["microphone"]["status"] == "usable"
+
+
+def test_playback_readiness_blocks_horn_guidance_on_clipping() -> None:
+    report = build_playback_readiness(
+        _topology(protection="software_guard_requested"),
+        speaker_group_id="left",
+        role="tweeter",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(
+            observed_mic_dbfs=-18,
+            mic_clipping=True,
+        ),
+        startup_load_state=_startup_load(),
+    )
+
+    horn = report["compression_driver"]
+    codes = {issue["code"] for issue in horn["issues"]}
+
+    assert horn["status"] == "blocked"
+    assert horn["manual_floor_test_candidate"] is False
+    assert horn["guided_floor_test_candidate"] is False
+    assert horn["microphone"]["status"] == "clipping"
+    assert "mic_not_too_loud" in codes
+
+
 def test_playback_readiness_requires_environment_and_safe_session() -> None:
     report = build_playback_readiness(
         _topology(),
