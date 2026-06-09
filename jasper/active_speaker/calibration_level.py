@@ -246,6 +246,8 @@ def update_calibration_level_state(
         })
     elif action_id in {"reset", "floor", "stop"}:
         next_level = MIN_TEST_LEVEL_DBFS
+    elif action_id == "observe":
+        next_level = current
     elif action_id == "raise":
         next_level = min(current + TEST_LEVEL_STEP_DB, MAX_TEST_LEVEL_DBFS)
     elif action_id == "lower":

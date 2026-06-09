@@ -61,6 +61,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     stagedConfig: null, calibrationLevel: null, plan: null, playback: null,
     bringup: null, startupLoad: null, rehearsal: null, error: '', levelDbfs: null
   };
+  var activeSpeakerMicObservation = {observedDbfs: '', clipping: false};
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
     identity: null, clockDomain: null, identitySaving: '', protectionSaving: '',
@@ -1758,6 +1759,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     value = clamp(value, min, max);
     return {min: min, max: max, step: step, def: def, value: value};
   }
+  function activeSpeakerMicRecommendation(code) {
+    return {
+      start_at_minimum: 'Start at the minimum level.',
+      raise_slowly: 'Raise slowly, one backend-approved step at a time.',
+      hold_level: 'Hold this level for the next check.',
+      lower_level: 'Lower the level before continuing.',
+      stop_or_lower: 'Stop or lower; clipping resets the level to the floor.'
+    }[code] || 'Record a mic reading before treating this as guided calibration.';
+  }
   function renderActiveSpeakerLevel() {
     var cfg = activeSpeakerLevelConfig();
     var contract = activeSpeaker.calibrationLevel ||
@@ -1776,6 +1786,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }[meter.status] || 'Mic unmeasured';
     var toneClass = meter.tone === 'danger' ? ' status-pill--blocked' :
       (meter.tone === 'ok' ? ' status-pill--ready' : '');
+    var observedInput = activeSpeakerMicObservation.observedDbfs;
+    if (!observedInput && meter.observed_dbfs != null) {
+      observedInput = String(meter.observed_dbfs);
+    }
+    var clippingChecked = activeSpeakerMicObservation.clipping ||
+      meter.status === 'clipping';
     return '<div class="active-speaker-level">' +
       '<div class="row-between active-speaker-level__head">' +
         '<div class="setting-row__text">' +
@@ -1802,6 +1818,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<span class="status-pill' + toneClass + '">' + escapeHtml(label) + '</span>' +
         '<span class="setting-row__hint">JTS caps this at ' + escapeHtml(fmtDbfs(cfg.max)) +
           ' and limits upward moves to ' + escapeHtml(fmtDb(Number(guard.upward_step_limit_db) || cfg.step)) + ' dB.</span>' +
+      '</div>' +
+      '<div class="active-speaker-mic-observation">' +
+        '<div class="active-speaker-mic-observation__fields">' +
+          '<label for="active-speaker-mic-dbfs">Mic reading dBFS' +
+            '<input type="number" id="active-speaker-mic-dbfs" inputmode="decimal" ' +
+              'min="-120" max="0" step="0.1" value="' + escapeHtml(observedInput) + '" ' +
+              'placeholder="-35.0"></label>' +
+          '<label class="active-speaker-mic-observation__check">' +
+            '<input type="checkbox" id="active-speaker-mic-clipping"' +
+              (clippingChecked ? ' checked' : '') + '> Clipping observed</label>' +
+          '<button type="button" class="btn btn--ghost" data-act="active-mic-observation">Record reading</button>' +
+        '</div>' +
+        '<p class="setting-row__hint">' + escapeHtml(activeSpeakerMicRecommendation(meter.recommendation)) + '</p>' +
+        '<p class="setting-row__hint">This records operator-observed capture level only. It does not play sound or claim calibrated SPL.</p>' +
       '</div>' +
       (issues.length ? '<ul class="active-speaker-issues">' + issues.slice(0, 3).map(function(issue) {
         return '<li>' + escapeHtml('Level guard: ' + (issue.code || 'issue')) + '</li>';
@@ -2436,6 +2466,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'active-level') {
       updateActiveSpeakerLevel(t.getAttribute('data-level-action') || 'set');
     }
+    else if (act === 'active-mic-observation') {
+      recordActiveSpeakerMicObservation();
+    }
     else if (act === 'prepare-active-tone') {
       activeSpeakerTonePlan({
         side: t.getAttribute('data-side') || '',
@@ -2529,6 +2562,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       return;
     }
+    if (ev.target.id === 'active-speaker-mic-dbfs') {
+      activeSpeakerMicObservation.observedDbfs = ev.target.value;
+      return;
+    }
     if (ev.target.id === 'set-headroom') {
       var ro = el('set-headroom-readout');           // live readout; commit on 'change'
       if (ro) ro.textContent = fmtTrim(ev.target.value);
@@ -2551,6 +2588,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (ev.target.id === 'active-speaker-level') {
       updateActiveSpeakerLevel('set', Number(ev.target.value));
+      return;
+    }
+    if (ev.target.id === 'active-speaker-mic-clipping') {
+      activeSpeakerMicObservation.clipping = ev.target.checked;
       return;
     }
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
@@ -3370,6 +3411,96 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: activeSpeaker.levelDbfs
       };
       status('Could not update calibration level: ' + e.message, true);
+    }
+    render();
+  }
+  async function recordActiveSpeakerMicObservation() {
+    var input = el('active-speaker-mic-dbfs');
+    var clippingInput = el('active-speaker-mic-clipping');
+    var raw = input ? String(input.value || '').trim() : '';
+    var clipping = !!(clippingInput && clippingInput.checked);
+    var observed = raw === '' ? null : Number(raw);
+    if (raw !== '' && !isFinite(observed)) {
+      status('Enter the observed mic level as dBFS, for example -35.0.', true);
+      return;
+    }
+    if (raw === '' && !clipping) {
+      status('Enter a mic reading or mark clipping before recording an observation.', true);
+      return;
+    }
+    activeSpeakerMicObservation = {observedDbfs: raw, clipping: clipping};
+    activeSpeaker = {
+      loading: false, action: 'Recording mic reading',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
+      plan: null,
+      playback: null,
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    };
+    render();
+    try {
+      var body = {action: 'observe', mic_clipping: clipping};
+      if (observed != null) body.observed_mic_dbfs = observed;
+      var resp = await fetch('./active-speaker/calibration-level', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(body)
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'mic observation update failed');
+      var meter = payload.mic_meter || {};
+      var accepted = payload && payload.test_signal ?
+        Number(payload.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs;
+      var bringupResp = await fetch('./active-speaker/bringup-preflight', {cache: 'no-store'});
+      if (!bringupResp.ok) throw new Error('bring-up preflight failed');
+      var startupLoad = await fetchActiveSpeakerStartupLoad();
+      activeSpeakerMicObservation = {
+        observedDbfs: meter.observed_dbfs != null ? String(meter.observed_dbfs) : raw,
+        clipping: meter.status === 'clipping'
+      };
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: payload,
+        bringup: await bringupResp.json(),
+        startupLoad: startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
+        plan: null,
+        playback: null,
+        error: '',
+        levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
+      };
+      await refreshActiveSpeakerRehearsal();
+      status(meter.status === 'clipping' ?
+        'Mic clipping recorded; calibration level reset to the floor.' :
+        'Mic observation recorded.');
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
+        plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status('Could not record mic observation: ' + e.message, true);
     }
     render();
   }

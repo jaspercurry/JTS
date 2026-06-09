@@ -193,12 +193,13 @@ armed state also exposes a **Calibration level** slider backed by
 backend-owned bounds, and is separate from normal listening volume. The
 browser updates it through `/sound/active-speaker/calibration-level`; the
 backend accepts only one 1 dB upward step per transition and lets Lower,
-Reset, Stop, or future clipping evidence return to the floor. Tone-plan,
-readiness, and artifact routes consume the accepted persisted level rather
-than a caller-supplied `level_dbfs`. This is still only the software guard
-substrate: it does not write live CamillaDSP volume or emit samples. The
-current mic meter is a schema placeholder/classifier; real microphone
-observations are a future slice.
+Reset, Stop, or clipping evidence return to the floor. The same route accepts
+an `action=observe` mic observation from the operator; it records coarse
+capture-level guidance without changing the requested test level unless
+clipping is reported. Tone-plan, readiness, and artifact routes consume the
+accepted persisted level rather than a caller-supplied `level_dbfs`. This is
+still only the software guard substrate: it does not write live CamillaDSP
+volume, emit samples, read the microphone directly, or claim calibrated SPL.
 The card can also **Verify tone artifact** through
 `/sound/active-speaker/play-tone`: this validates the selected logical output
 target and writes a bounded multi-channel WAV artifact with only that output
@@ -309,8 +310,8 @@ The active-speaker runtime substrate starts in
 `jasper.output_topology`, and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 The next `/sound/` slice should exercise the lab-gated quiet woofer/mid path on
-hardware, then add the microphone-observed level loop before any horn output is
-enabled.
+hardware, then use the operator-observed microphone loop before any horn output
+is enabled.
 
 ## Files
 
