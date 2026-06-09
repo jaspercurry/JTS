@@ -37,7 +37,14 @@ def test_client_paths_exist_in_server_route_table():
     """Contract guard: each path the client targets must be a real route in
     jasper/control/server.py, so renaming a server route fails this test
     instead of silently breaking a daemon at runtime."""
-    routes = set(re.findall(r'self\.path == "([^"]+)"', SERVER_SRC))
+    # Dispatch is table-driven: do_GET/do_POST look the path up in the
+    # _GET_ROUTES / _POST_ROUTES tables, whose keys are the route paths
+    # (mapped to handler-method names). Parse those keys. Also pick up the
+    # residual `self.path == "..."` literals that still live inside the
+    # guard's /healthz special-case and the tuple handlers' internal
+    # re-discrimination ladder, so a route declared either way is found.
+    routes = set(re.findall(r'"([^"]+)":\s*"_(?:get|post)_[a-z_]+"', SERVER_SRC))
+    routes |= set(re.findall(r'self\.path == "([^"]+)"', SERVER_SRC))
     assert routes, "could not parse any routes from server.py"
     missing = [p for p in CLIENT_PATHS if p not in routes]
     assert not missing, f"client targets paths the server does not serve: {missing}"
