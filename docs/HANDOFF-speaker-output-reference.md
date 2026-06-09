@@ -865,10 +865,10 @@ datum: how much assistant audio was actually heard.
   Apple-dongle failures.
 - 2026-06-09: `jasper.output_topology` now consumes
   `jasper.audio_hardware.dac` for known DAC labels, physical output counts,
-  clock-domain labels, and clock-coherence reports. This makes dual Apple a
-  known four-output topology shape while still reporting its independent child
-  clocks, distinguishing profile shape from aggregate runtime enablement, and
-  leaving runtime activation with hardware reconcile/outputd.
+  clock-domain labels, and clock-domain reports. This makes dual Apple a known
+  four-output topology shape with a measured-sync-required clock contract,
+  distinguishing profile shape from aggregate runtime enablement and leaving
+  runtime activation with hardware reconcile/outputd.
 - 2026-06-09: Added `jasper.output_hardware` and
   `/run/jasper-output-hardware/output_hardware.json` as the observed output hardware state
   contract. `jasper-audio-hardware-reconcile` writes the artifact during

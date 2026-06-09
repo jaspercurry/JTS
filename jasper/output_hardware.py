@@ -19,40 +19,43 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .audio_hardware.dac import (
+    APPLE_USB_C_DONGLE,
+    APPLE_USB_C_DONGLE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_ID,
+    HIFIBERRY_DAC8X_ID,
+    HIFIBERRY_DAC8X_STUDIO_ID,
+    all_profiles as _all_dac_profiles,
+)
+
 
 SCHEMA_VERSION = 1
 OUTPUT_HARDWARE_STATE_KIND = "jts_output_hardware_state"
 DEFAULT_STATE_PATH = "/run/jasper-output-hardware/output_hardware.json"
 DEFAULT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
-APPLE_USB_C_DONGLE_DEVICE_ID = "apple_usb_c_dongle"
-DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID = "dual_apple_usb_c_dac_4ch"
+APPLE_USB_C_DONGLE_DEVICE_ID = APPLE_USB_C_DONGLE_ID
+DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_ID
 DUAL_APPLE_LEGACY_ACTIVE_DEVICE_ID = "dual_apple_usb_c_dac_active_2way"
-HIFIBERRY_DAC8X_DEVICE_ID = "hifiberry_dac8x"
-HIFIBERRY_DAC8X_STUDIO_DEVICE_ID = "hifiberry_dac8x_studio"
+HIFIBERRY_DAC8X_DEVICE_ID = HIFIBERRY_DAC8X_ID
+HIFIBERRY_DAC8X_STUDIO_DEVICE_ID = HIFIBERRY_DAC8X_STUDIO_ID
 
-APPLE_USB_VENDOR_ID = "05ac"
-APPLE_USB_PRODUCT_ID = "110a"
+APPLE_USB_VENDOR_ID, APPLE_USB_PRODUCT_ID = APPLE_USB_C_DONGLE.usb_ids[0].split(
+    ":",
+    1,
+)
 
 SUPPORTED_DEVICE_OUTPUT_COUNTS = {
-    APPLE_USB_C_DONGLE_DEVICE_ID: 2,
-    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID: 4,
-    HIFIBERRY_DAC8X_DEVICE_ID: 8,
-    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID: 8,
+    profile.id: profile.physical_output_count
+    for profile in _all_dac_profiles()
 }
 SUPPORTED_DEVICE_LABELS = {
-    APPLE_USB_C_DONGLE_DEVICE_ID: "Apple USB-C audio adapter",
-    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID: "Dual Apple USB-C DAC 4-channel pair",
-    HIFIBERRY_DAC8X_DEVICE_ID: "HiFiBerry DAC8x",
-    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID: "HiFiBerry DAC8x Studio",
+    profile.id: profile.label
+    for profile in _all_dac_profiles()
 }
 SUPPORTED_CLOCK_DOMAIN_LABELS = {
-    APPLE_USB_C_DONGLE_DEVICE_ID: "Single Apple USB audio device clock",
-    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID: "Dual Apple USB-C DAC synchronous pair",
-    HIFIBERRY_DAC8X_DEVICE_ID: "Single HiFiBerry DAC8x device clock",
-    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID: (
-        "Single HiFiBerry DAC8x Studio device clock"
-    ),
+    profile.id: profile.clock_domain_label
+    for profile in _all_dac_profiles()
 }
 
 _CARD_RE = re.compile(r"^hw:CARD=([^,\s]+),DEV=(\d+)")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from jasper.audio_hardware import dac
+import jasper.output_hardware as output_hardware
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -14,6 +16,28 @@ from jasper.output_hardware import (
     probe_system_cards,
     topology_hardware_from_state,
 )
+
+
+def test_static_output_hardware_metadata_matches_dac_registry() -> None:
+    profiles = {profile.id: profile for profile in dac.all_profiles()}
+
+    assert output_hardware.SUPPORTED_DEVICE_OUTPUT_COUNTS == {
+        profile.id: profile.physical_output_count
+        for profile in profiles.values()
+    }
+    assert output_hardware.SUPPORTED_DEVICE_LABELS == {
+        profile.id: profile.label
+        for profile in profiles.values()
+    }
+    assert output_hardware.SUPPORTED_CLOCK_DOMAIN_LABELS == {
+        profile.id: profile.clock_domain_label
+        for profile in profiles.values()
+    }
+    assert dac.by_id(output_hardware.HIFIBERRY_DAC8X_STUDIO_DEVICE_ID) is not None
+    assert (
+        f"{output_hardware.APPLE_USB_VENDOR_ID}:"
+        f"{output_hardware.APPLE_USB_PRODUCT_ID}"
+    ) in dac.APPLE_USB_C_DONGLE.usb_ids
 
 
 def test_parse_aplay_listing_classifies_known_output_cards() -> None:

@@ -15,11 +15,17 @@ from typing import Literal
 
 APPLE_USB_C_DONGLE_ID = "apple_usb_c_dongle"
 HIFIBERRY_DAC8X_ID = "hifiberry_dac8x"
+HIFIBERRY_DAC8X_STUDIO_ID = "hifiberry_dac8x_studio"
 DUAL_APPLE_USB_C_DAC_4CH_ID = "dual_apple_usb_c_dac_4ch"
 
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
 
 DacKind = Literal["single", "composite"]
+ClockDomainContract = Literal[
+    "single_device",
+    "independent",
+    "measured_sync_required",
+]
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
 
@@ -58,6 +64,7 @@ class DacProfile:
     physical_output_count: int
     coherent_clock_domain: bool
     clock_domain_label: str
+    clock_domain_contract: ClockDomainContract
     outputd_sink: str
     supported_card_matches: tuple[str, ...]
     usb_ids: tuple[str, ...] = ()
@@ -81,6 +88,15 @@ class DacProfile:
             raise ValueError(f"{self.id}: physical_output_count must be >= 0")
         if not self.clock_domain_label.strip():
             raise ValueError(f"{self.id}: clock_domain_label is required")
+        if self.clock_domain_contract not in (
+            "single_device",
+            "independent",
+            "measured_sync_required",
+        ):
+            raise ValueError(
+                f"{self.id}: unsupported clock_domain_contract "
+                f"{self.clock_domain_contract!r}"
+            )
         if not self.outputd_sink.strip():
             raise ValueError(f"{self.id}: outputd_sink is required")
         if not self.supported_card_matches and not self.child_profile_ids:
@@ -99,6 +115,20 @@ class DacProfile:
             )
         if self.requires_same_usb_bus and self.kind != "composite":
             raise ValueError(f"{self.id}: same-bus requirement only fits composites")
+        if self.kind == "single" and self.clock_domain_contract != "single_device":
+            raise ValueError(
+                f"{self.id}: single DAC profiles use single_device clock contract"
+            )
+        if self.kind == "composite" and self.clock_domain_contract == "single_device":
+            raise ValueError(
+                f"{self.id}: composite DAC profile cannot use single_device "
+                "clock contract"
+            )
+        if self.coherent_clock_domain and self.clock_domain_contract != "single_device":
+            raise ValueError(
+                f"{self.id}: coherent_clock_domain only describes single-device "
+                "clock domains"
+            )
 
 
 APPLE_HEADPHONE_CONTROL = MixerControl(
@@ -114,6 +144,7 @@ APPLE_USB_C_DONGLE = DacProfile(
     physical_output_count=2,
     coherent_clock_domain=True,
     clock_domain_label="Single Apple USB audio device clock",
+    clock_domain_contract="single_device",
     outputd_sink="alsa",
     supported_card_matches=("usb-c to 3.5mm",),
     usb_ids=("05ac:110a",),
@@ -125,16 +156,35 @@ APPLE_USB_C_DONGLE = DacProfile(
 
 HIFIBERRY_DAC8X = DacProfile(
     id=HIFIBERRY_DAC8X_ID,
-    label="HiFiBerry DAC8x / Studio DAC8x",
+    label="HiFiBerry DAC8x",
     kind="single",
     physical_output_count=8,
     coherent_clock_domain=True,
     clock_domain_label="Single HiFiBerry DAC8x device clock",
+    clock_domain_contract="single_device",
     outputd_sink="alsa",
     supported_card_matches=(
         "snd_rpi_hifiberry_dac8x",
-        "hifiberry.*dac8x",
-        "dac8x",
+        "hifiberry.*dac8x(?!.*studio)",
+        r"\bdac8x\b(?!.*studio)",
+    ),
+    supports_active_outputd_lane=True,
+    validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
+    dtoverlay="hifiberry-dac8x",
+)
+
+HIFIBERRY_DAC8X_STUDIO = DacProfile(
+    id=HIFIBERRY_DAC8X_STUDIO_ID,
+    label="HiFiBerry DAC8x Studio",
+    kind="single",
+    physical_output_count=8,
+    coherent_clock_domain=True,
+    clock_domain_label="Single HiFiBerry DAC8x Studio device clock",
+    clock_domain_contract="single_device",
+    outputd_sink="alsa",
+    supported_card_matches=(
+        "dac8x.*studio",
+        "hifiberry.*dac8x.*studio",
     ),
     supports_active_outputd_lane=True,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
@@ -143,11 +193,12 @@ HIFIBERRY_DAC8X = DacProfile(
 
 DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     id=DUAL_APPLE_USB_C_DAC_4CH_ID,
-    label="Dual Apple USB-C audio adapters",
+    label="Dual Apple USB-C DAC 4-channel pair",
     kind="composite",
     physical_output_count=4,
     coherent_clock_domain=False,
-    clock_domain_label="Dual Apple USB-C adapter independent clocks",
+    clock_domain_label="Dual Apple USB-C DAC pair (measured sync required)",
+    clock_domain_contract="measured_sync_required",
     outputd_sink="dual_apple",
     supported_card_matches=("usb-c to 3.5mm",),
     usb_ids=("05ac:110a",),
@@ -161,6 +212,7 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
 REGISTRY: tuple[DacProfile, ...] = (
     APPLE_USB_C_DONGLE,
     HIFIBERRY_DAC8X,
+    HIFIBERRY_DAC8X_STUDIO,
     DUAL_APPLE_USB_C_DAC_4CH,
 )
 
@@ -216,6 +268,24 @@ def physical_output_count_for(profile_id: str) -> int | None:
     return profile.physical_output_count
 
 
+def label_for(profile_id: str) -> str | None:
+    """Return the display label for a known profile."""
+
+    profile = by_id(profile_id)
+    if profile is None:
+        return None
+    return profile.label
+
+
+def clock_domain_label_for(profile_id: str) -> str | None:
+    """Return the clock-domain label for a known profile."""
+
+    profile = by_id(profile_id)
+    if profile is None:
+        return None
+    return profile.clock_domain_label
+
+
 def supports_physical_output_count(profile_id: str, output_count: int) -> bool:
     """Return whether a known profile has exactly ``output_count`` outputs."""
 
@@ -251,6 +321,7 @@ __all__ = [
     "APPLE_HEADPHONE_CONTROL",
     "APPLE_USB_C_DONGLE",
     "APPLE_USB_C_DONGLE_ID",
+    "ClockDomainContract",
     "DAC8X_OUTPUTD_STABILITY_PROFILE",
     "DUAL_APPLE_USB_C_DAC_4CH",
     "DUAL_APPLE_USB_C_DAC_4CH_ID",
@@ -258,12 +329,16 @@ __all__ = [
     "DacProfile",
     "HIFIBERRY_DAC8X",
     "HIFIBERRY_DAC8X_ID",
+    "HIFIBERRY_DAC8X_STUDIO",
+    "HIFIBERRY_DAC8X_STUDIO_ID",
     "MixerControl",
     "REGISTRY",
     "all_profiles",
     "by_id",
+    "clock_domain_label_for",
     "is_known_profile_id",
     "known_profile_ids",
+    "label_for",
     "mixer_control_groups_for",
     "physical_output_count_for",
     "supports_physical_output_count",
