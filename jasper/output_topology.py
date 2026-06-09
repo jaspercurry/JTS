@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.audio_hardware.dac import all_profiles, by_id
+from jasper.output_hardware import (
+    load_state as load_output_hardware_state,
+    topology_hardware_mapping,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -627,6 +631,28 @@ def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
     )
 
 
+def hardware_from_output_hardware_state(
+    state: Mapping[str, Any] | None = None,
+) -> OutputHardware | None:
+    """Build draft topology hardware from the reconciler state artifact."""
+
+    if state is None:
+        state = load_output_hardware_state()
+    if state is None:
+        return None
+    raw = topology_hardware_mapping(state)
+    if raw is None:
+        return None
+    try:
+        return OutputHardware.from_mapping(raw)
+    except OutputTopologyError as exc:
+        logger.warning(
+            "event=output_topology.output_hardware_state_ignored error=%s",
+            type(exc).__name__,
+        )
+        return None
+
+
 def new_topology_draft(
     *,
     topology_id: str = "default",
@@ -636,7 +662,11 @@ def new_topology_draft(
     return OutputTopology(
         topology_id=topology_id,
         name=name,
-        hardware=hardware or hardware_from_env(),
+        hardware=(
+            hardware
+            or hardware_from_output_hardware_state()
+            or hardware_from_env()
+        ),
         speaker_groups=(),
         routing=TopologyRouting(),
         status="draft",

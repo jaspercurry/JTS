@@ -174,10 +174,21 @@ What exists:
   is detected) plus `JASPER_AUDIO_DAC_CARD` into
   `/etc/jasper/jasper.env` so validation artifacts and status surfaces
   have stable hardware identity instead of only the generic
-  `outputd_dac` PCM name. `jasper-doctor` uses that same role identity:
-  Apple-dongle USB/headphone-gain checks are active only when
-  `JASPER_AUDIO_DAC_ID=apple_usb_c_dongle`, and are skipped for DAC8x
-  or other selected output roles. For recognized DAC8x hardware only,
+  `outputd_dac` PCM name. It also writes
+  `/run/jasper/output_hardware.json`, a structured observed-vs-active
+  state artifact: `active` is the runtime role actually published to
+  `/etc/jasper/jasper.env`; `observed` is the best attached hardware
+  shape, including the dual-Apple 4-output profile when two Apple
+  adapters are present. `/state` exposes this artifact as
+  `audio.output_hardware`, `/sound/output-topology` returns it alongside
+  the topology draft, and `jasper-doctor` has a first-line "Output
+  hardware state" check for parked output, observed/active mismatch, and
+  blocked dual-Apple USB topology evidence. `jasper-doctor` also uses
+  the DAC profile registry for Apple-specific USB/headphone-gain checks:
+  those checks are active only when the active output profile is
+  `apple_usb_c_dongle`, use the reconciled `JASPER_AUDIO_DAC_CARD`, and
+  are skipped for DAC8x or other selected output roles. For recognized
+  DAC8x hardware only,
   `JASPER_OUTPUT_DAC_ROUTE=mono:N` renders a stereo-to-mono sum onto
   one 1-indexed physical DAC8x output, and
   `JASPER_OUTPUT_DAC_ROUTE=stereo:L,R` maps stereo left/right to two
@@ -220,14 +231,17 @@ What exists:
   DAC8x or one Apple USB-C dongle reports one coherent output clock. The
   recognized dual-Apple composite reports four physical outputs but independent
   child clocks and a separate "aggregate runtime not enabled" fact; topology
-  can expose that shape to setup surfaces, but the runtime output path still
-  needs matching graph, identity, and clock/drift evidence before any
-  sound-emitting path may use it.
+  can expose that shape to setup surfaces only when
+  `/run/jasper/output_hardware.json` says the observed physical shape is ready
+  (including same-bus evidence). The active runtime path remains single-PCM
+  until outputd has a matching dual-Apple sink; the reconciler must not publish
+  the dual profile as the active env role before that graph can own both child
+  PCMs.
   The configured route takes effect when deploy, boot/udev reconcile, or a
   manual `jasper-audio-hardware-reconcile` run re-renders the managed
   ALSA template; hardware validation artifacts report the observed
-  route in `dac_identity`. A recognized role renders the ALSA template
-  and restarts
+  route in `dac_identity`. A recognized role renders the ALSA template first,
+  then publishes the active DAC env values and restarts
   `jasper-outputd` so hotplug arrival recovers from a previously parked
   state. An unknown/no-output role does **not** render `outputd_dac` to
   a guessed card; it stops `jasper-voice` and `jasper-outputd` so stale
@@ -804,12 +818,20 @@ datum: how much assistant audio was actually heard.
 - 2026-06-04: `jasper-doctor` now gates Apple-dongle-specific USB and
   headphone-gain checks on `JASPER_AUDIO_DAC_ID=apple_usb_c_dongle`, so
   HiFiBerry/DAC8x systems report the selected output role instead of false
-  Apple-dongle failures.
+  Apple-dongle failures. The 2026-06-09 profile-registry pass below replaces
+  this hardcoded check shape with registry-backed DAC profile checks.
 - 2026-06-09: `jasper.output_topology` now consumes
   `jasper.audio_hardware.dac` for known DAC labels, physical output counts,
   clock-domain labels, and clock-coherence reports. This makes dual Apple a
   known four-output topology shape while still reporting its independent child
   clocks, distinguishing profile shape from aggregate runtime enablement, and
   leaving runtime activation with hardware reconcile/outputd.
+- 2026-06-09: Added `jasper.output_hardware` and
+  `/run/jasper/output_hardware.json` as the observed-vs-active output hardware
+  state contract. `jasper-audio-hardware-reconcile` writes the artifact during
+  install/boot/udev convergence, publishes active env only after the managed
+  ALSA template renders successfully, and leaves dual Apple observed but not
+  active until outputd has a real dual-Apple sink. `/state`,
+  `/sound/output-topology`, and `jasper-doctor` now read the same artifact.
 
 Last verified: 2026-06-09

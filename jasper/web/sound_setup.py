@@ -65,6 +65,7 @@ from jasper.output_topology import (
     set_channel_identity_verified,
     set_channel_protection_status,
 )
+from jasper.output_hardware import load_state as load_output_hardware_state
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
     CUT_MAX_Q,
@@ -173,6 +174,7 @@ def _output_topology_payload() -> dict[str, Any]:
     topology = load_output_topology()
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
+        "output_hardware": load_output_hardware_state(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
     }
@@ -196,6 +198,7 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
+        "output_hardware": load_output_hardware_state(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
     }
@@ -248,6 +251,7 @@ def _active_speaker_channel_identity_save_payload(
     )
     return {
         "output_topology": updated.to_dict(include_evaluation=True),
+        "output_hardware": load_output_hardware_state(),
         "channel_identity": report,
         "clock_domain": clock_domain_report(updated),
     }
@@ -295,6 +299,7 @@ def _active_speaker_channel_protection_save_payload(
     )
     return {
         "output_topology": updated.to_dict(include_evaluation=True),
+        "output_hardware": load_output_hardware_state(),
         "channel_identity": report,
         "clock_domain": clock_domain_report(updated),
     }

@@ -48,10 +48,16 @@ from ..audio_validation import (
     current_artifact_filter_kwargs as _audio_validation_filter_kwargs,
 )
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
+from ..audio_hardware.dac import (
+    APPLE_USB_C_DONGLE_ID,
+    by_id as _dac_profile_by_id,
+    mixer_control_groups_for as _dac_mixer_control_groups_for,
+)
 from ..camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ..config import Config
 from ..env_load import load_env_files as _load_env_files
 from ..env_load import parse_env_file as _shared_parse_env_file
+from ..output_hardware import load_state as _load_output_hardware_state
 from ..voice.catalog import (
     PROVIDER_IDS_MANIFEST_FILE,
     provider_by_id,
@@ -739,12 +745,75 @@ def check_nqptp_running() -> CheckResult:
     )
 
 
-def _active_audio_dac_id() -> str:
+def _active_audio_dac_env() -> dict[str, str]:
     env = _shared_parse_env_file("/etc/jasper/jasper.env")
-    return (
-        os.environ.get("JASPER_AUDIO_DAC_ID")
-        or env.get("JASPER_AUDIO_DAC_ID")
-        or "apple_usb_c_dongle"
+    return {
+        "id": (
+            os.environ.get("JASPER_AUDIO_DAC_ID")
+            or env.get("JASPER_AUDIO_DAC_ID")
+            or APPLE_USB_C_DONGLE_ID
+        ),
+        "card": (
+            os.environ.get("JASPER_AUDIO_DAC_CARD")
+            or env.get("JASPER_AUDIO_DAC_CARD")
+            or "A"
+        ),
+    }
+
+
+def _active_audio_dac_id() -> str:
+    return _active_audio_dac_env()["id"]
+
+
+def check_output_hardware_state() -> CheckResult:
+    """Surface reconciler-owned observed-vs-active output hardware state."""
+
+    state = _load_output_hardware_state()
+    if state is None:
+        return CheckResult(
+            "Output hardware state",
+            "warn",
+            "state file unavailable — run `sudo systemctl start jasper-audio-hardware-reconcile`",
+        )
+    active = state.get("active") if isinstance(state.get("active"), dict) else {}
+    observed = state.get("observed") if isinstance(state.get("observed"), dict) else {}
+    issues = state.get("issues") if isinstance(state.get("issues"), list) else []
+    active_id = active.get("profile_id") or "unknown"
+    observed_id = observed.get("profile_id") or "unknown"
+    observed_status = observed.get("status") or "unknown"
+
+    blocker_codes = [
+        item.get("code") for item in issues
+        if isinstance(item, dict) and item.get("severity") == "blocker"
+    ]
+    if not active.get("recognized"):
+        return CheckResult(
+            "Output hardware state",
+            "fail",
+            f"active output is parked; observed={observed_id} status={observed_status}",
+        )
+    if not active.get("runtime_ready"):
+        return CheckResult(
+            "Output hardware state",
+            "fail",
+            f"active output profile {active_id} is not runtime-ready",
+        )
+    if blocker_codes:
+        return CheckResult(
+            "Output hardware state",
+            "warn",
+            f"active={active_id}, observed={observed_id} blocked={','.join(blocker_codes)}",
+        )
+    if active_id != observed_id:
+        return CheckResult(
+            "Output hardware state",
+            "warn",
+            f"active={active_id}, observed={observed_id} status={observed_status}",
+        )
+    return CheckResult(
+        "Output hardware state",
+        "ok",
+        f"active={active_id}, observed={observed_id} status={observed_status}",
     )
 
 
@@ -765,14 +834,18 @@ def check_apple_dongle_audio() -> CheckResult:
       - dongle audio active: card visible → ok
     """
     dac_id = _active_audio_dac_id()
-    if dac_id != "apple_usb_c_dongle":
+    profile = _dac_profile_by_id(dac_id)
+    if profile is None or profile.id != APPLE_USB_C_DONGLE_ID:
         return CheckResult(
             "Apple dongle", "ok",
             f"skipped — active output DAC is {dac_id}",
         )
 
     p = _run(["lsusb"])
-    has_apple_dongle = bool(re.search(r"05ac:110a", p.stdout))
+    usb_pattern = "|".join(re.escape(item) for item in profile.usb_ids)
+    has_apple_dongle = bool(
+        usb_pattern and re.search(usb_pattern, p.stdout, re.IGNORECASE)
+    )
     if not has_apple_dongle:
         return CheckResult(
             "Apple dongle", "fail",
@@ -780,8 +853,10 @@ def check_apple_dongle_audio() -> CheckResult:
             "Plug it into the Pi.",
         )
     p = _run(["aplay", "-l"])
+    card_pattern = "|".join(profile.supported_card_matches)
     has_audio_card = bool(
-        re.search(r"USB-C to 3\.5mm|USB Audio.*USB Audio", p.stdout)
+        re.search(card_pattern, p.stdout, re.IGNORECASE)
+        or re.search(r"USB Audio.*USB Audio", p.stdout)
     )
     if has_audio_card:
         return CheckResult("Apple dongle", "ok", "USB + audio interfaces present")
@@ -804,19 +879,36 @@ def check_dongle_headphone_at_max() -> CheckResult:
     this check catches it. -36 dB at 40% was the historical "safe test"
     setting and is what triggered the audible-loudness gap that led to
     this check existing."""
-    dac_id = _active_audio_dac_id()
-    if dac_id != "apple_usb_c_dongle":
+    dac = _active_audio_dac_env()
+    dac_id = dac["id"]
+    card_id = dac["card"]
+    profile = _dac_profile_by_id(dac_id)
+    control_groups = _dac_mixer_control_groups_for(dac_id)
+    if profile is None or profile.id != APPLE_USB_C_DONGLE_ID or not control_groups:
         return CheckResult(
             "Dongle headphone gain", "ok",
             f"skipped — active output DAC is {dac_id}",
         )
+    control = next(
+        (
+            item for item in control_groups[0]
+            if item.name == "Headphone" and item.target_percent is not None
+        ),
+        None,
+    )
+    if control is None:
+        return CheckResult(
+            "Dongle headphone gain",
+            "ok",
+            f"skipped — active output DAC profile {dac_id} has no Headphone target",
+        )
 
-    p = _run(["amixer", "-c", "A", "sget", "Headphone"])
+    p = _run(["amixer", "-c", card_id, "sget", control.name])
     if p.returncode != 0:
         return CheckResult(
             "Dongle headphone gain", "fail",
-            "amixer -c A sget Headphone failed — dongle not enumerated as "
-            "card 'A'?",
+            f"amixer -c {card_id} sget {control.name} failed — dongle not enumerated as "
+            f"card {card_id!r}?",
         )
     # amixer prints "Front Left: Playback NN [PP%] [-DD.DDdB] [on]";
     # we want PP. If both channels are present, expect them equal.
@@ -827,7 +919,8 @@ def check_dongle_headphone_at_max() -> CheckResult:
             "Could not parse percent from amixer output (format change?).",
         )
     pct = int(pcts[0])
-    if pct < 100:
+    target_pct = int(control.target_percent or 100)
+    if pct < target_pct:
         return CheckResult(
             "Dongle headphone gain", "warn",
             f"Headphone control at {pct}% (analog attenuation engaged). "
@@ -835,7 +928,7 @@ def check_dongle_headphone_at_max() -> CheckResult:
         )
     return CheckResult(
         "Dongle headphone gain", "ok",
-        "Headphone at 100% (analog ceiling open)",
+        f"Headphone at {target_pct}% (analog ceiling open)",
     )
 
 
@@ -4923,6 +5016,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # Citi Bike: GBFS reachability + saved-station drift detection.
         # Skip-if-not-configured matches the home_assistant pattern.
         ("Citi Bike", lambda: check_citibike(cfg)),
+        check_output_hardware_state,
         check_apple_dongle_audio,
         check_dongle_headphone_at_max,
         ("state dir", lambda: check_state_dir(cfg)),

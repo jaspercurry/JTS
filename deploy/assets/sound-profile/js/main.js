@@ -64,7 +64,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var activeSpeakerMicObservation = {observedDbfs: '', clipping: false};
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
-    identity: null, clockDomain: null, identitySaving: '', protectionSaving: '',
+    identity: null, clockDomain: null, hardwareState: null,
+    identitySaving: '', protectionSaving: '',
     readiness: null, readinessChecking: '', readinessError: '',
     readinessPlayback: null, readinessPlaybackChecking: '',
     error: '', dirty: false, touched: false
@@ -556,6 +557,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function outputClockDomainReport() {
     return outputTopology.clockDomain || null;
+  }
+  function outputHardwareState() {
+    return outputTopology.hardwareState || null;
   }
   function identityTargetFor(groupId, role) {
     var report = outputIdentityReport();
@@ -1077,18 +1081,26 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderOutputHardwareCard(topology, statusValue) {
     var hardware = outputHardware(topology) || {};
     var clock = outputClockDomainReport();
+    var hardwareState = outputHardwareState();
+    var observed = hardwareState && hardwareState.observed || null;
+    var active = hardwareState && hardwareState.active || null;
     var aggregateRuntime = clock && clock.aggregate_output_runtime_enabled;
     var aggregateState = aggregateRuntime ? 'enabled' :
       clock && clock.profile_is_composite_output ? 'profile only' : 'not applicable';
     var rows = [
       ['Device', hardware.device_id || 'unknown'],
       ['Outputs', String(hardware.physical_output_count || 0) + ' physical'],
+      ['Active runtime', active ? (active.profile_id || 'unknown') : 'unknown'],
+      ['Observed hardware', observed ? ((observed.profile_id || 'unknown') + ' / ' + (observed.status || 'unknown')) : 'unknown'],
       ['Route', hardware.route || 'default'],
       ['Clock domain', clock && clock.clock_domain_label ||
         hardware.clock_domain_label || 'Single output device clock'],
       ['Aggregate runtime', aggregateState],
       ['Topology', topology.name || topology.topology_id || 'Speaker outputs']
     ];
+    if (observed && Object.prototype.hasOwnProperty.call(observed, 'same_usb_bus')) {
+      rows.splice(5, 0, ['USB topology', observed.same_usb_bus ? 'same bus' : 'bus mismatch']);
+    }
     return '<div class="output-card output-card--hardware">' +
       '<div class="output-card__head">' +
         '<div><p class="output-card__title">' + escapeHtml(hardware.device_label || 'Unknown output device') + '</p>' +
@@ -2767,6 +2779,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.draft = topology ? clone(topology) : null;
     outputTopology.identity = payload && payload.channel_identity || topology && topology.channel_identity || null;
     outputTopology.clockDomain = payload && payload.clock_domain || topology && topology.clock_domain || null;
+    outputTopology.hardwareState = payload && payload.output_hardware || topology && topology.output_hardware || null;
     outputTopology.error = '';
     outputTopology.dirty = false;
     outputTopology.saving = false;

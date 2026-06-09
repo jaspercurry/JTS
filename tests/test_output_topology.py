@@ -13,6 +13,7 @@ from jasper.output_topology import (
     OutputTopology,
     channel_identity_report,
     clock_domain_report,
+    hardware_from_output_hardware_state,
     hardware_from_env,
     load_output_topology,
     new_topology_draft,
@@ -73,6 +74,38 @@ def test_hardware_from_env_reports_known_output_counts() -> None:
     )
     assert unknown.physical_output_count == 0
     assert unknown.outputs == ()
+
+
+def test_hardware_from_output_hardware_state_uses_ready_observed_shape() -> None:
+    hardware = hardware_from_output_hardware_state({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_hardware_state",
+        "observed": {
+            "profile_id": DUAL_APPLE_USB_C_DAC_4CH_ID,
+            "status": "ready",
+            "physical_output_count": 4,
+        },
+        "child_devices": [],
+    })
+
+    assert hardware is not None
+    assert hardware.device_id == DUAL_APPLE_USB_C_DAC_4CH_ID
+    assert hardware.physical_output_count == 4
+    assert hardware.outputs[0].terminal_label == "A-L"
+
+
+def test_hardware_from_output_hardware_state_ignores_blocked_observed_shape() -> None:
+    hardware = hardware_from_output_hardware_state({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_hardware_state",
+        "observed": {
+            "profile_id": DUAL_APPLE_USB_C_DAC_4CH_ID,
+            "status": "blocked",
+            "physical_output_count": 4,
+        },
+    })
+
+    assert hardware is None
 
 
 def test_empty_topology_draft_is_honest_and_no_audio_allowed() -> None:

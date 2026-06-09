@@ -13,10 +13,13 @@ ASOUND_TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}
 RENDER_ASOUND_CONF="${JASPER_RENDER_ASOUND_CONF:-/usr/local/sbin/jasper-render-asound-conf}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 APLAY="${JASPER_APLAY:-aplay}"
+OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper/output_hardware.json}"
+OUTPUT_HARDWARE_APLAY_LISTING="${JASPER_OUTPUT_HARDWARE_APLAY_LISTING:-}"
 REASON="manual"
 PRINT_ENV=0
 NO_RESTART=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." 2>/dev/null && pwd || true)"
 ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
 
 load_asound_render_lib() {
@@ -104,6 +107,16 @@ find_card() {
         || true
 }
 
+find_cards() {
+    local regex="$1"
+    "$APLAY" -L 2>/dev/null \
+        | grep -B1 -iE "$regex" \
+        | grep -oE 'CARD=[^,]+' \
+        | sed 's/CARD=//' \
+        | awk '!seen[$0]++' \
+        || true
+}
+
 env_file_value() {
     local key="$1"
     if [[ ! -f "$ENV_FILE" ]]; then
@@ -170,6 +183,8 @@ set_env_var_if_changed() {
 }
 
 APPLE_DONGLE_CARD=""
+APPLE_DONGLE_CARDS=()
+APPLE_DONGLE_COUNT=0
 APPLE_DONGLE_PRESENT=0
 APPLE_DONGLE_SERVICE_CARD="auto"
 DAC8X_OUTPUT_CARD=""
@@ -187,8 +202,13 @@ load_output_dac_route() {
 }
 
 detect_roles() {
-    APPLE_DONGLE_CARD="$(find_card 'usb-c to 3.5mm')"
-    if [[ -n "$APPLE_DONGLE_CARD" ]]; then
+    APPLE_DONGLE_CARDS=()
+    while IFS= read -r card; do
+        [[ -n "$card" ]] && APPLE_DONGLE_CARDS+=("$card")
+    done < <(find_cards 'usb-c to 3.5mm')
+    APPLE_DONGLE_COUNT="${#APPLE_DONGLE_CARDS[@]}"
+    if [[ "$APPLE_DONGLE_COUNT" -gt 0 ]]; then
+        APPLE_DONGLE_CARD="${APPLE_DONGLE_CARDS[0]}"
         DONGLE_CARD="$APPLE_DONGLE_CARD"
         APPLE_DONGLE_PRESENT=1
         APPLE_DONGLE_SERVICE_CARD="$APPLE_DONGLE_CARD"
@@ -210,6 +230,7 @@ detect_roles() {
 print_env() {
     printf 'DONGLE_CARD=%s\n' "$(quote_env_value "$DONGLE_CARD")"
     printf 'APPLE_DONGLE_PRESENT=%s\n' "$(quote_env_value "$APPLE_DONGLE_PRESENT")"
+    printf 'APPLE_DONGLE_COUNT=%s\n' "$(quote_env_value "$APPLE_DONGLE_COUNT")"
     printf 'APPLE_DONGLE_SERVICE_CARD=%s\n' "$(quote_env_value "$APPLE_DONGLE_SERVICE_CARD")"
     printf 'OUTPUT_DAC_CARD=%s\n' "$(quote_env_value "$OUTPUT_DAC_CARD")"
     printf 'OUTPUT_DAC_ID=%s\n' "$(quote_env_value "$OUTPUT_DAC_ID")"
@@ -226,7 +247,7 @@ render_asound_if_needed() {
     fi
     if [[ ! -f "$ASOUND_SOURCE_TEMPLATE" ]]; then
         log_event "asound_skip" "source_template=${ASOUND_SOURCE_TEMPLATE} missing=1"
-        return 1
+        return 66
     fi
 
     install -d -m 0755 "$(dirname "$ASOUND_TEMPLATE")"
@@ -249,6 +270,57 @@ render_asound_if_needed() {
         return 0
     fi
     return 1
+}
+
+output_hardware_python() {
+    if [[ -n "${JASPER_OUTPUT_HARDWARE_PYTHON:-}" && -x "${JASPER_OUTPUT_HARDWARE_PYTHON}" ]]; then
+        echo "${JASPER_OUTPUT_HARDWARE_PYTHON}"
+        return 0
+    fi
+    if [[ -x /opt/jasper/.venv/bin/python ]]; then
+        echo /opt/jasper/.venv/bin/python
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        command -v python3
+        return 0
+    fi
+    return 1
+}
+
+write_output_hardware_state() {
+    local python_bin
+    local cmd=()
+    local module_env=()
+
+    if ! python_bin="$(output_hardware_python)"; then
+        log_event "state_skip" "reason=no_python state_path=${OUTPUT_HARDWARE_STATE_PATH}"
+        return 0
+    fi
+    cmd=(
+        "$python_bin" -m jasper.output_hardware
+        --active-profile-id "$OUTPUT_DAC_ID"
+        --active-card-id "$OUTPUT_DAC_CARD"
+        --state-path "$OUTPUT_HARDWARE_STATE_PATH"
+    )
+    if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+        cmd+=(--active-recognized)
+    fi
+    if [[ -n "$OUTPUT_HARDWARE_APLAY_LISTING" ]]; then
+        cmd+=(--aplay-listing "$OUTPUT_HARDWARE_APLAY_LISTING")
+    fi
+    if [[ -r "${REPO_ROOT}/jasper/output_hardware.py" ]]; then
+        module_env=(PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}")
+    fi
+    cmd+=(--write)
+    if [[ "${#module_env[@]}" -gt 0 ]]; then
+        cmd=(env "${module_env[@]}" "${cmd[@]}")
+    fi
+    if ! "${cmd[@]}" >/dev/null; then
+        log_event "state_skip" "reason=writer_failed state_path=${OUTPUT_HARDWARE_STATE_PATH}"
+        return 0
+    fi
+    log_event "state_written" "state_path=${OUTPUT_HARDWARE_STATE_PATH} output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
 }
 
 gate_role_services() {
@@ -292,12 +364,19 @@ if [[ "$PRINT_ENV" == "1" ]]; then
     exit 0
 fi
 
+render_changed=0
+render_rc=0
+render_asound_if_needed || render_rc=$?
+if [[ "$render_rc" -gt 1 ]]; then
+    exit "$render_rc"
+fi
+if [[ "$render_rc" == "0" ]]; then
+    render_changed=1
+fi
 env_changed=0
 set_env_var_if_changed "JASPER_AUDIO_DAC_ID" "$OUTPUT_DAC_ID" && env_changed=1
 set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && env_changed=1
-
-render_changed=0
-render_asound_if_needed && render_changed=1
+write_output_hardware_state
 gate_role_services
 if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     restart_needed=0
