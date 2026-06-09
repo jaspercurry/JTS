@@ -33,11 +33,15 @@ def _install_text() -> str:
 
 def _call_site_index(lines: list[str]) -> int:
     """Index of the single line that INVOKES require_outputd_ready (i.e. not
-    its `require_outputd_ready() {` definition)."""
+    its `require_outputd_ready() {` definition, and not a comment). Uses a
+    substring match so it finds the call under either non-fatal idiom — the
+    `cmd || <warn>` fallback or an `if ! cmd; then <warn> fi` wrapper."""
     hits = [
         i
         for i, line in enumerate(lines)
-        if line.strip().startswith("require_outputd_ready") and "()" not in line
+        if "require_outputd_ready" in line
+        and "require_outputd_ready()" not in line
+        and not line.lstrip().startswith("#")
     ]
     assert len(hits) == 1, (
         f"expected exactly one require_outputd_ready call site, found {len(hits)} "
@@ -46,22 +50,47 @@ def _call_site_index(lines: list[str]) -> int:
     return hits[0]
 
 
+def _logical_line(lines: list[str], idx: int) -> str:
+    """Reconstruct one logical shell line starting at `idx`, joining physical
+    lines linked by a trailing backslash. Lets the non-fatal check see a guard
+    that sits after a `\\`-continuation without false-matching a `||` that
+    belongs to an unrelated later command."""
+    parts = [lines[idx]]
+    while parts[-1].rstrip().endswith("\\") and idx + 1 < len(lines):
+        idx += 1
+        parts.append(lines[idx])
+    return " ".join(p.rstrip().rstrip("\\") for p in parts)
+
+
 def test_require_outputd_ready_call_is_non_fatal_and_loud():
-    """The call must be `||`-guarded (so `set -e` can't abort the install on a
-    transient probe miss) AND must still WARN loudly about outputd (the
-    project's 'no silent failure' bar — non-fatal is not the same as silent)."""
+    """The call must be non-fatal — guarded so `set -euo pipefail` cannot abort
+    the install on a transient probe miss — AND still WARN loudly about outputd
+    (the project's 'no silent failure' bar; non-fatal is not silent). Asserts
+    the *property*, not one idiom: a `|| <warn>` fallback and an
+    `if ! …; then <warn> fi` wrapper both pass; a bare statement does not."""
     lines = _install_text().splitlines()
     idx = _call_site_index(lines)
-    # The guard + WARN may use a `\`-continuation, so inspect a 2-line window.
-    window = " ".join(lines[idx : idx + 2])
-    assert "||" in window, (
-        "require_outputd_ready must be non-fatal (guarded by `||`); a bare call "
-        f"aborts the install on a transient failure. Got: {lines[idx]!r}"
+    call_line = lines[idx]
+    stripped = call_line.strip()
+    # `set -e` is suppressed only when the command is on the LHS of `||` or is
+    # the condition of an if/while/until. `&&` does NOT count — a failed LHS
+    # still propagates its non-zero status and aborts under set -e.
+    logical = _logical_line(lines, idx)
+    non_fatal = "||" in logical or stripped.startswith(
+        ("if ", "if!", "while ", "until ", "elif ")
     )
-    low = window.lower()
+    assert non_fatal, (
+        "require_outputd_ready must be non-fatal — guard it with `|| <warn>` or "
+        "wrap it in an `if`. A bare call aborts the install on a transient "
+        f"failure under set -e. Got: {call_line!r}"
+    )
+    # The WARN may sit a couple of lines down (a `then` block or after a
+    # `\`-continuation); a small window keeps the 'no silent failure' check
+    # idiom-independent without matching an unrelated distant WARN.
+    low = " ".join(lines[idx : idx + 3]).lower()
     assert "warn" in low and "outputd" in low, (
-        "the require_outputd_ready fallback must loudly WARN and name outputd so "
-        f"the operator can act. Got: {lines[idx : idx + 2]!r}"
+        "the require_outputd_ready failure path must loudly WARN and name "
+        f"outputd so the operator can act. Got: {lines[idx : idx + 3]!r}"
     )
 
 
