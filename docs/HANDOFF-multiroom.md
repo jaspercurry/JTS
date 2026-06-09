@@ -128,11 +128,18 @@ yet** and the gating spike has not been run. What exists:
   `canonical_page()` shell + ES module; `GET /rooms.json` carries the data
   (self block now includes a `peering: {enabled, primary}` wake-response
   block, read fresh via the reused `peering_setup` readers); self is
-  excluded from `peers`. **One POST — `/peering`, the wake-response toggle**
-  (CSRF via `X-CSRF-Token`; read-modify-writes `peering.env` through the
-  reused `peering_setup` constant, preserving `JASPER_PEER_ROOM`; restarts
-  voice + control). **No bond-forming controls** — those write config that
-  no-ops until the P1 sync engine exists (§8). Untrusted mDNS fields never
+  excluded from `peers`. **Two POSTs.** (1) `/peering`, the wake-response
+  toggle (CSRF via `X-CSRF-Token`; read-modify-writes `peering.env` through
+  the reused `peering_setup` constant, preserving `JASPER_PEER_ROOM`;
+  restarts voice + control). (2) `/bond`, **the Sonos-style one-flow
+  stereo-pair setup**: the browser sends the member list, the server mints a
+  `bond_id` and fans the grouping config out SERVER-side to each member's
+  `jasper-control /grouping/set` (this speaker → leader/left, the picked one
+  → follower/right). Configuration is automatic — no per-speaker tinkering.
+  An SSRF guard limits cross-speaker POSTs to private/loopback IPv4; the
+  producer + reconciler tap make audio FLOW once a leader is formed, so the
+  UI carries an honest "preview" note (perfect sample-lock still needs §2
+  inv. 2). Untrusted mDNS fields never
   enter the server HTML (the shell is data-free; data ships as
   `application/json` and the module renders it via DOM/text APIs). **Friendly names + identity:** each speaker
   advertises its `/speaker` display name as a `name=` TXT on
@@ -153,15 +160,16 @@ yet** and the gating spike has not been run. What exists:
 Not yet built (P1+, post-spike): the `BondedSet` entity, **live weaving
 of the channel-split fragment into the active CamillaDSP config** (P1.3;
 the pure generator landed — `channel_split.py` above), satellite
-calibration, the **bond-forming controls on `/rooms/`** (role/leader/
-channel assignment, stereo-pair / 2.1 / sub setup), the **leader's own
-snapclient → outputd content lane** (§2 inv. 2 — so the leader plays the
-*buffered* stream in sync with followers, not its direct unsynced output)
-and **`rate_adjust=false`** on each member (§2 inv. 5), and the on-device
-end-to-end + acoustic sync validation. *(The producer AND its activation
-landed — `SnapfifoSink` + the reconciler tap wiring, §0/§2 below. Enabling
-a leader now makes audio FLOW to followers; sample-lock still needs
-inv. 2.)*
+calibration, **2.1 / sub / >2-member bond setup on `/rooms/`** (the
+stereo-pair one-flow landed — `/bond` fans config out to both members;
+the multi-member channel/leader picker is the remaining UI), the
+**leader's own snapclient → outputd content lane** (§2 inv. 2 — so the
+leader plays the *buffered* stream in sync with followers, not its direct
+unsynced output) and **`rate_adjust=false`** on each member (§2 inv. 5),
+and the on-device end-to-end + acoustic sync validation. *(The producer
+AND its activation landed — `SnapfifoSink` + the reconciler tap wiring,
+§0/§2 below. Enabling a leader now makes audio FLOW to followers;
+sample-lock still needs inv. 2.)*
 
 ---
 
@@ -637,11 +645,11 @@ one would reopen the two-homes drift this increment closed. (The
 peering → identity room consolidation remains a flagged follow-up; see
 below.)
 
-**Shipped: directory + wake-response toggle.** The directory —
-discovery + click-through + this speaker's grouping status — and the
-**wake-response card** (a toggle: "when multiple speakers hear 'Hey
-Jarvis', only one answers", plus a "Primary" checkbox to prefer this
-speaker in ties) landed behind port 8785 / `JASPER_ROOMS_WEB_PORT`,
+**Shipped: directory + wake-response toggle + stereo-pair bond-forming.**
+The directory — discovery + click-through + this speaker's grouping
+status — and the **wake-response card** (a toggle: "when multiple speakers
+hear 'Hey Jarvis', only one answers", plus a "Primary" checkbox to prefer
+this speaker in ties) landed behind port 8785 / `JASPER_ROOMS_WEB_PORT`,
 sourcing siblings from the always-on `_jasper-control._tcp` service so it
 works whether or not wake-peering is on (see §0). The wake-response card
 is the **one working write surface**: `POST /peering` (CSRF-verified via
@@ -650,12 +658,18 @@ through the reused `peering_setup` constant — flipping `JASPER_PEERING`
 on/off and setting/clearing `JASPER_PEER_PRIMARY` while **preserving**
 `JASPER_PEER_ROOM` (owned by `/speaker/`) and operator tuning knobs — then
 restarts voice + `jasper-control` and returns `{ok, peering:{enabled,
-primary}}`. **Bond-forming controls stay deferred:** making this Pi's own
-`role`/`leader` editable in place and forming stereo-pair / 2.1 / sub
-bonds waits on the on-hardware sync spike (§8 P0) validating the engine —
-a toggle that writes grouping config which silently no-ops (no
-`BondedSet`, no Snapcast path yet) would be dishonest. Sibling fields stay
-read-only by design (configure each speaker on its own UI).
+primary}}`. **Bond-forming now ships (stereo pair):** the bond card lets
+the household pick a sibling for the right channel and Save; `POST /bond`
+mints a `bond_id` and fans the grouping config out SERVER-side to each
+member's `jasper-control /grouping/set` (this speaker → leader/left, the
+picked one → follower/right) — the same no-auth LAN surface the dial uses,
+SSRF-guarded to private/loopback IPv4. Configuration is fully automatic
+(no per-speaker tinkering); the producer + reconciler tap make audio FLOW
+once the leader is formed. What's honestly *not* done is perfect
+sample-lock (§2 inv. 2) and the >2-member / 2.1 / sub picker, so the card
+carries a "preview" note rather than pretending the audio half is fully
+validated. Sibling rows in the directory stay read-only by design beyond
+the pair-forming flow (configure each speaker's own knobs on its own UI).
 
 #### Friendly names + identity on the directory (shared primitives)
 
@@ -810,7 +824,20 @@ resolving):
 
 ---
 
-Last verified: 2026-06-09 (staff-review fixes: extracted shared
+Last verified: 2026-06-09 (bond-forming UI — the Sonos-style one-flow
+stereo-pair setup landed on `/rooms`: a bond card (pick a sibling for the
+right channel, Save) + `POST /bond` that mints a `bond_id` and fans the
+grouping config out SERVER-side to each member's `jasper-control
+/grouping/set` (leader/left = this speaker, follower/right = the picked
+one), SSRF-guarded to private/loopback IPv4. Builds on the prior `POST
+/grouping/set` control endpoint + shared `validate_grouping` (read/write
+share one validator). Configuration is now fully automatic — no
+per-speaker tinkering; audio FLOWs once the leader forms (producer + tap),
+with sample-lock (§2 inv. 2) the honest "preview" gap. Coverage:
+`_post_grouping_to_member` SSRF/self-routing + `/bond`
+fan-out/partial-failure-502/bad-CSRF/empty-400 in
+`tests/test_web_rooms_setup.py`; §0/§6 + this footer updated. Earlier
+2026-06-09 (staff-review fixes): extracted shared
 `jasper/atomic_io.py` (atomic_write_text) and migrated the reconciler's two
 env writers onto it — the canonical home for the ~39 hand-rolled
 tempfile+os.replace sites, migrated incrementally; and surfaced the leader
