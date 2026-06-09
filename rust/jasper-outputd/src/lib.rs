@@ -16,6 +16,7 @@ pub mod loudness;
 pub mod mixer;
 pub mod protocol;
 pub mod reference;
+pub mod snapfifo;
 pub mod state;
 pub mod types;
 

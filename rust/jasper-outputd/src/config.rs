@@ -76,6 +76,13 @@ pub struct Config {
     pub chip_ref_period_frames: u32,
     pub chip_ref_buffer_frames: u32,
     pub reference_udp_target: Option<String>,
+    // Multi-room (grouping LEADER): when set, jasper-outputd taps a copy of
+    // the post-clamp stereo program into this FIFO for snapserver to stream.
+    // Unset on a solo speaker (and every follower) => no tap, zero cost.
+    // The reconciler sets JASPER_OUTPUTD_SNAPFIFO_PATH when this speaker
+    // becomes a leader (on-device wiring, pending). Separate from the AEC
+    // reference (reference_udp_target) — see HANDOFF-multiroom.md §2 inv. 4.
+    pub snapfifo_path: Option<String>,
     pub stream_id: u64,
     pub tts_socket_path: Option<String>,
     pub control_socket_path: Option<String>,
@@ -206,6 +213,7 @@ impl Config {
             chip_ref_period_frames,
             chip_ref_buffer_frames,
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
+            snapfifo_path: env_optional("JASPER_OUTPUTD_SNAPFIFO_PATH"),
             stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
             tts_socket_path: env_optional("JASPER_OUTPUTD_TTS_SOCKET"),
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
@@ -420,6 +428,7 @@ mod tests {
             assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
             assert!(cfg.chip_ref_pcm.is_none());
             assert!(cfg.reference_udp_target.is_none());
+            assert!(cfg.snapfifo_path.is_none());
             assert!(cfg.tts_socket_path.is_none());
             assert!(cfg.control_socket_path.is_none());
             assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
@@ -455,6 +464,10 @@ mod tests {
                     "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
                     Some("127.0.0.1:9891"),
                 ),
+                (
+                    "JASPER_OUTPUTD_SNAPFIFO_PATH",
+                    Some("/run/jasper-snapserver/snapfifo"),
+                ),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -472,6 +485,10 @@ mod tests {
                 assert_eq!(cfg.chip_ref_period_frames, 320);
                 assert_eq!(cfg.chip_ref_buffer_frames, 1280);
                 assert_eq!(cfg.reference_udp_target.as_deref(), Some("127.0.0.1:9891"));
+                assert_eq!(
+                    cfg.snapfifo_path.as_deref(),
+                    Some("/run/jasper-snapserver/snapfifo")
+                );
             },
         );
     }

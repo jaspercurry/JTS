@@ -29,6 +29,7 @@ use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::ledger::{PlayoutEvent, SegmentId, SegmentStatus};
 use jasper_outputd::mixer::MAX_TTS_GAIN_DB;
 use jasper_outputd::protocol::{read_command, TtsCommand};
+use jasper_outputd::snapfifo::SnapfifoSink;
 use jasper_outputd::state::{OutputdState, StateServer, TtsQueueMetrics};
 use jasper_outputd::types::SegmentKind;
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
@@ -37,6 +38,11 @@ use signal_hook::flag;
 
 const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
+// snapfifo reference-fanout slots (drained every period, rarely holds >1).
+const SNAPFIFO_REF_CAPACITY: usize = 8;
+// Bounded writer-thread backlog (~32 periods ≈ 0.7 s). Drop-on-full here is
+// what keeps the DAC loop from ever back-pressuring on a slow snapserver.
+const SNAPFIFO_QUEUE_CAPACITY: usize = 32;
 const MAX_CONTENT_BRIDGE_DRAIN_READS: usize = 8;
 const MAX_PENDING_ASSISTANT_FRAMES: u64 = SAMPLE_RATE as u64 * 2;
 const TTS_QUEUE_LOG_STREAK_MS: u64 = 500;
@@ -57,6 +63,14 @@ fn main() -> Result<()> {
         } else {
             None
         };
+    // Multi-room: a SEPARATE reference consumer from the AEC one above
+    // (§2 invariant 4 — never share a sender). Present only when this
+    // speaker is a grouping leader (JASPER_OUTPUTD_SNAPFIFO_PATH set).
+    let snapfifo_consumer = if config.snapfifo_path.is_some() {
+        Some(core.add_reference_consumer("snapfifo", SNAPFIFO_REF_CAPACITY))
+    } else {
+        None
+    };
     let state = Arc::new(OutputdState::new(&config));
 
     if let Some(socket_path) = &config.control_socket_path {
@@ -96,6 +110,7 @@ fn main() -> Result<()> {
             &config,
             &mut core,
             reference_consumer,
+            snapfifo_consumer,
             &tts_rx,
             &tts_flush_rx,
             &state,
@@ -166,6 +181,7 @@ fn run_alsa(
     config: &Config,
     core: &mut OutputCore,
     reference_consumer: Option<jasper_outputd::reference::ConsumerId>,
+    snapfifo_consumer: Option<jasper_outputd::reference::ConsumerId>,
     tts_rx: &Receiver<QueuedTtsCommand>,
     tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
@@ -174,6 +190,14 @@ fn run_alsa(
 ) -> Result<()> {
     let mut backend = AlsaBackend::new(config)?;
     let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
+    // Multi-room leader: the snapfifo writer thread (lazy-open, drop-safe).
+    // None on a solo speaker / follower. The thread does the blocking FIFO
+    // writes; the DAC loop only ever does a bounded non-blocking try_send.
+    let snapfifo_tx = match &config.snapfifo_path {
+        Some(path) => Some(spawn_snapfifo_writer(path.clone(), Arc::clone(shutdown))?),
+        None => None,
+    };
+    let mut snapfifo_drops: u64 = 0;
     state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
     let mut content_buf = vec![0i16; core.period_samples()];
     let mut content_read_buf = vec![0i16; core.period_samples()];
@@ -244,6 +268,28 @@ fn run_alsa(
         if let Some(consumer) = reference_consumer {
             for packet in core.drain_reference_consumer(consumer) {
                 ref_outputs.publish(&packet.samples);
+            }
+        }
+        // Multi-room leader: hand each post-clamp stereo packet to the
+        // snapfifo writer thread. try_send is non-blocking and drops on a
+        // full backlog, so a slow/wedged snapserver can never stall the DAC
+        // loop (§2 invariant 1). The writer thread owns the FIFO write.
+        if let (Some(consumer), Some(tx)) = (snapfifo_consumer, snapfifo_tx.as_ref()) {
+            for packet in core.drain_reference_consumer(consumer) {
+                match tx.try_send(packet.samples) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        snapfifo_drops += 1;
+                        if snapfifo_drops % 256 == 1 {
+                            eprintln!(
+                                "event=outputd.snapfifo.queue_full action=drop_period drops={snapfifo_drops}"
+                            );
+                        }
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        eprintln!("event=outputd.snapfifo.disconnected action=drop_period");
+                    }
+                }
             }
         }
         let tts_metrics = tts_queue.mark_period(core.pending_assistant_frames());
@@ -460,6 +506,35 @@ fn bytemuck_i16(samples: &[i16]) -> &[u8] {
             samples.as_ptr() as *const u8,
             std::mem::size_of_val(samples),
         )
+    }
+}
+
+fn spawn_snapfifo_writer(
+    path: String,
+    shutdown: Arc<AtomicBool>,
+) -> Result<SyncSender<Vec<i16>>> {
+    let (tx, rx) = mpsc::sync_channel(SNAPFIFO_QUEUE_CAPACITY);
+    thread::Builder::new()
+        .name("outputd-snapfifo".to_string())
+        .spawn(move || run_snapfifo_writer(&path, &rx, &shutdown))
+        .context("spawning outputd snapfifo writer")?;
+    Ok(tx)
+}
+
+fn run_snapfifo_writer(path: &str, rx: &Receiver<Vec<i16>>, shutdown: &AtomicBool) {
+    // No startup gate (unlike the chip-ref PCM): the FIFO opens lazily inside
+    // SnapfifoSink, so outputd readiness never waits on snapserver. The sink
+    // drops packets until snapserver is reading, then streams whole packets.
+    let mut sink = SnapfifoSink::new(path);
+    eprintln!("event=outputd.snapfifo.writer_started path={path}");
+    while !shutdown.load(Ordering::Relaxed) {
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(samples) => {
+                sink.write(&samples);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
     }
 }
 
@@ -1624,6 +1699,7 @@ mod tests {
             chip_ref_period_frames: 320,
             chip_ref_buffer_frames: 1280,
             reference_udp_target: None,
+            snapfifo_path: None,
             stream_id: 99,
             tts_socket_path: None,
             control_socket_path: None,
