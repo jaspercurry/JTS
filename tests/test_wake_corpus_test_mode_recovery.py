@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.wake_corpus import bridge_session
 from jasper.web import wake_corpus_setup
 
 
@@ -59,12 +60,12 @@ def recovery_calls(
     """Capture the systemctl side of exit_corpus_test_mode()."""
     calls: dict[str, list[str]] = {"voice": [], "bridge_disable": []}
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "disable_bridge_corpus_outputs",
         lambda: calls["bridge_disable"].append("disable") or False,
     )
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "set_voice_daemon_state",
         lambda action: calls["voice"].append(action),
     )
@@ -171,13 +172,13 @@ def test_failed_restart_keeps_marker_for_retry(
         out, age_sec=wake_corpus_setup.TEST_MODE_STALE_SEC + 60,
     )
     monkeypatch.setattr(
-        wake_corpus_setup, "disable_bridge_corpus_outputs", lambda: False,
+        bridge_session, "disable_bridge_corpus_outputs", lambda: False,
     )
 
     def boom(action: str) -> None:
         raise subprocess.CalledProcessError(1, ["systemctl", action])
 
-    monkeypatch.setattr(wake_corpus_setup, "set_voice_daemon_state", boom)
+    monkeypatch.setattr(bridge_session, "set_voice_daemon_state", boom)
 
     b = _make_backend(out)
     b._maybe_recover_stale_test_mode()  # must not raise

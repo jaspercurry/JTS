@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.wake_corpus import bridge_session
 from jasper.web import wake_corpus_setup
 
 
@@ -153,7 +154,7 @@ def backend(monkeypatch, tmp_path: Path):
     default. Tests that exercise 3-leg mode just don't opt into
     include_raw_mic_0."""
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "BRIDGE_STATS_PATH",
         tmp_path / "missing_aec_bridge_stats.json",
     )
@@ -492,9 +493,9 @@ def test_metadata_records_audio_context_snapshot(
         "checks": {"measured_drift_delay": {"status": "pass"}},
         "recommendation": "chip_aec_validated",
     }))
-    monkeypatch.setattr(wake_corpus_setup, "AEC_MODE_PATH", aec_mode_path)
+    monkeypatch.setattr(bridge_session, "AEC_MODE_PATH", aec_mode_path)
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "AUDIO_VALIDATION_ARTIFACT_PATH",
         validation_path,
     )
@@ -504,7 +505,7 @@ def test_metadata_records_audio_context_snapshot(
         "JASPER_OUTPUTD_CONTROL_SOCKET",
         "/run/stale-process-outputd.sock",
     )
-    monkeypatch.setattr(wake_corpus_setup, "aec_bridge_active", lambda: True)
+    monkeypatch.setattr(bridge_session, "aec_bridge_active", lambda: True)
 
     from jasper.mics import xvf3800
 
@@ -584,8 +585,8 @@ def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
         "JASPER_WAKE_LEG_DTLN=0\n"
         "JASPER_WAKE_LEG_CHIP_AEC=1\n",
     )
-    monkeypatch.setattr(wake_corpus_setup, "AEC_MODE_PATH", aec_mode_path)
-    monkeypatch.setattr(wake_corpus_setup, "aec_bridge_active", lambda: True)
+    monkeypatch.setattr(bridge_session, "AEC_MODE_PATH", aec_mode_path)
+    monkeypatch.setattr(bridge_session, "aec_bridge_active", lambda: True)
 
     from jasper.mics import xvf3800
 
@@ -1361,9 +1362,9 @@ def _use_tmp_bridge_env(
         system_path.write_text(system_env)
     if corpus_env:
         bridge_path.write_text(corpus_env)
-    monkeypatch.setattr(wake_corpus_setup, "SYSTEM_ENV_PATH", system_path)
+    monkeypatch.setattr(bridge_session, "SYSTEM_ENV_PATH", system_path)
     monkeypatch.setattr(
-        wake_corpus_setup, "BRIDGE_CORPUS_ENV_PATH", bridge_path,
+        bridge_session, "BRIDGE_CORPUS_ENV_PATH", bridge_path,
     )
     return system_path, bridge_path
 
@@ -1583,9 +1584,9 @@ def test_combined_web_lazy_wake_corpus_serves_after_first_request(
 
     from jasper.web import __main__ as web_main
 
-    monkeypatch.setattr(wake_corpus_setup, "voice_daemon_active", lambda: False)
+    monkeypatch.setattr(bridge_session, "voice_daemon_active", lambda: False)
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "bridge_output_status",
         lambda: {
             "dtln": True,
@@ -1995,7 +1996,7 @@ def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
     _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
@@ -2051,7 +2052,7 @@ def test_enable_bridge_outputs_preserves_system_usb_device(
         tmp_path,
         system_env='JASPER_AEC_USB_MIC_DEVICE=Studio Mic\n',
     )
-    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+    monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
     wake_corpus_setup.enable_bridge_outputs_for_session(
         include_dtln=False,
@@ -2079,7 +2080,7 @@ def test_set_bridge_outputs_matches_selected_session_outputs(
     )
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
@@ -2112,7 +2113,7 @@ def test_set_bridge_outputs_enables_aec3_sweep_and_parks_dtln(
         tmp_path,
         system_env="JASPER_AEC_DTLN_ENABLED=1\n",
     )
-    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+    monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
     changed = wake_corpus_setup.set_bridge_outputs_for_session(
         include_dtln=False,
@@ -2136,14 +2137,14 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_unit",
         lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
             restarts.append(unit)
         ),
     )
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
     )
@@ -2197,14 +2198,14 @@ def test_set_bridge_outputs_chip_profile_without_usb_enables_ref_only(
     _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_unit",
         lambda unit, timeout=wake_corpus_setup.BRIDGE_RESTART_TIMEOUT_SEC: (
             restarts.append(unit)
         ),
     )
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append(wake_corpus_setup.BRIDGE_UNIT),
     )
@@ -2247,8 +2248,8 @@ def test_set_bridge_outputs_chip_profile_parks_production_dtln(
         tmp_path,
         system_env="JASPER_AEC_DTLN_ENABLED=1\n",
     )
-    monkeypatch.setattr(wake_corpus_setup, "restart_unit", lambda *args, **kwargs: None)
-    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+    monkeypatch.setattr(bridge_session, "restart_unit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
     changed = wake_corpus_setup.set_bridge_outputs_for_session(
         corpus_profile=wake_corpus_setup.PROFILE_CHIP_AEC_COMPARISON,
@@ -2289,7 +2290,7 @@ def test_enable_bridge_outputs_rolls_back_when_restart_fails(
             )
 
     monkeypatch.setattr(
-        wake_corpus_setup, "restart_aec_bridge", fake_restart,
+        bridge_session, "restart_aec_bridge", fake_restart,
     )
 
     with pytest.raises(subprocess.CalledProcessError):
@@ -2319,7 +2320,7 @@ def test_disable_bridge_outputs_removes_overrides_and_preserves_device(
     )
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
@@ -2350,7 +2351,7 @@ def test_disable_bridge_outputs_restores_system_dtln_intent(
             "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
         ),
     )
-    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+    monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
     before = wake_corpus_setup.bridge_output_status()
     wake_corpus_setup.disable_bridge_corpus_outputs()
@@ -3384,7 +3385,7 @@ def test_api_status_includes_include_raw_mic_0(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     backend.begin_session("jasper", include_raw_mic_0=True)
     server, th, port = _serve_in_thread(backend)
@@ -3411,7 +3412,7 @@ def test_api_status_includes_include_usb_mic(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     backend.begin_session("jasper", include_usb_mic=True)
     server, th, port = _serve_in_thread(backend)
@@ -3442,7 +3443,7 @@ def test_api_capture_plan_previews_selected_layers(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     _use_tmp_bridge_env(monkeypatch, tmp_path)
     server, th, port = _serve_in_thread(backend)
@@ -3481,7 +3482,7 @@ def test_api_status_includes_aec3_sweep(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     backend.begin_session(
         "jasper", include_dtln=False, include_aec3_sweep=True,
@@ -3517,10 +3518,10 @@ def test_api_session_begin_accepts_dtln_flags(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     _use_tmp_bridge_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+    monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
     server, th, port = _serve_in_thread(backend)
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
@@ -3557,7 +3558,7 @@ def test_api_session_begin_accepts_aec3_sweep(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     _use_tmp_bridge_env(
         monkeypatch,
@@ -3606,7 +3607,7 @@ def test_api_status_includes_bridge_output_status(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     _use_tmp_bridge_env(
         monkeypatch,
@@ -3670,7 +3671,7 @@ def test_api_bridge_outputs_disable(
     )
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
@@ -3713,7 +3714,7 @@ def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
     voice_actions: list[str] = []
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "voice_daemon_active",
         lambda: voice_active["value"],
     )
@@ -3722,9 +3723,9 @@ def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
         voice_actions.append(action)
         voice_active["value"] = action == "start"
 
-    monkeypatch.setattr(wake_corpus_setup, "set_voice_daemon_state", fake_voice)
+    monkeypatch.setattr(bridge_session, "set_voice_daemon_state", fake_voice)
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
@@ -3773,16 +3774,16 @@ def test_api_corpus_test_mode_enter_can_enable_aec3_sweep(
     )
     voice_active = {"value": True}
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "voice_daemon_active",
         lambda: voice_active["value"],
     )
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "set_voice_daemon_state",
         lambda action: voice_active.__setitem__("value", action == "start"),
     )
-    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+    monkeypatch.setattr(bridge_session, "restart_aec_bridge", lambda: None)
 
     server, th, port = _serve_in_thread(backend)
     try:
@@ -3828,7 +3829,7 @@ def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
     voice_actions: list[str] = []
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "voice_daemon_active",
         lambda: voice_active["value"],
     )
@@ -3837,9 +3838,9 @@ def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
         voice_actions.append(action)
         voice_active["value"] = action == "start"
 
-    monkeypatch.setattr(wake_corpus_setup, "set_voice_daemon_state", fake_voice)
+    monkeypatch.setattr(bridge_session, "set_voice_daemon_state", fake_voice)
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
@@ -3882,7 +3883,7 @@ def test_voice_start_can_disable_bridge_outputs_first(
     )
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
@@ -3925,7 +3926,7 @@ def test_api_usb_mic_status_endpoint(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "usb_mic_status",
         lambda: {
             "device": "USB PnP Sound Device",
@@ -3961,7 +3962,7 @@ def test_api_session_offers_bridge_enable_for_missing_outputs(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     _use_tmp_bridge_env(monkeypatch, tmp_path)
     server, th, port = _serve_in_thread(backend)
@@ -4000,12 +4001,12 @@ def test_api_session_enable_bridge_outputs_then_begins(
     import http.client
 
     monkeypatch.setattr(
-        wake_corpus_setup, "voice_daemon_active", lambda: False,
+        bridge_session, "voice_daemon_active", lambda: False,
     )
     _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
     restarts: list[str] = []
     monkeypatch.setattr(
-        wake_corpus_setup,
+        bridge_session,
         "restart_aec_bridge",
         lambda: restarts.append("restart"),
     )
