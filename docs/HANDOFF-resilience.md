@@ -353,7 +353,14 @@ thinks the system is healthy.
     3. **`/proc/loadavg` read** within 1 s (kernel I/O stall)
   After 3 consecutive failures (any probe), rate-limited at 1
   reboot per 24 hours, calls `systemctl --no-block reboot` for
-  a clean shutdown. Off via `JASPER_SYSTEM_SUPERVISOR=disabled`.
+  a clean shutdown. The rate-limit window is enforced against a
+  WALL-CLOCK last-reboot timestamp persisted to
+  `/var/lib/jasper/system_supervisor_reboot.json` (loaded on
+  construction, fail-open on a missing/corrupt file), so the window
+  survives the reboot it just issued — otherwise a *permanent*
+  userspace wedge would reboot-loop roughly every cold-start window
+  (~3.5 min) forever and the household could never reach jts.local.
+  Off via `JASPER_SYSTEM_SUPERVISOR=disabled`.
   Surfaced on `/state` under `resilience.system_supervisor` and
   via structured `event=system_supervisor.*` journal lines.
 
