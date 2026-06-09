@@ -3,10 +3,11 @@
 > **Status: proposal / implementation handoff, updated 2026-06-09.** The
 > initial IO-free registry scaffold exists in
 > [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py);
+> `jasper.output_hardware` derives its static output metadata from it, and
 > `jasper.output_topology` consumes it for known DAC labels, physical output
-> counts, clock-domain labels, and clock-coherence classification. This
-> supersedes the narrower 2026-06-04 sketch that modeled only a single Apple
-> dongle and a HiFiBerry DAC8x. Current operational truth for output ownership lives in
+> counts, clock-domain labels, and clock-domain classification. This supersedes
+> the narrower 2026-06-04 sketch that modeled only a single Apple dongle and a
+> HiFiBerry DAC8x. Current operational truth for output ownership lives in
 > [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
 > [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md), and
 > [audio-paths.md](audio-paths.md).
@@ -87,6 +88,11 @@ class DacProfile:
     physical_output_count: int
     coherent_clock_domain: bool
     clock_domain_label: str
+    clock_domain_contract: Literal[
+        "single_device",
+        "independent",
+        "measured_sync_required",
+    ]
     outputd_sink: str
     supported_card_matches: tuple[str, ...]
     usb_ids: tuple[str, ...] = ()
@@ -112,6 +118,8 @@ metadata:
 
 - `kind="composite"`
 - four physical outputs
+- `clock_domain_contract="measured_sync_required"` rather than claiming native
+  single-device coherence
 - two Apple child devices
 - same USB controller/bus requirement for Pi 5
 - stable child ordering via saved topology/serial evidence
@@ -149,20 +157,24 @@ outputd process control inside the registry.
    `by_id`, `all_profiles`, and pure helpers for validating known IDs and
    output counts. **Initial scaffold landed:** `jasper.audio_hardware.dac`
    includes Apple USB-C, HiFiBerry DAC8x-family, and dual-Apple 4ch profiles.
-2. Replace duplicated labels/output counts in `output_topology` and doctor with
-   registry lookups. **Topology consumer landed:** `jasper.output_topology`
-   now derives known DAC labels, physical output counts, clock-domain labels,
-   and clock-coherence reports from the registry while retaining its no-audio
-   authority boundary. It also reports composite-profile shape separately from
-   aggregate-output runtime enablement. `jasper-doctor` now consumes output
-   hardware state for Apple checks; a broader registry-only cleanup can remain
-   incremental.
+2. Replace duplicated labels/output counts in `output_hardware`,
+   `output_topology`, and doctor with registry lookups. **Runtime metadata
+   consumers landed:** `jasper.output_hardware` derives its supported-output
+   count, label, and clock-label maps from the registry, and
+   `jasper.output_topology` now derives known DAC labels, physical output
+   counts, clock-domain labels, and clock-domain reports from the same registry
+   while retaining its no-audio authority boundary. It also reports
+   composite-profile shape separately from aggregate-output runtime enablement.
+   `jasper-doctor` now consumes output hardware state for Apple checks; a
+   broader registry-only cleanup can remain incremental.
 3. Replace hardcoded Apple/DAC8x identity checks in `audio_validation` and
    `jasper-doctor` with profile-derived expectations.
 4. Move mixer/headphone policy into profile data, but keep mutation in
    `jasper-dac-init` and `jasper-headphone-monitor`.
 5. Teach `output_hardware` to emit profile IDs from the registry, including
-   composite dual-Apple states.
+   composite dual-Apple states. **Partially landed:** `output_hardware` still
+   owns live probing and composite classification, but its static vocabulary now
+   aliases or derives from `jasper.audio_hardware.dac`.
 6. Keep `jasper-audio-hardware-reconcile` as the runtime owner, but have it
    consume profile metadata rather than duplicating every device string.
 7. Burn down remaining hardcoded Apple/DAC8x references only when each consumer

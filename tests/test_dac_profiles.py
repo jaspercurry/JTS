@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from jasper.audio_hardware import dac
@@ -10,6 +12,8 @@ from jasper.audio_hardware.dac import (
     DUAL_APPLE_USB_C_DAC_4CH_ID,
     HIFIBERRY_DAC8X,
     HIFIBERRY_DAC8X_ID,
+    HIFIBERRY_DAC8X_STUDIO,
+    HIFIBERRY_DAC8X_STUDIO_ID,
     DacProfile,
 )
 
@@ -18,11 +22,13 @@ def test_registry_contains_current_output_profiles_in_stable_order() -> None:
     assert dac.all_profiles() == (
         APPLE_USB_C_DONGLE,
         HIFIBERRY_DAC8X,
+        HIFIBERRY_DAC8X_STUDIO,
         DUAL_APPLE_USB_C_DAC_4CH,
     )
     assert dac.known_profile_ids() == (
         APPLE_USB_C_DONGLE_ID,
         HIFIBERRY_DAC8X_ID,
+        HIFIBERRY_DAC8X_STUDIO_ID,
         DUAL_APPLE_USB_C_DAC_4CH_ID,
     )
 
@@ -46,6 +52,7 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     assert APPLE_USB_C_DONGLE.clock_domain_label == (
         "Single Apple USB audio device clock"
     )
+    assert APPLE_USB_C_DONGLE.clock_domain_contract == "single_device"
     assert APPLE_USB_C_DONGLE.outputd_sink == "alsa"
     assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
     assert APPLE_USB_C_DONGLE.usb_ids == ("05ac:110a",)
@@ -60,21 +67,48 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     )
 
 
-def test_hifiberry_dac8x_family_profile_keeps_existing_runtime_id() -> None:
+def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X.id == "hifiberry_dac8x"
-    assert HIFIBERRY_DAC8X.label == "HiFiBerry DAC8x / Studio DAC8x"
+    assert HIFIBERRY_DAC8X.label == "HiFiBerry DAC8x"
     assert HIFIBERRY_DAC8X.kind == "single"
     assert HIFIBERRY_DAC8X.physical_output_count == 8
     assert HIFIBERRY_DAC8X.coherent_clock_domain is True
     assert HIFIBERRY_DAC8X.clock_domain_label == (
         "Single HiFiBerry DAC8x device clock"
     )
+    assert HIFIBERRY_DAC8X.clock_domain_contract == "single_device"
     assert HIFIBERRY_DAC8X.outputd_sink == "alsa"
     assert HIFIBERRY_DAC8X.supports_active_outputd_lane is True
     assert "snd_rpi_hifiberry_dac8x" in HIFIBERRY_DAC8X.supported_card_matches
-    assert "hifiberry.*dac8x" in HIFIBERRY_DAC8X.supported_card_matches
+    assert "hifiberry.*dac8x(?!.*studio)" in HIFIBERRY_DAC8X.supported_card_matches
     assert HIFIBERRY_DAC8X.validation_profile == "hifiberry_dac8x_outputd_stability"
     assert HIFIBERRY_DAC8X.dtoverlay == "hifiberry-dac8x"
+    assert HIFIBERRY_DAC8X_STUDIO.id == "hifiberry_dac8x_studio"
+    assert HIFIBERRY_DAC8X_STUDIO.label == "HiFiBerry DAC8x Studio"
+    assert HIFIBERRY_DAC8X_STUDIO.physical_output_count == 8
+    assert HIFIBERRY_DAC8X_STUDIO.clock_domain_contract == "single_device"
+    assert HIFIBERRY_DAC8X_STUDIO.outputd_sink == "alsa"
+    assert HIFIBERRY_DAC8X_STUDIO.validation_profile == (
+        "hifiberry_dac8x_outputd_stability"
+    )
+
+
+def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
+    base_label = "snd_rpi_hifiberry_dac8x, HiFiBerry DAC8x"
+    studio_label = "HiFiBerry DAC8x Studio, USB Audio"
+
+    assert any(
+        re.search(pattern, base_label, re.IGNORECASE)
+        for pattern in HIFIBERRY_DAC8X.supported_card_matches
+    )
+    assert not any(
+        re.search(pattern, studio_label, re.IGNORECASE)
+        for pattern in HIFIBERRY_DAC8X.supported_card_matches
+    )
+    assert any(
+        re.search(pattern, studio_label, re.IGNORECASE)
+        for pattern in HIFIBERRY_DAC8X_STUDIO.supported_card_matches
+    )
 
 
 def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
@@ -82,7 +116,10 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
     assert DUAL_APPLE_USB_C_DAC_4CH.physical_output_count == 4
     assert DUAL_APPLE_USB_C_DAC_4CH.coherent_clock_domain is False
     assert DUAL_APPLE_USB_C_DAC_4CH.clock_domain_label == (
-        "Dual Apple USB-C adapter independent clocks"
+        "Dual Apple USB-C DAC pair (measured sync required)"
+    )
+    assert DUAL_APPLE_USB_C_DAC_4CH.clock_domain_contract == (
+        "measured_sync_required"
     )
     assert DUAL_APPLE_USB_C_DAC_4CH.outputd_sink == "dual_apple"
     assert DUAL_APPLE_USB_C_DAC_4CH.child_profile_ids == (
@@ -109,6 +146,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             physical_output_count=2,
             coherent_clock_domain=True,
             clock_domain_label="Bad clock",
+            clock_domain_contract="single_device",
             outputd_sink="alsa",
             supported_card_matches=("bad",),
         )
@@ -121,6 +159,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             physical_output_count=4,
             coherent_clock_domain=False,
             clock_domain_label="Bad clock",
+            clock_domain_contract="measured_sync_required",
             outputd_sink="dual_apple",
             supported_card_matches=("usb",),
             child_profile_ids=(APPLE_USB_C_DONGLE_ID,),
@@ -137,6 +176,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             physical_output_count=4,
             coherent_clock_domain=False,
             clock_domain_label="Bad clock",
+            clock_domain_contract="measured_sync_required",
             outputd_sink="dual_apple",
             supported_card_matches=("usb",),
             child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),

@@ -20,14 +20,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from .audio_hardware.dac import (
+    APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    HIFIBERRY_DAC8X_ID as HIFIBERRY_DAC8X_DEVICE_ID,  # noqa: F401 - re-export.
+    HIFIBERRY_DAC8X_STUDIO_ID as HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,  # noqa: F401 - re-export.
+    clock_domain_label_for as _dac_clock_domain_label_for,
+    label_for as _dac_label_for,
+    physical_output_count_for as _dac_physical_output_count_for,
+)
 from .output_hardware import (
-    APPLE_USB_C_DONGLE_DEVICE_ID,
-    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-    HIFIBERRY_DAC8X_DEVICE_ID,  # noqa: F401 - compatibility re-export.
-    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,  # noqa: F401 - compatibility re-export.
-    SUPPORTED_CLOCK_DOMAIN_LABELS,
-    SUPPORTED_DEVICE_LABELS,
-    SUPPORTED_DEVICE_OUTPUT_COUNTS,
     OutputHardwareState,
     load_state as load_output_hardware_state,
     normalize_output_device_id,
@@ -211,7 +213,7 @@ def default_clock_domain_id(device_id: str, card_id: str | None = None) -> str:
 
 def default_clock_domain_label(device_id: str) -> str:
     device_id = normalize_output_device_id(device_id)
-    return SUPPORTED_CLOCK_DOMAIN_LABELS.get(device_id, "Single output device clock")
+    return _dac_clock_domain_label_for(device_id) or "Single output device clock"
 
 
 @dataclass(frozen=True)
@@ -506,7 +508,7 @@ class OutputHardware:
             device_label=_text(
                 raw.get("device_label"),
                 "hardware.device_label",
-                default=SUPPORTED_DEVICE_LABELS.get(device_id, device_id),
+                default=_dac_label_for(device_id) or device_id,
             ),
             physical_output_count=count,
             card_id=card_id,
@@ -525,7 +527,7 @@ class OutputHardware:
         return hardware
 
     def validate(self) -> None:
-        expected_count = SUPPORTED_DEVICE_OUTPUT_COUNTS.get(self.device_id)
+        expected_count = _dac_physical_output_count_for(self.device_id)
         if expected_count is not None and self.physical_output_count != expected_count:
             raise OutputTopologyError(
                 f"{self.device_id} requires exactly {expected_count} physical outputs"
@@ -881,12 +883,11 @@ def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
     device_id = normalize_output_device_id(env.get("JASPER_AUDIO_DAC_ID"))
     card_id = env.get("JASPER_AUDIO_DAC_CARD") or None
     route = env.get("JASPER_OUTPUT_DAC_ROUTE") or None
-    output_count = SUPPORTED_DEVICE_OUTPUT_COUNTS.get(device_id, 0)
+    output_count = _dac_physical_output_count_for(device_id) or 0
     if output_count <= 0:
         output_count = 2 if card_id else 0
-    device_label = SUPPORTED_DEVICE_LABELS.get(
-        device_id,
-        device_id if device_id != "unknown" else "Unknown output device",
+    device_label = _dac_label_for(device_id) or (
+        device_id if device_id != "unknown" else "Unknown output device"
     )
     return OutputHardware(
         device_id=device_id,
@@ -1480,7 +1481,7 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
                 "no recognized output hardware is available",
             )
         )
-    elif hardware.device_id not in SUPPORTED_DEVICE_OUTPUT_COUNTS:
+    elif _dac_physical_output_count_for(hardware.device_id) is None:
         status = "unknown_device_clock"
         issues.append(
             _issue(
