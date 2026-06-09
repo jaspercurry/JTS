@@ -1788,980 +1788,1038 @@ def _make_handler(
             return {"db": round(_percent_to_db(percent), 3), "percent": percent}
 
         # --- routes ---
+        #
+        # do_GET / do_POST own the dispatch via the _GET_ROUTES /
+        # _POST_ROUTES tables (path -> handler-method name) defined at the
+        # bottom of this class. Each table entry's handler holds the exact
+        # body the inlined `if self.path == ...` branch had — moved into a
+        # named method, logic unchanged.
+        #
+        # SECURITY ORDERING IS LOAD-BEARING: the management-read /
+        # mutating-request guard runs FIRST (before the table lookup), and
+        # the unknown-path 404 happens LAST (table miss -> send_error). So
+        # an unknown path under a hostile Host/Origin is still rejected by
+        # the guard (403/400/413) BEFORE it can 404 — the inverse of the
+        # web-wizard "route-check before guard" convention, preserved here
+        # on purpose. Do not reorder lookup ahead of the guard.
 
         def do_GET(self) -> None:  # noqa: N802
             if not self._guard_management_read():
                 return
-            if self.path == "/healthz":
-                self._send_json({"ok": True})
+            handler_name = self._GET_ROUTES.get(self.path)
+            if handler_name is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if self.path == "/volume":
-                try:
-                    percent = asyncio.run(_get_op())
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("get volume failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                self._send_json(self._volume_payload(percent))
-                return
-            if self.path == "/mic":
-                # Read mic mute state from the voice daemon's STATUS
-                # response. If the daemon isn't reachable, surface that
-                # explicitly so the UI can grey out the toggle instead
-                # of pretending we know the state.
-                try:
-                    st = asyncio.run(_voice_socket_command(
-                        voice_socket_path, "STATUS", timeout=2.0,
-                    ))
-                except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-                    self._send_json(
-                        {"error": f"voice_daemon unreachable: {e}"},
-                        status=503,
-                    )
-                    return
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("mic STATUS failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                self._send_json({"muted": bool(st.get("mic_muted", False))})
-                return
-            if self.path == "/source/state":
-                # Source selection state from jasper-mux. This is
-                # separate from the /sources/ wizard (on/off toggles):
-                # selecting a source does not enable or disable any
-                # renderer, it only chooses which active lane the
-                # speaker should pass through.
-                try:
-                    result = asyncio.run(_mux_socket_command("STATUS"))
-                except (
-                    FileNotFoundError,
-                    ConnectionRefusedError,
-                    OSError,
-                    asyncio.TimeoutError,
-                ) as e:
-                    self._send_json(
-                        {"error": f"jasper-mux unreachable: {e}"},
-                        status=503,
-                    )
-                    return
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("source STATUS failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                self._send_json(_augment_source_payload(result))
-                return
-            if self.path == "/aec":
-                # Software AEC bridge state + per-leg config + wake
-                # threshold. Mode and leg booleans are the persisted
-                # request (what the operator asked for, via the /wake/
-                # page or aec_mode.env directly); bridge_active is the
-                # observed truth from systemd. They diverge briefly
-                # during a reconciler-driven transition (~10-15 s).
-                # Threshold is read from wake_model.env — the same
-                # file the /wake/ form save writes the model into, so
-                # both controls stay in sync without sharing code.
-                #
-                # DTLN load failures don't surface in this payload —
-                # /system's Diagnostics disclosure runs jasper-doctor
-                # which has check_aec_bridge_dtln_engine for the
-                # silent-failure case.
-                self._send_json(_aec_full_status())
-                return
+            getattr(self, handler_name)()
 
-            if self.path == "/debug":
-                # Runtime debug-logging state for the /system Debug card:
-                # per-subsystem on/off + the shared auto-expiry countdown.
-                self._send_json(debug_control.snapshot())
+        def _get_healthz(self) -> None:
+            self._send_json({"ok": True})
+
+        def _get_volume(self) -> None:
+            try:
+                percent = asyncio.run(_get_op())
+            except Exception as e:  # noqa: BLE001
+                logger.exception("get volume failed")
+                self._send_json({"error": str(e)}, status=502)
                 return
+            self._send_json(self._volume_payload(percent))
 
-            if self.path == "/state":
-                # Cross-daemon snapshot — voice / audio / renderers /
-                # satellites. Polled by the /voice web UI for live
-                # status, used by jasper-doctor for one-shot health,
-                # and consumable from `curl jts.local:8780/state | jq`
-                # for ad-hoc debugging. ~200 ms typical (mostly the
-                # parallel busctl + camilla WS probes).
-                try:
-                    state = asyncio.run(_get_state(
-                        camilla_host=camilla_host,
-                        camilla_port=camilla_port,
-                        voice_socket_path=voice_socket_path,
-                    ))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/state aggregation failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                self._send_json(state)
+        def _get_mic(self) -> None:
+            # Read mic mute state from the voice daemon's STATUS
+            # response. If the daemon isn't reachable, surface that
+            # explicitly so the UI can grey out the toggle instead
+            # of pretending we know the state.
+            try:
+                st = asyncio.run(_voice_socket_command(
+                    voice_socket_path, "STATUS", timeout=2.0,
+                ))
+            except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+                self._send_json(
+                    {"error": f"voice_daemon unreachable: {e}"},
+                    status=503,
+                )
                 return
-            if self.path == "/grouping":
-                # Multiroom grouping block, nested under "grouping" so a
-                # fail-soft read returns {"grouping": null} unambiguously.
-                # Read SERVER-SIDE by another speaker's /rooms /unbond
-                # fan-out (rooms_setup._get_member_grouping) to discover which
-                # siblings share a bond_id before dissolving it — NOT by the
-                # browser (the page reads self.grouping from /rooms.json).
-                # NO CSRF: a read on the same no-auth LAN surface as /state
-                # and /healthz. Fail-soft like /state's grouping section —
-                # a broken read returns 200 with null rather than 500.
-                try:
-                    grouping = read_grouping_state()
-                except Exception:  # noqa: BLE001
-                    logger.exception("grouping state read failed")
-                    grouping = None
-                # grouping_response is the ONE home for the envelope shape; the
-                # /rooms /unbond consumer parses it via the paired
-                # parse_grouping_response (jasper/multiroom/state.py), so the
-                # two daemons can't drift (the C4 regression).
-                self._send_json(grouping_response(grouping))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("mic STATUS failed")
+                self._send_json({"error": str(e)}, status=502)
                 return
-            if self.path == "/dial/status":
-                # Heartbeat snapshot — used by jasper-doctor's
-                # "is the dial actually talking to us?" check.
-                snap = dict(_dial_heartbeat)
-                if snap["last_seen_at"] is not None:
-                    snap["age_seconds"] = round(
-                        time.time() - snap["last_seen_at"], 1,
-                    )
-                else:
-                    snap["age_seconds"] = None
-                self._send_json(snap)
+            self._send_json({"muted": bool(st.get("mic_muted", False))})
+
+        def _get_source_state(self) -> None:
+            # Source selection state from jasper-mux. This is
+            # separate from the /sources/ wizard (on/off toggles):
+            # selecting a source does not enable or disable any
+            # renderer, it only chooses which active lane the
+            # speaker should pass through.
+            try:
+                result = asyncio.run(_mux_socket_command("STATUS"))
+            except (
+                FileNotFoundError,
+                ConnectionRefusedError,
+                OSError,
+                asyncio.TimeoutError,
+            ) as e:
+                self._send_json(
+                    {"error": f"jasper-mux unreachable: {e}"},
+                    status=503,
+                )
                 return
-            if self.path == "/system/snapshot":
-                # Snapshot for the /system dashboard. Current values +
-                # 60-min ring buffers for the sparklines + build info +
-                # home_assistant connection status.
-                # Sampler may be None in tests / direct CLI invocation;
-                # surface an empty history rather than 500.
-                from .system_metrics import read_build_info
-                from .. import home_assistant as _ha_mod
-                from ..speaker_name import read_state as _read_speaker_name_state
-                from ..voice.provider_state import read_active_provider
+            except Exception as e:  # noqa: BLE001
+                logger.exception("source STATUS failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
+            self._send_json(_augment_source_payload(result))
 
-                # HA probe is async + slow-ish (~50-200 ms typical against
-                # a healthy local HA, fails fast on unreachable). Run it
-                # via asyncio.run so the rest of /system/snapshot stays
-                # synchronous like the existing handler.
-                try:
-                    # Same env-file-direct read as /state.home_assistant
-                    # above — wizard saves must reflect immediately in the
-                    # dashboard without restarting jasper-control.
-                    ha_status = asyncio.run(_ha_mod.probe_status_from_env())
-                except Exception:  # noqa: BLE001
-                    # Fail-soft per the existing aggregator convention —
-                    # never break /system/snapshot because HA is wedged.
-                    ha_status = {
-                        "configured": False, "connected": False, "url": "",
-                        "instance_name": None, "version": None,
-                        "error": "probe failed",
-                    }
+        def _get_aec(self) -> None:
+            # Software AEC bridge state + per-leg config + wake
+            # threshold. Mode and leg booleans are the persisted
+            # request (what the operator asked for, via the /wake/
+            # page or aec_mode.env directly); bridge_active is the
+            # observed truth from systemd. They diverge briefly
+            # during a reconciler-driven transition (~10-15 s).
+            # Threshold is read from wake_model.env — the same
+            # file the /wake/ form save writes the model into, so
+            # both controls stay in sync without sharing code.
+            #
+            # DTLN load failures don't surface in this payload —
+            # /system's Diagnostics disclosure runs jasper-doctor
+            # which has check_aec_bridge_dtln_engine for the
+            # silent-failure case.
+            self._send_json(_aec_full_status())
 
-                try:
-                    airplay_health = (
-                        airplay_health_sampler.snapshot()
-                        if airplay_health_sampler is not None else None
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("airplay health snapshot failed")
-                    airplay_health = {
-                        "status": "unknown",
-                        "reason": "AirPlay health sampler failed",
-                    }
+        def _get_debug(self) -> None:
+            # Runtime debug-logging state for the /system Debug card:
+            # per-subsystem on/off + the shared auto-expiry countdown.
+            self._send_json(debug_control.snapshot())
 
-                try:
-                    outputd_status = asyncio.run(_outputd_status())
-                except Exception:  # noqa: BLE001
-                    logger.exception("outputd status snapshot failed")
-                    outputd_status = None
+        def _get_state(self) -> None:
+            # Cross-daemon snapshot — voice / audio / renderers /
+            # satellites. Polled by the /voice web UI for live
+            # status, used by jasper-doctor for one-shot health,
+            # and consumable from `curl jts.local:8780/state | jq`
+            # for ad-hoc debugging. ~200 ms typical (mostly the
+            # parallel busctl + camilla WS probes).
+            try:
+                state = asyncio.run(_get_state(
+                    camilla_host=camilla_host,
+                    camilla_port=camilla_port,
+                    voice_socket_path=voice_socket_path,
+                ))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("/state aggregation failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
+            self._send_json(state)
 
-                payload: dict[str, Any] = {
-                    "build": read_build_info(),
-                    "metrics": (
-                        sampler.snapshot() if sampler is not None else None
-                    ),
-                    "airplay_health": airplay_health,
-                    "outputd": outputd_status,
-                    "audio_quality": _safe_audio_quality_state(),
-                    "voice_provider": read_active_provider(),
-                    "speaker_name": _read_speaker_name_state().__dict__,
-                    "home_assistant": ha_status,
+        def _get_grouping(self) -> None:
+            # Multiroom grouping block, nested under "grouping" so a
+            # fail-soft read returns {"grouping": null} unambiguously.
+            # Read SERVER-SIDE by another speaker's /rooms /unbond
+            # fan-out (rooms_setup._get_member_grouping) to discover which
+            # siblings share a bond_id before dissolving it — NOT by the
+            # browser (the page reads self.grouping from /rooms.json).
+            # NO CSRF: a read on the same no-auth LAN surface as /state
+            # and /healthz. Fail-soft like /state's grouping section —
+            # a broken read returns 200 with null rather than 500.
+            try:
+                grouping = read_grouping_state()
+            except Exception:  # noqa: BLE001
+                logger.exception("grouping state read failed")
+                grouping = None
+            # grouping_response is the ONE home for the envelope shape; the
+            # /rooms /unbond consumer parses it via the paired
+            # parse_grouping_response (jasper/multiroom/state.py), so the
+            # two daemons can't drift (the C4 regression).
+            self._send_json(grouping_response(grouping))
+
+        def _get_dial_status(self) -> None:
+            # Heartbeat snapshot — used by jasper-doctor's
+            # "is the dial actually talking to us?" check.
+            snap = dict(_dial_heartbeat)
+            if snap["last_seen_at"] is not None:
+                snap["age_seconds"] = round(
+                    time.time() - snap["last_seen_at"], 1,
+                )
+            else:
+                snap["age_seconds"] = None
+            self._send_json(snap)
+
+        def _get_system_snapshot(self) -> None:
+            # Snapshot for the /system dashboard. Current values +
+            # 60-min ring buffers for the sparklines + build info +
+            # home_assistant connection status.
+            # Sampler may be None in tests / direct CLI invocation;
+            # surface an empty history rather than 500.
+            from .system_metrics import read_build_info
+            from .. import home_assistant as _ha_mod
+            from ..speaker_name import read_state as _read_speaker_name_state
+            from ..voice.provider_state import read_active_provider
+
+            # HA probe is async + slow-ish (~50-200 ms typical against
+            # a healthy local HA, fails fast on unreachable). Run it
+            # via asyncio.run so the rest of /system/snapshot stays
+            # synchronous like the existing handler.
+            try:
+                # Same env-file-direct read as /state.home_assistant
+                # above — wizard saves must reflect immediately in the
+                # dashboard without restarting jasper-control.
+                ha_status = asyncio.run(_ha_mod.probe_status_from_env())
+            except Exception:  # noqa: BLE001
+                # Fail-soft per the existing aggregator convention —
+                # never break /system/snapshot because HA is wedged.
+                ha_status = {
+                    "configured": False, "connected": False, "url": "",
+                    "instance_name": None, "version": None,
+                    "error": "probe failed",
                 }
-                self._send_json(payload)
+
+            try:
+                airplay_health = (
+                    airplay_health_sampler.snapshot()
+                    if airplay_health_sampler is not None else None
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("airplay health snapshot failed")
+                airplay_health = {
+                    "status": "unknown",
+                    "reason": "AirPlay health sampler failed",
+                }
+
+            try:
+                outputd_status = asyncio.run(_outputd_status())
+            except Exception:  # noqa: BLE001
+                logger.exception("outputd status snapshot failed")
+                outputd_status = None
+
+            payload: dict[str, Any] = {
+                "build": read_build_info(),
+                "metrics": (
+                    sampler.snapshot() if sampler is not None else None
+                ),
+                "airplay_health": airplay_health,
+                "outputd": outputd_status,
+                "audio_quality": _safe_audio_quality_state(),
+                "voice_provider": read_active_provider(),
+                "speaker_name": _read_speaker_name_state().__dict__,
+                "home_assistant": ha_status,
+            }
+            self._send_json(payload)
+
+        def _get_system_diagnostics(self) -> None:
+            # Run jasper-doctor --json and proxy its output. ~3-5 s
+            # on a Pi 5; the dashboard surfaces a spinner during
+            # the call. Single-flight semantics not enforced here
+            # (the dashboard disables the button while in flight).
+            try:
+                proc = subprocess.run(
+                    ["/opt/jasper/.venv/bin/jasper-doctor", "--json"],
+                    capture_output=True, text=True, timeout=30,
+                    env=subprocess_env_with_fresh_files(),
+                )
+            except (subprocess.SubprocessError, FileNotFoundError) as e:
+                self._send_json(
+                    {"error": f"jasper-doctor invocation failed: {e}"},
+                    status=502,
+                )
                 return
-            if self.path == "/system/diagnostics":
-                # Run jasper-doctor --json and proxy its output. ~3-5 s
-                # on a Pi 5; the dashboard surfaces a spinner during
-                # the call. Single-flight semantics not enforced here
-                # (the dashboard disables the button while in flight).
-                try:
-                    proc = subprocess.run(
-                        ["/opt/jasper/.venv/bin/jasper-doctor", "--json"],
-                        capture_output=True, text=True, timeout=30,
-                        env=subprocess_env_with_fresh_files(),
-                    )
-                except (subprocess.SubprocessError, FileNotFoundError) as e:
-                    self._send_json(
-                        {"error": f"jasper-doctor invocation failed: {e}"},
-                        status=502,
-                    )
-                    return
-                # jasper-doctor exits 1 when any check failed; that's
-                # a normal "report has failures" outcome, not an HTTP
-                # error. Parse stdout regardless.
-                try:
-                    body = json.loads(proc.stdout)
-                except json.JSONDecodeError:
-                    self._send_json(
-                        {"error": "doctor output not JSON",
-                         "stdout": proc.stdout[:500],
-                         "stderr": proc.stderr[:500]},
-                        status=502,
-                    )
-                    return
-                self._send_json(body)
+            # jasper-doctor exits 1 when any check failed; that's
+            # a normal "report has failures" outcome, not an HTTP
+            # error. Parse stdout regardless.
+            try:
+                body = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                self._send_json(
+                    {"error": "doctor output not JSON",
+                     "stdout": proc.stdout[:500],
+                     "stderr": proc.stderr[:500]},
+                    status=502,
+                )
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            self._send_json(body)
 
         def do_POST(self) -> None:  # noqa: N802
             if not self._guard_mutating_request():
                 return
-            if self.path == "/volume/adjust":
-                body = self._read_json()
-                # Support both legacy delta_db (dial firmware compat,
-                # interpreted on the 50 dB camilla scale) and the
-                # cleaner delta_percent for newer clients.
-                if "delta_percent" in body:
-                    try:
-                        delta_pct = int(body["delta_percent"])
-                    except (TypeError, ValueError):
-                        self._send_json(
-                            {"error": "delta_percent must be an integer"},
-                            status=400,
-                        )
-                        return
-                elif "delta_db" in body:
-                    try:
-                        delta_pct = _delta_db_to_delta_percent(
-                            float(body["delta_db"]),
-                        )
-                    except (TypeError, ValueError):
-                        self._send_json(
-                            {"error": "delta_db must be a number"},
-                            status=400,
-                        )
-                        return
-                else:
-                    self._send_json(
-                        {"error": "missing delta_db or delta_percent"},
-                        status=400,
-                    )
-                    return
-                try:
-                    new_pct = asyncio.run(_adjust_op(delta_pct))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("adjust volume failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                logger.info(
-                    "event=volume.adjust delta_pct=%d new_pct=%d client=%s",
-                    delta_pct, new_pct, self.address_string(),
-                )
-                self._send_json(self._volume_payload(new_pct))
+            handler_name = self._POST_ROUTES.get(self.path)
+            if handler_name is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
+            getattr(self, handler_name)()
 
-            if self.path == "/volume/set":
-                body = self._read_json()
-                # Support both legacy `db` (dial / older clients) and
-                # the cleaner `percent`. Percent is the canonical unit
-                # for listening_level.
-                if "percent" in body:
-                    try:
-                        target_pct = int(body["percent"])
-                    except (TypeError, ValueError):
-                        self._send_json(
-                            {"error": "percent must be an integer"}, status=400,
-                        )
-                        return
-                elif "db" in body:
-                    try:
-                        target_pct = _db_to_percent(float(body["db"]))
-                    except (TypeError, ValueError):
-                        self._send_json(
-                            {"error": "db must be a number"}, status=400,
-                        )
-                        return
-                else:
-                    self._send_json(
-                        {"error": "missing db or percent"}, status=400,
-                    )
-                    return
-                # Optional `source` field marks the caller as an
-                # observed source-side change (e.g. host moved its
-                # volume slider on the USB gadget). Route through
-                # observe_source_volume so the coordinator's echo
-                # window and source-active gate apply. Without
-                # `source`, the caller is treated as authoritative
-                # (dial twist, voice "louder", etc.).
-                source_name = body.get("source")
+        def _post_volume_adjust(self) -> None:
+            body = self._read_json()
+            # Support both legacy delta_db (dial firmware compat,
+            # interpreted on the 50 dB camilla scale) and the
+            # cleaner delta_percent for newer clients.
+            if "delta_percent" in body:
                 try:
-                    if source_name:
-                        new_pct = asyncio.run(
-                            _observe_op(str(source_name), target_pct),
-                        )
-                    else:
-                        new_pct = asyncio.run(_set_op(target_pct))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("set volume failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                logger.info(
-                    "event=volume.set new_pct=%d source=%s client=%s",
-                    new_pct, source_name or "authoritative",
-                    self.address_string(),
-                )
-                self._send_json(self._volume_payload(new_pct))
-                return
-
-            if self.path == "/grouping/set":
-                # Set this speaker's grouping role. Same no-auth LAN surface
-                # as /volume (the dial) — so the bond-forming UI on speaker A
-                # configures speaker B by POSTing here on B's port. The
-                # reconciler (kicked below) is the single applier of the
-                # snapcast units + the outputd tap.
-                body = self._read_json()
-                enabled = bool(body.get("enabled"))
-                role = str(body.get("role", "")).strip()
-                channel = str(body.get("channel", "")).strip()
-                bond_id = str(body.get("bond_id", "")).strip()
-                leader_addr = str(body.get("leader_addr", "")).strip()
-                # Validate an ENABLED request up front via the SHARED
-                # validate_grouping (same rule the config loader applies on
-                # read) so we never persist a fail-loud config. A disabled
-                # request needs no fields.
-                if enabled:
-                    err = validate_grouping(
-                        role=role, channel=channel,
-                        bond_id=bond_id, leader_addr=leader_addr,
-                    )
-                    if err:
-                        self._send_json({"error": err}, status=400)
-                        return
-                try:
-                    _write_grouping(
-                        enabled=enabled, role=role, channel=channel,
-                        bond_id=bond_id, leader_addr=leader_addr,
-                    )
-                    _kick_grouping_reconciler()
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("grouping set failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                logger.info(
-                    "event=grouping.set enabled=%s role=%s channel=%s "
-                    "bond=%s client=%s",
-                    enabled, role or "(none)", channel or "(none)",
-                    bond_id or "(none)", self.address_string(),
-                )
-                self._send_json({
-                    "ok": True, "enabled": enabled, "role": role,
-                    "channel": channel, "bond_id": bond_id,
-                    "leader_addr": leader_addr,
-                })
-                return
-
-            if self.path == "/volume/mute":
-                # Toggle mute: muted → unmute (restore pre-mute level),
-                # unmuted → mute (save current level, drop to 0).
-                # Used by HID accessory clicks (jasper-input) and any
-                # other one-shot toggle caller. State persistence and
-                # the pre-mute level live inside VolumeCoordinator.
-                try:
-                    new_pct = asyncio.run(_mute_toggle_op())
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("mute toggle failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                logger.info(
-                    "event=volume.mute new_pct=%d client=%s",
-                    new_pct, self.address_string(),
-                )
-                self._send_json(self._volume_payload(new_pct))
-                return
-
-            if self.path in (
-                "/transport/toggle", "/transport/next", "/transport/previous",
-            ):
-                action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
-                try:
-                    result = asyncio.run(_dispatch_transport(action))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("transport %s failed", action)
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                logger.info(
-                    "event=transport.dispatch action=%s client=%s",
-                    action, self.address_string(),
-                )
-                if "error" in result:
-                    self._send_json(result, status=502)
-                    return
-                self._send_json(result)
-                return
-
-            if self.path == "/source/select":
-                # POST /source/select body: {"source": "airplay"} or
-                # {"source": "auto"}. The mux validates policy and
-                # forwards the low-level lane choice to fan-in.
-                body = self._read_json()
-                source = str(body.get("source") or "").strip().lower()
-                if source == "auto":
-                    cmd = "AUTO"
-                elif source in SOURCE_SELECT_IDS:
-                    cmd = f"SELECT {source}"
-                else:
-                    choices = ", ".join(sorted(SOURCE_SELECT_IDS))
-                    self._send_json(
-                        {
-                            "error": (
-                                f"source must be {choices}, or auto"
-                            ),
-                        },
-                        status=400,
-                    )
-                    return
-                try:
-                    result = asyncio.run(
-                        _mux_socket_command(cmd, timeout=6.0),
-                    )
-                except (
-                    FileNotFoundError,
-                    ConnectionRefusedError,
-                    OSError,
-                    asyncio.TimeoutError,
-                ) as e:
-                    self._send_json(
-                        {"error": f"jasper-mux unreachable: {e}"},
-                        status=503,
-                    )
-                    return
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("source select failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                logger.info(
-                    "event=source.select source=%s client=%s",
-                    source, self.address_string(),
-                )
-                self._send_json(_augment_source_payload(result))
-                return
-
-            if self.path == "/session/start" or self.path == "/session/end":
-                cmd = "START" if self.path.endswith("start") else "END"
-                try:
-                    result = asyncio.run(
-                        _voice_socket_command(voice_socket_path, cmd),
-                    )
-                except FileNotFoundError:
-                    self._send_json(
-                        {"error": "voice_daemon not running (socket not found)"},
-                        status=503,
-                    )
-                    return
-                except (OSError, asyncio.TimeoutError) as e:
-                    self._send_json(
-                        {"error": f"voice_daemon unreachable: {e}"},
-                        status=503,
-                    )
-                    return
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("session %s failed", cmd)
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                # Result codes from voice_daemon's manual_session_*:
-                #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING /
-                #   NO_SESSION / ALREADY_ENDED / ERROR
-                # Map non-OK outcomes to non-2xx so the dial's HTTP
-                # error path can show the right LED color.
-                http_status = 200
-                if result.get("result") not in ("OK", None):
-                    if result.get("result") in ("CAP", "PAUSED", "MUTED", "MEASURING"):
-                        http_status = 503
-                    elif result.get("result") in ("BUSY", "NO_SESSION", "ALREADY_ENDED"):
-                        http_status = 409
-                    else:
-                        http_status = 502
-                self._send_json(result, status=http_status)
-                return
-
-            if self.path == "/cue/play":
-                # POST /cue/play  body: {"slug": "<cue_slug>"}
-                # Routes the request through voice_daemon's control
-                # socket so the cue plays through the daemon's
-                # already-correctly-gained TtsPlayout. A separate
-                # standalone client (e.g., `jasper-cues play <slug>`)
-                # would have to recreate the daemon's volume math
-                # to match levels, and got it wrong (~20 dB too
-                # loud). Centralising here keeps levels consistent.
-                body = self._read_json()
-                slug = (body.get("slug") or "").strip()
-                if not slug:
-                    self._send_json(
-                        {"error": "missing 'slug' in body"}, status=400,
-                    )
-                    return
-                try:
-                    # Cues run ~5-6s of audio plus duck/restore plus
-                    # drain. 30s gives generous headroom even for the
-                    # longest reasonable cue.
-                    result = asyncio.run(_voice_socket_command(
-                        voice_socket_path, f"CUE_PLAY {slug}",
-                        timeout=30.0,
-                    ))
-                except FileNotFoundError:
-                    self._send_json(
-                        {"error": "voice_daemon not running"}, status=503,
-                    )
-                    return
-                except (OSError, asyncio.TimeoutError) as e:
-                    self._send_json(
-                        {"error": f"voice_daemon unreachable: {e}"},
-                        status=503,
-                    )
-                    return
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("cue play failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                http_status = 200
-                if result.get("result") == "missing_slug":
-                    http_status = 400
-                elif result.get("result") == "unknown_slug":
-                    http_status = 404
-                elif result.get("result") == "cues_not_configured":
-                    http_status = 503
-                elif result.get("result") != "ok":
-                    http_status = 502
-                self._send_json(result, status=http_status)
-                return
-
-            if self.path == "/mic/mute":
-                # POST /mic/mute  body: {"muted": bool}
-                # Idempotent set. Forwards MUTE or UNMUTE to the voice
-                # daemon's control socket, which drops mic frames at
-                # the wake-loop gate (mute) or resumes (unmute) and
-                # plays a short click on either edge for feedback.
-                body = self._read_json()
-                if "muted" not in body:
-                    self._send_json(
-                        {"error": "missing 'muted' in body"}, status=400,
-                    )
-                    return
-                cmd = "MUTE" if bool(body["muted"]) else "UNMUTE"
-                try:
-                    result = asyncio.run(_voice_socket_command(
-                        voice_socket_path, cmd, timeout=3.0,
-                    ))
-                except FileNotFoundError:
-                    self._send_json(
-                        {"error": "voice_daemon not running"}, status=503,
-                    )
-                    return
-                except (OSError, asyncio.TimeoutError) as e:
-                    self._send_json(
-                        {"error": f"voice_daemon unreachable: {e}"},
-                        status=503,
-                    )
-                    return
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("mic %s failed", cmd)
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                logger.info(
-                    "event=mic.set muted=%s client=%s",
-                    bool(body["muted"]), self.address_string(),
-                )
-                # Read back the truth from the daemon. STATUS is cheap
-                # and the daemon's flag is authoritative.
-                try:
-                    st = asyncio.run(_voice_socket_command(
-                        voice_socket_path, "STATUS", timeout=2.0,
-                    ))
-                    muted_now = bool(st.get("mic_muted", False))
-                except Exception:  # noqa: BLE001
-                    # If readback fails, trust the set and move on.
-                    muted_now = bool(body["muted"])
-                self._send_json({"muted": muted_now, "result": result.get("result")})
-                return
-
-            if self.path == "/aec/toggle":
-                # Flip JASPER_AEC_MODE between auto and disabled, then
-                # kick the reconciler. The reconciler stops/starts
-                # jasper-aec-bridge.service and restarts jasper-voice
-                # with the new JASPER_MIC_DEVICE (udp:9876 vs chip
-                # direct). Called by the /wake/ page's AEC layer toggle
-                # (after a current-state read for idempotent set-state
-                # semantics). Non-blocking — the wizard polls /aec to
-                # see when the transition lands (~10-15 s). The kick
-                # uses systemctl restart so rapid toggles cannot be
-                # swallowed while the oneshot reconciler is already active.
-                #
-                # Risk model: LAN-local + browser-origin guard, same
-                # as /system/restart/*. This is still not auth; it is
-                # the small boundary that blocks cross-site browser
-                # POSTs and DNS-rebinding Host headers while keeping
-                # curl, local proxies, and accessories working.
-                current = _read_aec_mode()
-                new_mode = "disabled" if current == "auto" else "auto"
-                try:
-                    _write_aec_mode(new_mode)
-                except (OSError, ValueError) as e:
-                    self._send_json(
-                        {"error": f"write aec_mode.env failed: {e}"},
-                        status=502,
-                    )
-                    return
-                try:
-                    _kick_aec_reconciler()
-                except (OSError, subprocess.SubprocessError) as e:
-                    self._send_json(
-                        {"error": f"reconciler restart failed: {e}"},
-                        status=502,
-                    )
-                    return
-                logger.info(
-                    "event=aec.toggle from=%s to=%s client=%s",
-                    current, new_mode, self.address_string(),
-                )
-                self._send_json({
-                    "mode": new_mode,
-                    "bridge_active": _aec_bridge_active(),
-                })
-                return
-
-            if self.path == "/aec/leg":
-                # Toggle one of the additive wake-detection legs
-                # (raw chip-direct, DTLN neural, or chip-AEC beams). The
-                # reconciler maps the boolean back to the underlying env vars
-                # the bridge + voice each read at startup, then
-                # restarts whichever daemons need to pick up the
-                # change. Per-leg sub-toggles are only meaningful
-                # when JASPER_AEC_MODE=auto and the bridge is up;
-                # the reconciler clears the underlying vars when
-                # AEC is disabled so a stale leg config doesn't
-                # leave voice listening on a port nobody talks to.
-                #
-                # Risk model: LAN-local + browser-origin guard, same
-                # as /aec/toggle.
-                try:
-                    body = self._read_json()
-                except (ValueError, OSError) as e:
-                    self._send_json(
-                        {"error": f"invalid request body: {e}"}, status=400,
-                    )
-                    return
-                leg = body.get("leg")
-                enabled_val = body.get("enabled")
-                if leg not in _TOGGLE_TO_TOKEN:
-                    self._send_json(
-                        {"error": "leg must be one of: "
-                                  + ", ".join(sorted(_TOGGLE_TO_TOKEN))},
-                        status=400,
-                    )
-                    return
-                if not isinstance(enabled_val, bool):
-                    self._send_json(
-                        {"error": "enabled must be a boolean"}, status=400,
-                    )
-                    return
-                try:
-                    _write_aec_leg(leg, enabled_val)
-                except (OSError, ValueError) as e:
-                    self._send_json(
-                        {"error": f"write aec_mode.env failed: {e}"},
-                        status=502,
-                    )
-                    return
-                try:
-                    _kick_aec_reconciler()
-                except (OSError, subprocess.SubprocessError) as e:
-                    self._send_json(
-                        {"error": f"reconciler restart failed: {e}"},
-                        status=502,
-                    )
-                    return
-                logger.info(
-                    "event=aec.leg leg=%s enabled=%s client=%s",
-                    leg, enabled_val, self.address_string(),
-                )
-                self._send_json(_aec_full_status())
-                return
-
-            if self.path == "/aec/profile":
-                # Set the canonical mic/AEC input profile. This is the
-                # preferred surface for households and onboarding: it writes
-                # one high-level choice plus rollback-safe legacy leg keys.
-                # The older /aec/toggle and /aec/leg routes remain as custom
-                # expert controls and stamp JASPER_AUDIO_INPUT_PROFILE=custom.
-                try:
-                    body = self._read_json()
-                except (ValueError, OSError) as e:
-                    self._send_json(
-                        {"error": f"invalid request body: {e}"}, status=400,
-                    )
-                    return
-                profile = body.get("profile")
-                if not isinstance(profile, str):
-                    self._send_json(
-                        {"error": "profile must be a string"}, status=400,
-                    )
-                    return
-                try:
-                    _write_audio_input_profile(profile)
-                except (OSError, ValueError) as e:
-                    self._send_json(
-                        {"error": f"write aec_mode.env failed: {e}"},
-                        status=400 if isinstance(e, ValueError) else 502,
-                    )
-                    return
-                try:
-                    _kick_aec_reconciler()
-                except (OSError, subprocess.SubprocessError) as e:
-                    self._send_json(
-                        {"error": f"reconciler restart failed: {e}"},
-                        status=502,
-                    )
-                    return
-                logger.info(
-                    "event=aec.profile profile=%s client=%s",
-                    normalize_audio_input_profile(profile, default=""),
-                    self.address_string(),
-                )
-                self._send_json(_aec_full_status())
-                return
-
-            if self.path == "/aec/threshold":
-                # Sensitivity slider on the /wake/ page. Writes
-                # JASPER_WAKE_THRESHOLD into wake_model.env (same
-                # file the /wake/ form save writes the model into)
-                # and restarts jasper-voice — the openWakeWord
-                # detector reads the threshold at startup, so a hot
-                # config change without a restart wouldn't take
-                # effect on the next wake.
-                #
-                # AEC-mode and leg toggles share the reconciler
-                # which already restarts voice; threshold-only
-                # changes bypass the reconciler since they don't
-                # need the bridge to restart. Non-blocking — the
-                # slider's "Applying…" state is just UX.
-                try:
-                    body = self._read_json()
-                except (ValueError, OSError) as e:
-                    self._send_json(
-                        {"error": f"invalid request body: {e}"}, status=400,
-                    )
-                    return
-                try:
-                    threshold = float(body.get("threshold"))
+                    delta_pct = int(body["delta_percent"])
                 except (TypeError, ValueError):
                     self._send_json(
-                        {"error": "threshold must be a number"}, status=400,
-                    )
-                    return
-                if not 0.0 <= threshold <= 1.0:
-                    self._send_json(
-                        {"error": "threshold must be between 0 and 1"},
+                        {"error": "delta_percent must be an integer"},
                         status=400,
                     )
                     return
+            elif "delta_db" in body:
                 try:
-                    _write_wake_threshold(threshold)
-                except (OSError, ValueError) as e:
-                    self._send_json(
-                        {"error": f"write wake_model.env failed: {e}"},
-                        status=502,
+                    delta_pct = _delta_db_to_delta_percent(
+                        float(body["delta_db"]),
                     )
-                    return
-                try:
-                    subprocess.Popen(
-                        ["systemctl", "restart", "--no-block",
-                         "jasper-voice.service"],
-                    )
-                except (OSError, subprocess.SubprocessError) as e:
+                except (TypeError, ValueError):
                     self._send_json(
-                        {"error": f"voice restart failed: {e}"},
-                        status=502,
-                    )
-                    return
-                logger.info(
-                    "event=wake.threshold value=%.2f client=%s",
-                    threshold, self.address_string(),
-                )
-                self._send_json({"threshold": threshold})
-                return
-
-            if self.path == "/debug":
-                # /system Debug card: raise one subsystem to DEBUG
-                # logging. Additive-only + auto-expiring (jasper/
-                # debug_mode.py). Daemon subsystems restart to apply;
-                # control applies in-process. Non-blocking — the card's
-                # "Applying…" state is just UX.
-                try:
-                    body = self._read_json()
-                except (ValueError, OSError) as e:
-                    self._send_json(
-                        {"error": f"invalid request body: {e}"}, status=400,
-                    )
-                    return
-                subsystem = str(body.get("subsystem") or "")
-                enabled = body.get("enabled")
-                if not isinstance(enabled, bool):
-                    self._send_json(
-                        {"error": "enabled must be a boolean"}, status=400,
-                    )
-                    return
-                try:
-                    debug_control.set_debug(subsystem, enabled)
-                except ValueError as e:
-                    self._send_json({"error": str(e)}, status=400)
-                    return
-                except (OSError, subprocess.SubprocessError) as e:
-                    self._send_json(
-                        {"error": f"debug toggle failed: {e}"}, status=502,
-                    )
-                    return
-                logger.info(
-                    "event=debug.toggle subsystem=%s enabled=%s client=%s",
-                    subsystem, enabled, self.address_string(),
-                )
-                self._send_json(debug_control.snapshot())
-                return
-
-            if self.path == "/system/audio-quality":
-                try:
-                    body = self._read_json()
-                except (ValueError, OSError) as e:
-                    self._send_json(
-                        {"error": f"invalid request body: {e}"}, status=400,
-                    )
-                    return
-                if not isinstance(body, dict):
-                    self._send_json(
-                        {"error": "invalid request body: expected JSON object"},
+                        {"error": "delta_db must be a number"},
                         status=400,
                     )
                     return
-                raw_converter = body.get("converter")
-                if not isinstance(raw_converter, str) or not raw_converter.strip():
-                    self._send_json(
-                        {"error": "converter is required"},
-                        status=400,
-                    )
-                    return
-                try:
-                    converter = _normalize_audio_converter(raw_converter)
-                except ValueError as e:
-                    self._send_json({"error": str(e)}, status=400)
-                    return
-                try:
-                    state = _apply_audio_quality(converter)
-                except (OSError, subprocess.SubprocessError) as e:
-                    logger.exception("audio quality apply failed")
-                    self._send_json(
-                        {"error": f"audio quality apply failed: {e}"},
-                        status=502,
-                    )
-                    return
-                try:
-                    # Refresh active renderers without resurrecting sources the
-                    # household explicitly disabled in /sources/.
-                    subprocess.Popen(
-                        [
-                            "systemctl",
-                            "try-restart",
-                            *AUDIO_QUALITY_RENDERER_UNITS,
-                        ],
-                    )
-                except (OSError, subprocess.SubprocessError) as e:
-                    self._send_json(
-                        {"error": f"renderer restart failed: {e}"},
-                        status=502,
-                    )
-                    return
-                logger.info(
-                    "event=audio_quality.set converter=%s client=%s",
-                    converter, self.address_string(),
+            else:
+                self._send_json(
+                    {"error": "missing delta_db or delta_percent"},
+                    status=400,
                 )
-                self._send_json({
-                    "ok": True,
-                    "action": "audio-quality",
-                    "try_restart_units": AUDIO_QUALITY_RENDERER_UNITS,
-                    "audio_quality": state,
-                })
                 return
+            try:
+                new_pct = asyncio.run(_adjust_op(delta_pct))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("adjust volume failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
+            logger.info(
+                "event=volume.adjust delta_pct=%d new_pct=%d client=%s",
+                delta_pct, new_pct, self.address_string(),
+            )
+            self._send_json(self._volume_payload(new_pct))
 
-            if self.path in ("/system/restart/voice",
-                             "/system/restart/audio",
-                             "/system/reboot",
-                             "/system/poweroff"):
-                # Action endpoints for the /system dashboard. All
-                # shell out to systemctl; jasper-control already runs
-                # as root so no sudo needed. Returns immediately —
-                # the restart is async on systemd's side and the
-                # dashboard polls /system/snapshot to know when
-                # things are back up.
-                #
-                # Risk model: LAN-local + browser-origin guard
-                # (consistent with the wizards). Anyone already on the
-                # trusted WiFi can trigger these; the dashboard's
-                # confirm dialogs are UX, not security.
-                if self.path == "/system/restart/voice":
-                    units = ["jasper-voice.service"]
-                    action = "restart-voice"
-                elif self.path == "/system/restart/audio":
-                    units = [
-                        "jasper-camilla.service",
-                        "librespot.service",
-                        "shairport-sync.service",
-                        "bluealsa-aplay.service",
-                    ]
-                    action = "restart-audio"
-                elif self.path == "/system/reboot":
-                    units = []  # systemctl reboot — no units
-                    action = "reboot"
+        def _post_volume_set(self) -> None:
+            body = self._read_json()
+            # Support both legacy `db` (dial / older clients) and
+            # the cleaner `percent`. Percent is the canonical unit
+            # for listening_level.
+            if "percent" in body:
+                try:
+                    target_pct = int(body["percent"])
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "percent must be an integer"}, status=400,
+                    )
+                    return
+            elif "db" in body:
+                try:
+                    target_pct = _db_to_percent(float(body["db"]))
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "db must be a number"}, status=400,
+                    )
+                    return
+            else:
+                self._send_json(
+                    {"error": "missing db or percent"}, status=400,
+                )
+                return
+            # Optional `source` field marks the caller as an
+            # observed source-side change (e.g. host moved its
+            # volume slider on the USB gadget). Route through
+            # observe_source_volume so the coordinator's echo
+            # window and source-active gate apply. Without
+            # `source`, the caller is treated as authoritative
+            # (dial twist, voice "louder", etc.).
+            source_name = body.get("source")
+            try:
+                if source_name:
+                    new_pct = asyncio.run(
+                        _observe_op(str(source_name), target_pct),
+                    )
                 else:
-                    # poweroff is reboot's terminal sibling: the speaker
-                    # stays off until someone physically re-plugs power.
-                    # The "graceful" part matters more than usual here —
-                    # this endpoint exists *specifically* to give the
-                    # household a non-power-yank way to shut down before
-                    # hardware changes, after 2026-05-23's dirty-shutdown
-                    # incident wiped the NetworkManager keyfile.
-                    units = []  # systemctl poweroff — no units
-                    action = "poweroff"
-                try:
-                    if action == "reboot":
-                        subprocess.Popen(["systemctl", "reboot"])
-                    elif action == "poweroff":
-                        subprocess.Popen(["systemctl", "poweroff"])
-                    else:
-                        # Use start-after-stop semantics. Don't block
-                        # on the systemctl call (jasper-aec-bridge +
-                        # jasper-voice both take up to 90s to stop
-                        # cleanly under the SIGTERM timeout).
-                        subprocess.Popen(["systemctl", "restart", *units])
-                except (OSError, subprocess.SubprocessError) as e:
-                    self._send_json(
-                        {"error": f"systemctl invocation failed: {e}"},
-                        status=502,
-                    )
-                    return
-                self._send_json({
-                    "ok": True,
-                    "action": action,
-                    "units": units,
-                })
+                    new_pct = asyncio.run(_set_op(target_pct))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("set volume failed")
+                self._send_json({"error": str(e)}, status=502)
                 return
+            logger.info(
+                "event=volume.set new_pct=%d source=%s client=%s",
+                new_pct, source_name or "authoritative",
+                self.address_string(),
+            )
+            self._send_json(self._volume_payload(new_pct))
 
-            self.send_error(HTTPStatus.NOT_FOUND)
+        def _post_grouping_set(self) -> None:
+            # Set this speaker's grouping role. Same no-auth LAN surface
+            # as /volume (the dial) — so the bond-forming UI on speaker A
+            # configures speaker B by POSTing here on B's port. The
+            # reconciler (kicked below) is the single applier of the
+            # snapcast units + the outputd tap.
+            body = self._read_json()
+            enabled = bool(body.get("enabled"))
+            role = str(body.get("role", "")).strip()
+            channel = str(body.get("channel", "")).strip()
+            bond_id = str(body.get("bond_id", "")).strip()
+            leader_addr = str(body.get("leader_addr", "")).strip()
+            # Validate an ENABLED request up front via the SHARED
+            # validate_grouping (same rule the config loader applies on
+            # read) so we never persist a fail-loud config. A disabled
+            # request needs no fields.
+            if enabled:
+                err = validate_grouping(
+                    role=role, channel=channel,
+                    bond_id=bond_id, leader_addr=leader_addr,
+                )
+                if err:
+                    self._send_json({"error": err}, status=400)
+                    return
+            try:
+                _write_grouping(
+                    enabled=enabled, role=role, channel=channel,
+                    bond_id=bond_id, leader_addr=leader_addr,
+                )
+                _kick_grouping_reconciler()
+            except Exception as e:  # noqa: BLE001
+                logger.exception("grouping set failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
+            logger.info(
+                "event=grouping.set enabled=%s role=%s channel=%s "
+                "bond=%s client=%s",
+                enabled, role or "(none)", channel or "(none)",
+                bond_id or "(none)", self.address_string(),
+            )
+            self._send_json({
+                "ok": True, "enabled": enabled, "role": role,
+                "channel": channel, "bond_id": bond_id,
+                "leader_addr": leader_addr,
+            })
+            return
+
+        def _post_volume_mute(self) -> None:
+            # Toggle mute: muted → unmute (restore pre-mute level),
+            # unmuted → mute (save current level, drop to 0).
+            # Used by HID accessory clicks (jasper-input) and any
+            # other one-shot toggle caller. State persistence and
+            # the pre-mute level live inside VolumeCoordinator.
+            try:
+                new_pct = asyncio.run(_mute_toggle_op())
+            except Exception as e:  # noqa: BLE001
+                logger.exception("mute toggle failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
+            logger.info(
+                "event=volume.mute new_pct=%d client=%s",
+                new_pct, self.address_string(),
+            )
+            self._send_json(self._volume_payload(new_pct))
+            return
+
+        def _post_transport(self) -> None:
+            action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
+            try:
+                result = asyncio.run(_dispatch_transport(action))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("transport %s failed", action)
+                self._send_json({"error": str(e)}, status=502)
+                return
+            logger.info(
+                "event=transport.dispatch action=%s client=%s",
+                action, self.address_string(),
+            )
+            if "error" in result:
+                self._send_json(result, status=502)
+                return
+            self._send_json(result)
+            return
+
+        def _post_source_select(self) -> None:
+            # POST /source/select body: {"source": "airplay"} or
+            # {"source": "auto"}. The mux validates policy and
+            # forwards the low-level lane choice to fan-in.
+            body = self._read_json()
+            source = str(body.get("source") or "").strip().lower()
+            if source == "auto":
+                cmd = "AUTO"
+            elif source in SOURCE_SELECT_IDS:
+                cmd = f"SELECT {source}"
+            else:
+                choices = ", ".join(sorted(SOURCE_SELECT_IDS))
+                self._send_json(
+                    {
+                        "error": (
+                            f"source must be {choices}, or auto"
+                        ),
+                    },
+                    status=400,
+                )
+                return
+            try:
+                result = asyncio.run(
+                    _mux_socket_command(cmd, timeout=6.0),
+                )
+            except (
+                FileNotFoundError,
+                ConnectionRefusedError,
+                OSError,
+                asyncio.TimeoutError,
+            ) as e:
+                self._send_json(
+                    {"error": f"jasper-mux unreachable: {e}"},
+                    status=503,
+                )
+                return
+            except Exception as e:  # noqa: BLE001
+                logger.exception("source select failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
+            logger.info(
+                "event=source.select source=%s client=%s",
+                source, self.address_string(),
+            )
+            self._send_json(_augment_source_payload(result))
+            return
+
+        def _post_session(self) -> None:
+            cmd = "START" if self.path.endswith("start") else "END"
+            try:
+                result = asyncio.run(
+                    _voice_socket_command(voice_socket_path, cmd),
+                )
+            except FileNotFoundError:
+                self._send_json(
+                    {"error": "voice_daemon not running (socket not found)"},
+                    status=503,
+                )
+                return
+            except (OSError, asyncio.TimeoutError) as e:
+                self._send_json(
+                    {"error": f"voice_daemon unreachable: {e}"},
+                    status=503,
+                )
+                return
+            except Exception as e:  # noqa: BLE001
+                logger.exception("session %s failed", cmd)
+                self._send_json({"error": str(e)}, status=502)
+                return
+            # Result codes from voice_daemon's manual_session_*:
+            #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING /
+            #   NO_SESSION / ALREADY_ENDED / ERROR
+            # Map non-OK outcomes to non-2xx so the dial's HTTP
+            # error path can show the right LED color.
+            http_status = 200
+            if result.get("result") not in ("OK", None):
+                if result.get("result") in ("CAP", "PAUSED", "MUTED", "MEASURING"):
+                    http_status = 503
+                elif result.get("result") in ("BUSY", "NO_SESSION", "ALREADY_ENDED"):
+                    http_status = 409
+                else:
+                    http_status = 502
+            self._send_json(result, status=http_status)
+            return
+
+        def _post_cue_play(self) -> None:
+            # POST /cue/play  body: {"slug": "<cue_slug>"}
+            # Routes the request through voice_daemon's control
+            # socket so the cue plays through the daemon's
+            # already-correctly-gained TtsPlayout. A separate
+            # standalone client (e.g., `jasper-cues play <slug>`)
+            # would have to recreate the daemon's volume math
+            # to match levels, and got it wrong (~20 dB too
+            # loud). Centralising here keeps levels consistent.
+            body = self._read_json()
+            slug = (body.get("slug") or "").strip()
+            if not slug:
+                self._send_json(
+                    {"error": "missing 'slug' in body"}, status=400,
+                )
+                return
+            try:
+                # Cues run ~5-6s of audio plus duck/restore plus
+                # drain. 30s gives generous headroom even for the
+                # longest reasonable cue.
+                result = asyncio.run(_voice_socket_command(
+                    voice_socket_path, f"CUE_PLAY {slug}",
+                    timeout=30.0,
+                ))
+            except FileNotFoundError:
+                self._send_json(
+                    {"error": "voice_daemon not running"}, status=503,
+                )
+                return
+            except (OSError, asyncio.TimeoutError) as e:
+                self._send_json(
+                    {"error": f"voice_daemon unreachable: {e}"},
+                    status=503,
+                )
+                return
+            except Exception as e:  # noqa: BLE001
+                logger.exception("cue play failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
+            http_status = 200
+            if result.get("result") == "missing_slug":
+                http_status = 400
+            elif result.get("result") == "unknown_slug":
+                http_status = 404
+            elif result.get("result") == "cues_not_configured":
+                http_status = 503
+            elif result.get("result") != "ok":
+                http_status = 502
+            self._send_json(result, status=http_status)
+            return
+
+        def _post_mic_mute(self) -> None:
+            # POST /mic/mute  body: {"muted": bool}
+            # Idempotent set. Forwards MUTE or UNMUTE to the voice
+            # daemon's control socket, which drops mic frames at
+            # the wake-loop gate (mute) or resumes (unmute) and
+            # plays a short click on either edge for feedback.
+            body = self._read_json()
+            if "muted" not in body:
+                self._send_json(
+                    {"error": "missing 'muted' in body"}, status=400,
+                )
+                return
+            cmd = "MUTE" if bool(body["muted"]) else "UNMUTE"
+            try:
+                result = asyncio.run(_voice_socket_command(
+                    voice_socket_path, cmd, timeout=3.0,
+                ))
+            except FileNotFoundError:
+                self._send_json(
+                    {"error": "voice_daemon not running"}, status=503,
+                )
+                return
+            except (OSError, asyncio.TimeoutError) as e:
+                self._send_json(
+                    {"error": f"voice_daemon unreachable: {e}"},
+                    status=503,
+                )
+                return
+            except Exception as e:  # noqa: BLE001
+                logger.exception("mic %s failed", cmd)
+                self._send_json({"error": str(e)}, status=502)
+                return
+            logger.info(
+                "event=mic.set muted=%s client=%s",
+                bool(body["muted"]), self.address_string(),
+            )
+            # Read back the truth from the daemon. STATUS is cheap
+            # and the daemon's flag is authoritative.
+            try:
+                st = asyncio.run(_voice_socket_command(
+                    voice_socket_path, "STATUS", timeout=2.0,
+                ))
+                muted_now = bool(st.get("mic_muted", False))
+            except Exception:  # noqa: BLE001
+                # If readback fails, trust the set and move on.
+                muted_now = bool(body["muted"])
+            self._send_json({"muted": muted_now, "result": result.get("result")})
+            return
+
+        def _post_aec_toggle(self) -> None:
+            # Flip JASPER_AEC_MODE between auto and disabled, then
+            # kick the reconciler. The reconciler stops/starts
+            # jasper-aec-bridge.service and restarts jasper-voice
+            # with the new JASPER_MIC_DEVICE (udp:9876 vs chip
+            # direct). Called by the /wake/ page's AEC layer toggle
+            # (after a current-state read for idempotent set-state
+            # semantics). Non-blocking — the wizard polls /aec to
+            # see when the transition lands (~10-15 s). The kick
+            # uses systemctl restart so rapid toggles cannot be
+            # swallowed while the oneshot reconciler is already active.
+            #
+            # Risk model: LAN-local + browser-origin guard, same
+            # as /system/restart/*. This is still not auth; it is
+            # the small boundary that blocks cross-site browser
+            # POSTs and DNS-rebinding Host headers while keeping
+            # curl, local proxies, and accessories working.
+            current = _read_aec_mode()
+            new_mode = "disabled" if current == "auto" else "auto"
+            try:
+                _write_aec_mode(new_mode)
+            except (OSError, ValueError) as e:
+                self._send_json(
+                    {"error": f"write aec_mode.env failed: {e}"},
+                    status=502,
+                )
+                return
+            try:
+                _kick_aec_reconciler()
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"reconciler restart failed: {e}"},
+                    status=502,
+                )
+                return
+            logger.info(
+                "event=aec.toggle from=%s to=%s client=%s",
+                current, new_mode, self.address_string(),
+            )
+            self._send_json({
+                "mode": new_mode,
+                "bridge_active": _aec_bridge_active(),
+            })
+            return
+
+        def _post_aec_leg(self) -> None:
+            # Toggle one of the additive wake-detection legs
+            # (raw chip-direct, DTLN neural, or chip-AEC beams). The
+            # reconciler maps the boolean back to the underlying env vars
+            # the bridge + voice each read at startup, then
+            # restarts whichever daemons need to pick up the
+            # change. Per-leg sub-toggles are only meaningful
+            # when JASPER_AEC_MODE=auto and the bridge is up;
+            # the reconciler clears the underlying vars when
+            # AEC is disabled so a stale leg config doesn't
+            # leave voice listening on a port nobody talks to.
+            #
+            # Risk model: LAN-local + browser-origin guard, same
+            # as /aec/toggle.
+            try:
+                body = self._read_json()
+            except (ValueError, OSError) as e:
+                self._send_json(
+                    {"error": f"invalid request body: {e}"}, status=400,
+                )
+                return
+            leg = body.get("leg")
+            enabled_val = body.get("enabled")
+            if leg not in _TOGGLE_TO_TOKEN:
+                self._send_json(
+                    {"error": "leg must be one of: "
+                              + ", ".join(sorted(_TOGGLE_TO_TOKEN))},
+                    status=400,
+                )
+                return
+            if not isinstance(enabled_val, bool):
+                self._send_json(
+                    {"error": "enabled must be a boolean"}, status=400,
+                )
+                return
+            try:
+                _write_aec_leg(leg, enabled_val)
+            except (OSError, ValueError) as e:
+                self._send_json(
+                    {"error": f"write aec_mode.env failed: {e}"},
+                    status=502,
+                )
+                return
+            try:
+                _kick_aec_reconciler()
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"reconciler restart failed: {e}"},
+                    status=502,
+                )
+                return
+            logger.info(
+                "event=aec.leg leg=%s enabled=%s client=%s",
+                leg, enabled_val, self.address_string(),
+            )
+            self._send_json(_aec_full_status())
+            return
+
+        def _post_aec_profile(self) -> None:
+            # Set the canonical mic/AEC input profile. This is the
+            # preferred surface for households and onboarding: it writes
+            # one high-level choice plus rollback-safe legacy leg keys.
+            # The older /aec/toggle and /aec/leg routes remain as custom
+            # expert controls and stamp JASPER_AUDIO_INPUT_PROFILE=custom.
+            try:
+                body = self._read_json()
+            except (ValueError, OSError) as e:
+                self._send_json(
+                    {"error": f"invalid request body: {e}"}, status=400,
+                )
+                return
+            profile = body.get("profile")
+            if not isinstance(profile, str):
+                self._send_json(
+                    {"error": "profile must be a string"}, status=400,
+                )
+                return
+            try:
+                _write_audio_input_profile(profile)
+            except (OSError, ValueError) as e:
+                self._send_json(
+                    {"error": f"write aec_mode.env failed: {e}"},
+                    status=400 if isinstance(e, ValueError) else 502,
+                )
+                return
+            try:
+                _kick_aec_reconciler()
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"reconciler restart failed: {e}"},
+                    status=502,
+                )
+                return
+            logger.info(
+                "event=aec.profile profile=%s client=%s",
+                normalize_audio_input_profile(profile, default=""),
+                self.address_string(),
+            )
+            self._send_json(_aec_full_status())
+            return
+
+        def _post_aec_threshold(self) -> None:
+            # Sensitivity slider on the /wake/ page. Writes
+            # JASPER_WAKE_THRESHOLD into wake_model.env (same
+            # file the /wake/ form save writes the model into)
+            # and restarts jasper-voice — the openWakeWord
+            # detector reads the threshold at startup, so a hot
+            # config change without a restart wouldn't take
+            # effect on the next wake.
+            #
+            # AEC-mode and leg toggles share the reconciler
+            # which already restarts voice; threshold-only
+            # changes bypass the reconciler since they don't
+            # need the bridge to restart. Non-blocking — the
+            # slider's "Applying…" state is just UX.
+            try:
+                body = self._read_json()
+            except (ValueError, OSError) as e:
+                self._send_json(
+                    {"error": f"invalid request body: {e}"}, status=400,
+                )
+                return
+            try:
+                threshold = float(body.get("threshold"))
+            except (TypeError, ValueError):
+                self._send_json(
+                    {"error": "threshold must be a number"}, status=400,
+                )
+                return
+            if not 0.0 <= threshold <= 1.0:
+                self._send_json(
+                    {"error": "threshold must be between 0 and 1"},
+                    status=400,
+                )
+                return
+            try:
+                _write_wake_threshold(threshold)
+            except (OSError, ValueError) as e:
+                self._send_json(
+                    {"error": f"write wake_model.env failed: {e}"},
+                    status=502,
+                )
+                return
+            try:
+                subprocess.Popen(
+                    ["systemctl", "restart", "--no-block",
+                     "jasper-voice.service"],
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"voice restart failed: {e}"},
+                    status=502,
+                )
+                return
+            logger.info(
+                "event=wake.threshold value=%.2f client=%s",
+                threshold, self.address_string(),
+            )
+            self._send_json({"threshold": threshold})
+            return
+
+        def _post_debug(self) -> None:
+            # /system Debug card: raise one subsystem to DEBUG
+            # logging. Additive-only + auto-expiring (jasper/
+            # debug_mode.py). Daemon subsystems restart to apply;
+            # control applies in-process. Non-blocking — the card's
+            # "Applying…" state is just UX.
+            try:
+                body = self._read_json()
+            except (ValueError, OSError) as e:
+                self._send_json(
+                    {"error": f"invalid request body: {e}"}, status=400,
+                )
+                return
+            subsystem = str(body.get("subsystem") or "")
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                self._send_json(
+                    {"error": "enabled must be a boolean"}, status=400,
+                )
+                return
+            try:
+                debug_control.set_debug(subsystem, enabled)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"debug toggle failed: {e}"}, status=502,
+                )
+                return
+            logger.info(
+                "event=debug.toggle subsystem=%s enabled=%s client=%s",
+                subsystem, enabled, self.address_string(),
+            )
+            self._send_json(debug_control.snapshot())
+            return
+
+        def _post_system_audio_quality(self) -> None:
+            try:
+                body = self._read_json()
+            except (ValueError, OSError) as e:
+                self._send_json(
+                    {"error": f"invalid request body: {e}"}, status=400,
+                )
+                return
+            if not isinstance(body, dict):
+                self._send_json(
+                    {"error": "invalid request body: expected JSON object"},
+                    status=400,
+                )
+                return
+            raw_converter = body.get("converter")
+            if not isinstance(raw_converter, str) or not raw_converter.strip():
+                self._send_json(
+                    {"error": "converter is required"},
+                    status=400,
+                )
+                return
+            try:
+                converter = _normalize_audio_converter(raw_converter)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            try:
+                state = _apply_audio_quality(converter)
+            except (OSError, subprocess.SubprocessError) as e:
+                logger.exception("audio quality apply failed")
+                self._send_json(
+                    {"error": f"audio quality apply failed: {e}"},
+                    status=502,
+                )
+                return
+            try:
+                # Refresh active renderers without resurrecting sources the
+                # household explicitly disabled in /sources/.
+                subprocess.Popen(
+                    [
+                        "systemctl",
+                        "try-restart",
+                        *AUDIO_QUALITY_RENDERER_UNITS,
+                    ],
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"renderer restart failed: {e}"},
+                    status=502,
+                )
+                return
+            logger.info(
+                "event=audio_quality.set converter=%s client=%s",
+                converter, self.address_string(),
+            )
+            self._send_json({
+                "ok": True,
+                "action": "audio-quality",
+                "try_restart_units": AUDIO_QUALITY_RENDERER_UNITS,
+                "audio_quality": state,
+            })
+            return
+
+        def _post_system_action(self) -> None:
+            # Action endpoints for the /system dashboard. All
+            # shell out to systemctl; jasper-control already runs
+            # as root so no sudo needed. Returns immediately —
+            # the restart is async on systemd's side and the
+            # dashboard polls /system/snapshot to know when
+            # things are back up.
+            #
+            # Risk model: LAN-local + browser-origin guard
+            # (consistent with the wizards). Anyone already on the
+            # trusted WiFi can trigger these; the dashboard's
+            # confirm dialogs are UX, not security.
+            if self.path == "/system/restart/voice":
+                units = ["jasper-voice.service"]
+                action = "restart-voice"
+            elif self.path == "/system/restart/audio":
+                units = [
+                    "jasper-camilla.service",
+                    "librespot.service",
+                    "shairport-sync.service",
+                    "bluealsa-aplay.service",
+                ]
+                action = "restart-audio"
+            elif self.path == "/system/reboot":
+                units = []  # systemctl reboot — no units
+                action = "reboot"
+            else:
+                # poweroff is reboot's terminal sibling: the speaker
+                # stays off until someone physically re-plugs power.
+                # The "graceful" part matters more than usual here —
+                # this endpoint exists *specifically* to give the
+                # household a non-power-yank way to shut down before
+                # hardware changes, after 2026-05-23's dirty-shutdown
+                # incident wiped the NetworkManager keyfile.
+                units = []  # systemctl poweroff — no units
+                action = "poweroff"
+            try:
+                if action == "reboot":
+                    subprocess.Popen(["systemctl", "reboot"])
+                elif action == "poweroff":
+                    subprocess.Popen(["systemctl", "poweroff"])
+                else:
+                    # Use start-after-stop semantics. Don't block
+                    # on the systemctl call (jasper-aec-bridge +
+                    # jasper-voice both take up to 90s to stop
+                    # cleanly under the SIGTERM timeout).
+                    subprocess.Popen(["systemctl", "restart", *units])
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"systemctl invocation failed: {e}"},
+                    status=502,
+                )
+                return
+            self._send_json({
+                "ok": True,
+                "action": action,
+                "units": units,
+            })
+            return
+
+        # --- route tables (path -> handler-method name) ---
+        # Keyed by exact path. Method dispatch (do_GET vs do_POST)
+        # disambiguates the two '/debug' handlers; tuple routes map
+        # each member path to the one method that re-discriminates
+        # self.path internally (transport action, system action).
+        # The string keys keep the route literals greppable for the
+        # client/server contract test (tests/test_control_client.py).
+        _GET_ROUTES = {
+            "/healthz": "_get_healthz",
+            "/volume": "_get_volume",
+            "/mic": "_get_mic",
+            "/source/state": "_get_source_state",
+            "/aec": "_get_aec",
+            "/debug": "_get_debug",
+            "/state": "_get_state",
+            "/grouping": "_get_grouping",
+            "/dial/status": "_get_dial_status",
+            "/system/snapshot": "_get_system_snapshot",
+            "/system/diagnostics": "_get_system_diagnostics",
+        }
+        _POST_ROUTES = {
+            "/volume/adjust": "_post_volume_adjust",
+            "/volume/set": "_post_volume_set",
+            "/grouping/set": "_post_grouping_set",
+            "/volume/mute": "_post_volume_mute",
+            "/transport/toggle": "_post_transport",
+            "/transport/next": "_post_transport",
+            "/transport/previous": "_post_transport",
+            "/source/select": "_post_source_select",
+            "/session/start": "_post_session",
+            "/session/end": "_post_session",
+            "/cue/play": "_post_cue_play",
+            "/mic/mute": "_post_mic_mute",
+            "/aec/toggle": "_post_aec_toggle",
+            "/aec/leg": "_post_aec_leg",
+            "/aec/profile": "_post_aec_profile",
+            "/aec/threshold": "_post_aec_threshold",
+            "/debug": "_post_debug",
+            "/system/audio-quality": "_post_system_audio_quality",
+            "/system/restart/voice": "_post_system_action",
+            "/system/restart/audio": "_post_system_action",
+            "/system/reboot": "_post_system_action",
+            "/system/poweroff": "_post_system_action",
+        }
 
     return Handler
 
