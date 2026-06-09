@@ -38,6 +38,20 @@ _PY_TO_JSON = {
 }
 
 
+# Default wall-clock budget for a single tool dispatch (the
+# `asyncio.wait_for` cap the session adapters apply around each tool
+# coroutine). 12s gives async tool calls (httpx HTTP + parsing)
+# headroom on a busy Pi event loop where ONNX wake-word + audio
+# resampling + the realtime WebSocket compete for CPU; anything slower
+# usually means the upstream API is genuinely failing and we'd rather
+# report the timeout than hang the session further. A tool whose
+# backend is legitimately slow (e.g. an LLM-backed Home Assistant agent
+# taking 30-60s) overrides this via the `timeout=` kwarg on `@tool()`.
+# This is the ONLY place the 12s literal lives — the dispatch seams read
+# `tool.timeout`.
+DEFAULT_TOOL_TIMEOUT_SEC = 12.0
+
+
 @dataclass
 class Tool:
     """A registered voice tool.
@@ -56,6 +70,10 @@ class Tool:
     fn: Callable[..., Any]
     parameters: dict[str, Any]
     providers: frozenset[str] | None = None
+    # Per-tool dispatch budget (seconds) applied at the session adapters'
+    # `asyncio.wait_for` seam. Defaults to `DEFAULT_TOOL_TIMEOUT_SEC`;
+    # raise it for a tool whose backend is legitimately slow.
+    timeout: float = DEFAULT_TOOL_TIMEOUT_SEC
 
 
 @dataclass
@@ -130,18 +148,27 @@ def tool(
     name: str | None = None,
     *,
     providers: Iterable[str] | None = None,
+    timeout: float | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Tag a function for registration.
 
     `providers` may be an iterable of provider names (`"gemini"`,
     `"openai"`, `"grok"`) — when set, the tool is hidden from any
     provider not in the set. None (default) means visible to every
-    provider. Use with `ToolRegistry.register()`."""
+    provider.
+
+    `timeout` is the per-tool dispatch budget in seconds applied at the
+    session adapters' `asyncio.wait_for` seam. None (default) keeps
+    `DEFAULT_TOOL_TIMEOUT_SEC`; raise it for a tool whose backend is
+    legitimately slow (e.g. an LLM-backed Home Assistant agent). Use
+    with `ToolRegistry.register()`."""
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         fn.__jasper_tool_name__ = name or fn.__name__  # type: ignore[attr-defined]
         if providers is not None:
             fn.__jasper_tool_providers__ = frozenset(providers)  # type: ignore[attr-defined]
+        if timeout is not None:
+            fn.__jasper_tool_timeout__ = timeout  # type: ignore[attr-defined]
         return fn
 
     return decorator
@@ -160,12 +187,14 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     desc = (inspect.getdoc(fn) or "").strip() or declared
     params = _params_schema(fn)
     decl_providers = getattr(fn, "__jasper_tool_providers__", None)
+    decl_timeout = getattr(fn, "__jasper_tool_timeout__", DEFAULT_TOOL_TIMEOUT_SEC)
     return Tool(
         name=declared,
         description=desc,
         fn=fn,
         parameters=params,
         providers=decl_providers,
+        timeout=decl_timeout,
     )
 
 

@@ -1969,7 +1969,12 @@ class OpenAIRealtimeConnection(LiveConnection):
             try:
                 out = tool.fn(**args)
                 if asyncio.iscoroutine(out):
-                    out = await asyncio.wait_for(out, timeout=12.0)
+                    # Per-tool dispatch budget (default
+                    # DEFAULT_TOOL_TIMEOUT_SEC=12s; slow backends like an
+                    # LLM-backed Home Assistant agent raise it via
+                    # @tool(timeout=...)). Grok inherits this via
+                    # GrokRealtimeConnection(OpenAIRealtimeConnection).
+                    out = await asyncio.wait_for(out, timeout=tool.timeout)
                 payload = out if isinstance(out, dict) else {"value": out}
                 fn_ms = (_time.monotonic() - t_fn) * 1000
                 preview = repr(payload)

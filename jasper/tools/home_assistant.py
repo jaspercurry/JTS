@@ -27,7 +27,18 @@ from __future__ import annotations
 
 from . import tool
 
-from ..home_assistant import HAClient
+from ..home_assistant import DEFAULT_TIMEOUT, HAClient
+
+
+# LLM-backed HA conversation agents (OpenAI Conversation, Anthropic,
+# Google Generative AI inside HA) legitimately take 30-60s for a
+# tool-using turn, so HAClient's read timeout is 90s. The dispatch-seam
+# budget must outlive that read timeout — otherwise every slow HA turn
+# trips the generic 12s tool timeout and the model never sees HA's real
+# answer (the bug this fixes). +5s margin lets the HTTP layer surface
+# its own timeout/error first. Derived from the client so the 90s number
+# stays single-sourced in home_assistant.py.
+_HA_TOOL_TIMEOUT_SEC = DEFAULT_TIMEOUT.read + 5.0
 
 
 def make_home_assistant_tools(ha: HAClient | None):
@@ -39,7 +50,7 @@ def make_home_assistant_tools(ha: HAClient | None):
     if ha is None:
         return []
 
-    @tool()
+    @tool(timeout=_HA_TOOL_TIMEOUT_SEC)
     async def home_assistant(query: str) -> dict:
         """Send a natural-language smart-home request to Home Assistant.
 

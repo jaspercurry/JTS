@@ -1629,14 +1629,14 @@ class GeminiLiveConnection(LiveConnection):
                 try:
                     out = tool.fn(**args)
                     if asyncio.iscoroutine(out):
-                        # 12s gives async tool calls (httpx HTTP +
-                        # parsing) headroom on a busy Pi event loop
-                        # where ONNX wake-word + audio resampling +
-                        # Gemini WebSocket compete for CPU. Anything
-                        # slower than that probably means the upstream
+                        # Per-tool dispatch budget (default
+                        # DEFAULT_TOOL_TIMEOUT_SEC=12s; a slow backend
+                        # like an LLM-backed Home Assistant agent raises
+                        # it via @tool(timeout=...)). Anything slower than
+                        # the tool's budget probably means the upstream
                         # API is genuinely failing — we'd rather report
                         # the timeout than hang the session further.
-                        out = await asyncio.wait_for(out, timeout=12.0)
+                        out = await asyncio.wait_for(out, timeout=tool.timeout)
                     # Pass dict outputs straight through; only wrap scalars
                     # so the model doesn't see {"result": {"ok": true}}.
                     payload = out if isinstance(out, dict) else {"value": out}
@@ -2008,14 +2008,14 @@ class GeminiLiveSession(VoiceSession):
                 try:
                     out = tool.fn(**args)
                     if asyncio.iscoroutine(out):
-                        # 12s gives async tool calls (httpx HTTP +
-                        # parsing) headroom on a busy Pi event loop
-                        # where ONNX wake-word + audio resampling +
-                        # Gemini WebSocket compete for CPU. Anything
-                        # slower than that probably means the upstream
+                        # Per-tool dispatch budget (default
+                        # DEFAULT_TOOL_TIMEOUT_SEC=12s; a slow backend
+                        # like an LLM-backed Home Assistant agent raises
+                        # it via @tool(timeout=...)). Anything slower than
+                        # the tool's budget probably means the upstream
                         # API is genuinely failing — we'd rather report
                         # the timeout than hang the session further.
-                        out = await asyncio.wait_for(out, timeout=12.0)
+                        out = await asyncio.wait_for(out, timeout=tool.timeout)
                     # Pass dict outputs straight through; only wrap scalars
                     # so the model doesn't see {"result": {"ok": true}}.
                     payload = out if isinstance(out, dict) else {"value": out}
