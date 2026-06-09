@@ -846,7 +846,6 @@ mod tests {
             chip_ref_period_frames: 320,
             chip_ref_buffer_frames: 4096,
             reference_udp_target: None,
-            snapfifo_path: None,
             stream_id: 1,
             control_socket_path: None,
         }

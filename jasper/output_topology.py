@@ -23,8 +23,8 @@ from typing import Any, Mapping
 from .output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-    HIFIBERRY_DAC8X_DEVICE_ID,
-    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
+    HIFIBERRY_DAC8X_DEVICE_ID,  # noqa: F401 - compatibility re-export.
+    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,  # noqa: F401 - compatibility re-export.
     SUPPORTED_CLOCK_DOMAIN_LABELS,
     SUPPORTED_DEVICE_LABELS,
     SUPPORTED_DEVICE_OUTPUT_COUNTS,
