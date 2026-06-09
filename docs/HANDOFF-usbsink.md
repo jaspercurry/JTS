@@ -113,8 +113,8 @@ ConfigFS gadget setup at start; a small Python daemon
 
 1. Loops audio from the gadget capture endpoint into `usbsink_substream`
    so it joins the fan-in music chain
-2. Subscribes to ALSA mixer events on the gadget's `PCM Capture Volume`
-   and forwards them to `VolumeCoordinator.observe_source_volume()`
+2. Polls the gadget's `PCM Capture Volume` mixer control at 4 Hz and
+   forwards changes to `VolumeCoordinator.observe_source_volume()`
 3. Computes RMS-based playing state and publishes it to a state file
    that `jasper.source_state` reads
 
@@ -780,8 +780,8 @@ Add `UsbSinkObserver`:
 class UsbSinkObserver:
     """Polls jasper-usbsink's published state at 1 Hz and feeds
     volume changes into the coordinator. This is a thin polling
-    observer because jasper-usbsink itself does the event-driven
-    mixer subscription and POSTs to jasper-control; the observer
+    observer because jasper-usbsink itself does the `amixer`-poll
+    mixer observation and POSTs to jasper-control; the observer
     only kicks in for cases where the coordinator instance isn't
     the one inside jasper-control (e.g. voice_daemon's own
     coordinator, which receives volume changes through this path)."""
@@ -1384,7 +1384,7 @@ sufficient for incident debugging.
 `tests/test_usbsink_volume.py`:
 - `gadget_raw_to_pct()` math: 0 dB → 100%, min → 0%, mid → 50%
 - listening-level conversion symmetry
-- pyalsa stub: feed synthetic mixer event, verify POST payload
+- amixer stub: feed synthetic `amixer cget` output, verify POST payload
 
 `tests/test_usbsink_state.py`:
 - State file write atomicity (tempfile+rename)
@@ -1481,7 +1481,7 @@ blockers; defaults are documented for each.
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Pi linux issue #6569 (related kernel quirk) still alive on Trixie | Medium | Medium — could prevent gadget from enumerating | Historical pre-ship risk. Current shipped path uses the 8086 splitter-backed topology; re-check this only if changing USB-C cabling or removing the splitter assumption. |
-| pyalsa not available on Pi OS Trixie / requires source build | Low | Low | Fallback: `alsactl monitor` subprocess parsing. Adds ~2 MB RAM. |
+| Python ALSA binding (pyalsa) needs a Trixie source build | Avoided | — | volume_bridge polls `amixer cget` (alsa-utils, already required) instead of a Python ALSA binding, so this never applied. |
 | sounddevice/PortAudio doesn't handle gadget endpoint cleanly (e.g. XRUNs on host hot-plug) | Medium | Medium | Stream reopen-on-error pattern documented in §6. If chronic, fall back to `alsaloop` subprocess and lose the per-frame RMS (would need separate RMS via `arecord | tee`). |
 | Host changes sample rate mid-session and gadget descriptor doesn't permit | High on Mac (auto-rate-switching) | Low — host resamples its own output to match the gadget's advertised rate | Document in BRINGUP.md. JTS doesn't aspire to bit-perfect. |
 | RAM drift on disable (libcomposite stays loaded after stop) | Medium | Low — 60 KB | Doctor warns. Manual `rmmod` or reboot recovers. |
@@ -1534,8 +1534,6 @@ blockers; defaults are documented for each.
   ConfigFS attributes for `uac2.usb0`
 - [8086 Consultancy USB-C/PWR Splitter](https://www.8086.net/products/usb-c-pwr-splitter) —
   Hardware datasheet
-- [pyalsa](https://github.com/alsa-project/alsa-python) — Mixer event
-  API used by volume_bridge.py
 - [sounddevice](https://python-sounddevice.readthedocs.io/) — PortAudio
   binding; same lib used by jasper-aec-bridge
 
@@ -1578,13 +1576,13 @@ What happens:
      log no-op.
    - Now USB is the lone winner.
 
-7. **Volume bridge** (concurrent, event-driven):
+7. **Volume bridge** (concurrent, 4 Hz poll):
    - User opens Mac volume slider. Mac writes UAC2 Volume Control
      Unit value.
-   - Linux's `u_audio` driver reflects this as ALSA mixer event on
+   - Linux's `u_audio` driver updates the ALSA mixer value on
      `PCM Capture Volume`.
-   - pyalsa observer wakes, reads new value, converts to
-     listening-level percent.
+   - On its next 4 Hz tick, volume_bridge.py reads the new value via
+     `amixer cget`, converts to listening-level percent.
    - POSTs `{"percent": 65, "source": "usbsink"}` to
      `http://127.0.0.1:8780/volume/set`.
    - jasper-control routes through
