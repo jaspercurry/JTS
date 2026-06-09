@@ -56,11 +56,16 @@ URL surface (after nginx strips the /rooms/ prefix):
   POST /bond        form a stereo pair: mint a bond id, then fan the
                     grouping config out SERVER-side to each member's
                     jasper-control /grouping/set (JSON body, CSRF-verified)
+  POST /unbond      dissolve the bond this speaker is in: disable self +
+                    every sibling sharing this bond_id, SERVER-side via each
+                    member's jasper-control /grouping/set (CSRF-verified)
 """
 from __future__ import annotations
 
 import argparse
 import asyncio  # noqa: F401 — kept so tests can patch rooms_setup.asyncio.run
+import concurrent.futures
+import http.client
 import ipaddress
 import json
 import logging
@@ -164,6 +169,20 @@ def _self_address(known: set[str] | None = None) -> str:
     genuinely can't resolve one (the module renders it as a dash)."""
     pool = known if known is not None else _self_addresses()
     return next(iter(sorted(pool)), "")
+
+
+def _leader_handle() -> str:
+    """This speaker's STABLE address to hand a follower as ``leader_addr``.
+
+    Returns the mDNS .local FQDN (jasper.identity.read_identity().hostname,
+    e.g. ``jts.local``) — NOT a NIC IP. The follower's snapclient resolves it
+    via mDNS, so the bond keeps working across DHCP lease churn that would
+    invalidate a baked-in IP. (snapclient_argv in jasper/multiroom/reconcile.py
+    passes leader_addr verbatim to ``snapclient --host``, which resolves a
+    .local name fine — no reconcile change needed.) Distinct from
+    _self_address, which stays NIC-derived for SSRF self-routing in
+    _post_grouping_to_member / _lan_target."""
+    return identity.read_identity().hostname
 
 
 # ----------------------------------------------------------------------
@@ -527,6 +546,28 @@ def _generate_bond_id() -> str:
     return "bond-" + uuid.uuid4().hex[:8]
 
 
+def _lan_target(addr: str) -> str | None:
+    """Resolve ``addr`` to a host safe to call on the home LAN, or None to
+    refuse it. The SSRF guard for every cross-speaker control call.
+
+    ``addr`` empty or one of this host's own addresses → ``"127.0.0.1"``
+    (configure self / talk to our own control API). A remote target must
+    parse as a PRIVATE or loopback IPv4 — the control API is a home-LAN
+    surface, never a public host, and bare hostnames are refused (no DNS
+    rebind surface). Returns the host string on accept, None on refuse.
+    Shared by _post_grouping_to_member (POST) and _get_member_grouping (GET)
+    so both apply the EXACT same guard."""
+    if not addr or addr in _self_addresses():
+        return "127.0.0.1"
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return None
+    if not (ip.is_private or ip.is_loopback):
+        return None
+    return addr
+
+
 def _post_grouping_to_member(addr: str, body: dict) -> tuple[bool, str]:
     """Configure ONE member by POSTing to its jasper-control /grouping/set.
 
@@ -534,20 +575,17 @@ def _post_grouping_to_member(addr: str, body: dict) -> tuple[bool, str]:
     browser hands us the member list, and we fan the config out SERVER-side
     (no CORS) to each member's control API — the same no-auth LAN surface
     the dial uses. ``addr`` empty or one of this host's own addresses routes
-    to loopback (configure self). SSRF guard: a remote target must be a
-    PRIVATE / loopback IPv4 — the control API is a home-LAN surface, never a
-    public host. Returns (ok, detail); never raises.
+    to loopback (configure self). SSRF guard (via :func:`_lan_target`): a
+    remote target must be a PRIVATE / loopback IPv4 — the control API is a
+    home-LAN surface, never a public host. Returns (ok, detail); never raises.
     """
-    if not addr or addr in _self_addresses():
-        target = "127.0.0.1"
-    else:
+    target = _lan_target(addr)
+    if target is None:
         try:
-            ip = ipaddress.ip_address(addr)
+            ipaddress.ip_address(addr)
         except ValueError:
             return False, f"not an IP address: {addr!r}"
-        if not (ip.is_private or ip.is_loopback):
-            return False, f"refusing non-LAN target {addr}"
-        target = addr
+        return False, f"refusing non-LAN target {addr}"
     url = f"http://{target}:{CONTROL_HTTP_PORT}/grouping/set"
     req = urllib.request.Request(
         url,
@@ -561,8 +599,65 @@ def _post_grouping_to_member(addr: str, body: dict) -> tuple[bool, str]:
     except urllib.error.HTTPError as e:
         detail = (e.read() or b"").decode(errors="replace")[:200] if e.fp else ""
         return False, f"HTTP {e.code}: {detail}".strip()
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+        # http.client.HTTPException (BadStatusLine / IncompleteRead) is NOT an
+        # OSError subclass — a malformed/truncated reply from one peer must
+        # still return (False, …), never escape and crash the fan-out batch.
         return False, str(e)
+
+
+def _fan_out_grouping(targets: list[tuple[str, dict]]) -> list[tuple[bool, str]]:
+    """POST a grouping config to several members concurrently and return the
+    ``(ok, detail)`` results in INPUT order.
+
+    Each ``(addr, body)`` is sent via :func:`_post_grouping_to_member` on a
+    bounded thread pool, so a slow/unreachable member doesn't serialize the
+    whole fan-out (a stereo pair is two HTTP calls — without this the failing
+    one blocks the other until its 5 s timeout). ``executor.map`` yields
+    results in the order the iterable was submitted, so a slow or failing
+    member can never REORDER the results relative to ``targets`` (the caller
+    pairs results back to members positionally). Empty input → empty list."""
+    if not targets:
+        return []
+    max_workers = min(8, len(targets))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        return list(pool.map(lambda t: _post_grouping_to_member(*t), targets))
+
+
+def _get_member_grouping(addr: str) -> dict | None:
+    """Read ONE member's grouping state by GETting its jasper-control
+    ``/grouping`` (the same no-auth LAN surface :func:`_post_grouping_to_member`
+    POSTs to). Used by :func:`_unbond` to find which siblings share this
+    speaker's bond before dissolving it.
+
+    Same SSRF guard as the POST path (via :func:`_lan_target`): a refused /
+    non-LAN / non-IP target returns None. Returns the peer's grouping dict —
+    UNWRAPPED from the ``{"grouping": …}`` envelope that GET /grouping emits
+    (see jasper/control/server.py; the envelope lets a fail-soft read return
+    ``{"grouping": null}`` unambiguously) — or None on ANY failure (refused,
+    network error, non-2xx, malformed/truncated HTTP, a body that isn't a
+    JSON object, or a null/absent grouping block) — never raises, so a single
+    unreachable peer can't break a dissolve."""
+    target = _lan_target(addr)
+    if target is None:
+        return None
+    url = f"http://{target}:{CONTROL_HTTP_PORT}/grouping"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            if not (200 <= r.status < 300):
+                return None
+            parsed = json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, http.client.HTTPException,
+            UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    # GET /grouping nests the snapshot under a "grouping" key; unwrap to the
+    # flat dict the caller compares bond_id against. A missing/null/non-dict
+    # grouping block reads as "unknown" → None (so it won't match any bond).
+    grouping = parsed.get("grouping")
+    return grouping if isinstance(grouping, dict) else None
 
 
 def _save_bond(handler: BaseHTTPRequestHandler) -> None:
@@ -570,10 +665,12 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
 
     One-flow Sonos-style: the browser sends ``{members: [{addr, role,
     channel}, …]}`` (this speaker + the picked speaker(s), with their roles
-    and channels). We mint a bond_id, then fan the config out to each
-    member's control API via :func:`_post_grouping_to_member` — the leader is
-    this speaker (it hosts this page), so followers get its address as
-    ``leader_addr``. No env editing, no per-speaker tinkering.
+    and channels). We mint a bond_id, build one target per member, then fan
+    the config out concurrently to each member's control API via
+    :func:`_fan_out_grouping`. The leader is this speaker (it hosts this
+    page), so followers get its STABLE mDNS handle (:func:`_leader_handle`,
+    e.g. ``jts.local``) as ``leader_addr`` — a handle that survives DHCP IP
+    churn, not a NIC IP. No env editing, no per-speaker tinkering.
 
     Per-member outcomes are returned so the UI can show exactly which
     speaker failed. A partial failure (some members configured, one
@@ -595,24 +692,34 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         return
 
     bond_id = str(parsed.get("bond_id") or "").strip() or _generate_bond_id()
-    leader_addr = _self_address()  # this speaker leads the bond it forms
+    leader_addr = _leader_handle()  # stable mDNS handle of the leader (this speaker)
 
-    results: list[dict] = []
-    for m in members:
+    # Build a target per member, recording each one's directory slot so the
+    # positional results from _fan_out_grouping pair back to the right member.
+    # Malformed (non-object) members short-circuit to a result with no call.
+    results: list[dict] = [None] * len(members)  # type: ignore[list-item]
+    targets: list[tuple[str, dict]] = []
+    target_idx: list[int] = []
+    for i, m in enumerate(members):
         if not isinstance(m, dict):
-            results.append({"ok": False, "detail": "member must be an object"})
+            results[i] = {"ok": False, "detail": "member must be an object"}
             continue
         addr = str(m.get("addr") or "").strip()
         role = str(m.get("role") or "").strip()
         channel = str(m.get("channel") or "").strip()
-        ok, detail = _post_grouping_to_member(addr, {
+        targets.append((addr, {
             "enabled": True,
             "role": role,
             "channel": channel,
             "bond_id": bond_id,
             "leader_addr": "" if role == "leader" else leader_addr,
-        })
-        results.append({"addr": addr, "role": role, "ok": ok, "detail": detail})
+        }))
+        target_idx.append(i)
+
+    for slot, (addr, body), (ok, detail) in zip(
+        target_idx, targets, _fan_out_grouping(targets)
+    ):
+        results[slot] = {"addr": addr, "role": body["role"], "ok": ok, "detail": detail}
 
     all_ok = all(r["ok"] for r in results)
     logger.info(
@@ -623,6 +730,68 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         handler,
         {"ok": all_ok, "bond_id": bond_id, "results": results},
         status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
+    )
+
+
+def _unbond(handler: BaseHTTPRequestHandler) -> None:
+    """Handle POST /unbond: dissolve the bond THIS speaker is in.
+
+    The inverse of :func:`_save_bond`. We read this speaker's own grouping
+    (read_grouping_state); if it isn't in a bond (not enabled, or no bond_id)
+    there's nothing to dissolve → 400. Otherwise we browse the sibling
+    directory, GET each peer's ``/grouping``, and collect the peers whose
+    ``bond_id`` EQUALS ours — a peer in a DIFFERENT bond is left alone, never
+    disabled. We then fan ``{enabled: false}`` out to self (empty addr → our
+    own loopback control API) plus every matched peer via
+    :func:`_fan_out_grouping`.
+
+    Self is ALWAYS in the disable set, so "leave the bond" works locally even
+    when no peer is reachable. HTTP 200 when self disabled OK (the local leave
+    succeeded), 502 otherwise. ``dissolved`` lists the addresses that
+    confirmed disabled; ``results`` carries the per-target outcomes."""
+    grouping = read_grouping_state()
+    bond_id = str(grouping.get("bond_id") or "").strip()
+    if not grouping.get("enabled") or not bond_id:
+        _send_json(
+            handler, {"ok": False, "error": "not in a bond"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+
+    # Find siblings sharing our bond_id. A peer we can't reach (GET fails →
+    # None) or one in a different bond is simply not added to the disable set.
+    peer_addrs: list[str] = []
+    for s in _discover_speakers_cached():
+        addr = str(s.get("address") or "").strip()
+        if not addr:
+            continue
+        peer_grouping = _get_member_grouping(addr)
+        if peer_grouping is None:
+            continue
+        if str(peer_grouping.get("bond_id") or "").strip() == bond_id:
+            peer_addrs.append(addr)
+
+    # Self first (empty addr → loopback), then each matching peer.
+    targets: list[tuple[str, dict]] = [("", {"enabled": False})]
+    targets += [(addr, {"enabled": False}) for addr in peer_addrs]
+    addrs = [t[0] for t in targets]
+
+    fan_results = _fan_out_grouping(targets)
+    results = [
+        {"addr": addr, "ok": ok, "detail": detail}
+        for addr, (ok, detail) in zip(addrs, fan_results)
+    ]
+    dissolved = [r["addr"] for r in results if r["ok"]]
+    self_ok = results[0]["ok"]  # self is always targets[0]
+
+    logger.info(
+        "event=rooms.unbond bond=%s peers=%d self_ok=%s dissolved=%d",
+        bond_id, len(peer_addrs), self_ok, len(dissolved),
+    )
+    _send_json(
+        handler,
+        {"ok": self_ok, "bond_id": bond_id, "dissolved": dissolved, "results": results},
+        status=HTTPStatus.OK if self_ok else HTTPStatus.BAD_GATEWAY,
     )
 
 
@@ -649,7 +818,7 @@ def _make_handler():
         def do_POST(self):  # noqa: N802
             # Route-check BEFORE the CSRF guard (project convention): a bogus
             # path 404s without revealing CSRF state.
-            if self.path not in ("/peering", "/bond"):
+            if self.path not in ("/peering", "/bond", "/unbond"):
                 self.send_response(HTTPStatus.NOT_FOUND)
                 self.end_headers()
                 return
@@ -660,6 +829,8 @@ def _make_handler():
                 return
             if self.path == "/bond":
                 _save_bond(self)
+            elif self.path == "/unbond":
+                _unbond(self)
             else:
                 _save_peering(self)
 

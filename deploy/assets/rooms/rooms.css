@@ -178,3 +178,24 @@ a.room-row:hover .room-row__go {
 .bond-status {
   margin-top: 0.7rem;
 }
+
+/* Dissolve face — shown (in place of the create picker) when this speaker is
+ * already in a bond. A one-line legible summary of the current pairing plus a
+ * danger button to dissolve it. Reuses the shared --status-danger token; the
+ * button itself is the shared app.css .btn--danger. */
+.bond-current {
+  margin-top: 0.9rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+/* The leader address inside the follower summary — same monospace treatment as
+ * the peer-row address, but inline. */
+.bond-current__addr {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  word-break: break-all;
+}
+.bond-dissolve {
+  display: flex;
+  margin-top: 0.9rem;
+}

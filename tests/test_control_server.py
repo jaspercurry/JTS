@@ -599,6 +599,71 @@ def test_grouping_set_follower_requires_leader_addr(
     assert _GROUPING_KICK not in popens
 
 
+# ---------- GET /grouping (the dissolve-flow read endpoint) ----------
+
+
+def test_grouping_get_returns_grouping_block(
+    monkeypatch, server_with_coordinator,
+):
+    """GET /grouping returns read_grouping_state() under a `grouping`
+    key — the block the dissolve flow reads to discover bond
+    membership (role, bond_id, leader_addr)."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    snapshot = {
+        "enabled": True,
+        "role": "leader",
+        "channel": "left",
+        "bond_id": "living-room",
+        "leader_addr": "",
+        "buffer_ms": 1000,
+        "codec": "flac",
+        "error": None,
+    }
+    monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: snapshot)
+
+    status, body = _get(f"{base}/grouping")
+
+    assert status == 200
+    assert body["grouping"] == snapshot
+
+
+def test_grouping_get_requires_no_csrf(monkeypatch, server_with_coordinator):
+    """A plain GET (no Origin / CSRF token) succeeds — /grouping is an
+    unauthenticated read on this no-auth LAN surface, like /state and
+    /healthz."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: {"enabled": False})
+
+    status, body = _get(f"{base}/grouping")
+
+    assert status == 200
+    assert body["grouping"] == {"enabled": False}
+
+
+def test_grouping_get_fails_soft_on_read_error(
+    monkeypatch, server_with_coordinator,
+):
+    """If read_grouping_state raises, /grouping still returns 200 with a
+    null grouping payload rather than 500 — mirrors /state's fail-soft
+    grouping section."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    def boom():
+        raise RuntimeError("grouping read exploded")
+
+    monkeypatch.setattr(srv_mod, "read_grouping_state", boom)
+
+    status, body = _get(f"{base}/grouping")
+
+    assert status == 200
+    assert body["grouping"] is None
+
+
 def test_system_snapshot_audio_quality_fails_soft(
     monkeypatch,
 ):

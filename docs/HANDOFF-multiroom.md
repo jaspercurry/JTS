@@ -20,8 +20,12 @@
 
 ## 0. Implementation status (2026-06-04)
 
-Off-by-default plumbing has landed; **no audio crosses the network
-yet** and the gating spike has not been run. What exists:
+Off-by-default plumbing has landed, and the producer + reconciler tap now
+make audio **FLOW** to followers once a leader is formed (the bond-forming
+UI ships — §8). What is **not** yet done: perfect sample-lock (§2 inv. 2,
+the leader's own buffered snapclient lane) so the card carries an honest
+"preview" note, and the gating §8 spike (network sync error, FLAC RAM/CPU)
+has not been run on hardware. What exists:
 
 - **`jasper/multiroom/config.py`** — pure, off-by-default
   `GroupingConfig` + `load_config()` (SSOT `/var/lib/jasper/grouping.env`;
@@ -31,7 +35,14 @@ yet** and the gating spike has not been run. What exists:
   desired snapserver/snapclient unit states; invalid → start nothing)
   + pure `snapserver_argv`/`snapclient_argv`; a thin `main()`
   entrypoint does the only systemctl I/O (`--reason` logged, validated
-  on hardware, not in pytest).
+  on hardware, not in pytest). `snapclient_argv` passes `cfg.leader_addr`
+  **verbatim** to `--host`; the bond wizard now mints that as a **stable
+  mDNS `.local` handle** (the leader's `JASPER_HOSTNAME`, e.g. `jts3.local`)
+  rather than a raw DHCP IP, so a follower's snapclient **survives the leader
+  changing IP** — it re-resolves the name at connect time. A literal IPv4 is
+  still accepted (`config.GroupingConfig.leader_addr` documents both); no
+  reconcile change was needed because snapclient resolves either. (P0
+  staff-review fix.)
 - **`jasper/multiroom/state.py`** — `read_grouping_state()`, fresh-read
   (never `os.environ`); wired into `jasper-control` `/state.grouping`
   (fail-soft). Now also carries a **`runtime` health block** when grouping
@@ -128,20 +139,33 @@ yet** and the gating spike has not been run. What exists:
   `canonical_page()` shell + ES module; `GET /rooms.json` carries the data
   (self block now includes a `peering: {enabled, primary}` wake-response
   block, read fresh via the reused `peering_setup` readers); self is
-  excluded from `peers`. **Two POSTs.** (1) `/peering`, the wake-response
+  excluded from `peers`. **Three POSTs.** (1) `/peering`, the wake-response
   toggle (CSRF via `X-CSRF-Token`; read-modify-writes `peering.env` through
   the reused `peering_setup` constant, preserving `JASPER_PEER_ROOM`;
   restarts voice + control). (2) `/bond`, **the Sonos-style one-flow
   stereo-pair setup**: the browser sends the member list, the server mints a
   `bond_id` and fans the grouping config out SERVER-side to each member's
   `jasper-control /grouping/set` (this speaker → leader/left, the picked one
-  → follower/right). Configuration is automatic — no per-speaker tinkering.
-  An SSRF guard limits cross-speaker POSTs to private/loopback IPv4; the
-  producer + reconciler tap make audio FLOW once a leader is formed, so the
-  UI carries an honest "preview" note (perfect sample-lock still needs §2
-  inv. 2). Untrusted mDNS fields never
-  enter the server HTML (the shell is data-free; data ships as
-  `application/json` and the module renders it via DOM/text APIs). **Friendly names + identity:** each speaker
+  → follower/right), the follower's `leader_addr` set to the leader's
+  **stable mDNS `.local` handle** (survives the leader's DHCP IP churn — see
+  the reconcile bullet above). (3) `/unbond`, **dissolve the bond**: the
+  server reads each member's current grouping via `GET /grouping` to
+  discover bond membership, then fans `{enabled:false}` to the matches plus
+  self. Configuration is automatic — no per-speaker tinkering. The
+  bond/unbond fan-out runs **concurrently** across members (one slow/absent
+  peer doesn't serialize the rest). An SSRF guard limits cross-speaker
+  POST/GET targets to private/loopback IPv4 and rejects bare hostnames (see
+  §7 "Grouping control plane — threat model"); the producer + reconciler tap
+  make audio FLOW once a leader is formed, so the UI carries an honest
+  "preview" note (perfect sample-lock still needs §2 inv. 2). Untrusted mDNS
+  fields never enter the server HTML (the shell is data-free; data ships as
+  `application/json` and the module renders it via DOM/text APIs).
+  On `jasper-control` itself the grouping HTTP surface is `POST
+  /grouping/set` (validates via the shared `validate_grouping` before
+  persisting — same rule the config loader applies on read) and the new
+  CSRF-free **`GET /grouping`** read (the same no-auth LAN surface as
+  `/state`; fail-soft to `null`, never 500), which the unbond flow uses for
+  membership discovery. **Friendly names + identity:** each speaker
   advertises its `/speaker` display name as a `name=` TXT on
   `_jasper-control._tcp`, rendered by `jasper/control_advert.py` from
   `deploy/avahi/jasper-control.service.template` (purely additive vs. the
@@ -539,6 +563,41 @@ ceiling; all volume is done in software upstream):
    `volume_limit: 0.0` ceiling; on a *dumb* endpoint the analog
    ceiling (1) is the floor.
 
+### Grouping control plane — threat model (UNAUTHENTICATED by design)
+
+The grouping control plane — `POST /grouping/set`, `GET /grouping`, and
+the bond/unbond fan-out that POSTs to those on *other* speakers — is
+**unauthenticated, by design**. It is the *same* home-LAN trust model as
+the dial's `/volume` endpoint on `jasper-control:8780` (which already binds
+`0.0.0.0`): JTS treats the home LAN as the trust boundary, so any LAN
+client may set this speaker's grouping role exactly as it may set its
+volume. This is called out explicitly so it is a **decision, not an
+accident**.
+
+What the fan-out adds — and, importantly, does **not** add:
+
+- **It grants no capability a LAN client lacked.** The `/rooms` bond/unbond
+  flow is a *convenience* that fans the same `POST /grouping/set` out to
+  each member server-side; a LAN client could already hit any peer's
+  `/grouping/set` directly. The fan-out is not a new privilege, just a
+  one-flow wrapper.
+- **The SSRF guard is a target restriction, not an auth layer.**
+  `rooms_setup._post_grouping_to_member` (and the unbond fan-out) constrain
+  cross-speaker POST/GET targets to **private or loopback IPv4** and reject
+  bare hostnames — so the no-auth surface can never be aimed at an internet
+  host (no internet-proxy / no DNS-rebinding pivot). It does not
+  authenticate the caller; it bounds *where* the server will talk.
+- **What's genuinely new: "LAN = trusted" is now load-bearing ACROSS
+  devices.** Before bonding, the no-auth assumption only let a LAN client
+  reconfigure *one* box. Bond/unbond makes one speaker reconfigure *another*
+  on the household's behalf. That is the same trust boundary stretched
+  across devices — an explicit, accepted trade-off for a home appliance,
+  surfaced here rather than left implicit.
+
+This subsection covers the *grouping control plane*; the *audio* threat
+surface (Snapcast's 1704/1705 ports, the post-clamp tap, the dumb-endpoint
+analog ceiling) is items 1–5 above.
+
 ### Bond-formation transient
 
 Forming a bond moves the leader's own music from near-zero local
@@ -651,25 +710,34 @@ status — and the **wake-response card** (a toggle: "when multiple speakers
 hear 'Hey Jarvis', only one answers", plus a "Primary" checkbox to prefer
 this speaker in ties) landed behind port 8785 / `JASPER_ROOMS_WEB_PORT`,
 sourcing siblings from the always-on `_jasper-control._tcp` service so it
-works whether or not wake-peering is on (see §0). The wake-response card
-is the **one working write surface**: `POST /peering` (CSRF-verified via
-the `X-CSRF-Token` header) read-modify-writes `/var/lib/jasper/peering.env`
-through the reused `peering_setup` constant — flipping `JASPER_PEERING`
-on/off and setting/clearing `JASPER_PEER_PRIMARY` while **preserving**
-`JASPER_PEER_ROOM` (owned by `/speaker/`) and operator tuning knobs — then
-restarts voice + `jasper-control` and returns `{ok, peering:{enabled,
-primary}}`. **Bond-forming now ships (stereo pair):** the bond card lets
-the household pick a sibling for the right channel and Save; `POST /bond`
-mints a `bond_id` and fans the grouping config out SERVER-side to each
-member's `jasper-control /grouping/set` (this speaker → leader/left, the
-picked one → follower/right) — the same no-auth LAN surface the dial uses,
-SSRF-guarded to private/loopback IPv4. Configuration is fully automatic
-(no per-speaker tinkering); the producer + reconciler tap make audio FLOW
-once the leader is formed. What's honestly *not* done is perfect
-sample-lock (§2 inv. 2) and the >2-member / 2.1 / sub picker, so the card
-carries a "preview" note rather than pretending the audio half is fully
-validated. Sibling rows in the directory stay read-only by design beyond
-the pair-forming flow (configure each speaker's own knobs on its own UI).
+works whether or not wake-peering is on (see §0). The page now carries
+**two write cards**. The **wake-response** card: `POST /peering`
+(CSRF-verified via the `X-CSRF-Token` header) read-modify-writes
+`/var/lib/jasper/peering.env` through the reused `peering_setup` constant —
+flipping `JASPER_PEERING` on/off and setting/clearing `JASPER_PEER_PRIMARY`
+while **preserving** `JASPER_PEER_ROOM` (owned by `/speaker/`) and operator
+tuning knobs — then restarts voice + `jasper-control` and returns `{ok,
+peering:{enabled, primary}}`. **Bond/unbond now ships (stereo pair):** the
+bond card lets the household pick a sibling for the right channel and Save;
+`POST /bond` mints a `bond_id` and fans the grouping config out SERVER-side
+to each member's `jasper-control /grouping/set` (this speaker → leader/left,
+the picked one → follower/right), the follower's `leader_addr` set to the
+leader's **stable mDNS `.local` handle** so the bond survives the leader's
+DHCP IP churn (see §0 reconcile bullet). `POST /unbond` **dissolves** the
+bond: the server discovers membership by reading each member's `GET
+/grouping` (the new CSRF-free read on `jasper-control`) and fans
+`{enabled:false}` to the matches plus self. Both fan-outs run
+**concurrently** across members (a slow/absent peer never serializes the
+rest) over the same no-auth LAN surface the dial uses, SSRF-guarded to
+private/loopback IPv4 (bare hostnames rejected) — see §7 "Grouping control
+plane — threat model" for why that surface is unauthenticated by design.
+Configuration is fully automatic (no per-speaker tinkering); the producer +
+reconciler tap make audio FLOW once the leader is formed. What's honestly
+*not* done is perfect sample-lock (§2 inv. 2) and the >2-member / 2.1 / sub
+picker, so the card carries a "preview" note rather than pretending the
+audio half is fully validated. Sibling rows in the directory stay read-only
+by design beyond the pair-forming flow (configure each speaker's own knobs
+on its own UI).
 
 #### Friendly names + identity on the directory (shared primitives)
 
@@ -824,7 +892,32 @@ resolving):
 
 ---
 
-Last verified: 2026-06-09 (bond-forming UI — the Sonos-style one-flow
+Last verified: 2026-06-09 (grouping hardening — staff-review fixes on the
+bond control plane: (1) `leader_addr` is now a **stable mDNS `.local`
+handle** minted by the bond wizard (the leader's `JASPER_HOSTNAME`), not a
+raw DHCP IP, so a follower survives the leader changing IP —
+`reconcile.snapclient_argv` passes it verbatim and snapclient re-resolves
+at connect time (no reconcile change needed; literal IPv4 still accepted).
+(2) New operational surface: `POST /unbond` on `/rooms` dissolves a bond by
+discovering membership via the new CSRF-free `GET /grouping` read on
+`jasper-control` and fanning `{enabled:false}` to matches + self; the
+bond/unbond fan-out now runs concurrently across members. (3) Documented
+the grouping control plane's threat model (§7): `POST /grouping/set` / `GET
+/grouping` / the fan-out are UNAUTHENTICATED by design — the same home-LAN
+trust model as the dial `/volume`; the SSRF guard bounds cross-speaker
+targets to private/loopback IPv4 (bare hostnames rejected) and grants no
+capability a LAN client lacked, but bond/unbond makes "LAN = trusted"
+load-bearing ACROSS devices — an explicit, accepted home-appliance
+trade-off. (4) `config.py` now documents the leader_addr IPv4-or-mDNS
+acceptance and the intentional codec asymmetry (the wizard never sets
+codec, so `/grouping/set` validates against `DEFAULT_CODEC`; the operator's
+codec is preserved by `_write_grouping`'s read-modify-write and
+re-validated fail-loud by `load_config` on read). Coverage: reconcile
+regression that a follower `leader_addr="jts3.local"` yields `--host`
+immediately followed by `jts3.local` (56 reconcile tests, ruff clean).
+**Unchanged by this work:** the §2 inv. 2 sample-lock "preview" status —
+the audio half is still not fully validated. Earlier 2026-06-09
+(bond-forming UI — the Sonos-style one-flow
 stereo-pair setup landed on `/rooms`: a bond card (pick a sibling for the
 right channel, Save) + `POST /bond` that mints a `bond_id` and fans the
 grouping config out SERVER-side to each member's `jasper-control

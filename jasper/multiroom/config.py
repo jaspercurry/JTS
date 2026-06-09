@@ -84,6 +84,10 @@ class GroupingConfig:
     role: str            # "" | "leader" | "follower"
     channel: str         # one of ALLOWED_CHANNELS
     bond_id: str
+    # A follower's leader address. May be a literal IPv4 OR (preferred, and
+    # what the bond wizard now mints) a stable mDNS host like "jts3.local" —
+    # both are accepted because snapclient resolves either, and the .local
+    # handle survives the leader's DHCP IP churn (reconcile.snapclient_argv).
     leader_addr: str
     buffer_ms: int
     codec: str           # one of ALLOWED_CODECS
@@ -164,6 +168,17 @@ def validate_grouping(
     ``/grouping/set`` control endpoint (validating a write before it
     persists) — so the two can never drift. Checked in order: bond_id,
     channel, codec, role, follower-needs-leader_addr.
+
+    CODEC ASYMMETRY (intentional, not a bug): the ``/grouping/set`` endpoint
+    calls this WITHOUT a codec arg, so it validates against ``DEFAULT_CODEC``.
+    That is correct because the bond wizard never sets the codec — codec is an
+    operator-tuned knob (``JASPER_GROUPING_CODEC`` in grouping.env). The
+    control endpoint's read-modify-write (``_write_grouping``) does NOT touch
+    that key, so an operator's codec is PRESERVED across a wizard role change;
+    and :func:`load_config` re-validates the actually-persisted codec on read,
+    so a bad operator value still fails LOUD there. Validating the write path
+    against the default is thus safe: the write can never INTRODUCE a bad codec
+    (it never writes one), and the read path is the fail-loud backstop.
     """
     if not bond_id:
         return "JASPER_GROUPING_BOND_ID is empty (grouping is on)"
