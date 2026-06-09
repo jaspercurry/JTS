@@ -17,8 +17,12 @@ specifically. Adding one means a new module here + one line in
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from ..base import BoundingBox, Stop, haversine_miles
+
+if TYPE_CHECKING:
+    from ...config import Config
 
 # `jasper.citibike` imports `from .transit.base import TransitError`,
 # which triggers `transit/__init__.py`, which transitively loads this
@@ -124,6 +128,22 @@ class _CitiBike:
         # as rejected rather than raising, so the wizard's UX stays
         # consistent across keyless/credentialed providers.
         return {k: "citibike is keyless" for k in credentials} or None
+
+    def build_client(self, cfg: Config) -> object | None:
+        if not cfg.citibike_enabled:
+            return None
+        # lazy (also avoids the import cycle described at the top of file)
+        from ...citibike import CitiBikeClient
+
+        return CitiBikeClient(
+            saved_stations=list(cfg.citibike_stations),
+            ebike_only=cfg.citibike_ebike_only,
+        )
+
+    def make_tools(self, client: object):
+        from ...tools.citibike import make_citibike_tools  # lazy
+
+        return make_citibike_tools(client)
 
 
 PROVIDER = _CitiBike()

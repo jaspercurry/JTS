@@ -1849,6 +1849,32 @@ migrate_transit_config() {
         sed -i.bak "/^${k}=/d" "${jasper_env}"
         rm -f "${jasper_env}.bak"
     done
+
+    # Seed the city-pack toggle for existing households. JASPER_TRANSIT_CITIES
+    # (comma-separated CityPack ids, wizard-owned) gates which city's transit
+    # providers are eligible. It is intentionally optional — jasper.transit's
+    # enabled_pack_ids() treats "unset" as "all packs", so installs predating
+    # the toggle keep working untouched — but seeding an explicit value when
+    # the household ALREADY uses NYC transit (a) makes the /transit/ wizard
+    # render the right toggle state and (b) follows the codify-don't-memorise
+    # rule. Only the NYC pack ships today, so "nyc" is the only value to seed.
+    # Idempotent: never overwrites an explicit (wizard-written) value, and
+    # never presumes transit for a household that has configured none.
+    if [[ -f "${wizard_env}" ]] && ! grep -qE "^JASPER_TRANSIT_CITIES=" "${wizard_env}"; then
+        local cfgkey has_nyc_transit=""
+        for cfgkey in JASPER_SUBWAY_STATION_ID JASPER_BUS_STOPS JASPER_CITIBIKE_STATIONS; do
+            # A non-empty value (`.+` after `=`) means that NYC mode is set up.
+            if grep -qE "^${cfgkey}=.+" "${wizard_env}"; then
+                has_nyc_transit=1
+                break
+            fi
+        done
+        if [[ -n "${has_nyc_transit}" ]]; then
+            echo "JASPER_TRANSIT_CITIES=nyc" >> "${wizard_env}"
+            echo "  migrate_transit_config: seeded JASPER_TRANSIT_CITIES=nyc"
+            echo "    (existing NYC transit detected; explicit city-pack toggle)"
+        fi
+    fi
 }
 
 # Migrate stale multi-room grouping env vars from /etc/jasper/jasper.env

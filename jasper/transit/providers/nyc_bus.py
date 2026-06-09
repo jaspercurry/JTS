@@ -24,10 +24,14 @@ time so an unsaved key can be tested without disk IO.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import httpx
 
 from ..base import BoundingBox, CredentialSpec, Stop, TransitError, haversine_miles, scrub_secrets
+
+if TYPE_CHECKING:
+    from ...config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +310,24 @@ class _NycBus:
         if data.get("code") != 200:
             return {CREDENTIAL.env_key: "BusTime rejected the key"}
         return None
+
+    def build_client(self, cfg: Config) -> object | None:
+        if not cfg.bus_enabled:
+            return None
+        from ...bus import BusClient  # lazy: keep the wizard light
+
+        # cfg.bus_stops is (stop_id, label) pairs: ids drive the SIRI
+        # fan-out; labels name the stop in the voice answer.
+        return BusClient(
+            stop_ids=[sid for sid, _ in cfg.bus_stops],
+            api_key=cfg.mta_bustime_key,
+            stop_labels={sid: label for sid, label in cfg.bus_stops if label},
+        )
+
+    def make_tools(self, client: object):
+        from ...tools.bus import make_bus_tools  # lazy
+
+        return make_bus_tools(client)
 
 
 PROVIDER = _NycBus()

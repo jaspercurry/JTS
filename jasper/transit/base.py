@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 
 # Provider kind drives wizard UI grouping. Open set — add new values
@@ -168,6 +172,21 @@ class TransitProvider(Protocol):
         kills the redirect path. Unknown env_keys (typos) may raise
         `NotImplementedError` since those are programming errors, not
         user-facing conditions."""
+        ...
+
+    def build_client(self, cfg: Config) -> object | None:
+        """Build this provider's runtime client when its mode is configured
+        in `cfg`, else return None. Implementations LAZY-import the client
+        inside the method (e.g. `from ...subway import SubwayClient`) so
+        importing the discovery layer — which the socket-activated
+        /transit/ wizard does — never drags in the voice-runtime stack.
+        This keeps a city pack self-contained (a provider owns both its
+        discovery and its runtime) without paying the wizard's RAM for it."""
+        ...
+
+    def make_tools(self, client: object) -> Iterable[Callable[..., object]]:
+        """The provider's voice-tool functions for an already-built client.
+        Lazy-imports its tool factory, same rationale as `build_client`."""
         ...
 
 
