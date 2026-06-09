@@ -278,17 +278,40 @@ into `usbsink_substream`. Bridging UAC2Gadget → fan-in is a tiny daemon
 (~80 lines of sounddevice code) and keeps CamillaDSP's capture
 configuration unchanged.
 
-Latency budget (rough, measured during implementation):
+Latency budget (updated 2026-06-04 for the `jasper-outputd`
+architecture; computed from buffer sizes, **not** hardware-measured —
+the original "~120-150 ms" predated both the outputd cutover and the
+two-stream bridge below, so it understated the real figure):
 - Host → gadget USB endpoint: ~3-5 ms
-- sounddevice ring buffer: ~10 ms (configurable; default ~chunksize)
-- snd-aloop loopback: ~10 ms (Loopback,0 → Loopback,1)
-- fan-in output + CamillaDSP target above chunksize: ~85 ms
-- dmix → dongle: ~10 ms
-- **Total**: ~120-150 ms end-to-end
+- `jasper-usbsink` bridge: ~50-90 ms (two PortAudio streams at the
+  PortAudio default `latency='high'`, joined by the 8-block queue —
+  the host-clock↔Pi-clock crossing; the dominant USB-*specific* term
+  and the one never profiled on hardware)
+- snd-aloop usbsink lane → fan-in: ~5-10 ms (the fan-in *input* buffer,
+  4096 fr ≈ 85 ms, is WiFi-burst-absorption headroom for AirPlay; a
+  steady USB writer leaves it near-empty, so it adds ~0 ms here)
+- fan-in output buffer: 3072 fr ≈ 64 ms
+- CamillaDSP: chunksize 1024 (~21 ms) + target_level above chunksize
+  (1024 fr ≈ 21 ms) ≈ 43 ms
+- outputd content bridge (`direct`): ~0 ms
+- outputd direct-DAC buffer: 3072 fr ≈ 64 ms
+- **Total**: ~250-300 ms end-to-end (computed)
 
-That's well within "music streaming" expectations. Not suitable for
-real-time monitoring (singing into a mic plugged into the host while
-listening on JTS speakers), but JTS isn't a DAW.
+The shared downstream tail — fan-in output + CamillaDSP
+target-above-chunksize + outputd DAC ≈ 149 ms — is exactly the value
+the codebase already tracks as AirPlay's latency-compensation offset
+(`-0.149333 s`; see `deploy/bin/jasper-apply-airplay-mode` and
+[HANDOFF-airplay.md](HANDOFF-airplay.md)). It is identical for every
+source — it is not USB-specific.
+
+That's well within "music streaming" expectations. It is **not** good
+for video: ~250-300 ms of audio lag is far past the ~125 ms A/V-sync
+comfort threshold, and — unlike AirPlay, which reports the offset above
+to the sender so it can delay the picture — UAC2 has no back-channel to
+tell the host about this delay. A manual audio-offset in the host's
+video player is the only in-tool fix today. (Also not suitable for
+real-time monitoring — singing into a mic on the host while listening
+on JTS — but JTS isn't a DAW.)
 
 ### 3.2 Volume model — USB gadget is camilla-as-master
 
@@ -301,9 +324,11 @@ Concretely, in `jasper.volume_coordinator.VolumeCoordinator`:
 - `jasper/music_sources.py` declares `Source.USBSINK` with
   `VolumeMode.CAMILLA_MASTER` — joins `AIRPLAY` and `IDLE` as a
   camilla-as-master source
-- Inbound observer: pyalsa subscribes to gadget mixer events on
-  `PCM Capture Volume` and `PCM Capture Switch`. When the user moves
-  the Mac slider, observer calls
+- Inbound observer: `volume_bridge.py` polls the gadget mixer controls
+  `PCM Capture Volume` and `PCM Capture Switch` at 4 Hz (`amixer cget`;
+  polling was chosen over pyalsa event subscription for restart
+  robustness and one fewer dependency — see the module docstring). When
+  the user moves the Mac slider, it calls
   `coordinator.observe_source_volume(Source.USBSINK, value_pct)`,
   which translates and updates `listening_level` + `camilla.main_volume`
 - Outbound: dial twist / voice "louder" goes through the normal
