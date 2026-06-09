@@ -199,7 +199,7 @@ shared libs deduplicated) on a Pi 5 running Raspberry Pi OS Lite Trixie.
 | libcomposite + u_audio kernel modules | ~60 KB | Loaded by `jasper-usbsink-init` |
 | ConfigFS gadget descriptor | <1 KB | Just in-kernel state |
 | `jasper-usbsink.service` (Python daemon) | **18-22 MB** | sounddevice (PortAudio) + `amixer`-cget mixer poller + RMS + state publisher |
-| **Total new RAM (enabled)** | **~22 MB** | Comparable to `jasper-mux` (~13 MB) and `jasper-input` (~28 MB) |
+| **Total new RAM (enabled)** | **~22 MB** | Comparable to `jasper-mux` (~13 MB) and `jasper-input` (~16 MB) |
 
 The daemon budget breakdown:
 - Python 3.11 interpreter: ~10 MB
