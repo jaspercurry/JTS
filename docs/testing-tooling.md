@@ -303,6 +303,40 @@ score, or alter Pi runtime state.
 
 ---
 
+## Wake training workdir prep
+
+Laptop-side or training-host-side, offline. Consumes the feature-bank directory
+from `scripts/build-wake-feature-bank.sh` and stages the JTS real-positive
+features into the LiveKit/openWakeWord positive-feature naming convention.
+
+```sh
+bash scripts/prepare-wake-training-workdir.sh \
+  logs/wake-corpus-export/20260609T120000Z/feature-bank
+bash scripts/prepare-wake-training-workdir.sh logs/wake-features logs/wake-train \
+  --target-phrase "hey jarvis" --model-name hey_jarvis_jts --positive-weight 3
+```
+
+Outputs:
+
+- `feature_data/positive_features_train.npy`
+- `feature_data/positive_features_test.npy`
+- `real_positive_manifest.jsonl`
+- `real_positive_injection.json`
+- `training_workdir.json`
+- `README.md`
+
+The prep step verifies the feature manifest against the source arrays, maps the
+JTS `eval` split to the trainer `test` split, and repeats train positives for
+real-positive up-weighting while leaving eval/test rows unweighted. The default
+weight is `3x`; every repeated row is recorded in `real_positive_manifest.jsonl`
+with its source feature index and repeat index.
+
+It does not generate synthetic positives, build negative/background banks,
+train, export, evaluate, call LiveKit, launch cloud jobs, or alter Pi runtime
+state.
+
+---
+
 ## Wake-corpus quality analyzer
 
 Laptop-side, offline. Deterministic first-pass signal-quality analysis of a
