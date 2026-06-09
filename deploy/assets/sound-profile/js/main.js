@@ -1074,13 +1074,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderOutputHardwareCard(topology, statusValue) {
     var hardware = outputHardware(topology) || {};
     var clock = outputClockDomainReport();
+    var aggregateRuntime = clock && clock.aggregate_output_runtime_enabled;
+    var aggregateState = aggregateRuntime ? 'enabled' :
+      clock && clock.profile_is_composite_output ? 'profile only' : 'not applicable';
     var rows = [
       ['Device', hardware.device_id || 'unknown'],
       ['Outputs', String(hardware.physical_output_count || 0) + ' physical'],
       ['Route', hardware.route || 'default'],
       ['Clock domain', clock && clock.clock_domain_label ||
         hardware.clock_domain_label || 'Single output device clock'],
-      ['Multi-DAC aggregate', clock && clock.multi_device_aggregate_supported ? 'supported' : 'not enabled'],
+      ['Aggregate runtime', aggregateState],
       ['Topology', topology.name || topology.topology_id || 'Speaker outputs']
     ];
     return '<div class="output-card output-card--hardware">' +

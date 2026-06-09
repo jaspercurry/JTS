@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.audio_hardware.dac import all_profiles, by_id
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
@@ -29,8 +31,7 @@ CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
 SUPPORTED_DEVICE_OUTPUT_COUNTS = {
-    "apple_usb_c_dongle": 2,
-    "hifiberry_dac8x": 8,
+    profile.id: profile.physical_output_count for profile in all_profiles()
 }
 SUPPORTED_GROUP_KINDS = {"left", "right", "mono", "subwoofer"}
 SUPPORTED_GROUP_MODES = {
@@ -167,10 +168,8 @@ def default_clock_domain_id(device_id: str, card_id: str | None = None) -> str:
 
 
 def default_clock_domain_label(device_id: str) -> str:
-    return {
-        "apple_usb_c_dongle": "Single Apple USB audio device clock",
-        "hifiberry_dac8x": "Single HiFiBerry DAC8x device clock",
-    }.get(device_id, "Single output device clock")
+    profile = by_id(device_id)
+    return profile.clock_domain_label if profile else "Single output device clock"
 
 
 @dataclass(frozen=True)
@@ -607,13 +606,15 @@ def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
     device_id = env.get("JASPER_AUDIO_DAC_ID") or "unknown"
     card_id = env.get("JASPER_AUDIO_DAC_CARD") or None
     route = env.get("JASPER_OUTPUT_DAC_ROUTE") or None
-    output_count = SUPPORTED_DEVICE_OUTPUT_COUNTS.get(device_id, 0)
+    profile = by_id(device_id)
+    output_count = profile.physical_output_count if profile else 0
     if output_count <= 0:
         output_count = 2 if card_id else 0
-    device_label = {
-        "apple_usb_c_dongle": "Apple USB-C audio adapter",
-        "hifiberry_dac8x": "HiFiBerry DAC8x",
-    }.get(device_id, device_id if device_id != "unknown" else "Unknown output device")
+    device_label = (
+        profile.label
+        if profile
+        else device_id if device_id != "unknown" else "Unknown output device"
+    )
     return OutputHardware(
         device_id=device_id,
         device_label=device_label,
@@ -898,18 +899,21 @@ def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
 def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
     """Return read-only output clocking evidence for the topology.
 
-    This intentionally does not try to implement multi-DAC aggregation. It
-    names the current single-device clock-domain assumption and preserves the
-    product boundary: active-crossover playback should use one coherent
-    multi-output device until a future lab path proves multi-device skew/drift.
+    This intentionally does not authorize multi-DAC playback. It names the
+    active profile's declared clocking shape and preserves the product
+    boundary: topology evidence records the hardware clock contract, while
+    runtime owners must still prove graph safety, xrun behavior, and any
+    inter-device skew/drift constraints before playback.
     """
 
     hardware = topology.hardware
+    profile = by_id(hardware.device_id)
+    profile_known = profile is not None
+    profile_kind = profile.kind if profile else "unknown"
+    profile_is_composite = bool(profile and profile.kind == "composite")
+    aggregate_output_runtime_enabled = False
     issues: list[dict[str, str]] = []
-    notes: list[str] = [
-        "All current physical outputs are assumed to belong to one output device clock domain.",
-        "Multiple independent USB DACs are not aggregated by this topology contract.",
-    ]
+    notes: list[str] = []
     if hardware.physical_output_count <= 0:
         status = "missing_hardware"
         issues.append(
@@ -919,7 +923,10 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
                 "no recognized output hardware is available",
             )
         )
-    elif hardware.device_id not in SUPPORTED_DEVICE_OUTPUT_COUNTS:
+        clock_domain_count = 0
+        coherent_physical_output_count = 0
+        notes.append("No final-output hardware is currently available.")
+    elif profile is None:
         status = "unknown_device_clock"
         issues.append(
             _issue(
@@ -928,8 +935,49 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
                 "output hardware clocking is not recognized by JTS",
             )
         )
-    else:
+        clock_domain_count = 1
+        coherent_physical_output_count = 0
+        notes.extend([
+            "The active output device is not in the DAC profile registry.",
+            "Topology can record wiring, but clock coherence is unknown.",
+        ])
+    elif profile.coherent_clock_domain:
         status = "single_device_clock"
+        clock_domain_count = 1
+        coherent_physical_output_count = hardware.physical_output_count
+        notes.extend([
+            f"{profile.label} is a known coherent output profile.",
+            "All declared physical outputs share one hardware clock domain.",
+        ])
+    else:
+        status = "known_independent_clocks"
+        clock_domain_count = max(1, len(profile.child_profile_ids))
+        coherent_physical_output_count = 0
+        issues.append(
+            _issue(
+                "warning",
+                "independent_output_clocks",
+                "known output profile does not declare one coherent clock domain",
+            )
+        )
+        notes.extend([
+            f"{profile.label} is a known output profile with independent clocks.",
+            "Topology can expose the physical output shape, but runtime validation must prove aggregate-output safety.",
+        ])
+    if profile_is_composite:
+        notes.append(
+            "Composite output ordering and runtime readiness are owned by "
+            "hardware reconcile/outputd, not by this topology parser."
+        )
+
+    recommendation = (
+        "Use one coherent multi-output DAC/interface for active crossover."
+        if status in {"single_device_clock", "unknown_device_clock", "missing_hardware"}
+        else (
+            "Use this aggregate profile only after the output runtime has matching "
+            "graph, channel-identity, and clock-drift validation evidence."
+        )
+    )
 
     return {
         "artifact_schema_version": SCHEMA_VERSION,
@@ -937,20 +985,19 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
         "status": status,
         "clock_domain_id": hardware.clock_domain_id,
         "clock_domain_label": hardware.clock_domain_label,
-        "clock_domain_count": 1 if hardware.physical_output_count > 0 else 0,
-        "coherent_physical_output_count": hardware.physical_output_count
-        if status == "single_device_clock"
-        else 0,
+        "clock_domain_count": clock_domain_count,
+        "coherent_physical_output_count": coherent_physical_output_count,
+        "profile_id": profile.id if profile else hardware.device_id,
+        "profile_known": profile_known,
+        "profile_kind": profile_kind,
+        "profile_is_composite_output": profile_is_composite,
+        "aggregate_output_runtime_enabled": aggregate_output_runtime_enabled,
         "multi_device_aggregate_supported": False,
         "future_multi_device_lab_path": True,
         "sound_tests_allowed": False,
         "issues": issues,
         "notes": notes,
-        "recommendation": (
-            "Use one coherent multi-output DAC/interface for active crossover. "
-            "Treat multiple USB DACs as future lab work until JTS can measure "
-            "and compensate inter-device skew and drift."
-        ),
+        "recommendation": recommendation,
     }
 
 

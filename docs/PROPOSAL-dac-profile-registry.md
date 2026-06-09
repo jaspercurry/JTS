@@ -3,9 +3,10 @@
 > **Status: proposal / implementation handoff, updated 2026-06-09.** The
 > initial IO-free registry scaffold exists in
 > [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py);
-> runtime consumers are not migrated yet. This supersedes the narrower
-> 2026-06-04 sketch that modeled only a single Apple dongle and a HiFiBerry
-> DAC8x. Current operational truth for output ownership lives in
+> `jasper.output_topology` consumes it for known DAC labels, physical output
+> counts, clock-domain labels, and clock-coherence classification. This
+> supersedes the narrower 2026-06-04 sketch that modeled only a single Apple
+> dongle and a HiFiBerry DAC8x. Current operational truth for output ownership lives in
 > [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
 > [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md), and
 > [audio-paths.md](audio-paths.md).
@@ -85,6 +86,7 @@ class DacProfile:
     kind: Literal["single", "composite"]
     physical_output_count: int
     coherent_clock_domain: bool
+    clock_domain_label: str
     outputd_sink: str
     supported_card_matches: tuple[str, ...]
     usb_ids: tuple[str, ...] = ()
@@ -148,7 +150,11 @@ outputd process control inside the registry.
    output counts. **Initial scaffold landed:** `jasper.audio_hardware.dac`
    includes Apple USB-C, HiFiBerry DAC8x-family, and dual-Apple 4ch profiles.
 2. Replace duplicated labels/output counts in `output_topology` and doctor with
-   registry lookups.
+   registry lookups. **Topology consumer landed:** `jasper.output_topology`
+   now derives known DAC labels, physical output counts, clock-domain labels,
+   and clock-coherence reports from the registry while retaining its no-audio
+   authority boundary. It also reports composite-profile shape separately from
+   aggregate-output runtime enablement. `jasper-doctor` is still pending.
 3. Replace hardcoded Apple/DAC8x identity checks in `audio_validation` and
    `jasper-doctor` with profile-derived expectations.
 4. Move mixer/headphone policy into profile data, but keep mutation in

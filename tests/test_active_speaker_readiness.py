@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.playback import tone_backend_status
 from jasper.active_speaker.readiness import (
@@ -9,14 +10,19 @@ from jasper.active_speaker.readiness import (
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
-def _topology(*, verified: bool = True, protection: str = "present") -> OutputTopology:
+def _topology(
+    *,
+    verified: bool = True,
+    protection: str = "present",
+    hardware: dict | None = None,
+) -> OutputTopology:
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
         "topology_id": "living_room",
         "name": "Living room",
         "status": "draft",
-        "hardware": {
+        "hardware": hardware or {
             "device_id": "hifiberry_dac8x",
             "device_label": "HiFiBerry DAC8x",
             "physical_output_count": 8,
@@ -219,6 +225,39 @@ def test_playback_readiness_keeps_software_guard_request_blocked() -> None:
 
     assert report["status"] == "blocked"
     assert "tweeter_software_guard_requested" in codes
+    assert report["playback_allowed"] is False
+
+
+def test_playback_readiness_blocks_known_independent_composite_clock_domain() -> None:
+    report = build_playback_readiness(
+        _topology(
+            hardware={
+                "device_id": DUAL_APPLE_USB_C_DAC_4CH_ID,
+                "device_label": "Dual Apple USB-C audio adapters",
+                "physical_output_count": 4,
+            }
+        ),
+        speaker_group_id="left",
+        role="woofer",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
+        tone_backend=tone_backend_status({
+            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+        }),
+    )
+    gates = {gate["id"]: gate["passed"] for gate in report["required_gates"]}
+    codes = {issue["code"] for issue in report["issues"]}
+
+    assert report["clock_domain"]["status"] == "known_independent_clocks"
+    assert report["clock_domain"]["profile_kind"] == "composite"
+    assert report["clock_domain"]["profile_is_composite_output"] is True
+    assert report["clock_domain"]["aggregate_output_runtime_enabled"] is False
+    assert gates["single_clock_domain"] is False
+    assert "single_clock_domain" in codes
     assert report["playback_allowed"] is False
 
 

@@ -57,6 +57,7 @@ class DacProfile:
     kind: DacKind
     physical_output_count: int
     coherent_clock_domain: bool
+    clock_domain_label: str
     outputd_sink: str
     supported_card_matches: tuple[str, ...]
     usb_ids: tuple[str, ...] = ()
@@ -78,6 +79,8 @@ class DacProfile:
             raise ValueError(f"{self.id}: unsupported kind {self.kind!r}")
         if self.physical_output_count < 0:
             raise ValueError(f"{self.id}: physical_output_count must be >= 0")
+        if not self.clock_domain_label.strip():
+            raise ValueError(f"{self.id}: clock_domain_label is required")
         if not self.outputd_sink.strip():
             raise ValueError(f"{self.id}: outputd_sink is required")
         if not self.supported_card_matches and not self.child_profile_ids:
@@ -110,6 +113,7 @@ APPLE_USB_C_DONGLE = DacProfile(
     kind="single",
     physical_output_count=2,
     coherent_clock_domain=True,
+    clock_domain_label="Single Apple USB audio device clock",
     outputd_sink="alsa",
     supported_card_matches=("usb-c to 3.5mm",),
     usb_ids=("05ac:110a",),
@@ -125,6 +129,7 @@ HIFIBERRY_DAC8X = DacProfile(
     kind="single",
     physical_output_count=8,
     coherent_clock_domain=True,
+    clock_domain_label="Single HiFiBerry DAC8x device clock",
     outputd_sink="alsa",
     supported_card_matches=(
         "snd_rpi_hifiberry_dac8x",
@@ -142,6 +147,7 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     kind="composite",
     physical_output_count=4,
     coherent_clock_domain=False,
+    clock_domain_label="Dual Apple USB-C adapter independent clocks",
     outputd_sink="dual_apple",
     supported_card_matches=("usb-c to 3.5mm",),
     usb_ids=("05ac:110a",),

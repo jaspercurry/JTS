@@ -264,8 +264,8 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Saving this map does not play sound or reload CamillaDSP." in js
     assert "Backend validation owns the final decision." in js
     assert "Physical verification is operator evidence." in js
-    assert "Multi-DAC aggregate" in js
-    assert "not enabled" in js
+    assert "Aggregate runtime" in js
+    assert "profile only" in js
     assert "Mark verified" in js
     assert "Hardware protected" in js
     assert "Use software guard" in js
