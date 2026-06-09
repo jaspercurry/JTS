@@ -261,14 +261,20 @@ the protected startup DSP is loaded, current, and rollbackable. The UI labels
 that action as a quiet role-specific test, confirms the selected target before
 the POST, and records the shared `woofer_mid_low_level_v1` policy in the
 returned evidence. Tweeter/compression-driver and unlisted-role audio remains
-disabled in this slice even with the lab backend enabled. The safety card now
-renders the intended operator sequence directly in `/sound/`: check
-environment, stage protected startup, check protected path, load protected
-startup, arm safe session, check one saved target, reset/lower to the
-test-level floor, then verify an artifact before audio. The readiness result
-summarizes the selected DAC output, role policy, backend, rollback state, and
-test level, plus an explicit "Why sound is blocked" list so the user does not
-have to infer missing gates from raw evidence rows.
+disabled in this slice even with the lab backend enabled. The safe session now
+also records quiet-start evidence: every armed session starts at
+`floor_required`; the backend rejects raised audible tests until a successful
+floor-level audible result has been recorded for the same saved target and
+session; artifact-only results do not unlock raised playback; Stop, expiry, or
+target change resets the phase. The safety card now renders that intended
+operator sequence directly in `/sound/`: check environment, stage protected
+startup, check protected path, load protected startup, arm safe session, check
+one saved target, reset/lower to the test-level floor, verify an artifact
+before audio, confirm floor audio, then raise slowly. The readiness result
+summarizes the selected DAC output, role policy, backend, rollback state, test
+level, plus an explicit "Why sound is blocked" list; the adjacent safe-session
+status shows the quiet-start phase so the user does not have to infer missing
+gates from raw evidence rows.
 For Jasper's immediate mono 2-way build, the same row can now record
 compression-driver protection evidence through
 `/sound/active-speaker/channel-protection`, and the card can **Stage protected
@@ -626,4 +632,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-05
+Last verified: 2026-06-08

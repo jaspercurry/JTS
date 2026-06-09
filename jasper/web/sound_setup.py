@@ -1298,7 +1298,7 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
         "event=sound.active_speaker_tone_playback status=%s backend=%s "
         "source=%s side=%s group_id=%s driver_role=%s output_index=%s "
         "level_dbfs=%s duration_ms=%s audio_requested=%s audio_emitted=%s "
-        "blockers=%d artifact=%s",
+        "blockers=%d artifact=%s quiet_start=%s",
         playback.get("status"),
         playback.get("backend"),
         plan.get("source") or "preset",
@@ -1312,6 +1312,7 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
         bool(playback.get("audio_emitted")),
         len(playback.get("issues") or []),
         (playback.get("artifact") or {}).get("wav_basename"),
+        (session.get("quiet_start") or {}).get("status"),
     )
     return {
         "plan": plan,
