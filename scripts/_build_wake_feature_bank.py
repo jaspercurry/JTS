@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import shutil
 import sys
 import types
@@ -23,7 +24,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-import numpy as np
+try:
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover - exercised by CLI help paths.
+    np = None  # type: ignore[assignment]
 
 
 SCHEMA_VERSION = 1
@@ -35,6 +39,14 @@ TRAIN_SPLIT = "train"
 EVAL_SPLIT = "eval"
 DEFAULT_SPLITS = (TRAIN_SPLIT, EVAL_SPLIT)
 EMBEDDING_DIM = 96
+
+
+def _require_numpy() -> None:
+    if np is None:
+        raise RuntimeError(
+            "numpy is required to build wake feature banks. Run inside the "
+            "JTS environment or install numpy in the selected Python."
+        )
 
 
 @dataclass(frozen=True)
@@ -140,7 +152,7 @@ def _sha256(path: Path) -> str:
 def _feature_frame_count(total_samples: int) -> int:
     if total_samples <= 0:
         raise ValueError("total_samples must be positive")
-    melspec_frames = int(np.ceil(total_samples / 160 - 3))
+    melspec_frames = int(math.ceil(total_samples / 160 - 3))
     frames = (melspec_frames - 76) // 8 + 1
     if frames < 1:
         raise ValueError(
@@ -218,6 +230,31 @@ def _prepare_clip(
         return None, _rejection_for_row(row, reason=str(e), audio_path="")
     if not audio_path.is_file():
         return None, _rejection_for_row(row, reason="missing_wav", audio_path=str(audio_path))
+
+    expected_sha256 = str(row.get("sha256") or "")
+    if not expected_sha256:
+        return None, _rejection_for_row(
+            row,
+            reason="sha256_missing",
+            audio_path=str(audio_path),
+        )
+    try:
+        actual_sha256 = _sha256(audio_path)
+    except OSError as e:
+        return None, _rejection_for_row(
+            row,
+            reason=f"sha256_read_failed:{e}",
+            audio_path=str(audio_path),
+        )
+    if actual_sha256 != expected_sha256:
+        rejection = _rejection_for_row(
+            row,
+            reason="sha256_mismatch",
+            audio_path=str(audio_path),
+        )
+        rejection["expected_sha256"] = expected_sha256
+        rejection["actual_sha256"] = actual_sha256
+        return None, rejection
 
     samples, info_or_error = _read_wav_int16(audio_path)
     if samples is None:
@@ -382,6 +419,7 @@ def build_feature_bank(
 ) -> dict[str, Any]:
     bundle_dir = bundle_dir.expanduser().resolve()
     output_dir = output_dir.expanduser().resolve()
+    _require_numpy()
     manifest_path = bundle_dir / "manifest.jsonl"
     bundle_json_path = bundle_dir / "bundle.json"
     if not manifest_path.is_file():
@@ -537,9 +575,25 @@ def _safe_to_remove_output(path: Path, *, bundle_dir: Path) -> bool:
         return False
     if bundle_resolved in resolved.parents:
         rel = resolved.relative_to(bundle_resolved)
-        if rel.parts and rel.parts[0] == "audio":
-            return False
-    return True
+        return bool(rel.parts and rel.parts[0] == "feature-bank")
+    return _looks_like_feature_bank_output(resolved)
+
+
+def _looks_like_feature_bank_output(path: Path) -> bool:
+    marker = path / "feature_bank.json"
+    if not marker.is_file():
+        return False
+    try:
+        data = _read_json(marker)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+    artifacts = data.get("artifacts")
+    return (
+        data.get("schema_version") == SCHEMA_VERSION
+        and isinstance(artifacts, dict)
+        and artifacts.get("summary") == "feature_bank.json"
+        and artifacts.get("feature_manifest") == "feature_manifest.jsonl"
+    )
 
 
 def _print_summary(summary: dict[str, Any]) -> str:

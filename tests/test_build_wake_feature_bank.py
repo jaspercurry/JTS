@@ -51,6 +51,15 @@ def _write_bundle(root: Path, rows: list[dict[str, object]]) -> None:
     (root / "bundle.json").write_text(json.dumps({"schema_version": 1}) + "\n")
     with open(root / "manifest.jsonl", "w") as f:
         for row in rows:
+            bundle_path = str(row.get("bundle_path") or "")
+            wav_path = root / bundle_path if bundle_path else None
+            existing_sha = str(row.get("sha256") or "")
+            existing_is_hex_sha = (
+                len(existing_sha) == 64
+                and all(c in "0123456789abcdefABCDEF" for c in existing_sha)
+            )
+            if wav_path is not None and wav_path.is_file() and not existing_is_hex_sha:
+                row = {**row, "sha256": builder._sha256(wav_path)}
             f.write(json.dumps({"schema_version": 1, **row}, sort_keys=True) + "\n")
 
 
@@ -209,9 +218,41 @@ def test_rejects_missing_or_bad_wavs_without_stopping_other_features(tmp_path: P
     assert {item["reason"] for item in rejections} == {"wrong_wav_format", "missing_wav"}
 
 
-def test_force_remove_guard_allows_feature_dir_but_not_bundle_audio(tmp_path: Path) -> None:
+def test_rejects_wav_hash_mismatch(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    wav = bundle / "audio/train/music/near/raw0/changed.wav"
+    _write_wav(wav, np.array([1], dtype=np.int16))
+    row = _row(split="train", leg="raw0", filename="changed")
+    row["sha256"] = "0" * 64
+    _write_bundle(bundle, [row])
+
+    summary = builder.build_feature_bank(bundle, tmp_path / "features", extractor=FakeExtractor())
+
+    assert summary["counts"]["feature_rows"] == 0
+    assert summary["counts"]["rejections"] == 1
+    rejection = json.loads(
+        (tmp_path / "features" / "feature_rejections.jsonl").read_text()
+    )
+    assert rejection["reason"] == "sha256_mismatch"
+    assert rejection["expected_sha256"] == "0" * 64
+    assert rejection["actual_sha256"] == builder._sha256(wav)
+
+
+def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     assert builder._safe_to_remove_output(bundle / "feature-bank", bundle_dir=bundle)
     assert not builder._safe_to_remove_output(bundle, bundle_dir=bundle)
     assert not builder._safe_to_remove_output(bundle / "audio" / "train", bundle_dir=bundle)
+    assert not builder._safe_to_remove_output(tmp_path / "custom", bundle_dir=bundle)
     assert not builder._safe_to_remove_output(Path.cwd(), bundle_dir=bundle)
+
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    (custom / "feature_bank.json").write_text(json.dumps({
+        "schema_version": builder.SCHEMA_VERSION,
+        "artifacts": {
+            "summary": "feature_bank.json",
+            "feature_manifest": "feature_manifest.jsonl",
+        },
+    }))
+    assert builder._safe_to_remove_output(custom, bundle_dir=bundle)
