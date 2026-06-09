@@ -238,3 +238,43 @@ def read_grouping_state(
             cfg, states, leader_tap_path=tap
         )
     return snapshot
+
+
+# ----------------------------------------------------------------------
+# GET /grouping wire contract — ONE home for the envelope shape.
+#
+# jasper-control's GET /grouping handler (the PRODUCER) and the /rooms
+# /unbond fan-out (the CONSUMER, jasper.web.rooms_setup._get_member_grouping)
+# are in different daemons and exchange JSON over HTTP. The C4 regression
+# (2026-06-09) was exactly this contract drifting: the producer nested the
+# snapshot under a "grouping" key while the consumer read bond_id at the top
+# level, so /unbond matched no real peer. Both sides now go through the two
+# functions below, which share GROUPING_RESPONSE_KEY — so the envelope shape
+# is defined in exactly one place and the two daemons cannot drift by
+# construction. A round-trip test locks parse(build(x)) == x.
+# ----------------------------------------------------------------------
+
+# The single key the GET /grouping body nests its snapshot under. Nested
+# (rather than a bare dict) so a fail-soft read returns {"grouping": null}
+# unambiguously — None means "read failed / unknown", distinct from a real
+# disabled snapshot.
+GROUPING_RESPONSE_KEY = "grouping"
+
+
+def grouping_response(grouping: dict | None) -> dict:
+    """Build the GET /grouping wire body from a snapshot (or None on a
+    fail-soft read). The PRODUCER side of the contract — used by
+    jasper-control's handler. Inverse of :func:`parse_grouping_response`."""
+    return {GROUPING_RESPONSE_KEY: grouping}
+
+
+def parse_grouping_response(body: object) -> dict | None:
+    """Extract the inner grouping snapshot from a GET /grouping body, or None
+    when it's absent / null / not a dict (treat as "unknown", so it can never
+    spuriously match a bond_id). The CONSUMER side of the contract — used by
+    the /rooms /unbond discovery. Inverse of :func:`grouping_response`; total,
+    never raises."""
+    if not isinstance(body, dict):
+        return None
+    inner = body.get(GROUPING_RESPONSE_KEY)
+    return inner if isinstance(inner, dict) else None

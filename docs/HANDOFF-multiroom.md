@@ -845,6 +845,51 @@ resolving):
   name falls back to the hostname so the TXT is never empty and the
   service always advertises.
 
+### Known scaling boundaries & future extraction points
+
+The grouping control plane is deliberately scoped to a stereo PAIR today.
+These are the seams that will stretch as the feature grows — each paired with
+the TRIGGER that says "extract/generalise now, not before," so we neither
+front-run the complexity nor forget where it belongs.
+
+- **Cross-speaker peer-control client.** The HTTP-to-a-peer's-control-API
+  pattern lives as two helpers in `jasper/web/rooms_setup.py`
+  (`_post_grouping_to_member`, `_get_member_grouping`) sharing the
+  `_lan_target` SSRF guard — the right size for two call sites. **Trigger to
+  extract a `PeerControlClient`:** the THIRD cross-speaker call (e.g.
+  bond-wide volume sync, status aggregation). Then lift the guard + the
+  GET/POST + the `:8780` base into one client so the SSRF policy, timeouts,
+  and never-raise contract have a single home — not three copies.
+
+- **The GET /grouping wire contract has ONE home — keep it that way.**
+  `grouping_response` / `parse_grouping_response` (+ `GROUPING_RESPONSE_KEY`)
+  in `jasper/multiroom/state.py` are the producer/consumer pair, locked by a
+  round-trip test. The C4 regression (2026-06-09) was exactly this envelope
+  drifting across daemons (producer nested under `grouping`, consumer read the
+  top level). **Rule:** any NEW cross-daemon grouping payload follows the same
+  builder + parser + round-trip-test shape, never hand-rolled JSON on each
+  side.
+
+- **Bond topology is pair-shaped.** `role ∈ {leader, follower}`,
+  `channel ∈ {stereo, left, right, sub, mono}`, and a single `leader_addr`
+  model a stereo pair. `/unbond`'s discover-by-`bond_id` already scales to N
+  members (it disables every match), but the CREATE flow does not. **Trigger
+  for 2.1 / multi-member:** when >2-member bonds land, (a) the `channel` /
+  `role` vocabulary grows (and `validate_grouping` with it), and (b)
+  `makeBondCard()` in `deploy/assets/rooms/js/main.js` — today a two-faced
+  create/dissolve card — splits into a create-view and a manage-view
+  sub-component rather than growing a third face.
+
+- **Dissolve is best-effort by liveness (accepted property, not a TODO).**
+  `/unbond` only disables peers it can discover AND reach at dissolve time; a
+  follower offline at that moment comes back still configured (stranded),
+  which the `degraded` runtime health surfaces and the next bond/leave
+  self-corrects. Self is always disabled, so the local leave never depends on
+  a peer being up. If guaranteed teardown of an offline member is ever
+  required, THAT is where a persisted roster + retry would be added —
+  deliberately not built now (it would trade the stateless, drift-free
+  discovery design for roster bookkeeping that can itself go stale).
+
 ---
 
 ## 9. Open questions for the project owner
@@ -892,7 +937,24 @@ resolving):
 
 ---
 
-Last verified: 2026-06-09 (grouping hardening — staff-review fixes on the
+Last verified: 2026-06-09 (second staff-review pass — three follow-ups on the
+hardening below: (1) the GET /grouping wire contract now has ONE home —
+`grouping_response` / `parse_grouping_response` (+ `GROUPING_RESPONSE_KEY`) in
+`jasper/multiroom/state.py`, used by both the `jasper-control` producer and the
+`/rooms` `_get_member_grouping` consumer, locked by a round-trip test + a
+cross-boundary assertion in the control-server test, so the two daemons can't
+drift again (the C4 root cause). (2) per-member fan-out failures now log
+`event=rooms.bond.member_failed` / `rooms.unbond.member_failed` (addr + reason,
+failures only) so a half-formed/half-dissolved bond names the culprit in the
+journal, not just an aggregate. (3) new §8 "Known scaling boundaries & future
+extraction points" documents the `PeerControlClient` extraction trigger (3rd
+cross-speaker call), the pair-shaped topology + `makeBondCard` split point for
+multi-member, and best-effort-dissolve-by-liveness as an accepted property.
+Coverage added in `test_multiroom_state.py` (round-trip + unknown-cases),
+`test_control_server.py` (cross-boundary parse), `test_web_rooms_setup.py`
+(per-member-failure caplog); 196 affected tests green, ruff clean. **Unchanged:**
+§2 inv. 2 sample-lock is still a "preview.") Earlier 2026-06-09 (grouping
+hardening — staff-review fixes on the
 bond control plane: (1) `leader_addr` is now a **stable mDNS `.local`
 handle** minted by the bond wizard (the leader's `JASPER_HOSTNAME`), not a
 raw DHCP IP, so a follower survives the leader changing IP —
