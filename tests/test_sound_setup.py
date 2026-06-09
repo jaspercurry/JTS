@@ -13,7 +13,17 @@ import pytest
 from jasper.correction.camilla_yaml import emit_correction_config
 from jasper.correction.peq import PEQ
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND
+from jasper.output_topology import (
+    DUAL_APPLE_ACTIVE_DEVICE_ID,
+    OUTPUT_TOPOLOGY_KIND,
+)
+from jasper.output_hardware import (
+    APPLE_USB_C_DONGLE_DEVICE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    OutputCardFact,
+    classify_output_cards,
+    write_state as write_output_hardware_state,
+)
 from jasper.sound.profile import (
     ParametricBand,
     SimpleEq,
@@ -265,6 +275,9 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Backend validation owns the final decision." in js
     assert "Physical verification is operator evidence." in js
     assert "Multi-DAC aggregate" in js
+    assert "Composite clock" in js
+    assert "supported" in js
+    assert "needs attention" in js
     assert "not enabled" in js
     assert "Mark verified" in js
     assert "Hardware protected" in js
@@ -760,6 +773,198 @@ def test_sound_output_topology_payload_is_no_audio_draft(
     assert envelope["clock_domain"]["multi_device_aggregate_supported"] is False
     assert payload["safety"]["sound_tests_allowed"] is False
     assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"
+
+
+def _dual_apple_hardware() -> dict:
+    return {
+        "device_id": DUAL_APPLE_ACTIVE_DEVICE_ID,
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "left_dac",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "DWH53530FHL2FN3AC",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "right_dac",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "DWH53530FLL2FN3A3",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+        "clock_domain_evidence": {
+            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
+            "measurement_id": "scarlett-ticks-900s-repeat-buffered",
+            "status": "passed",
+            "duration_seconds": 900,
+            "sample_rate_hz": 48000,
+            "offset_frames": -7,
+            "max_offset_delta_frames": 0,
+            "drift_ppm": 0,
+            "xrun_count": 0,
+            "dac_serials": [
+                "DWH53530FHL2FN3AC",
+                "DWH53530FLL2FN3A3",
+            ],
+        },
+    }
+
+
+def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    envelope = sound_setup._output_topology_payload()
+    payload = envelope["output_topology"]
+
+    assert payload["hardware"]["device_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert payload["hardware"]["device_label"] == "Dual Apple USB-C DAC 4-channel pair"
+    assert payload["hardware"]["physical_output_count"] == 4
+    assert payload["hardware"]["child_devices"][0]["serial"] == "DWH53530FHL2FN3AC"
+    assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock"
+    assert envelope["clock_domain"]["composite_clock_supported"] is True
+    assert envelope["clock_domain"]["measured_composite_supported"] is False
+    assert "clock_evidence_missing" in {
+        issue["code"] for issue in envelope["clock_domain"]["issues"]
+    }
+    assert payload["safety"]["sound_tests_allowed"] is False
+
+
+def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
+    monkeypatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    payload = sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple_pair",
+        "name": "Dual Apple stereo active pair",
+        "status": "draft",
+        "hardware": _dual_apple_hardware(),
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 2,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 3,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+        },
+    })
+
+    topology = payload["output_topology"]
+
+    assert topology["status"] == "verified"
+    assert topology["hardware"]["physical_output_count"] == 4
+    assert payload["clock_domain"]["status"] == "dual_apple_composite_clock"
+    assert payload["clock_domain"]["measured_composite_supported"] is True
+    assert payload["clock_domain"]["multi_device_aggregate_supported"] is False
+    assert payload["channel_identity"]["verified_channel_count"] == 4
+    assert topology["safety"]["sound_tests_allowed"] is False
 
 
 def test_sound_output_topology_save_validates_and_persists_complete_contract(

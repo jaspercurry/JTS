@@ -42,7 +42,8 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_OPENAI_REASONING_EFFORT", "JASPER_OPENAI_NOISE_REDUCTION",
         "JASPER_GROK_MODEL", "JASPER_GROK_VOICE",
         "JASPER_WAKE_MODEL",
-        "JASPER_DUCK_DB", "JASPER_DAILY_SPEND_CAP_USD",
+        "JASPER_DUCK_DB", "JASPER_DUCK_TRANSPORT",
+        "JASPER_DAILY_SPEND_CAP_USD",
         "JASPER_MIC_DEVICE", "JASPER_TTS_DEVICE",
         "JASPER_SPEAKER_NAME",
         "JASPER_DEFAULT_LOCATION", "JASPER_WEATHER_LAT",
@@ -70,6 +71,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.grok_voice == catalog.default_voice_id("grok")
     assert cfg.wake_model == "hey_jarvis"
     assert cfg.duck_db == -25.0
+    assert cfg.duck_transport == "fanin"
     # Idle context reset is opt-in (0 = disabled). Per-provider so the
     # cost/race tradeoffs can be tuned separately.
     assert cfg.openai_context_reset_sec == 0
@@ -91,7 +93,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.aec_chip_aec_enabled is False
     assert cfg.tts_device == "jasper_out"
     assert cfg.tts_transport == "outputd"
-    assert cfg.tts_outputd_socket == "/run/jasper-outputd/tts.sock"
+    assert cfg.tts_outputd_socket == "/run/jasper-fanin/tts.sock"
     assert cfg.tts_output_rate == 48000
     assert cfg.assistant_loudness_profile_path == (
         "/var/lib/jasper/assistant_loudness_profiles.json"
@@ -281,6 +283,7 @@ def test_blank_spotify_redirect_uri_uses_hostname_default(monkeypatch):
         ("JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", "150", "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT"),
         ("JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", "-1", "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT"),
         ("JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", "200", "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT"),
+        ("JASPER_DUCK_TRANSPORT", "sidechain", "JASPER_DUCK_TRANSPORT"),
     ],
 )
 def test_invalid_env_values_raise(monkeypatch, name, value, expected):
@@ -297,6 +300,24 @@ def test_tts_outputd_transport_env(monkeypatch):
     cfg = Config.from_env()
     assert cfg.tts_transport == "outputd"
     assert cfg.tts_outputd_socket == "/tmp/jasper-outputd.sock"
+
+
+def test_duck_transport_env_accepts_fanin(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_DUCK_TRANSPORT", "fanin")
+
+    cfg = Config.from_env()
+
+    assert cfg.duck_transport == "fanin"
+
+
+def test_fanin_tts_socket_requires_fanin_duck_transport(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_TTS_OUTPUTD_SOCKET", "/run/jasper-fanin/tts.sock")
+    monkeypatch.setenv("JASPER_DUCK_TRANSPORT", "camilla")
+
+    with pytest.raises(RuntimeError, match="JASPER_DUCK_TRANSPORT=fanin"):
+        Config.from_env()
 
 
 def test_spend_cap_safety_multiplier_below_one_raises(monkeypatch):

@@ -404,7 +404,7 @@ When a provider exposes a stable assistant audio item id, its
 `audio_out_chunks()` with `provider_item_id` populated. OpenAI does
 this from `response.output_item.added.item.id`; Gemini currently has
 no equivalent and leaves the field empty. The voice daemon passes this
-identity through `OutputdTtsPlayout.write_segment()` so outputd's
+identity through `OutputdTtsPlayout.write_segment()` so fan-in's
 flush acknowledgement can later drive provider-specific truncate or
 cancel calls.
 
@@ -443,6 +443,6 @@ These have all been surfaced and rejected in design reviews:
 
 - [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md) — Gemini-side reconnect supervisor + idle context reset
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
-- [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
+- [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-06-04 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`)
+Last verified: 2026-06-08 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS)

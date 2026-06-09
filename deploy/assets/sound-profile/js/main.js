@@ -712,13 +712,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderOutputHardwareCard(topology, statusValue) {
     var hardware = outputHardware(topology) || {};
     var clock = outputClockDomainReport();
+    var clockStatus = clock && clock.status || '';
+    var compositeClock = clockStatus.indexOf('dual_apple_composite_clock') === 0;
+    var clockSupportLabel = compositeClock ? 'Composite clock' : 'Multi-DAC aggregate';
+    var clockSupportValue = compositeClock
+      ? (clock && clock.composite_clock_supported ? 'supported' : 'needs attention')
+      : (clock && clock.multi_device_aggregate_supported ? 'supported' : 'not enabled');
     var rows = [
       ['Device', hardware.device_id || 'unknown'],
       ['Outputs', String(hardware.physical_output_count || 0) + ' physical'],
       ['Route', hardware.route || 'default'],
       ['Clock domain', clock && clock.clock_domain_label ||
         hardware.clock_domain_label || 'Single output device clock'],
-      ['Multi-DAC aggregate', clock && clock.multi_device_aggregate_supported ? 'supported' : 'not enabled'],
+      [clockSupportLabel, clockSupportValue],
       ['Topology', topology.name || topology.topology_id || 'Speaker outputs']
     ];
     return '<div class="output-card output-card--hardware">' +
@@ -1028,7 +1034,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     blockers.forEach(function(issue) { rows.push(['blocker', issue.code, issue.message]); });
     warnings.forEach(function(issue) { rows.push(['warning', issue.code, issue.message]); });
     if (clock && clock.status && clock.status !== 'single_device_clock') {
-      rows.push(['warning', 'clock_domain', clock.recommendation || 'Output clocking needs review.']);
+      rows.push([
+        clock.composite_clock_supported ? 'info' : 'warning',
+        'clock_domain',
+        clock.recommendation || 'Output clocking needs review.'
+      ]);
     }
     rows.push([
       safety.sound_tests_allowed ? 'warning' : 'info',

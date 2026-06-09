@@ -2,7 +2,7 @@
 name = "jasper-outputd"
 version = "0.1.0"
 edition = "2021"
-description = "JTS final-output owner: mixes post-DSP content with assistant audio and publishes a speaker reference."
+description = "JTS final-output owner: writes the final DAC sink and publishes output health/reference taps."
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]

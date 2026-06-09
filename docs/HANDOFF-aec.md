@@ -50,12 +50,13 @@ beam to `:9876` while exposing `:9887`/`:9888` scoring legs. Software
 AEC3 remains the fallback profile (`xvf_software_aec3`) when chip-AEC
 is unavailable or explicitly selected.
 
-In the software-AEC3 path, the bridge consumes the content/reference
-path used by the software canceller, and TTS/cues are not part of that
-AEC reference. In the chip-AEC path, outputd's direct final-output
-fanout is the reference source, so the chip sees the same source
-timeline as the physical DAC. Do not route TTS through CamillaDSP or
-add another ad-hoc ALSA tap to solve reference alignment.
+In the software-AEC3 path, the bridge consumes outputd's 48 kHz stereo
+speaker monitor over UDP and downmixes/resamples it for WebRTC AEC3. The
+same outputd monitor feeds chip-AEC/corpus/diagnostics; chip-AEC
+additionally gets the downsampled XVF USB-IN reference PCM. Explicit
+`JASPER_AEC_REF_SOURCE=alsa` remains a fallback/diagnostic mode for the
+pre-DSP `pcm.jasper_ref` path. Do not add another ad-hoc ALSA tap to solve
+reference alignment.
 
 To turn the bridge OFF (or back to chip-direct mic for A/B testing),
 set the state file to disabled and run the reconciler:
@@ -193,7 +194,9 @@ retained for historical context).
                                                        │
                                                        ▼
               jasper-aec-bridge:
-                ref = pcm.jasper_ref (plug-wrapped dsnoop on music chain)
+                ref = outputd UDP speaker monitor
+                      (final electrical samples: renderer/content plus
+                       TTS/cues, post-CamillaDSP/outputd)
                      → resample 48k → 16k → HPF 125 Hz → REF_GAIN +0 dB
                 mic = chip ch 1 (16k mono, raw-ish)
                      → AudioProcessing internal HPF 100 Hz
@@ -363,7 +366,7 @@ somewhere in the chain:
 | AirPlay (shairport-sync) | 44.1 kHz | shairport writes `shairport_substream` → ALSA plug |
 | Spotify Connect (librespot) | 44.1 / 48 kHz | librespot → snd-aloop, plug if mismatch |
 | Bluetooth A2DP (bluealsa-aplay) | 44.1 / 48 kHz | bluealsa-aplay → snd-aloop, plug if mismatch |
-| AEC bridge ref read | 16 kHz (internal) | `pcm.jasper_ref` plug → bridge requests 48k from 48k loopback (no-op normally); but the upstream 44.1→48 conversion happens via the same plug |
+| AEC bridge ref read | 16 kHz (internal) | Normal path: outputd UDP speaker monitor at 48 kHz → bridge resamples/downmixes. Explicit fallback: `pcm.jasper_ref` plug → bridge requests 48k from 48k loopback. |
 
 The bridge's *own* 48→16 resample is scipy `resample_poly`, which
 is high-quality polyphase. That step has never been the issue.
@@ -2577,4 +2580,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-04.
+Last verified: 2026-06-08.

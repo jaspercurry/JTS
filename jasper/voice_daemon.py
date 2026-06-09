@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import signal
+import socket
 import sys
 import time
 from collections import deque
@@ -90,6 +91,70 @@ VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
 SYNTHETIC_AUDIO_PROFILE_PROVIDER = "jts"
 SYNTHETIC_AUDIO_PROFILE_UPDATED_AT = "static"
+
+
+class FanInDucker:
+    """Voice-session duck transport for the pre-DSP TTS topology.
+
+    The voice loop still owns the duck/restore lifecycle; fan-in owns
+    where the attenuation happens. This keeps TTS out of the attenuated
+    program lane while sending the final mixed signal through CamillaDSP
+    crossover/protection.
+    """
+
+    def __init__(self, socket_path: str, duck_db: float) -> None:
+        self._socket_path = socket_path
+        self._duck_db = duck_db
+        self._ducked = False
+
+    @property
+    def is_ducked(self) -> bool:
+        return self._ducked
+
+    async def duck(self) -> None:
+        if self._ducked:
+            return
+        ok = await asyncio.to_thread(
+            self._send_command, b"PROGRAM_DUCK_ON\nCLOSE\n"
+        )
+        if not ok:
+            return
+        self._ducked = True
+        logger.info(
+            "event=duck on=true transport=fanin socket=%s duck_db=%.1f",
+            self._socket_path,
+            self._duck_db,
+        )
+
+    async def restore(self) -> None:
+        if not self._ducked:
+            return
+        try:
+            ok = await asyncio.to_thread(
+                self._send_command, b"PROGRAM_DUCK_OFF\nCLOSE\n"
+            )
+            if ok:
+                logger.info(
+                    "event=duck on=false transport=fanin socket=%s",
+                    self._socket_path,
+                )
+        finally:
+            self._ducked = False
+
+    def _send_command(self, payload: bytes) -> bool:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1.0)
+                sock.connect(self._socket_path)
+                sock.sendall(payload)
+            return True
+        except OSError as e:
+            logger.warning(
+                "event=duck_failed transport=fanin socket=%s detail=%s",
+                self._socket_path,
+                e,
+            )
+            return False
 
 
 def _synthetic_audio_profile(
@@ -720,7 +785,10 @@ def _active_voice(cfg: Config) -> str:
 def _tts_ready_detail(cfg: Config) -> str:
     """Return the startup-log fields for the selected TTS transport."""
     if cfg.tts_transport == "outputd":
-        return f"tts_transport=outputd tts_socket={cfg.tts_outputd_socket}"
+        return (
+            f"tts_transport=outputd tts_owner=fanin "
+            f"tts_socket={cfg.tts_outputd_socket}"
+        )
     return f"tts_transport={cfg.tts_transport} unsupported=true"
 
 
@@ -1304,7 +1372,7 @@ class WakeLoop:
         cfg: Config,
         tts: TtsPlayout,
         connection: LiveConnection,
-        ducker: Ducker,
+        ducker: Ducker | FanInDucker,
         content_activity: ContentActivityTracker,
         usage_store: UsageStore,
         spend_cap: SpendCap,
@@ -1567,7 +1635,7 @@ class WakeLoop:
         """Public wrapper for `_play_cue`, callable via the control
         socket so external clients (jasper-control HTTP, the
         `jasper-cues play` CLI) can play cues through the daemon's
-        outputd-backed TtsPlayout."""
+        fan-in-backed TtsPlayout."""
         if not slug:
             return "missing_slug"
         if self._cues is None:
@@ -1632,6 +1700,15 @@ class WakeLoop:
         more than the dial-twist-wins behavior `Ducker` is designed
         for. See `jasper/camilla.py:CueDuck` for the rationale."""
         if self._cues is None:
+            return
+        if isinstance(self._ducker, FanInDucker):
+            try:
+                await self._ducker.duck()
+                await self._cues.speak_text(text)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("dynamic text play failed: %s", e)
+            finally:
+                await self._ducker.restore()
             return
         if self._camilla is None:
             # No camilla handle — degrade to unducked playback rather
@@ -2576,10 +2653,10 @@ class WakeLoop:
 
             # Step 3: existing chirp + acquire + drain flow.
             #
-            # Prime outputd's loudness context before the chirp as well
+            # Prime the TTS IPC owner's loudness context before the chirp as well
             # as before assistant TTS. The chirp is fire-and-forget
             # below, so waiting for _begin_turn's prepare would race it
-            # back onto outputd's no-context fallback.
+            # back onto the no-context fallback.
             await self._prepare_assistant_loudness_context()
             # "Now listening" chirp. Fire-and-forget so it plays in
             # parallel with `_begin_turn` opening rather than adding
@@ -3401,7 +3478,7 @@ async def _start_control_socket(
         END                 → manual_session_end    (long-press release)
         STATUS              → session_status        (diagnostic snapshot)
         CUE_PLAY <slug>     → play a registered audio cue through the
-                              daemon's outputd-backed TtsPlayout. Routed
+                              daemon's fan-in-backed TtsPlayout. Routed
                               here so a standalone CLI doesn't have to
                               recreate the output path or gain policy.
         MEASURE_PAUSE       → open a room-correction measurement
@@ -3638,14 +3715,18 @@ async def run() -> None:
         spotify_router=volume_spotify_router,
         spotify_device_name=cfg.spotify_device_name,
     )
-    # Ducker built after the coordinator so it can read the canonical
-    # camilla target on restore (avoids additive-overshoot when other
-    # writers — dial twists, voice tools — touch listening_level mid-
-    # session).
-    ducker = Ducker(
-        camilla, cfg.duck_db,
-        target_db_provider=volume_coordinator.get_camilla_target_db,
-    )
+    # Ducker built after the coordinator so restore follows the active
+    # output topology. Current production routes TTS/cues into fan-in
+    # before CamillaDSP, so ducking must also happen in fan-in; otherwise
+    # Camilla main_volume would attenuate assistant audio along with
+    # renderer/program audio.
+    if cfg.duck_transport == "fanin":
+        ducker = FanInDucker(cfg.tts_outputd_socket, cfg.duck_db)
+    else:
+        ducker = Ducker(
+            camilla, cfg.duck_db,
+            target_db_provider=volume_coordinator.get_camilla_target_db,
+        )
     try:
         target_level, restore_reason = await volume_coordinator.initialize(
             stale_after_sec=cfg.volume_regress_after_sec,

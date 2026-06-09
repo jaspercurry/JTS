@@ -1017,8 +1017,13 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
     `jasper.http_security.mutating_request_allowed` — the same allowlist
     the control daemon already runs in production (configured hostname,
     `.local`, RFC1918/ULA/loopback IPs, missing Host for non-browser
-    clients). Folded into `verify_csrf` so every wizard inherits it at
-    its single mutating chokepoint without per-page edits.
+    clients). Used by the shared mutating request guard so every wizard
+    inherits it at its single mutating chokepoint without per-page edits.
+
+    Some form-rendered handlers parse the small POST form before calling
+    `verify_csrf(handler, form)` so they can pass the parsed token. The
+    load-bearing ordering invariant is: route-check unknown POST paths
+    first, then call this host guard before any mutation or token compare.
 
     Returns False (so the caller rejects with 403) on a disallowed
     Host/Origin and logs one structured `event=http.reject` line."""
@@ -1042,10 +1047,14 @@ def verify_csrf(
     matches the cookie. `secrets.compare_digest` for constant-time
     comparison.
 
-    The Host/Origin check (`guard_mutating_host`) runs first so a
-    DNS-rebinding / cross-site browser request is rejected before any
-    state change — mirroring jasper-control's `_guard_mutating_request`.
-    Both must pass; a failure of either returns False, and the wizard's
+    Within this function the Host/Origin check (`guard_mutating_host`)
+    runs before CSRF token comparison, so a DNS-rebinding / cross-site
+    browser request is rejected before token work and before any state
+    change — mirroring jasper-control's `_guard_mutating_request`. Some
+    form handlers parse the small request body before this call so they
+    can pass `form`; that is acceptable only because route checks happen
+    first and mutation happens after this function returns True. Both
+    checks must pass; a failure of either returns False, and the wizard's
     POST handler turns that into a 403 via `reject_csrf`.
 
     Accepts the token via either:

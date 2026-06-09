@@ -389,6 +389,11 @@ def _active_chip_inputs() -> dict:
             "backend": "alsa",
             "dac": {"pcm": "outputd_dac", "sample_rate": 48000},
             "reference_outputs": {
+                "speaker_reference_source": "outputd_final_electrical",
+                "speaker_reference_is_fallback": False,
+                "speaker_reference_active": True,
+                "speaker_reference_sample_rate": 48000,
+                "speaker_reference_channels": 2,
                 "chip_ref_pcm": "plughw:CARD=Array,DEV=0",
                 "chip_ref_sample_rate": 16000,
                 "chip_ref_period_frames": 320,
@@ -521,6 +526,11 @@ def test_chip_aec_readiness_fails_when_outputd_reference_missing():
         "backend": "alsa",
         "dac": {"pcm": "outputd_dac", "sample_rate": 48000},
         "reference_outputs": {
+            "speaker_reference_source": "outputd_final_electrical",
+            "speaker_reference_is_fallback": False,
+            "speaker_reference_active": False,
+            "speaker_reference_sample_rate": 48000,
+            "speaker_reference_channels": 2,
             "chip_ref_pcm": None,
             "chip_ref_sample_rate": 16000,
             "udp_target": None,

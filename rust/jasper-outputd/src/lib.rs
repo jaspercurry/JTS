@@ -1,10 +1,12 @@
 //! Core for the JTS outputd final-output owner.
 //!
 //! This crate models the contracts from
-//! `docs/HANDOFF-speaker-output-reference.md`: content plus assistant
-//! audio are mixed once, written to the output sink, copied to bounded
-//! reference consumers, and accounted for in a playout ledger. The
-//! outputd systemd unit enables the ALSA transport.
+//! `docs/HANDOFF-speaker-output-reference.md`: production audio is already
+//! mixed and processed before outputd, then outputd writes the final
+//! electrical samples to the selected sink and publishes bounded monitor/
+//! reference taps. Assistant/TTS ingress is owned by `jasper-fanin`; the
+//! older outputd TTS IPC path has been retired. The outputd systemd unit
+//! enables the ALSA transport.
 
 pub mod alsa_backend;
 pub mod config;
@@ -14,7 +16,6 @@ pub mod fake;
 pub mod ledger;
 pub mod loudness;
 pub mod mixer;
-pub mod protocol;
 pub mod reference;
 pub mod state;
 pub mod types;

@@ -137,25 +137,22 @@ jasper-fanin (the new Rust daemon):
 
 The "summed music" substream:
   CamillaDSP captures  ← pcm.jasper_capture → dsnoop on hw:Loopback,1,7
-  AEC bridge captures  ← pcm.jasper_ref     → dsnoop on hw:Loopback,1,7
-                                                  (same substream, both consumers)
+  AEC fallback/diag    ← pcm.jasper_ref     → dsnoop on hw:Loopback,1,7
+  Production AEC ref   ← outputd UDP speaker monitor after CamillaDSP/outputd
 
 CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
 ```
 
 ### What this preserves
 
-- **TTS bypass of CamillaDSP.** TTS still bypasses CamillaDSP, but on
-  current main it enters `jasper-outputd` instead of
-  writing directly to the legacy `jasper_out` dmix. Music still goes
-  through CamillaDSP first; the ducker's `main_volume` still attenuates
-  only music. `jasper-outputd` now measures content loudness and applies
-  provider source-loudness profiles to scale assistant audio at the
-  final mix boundary.
-- **AEC reference tap shape.** Unchanged at the consumer end —
-  `pcm.jasper_ref` is still a plug-wrapped dsnoop; the AEC bridge code
-  doesn't change at all. Only the underlying substream-pair shifts from
-  `(1,0)` to `(1,7)`.
+- **Pre-DSP TTS for every output profile.** TTS/cues enter
+  `jasper-fanin` instead of bypassing CamillaDSP. Fan-in measures
+  pre-duck program loudness, applies the provider/profile peak-capped
+  assistant gain policy, applies program ducking to renderer lanes, then
+  mixes TTS/cues before CamillaDSP crossover/protection.
+- **AEC fallback tap shape.** `pcm.jasper_ref` remains a plug-wrapped
+  dsnoop for explicit fallback/diagnostics. The normal production AEC
+  reference is outputd's UDP speaker monitor after CamillaDSP/outputd.
 - **Mux arbitration.** `jasper-mux` still owns source policy:
   latest-source-wins in auto mode, and user-selected source override
   from the landing page. Fan-in only enforces the low-level selected
@@ -164,8 +161,8 @@ CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongl
   from `jasper_renderer_in` (the plug-on-dmix) to its assigned substream
   alias (`pcm.librespot_substream`, etc.). The renderer code is unchanged.
 - **Final output owner.** Changed by the outputd mainline topology:
-  music + TTS now sum in `jasper-outputd`, and `pcm.jasper_out` is only
-  the pre-outputd rollback dmix.
+  the already-crossed-over/protected stream reaches `jasper-outputd`,
+  and `pcm.jasper_out` is only the pre-outputd rollback dmix.
 - **CamillaDSP config.** Capture device stays `plug:jasper_capture`.
   The dsnoop's underlying substream remains `(1,7)` in the asoundrc —
   invisible to CamillaDSP itself. Playback is `outputd_content_playback`
@@ -357,6 +354,7 @@ project's `event=<subsystem>.<action> [key=value ...]` convention.
 | `event=fanin.xrun source=input label=airplay count=N` | input overrun recovered | WARN |
 | `event=fanin.xrun source=output count=N frames_pending=M` | output underrun recovered | WARN |
 | `event=fanin.source_select selected=airplay` | mux selected one input lane (or `selected=auto` / `selected=none`) | INFO |
+| `event=fanin.assistant_loudness kind=... final_gain_db=... reason=...` | pre-DSP TTS/cue gain decision | INFO |
 | `event=fanin.watchdog.stale age_ms=X` | heartbeat thread skipped a ping (sentinel stale) | WARN |
 | `event=fanin.shutdown reason=signal graceful=true` | clean shutdown | INFO |
 
@@ -428,8 +426,9 @@ Fan-in checks are in the main doctor run-list:
 1. **`check_fanin_asound_wiring`** verifies `/etc/asound.conf` has no
    retired `jasper_renderer_*` dmix blocks, defines every private
    renderer/test lane with a pinned 48 kHz stereo S16_LE plug wrapper,
-   and points `pcm.jasper_capture` / `pcm.jasper_ref` at summed
-   substream 7.
+   points `pcm.jasper_capture` at summed substream 7, and keeps
+   `pcm.jasper_ref` as the explicit pre-DSP AEC fallback/diagnostic
+   wrapper.
 
 2. **`check_fanin_service`** treats disabled or inactive
    `jasper-fanin.service` as a failure, probes
@@ -475,6 +474,9 @@ JASPER_FANIN_SAMPLE_RATE=48000
 JASPER_FANIN_PERIOD_FRAMES=256                                  # ~5.3 ms at 48k
 JASPER_FANIN_INPUT_BUFFER_FRAMES=4096                            # ~85 ms input burst absorber — see "Buffer sizing" below
 JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072                           # ~64 ms output queue toward CamillaDSP/AEC
+JASPER_FANIN_TTS_SOCKET=/run/jasper-fanin/tts.sock                # production TTS IPC; "disabled" is rollback/lab only
+JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kHz
+JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
 ```
 
 The list-shaped env vars (`JASPER_FANIN_INPUT_PCMS`,
@@ -483,6 +485,19 @@ delimited. ALSA hw PCM names contain commas (`hw:Loopback,1,0`), so
 a comma-delimited shape silently splits one PCM name into three
 entries. Discovered via the chunk 2 smoke test; regression-tested
 in `config::tests::pipe_delimiter_preserves_commas_inside_hw_pcm_names`.
+
+The TTS socket speaks the same line protocol as outputd's TTS
+socket (`GAIN`, `PREPARE_ASSISTANT`, `SEGMENT_START`, `AUDIO`,
+`FLUSH_SYNC`, `CLOSE`) plus `PROGRAM_DUCK_ON/OFF`. Fan-in drains those
+commands at period boundaries, drops excess queued audio over the
+pending-frame budget, applies program ducking only to renderer lanes,
+then mixes TTS/cues into the summed buffer before writing toward
+CamillaDSP. `PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
+drive the same content-loudness/profile/peak-cap gain decision used by
+outputd; the latest values are exposed under `tts.assistant_loudness` in
+the STATUS response. `PROGRAM_DUCK_OFF` is allowed to release a duck
+even after an audio flush advances the TTS epoch; stale
+`PROGRAM_DUCK_ON` is not allowed to relatch after a flush.
 
 **Period sizing**: 256 frames at 48 kHz = ~5.3 ms wakeup cadence,
 frequent enough that the heartbeat sentinel sees real forward
@@ -585,7 +600,8 @@ plug played, but per-renderer instead of fronting a shared dmix.
 
 - `pcm.jasper_capture` dsnoop's slave shifts from `hw:Loopback,1,0` →
   `hw:Loopback,1,7` (the new "summed music" substream).
-- `pcm.jasper_ref` plug wrapper unchanged (slave is still `jasper_capture`).
+- `pcm.jasper_ref` plug wrapper unchanged as explicit fallback/diagnostics
+  (slave is still `jasper_capture`).
 - CamillaDSP's `v1.yml` capture device unchanged (still `plug:jasper_capture`).
 
 ### snd-aloop module parameters
@@ -894,4 +910,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-06-01 (outputd topology and assistant loudness ownership rechecked).
+Last verified: 2026-06-08 (fan-in-owned TTS/duck IPC, outputd final-sink ownership, and assistant loudness ownership rechecked).

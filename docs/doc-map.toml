@@ -84,9 +84,15 @@ code = [
   "jasper/source_state.py",
   "jasper/camilla.py",
   "jasper/camilla_config_contract.py",
+  "jasper/output_hardware.py",
   "jasper/output_topology.py",
   "deploy/alsa/**",
   "deploy/camilladsp/**",
+  "deploy/bin/jasper-audio-hardware-reconcile",
+  "deploy/bin/jasper-dac-init",
+  "deploy/bin/jasper-headphone-monitor",
+  "deploy/udev/99-jasper-audio-hardware-reconcile.rules",
+  "deploy/udev/99-jasper-apple-dongle.rules",
   "deploy/shairport-sync.conf.template",
   "deploy/systemd/jasper-fanin.service",
   "deploy/systemd/jasper-outputd.service",
@@ -111,9 +117,32 @@ docs = [
 requires_docs_when = [
   "A source lane, fan-in buffer, ALSA PCM, mux arbitration rule, renderer device, or source-selection behavior changes.",
   "A source starts using a different volume carrier or bypasses/enters CamillaDSP differently.",
+  "Output hardware profile detection, DAC hotplug reconcile behavior, or Apple DAC mixer pinning changes.",
 ]
 verification = [
   "pytest tests/test_fanin_wiring.py tests/test_fanin_systemd.py tests/test_volume_coordinator.py tests/test_airplay_render.py",
+]
+
+[[subsystem]]
+id = "dual-apple-dac-lab"
+title = "Dual Apple USB-C DAC lab topology"
+safety = "audio-output-risk"
+code = [
+  "rust/jasper-dual-dac-lab/**",
+  "docs/dual-apple-dac-lab.md",
+]
+docs = [
+  "docs/dual-apple-dac-lab.md",
+  "docs/HANDOFF-active-speaker-dsp.md",
+  "docs/HANDOFF-speaker-output-reference.md",
+  "docs/testing-tooling.md",
+]
+requires_docs_when = [
+  "The lab binary, serial-pinned direct-PCM behavior, safety gates, evidence bundle contract, or dual-Apple-DAC pass/fail criteria change.",
+]
+verification = [
+  "cargo test --locked --manifest-path rust/jasper-dual-dac-lab/Cargo.toml",
+  "python3 scripts/docs-impact.py --validate-only",
 ]
 
 [[subsystem]]
@@ -503,6 +532,7 @@ docs = [
   "docs/HANDOFF-source-capabilities.md",
   "docs/HANDOFF-volume-control-redesign.md",
   "docs/HANDOFF-persistent-live-session.md",
+  "docs/PROPOSAL-dac-profile-registry.md",
 ]
 requires_docs_when = [
   "A roadmap item becomes implementation work, a future integration lands, or a historical transition brief is superseded by shipped behavior.",

@@ -172,8 +172,33 @@ def build_playback_readiness(
         issue for issue in safe_session.get("issues", [])
         if isinstance(issue, dict)
     ]
+    clock_issues = [
+        issue for issue in clock.get("issues", [])
+        if isinstance(issue, dict)
+    ]
+    clock_blockers = [
+        issue for issue in clock_issues
+        if issue.get("severity") == "blocker"
+    ]
     calibration_bounded = _bounded_level(calibration_level)
     backend = tone_backend if isinstance(tone_backend, dict) else {}
+    clock_status = str(clock.get("status") or "")
+    clock_ready = (
+        clock_status == "single_device_clock"
+        and not bool(clock.get("multi_device_aggregate_supported"))
+    ) or (
+        clock_status == "dual_apple_composite_clock"
+        and bool(clock.get("composite_clock_supported"))
+    )
+    clock_message = (
+        "Single-device output clock is in use"
+        if clock_status == "single_device_clock"
+        else (
+            "Dual Apple composite output profile is in use"
+            if clock_status == "dual_apple_composite_clock"
+            else "Use one coherent output clock or measured composite output owner"
+        )
+    )
     gates = [
         _gate(
             "topology_valid",
@@ -217,14 +242,9 @@ def build_playback_readiness(
         ),
         _gate(
             "single_clock_domain",
-            label="Outputs use one coherent device clock",
-            passed=clock.get("status") == "single_device_clock"
-            and not clock.get("multi_device_aggregate_supported"),
-            message=(
-                "Single-device output clock is in use"
-                if clock.get("status") == "single_device_clock"
-                else "Use one coherent multi-output DAC for product playback"
-            ),
+            label="Outputs use one coherent or measured composite clock",
+            passed=clock_ready,
+            message=clock_message,
         ),
         _gate(
             "tweeter_protection",
@@ -289,6 +309,7 @@ def build_playback_readiness(
     ]
     issues: list[dict[str, str]] = []
     issues.extend(topology_blockers)
+    issues.extend(clock_issues)
     issues.extend(environment_issues)
     issues.extend(session_issues)
     known_issue_codes = {
@@ -302,6 +323,8 @@ def build_playback_readiness(
         if gate["id"] == "active_config_load_gate" and environment_issues:
             continue
         if gate["id"] == "safe_session_armed" and session_issues:
+            continue
+        if gate["id"] == "single_clock_domain" and clock_blockers:
             continue
         issues.append(_issue("blocker", gate["id"], gate["message"]))
         known_issue_codes.add(gate["id"])
@@ -373,6 +396,15 @@ def build_playback_readiness(
             "clock_domain_id": clock.get("clock_domain_id"),
             "multi_device_aggregate_supported": bool(
                 clock.get("multi_device_aggregate_supported")
+            ),
+            "measured_composite_supported": bool(
+                clock.get("measured_composite_supported")
+            ),
+            "composite_clock_supported": bool(
+                clock.get("composite_clock_supported")
+            ),
+            "coherent_physical_output_count": (
+                clock.get("coherent_physical_output_count")
             ),
         },
         "environment": {

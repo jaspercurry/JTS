@@ -404,7 +404,7 @@ Multiple guardrails sit on top:
 
 - `regress_listening_level_if_stale` clamps stale + extreme values
   into `[20%, 70%]` by default.
-- `OutputdTtsPlayout.set_gain_db` and jasper-outputd enforce the
+- `OutputdTtsPlayout.set_gain_db` and jasper-fanin enforce the
   `MAX_TTS_GAIN_DB = -6 dB` hardware ceiling on the TTS path
   independent of any volume math.
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
@@ -567,4 +567,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-06-04 (0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and outputd TTS ceiling path rechecked)
+Last verified: 2026-06-08 (0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path rechecked)

@@ -10,7 +10,8 @@
 # docs/HANDOFF-aec.md). Affects:
 #   - shairport-sync writing shairport_substream (44.1k → 48k)
 #   - bluealsa-aplay's plug operations
-#   - jasper-aec-bridge reading pcm.jasper_ref (a `plug:` wrapper)
+#   - explicit AEC fallback/diagnostics reading pcm.jasper_ref
+#     (a `plug:` wrapper)
 # Medium preserves the speech/AEC band while saving CPU; Best keeps
 # the highest-frequency edge for critical listening. Toggle at
 # http://jts.local/system/.
@@ -40,13 +41,14 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   - jasper-fanin reads those per-renderer capture substreams, sums
 #     them sample-wise, and writes the single "summed music" stream to
 #     substream 7.
-#   - CamillaDSP and the AEC bridge both read that summed stream via
-#     `pcm.jasper_capture` / `pcm.jasper_ref`.
+#   - CamillaDSP reads that summed stream via `pcm.jasper_capture`.
+#     `pcm.jasper_ref` remains as an explicit AEC fallback/diagnostic
+#     view; production AEC now consumes outputd's speaker monitor.
 #   - In the outputd topology, CamillaDSP writes post-DSP content to
 #     `outputd_content_playback`, and jasper-outputd is the only reader
 #     of `outputd_content_capture` and the only normal writer to
-#     `outputd_dac`. Assistant TTS reaches the same final-output owner
-#     over `/run/jasper-outputd/tts.sock`.
+#     `outputd_dac`. Assistant TTS enters jasper-fanin before
+#     CamillaDSP, then reaches outputd as part of post-DSP content.
 #   - `pcm.jasper_out` remains defined as the pre-outputd rollback
 #     dmix path, but it is not the active convergence point.
 #
@@ -57,6 +59,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   bluealsa-aplay     → pcm.bluealsa_substream    → hw:Loopback,0,2
 #   jasper-usbsink     → pcm.usbsink_substream     → hw:Loopback,0,3
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
+#   active 4ch DSP    ← outputd_active_content_*  ← hw:Loopback,0/1,5
 #                                                       │
 #                                                       ▼ (loop)
 #   jasper-fanin reads        hw:Loopback,1,0..4
@@ -75,7 +78,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #                                                   outputd_content_capture
 #                                                               │
 #                                                               ▼
-#                                                       jasper-outputd ◄── TTS socket
+#                                                       jasper-outputd
 #                                                               │
 #                                                               ▼
 #                                                           outputd_dac
@@ -108,15 +111,15 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #     outputd config. plug keeps the consumer tolerant of
 #     operator mistakes, but the intended fan-in output shape is fixed
 #     at 48 kHz S16_LE.
-#   - AEC bridge opens `jasper_ref` (defined below) — a plug-wrapped
-#     alias of jasper_capture. Mirrors the same pattern. The bridge
-#     gets samples at whatever rate it requests via alsaaudio,
-#     regardless of the loopback's actual locked rate.
+#   - Explicit AEC fallback/diagnostics can open `jasper_ref` (defined
+#     below) — a plug-wrapped alias of jasper_capture. That path gets
+#     samples at whatever rate it requests via alsaaudio, regardless of
+#     the loopback's actual locked rate.
 #
 # Why two names: keeps `pcm.jasper_capture` semantically "the raw
-# dsnoop tap" so other consumers / diagnostics see exactly what
-# the kernel produced, while `pcm.jasper_ref` advertises its
-# intent ("AEC reference, rate-agnostic") at the call site.
+# dsnoop tap" so CamillaDSP and diagnostics see exactly what the kernel
+# produced, while `pcm.jasper_ref` advertises its fallback intent
+# ("pre-DSP AEC reference, rate-agnostic") at the call site.
 #
 # We never want camilla to read a raw `hw:Loopback,1,N` capture
 # directly — that would deny dsnoop the slave, and the bridge would
@@ -131,9 +134,9 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   2 — bluealsa-aplay     (Bluetooth A2DP)
 #   3 — jasper-usbsink     (USB audio input)
 #   4 — correction/test sweeps
-#   5 — reserved for debug "monitor" tap (offline AEC capture)
+#   5 — outputd active-speaker 4-channel content lane (Camilla -> outputd)
 #   6 — outputd post-DSP content lane (Camilla -> outputd)
-#   7 — fan-in daemon's summed output → CamillaDSP/AEC bridge
+#   7 — fan-in daemon's summed output → CamillaDSP / AEC fallback
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
 # gets converted to the substream's 48 kHz S16_LE via the configured
@@ -188,6 +191,36 @@ pcm.correction_substream {
     }
 }
 
+# Active-speaker post-Camilla lane for jasper-outputd. Camilla writes
+# protected/crossed-over 4-channel active-speaker content here;
+# jasper-outputd reads the paired capture side and owns the physical
+# dual-DAC write loop. This keeps all sound, including TTS routed
+# through fan-in, behind the same CamillaDSP crossover/protection graph.
+pcm.outputd_active_content_playback {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,5"
+        rate 48000
+        channels 4
+        format S16_LE
+    }
+}
+
+pcm.outputd_active_content_capture {
+    type plug
+    slave {
+        pcm "hw:Loopback,1,5"
+        rate 48000
+        channels 4
+        format S16_LE
+    }
+}
+
+ctl.outputd_active_content_capture {
+    type hw
+    card Loopback
+}
+
 # Post-Camilla lane for jasper-outputd. Camilla writes to
 # outputd_content_playback; jasper-outputd is the only reader of
 # outputd_content_capture. Do NOT wrap this capture side in dsnoop:
@@ -220,9 +253,9 @@ ctl.outputd_content_capture {
 
 # DAC alias for jasper-outputd once it owns the final speaker boundary.
 # The installer/reconciler renders this block as either the default direct
-# hardware alias or, for explicit DAC8x lab/commissioning configs, a tiny
+# hardware alias or, for explicit DAC8x-family lab/commissioning configs, a tiny
 # ALSA route map that keeps outputd's public surface stereo while targeting
-# selected physical DAC8x outputs.
+# selected physical DAC8x-family outputs.
 __OUTPUTD_DAC_PCM_BLOCK__
 
 ctl.outputd_dac {
@@ -248,16 +281,17 @@ pcm.jasper_capture {
     }
 }
 
-# Plug-wrapped alias for the AEC bridge's reference capture.
+# Plug-wrapped alias for explicit AEC fallback/diagnostic reference capture.
 #
 # `plug` is defense in depth around the AEC bridge's requested shape.
 # In the production fan-in topology, jasper_capture's dsnoop slave is
-# pinned to 48 kHz S16_LE stereo and the bridge requests that same
-# shape, so this is normally an identity wrapper. If a future
-# diagnostic or stale topology hands the bridge a different shape,
-# ALSA applies the configured libsamplerate converter instead of
-# feeding mismatched samples. CPU cost is sub-1% of a Pi 5 core at
-# S16 stereo / speech rates; latency cost is a few ms of buffer.
+# pinned to 48 kHz S16_LE stereo. If an operator deliberately runs the
+# AEC bridge in ALSA fallback mode, the bridge requests that same shape,
+# so this is normally an identity wrapper. If a future diagnostic or
+# stale topology hands the bridge a different shape, ALSA applies the
+# configured libsamplerate converter instead of feeding mismatched
+# samples. CPU cost is sub-1% of a Pi 5 core at S16 stereo / speech
+# rates; latency cost is a few ms of buffer.
 #
 # Without this wrapper, the bridge would receive distorted or
 # silent samples when the loopback's locked rate ≠ 48 kHz —

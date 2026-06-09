@@ -18,6 +18,7 @@ from typing import Any
 # route music around jasper-outputd while TTS still uses outputd.
 DEFAULT_CAPTURE_DEVICE = "plug:jasper_capture"
 DEFAULT_PLAYBACK_DEVICE = "outputd_content_playback"
+ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
 DEFAULT_PLAYBACK_FORMAT = "S16_LE"
 DEFAULT_SAMPLE_RATE = 48000

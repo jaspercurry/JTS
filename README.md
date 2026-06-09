@@ -71,8 +71,9 @@ Phone (AirPlay / Spotify Connect / BT)
         │                       │
         │ private snd-aloop lanes: hw:Loopback,0,0..4
         ▼                       ▼
-  hw:Loopback,1,0..4  ──►  jasper-fanin
-                              │ sums active renderer/test lanes
+  hw:Loopback,1,0..4  ──►  jasper-fanin ◄── /run/jasper-fanin/tts.sock
+                              │ sums active renderer/test lanes + TTS
+                              │ applies program duck before TTS mix
                               ▼
                        hw:Loopback,0,7
                               │
@@ -81,8 +82,8 @@ Phone (AirPlay / Spotify Connect / BT)
                               │
                               ▼
                     jasper-camilla (CamillaDSP, port 1234)
-                    - main_volume (the ducking knob)
-                    - flat passthrough today
+                    - main_volume (listening level / source volume)
+                    - crossover / correction / protection profile
                               │
                               ▼
                     outputd_content_playback
@@ -92,8 +93,7 @@ Phone (AirPlay / Spotify Connect / BT)
                               │
                               ▼
                     jasper-outputd (final output owner)
-                    - mixes post-DSP content + assistant audio
-                    - clamps positive TTS gain
+                    - writes post-DSP content to the selected sink
                     - publishes runtime health / xrun counters
                               │
                               ▼
@@ -119,7 +119,7 @@ Phone (AirPlay / Spotify Connect / BT)
         │                            TTS (provider-generated PCM, 24 kHz mono)
         │                                     │
         │                                     ▼
-        │                            /run/jasper-outputd/tts.sock
+        │                            /run/jasper-fanin/tts.sock
         │                                     │
         │                                     ▼
         └──── airborne echo back to mic ◄── speakers
@@ -127,27 +127,24 @@ Phone (AirPlay / Spotify Connect / BT)
 
 `jasper-outputd` is the only normal writer to the physical DAC.
 `jasper-camilla` writes post-DSP content to a private loopback lane,
-and `jasper-voice` sends assistant PCM over outputd's local TTS
-socket. Music still ducks on wake via a CamillaDSP
-`SetMainVolume` call (the `main_volume` property, not the
-`master_gain` mixer — that mixer is identity) over its websocket on
-port 1234.
+and `jasper-voice` sends assistant PCM over fan-in's
+outputd-compatible local TTS socket. Wake/speech ducking happens in
+`jasper-fanin` before TTS is mixed, so CamillaDSP can apply the same
+crossover, correction, and protection path to music and assistant
+audio. CamillaDSP `main_volume` remains the steady-state listening
+level/source-volume knob.
 
 > ### Important: one final output owner
 >
-> Music still goes **through** CamillaDSP. TTS goes **around**
-> CamillaDSP but no longer writes around the final output owner; it
-> enters `jasper-outputd`, which mixes it with post-DSP content and
-> owns the DAC timing loop. `main_volume` only attenuates music — TTS
-> keeps up because `jasper-outputd` measures content loudness before
-> ducking and applies provider/model/voice source-loudness profiles at
-> the final mix boundary. Works the same whether the user is turning
-> the iPhone slider, the Spotify slider, the dial, the
-> `listening_level` wizard, or an external amp downstream of the
-> dongle. To test the chain at a controlled volume, play to
-> `correction_substream`; the legacy `jasper_out` dmix remains only as
-> the pre-outputd rollback path. Why the split and how assistant
-> loudness matching works:
+> Music and TTS both go **through** CamillaDSP. TTS enters
+> `jasper-fanin`, which measures content before ducking, applies the
+> provider/profile/peak-capped assistant loudness matcher, mixes TTS
+> after the program duck, then hands one protected stream to CamillaDSP.
+> `jasper-outputd` owns the final DAC timing loop and nothing else
+> normally writes to the physical sink. To test the chain at a
+> controlled volume, play to `correction_substream`; the legacy
+> `jasper_out` dmix remains only as the pre-outputd rollback path. How
+> assistant loudness matching works:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
 `jasper-mux` arbitrates between the renderers. In auto mode, when a new
@@ -185,10 +182,10 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ `jasper-mux` daemon for latest-source-wins preemption plus manual
   landing-page source selection with guarded volume handoff
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
-- ✅ Outputd mainline topology: `jasper-outputd` owns direct DAC playback,
-  mixes post-DSP content with assistant audio, exposes `/state.outputd`
-  health, and leaves the pre-outputd Camilla statefile intact for
-  rollback
+- ✅ Outputd mainline topology: `jasper-outputd` owns final DAC playback
+  and sink health; assistant audio enters fan-in before CamillaDSP so it is
+  crossed over like other content; `/state.outputd` reports output health
+  while the pre-outputd Camilla statefile remains intact for rollback
 - ✅ Wake-word detection — default is "Jarvis" (the
   [fwartner Home Assistant community model](https://github.com/fwartner/home-assistant-wakewords-collection)
   which also accepts "Hey Jarvis"); picker UI at
@@ -313,7 +310,7 @@ setup. Live with `NO_INTERRUPTION` on the Gemini session and a
 ```
 jasper/                         Python daemon source
   voice_daemon.py               Main: wake → real-time LLM → tools → TTS
-  audio_io.py                   MicCapture, TtsPlayout, outputd TTS transport
+  audio_io.py                   MicCapture, TtsPlayout, TTS IPC transport
   camilla.py                    pycamilladsp websocket helpers
   voice/                        Provider-agnostic LiveConnection / LiveTurn
                                   protocols + adapters (gemini_session,
@@ -766,6 +763,11 @@ reference. Currently:
   model, safe bring-up, channel-map hazards, TTS/cue bypass risk,
   near-field/null-depth/gated measurement triad, LR/IIR-first default,
   and delay/null verification.
+- [`dual-apple-dac-lab.md`](docs/dual-apple-dac-lab.md) —
+  Lab-only runbook for validating two Apple USB-C to 3.5 mm adapters
+  as one stereo DAC per speaker. Keeps the experiment outside the
+  product output path, requires serial-pinned direct hardware PCMs,
+  and starts with no-speaker silence/identity/drift evidence.
 - [`docs/calibration-agent/`](docs/calibration-agent/README.md) —
   Calibration/tuning knowledge corpus:
   measurement-quality guidance, FIR research landing zone,
@@ -789,6 +791,10 @@ reference. Currently:
   Proposal (created 2026-05-22, not yet implemented) for
   restructuring the `jts.local` management surface into a tighter
   layout with a first-run setup wizard.
+- [`PROPOSAL-dac-profile-registry.md`](docs/PROPOSAL-dac-profile-registry.md)
+  — **Proposal** (updated 2026-06-08, not yet implemented) — scoped
+  design for a data-driven DAC profile registry covering Apple USB-C,
+  HiFiBerry DAC8x-family, and dual-Apple composite output profiles.
 - [`HANDOFF-canonical-ui-migration.md`](docs/HANDOFF-canonical-ui-migration.md)
   — **Historical** (snapshot 2026-05-31) — the handoff for the
   now-completed canonical design-system migration of all wizards.

@@ -35,6 +35,19 @@ def test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop():
     assert "type dsnoop" not in capture
 
 
+def test_asoundrc_declares_outputd_active_four_channel_lane():
+    rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
+    playback = _pcm_block(rc, "outputd_active_content_playback")
+    capture = _pcm_block(rc, "outputd_active_content_capture")
+    assert "type plug" in playback
+    assert 'pcm "hw:Loopback,0,5"' in playback
+    assert "channels 4" in playback
+    assert "type plug" in capture
+    assert 'pcm "hw:Loopback,1,5"' in capture
+    assert "channels 4" in capture
+    assert "type dsnoop" not in capture
+
+
 def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
     assert "__OUTPUTD_DAC_PCM_BLOCK__" in rc
@@ -48,7 +61,9 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
     assert "DAC8X_OUTPUT_CARD=" in reconcile
+    assert "DAC8X_STUDIO_OUTPUT_CARD=" in reconcile
     assert 'OUTPUT_DAC_ID="hifiberry_dac8x"' in reconcile
+    assert 'OUTPUT_DAC_ID="hifiberry_dac8x_studio"' in reconcile
     assert 'OUTPUT_DAC_ID="apple_usb_c_dongle"' in reconcile
     assert "snd_rpi_hifiberry_dac8x" in reconcile
     assert "hifiberry_dac8x" in reconcile
@@ -65,16 +80,19 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     assert 'APPLE_DONGLE_SERVICE_CARD="auto"' in reconcile
 
 
-def test_output_dac_route_policy_is_narrow_and_dac8x_only():
+def test_output_dac_route_policy_is_narrow_and_dac8x_family_only():
     route_lib = (REPO / "deploy" / "lib" / "jasper-asound-render.sh").read_text()
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     assert 'OUTPUT_DAC_ID" != "hifiberry_dac8x"' in route_lib
+    assert 'OUTPUT_DAC_ID" != "hifiberry_dac8x_studio"' in route_lib
     assert "mono:([1-8])" in route_lib
     assert "stereo:([1-8]),([1-8])" in route_lib
     assert "channels 8" in route_lib
     assert "0.${mono_idx} 0.5" in route_lib
     assert "1.${mono_idx} 0.5" in route_lib
     assert "duplicate_stereo_channel" in route_lib
+    assert 'OUTPUT_DAC_ID:-}" == "dual_apple_usb_c_dac_4ch"' in route_lib
+    assert "type null" in route_lib
     assert "jasper_asound_route_ignored()" in reconcile
     assert "event=audio_hardware_reconcile.${name}" in reconcile
 
@@ -82,7 +100,7 @@ def test_output_dac_route_policy_is_narrow_and_dac8x_only():
 def test_apple_dongle_mixer_services_are_enabled_only_for_apple_output_role():
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     gated = reconcile.split(
-        'if [[ "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" && "$APPLE_DONGLE_PRESENT" == "1" ]]; then',
+        'if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then',
         1,
     )[1].split("restart_audio_if_needed()", 1)[0]
     assert '"$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service' in gated
@@ -108,10 +126,24 @@ def test_apple_dongle_helpers_use_runtime_safe_card_template():
     assert "event=apple_dongle.headphone_monitor.absent" in monitor_script
 
 
+def test_apple_dongle_udev_rule_escapes_literal_headphone_percent():
+    rule = (REPO / "deploy" / "udev" / "99-jasper-apple-dongle.rules").read_text()
+    run_line = next(
+        line
+        for line in rule.splitlines()
+        if "RUN+=" in line and not line.lstrip().startswith("#")
+    )
+
+    assert "100%% unmute" in run_line
+    assert "100% unmute" not in run_line
+
+
 def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     install_sh = (REPO / "deploy" / "install.sh").read_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
+    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
     assert "deploy/bin/jasper-audio-hardware-reconcile" in install_sh
     assert "deploy/lib/jasper-asound-render.sh" in install_sh
@@ -127,6 +159,91 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert 'ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*"' in rule
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
+    assert "dual_apple_active_graph_status()" in reconcile
+    assert "action=park_until_active_graph" in reconcile
+    assert 'JASPER_OUTPUTD_BACKEND" "fake"' in reconcile
+    assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" in reconcile
+    assert "JASPER_CAMILLA_STATEFILE" in reconcile
+    assert "outputd_active_content_playback" in reconcile
+    assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
+    assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_load\")" in startup_load
+    assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_rollback\")" in startup_load
+
+
+def test_voice_tts_socket_is_canonical_fanin_path():
+    unit = (REPO / "deploy" / "systemd" / "jasper-voice.service").read_text()
+    assert 'Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"' in unit
+    assert 'Environment="JASPER_DUCK_TRANSPORT=fanin"' in unit
+    assert "EnvironmentFile=-/var/lib/jasper/tts.env" not in unit
+
+
+def test_fanin_exposes_outputd_compatible_tts_socket():
+    main_rs = (REPO / "rust" / "jasper-fanin" / "src" / "main.rs").read_text()
+    config_rs = (REPO / "rust" / "jasper-fanin" / "src" / "config.rs").read_text()
+    tts_rs = (REPO / "rust" / "jasper-fanin" / "src" / "tts.rs").read_text()
+    mixer_rs = (REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs").read_text()
+    outputd_main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    outputd_config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
+    outputd_lib_rs = (REPO / "rust" / "jasper-outputd" / "src" / "lib.rs").read_text()
+    assert '"/run/jasper-fanin/tts.sock"' in config_rs
+    assert "spawn_tts_server(" in main_rs
+    assert "spawn_tts_server(" not in outputd_main_rs
+    assert "handle_tts_client(" not in outputd_main_rs
+    assert "JASPER_OUTPUTD_TTS_SOCKET" not in outputd_config_rs
+    assert "pub mod protocol;" not in outputd_lib_rs
+    assert "TtsCommand::FlushSync" in tts_rs
+    assert "TtsCommand::ProgramDuckOn" in tts_rs
+    assert '"PROGRAM_DUCK_ON"' in tts_rs
+    assert "prepare_period()" in mixer_rs
+    assert "mix_into_with_gain" in mixer_rs
+    assert "program_gain" in mixer_rs
+    assert "AUDIO byte length must contain whole stereo frames" in tts_rs
+    assert "tts.mix_period(&mut self.sum_buf)" in mixer_rs
+
+
+def test_voice_uses_fanin_tts_and_duck_for_all_output_profiles():
+    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    voice_unit = (REPO / "deploy" / "systemd" / "jasper-voice.service").read_text()
+    voice_daemon = (REPO / "jasper" / "voice_daemon.py").read_text()
+    config_py = (REPO / "jasper" / "config.py").read_text()
+    assert "TTS_ENV_FILE" not in reconcile
+    assert "JASPER_TTS_OUTPUTD_SOCKET" not in reconcile
+    assert "JASPER_DUCK_TRANSPORT" not in reconcile
+    assert 'JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock' in voice_unit
+    assert 'JASPER_DUCK_TRANSPORT=fanin' in voice_unit
+    assert 'duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin")' in config_py
+    assert 'cfg.duck_transport == "fanin"' in voice_daemon
+    assert "FanInDucker" in voice_daemon
+
+
+def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
+    config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    assert "SinkMode::DualApple" in config_rs
+    assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM" in config_rs
+    assert "outputd_active_content_capture" in config_rs
+    assert "dual_apple_requires_pre_dsp_tts" not in main_rs
+    assert "run_alsa_dual_apple" in main_rs
+    assert "DualAppleBackend::new(config)" in main_rs
+    assert "deinterleave_4ch_to_dual_stereo" in alsa_rs
+    assert "aborted on xrun/suspend" in alsa_rs
+    assert "delay divergence" in alsa_rs
+
+
+def test_outputd_dual_apple_zero_frame_active_read_silences_period():
+    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
+    read_dual = alsa_rs.split(
+        "pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {",
+        2,
+    )[2].split("pub fn write_dual_period", 1)[0]
+    zero_frame_branch = read_dual.split("if frames == 0 {", 1)[1].split(
+        "} else if frames < requested_frames",
+        1,
+    )[0]
+
+    assert "content_empty_period_count += 1" in zero_frame_branch
+    assert "out.fill(0);" in zero_frame_branch
 
 
 def test_camilla_outputd_config_is_not_legacy_v1():
@@ -150,19 +267,24 @@ def test_install_uses_separate_outputd_statefile():
     assert "--statefile /var/lib/camilladsp/outputd-statefile.yml" in camilla_unit
 
 
-def test_outputd_alsa_loop_commits_only_after_dac_write():
+def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
-    prepare = run_alsa.index("core.prepare_period_with_content(&content_buf);")
-    dac_write = run_alsa.index("backend.write_dac_period(core.output_period())?;")
-    commit = run_alsa.index("let report = core.commit_prepared_period_with_dac_delay(")
+    content_read = run_alsa.index("backend.read_content_period(&mut content_buf)?;")
+    dac_write = run_alsa.index("backend.write_dac_period(&content_buf)?;")
+    publish = run_alsa.index("ref_outputs.publish(&content_buf);")
     state = run_alsa.index("state.mark_period(")
 
-    assert prepare < dac_write < commit < state
+    assert "prepare_period_with_content" not in run_alsa
+    assert "commit_prepared_period" not in run_alsa
+    assert content_read < dac_write < publish < state
 
 
 def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    backend_rs = (
+        REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs"
+    ).read_text()
     main_fn = main_rs.split("fn main() -> Result<()> {", 1)[1].split(
         "fn run_fake(",
         1,
@@ -178,12 +300,32 @@ def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
     assert 'notify_systemd("READY=1")' not in main_fn
     assert "notify_ready(config)?" not in main_fn
     assert backend_open < primed < started < ready
+    assert "swp.set_start_threshold(negotiated.buffer_frames as i64)" in backend_rs
+    assert "fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32" in main_rs
+    assert "event=outputd.alsa.primed" in run_alsa
+
+
+def test_outputd_dual_apple_ready_is_after_multi_period_prime_and_start():
+    main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
+    run_dual = main_rs.split("fn run_alsa_dual_apple(", 1)[1].split(
+        "fn downmix_dual_active_reference(",
+        1,
+    )[0]
+    backend_open = run_dual.index("let mut backend = DualAppleBackend::new(config)?;")
+    prime_count = run_dual.index("let prime_periods = prime_periods(")
+    prime_loop = run_dual.index("for _ in 0..prime_periods")
+    primed = run_dual.index(".context(\"priming dual Apple DACs with silence\")?;")
+    started = run_dual.index("backend.start_dacs()?;")
+    ready = run_dual.index("notify_ready(config)?;")
+
+    assert backend_open < prime_count < prime_loop < primed < started < ready
+    assert "event=outputd.dual_apple.primed" in run_dual
 
 
 def test_outputd_state_socket_is_bound_before_thread_spawn():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     spawn_state = main_rs.split("fn spawn_state_server(", 1)[1].split(
-        "fn spawn_tts_server(",
+        "fn lock_memory(",
         1,
     )[0]
     bind = spawn_state.index("StateServer::bind(path, state)")
@@ -193,25 +335,18 @@ def test_outputd_state_socket_is_bound_before_thread_spawn():
     assert bind < spawn
 
 
-def test_outputd_tts_accept_loop_does_not_inline_client_handling():
+def test_outputd_no_longer_owns_tts_ipc_runtime():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
-    spawn_tts = main_rs.split("fn spawn_tts_server(", 1)[1].split(
-        "fn spawn_tts_client(",
-        1,
-    )[0]
-    spawn_client = main_rs.split("fn spawn_tts_client(", 1)[1].split(
-        "fn handle_tts_client(",
-        1,
-    )[0]
+    state_rs = (REPO / "rust" / "jasper-outputd" / "src" / "state.rs").read_text()
 
-    assert "spawn_tts_client(" in spawn_tts
-    assert "tx.clone()" in spawn_tts
-    assert "flush_tx.clone()" in spawn_tts
-    assert "Arc::clone(&epoch)" in spawn_tts
-    assert "Arc::clone(&state)" in spawn_tts
-    assert '.name("outputd-tts-client".to_string())' in spawn_client
-    assert (
-        ".spawn(move || handle_tts_client(stream, tx, flush_tx, epoch, state))"
-        in spawn_client
-    )
-    assert "Ok(stream) => handle_tts_client(stream" not in spawn_tts
+    for stale in [
+        "spawn_tts_server(",
+        "spawn_tts_client(",
+        "handle_tts_client(",
+        "outputd.tts_socket",
+        "outputd.tts_flush",
+        "TtsQueueMetrics",
+        "mark_tts_command_dropped",
+    ]:
+        assert stale not in main_rs
+        assert stale not in state_rs

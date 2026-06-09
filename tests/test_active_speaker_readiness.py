@@ -1,22 +1,111 @@
 from __future__ import annotations
 
+import pytest
+
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.playback import tone_backend_status
 from jasper.active_speaker.readiness import (
     PLAYBACK_READINESS_KIND,
     build_playback_readiness,
 )
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology import (
+    DUAL_APPLE_ACTIVE_DEVICE_ID,
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+)
+from jasper.output_hardware import (
+    APPLE_USB_C_DONGLE_DEVICE_ID,
+    OutputCardFact,
+    classify_output_cards,
+    write_state as write_output_hardware_state,
+)
 
 
-def _topology(*, verified: bool = True, protection: str = "present") -> OutputTopology:
+def _dual_apple_hardware() -> dict:
+    return {
+        "device_id": DUAL_APPLE_ACTIVE_DEVICE_ID,
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "left_dac",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "DWH53530FHL2FN3AC",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "right_dac",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "DWH53530FLL2FN3A3",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+        "clock_domain_evidence": {
+            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
+            "measurement_id": "scarlett-ticks-900s-repeat-buffered",
+            "status": "passed",
+            "duration_seconds": 900,
+            "sample_rate_hz": 48000,
+            "offset_frames": -7,
+            "max_offset_delta_frames": 0,
+            "drift_ppm": 0,
+            "xrun_count": 0,
+            "dac_serials": [
+                "DWH53530FHL2FN3AC",
+                "DWH53530FLL2FN3A3",
+            ],
+        },
+    }
+
+
+def _write_dual_apple_observation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+
+def _topology(
+    *,
+    verified: bool = True,
+    protection: str = "present",
+    hardware: dict | None = None,
+) -> OutputTopology:
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
         "topology_id": "living_room",
         "name": "Living room",
         "status": "draft",
-        "hardware": {
+        "hardware": hardware or {
             "device_id": "hifiberry_dac8x",
             "device_label": "HiFiBerry DAC8x",
             "physical_output_count": 8,
@@ -112,6 +201,59 @@ def test_playback_readiness_passes_preconditions_without_authorizing_audio() -> 
     assert report["target"]["physical_output_index"] == 0
     assert report["issues"] == []
     assert all(gate["passed"] for gate in report["required_gates"])
+
+
+def test_playback_readiness_accepts_measured_dual_apple_clock_precondition(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _write_dual_apple_observation(monkeypatch, tmp_path)
+    report = build_playback_readiness(
+        _topology(hardware=_dual_apple_hardware()),
+        speaker_group_id="left",
+        role="woofer",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
+    )
+
+    assert report["status"] == "preconditions_passed"
+    assert report["preconditions_passed"] is True
+    assert report["playback_allowed"] is False
+    assert report["clock_domain"]["status"] == "dual_apple_composite_clock"
+    assert report["clock_domain"]["measured_composite_supported"] is True
+    assert report["clock_domain"]["coherent_physical_output_count"] == 4
+    assert all(gate["passed"] for gate in report["required_gates"])
+
+
+def test_playback_readiness_surfaces_missing_dual_apple_clock_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _write_dual_apple_observation(monkeypatch, tmp_path)
+    hardware = _dual_apple_hardware()
+    hardware.pop("clock_domain_evidence")
+
+    report = build_playback_readiness(
+        _topology(hardware=hardware),
+        speaker_group_id="left",
+        role="woofer",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
+    )
+
+    codes = {issue["code"] for issue in report["issues"]}
+
+    assert report["status"] == "preconditions_passed"
+    assert report["preconditions_passed"] is True
+    assert report["clock_domain"]["status"] == "dual_apple_composite_clock"
+    assert report["clock_domain"]["composite_clock_supported"] is True
+    assert report["clock_domain"]["measured_composite_supported"] is False
+    assert "clock_evidence_missing" in codes
+    assert "single_clock_domain" not in codes
 
 
 def test_playback_readiness_allows_non_tweeter_when_audio_backend_enabled() -> None:

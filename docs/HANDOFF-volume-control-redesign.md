@@ -64,13 +64,12 @@ AirPlay / Spotify Connect / Bluetooth
         -> Apple USB-C DAC
 ```
 
-TTS is separate: `jasper-voice` writes directly to `pcm.jasper_out`, so
-music goes through CamillaDSP while TTS bypasses it. This is why
-`main_volume` has two jobs today: user-facing music attenuation for some
-sources, and voice-session ducking. On current main, TTS enters
-`jasper-outputd`; outputd compensates by matching assistant loudness to
-measured content at the final mix boundary rather than assuming one
-volume knob explains everything.
+TTS now enters `jasper-fanin` before CamillaDSP, and fan-in owns
+voice-session ducking so the assistant itself is not attenuated by the
+duck. Camilla `main_volume` remains the steady-state listening-level
+knob for sources carried by Camilla. Fan-in compensates assistant
+loudness by matching to measured pre-duck content rather than assuming
+one volume knob explains everything.
 
 ### File map
 
@@ -463,6 +462,6 @@ cleanup pass in the same PR or immediately after:
 - Keep the mapping simple first. Tune perceptual curves only after the
   architecture is correct.
 
-Last verified: 2026-06-01 (superseded status, canonical volume link, and
-current outputd assistant-loudness note checked; redesign body otherwise
+Last verified: 2026-06-08 (superseded status, canonical volume link, and
+current fan-in assistant-loudness note checked; redesign body otherwise
 intentionally not revalidated)

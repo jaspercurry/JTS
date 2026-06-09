@@ -164,7 +164,7 @@ Run for real from a Pi-local checkout:
      headphone monitor, nginx, Avahi, CamillaGUI socket, and the WiFi
      guardian.
    - Require jasper-outputd to be active and answering STATUS before
-     voice is reconciled onto the outputd TTS socket.
+     voice starts against the final-output path.
    - Seed or validate the outputd Camilla statefile while preserving
      the normal production statefile. Rollback to a pre-outputd
      release/branch must also stop/disable jasper-outputd because that
@@ -2818,9 +2818,10 @@ install_systemd_units() {
     # an old capture fd across topology updates.
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
     # outputd owns the final DAC loop on current main. This is mandatory:
-    # if outputd is not active and answering STATUS, the voice daemon's
-    # outputd TTS socket would point at a silent path. Fail the install
-    # before the AEC reconciler restarts voice into a broken output path.
+    # if outputd is not active and answering STATUS, voice can enqueue
+    # TTS into fan-in but nothing will own the final sink. Fail the
+    # install before the AEC reconciler restarts voice into a broken
+    # output path.
     require_outputd_ready
 
     systemctl enable nqptp.service shairport-sync.service \

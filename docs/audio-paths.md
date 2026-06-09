@@ -1,28 +1,25 @@
 # Audio paths and software volume knobs
 
-Two paths to the final output owner, processed differently. Knowing
-which is which matters when you're testing volume-controlled output and
-when you're trying to understand assistant loudness matching in
-`jasper-outputd`.
+One audio path reaches the final output owner. Renderer audio and
+assistant TTS converge in `jasper-fanin` before CamillaDSP, then
+`jasper-outputd` owns the final hardware sink. Knowing that boundary
+matters when you're testing volume-controlled output and assistant
+loudness matching.
 
 ## How we got here
 
-A smart speaker plays music AND voice prompts. They want different
-processing: music tolerates latency and benefits from EQ / room
-correction; voice prompts need to be heard above music and shouldn't
-be re-processed by an EQ tuned for music. This is the standard
-"two-bus" pattern (HA Voice PE, OVOS, Alexa AVS Dialog/Content,
-broadcast PA hardware).
+A smart speaker plays music AND voice prompts. They need different
+mix policy but the same speaker-protection path: music should be
+ducked while speech plays, while TTS/cues still need crossover,
+correction, gain ceilings, and active-speaker protection.
 
 The Linux-on-a-single-Pi version of this pattern has one constraint:
-**CamillaDSP supports only one ALSA capture device per process.**
-Combining music and TTS into one DSP pipeline would require either
-pre-mixing them upstream (which would mean ducking music ducks TTS
-too — wrong) or the fragile ALSA `multi` plugin (xrun storms with
-bursty writers). So we route TTS around CamillaDSP into
-`jasper-outputd`, the final output owner, and compensate for the DSP
-bypass at that same final mix boundary (see "Assistant loudness
-matching" below).
+**CamillaDSP supports only one ALSA capture device per process.** JTS
+therefore pre-mixes upstream in `jasper-fanin`: renderer/program lanes
+are ducked there, TTS is mixed after the duck, CamillaDSP receives one
+stream for crossover/protection, and `jasper-outputd` writes the final
+sink. This avoids ALSA `multi` aggregation in the hot path and gives
+single Apple, dual Apple, and DAC8x profiles the same TTS semantics.
 
 ## The two paths
 
@@ -37,10 +34,13 @@ MUSIC chain (gets CamillaDSP processing)
               → snd-aloop → outputd_content_capture
               → jasper-outputd → outputd_dac → amp → speakers
 
-TTS / TEST-TONE chain (BYPASSES CamillaDSP)
-    jasper-voice OutputdTtsPlayout → /run/jasper-outputd/tts.sock
-                                   → jasper-outputd → outputd_dac
-                                   → amp → speakers
+TTS / CUE chain (CROSSED OVER on every output profile)
+    jasper-voice OutputdTtsPlayout → /run/jasper-fanin/tts.sock
+                                   → jasper-fanin, mixed after program duck
+                                   → jasper-camilla crossover/protection
+                                   → outputd_content_* or outputd_active_content_*
+                                   → jasper-outputd final sink
+                                   → selected DAC(s) → amps → drivers
 ```
 
 `jasper-outputd` normally reads the content capture lane directly. For
@@ -53,8 +53,10 @@ is explicitly enabled.
 
 Each renderer has its own snd-aloop lane, and room-correction/test
 playback has a dedicated `correction_substream` lane. `jasper-fanin`
-sums those lanes into substream 7, which CamillaDSP and the AEC bridge
-share via `pcm.jasper_capture` / `pcm.jasper_ref`. This replaced the
+sums those lanes into substream 7, which CamillaDSP reads via
+`pcm.jasper_capture`; `pcm.jasper_ref` remains the explicit pre-DSP
+AEC fallback/diagnostic view. Production AEC consumes outputd's
+post-Camilla speaker monitor. This replaced the
 short-lived renderer-side dmix (`jasper_renderer_mix`) after AirPlay
 testing showed dmix's per-write timing could drop WiFi-bursty RTP
 packets.
@@ -202,20 +204,21 @@ mixer, a second output device, or a new volume model.
     current operational truth; historical design notes should be marked
     historical.
 
-Both legs converge inside `jasper-outputd`, which owns the direct DAC
-writer on current main. CamillaDSP is upstream of outputd
-only on the music leg. The legacy `pcm.jasper_out` dmix remains in
+Renderer and TTS legs converge inside `jasper-fanin`, then pass through
+CamillaDSP and into `jasper-outputd`, which owns the direct DAC writer
+on current main. The legacy `pcm.jasper_out` dmix remains in
 `/etc/asound.conf` as the pre-outputd rollback path, not as the active
 convergence point here.
 
 ## Volume knobs and which path each affects
 
-| Knob | Where it lives | Music | TTS / outputd |
+| Knob | Where it lives | Music | TTS |
 |------|----------------|-------|----------------------------|
-| CamillaDSP `main_volume` (the ducker) | DSP, websocket port 1234 | yes | no |
+| CamillaDSP `main_volume` (listening level/source volume) | DSP, websocket port 1234 | yes | yes |
+| fan-in program duck | `jasper-fanin` TTS socket | yes | no |
 | Source slider (iPhone, Spotify Connect, BT phone) | Renderer-side, before Loopback | yes | no |
 | Source amplitude (PCM data) | The WAV / TTS PCM buffer | yes | yes |
-| Assistant loudness matcher (auto) | jasper-outputd + provider profiles | n/a | yes — auto-tracks content |
+| Assistant loudness matcher (auto) | jasper-fanin + provider profiles | n/a | yes |
 | Apple dongle Headphone | Hardware mixer | (pinned 100%) | (pinned 100%) |
 | TPA3255 amp | Physical knob | yes | yes |
 
@@ -234,27 +237,31 @@ Two notes:
 
 ## Assistant Loudness Matching
 
-Since assistant audio bypasses CamillaDSP, a fixed provider PCM level
-would ignore how the user currently listens to music. Current main keeps
-that compensation inside `jasper-outputd`, the final output owner:
+Since assistant audio enters the same DSP path as music, a fixed
+provider PCM level would ignore how the user currently listens to
+music. Current main keeps that compensation at the topology's TTS mix
+boundary: `jasper-fanin`.
 
-1. `jasper-outputd` continuously measures content/music with a bounded
-   K-weighted loudness window.
+1. The mix owner continuously measures content/music with a bounded
+   K-weighted loudness window. In fan-in mode this measurement happens
+   before program ducking and before TTS is mixed, so the assistant
+   baseline tracks the renderer content level rather than the temporary
+   ducked level.
 2. At wake turn start, `jasper-voice` sends `PREPARE_ASSISTANT` with
    the active provider/model/voice and a conservative silence target
    derived from `listening_level`.
-3. `jasper-outputd` snapshots the current content loudness before
-   ducking, then ignores content-meter updates while the voice turn or
-   correction measurement window is active.
+3. The mix owner snapshots the current content loudness before ducking,
+   then ignores content-meter updates while the voice turn or correction
+   measurement window is active.
 4. For each assistant/cue segment, `OutputdTtsPlayout` sends un-gained
    48 kHz stereo PCM plus optional source-loudness profile metadata.
-5. `jasper-outputd` chooses final gain at the mix boundary:
+5. The mix owner chooses final gain at the mix boundary:
    `target_lufs = content_baseline_lufs + assistant_offset_lu`.
    The default offset is `+1.5 LU`.
-6. Hearing safety is peak-aware and enforced in outputd: the requested
-   loudness gain is capped so the profiled source peak stays below the
-   configured assistant peak ceiling (default `-3 dBFS`), then clamped
-   through the global TTS gain floor/ceiling.
+6. Hearing safety is peak-aware and enforced at that boundary: the
+   requested loudness gain is capped so the profiled source peak stays
+   below the configured assistant peak ceiling (default `-3 dBFS`),
+   then clamped through the global TTS gain floor/ceiling.
 
 Python owns only provider source profiles:
 
@@ -271,11 +278,18 @@ Python owns only provider source profiles:
 - Live assistant PCM is measured passively after real replies and
   merged back into the same provider/model/voice profile. Cues and
   chirps never train the profile.
-- Profiles are advisory. If a profile is missing or malformed, outputd
+- Profiles are advisory. If a profile is missing or malformed, the mix owner
   uses conservative built-in fallback source loudness/peak values and
   still clamps the final gain.
 
-Operator retunes live in `/var/lib/jasper/outputd.env`:
+In the dual Apple active-output profile, TTS/cues enter fan-in instead
+so they can pass through CamillaDSP crossover/protection. Fan-in accepts
+the same outputd-compatible profile metadata, snapshots pre-duck content
+loudness, applies the same profile/peak-capped gain decision, and emits
+`event=fanin.assistant_loudness`. The resulting TTS/cue samples are then
+mixed into the program buffer before CamillaDSP active crossover/protection.
+
+Operator retunes live in `/var/lib/jasper/fanin.env`:
 
 ```
 JASPER_OUTPUTD_ASSISTANT_OFFSET_LU=1.5
@@ -287,47 +301,48 @@ JASPER_OUTPUTD_CONTENT_SILENCE_LUFS=-60.0
 ```
 
 When a cue/chirp/assistant segment arrives without a prepared wake-turn
-context and without measurable content, outputd uses
+context and without measurable content, fan-in uses
 `JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS` as the baseline
 instead of a fixed fallback gain. This keeps no-context feedback sounds
 on the same profile/peak-cap path as live assistant speech.
 
 ### Debugging Assistant Gain
 
-Every outputd assistant gain decision emits one structured journal line:
+Every assistant gain decision emits one structured journal line from the
+active mix owner:
 
 ```
-event=outputd.assistant_loudness kind=assistant provider=openai
+event=fanin.assistant_loudness kind=assistant provider=openai
   model=gpt-realtime-2 voice=verse calibrated=true confidence=0.82
   baseline_lufs=-29.4 target_lufs=-27.9 source_lufs=-18.2
   source_peak_dbfs=-2.5 requested_gain_db=-9.7 peak_cap_gain_db=-0.5
   final_gain_db=-9.7 reason=target
 ```
 
-`jasper-outputd` also exposes the latest content and assistant decision
-through `/run/jasper-outputd/control.sock` (`STATUS\n`) under
-`assistant_loudness`. `jasper-doctor` warns if this telemetry is
-missing or malformed. Use those two surfaces first when debugging a
-provider loudness report; they show whether the system used a calibrated
-profile, what content baseline it matched, and which clamp won.
+`jasper-fanin` exposes the same decision fields under
+`tts.assistant_loudness` in `/run/jasper-fanin/control.sock`.
+`jasper-doctor` warns if that telemetry is missing or malformed. Use
+that surface first when debugging a provider loudness report; it shows
+whether the system used a calibrated profile, what content baseline it
+matched, and which clamp won.
 
 ## End-of-turn drain — when is the speaker actually silent?
 
 The TTS write call returns when bytes are accepted by the current
 transport, **not** when they reach the DAC. On current main, the
-transport is a local Unix socket into `jasper-outputd`; the legacy
+transport is a local Unix socket into `jasper-fanin`; the legacy
 rollback path used PortAudio. Either way, there is still transport
-queue, outputd/DAC or OS-audio tail, and DAC flush ahead of the bytes
+queue, fan-in/Camilla/outputd tail, and DAC flush ahead of the bytes
 at that point. A naive
 end-of-turn timer that fires "shortly after the last write" can land
 mid-tail, clipping the last word — observed in production
 (PR #311, 2026-05-25) when OpenAI Realtime burst-streamed 10 chunks
 in 730 ms ahead of a 4 s playout.
 
-`TtsPlayout` owns the end-of-turn drain semantic. Outputd extends the
-same boundary with `write_segment()`/`end_segment()` metadata for the
-playout ledger, but the voice daemon still waits through the stable
-methods below:
+`TtsPlayout` owns the end-of-turn drain semantic. The fan-in IPC-backed
+implementation extends the same boundary with
+`write_segment()`/`end_segment()` metadata for segment identity, but the
+voice daemon still waits through the stable methods below:
 
 - `expected_drain_at()` — monotonic deadline when the last-queued
   sample's tail will have cleared the OS audio stack. Backed by a
@@ -339,7 +354,7 @@ methods below:
 - `wait_drained()` — single `asyncio.sleep` to the deadline. No
   polling because the deadline is known up-front.
 
-For interruption, `OutputdTtsPlayout.flush()` uses outputd's
+For interruption, `OutputdTtsPlayout.flush()` uses fan-in's
 `FLUSH_SYNC` command and returns the daemon's compact playout
 acknowledgement (`audio_played_ms`, flushed frames, provider item id).
 That acknowledgement is for provider truncation/cancel logic; normal
@@ -396,10 +411,10 @@ ssh pi@jts.local 'sudo journalctl -u jasper-voice | grep "drain wait"'
 **Test the music chain** (volume-controlled): `aplay -D correction_substream file.wav`.
 Goes through CamillaDSP, so `main_volume` applies.
 
-**Test the TTS chain**: use `jasper-voice`/cue playback or a small
-outputd client, not `aplay -D plug:jasper_out`. Direct `jasper_out`
-playback exercises only the pre-outputd rollback dmix and bypasses both
-CamillaDSP and outputd. `main_volume` does nothing to the TTS path.
+**Test the TTS chain**: use `jasper-voice`/cue playback or the canonical
+local TTS socket, `/run/jasper-fanin/tts.sock`. Direct `jasper_out`
+playback exercises only the pre-outputd rollback dmix and bypasses
+CamillaDSP and outputd.
 
 On Apple-dongle installs, the dongle `Headphone` control is pinned at
 100% by `jasper-dac-init`, watched by `jasper-headphone-monitor`, and
@@ -410,10 +425,10 @@ the Apple-specific units. The reconciler runs at install/boot and from
 udev `controlC*` add/remove/change events, so USB DAC changes converge
 without a deploy-only scan. The helper scripts remain runtime-safe for
 manual/operator starts. `outputd_dac` still points at the detected
-final-output card. For explicit DAC8x lab wiring, operators may set
+final-output card. For explicit DAC8x-family lab wiring, operators may set
 `JASPER_OUTPUT_DAC_ROUTE=mono:N` or `stereo:L,R` in
 `/etc/jasper/jasper.env`; the route is applied only for recognized
-DAC8x hardware and uses 1-indexed physical output numbers. It takes
+DAC8x/DAC8x Studio hardware and uses 1-indexed physical output numbers. It takes
 effect when deploy, boot/udev reconcile, or a manual
 `jasper-audio-hardware-reconcile` run re-renders `/etc/asound.conf`.
 This is a small final-output alias route for single-amp/commissioning
@@ -431,36 +446,49 @@ The topology itself still grants no playback authority; the separate
 active-speaker lab tone backend can emit only after explicit env enablement,
 passed readiness, and a non-tweeter target. Software never touches downstream
 amp gain. The amp gain is a physical knob set at install time.
-The same topology surface reports the detected output clock domain. Current
-product support assumes one coherent final-output device (for example DAC8x or
-one Apple dongle); multiple USB DAC aggregation is a future lab feature, not a
-supported active-crossover playback path.
+The same topology surface reports the detected output clock domain. Supported
+topology hardware IDs include one Apple dongle, HiFiBerry DAC8x/DAC8x Studio,
+and the special `dual_apple_usb_c_dac_4ch` pair. The dual-Apple option is valid
+only for exactly two Apple child DACs on the expected same USB controller/bus,
+one speaker-local stereo pair per DAC, and exactly four physical outputs.
+Stored 900 s common-clock drift evidence is surfaced as validation evidence;
+missing evidence warns, failed evidence blocks, and missing/partial live
+hardware observation blocks the composite clock report. When the live dual pair
+is ready, reconcile promotes `jasper-outputd` to `JASPER_OUTPUTD_SINK=dual_apple`
+and pins DAC A/B from the saved topology child identity; if only observed
+hardware order is available, that order is used only as first-time bootstrap.
+Partial states, USB topology mismatches, or saved-topology identity mismatches
+park normal output rather than silently routing four active lanes to the wrong
+dongle. Generic USB DAC aggregation through ALSA `multi`/`dmix`/`plug` or
+CamillaDSP multi-device output remains unsupported.
 
 ## AEC bridge implications
 
-The bridge taps `pcm.jasper_capture`, a dsnoop on the summed fan-in
-output `hw:Loopback,1,7` — the music chain reference, BEFORE
-CamillaDSP processing. So:
+The bridge normally receives outputd's speaker monitor over localhost
+UDP. Explicit fallback/diagnostic mode can still read `pcm.jasper_ref`, a
+plug wrapper over `pcm.jasper_capture`, which is a dsnoop on the summed
+fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
-- TTS bleed through the mic is not yet in the AEC reference; the bridge
-  cancels music bleed only. This is **intentional** for the current
-  AEC bridge, even though outputd now owns the final output loop. Robust
-  barge-in should move the reference consumer to outputd's eventual
-  speaker reference fanout — see
+- Production AEC now consumes outputd's 48 kHz stereo speaker monitor over
+  UDP. That reference includes renderer/content, TTS/cues, fan-in
+  ducking/gain, CamillaDSP filters/crossover/protection, and outputd sink
+  selection. It is the final software/electrical reference; no software
+  reference can include DAC, amp, driver, or room acoustics except through
+  microphone observation. Explicit `JASPER_AEC_REF_SOURCE=alsa`
+  fallback/diagnostic mode can still read the pre-DSP `pcm.jasper_ref`
+  path — see
   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. Acceptable today; if it becomes a problem,
   move the dsnoop tap downstream of CamillaDSP.
-- Chip-AEC exception: production chip-AEC mode and the wake-corpus
-  chip-AEC comparison profile can ask outputd to publish its final
-  speaker buffer as both an XVF USB-IN reference and an `outputd_udp`
-  reference tap for `jasper-aec-bridge`. The UDP tap stays at outputd's
-  48 kHz graph rate; the XVF USB-IN side output is downsampled to the
-  chip's 16 kHz playback contract. The production path is opt-in via
+- Chip-AEC addition: production chip-AEC mode and the wake-corpus
+  chip-AEC comparison profile also ask outputd to publish the same final
+  speaker monitor as an XVF USB-IN reference. The UDP tap stays at
+  outputd's 48 kHz graph rate; the XVF USB-IN side output is downsampled
+  to the chip's 16 kHz playback contract. The production path is opt-in via
   `JASPER_WAKE_LEG_CHIP_AEC=1` / `JASPER_AEC_CHIP_AEC_ENABLED=1`;
   the recorder owns the same overlay during corpus chip-AEC comparison
-  sessions and removes its test env when corpus mode exits. Default
-  software AEC still uses the `pcm.jasper_capture` reference above.
+  sessions and removes its test env when corpus mode exits.
 
 ## Related
 
@@ -474,4 +502,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-04 (0% content-mute invariant, USB Camilla-master note, assistant loudness matching note, and outputd STATUS telemetry path rechecked)
+Last verified: 2026-06-08 (dual Apple active-output TTS/fan-in duck path, 0% content-mute invariant, USB Camilla-master note, assistant loudness matching note, outputd STATUS telemetry path, and dual Apple output profile boundary rechecked)

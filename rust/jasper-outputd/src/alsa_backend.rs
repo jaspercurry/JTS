@@ -33,6 +33,17 @@ pub struct IoCounters {
     pub dac_xrun_count: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DualAppleStatus {
+    pub dac_a_pcm: String,
+    pub dac_b_pcm: String,
+    pub linked: bool,
+    pub delay_delta_frames: Option<i64>,
+    pub delay_delta_baseline_frames: Option<i64>,
+    pub delay_delta_error_frames: Option<i64>,
+    pub max_delay_delta_frames: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentRead {
     Frames(usize),
@@ -50,6 +61,25 @@ pub struct AlsaBackend {
     counters: IoCounters,
 }
 
+pub struct DualAppleBackend {
+    content: PCM,
+    dac_a: PCM,
+    dac_b: PCM,
+    pub content_pcm: String,
+    pub dac_a_pcm: String,
+    pub dac_b_pcm: String,
+    pub content_negotiated: NegotiatedPcm,
+    pub dac_negotiated: NegotiatedPcm,
+    counters: IoCounters,
+    linked: bool,
+    delay_delta_baseline: Option<i64>,
+    last_delay_delta: Option<i64>,
+    last_delay_delta_error: Option<i64>,
+    max_delay_delta_frames: i64,
+    period_a: Vec<i16>,
+    period_b: Vec<i16>,
+}
+
 impl AlsaBackend {
     pub fn new(config: &Config) -> Result<Self> {
         let content =
@@ -62,7 +92,9 @@ impl AlsaBackend {
             &content,
             config.sample_rate,
             config.period_frames,
+            config.content_channels,
             config.content_buffer_frames,
+            false,
         )
         .with_context(|| {
             format!(
@@ -82,7 +114,9 @@ impl AlsaBackend {
             &dac,
             config.sample_rate,
             config.period_frames,
+            CHANNELS,
             config.dac_buffer_frames,
+            true,
         )
         .with_context(|| format!("configuring outputd DAC PCM {}", config.dac_pcm))?;
 
@@ -247,6 +281,306 @@ impl AlsaBackend {
     }
 }
 
+impl DualAppleBackend {
+    pub fn new(config: &Config) -> Result<Self> {
+        let dac_a_pcm = config
+            .dual_dac_a_pcm
+            .as_ref()
+            .context("dual Apple sink missing DAC A PCM")?
+            .clone();
+        let dac_b_pcm = config
+            .dual_dac_b_pcm
+            .as_ref()
+            .context("dual Apple sink missing DAC B PCM")?
+            .clone();
+
+        let content = PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
+            format!(
+                "opening outputd active content capture PCM {}",
+                config.content_pcm
+            )
+        })?;
+        let content_negotiated = configure_pcm(
+            "active_content",
+            &config.content_pcm,
+            &content,
+            config.sample_rate,
+            config.period_frames,
+            config.content_channels,
+            config.content_buffer_frames,
+            false,
+        )
+        .with_context(|| {
+            format!(
+                "configuring outputd active content capture PCM {}",
+                config.content_pcm
+            )
+        })?;
+        content
+            .start()
+            .with_context(|| format!("starting capture PCM {}", config.content_pcm))?;
+
+        let dac_a = PCM::new(&dac_a_pcm, Direction::Playback, false)
+            .with_context(|| format!("opening outputd dual DAC A PCM {}", dac_a_pcm))?;
+        let dac_a_negotiated = configure_pcm(
+            "dual_dac_a",
+            &dac_a_pcm,
+            &dac_a,
+            config.sample_rate,
+            config.period_frames,
+            CHANNELS,
+            config.dac_buffer_frames,
+            true,
+        )
+        .with_context(|| format!("configuring outputd dual DAC A PCM {}", dac_a_pcm))?;
+
+        let dac_b = PCM::new(&dac_b_pcm, Direction::Playback, false)
+            .with_context(|| format!("opening outputd dual DAC B PCM {}", dac_b_pcm))?;
+        let dac_b_negotiated = configure_pcm(
+            "dual_dac_b",
+            &dac_b_pcm,
+            &dac_b,
+            config.sample_rate,
+            config.period_frames,
+            CHANNELS,
+            config.dac_buffer_frames,
+            true,
+        )
+        .with_context(|| format!("configuring outputd dual DAC B PCM {}", dac_b_pcm))?;
+
+        if dac_a_negotiated != dac_b_negotiated {
+            anyhow::bail!(
+                "dual Apple DACs negotiated different shapes: A={:?} B={:?}",
+                dac_a_negotiated,
+                dac_b_negotiated
+            );
+        }
+
+        let mut linked = false;
+        match dac_a.link(&dac_b) {
+            Ok(()) => {
+                linked = true;
+                eprintln!("event=outputd.dual_apple.link status=ok");
+            }
+            Err(err) if config.dual_require_link => {
+                anyhow::bail!(
+                    "dual Apple snd_pcm_link failed and JASPER_OUTPUTD_DUAL_REQUIRE_LINK=1: {}",
+                    err
+                );
+            }
+            Err(err) => {
+                eprintln!("event=outputd.dual_apple.link status=failed detail={err}");
+            }
+        }
+
+        eprintln!(
+            "event=outputd.dual_apple.opened content_pcm={} dac_a_pcm={} dac_b_pcm={} sample_rate={} period_frames={} content_buffer_frames={} dac_buffer_frames={} linked={} max_delay_delta_frames={}",
+            config.content_pcm,
+            dac_a_pcm,
+            dac_b_pcm,
+            dac_a_negotiated.sample_rate,
+            dac_a_negotiated.period_frames,
+            content_negotiated.buffer_frames,
+            dac_a_negotiated.buffer_frames,
+            linked,
+            config.dual_max_delay_delta_frames,
+        );
+
+        let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+        Ok(Self {
+            content,
+            dac_a,
+            dac_b,
+            content_pcm: config.content_pcm.clone(),
+            dac_a_pcm,
+            dac_b_pcm,
+            content_negotiated,
+            dac_negotiated: dac_a_negotiated,
+            counters: IoCounters::default(),
+            linked,
+            delay_delta_baseline: None,
+            last_delay_delta: None,
+            last_delay_delta_error: None,
+            max_delay_delta_frames: config.dual_max_delay_delta_frames,
+            period_a: vec![0i16; period_samples],
+            period_b: vec![0i16; period_samples],
+        })
+    }
+
+    pub fn counters(&self) -> IoCounters {
+        self.counters
+    }
+
+    pub fn dual_status(&self) -> DualAppleStatus {
+        DualAppleStatus {
+            dac_a_pcm: self.dac_a_pcm.clone(),
+            dac_b_pcm: self.dac_b_pcm.clone(),
+            linked: self.linked,
+            delay_delta_frames: self.last_delay_delta,
+            delay_delta_baseline_frames: self.delay_delta_baseline,
+            delay_delta_error_frames: self.last_delay_delta_error,
+            max_delay_delta_frames: self.max_delay_delta_frames,
+        }
+    }
+
+    pub fn start_dacs(&self) -> Result<()> {
+        if self.linked {
+            if self.dac_a.state() != State::Running || self.dac_b.state() != State::Running {
+                self.dac_a
+                    .start()
+                    .context("starting linked outputd dual Apple DACs")?;
+            }
+            let state_a = self.dac_a.state();
+            let state_b = self.dac_b.state();
+            if state_a != State::Running || state_b != State::Running {
+                anyhow::bail!(
+                    "linked outputd dual Apple DACs did not both enter Running state: dac_a={:?} dac_b={:?}",
+                    state_a,
+                    state_b
+                );
+            }
+            return Ok(());
+        }
+        if self.dac_a.state() != State::Running {
+            self.dac_a
+                .start()
+                .context("starting outputd dual Apple DAC A")?;
+        }
+        if self.dac_b.state() != State::Running {
+            self.dac_b
+                .start()
+                .context("starting outputd dual Apple DAC B")?;
+        }
+        Ok(())
+    }
+
+    pub fn read_content_period(&mut self, out: &mut [i16]) -> Result<usize> {
+        let requested_frames = out.len() / 4;
+        let io = self
+            .content
+            .io_i16()
+            .context("getting i16 IO handle for outputd active content input")?;
+        match io.readi(out) {
+            Ok(frames) => {
+                self.counters.content_frames_read += frames as u64;
+                if frames == 0 {
+                    self.counters.content_empty_period_count += 1;
+                    out.fill(0);
+                } else if frames < requested_frames {
+                    self.counters.content_partial_period_count += 1;
+                    out[(frames * 4)..].fill(0);
+                }
+                Ok(frames)
+            }
+            Err(e) => {
+                let errno = e.errno();
+                if errno == libc::EAGAIN {
+                    self.counters.content_eagain_count += 1;
+                    self.counters.content_empty_period_count += 1;
+                    out.fill(0);
+                    Ok(0)
+                } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                    self.counters.content_xrun_count += 1;
+                    self.counters.content_empty_period_count += 1;
+                    eprintln!(
+                        "event=outputd.xrun source=active_content pcm={} count={} errno={}",
+                        self.content_pcm, self.counters.content_xrun_count, errno
+                    );
+                    self.content
+                        .try_recover(e, true)
+                        .context("recovering outputd active content xrun")?;
+                    out.fill(0);
+                    Ok(0)
+                } else {
+                    Err(e).context(format!(
+                        "reading outputd active content PCM {}",
+                        self.content_pcm
+                    ))
+                }
+            }
+        }
+    }
+
+    pub fn write_dual_period(&mut self, samples_4ch: &[i16]) -> Result<()> {
+        deinterleave_4ch_to_dual_stereo(
+            samples_4ch,
+            &mut self.period_a,
+            &mut self.period_b,
+        )?;
+        write_dac_fail_closed(
+            &self.dac_a,
+            &self.dac_a_pcm,
+            &self.period_a,
+            &mut self.counters.dac_xrun_count,
+        )?;
+        write_dac_fail_closed(
+            &self.dac_b,
+            &self.dac_b_pcm,
+            &self.period_b,
+            &mut self.counters.dac_xrun_count,
+        )?;
+        self.counters.dac_frames_written += (samples_4ch.len() / 4) as u64;
+        if self.dac_a.state() == State::Running && self.dac_b.state() == State::Running {
+            self.check_delay_delta()?;
+        }
+        Ok(())
+    }
+
+    pub fn dac_delay_frames(&self) -> Result<u64> {
+        let a = self
+            .dac_a
+            .delay()
+            .context("reading outputd dual DAC A delay")?
+            .max(0) as u64;
+        let b = self
+            .dac_b
+            .delay()
+            .context("reading outputd dual DAC B delay")?
+            .max(0) as u64;
+        Ok(a.max(b))
+    }
+
+    fn check_delay_delta(&mut self) -> Result<()> {
+        let delay_a = self
+            .dac_a
+            .delay()
+            .context("reading outputd dual DAC A delay")?;
+        let delay_b = self
+            .dac_b
+            .delay()
+            .context("reading outputd dual DAC B delay")?;
+        let delta = delay_a - delay_b;
+        let baseline = *self.delay_delta_baseline.get_or_insert(delta);
+        let error = (delta - baseline).abs();
+        self.last_delay_delta = Some(delta);
+        self.last_delay_delta_error = Some(error);
+        if error > self.max_delay_delta_frames {
+            eprintln!(
+                "event=outputd.dual_apple.delay_diverged current_delta_frames={} baseline_frames={} error_frames={} max_error_frames={}",
+                delta,
+                baseline,
+                error,
+                self.max_delay_delta_frames
+            );
+            anyhow::bail!(
+                "outputd dual Apple delay divergence: current_delta={} baseline={} error={} max={}",
+                delta,
+                baseline,
+                error,
+                self.max_delay_delta_frames
+            );
+        }
+        if self.dac_a.state() != State::Running || self.dac_b.state() != State::Running {
+            anyhow::bail!(
+                "outputd dual Apple bad PCM state: dac_a={:?} dac_b={:?}",
+                self.dac_a.state(),
+                self.dac_b.state()
+            );
+        }
+        Ok(())
+    }
+}
+
 pub fn open_playback_pcm(
     role: &str,
     pcm_name: &str,
@@ -262,7 +596,9 @@ pub fn open_playback_pcm(
         &pcm,
         sample_rate,
         period_frames,
+        CHANNELS,
         buffer_frames,
+        true,
     )
     .with_context(|| format!("configuring outputd {role} playback PCM {pcm_name}"))?;
     Ok((pcm, negotiated))
@@ -274,13 +610,15 @@ fn configure_pcm(
     pcm: &PCM,
     sample_rate: u32,
     period_frames: u32,
+    channels: u16,
     buffer_frames: u32,
+    manual_start: bool,
 ) -> Result<NegotiatedPcm> {
     let negotiated;
     {
         let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
-        hwp.set_channels(CHANNELS as u32)
-            .with_context(|| format!("set_channels({})", CHANNELS))?;
+        hwp.set_channels(channels as u32)
+            .with_context(|| format!("set_channels({})", channels))?;
         hwp.set_rate(sample_rate, ValueOr::Nearest)
             .with_context(|| format!("set_rate({})", sample_rate))?;
         hwp.set_format(FORMAT)
@@ -297,6 +635,15 @@ fn configure_pcm(
             buffer_frames: hwp.get_buffer_size().context("get_buffer_size")? as u32,
         };
         pcm.hw_params(&hwp).context("installing HwParams")?;
+    }
+    if manual_start {
+        let swp = pcm
+            .sw_params_current()
+            .with_context(|| format!("reading outputd {role} SwParams"))?;
+        swp.set_start_threshold(negotiated.buffer_frames as i64)
+            .with_context(|| format!("setting outputd {role} start_threshold"))?;
+        pcm.sw_params(&swp)
+            .with_context(|| format!("installing outputd {role} SwParams"))?;
     }
     validate_negotiated(role, pcm_name, negotiated, sample_rate, period_frames)?;
     Ok(negotiated)
@@ -329,6 +676,62 @@ fn validate_negotiated(
             negotiated.buffer_frames,
             period_frames
         );
+    }
+    Ok(())
+}
+
+fn deinterleave_4ch_to_dual_stereo(
+    samples_4ch: &[i16],
+    out_a: &mut [i16],
+    out_b: &mut [i16],
+) -> Result<()> {
+    if samples_4ch.len() % 4 != 0 {
+        anyhow::bail!("active content period does not contain whole 4-channel frames");
+    }
+    let frames = samples_4ch.len() / 4;
+    if out_a.len() < frames * 2 || out_b.len() < frames * 2 {
+        anyhow::bail!("dual output scratch buffers are smaller than content period");
+    }
+    for frame in 0..frames {
+        let src = frame * 4;
+        let dst = frame * 2;
+        out_a[dst] = samples_4ch[src];
+        out_a[dst + 1] = samples_4ch[src + 1];
+        out_b[dst] = samples_4ch[src + 2];
+        out_b[dst + 1] = samples_4ch[src + 3];
+    }
+    Ok(())
+}
+
+fn write_dac_fail_closed(
+    pcm: &PCM,
+    pcm_name: &str,
+    samples: &[i16],
+    xrun_count: &mut u64,
+) -> Result<()> {
+    let frames_total = samples.len() / (CHANNELS as usize);
+    let io = pcm
+        .io_i16()
+        .with_context(|| format!("getting i16 IO handle for outputd DAC {pcm_name}"))?;
+    let mut frames_done = 0usize;
+    while frames_done < frames_total {
+        let offset = frames_done * (CHANNELS as usize);
+        match io.writei(&samples[offset..]) {
+            Ok(0) => {
+                anyhow::bail!("outputd dual Apple DAC {pcm_name} writei returned 0 frames");
+            }
+            Ok(n) => frames_done += n,
+            Err(e) => {
+                let errno = e.errno();
+                if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                    *xrun_count += 1;
+                    anyhow::bail!(
+                        "outputd dual Apple DAC {pcm_name} aborted on xrun/suspend errno={errno}"
+                    );
+                }
+                return Err(e).context(format!("writing outputd dual Apple DAC {pcm_name}"));
+            }
+        }
     }
     Ok(())
 }
@@ -382,5 +785,21 @@ mod tests {
 
         let err = validate_negotiated("dac", "outputd_dac", negotiated, 48_000, 1024).unwrap_err();
         assert!(err.to_string().contains("buffer_frames=1024"));
+    }
+
+    #[test]
+    fn deinterleaves_active_4ch_to_one_stereo_period_per_dac() {
+        let mut a = vec![0; 4];
+        let mut b = vec![0; 4];
+
+        deinterleave_4ch_to_dual_stereo(
+            &[10, 11, 20, 21, 12, 13, 22, 23],
+            &mut a,
+            &mut b,
+        )
+        .unwrap();
+
+        assert_eq!(a, vec![10, 11, 12, 13]);
+        assert_eq!(b, vec![20, 21, 22, 23]);
     }
 }

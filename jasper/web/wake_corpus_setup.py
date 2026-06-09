@@ -727,7 +727,7 @@ def _dac_reference_context(
             "source": env_value(
                 env,
                 "JASPER_AEC_REF_SOURCE",
-                "alsa",
+                "outputd_udp",
                 process_env=process_env,
             ),
             "outputd_chip_ref_pcm": env_value(

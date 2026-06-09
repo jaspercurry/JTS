@@ -58,7 +58,7 @@ daemon restart (or, for `control`, in-process).
 **The spine is the structured `event=` line.** Cross-daemon state
 changes emit `event=<name> key=val …` lines (`event=shairport.wedge_detected`,
 `event=system_supervisor.userspace_wedge`, `event=wifi_guardian.recreate_ok`,
-`event=duck`, `event=outputd.assistant_loudness`, …).
+`event=duck`, `event=fanin.assistant_loudness`, …).
 `scripts/jasper-trace.sh` keys off them. They are the cheap,
 high-signal, always-on observability floor — keep them.
 
@@ -101,10 +101,11 @@ music playing, ~110 lines/min combined):
 | AEC bridge `rms over` line | 1 / 5 s, always-on | the hardcoded `now - last_log > 5.0` gate in `aec_bridge.py`'s AEC loop | **Load-bearing** — `jasper-doctor`'s `_assess_aec_bridge_output` parses it from the journal, so demoting it blinds the AEC health check. Manage via Tier C, not demotion. |
 
 The old voice-side `event=tts_gain.compute` hotspot is retired. Current
-assistant loudness observability is one `event=outputd.assistant_loudness`
-line per assistant/cue segment plus outputd STATUS telemetry, so it is
-load-bearing without being steady-state journal spam. The low-level
-`tts gain set` echo in `audio_io.py` remains DEBUG.
+assistant loudness observability is one `event=fanin.assistant_loudness`
+line per assistant/cue segment plus fan-in STATUS telemetry under
+`tts.assistant_loudness`, so it is load-bearing without being
+steady-state journal spam. The low-level `tts gain set` echo in
+`audio_io.py` remains DEBUG.
 
 **Resilience state is observable without logs:**
 `curl -s http://jts.local:8780/state | jq .resilience` (`shairport`,
@@ -131,8 +132,8 @@ found the redundant `tts gain set` echo in `audio_io.py`
 `rms over` line remains INFO because `jasper-doctor`
 (`_assess_aec_bridge_output`) parses it continuously. The old
 voice-side `event=tts_gain.compute` line was removed when assistant
-loudness ownership moved into outputd; its replacement,
-`event=outputd.assistant_loudness`, is lower-volume structured
+loudness ownership moved into the audio mix owner; its replacement,
+`event=fanin.assistant_loudness`, is lower-volume structured
 decision telemetry and remains INFO.
 
 **Tier B — done (2026-05-30; pending on-device verification).** A
@@ -254,7 +255,7 @@ committed Tier-B tests still pass.
 future verbose instrumentation can live at DEBUG — quiet in the
 journal during healthy playback, but still captured in RAM and dumped
 around related anomalies. Keep low-volume, reconstructive
-`event=` decisions such as `event=outputd.assistant_loudness` at INFO
+`event=` decisions such as `event=fanin.assistant_loudness` at INFO
 unless they become steady-state spam.
 (The AEC `rms over` line still stays INFO — `jasper-doctor` reads it
 *continuously*, which a dump-on-anomaly model can't serve.)
@@ -364,4 +365,4 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-06-04
+Last verified: 2026-06-08

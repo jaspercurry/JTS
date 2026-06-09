@@ -208,21 +208,19 @@ both cleaner and more reliable. **That retired dmix remains prior art
 for the convergence sink pattern Option A below proposes — same idiom,
 different location in the chain.**
 
-The two chains converge at `pcm.jasper_out`, which is a dmix on
-the Apple USB-C dongle. The AEC bridge's reference tap is
-`pcm.jasper_ref` → `pcm.jasper_capture` → dsnoop on
-`hw:Loopback,1,7` — the summed music chain, *upstream* of CamillaDSP
-and *upstream* of the music↔TTS convergence point. So:
+The two chains now converge at `jasper-fanin` before CamillaDSP, and the
+AEC bridge consumes outputd's UDP speaker monitor as its normal reference.
+That closes the old "TTS invisible to AEC" gap and also moves the
+reference downstream of CamillaDSP filters/crossover and outputd sink
+selection. It is the final software/electrical speaker reference; DAC,
+amp, driver, cabinet, and room behavior are still only observable through
+the microphone.
 
-- AEC reference today contains music only.
-- TTS is invisible to AEC.
-- The convergence point (`jasper_out` dmix on hardware) cannot
-  natively be snooped — ALSA dmix has no "tap its output"
-  primitive.
-
-This means the canonical fix (single pre-mixed reference taken
-after the mixer) is **not achievable without changing the
-topology.** That's the crux of the decision.
+This means the canonical final-output reference is now published by the
+final output owner, so barge-in no longer needs a permanent TTS-only or
+content-only half-architecture. Remaining work is now playout accounting,
+flush/truncation coordination, and empirical tuning rather than inventing
+another reference tap.
 
 ---
 
@@ -801,8 +799,8 @@ External sources surveyed for this doc:
 Internal cross-references (for the next reader):
 
 - [audio-paths.md](audio-paths.md) — current routing topology,
-  why TTS bypasses CamillaDSP, and how outputd matches assistant
-  loudness.
+  how TTS enters fan-in before CamillaDSP, and how fan-in matches
+  assistant loudness.
 - [HANDOFF-aec.md](HANDOFF-aec.md) — AEC engine choice, the
   chip-AEC-disabled investigation, current software AEC tuning.
 - [HANDOFF-resilience.md](HANDOFF-resilience.md) — the resilience
@@ -822,4 +820,4 @@ Internal cross-references (for the next reader):
 
 ---
 
-Last verified: 2026-06-01
+Last verified: 2026-06-08
