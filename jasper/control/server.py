@@ -529,7 +529,7 @@ def _atomic_rewrite_env(path: str, updates: dict) -> None:
 def _read_wake_threshold() -> float:
     """Read JASPER_WAKE_THRESHOLD from /var/lib/jasper/wake_model.env
     (the /wake/ wizard's home) with the daemon's compiled-in default
-    (0.5) as fallback. Same precedence the daemon uses on startup."""
+    (0.3) as fallback. Same precedence the daemon uses on startup."""
     try:
         from ..web._common import read_env_file
         val = read_env_file(_WAKE_MODEL_FILE).get("JASPER_WAKE_THRESHOLD", "")
@@ -538,9 +538,14 @@ def _read_wake_threshold() -> float:
     if not val:
         val = os.environ.get("JASPER_WAKE_THRESHOLD", "")
     try:
-        return float(val) if val else 0.5
+        # Mirror the daemon's compiled-in default (jasper/config.py:469,
+        # `wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3)`, also
+        # shipped in .env.example) so the slider + /state show what's
+        # actually live. A higher fallback here would make a Save at the
+        # displayed value silently raise the real threshold.
+        return float(val) if val else 0.3
     except ValueError:
-        return 0.5
+        return 0.3
 
 
 def _write_wake_threshold(value: float) -> None:
