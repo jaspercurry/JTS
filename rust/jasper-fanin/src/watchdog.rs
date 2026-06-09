@@ -127,7 +127,7 @@ impl Heartbeat {
     /// then lets dependent units race a daemon that cannot yet mix
     /// audio.
     pub fn notify_ready(&self) {
-        match sd_notify::notify(false, &[NotifyState::Ready]) {
+        match sd_notify::notify(&[NotifyState::Ready]) {
             Ok(_) => info!("event=fanin.sd_notify_ready_sent"),
             Err(e) => warn!("event=fanin.sd_notify_ready_failed detail={}", e),
         }
@@ -141,7 +141,7 @@ impl Heartbeat {
             std::thread::sleep(HEARTBEAT_INTERVAL);
             let age_ms = self.last_progress_age_ms();
             if age_ms < STALE_THRESHOLD.as_millis() as u64 {
-                match sd_notify::notify(false, &[NotifyState::Watchdog]) {
+                match sd_notify::notify(&[NotifyState::Watchdog]) {
                     Ok(_) => {
                         self.pings_sent.fetch_add(1, Ordering::Relaxed);
                     }
@@ -167,7 +167,7 @@ impl Heartbeat {
     /// distinguish "clean exit" from "crashed" for restart-policy
     /// accounting (StartLimitBurst).
     pub fn notify_stopping(&self) {
-        if let Err(e) = sd_notify::notify(false, &[NotifyState::Stopping]) {
+        if let Err(e) = sd_notify::notify(&[NotifyState::Stopping]) {
             warn!("event=fanin.sd_notify_stopping_failed detail={}", e);
         }
     }
