@@ -274,7 +274,12 @@ before audio, confirm floor audio, then raise slowly. The readiness result
 summarizes the selected DAC output, role policy, backend, rollback state, test
 level, plus an explicit "Why sound is blocked" list; the adjacent safe-session
 status shows the quiet-start phase so the user does not have to infer missing
-gates from raw evidence rows.
+gates from raw evidence rows. The same safety step now renders a read-only
+**Commissioning rehearsal** card from
+`/sound/active-speaker/commissioning-rehearsal`. That packet is derived from
+existing durable evidence only; it does not store wizard progress, play audio,
+or reload CamillaDSP, and it explicitly hands off target readiness/artifact
+verification/floor-audio confirmation to operator-selected channel actions.
 For Jasper's immediate mono 2-way build, the same row can now record
 compression-driver protection evidence through
 `/sound/active-speaker/channel-protection`, and the card can **Stage protected
@@ -632,4 +637,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-08
+Last verified: 2026-06-09
