@@ -155,7 +155,14 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     model verbatim (see docs/HANDOFF-prompting.md for the
     rationale). Engineer-only notes (dev TODOs, implementation
     details) belong in `#` comments or the module docstring, not
-    in the tool's function docstring."""
+    in the tool's function docstring.
+
+    This does NOT validate or coerce the tool's return shape. The
+    JTS upstream-failure contract (a tool returns
+    ``{error: <speakable string>}`` on a hard failure and never an
+    empty success payload) is a documented convention enforced by
+    each tool's docstring, not by a base class here — see
+    docs/HANDOFF-prompting.md "The upstream-failure contract"."""
     declared = name or getattr(fn, "__jasper_tool_name__", None) or fn.__name__
     desc = (inspect.getdoc(fn) or "").strip() or declared
     params = _params_schema(fn)
