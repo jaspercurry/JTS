@@ -135,6 +135,7 @@ def emit_sound_config(
     out_path: str | Path | None = None,
     profile_id: str | None = None,
     output_trim_db: float = 0.0,
+    enable_rate_adjust: bool = True,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile."""
 
@@ -144,6 +145,9 @@ def emit_sound_config(
         output_trim_db=output_trim_db,
     )
     pipeline_yaml = _emit_pipeline(chain_names)
+    # inv-5: an active bond member runs rate_adjust off (snapclient is the sole
+    # rate-tracker); default True keeps the solo path unchanged.
+    rate_adjust_literal = "true" if enable_rate_adjust else "false"
     header_id = f" (id={profile_id})" if profile_id else ""
     yaml = f"""---
 # Auto-generated JTS DSP config{header_id}.
@@ -163,7 +167,7 @@ devices:
   queuelimit: 4
   target_level: {target_level}
   volume_limit: {volume_limit_db:.1f}
-  enable_rate_adjust: true
+  enable_rate_adjust: {rate_adjust_literal}
   capture:
     type: Alsa
     channels: 2

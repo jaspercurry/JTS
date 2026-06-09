@@ -113,9 +113,10 @@ has not been run on hardware. What exists:
   the I/O **`systemctl try-restart`s outputd ONLY on an actual leader
   transition** (never a steady-state reconcile) — load-bearing, since
   outputd has `StartLimitAction=reboot`. `try-restart` (not `restart`) so a
-  boot reconcile never force-starts / couples to outputd. What remains
-  (on-device): §2 inv. 2 (leader's own snapclient) + inv. 5
-  (`rate_adjust=false`), then end-to-end + acoustic sync.
+  boot reconcile never force-starts / couples to outputd. What remains:
+  §2 inv. 2 (leader's own snapclient → outputd content lane), then
+  end-to-end + acoustic sync on hardware. **inv. 5 (`rate_adjust=false`)
+  is SHIPPED** — predicate + generator param + doctor backstop (§2).
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -323,9 +324,16 @@ see `reconcile.py`).
    never shares a sender with the snapfifo consumer.
 5. **Exactly one rate-adjuster per chain.** snapclient's
    sample-stuffing is the rate-tracker, so each member's local
-   CamillaDSP runs `rate_adjust=false` / no resampler. Enforced in
-   the config generator, checked by `jasper-doctor`. (JTS already
-   documented that `rate_adjust` + `AsyncSinc` together oscillate.)
+   CamillaDSP runs `rate_adjust=false` / no resampler. **SHIPPED:**
+   the `disables_local_rate_adjust(cfg)` predicate
+   (`jasper/multiroom/config.py`) drives an `enable_rate_adjust`
+   param on the `correction` / `sound` generators (the live `/sound`
+   apply path passes it), and `jasper-doctor`'s
+   `check_grouping_rate_adjust` is the universal backstop — it reads
+   the ACTIVE config, so it catches every generator and a config
+   generated *before* the bond formed (stale → warns to regenerate).
+   (JTS already documented that `rate_adjust` + `AsyncSinc` together
+   oscillate.)
 
 ---
 
@@ -954,7 +962,19 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-09 (second staff-review pass — three follow-ups on the
+Last verified: 2026-06-09 (inv-5 SHIPPED — exactly one rate-adjuster per
+chain: a grouped member's local CamillaDSP now runs `enable_rate_adjust:
+false` so it doesn't fight snapclient's sample-stuffing (the documented
+`rate_adjust`+`AsyncSinc` oscillation). `disables_local_rate_adjust(cfg)` /
+`is_active_member(cfg)` predicates (`jasper/multiroom/config.py`) drive an
+`enable_rate_adjust` param on the `correction` + `sound` generators (the live
+`/sound` apply path passes it); `jasper-doctor`'s `check_grouping_rate_adjust`
+(order 74) is the universal backstop — it reads the ACTIVE config, so it
+catches every generator and a stale config generated before the bond formed,
+warning to regenerate. 260 affected tests green, ruff clean. **Still
+on-device:** §2 inv. 2 (the leader content lane — the Rust outputd change) and
+the channel-split live weave. Earlier 2026-06-09 (second staff-review pass —
+three follow-ups on the
 hardening below: (1) the GET /grouping wire contract now has ONE home —
 `grouping_response` / `parse_grouping_response` (+ `GROUPING_RESPONSE_KEY`) in
 `jasper/multiroom/state.py`, used by both the `jasper-control` producer and the
