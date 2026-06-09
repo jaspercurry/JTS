@@ -73,13 +73,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from jasper.camilla import CamillaController
 from jasper.config import Config
+from jasper.google_creds import build_google_clients
 from jasper.renderer import RendererClient
 from jasper.bus import BusClient
 from jasper.subway import SubwayClient
 from jasper.timers import TimerScheduler
 from jasper.tools import ToolRegistry
+from jasper.tools.audio import make_audio_tools
+from jasper.tools.calendar import make_calendar_tools
 from jasper.tools.diagnostic import make_diagnostic_tools
+from jasper.tools.gmail import make_gmail_tools
 from jasper.tools.home_assistant import make_home_assistant_tools
 from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.bus import make_bus_tools
@@ -89,6 +94,8 @@ from jasper.tools.timer import make_timer_tools
 from jasper.tools.transport import make_transport_tools
 from jasper.tools.weather import make_weather_tools
 from jasper.voice.trace import TurnTrace, reset_active, set_active, traced_registry
+from jasper.volume_coordinator import VolumeCoordinator
+from jasper.volume_persistence import VolumePersistence
 from jasper.weather import WeatherClient
 
 from . import tts
@@ -187,28 +194,64 @@ def _build_test_registry(
     test_state: "dict[str, object] | None" = None,
 ) -> ToolRegistry:
     """Construct the tool registry the eval harness exposes to the
-    LLM. Mirrors the daemon's `_build_registry` but skips backends
-    that require live audio hardware (volume coordinator,
-    calendar/gmail).
+    LLM. Mirrors the daemon's `_build_registry`.
 
     `test_state` is an optional dict the builder populates with
     side-channel references for test assertions — e.g. the timer
     scheduler so a scenario can `list_active()` after a turn to
-    verify final state without making another paid LLM call. Tests
-    that don't need side-channel access pass None.
+    verify final state without making another paid LLM call, or the
+    volume coordinator so a scenario can read+restore the prior
+    listening level. Tests that don't need side-channel access pass
+    None.
 
-    **Side-effect warning**: registering `spotify_play` and the
-    transport tools means a scenario that exercises them WILL
-    affect live playback on the speaker. The `home_assistant` tool
-    performs REAL smart-home actions (lights, locks, scenes) on the
-    configured HA. Both classes of scenario honour
-    `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1`. `flag_recent_issue` only
+    **Side-effect warning**: registering `spotify_play`, the
+    transport tools, and the volume tools means a scenario that
+    exercises them WILL affect live playback / speaker volume. The
+    Spotify scenarios honour `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1`; the
+    volume scenarios restore the prior level in a `finally`. The
+    `home_assistant` tool performs REAL smart-home actions (lights,
+    locks, scenes) on the configured HA. `flag_recent_issue` only
     writes a SQLite row to a throwaway tmp store, so it's low-risk.
-    Subway/weather/time scenarios are read-only.
+    Subway/weather/time/calendar/gmail scenarios are read-only.
+
+    **Hardware-backed tools**: the volume coordinator drives
+    CamillaDSP over a websocket; calendar/gmail hit Google's APIs.
+    Both only function where the eval actually runs (the Pi for
+    Camilla, any host with linked Google accounts for the Google
+    tools). On a laptop these tools register but their scenarios skip
+    — collection still works everywhere.
 
     As new tools land, extend this builder alongside the matching
     scenario file. The model only sees what's registered."""
     registry = ToolRegistry()
+
+    # Volume — source-aware coordinator backed by CamillaDSP. The
+    # coordinator construction is identical to the daemon's; it does
+    # NOT connect to CamillaDSP at build time (CamillaController is
+    # lazy), so this is safe to construct on a laptop. The tools only
+    # *work* where CamillaDSP is reachable (the Pi) — the volume
+    # scenarios restore the prior level in a finally and skip if the
+    # coordinator can't read a level. Exposed via test_state so a
+    # scenario can read+restore the level without a second paid call.
+    volume_persistence = VolumePersistence(cfg.volume_state_path)
+    volume_renderer = RendererClient(librespot_state_path=cfg.librespot_state_path)
+    try:
+        from jasper.voice_daemon import _build_router
+        volume_router = _build_router(cfg)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("voice-eval: volume spotify router build failed: %r", e)
+        volume_router = None
+    volume_coordinator = VolumeCoordinator(
+        camilla=CamillaController(cfg.camilla_host, cfg.camilla_port),
+        persistence=volume_persistence,
+        backend=volume_renderer,
+        spotify_router=volume_router,
+        spotify_device_name=cfg.spotify_device_name,
+    )
+    for fn in make_audio_tools(volume_coordinator):
+        registry.register(fn)
+    if test_state is not None:
+        test_state["volume_coordinator"] = volume_coordinator
 
     # Weather — stateless HTTP client. Read-only.
     weather = WeatherClient(
@@ -296,6 +339,23 @@ def _build_test_registry(
         for fn in make_spotify_tools(
             router, renderer, cfg.spotify_device_name, cfg.spotify_setup_url,
         ):
+            registry.register(fn)
+
+    # Calendar + Gmail — Google API clients, read-only. Same gate as
+    # the daemon's _build_registry: requires CLIENT_ID/SECRET at the
+    # env level (build_google_clients returns None otherwise) AND at
+    # least one linked account, so the model never sees a tool whose
+    # every call would fail with "no accounts linked". On a host with
+    # neither configured the tools simply aren't registered and the
+    # calendar/gmail scenarios skip. Exposed via test_state so a
+    # scenario can read account state for its skip decision.
+    google_clients = build_google_clients(cfg)
+    if test_state is not None:
+        test_state["google_clients"] = google_clients
+    if google_clients is not None and google_clients.list_account_names():
+        for fn in make_calendar_tools(google_clients):
+            registry.register(fn)
+        for fn in make_gmail_tools(google_clients):
             registry.register(fn)
 
     # Home Assistant — single tool surface that relays the utterance to

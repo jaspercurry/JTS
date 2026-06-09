@@ -92,7 +92,9 @@ def test_build_test_registry_constructs_with_all_backends_enabled(monkeypatch):
             "home_assistant",
         } <= names
         # And the always-on backends construct too.
-        assert {"get_weather", "get_current_time", "set_timer"} <= names
+        assert {"get_weather", "get_current_time", "set_timer", "get_volume"} <= names
+        assert "volume_coordinator" in test_state
+        assert "google_clients" in test_state
     finally:
         _cleanup(test_state)
 
@@ -112,7 +114,9 @@ def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
     try:
         registry = _build_test_registry(cfg, test_state=test_state)
         names = set(registry.tools)
-        assert {"get_weather", "get_current_time", "set_timer"} <= names
+        assert {"get_weather", "get_current_time", "set_timer", "get_volume"} <= names
+        assert "volume_coordinator" in test_state
+        assert test_state["google_clients"] is None
         assert "get_subway_arrivals" not in names
         assert "get_bus_arrivals" not in names
         assert "home_assistant" not in names
