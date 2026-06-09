@@ -263,11 +263,13 @@ def test_write_wake_threshold_rejects_out_of_range(wake_model_file):
 
 def test_read_wake_threshold_default_when_file_missing(wake_model_file, monkeypatch):
     """Fresh install: no wake_model.env yet. Slider must show the
-    daemon's compiled-in default (0.5) so users see what's actually
-    live, not a misleading 0."""
+    daemon's compiled-in default (0.3, per jasper/config.py:469 and
+    .env.example) so users see what's actually live — not a misleading
+    0, and not a higher value that a Save would silently raise the real
+    threshold to."""
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     assert not wake_model_file.exists()
-    assert server._read_wake_threshold() == 0.5
+    assert server._read_wake_threshold() == 0.3
 
 
 def test_read_wake_threshold_reads_persisted_value(wake_model_file, monkeypatch):
@@ -282,6 +284,25 @@ def test_read_wake_threshold_falls_back_to_env(wake_model_file, monkeypatch):
     monkeypatch.setenv("JASPER_WAKE_THRESHOLD", "0.42")
     assert not wake_model_file.exists()
     assert server._read_wake_threshold() == 0.42
+
+
+def test_read_wake_threshold_default_matches_daemon_config(wake_model_file, monkeypatch):
+    """The control-plane unconfigured fallback MUST equal the daemon's
+    compiled-in default. If they drift, /wake/'s slider and
+    /state.aec.threshold show a value higher than what jasper-voice is
+    actually running, and a Save at the displayed value silently RAISES
+    the live threshold (the bug this guards). Assert against the daemon
+    Config so the two can't diverge again rather than re-hardcoding the
+    literal."""
+    from jasper.config import Config
+
+    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+    # Config.from_env() requires a provider + key to construct; supply
+    # the minimum so we can read its compiled-in wake_threshold default.
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    assert not wake_model_file.exists()
+    assert server._read_wake_threshold() == Config.from_env().wake_threshold
 
 
 # ---------- _aec_full_status -----------------------------------------------
@@ -377,7 +398,9 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
         "chip_aec": {"configured": False, "available": False},
     }
     assert status["raw_intent"]["leg_raw"] is True
-    assert status["threshold"] == 0.5
+    # Unconfigured threshold falls back to the daemon default (0.3), not
+    # a higher value the slider would otherwise misrepresent as live.
+    assert status["threshold"] == 0.3
     assert status["microphone"]["processing_mode"] == "Direct mic"
     assert status["microphone"]["firmware"]["state"] == "absent"
 
