@@ -709,14 +709,16 @@ small safe envelope, and the default is the minimum (`-80 dBFS`). As of
 `JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE`). The `/sound/` card updates
 that state through `/sound/active-speaker/calibration-level`; upward movement
 is limited to one 1 dB backend transition, while lowering, reset, Stop, and
-future mic-clipping resets can return directly to the floor. Tone-plan,
-readiness, and artifact routes read the accepted persisted level rather than
-trusting request-local `level_dbfs`. No current code raises listening volume,
-writes live CamillaDSP volume, emits samples, or treats the slider as
-permission to play. The same contract has a coarse future mic-meter classifier
-(`unmeasured`, `too_quiet`, `low`, `usable`, `too_loud`, `clipping`) so the
-first real playback slice can add observed microphone feedback without
-inventing a second level schema.
+mic-clipping resets can return directly to the floor. The same route also
+accepts `action=observe` with an operator-observed capture dBFS reading; that
+records the coarse mic-meter status (`unmeasured`, `too_quiet`, `low`,
+`usable`, `too_loud`, `clipping`) without changing the requested test level
+unless clipping forces a floor reset. Tone-plan, readiness, and artifact
+routes read the accepted persisted level rather than trusting request-local
+`level_dbfs`. No current code raises listening volume, writes live CamillaDSP
+volume, emits samples, or treats the slider or mic observation as permission to
+play. This is still not real microphone capture or calibrated SPL; it is the
+operator-observed feedback loop the first audible slice can consume.
 
 `jasper.active_speaker.bringup` owns the read-only preflight packet for the
 horn-bring-up product decision. It composes output topology, channel identity,

@@ -886,11 +886,14 @@ def _active_speaker_calibration_level_payload(
     )
     logger.info(
         "event=sound.active_speaker_calibration_level action=%s "
-        "level_dbfs=%s prior_level_dbfs=%s delta_db=%s issues=%d",
+        "level_dbfs=%s prior_level_dbfs=%s delta_db=%s mic_status=%s "
+        "mic_recommendation=%s issues=%d",
         payload.get("last_action"),
         payload.get("test_signal", {}).get("requested_level_dbfs"),
         payload.get("prior_level_dbfs"),
         payload.get("applied_delta_db"),
+        payload.get("mic_meter", {}).get("status"),
+        payload.get("mic_meter", {}).get("recommendation"),
         len(payload.get("issues") or []),
     )
     return payload

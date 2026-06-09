@@ -202,6 +202,12 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "active-speaker-level" in js
     assert "data-act=\"active-level\"" in js
     assert "Raise 1 dB" in js
+    assert "Mic reading dBFS" in js
+    assert "data-act=\"active-mic-observation\"" in js
+    assert "action: 'observe'" in js
+    assert "observed_mic_dbfs" in js
+    assert "mic_clipping" in js
+    assert "This records operator-observed capture level only" in js
     assert "Level guard:" in js
     assert "Normal listening volume is untouched" in js
     assert "if (requestedLevel != null) body.level_dbfs = requestedLevel" in js
@@ -454,6 +460,36 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
     assert stopped["session_id"] == armed["session_id"]
     assert stopped["calibration_level"]["test_signal"]["requested_level_dbfs"] == -80.0
     assert stopped_level["test_signal"]["requested_level_dbfs"] == -80.0
+
+
+def test_active_speaker_mic_observation_preserves_level_guard(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
+        str(tmp_path / "calibration-level.json"),
+    )
+
+    raised = sound_setup._active_speaker_calibration_level_payload({
+        "action": "raise",
+    })
+    observed = sound_setup._active_speaker_calibration_level_payload({
+        "action": "observe",
+        "observed_mic_dbfs": -30,
+    })
+    clipped = sound_setup._active_speaker_calibration_level_payload({
+        "action": "observe",
+        "mic_clipping": True,
+    })
+
+    assert raised["test_signal"]["requested_level_dbfs"] == -79.0
+    assert observed["test_signal"]["requested_level_dbfs"] == -79.0
+    assert observed["last_action"] == "observe"
+    assert observed["mic_meter"]["status"] == "usable"
+    assert clipped["test_signal"]["requested_level_dbfs"] == -80.0
+    assert clipped["last_action"] == "clip_reset"
+    assert clipped["mic_meter"]["status"] == "clipping"
 
 
 def test_active_speaker_stop_payload_survives_level_reset_failure(
