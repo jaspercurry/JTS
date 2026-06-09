@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -250,6 +251,52 @@ async def test_reboot_window_persists_across_instance_past_window_allows_reboot(
     for _ in range(3):
         await sup2._tick()
     assert sup2.reboot_calls == 1
+
+
+def test_restored_reboot_state_logs_breadcrumb(caplog):
+    """When construction loads a persisted last-reboot time, the supervisor
+    emits exactly one info breadcrumb so an operator reading the journal can
+    see the process just came back from a supervisor-driven reboot. Mirrors
+    the mic-mute "restored from /var/lib/jasper/..." startup-log idiom."""
+    state_path = (
+        Path(tempfile.gettempdir())
+        / f"jts-test-supervisor-reboot-{uuid.uuid4().hex}.json"
+    )
+    # A recent persisted reboot (now minus a small offset) so the logged age
+    # is a small, sane non-negative number against the real wall clock.
+    reboot_at = round(time.time() - 42.0)
+    state_path.write_text(
+        '{"last_reboot_at": %d.0}' % reboot_at, encoding="utf-8",
+    )
+
+    with caplog.at_level("INFO", logger="jasper.control.system_supervisor"):
+        sup = SystemSupervisor(reboot_state_path=state_path)
+    assert sup.last_reboot_at == float(reboot_at)
+    restored = [
+        r for r in caplog.records
+        if "event=system_supervisor.reboot_state_restored" in r.getMessage()
+    ]
+    assert len(restored) == 1
+    msg = restored[0].getMessage()
+    assert "last_reboot_at=%d" % reboot_at in msg
+    assert "age=" in msg and "s" in msg.split("age=", 1)[1]
+
+
+def test_no_persisted_reboot_state_logs_no_breadcrumb(caplog):
+    """The breadcrumb fires only when a usable timestamp was restored. A
+    fresh install (no state file) must not log a spurious restore line."""
+    state_path = (
+        Path(tempfile.gettempdir())
+        / f"jts-test-supervisor-reboot-{uuid.uuid4().hex}.json"
+    )
+    # File deliberately absent.
+    with caplog.at_level("INFO", logger="jasper.control.system_supervisor"):
+        sup = SystemSupervisor(reboot_state_path=state_path)
+    assert sup.last_reboot_at is None
+    assert not [
+        r for r in caplog.records
+        if "event=system_supervisor.reboot_state_restored" in r.getMessage()
+    ]
 
 
 @pytest.mark.parametrize("contents", [None, "{ not json", '{"last_reboot_at": "nope"}', "[]"])

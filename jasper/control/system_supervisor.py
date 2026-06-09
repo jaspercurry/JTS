@@ -144,6 +144,23 @@ class SystemSupervisor:
         self.last_reboot_at: float | None = _read_reboot_state(
             self._reboot_state_path,
         )
+        # One startup breadcrumb when a persisted reboot time is restored, so
+        # an operator reading the journal after a supervisor-driven reboot can
+        # see that this process just came back from one (and the rate-limit
+        # window is armed). Mirrors the mic-mute "restored from
+        # /var/lib/jasper/..." startup-log idiom. Logged at most once per
+        # process, only when the file held a usable timestamp.
+        if self.last_reboot_at is not None:
+            # `time.time()` directly, not `self._now()`: the age here is an
+            # informational wall-clock diagnostic, while `_now()` is a seam for
+            # rate-limit *policy* testing — and it isn't set up yet on a test
+            # double at construction time. Same wall-clock source either way.
+            logger.info(
+                "event=system_supervisor.reboot_state_restored "
+                "path=%s last_reboot_at=%.0f age=%.0fs",
+                self._reboot_state_path, self.last_reboot_at,
+                time.time() - self.last_reboot_at,
+            )
 
     # ---- main loop ----
 

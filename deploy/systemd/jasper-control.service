@@ -50,9 +50,9 @@ ExecStart=/opt/jasper/.venv/bin/jasper-control
 Restart=on-failure
 RestartSec=2
 
-# Hardening — daemon only reads jasper.env, opens a localhost
-# WebSocket to CamillaDSP, and binds an HTTP port. No filesystem
-# writes outside transient sockets.
+# Hardening — daemon reads jasper.env, opens a localhost WebSocket to
+# CamillaDSP, binds an HTTP port, and persists a handful of small state
+# files under /var/lib/jasper (see ReadWritePaths below).
 ProtectSystem=full
 # `read-only` (not `true`) keeps home directories visible to diagnostic
 # subprocesses while still blocking writes. ALSA routing now lives in
@@ -61,6 +61,15 @@ ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
 NoNewPrivileges=true
+# jasper-control writes /var/lib/jasper state: the wizard env files it
+# owns (aec_mode.env, wake_model.env, debug.env), speaker_volume.json, and
+# the T5.2 supervisor's reboot rate-limit at
+# /var/lib/jasper/system_supervisor_reboot.json. Today these writes work
+# only because ProtectSystem=full leaves /var writable; pinning it
+# explicitly keeps the persisted reboot rate-limit (and thus the
+# reboot-loop guard) working if ProtectSystem is ever tightened to
+# `strict`. Mirrors jasper-voice.service / jasper-outputd.service.
+ReadWritePaths=/var/lib/jasper
 
 # OOM protection (Stage 1 of memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Control is the recovery surface — if
