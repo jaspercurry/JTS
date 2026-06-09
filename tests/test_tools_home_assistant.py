@@ -15,8 +15,13 @@ from dataclasses import dataclass
 
 import pytest
 
-from jasper.home_assistant import HAResponse, OUTCOME_NETWORK, OUTCOME_OK
-from jasper.tools import ToolRegistry, build_tool
+from jasper.home_assistant import (
+    DEFAULT_TIMEOUT,
+    HAResponse,
+    OUTCOME_NETWORK,
+    OUTCOME_OK,
+)
+from jasper.tools import DEFAULT_TOOL_TIMEOUT_SEC, ToolRegistry, build_tool
 from jasper.tools.home_assistant import make_home_assistant_tools
 
 
@@ -201,3 +206,27 @@ def test_tool_is_visible_to_all_providers():
     [fn] = make_home_assistant_tools(fake)
     built = build_tool(fn)
     assert built.providers is None
+
+
+# ---- Dispatch timeout outlives the HA client read timeout ------------------
+
+def test_tool_declares_timeout_longer_than_default():
+    """LLM-backed HA agents take 30-60s; HAClient's read timeout is 90s.
+    The tool must declare a dispatch budget longer than the generic
+    DEFAULT_TOOL_TIMEOUT_SEC so the session adapters' `asyncio.wait_for`
+    seam doesn't cut a slow HA turn off at 12s (the bug this fixes)."""
+    fake = _FakeHAClient(_ok_response())
+    [fn] = make_home_assistant_tools(fake)
+    built = build_tool(fn)
+    assert built.timeout > DEFAULT_TOOL_TIMEOUT_SEC
+
+
+def test_tool_timeout_outlives_ha_client_read_timeout():
+    """The dispatch budget must exceed HAClient's own read timeout so the
+    HTTP layer surfaces HA's real outcome (or its own timeout/error)
+    before the dispatch seam fires a generic 'timed out'. Derived from
+    DEFAULT_TIMEOUT so the 90s number stays single-sourced."""
+    fake = _FakeHAClient(_ok_response())
+    [fn] = make_home_assistant_tools(fake)
+    built = build_tool(fn)
+    assert built.timeout > DEFAULT_TIMEOUT.read

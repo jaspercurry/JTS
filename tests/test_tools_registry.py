@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import typing
 
-from jasper.tools import ToolRegistry, tool
+from jasper.tools import DEFAULT_TOOL_TIMEOUT_SEC, ToolRegistry, build_tool, tool
 from jasper.tools import _annotation_to_schema
 
 
@@ -178,6 +178,48 @@ def test_get_returns_tool_even_if_invisible_to_active_provider():
     reg = ToolRegistry()
     reg.register(restricted)
     assert reg.get("restricted") is not None
+
+
+# ---- Per-tool dispatch timeout --------------------------------------------
+
+
+def test_build_tool_defaults_timeout_to_named_constant():
+    """A tool with no `timeout=` on its decorator carries the default
+    dispatch budget. This is the budget the session adapters apply at
+    their `asyncio.wait_for` seam for the common (fast) tool."""
+    @tool()
+    def get_volume() -> dict:
+        """."""
+        return {}
+
+    built = build_tool(get_volume)
+    assert built.timeout == DEFAULT_TOOL_TIMEOUT_SEC
+    assert DEFAULT_TOOL_TIMEOUT_SEC == 12.0
+
+
+def test_tool_decorator_timeout_kwarg_overrides_default():
+    """A slow-backend tool raises its dispatch budget via
+    `@tool(timeout=...)`; build_tool reads it onto Tool.timeout."""
+    @tool(timeout=90.0)
+    async def slow_thing() -> dict:
+        """."""
+        return {}
+
+    built = build_tool(slow_thing)
+    assert built.timeout == 90.0
+
+
+def test_registered_tool_preserves_timeout():
+    """The registry's get() — the dispatch lookup path — returns the
+    Tool with its declared timeout intact, so the seam can read it."""
+    @tool(timeout=42.0)
+    async def slow_thing() -> dict:
+        """."""
+        return {}
+
+    reg = ToolRegistry()
+    reg.register(slow_thing)
+    assert reg.get("slow_thing").timeout == 42.0
 
 
 # ---- Enriched schema generation (Literal enums + list items) --------------
