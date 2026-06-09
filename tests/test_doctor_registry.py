@@ -3,11 +3,12 @@
 The doctor decomposition (the jasper/cli/doctor/ package) preserves the exact
 run sequence of the former monolith by giving every check an explicit `order=`
 key and sorting the registry by it. This test pins the invariants that keep
-that deterministic: orders are unique and contiguous (0..N-1), there is exactly
-one async check and it sorts last, and the decorator rejects a duplicate order
-at registration. A future check added with a duplicate or gappy order — which
-would silently fall back to import-order tie-breaking, the exact fragility the
-registry exists to remove — fails here.
+that deterministic: orders are unique sparse sort keys (gaps allowed so a
+mid-list insert never renumbers — only strictly-increasing + unique matters),
+there is exactly one async check and it sorts last, and the decorator rejects a
+duplicate order at registration. A future check added with a DUPLICATE order —
+which would silently fall back to import-order tie-breaking, the exact fragility
+the registry exists to remove — fails here.
 """
 from __future__ import annotations
 
@@ -17,14 +18,16 @@ from jasper.cli.doctor import _registry
 from jasper.cli.doctor._registry import doctor_check, registered_checks
 
 
-def test_registered_check_orders_are_unique_and_contiguous():
+def test_registered_check_orders_are_unique_and_strictly_increasing():
     checks = registered_checks()
     assert checks, "registry is empty — the per-domain modules did not register"
     orders = [c.order for c in checks]
     assert len(orders) == len(set(orders)), f"duplicate order keys: {orders}"
-    assert orders == list(range(len(orders))), (
-        "orders must be contiguous 0..N-1 so the run sequence is fully "
-        f"determined by `order`, never by import order (got {orders})"
+    # Sparse sort keys: gaps are intentional (a mid-list insert picks a value
+    # between its neighbours, e.g. 20.5, renumbering nothing). registered_checks()
+    # returns sorted, so the only remaining invariant is a tie-free sequence.
+    assert all(a < b for a, b in zip(orders, orders[1:])), (
+        f"orders must be strictly increasing (unique, no ties), got {orders}"
     )
 
 
