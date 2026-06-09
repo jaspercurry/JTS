@@ -20,6 +20,14 @@ answers "did the corpus record what we think it recorded?" It checks
 metadata, expected legs, coverage, WAV format, duration, RMS, and peak.
 It is not a deep audio-quality analyzer.
 
+**Training export is separate.** `scripts/export-wake-corpus-bundle.sh`
+turns audited browser-recorder sessions into a hashed, split, training-
+oriented bundle for
+[`HANDOFF-custom-wakeword-training.md`](HANDOFF-custom-wakeword-training.md).
+It should run after the fast audit and before feature extraction. Do not
+fold export semantics into this quality analyzer; this doc owns artifact
+review, not training dataset assembly.
+
 **Quality analysis starts with deterministic signal metrics.** For 1-3 s
 wake-word clips, trust sample-domain and frame-domain facts first:
 exact clipping, near-clipping, flat-top runs, DC offset, RMS, crest
@@ -585,7 +593,7 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-06-07 (v15 - deterministic offline quality analyzer
-shipped as scripts/analyze-wake-corpus-quality.sh; §11 Phase 0/1 and
-Phase 2 cross-leg analysis now done, HTML review + neural metrics still
-future.)
+Last verified: 2026-06-09 (v16 - rechecked against the corpus export
+handoff; quality analyzer still owns review/QA, while training dataset
+assembly lives in scripts/export-wake-corpus-bundle.sh and
+HANDOFF-custom-wakeword-training.md.)

@@ -22,6 +22,7 @@
 |---|---|
 | Capture the AEC bridge's three streams (raw mic / AEC ON / reference) | [Capture: 3-stream bridge captures](#capture-3-stream-bridge-captures) |
 | Audit the deliberate wake-corpus recorder output after rsync | [Wake-corpus audit (deliberate recordings)](#wake-corpus-audit-deliberate-recordings) |
+| Export wake-corpus recordings for off-Pi training | [Wake-corpus training bundle export](#wake-corpus-training-bundle-export) |
 | Analyze wake-corpus audio artifacts / quality | [Wake-corpus quality analyzer](#wake-corpus-quality-analyzer) |
 | Count wake-word detections on captured audio offline | [Wake-word scoring (offline)](#wake-word-scoring-offline) |
 | Pull production wake events + clips from the Pi | [Wake-event telemetry (production)](#wake-event-telemetry-production) |
@@ -233,6 +234,38 @@ methodology + metric definitions live in
 [`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md). Extend the
 quick corpus audit above only when a new check belongs in the fast integrity
 gate rather than the deeper analyzer.
+
+---
+
+## Wake-corpus training bundle export
+
+Laptop-side, offline. Converts browser-recorded
+`data/enrollment_positives/` sessions into the first training-oriented
+artifact for the custom wake-word workflow. It copies usable WAVs into a
+stable `audio/<split>/<condition>/<distance>/<leg>/<utterance>/` tree and
+writes `bundle.json`, `manifest.jsonl`, `manifest.csv`, `rejections.jsonl`,
+and `SHA256SUMS`.
+
+```sh
+bash scripts/export-wake-corpus-bundle.sh data/enrollment_positives
+bash scripts/export-wake-corpus-bundle.sh data/enrollment_positives logs/wake-export --latest 3
+```
+
+Use this after the quick corpus audit passes and before feature extraction or
+LiveKit/openWakeWord training. The exporter:
+
+- keeps sibling legs from the same spoken utterance in the same train/eval
+  split;
+- preserves profile, condition, distance, capture-plan, per-leg source, and
+  processing metadata;
+- remaps Pi absolute WAV paths to the local rsynced corpus copy;
+- hashes every accepted WAV;
+- rejects missing, malformed, wrong-format, or compromised-capture clips into
+  `rejections.jsonl` instead of silently training on them.
+
+It does not resample, segment, score, extract openWakeWord features, or train.
+Those later stages are owned by
+[`HANDOFF-custom-wakeword-training.md`](HANDOFF-custom-wakeword-training.md).
 
 ---
 
