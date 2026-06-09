@@ -305,9 +305,9 @@ nice-to-have):
 
 ### How `build_tool()` works
 
-[jasper/tools/__init__.py:126-149](../jasper/tools/__init__.py)
-sends the full cleaned docstring to the LLM as the tool
-description:
+[`build_tool`](../jasper/tools/__init__.py) in
+`jasper/tools/__init__.py` sends the full cleaned docstring to the
+LLM as the tool description:
 
 ```python
 def build_tool(fn, *, name=None):
@@ -353,6 +353,42 @@ error verbatim.">
 cleanest model — it has explicit positive triggers, a "Do NOT
 call for" conditional list, response shape, voice-answer style,
 and a "skip the preamble" hint, all in one docstring.
+
+### The upstream-failure contract
+
+On an upstream failure (network error, API timeout, missing
+config, no data) a tool MUST return `{error: <short, user-facing,
+speakable string>}` — `SYSTEM_INSTRUCTION` tells the model to
+speak the `error` field ~verbatim (see
+[`jasper/voice_daemon.py`](../jasper/voice_daemon.py)
+`SYSTEM_INSTRUCTION`, the cross-tool meta-rule "When a tool
+returns an `error` field, speak it verbatim … Don't apologize at
+length; don't paraphrase"). So the **base expectation is that
+`error` is itself the sentence the household hears** — write it
+as one, not as a stack trace or HTTP status. A tool MAY add a
+separate `spoken_error` for a friendlier spoken line while keeping
+a more technical `error` for logs/debugging — `get_weather` does
+this ([`jasper/tools/weather.py`](../jasper/tools/weather.py):
+"When the response includes `spoken_error`, say that briefly and
+do not add technical details from `error`") — but `spoken_error`
+is the exception, not the floor. A tool must **NEVER return an
+empty or partial success payload on a hard failure**: an empty
+list or a zeroed-out struct reads to the model as a real answer,
+so the assistant confidently states something false instead of
+saying what went wrong. This is the bus-tool bug — a credential/
+upstream miss surfaced as "no buses" rather than "the bus service
+isn't reachable", a confident-wrong answer with no `error` to
+speak. Fail loud, fail speakable.
+
+This is a **documented convention, not a framework-enforced
+contract.** `build_tool()` does not validate, wrap, or coerce
+return shapes — it ships the docstring and forwards whatever the
+function returns. There is deliberately no `ToolError` base class
+or result-type checker; each tool owns its own failure shape, and
+this paragraph plus the per-tool docstring (the error contract
+line in the "Writing a new tool" template above) are the only
+things keeping tools from drifting. Read it before adding a tool
+so the next author doesn't repeat the bus drift.
 
 ### Naming conventions
 
