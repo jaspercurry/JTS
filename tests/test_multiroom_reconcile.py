@@ -411,7 +411,9 @@ def test_write_args_file_is_fail_soft(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(reconcile_mod.os, "makedirs", _boom)
+    # The atomic tempfile+rename mechanics now live in jasper.atomic_io;
+    # inject the failure there (makedirs is the first I/O it does).
+    monkeypatch.setattr(reconcile_mod.atomic_io.os, "makedirs", _boom)
     # Must not raise; must report failure.
     assert _write_args_file({SERVER_KEY: "x", CLIENT_KEY: "y"}) is False
 
@@ -425,7 +427,8 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
     def _boom(*a, **k):
         raise OSError("rename failed")
 
-    monkeypatch.setattr(reconcile_mod.os, "replace", _boom)
+    # The rename now happens inside jasper.atomic_io; boom it there.
+    monkeypatch.setattr(reconcile_mod.atomic_io.os, "replace", _boom)
     assert _write_args_file({SERVER_KEY: "x", CLIENT_KEY: "y"}, path=str(target)) is False
     assert not target.exists()
     # No leftover temp files in the dir.
