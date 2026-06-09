@@ -81,7 +81,7 @@ multi-station picker + e-bike-only toggle and persists picks into
 | [jasper/web/transit_setup.py](../jasper/web/transit_setup.py) | `_citibike_card_html` wizard card + save-handler branch |
 | [jasper/config.py](../jasper/config.py) | `citibike_stations`, `citibike_ebike_only`, `citibike_enabled` fields |
 | [jasper/voice_daemon.py](../jasper/voice_daemon.py) | `CitiBikeClient` construction, registry wiring, system-prompt rules |
-| [jasper/cli/doctor.py](../jasper/cli/doctor.py) | `check_citibike` health probe (added in PR 4) |
+| [jasper/cli/doctor/](../jasper/cli/doctor/__init__.py) | `check_citibike` health probe (added in PR 4) |
 | [tests/test_citibike.py](../tests/test_citibike.py) | Unit tests for fetcher, cache, client |
 | [tests/test_tools_citibike.py](../tests/test_tools_citibike.py) | Tool-dispatch tests |
 

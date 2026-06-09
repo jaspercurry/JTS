@@ -38,7 +38,7 @@ docstring in [`__init__.py`](__init__.py) for the longer rationale.
 
 ## Consumers today
 
-- [`jasper.cli.doctor`](../cli/doctor.py) — the
+- [`jasper.cli.doctor`](../cli/doctor/__init__.py) — the
   `check_xvf_firmware_6ch`, `check_xvf_mixer_state`, and
   `check_aec_bridge_running` functions read constants and call
   helpers from `jasper.mics.xvf3800` (no inline literals).

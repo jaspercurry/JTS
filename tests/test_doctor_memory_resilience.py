@@ -470,7 +470,7 @@ def test_oom_score_adj_all_match():
         pid_str = str(self).split("/")[2]
         return _LIVE_OK.get(pid_str, "0") + "\n"
 
-    with patch.object(doctor, "_run",
+    with patch.object(doctor._shared, "_run",
                       side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
@@ -492,7 +492,7 @@ def test_oom_score_adj_warns_if_sshd_drifts():
     # this surfaces as the more-serious "UNIT FILE drift" message.
     drifted_config = dict(_EXPECTED_CONFIG)
     drifted_config["ssh"] = "0"
-    with patch.object(doctor, "_run",
+    with patch.object(doctor._shared, "_run",
                       side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
@@ -509,7 +509,7 @@ def test_oom_score_adj_live_drift_only():
         live["1002"] = "0"  # jasper-camilla drifted live to 0
         return live.get(pid_str, "0") + "\n"
 
-    with patch.object(doctor, "_run",
+    with patch.object(doctor._shared, "_run",
                       side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
@@ -534,7 +534,7 @@ def test_oom_score_adj_unit_file_drift_is_more_serious():
     # we'd otherwise miss until next restart.
     drifted_config = dict(_EXPECTED_CONFIG)
     drifted_config["jasper-camilla"] = "0"
-    with patch.object(doctor, "_run",
+    with patch.object(doctor._shared, "_run",
                       side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
@@ -555,7 +555,7 @@ def test_oom_score_adj_unit_drift_takes_precedence_over_live_drift():
 
     drifted_config = dict(_EXPECTED_CONFIG)
     drifted_config["jasper-camilla"] = "0"
-    with patch.object(doctor, "_run",
+    with patch.object(doctor._shared, "_run",
                       side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
@@ -584,7 +584,7 @@ def test_systemctl_show_property_parses_double_newline_separator():
         result.stdout = "1001\n\n1002\n\n1003\n"
         return result
 
-    with patch.object(doctor, "_run", side_effect=fake_run):
+    with patch.object(doctor._shared, "_run", side_effect=fake_run):
         result = doctor._systemctl_show_property(
             "MainPID", ["unit-a", "unit-b", "unit-c"],
         )
@@ -599,7 +599,7 @@ def test_systemctl_show_property_handles_single_unit():
         result.stdout = "1234\n"
         return result
 
-    with patch.object(doctor, "_run", side_effect=fake_run):
+    with patch.object(doctor._shared, "_run", side_effect=fake_run):
         result = doctor._systemctl_show_property("MainPID", ["unit-a"])
     assert result == ["1234"]
 
@@ -612,7 +612,7 @@ def test_systemctl_show_property_handles_empty_values():
         result.stdout = "\n\n\n\n\n"  # 3 empty values
         return result
 
-    with patch.object(doctor, "_run", side_effect=fake_run):
+    with patch.object(doctor._shared, "_run", side_effect=fake_run):
         result = doctor._systemctl_show_property(
             "MainPID", ["unit-a", "unit-b", "unit-c"],
         )
@@ -646,7 +646,7 @@ def test_start_limit_action_all_set_to_reboot():
         "jasper-voice": "reboot",
         "jasper-control": "reboot",
     }
-    with patch.object(doctor, "_run",
+    with patch.object(doctor.resilience, "_run",
                       side_effect=_make_start_limit_action_run(actions)):
         r = doctor.check_start_limit_action()
     assert r.status == "ok"
@@ -663,7 +663,7 @@ def test_start_limit_action_drift_one_unit_lost_directive():
         "jasper-voice": "reboot",
         "jasper-control": "none",   # drifted to default
     }
-    with patch.object(doctor, "_run",
+    with patch.object(doctor.resilience, "_run",
                       side_effect=_make_start_limit_action_run(actions)):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
@@ -682,7 +682,7 @@ def test_start_limit_action_drift_wrong_action():
         "jasper-voice": "reboot-force",   # wrong shape
         "jasper-control": "reboot",
     }
-    with patch.object(doctor, "_run",
+    with patch.object(doctor.resilience, "_run",
                       side_effect=_make_start_limit_action_run(actions)):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
@@ -695,7 +695,7 @@ def test_start_limit_action_skips_on_dev_host():
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError("systemctl not found")
 
-    with patch.object(doctor, "_run", side_effect=fake_run):
+    with patch.object(doctor.resilience, "_run", side_effect=fake_run):
         r = doctor.check_start_limit_action()
     assert r.status == "ok"
     assert "skipped" in r.detail
@@ -710,7 +710,7 @@ def test_oom_score_adj_no_systemctl_is_ok():
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError("systemctl not found")
 
-    with patch.object(doctor, "_run", side_effect=fake_run):
+    with patch.object(doctor._shared, "_run", side_effect=fake_run):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
     assert "systemctl unavailable" in r.detail
@@ -779,7 +779,7 @@ def test_audio_path_no_swap_happy_path():
             "VmSwap:\t0 kB\n"
         )
 
-    with patch.object(doctor, "_run", side_effect=fake_run), \
+    with patch.object(doctor._shared, "_run", side_effect=fake_run), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_audio_path_no_swap()
     assert r.status == "ok"
@@ -812,7 +812,7 @@ def test_audio_path_no_swap_warns_on_42mb_swap():
             return "Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t43056 kB\n"
         return "Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t0 kB\n"
 
-    with patch.object(doctor, "_run", side_effect=fake_run), \
+    with patch.object(doctor._shared, "_run", side_effect=fake_run), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_audio_path_no_swap()
     assert r.status == "warn"
@@ -827,7 +827,7 @@ def test_audio_path_no_swap_dev_host():
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError("systemctl not found")
 
-    with patch.object(doctor, "_run", side_effect=fake_run):
+    with patch.object(doctor._shared, "_run", side_effect=fake_run):
         r = doctor.check_audio_path_no_swap()
     assert r.status == "ok"
     assert "not running" in r.detail

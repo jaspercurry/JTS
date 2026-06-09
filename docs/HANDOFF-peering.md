@@ -112,7 +112,7 @@ Separated by I/O profile so each piece is independently testable.
 | [jasper/config.py](../jasper/config.py) | `Config.peering_enabled` (bool) + `Config.peering_uds_socket` (path). Read from `JASPER_PEERING` env. |
 | [jasper/voice_daemon.py](../jasper/voice_daemon.py) | New helpers: `_peer_arbitrate`, `_peering_send`, `_notify_peering_session_started/_ended`, `_wake_late_cancelled`, `_frame_rms_dbfs`. Restructured `_handle_wake_frame` to spawn `_arbitrate_acquire_drain` as a background task. |
 | [jasper/control/server.py](../jasper/control/server.py) | `start_peering_daemon_if_enabled()` — spawns a background thread with its own asyncio loop iff `JASPER_PEERING=on`. No-op when off. |
-| [jasper/cli/doctor.py](../jasper/cli/doctor.py) | Two new checks: `check_peering_mode` (env-file sanity) and `check_peering_discovery` (sibling-peer count via `avahi-browse`). |
+| [jasper/cli/doctor/](../jasper/cli/doctor/__init__.py) | Two new checks: `check_peering_mode` (env-file sanity) and `check_peering_discovery` (sibling-peer count via `avahi-browse`). |
 | [jasper/web/peering_setup.py](../jasper/web/peering_setup.py) | New `/peers/` wizard on port 8776. Toggle + room label + primary flag. Writes `/var/lib/jasper/peering.env`, restarts both voice + control daemons. |
 | [deploy/avahi/jasper-peer.service.template](../deploy/avahi/jasper-peer.service.template) | mDNS service-file template with `__PEER_ID__` / `__ROOM__` / `__PRIMARY__` placeholders, rendered at runtime. |
 | [deploy/install.sh:install_peering_template()](../deploy/install.sh) | Installs the template, generates a stable `peer_id` UUID at `/var/lib/jasper/peer_id`. |

@@ -1505,7 +1505,7 @@ blockers; defaults are documented for each.
   probes; `usbsink_playing()` added here
 - [jasper/web/sources_setup.py](../jasper/web/sources_setup.py) —
   Toggle wizard; pattern mirrored for USB
-- [jasper/cli/doctor.py](../jasper/cli/doctor.py) — Check pattern;
+- [jasper/cli/doctor/](../jasper/cli/doctor/__init__.py) — Check pattern;
   three new checks added
 - [deploy/install.sh](../deploy/install.sh) — dtoverlay handler
   pattern (cf. `country_code` at line 359)
