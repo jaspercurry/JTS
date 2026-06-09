@@ -18,6 +18,7 @@
 
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
+import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
 
 let state = { powered: false, discoverable: false, discovering: false };
 let devices = new Map(); // path → device
@@ -456,12 +457,6 @@ if (scanBtn) scanBtn.addEventListener('click', toggleScan);
 
 // -------- helpers --------
 
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  })[c]);
-}
-function cssIdSafe(s) { return String(s).replace(/[^a-zA-Z0-9]/g, '_'); }
 function iconSlug(s) { return String(s || 'device').replace(/[^a-zA-Z0-9_-]/g, '') || 'device'; }
 
 // -------- bootstrap --------

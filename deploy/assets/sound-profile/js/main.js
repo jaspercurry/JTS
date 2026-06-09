@@ -17,6 +17,7 @@
 // exercised on the Pi (band-drag + live-draft → CamillaDSP) before merge.
 // Do not blind-refactor it. See docs/HANDOFF-management-ui.md.
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { escapeHtml } from "/assets/shared/js/escape.js";
 import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js";
 (function() {
   var LIMIT_DEFAULTS = {
@@ -94,11 +95,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function fmtQ(v) { return 'Q ' + (Number(v) || 0).toFixed(1); }
   function fmtDbfs(v) { return fmtDb(v) + ' dBFS'; }
-  function escapeHtml(value) {
-    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
-      return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch];
-    });
-  }
   function zeroSimple() {
     var out = {};
     (simpleBands.length ? simpleBands : LIMIT_DEFAULTS.simple_bands).forEach(function(b) {

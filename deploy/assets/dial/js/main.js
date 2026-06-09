@@ -22,6 +22,7 @@
 // attribute read by the one delegated click handler.
 
 import { jsonHeaders } from "/assets/shared/js/http.js";
+import { escapeHtml } from "/assets/shared/js/escape.js";
 
 const statusEl = document.getElementById("status");
 const devicesEl = document.getElementById("devices");
@@ -30,12 +31,6 @@ const resultEl = document.getElementById("result");
 let pollTimer = null;
 let lastDevices = [];
 let busy = false; // true while a provision call is in flight
-
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  })[c]);
-}
 
 // Poll the server for the current set of plugged-in ESP32-S3 devices.
 // Read-only; skipped while a provision is running (the chip reset mid-flash

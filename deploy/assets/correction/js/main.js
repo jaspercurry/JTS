@@ -18,6 +18,12 @@
 // docs/HANDOFF-correction.md.
 import { csrfHeaders, jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
+// This page's local copy was named escapeText; import the shared escapeHtml
+// under that name so its call sites stay byte-for-byte. The local copy coerced
+// with `|| ''` vs the shared `?? ''`; every call site here passes a string or
+// its own `|| 'fallback'`, so no falsy non-string reaches it — output is
+// unchanged.
+import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 (function () {
   'use strict';
 
@@ -129,12 +135,6 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
     }
     ctx = null;
     workletNode = null;
-  }
-
-  function escapeText(s) {
-    return String(s || '').replace(/[&<>"']/g, function (ch) {
-      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
-    });
   }
 
   async function populateInputDevices(selectedId) {

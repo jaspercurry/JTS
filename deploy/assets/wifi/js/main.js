@@ -27,6 +27,7 @@
 
 import { jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
+import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
 
 // State + DOM helpers ------------------------------------------------
 let state = { adapterPresent: true, radioOn: false, hasEthernet: false,
@@ -39,12 +40,6 @@ let autoScanned = false;
 let openSsid = null;     // available-list inline panel currently open
 let openSavedName = null;// saved-list inline panel currently open
 let stateTimer = null;
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  })[c]);
-}
-function cssIdSafe(s) { return String(s).replace(/[^a-zA-Z0-9]/g, '_'); }
 function signalBars(sig) {
   if (sig == null) return '';
   if (sig >= 70) return '●●●●';
