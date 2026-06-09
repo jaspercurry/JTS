@@ -379,3 +379,83 @@ def test_deterministic():
     a = build_channel_split("sub", crossover_hz=90.0)
     b = build_channel_split("sub", crossover_hz=90.0)
     assert a == b
+
+
+# ---------- weave_channel_split: splicing into a generated config (PR-2) -----
+
+
+def test_weave_stereo_is_byte_for_byte_passthrough():
+    from jasper.multiroom.channel_split import weave_channel_split
+    assert weave_channel_split(BASE_CONFIG, build_channel_split("stereo")) == BASE_CONFIG
+
+
+@pytest.mark.parametrize("channel", ["left", "right", "mono"])
+def test_weave_inserts_channel_select_right_after_master_gain(channel):
+    from jasper.multiroom.channel_split import weave_channel_split
+    doc = yaml.safe_load(weave_channel_split(BASE_CONFIG, build_channel_split(channel)))
+    assert CHANNEL_SELECT_MIXER in doc["mixers"]
+    # master_gain stays the identity mixer (Ducker contract — never touched).
+    assert doc["mixers"]["master_gain"]["mapping"][0]["sources"][0]["channel"] == 0
+    # The channel_select Mixer step runs immediately AFTER master_gain.
+    steps = [(s.get("type"), s.get("name")) for s in doc["pipeline"]]
+    i_mg = steps.index(("Mixer", "master_gain"))
+    assert steps[i_mg + 1] == ("Mixer", CHANNEL_SELECT_MIXER)
+    # Non-sub: no crossover, per-channel Filter names untouched.
+    assert "sub_crossover" not in (doc.get("filters") or {})
+    for s in doc["pipeline"]:
+        if s.get("type") == "Filter":
+            assert s["names"] == ["flat"]
+
+
+def test_weave_sub_adds_crossover_and_appends_it_last_to_each_filter():
+    from jasper.multiroom.channel_split import (
+        SUB_CROSSOVER_FILTER,
+        weave_channel_split,
+    )
+    doc = yaml.safe_load(weave_channel_split(BASE_CONFIG, build_channel_split("sub")))
+    assert CHANNEL_SELECT_MIXER in doc["mixers"]
+    assert SUB_CROSSOVER_FILTER in doc["filters"]
+    # Existing correction stays first; the crossover runs LAST (just pre-DAC).
+    for s in doc["pipeline"]:
+        if s.get("type") == "Filter":
+            assert s["names"][0] == "flat"
+            assert s["names"][-1] == SUB_CROSSOVER_FILTER
+
+
+def test_weave_preserves_volume_limit_ceiling():
+    from jasper.multiroom.channel_split import weave_channel_split
+    doc = yaml.safe_load(weave_channel_split(BASE_CONFIG, build_channel_split("sub")))
+    assert doc["devices"]["volume_limit"] == 0.0  # safety floor untouched by the weave
+
+
+def test_weave_fails_loud_when_config_missing_anchors():
+    from jasper.multiroom.channel_split import weave_channel_split
+    # No `mixers:` section -> cannot splice the channel_select mixer. The weave
+    # must raise, never hand CamillaDSP a half-spliced (silent / mis-routed)
+    # config.
+    broken = "devices:\n  samplerate: 48000\npipeline:\n  - type: Mixer\n    name: master_gain\n"
+    with pytest.raises(ValueError, match="weave failed|missing"):
+        weave_channel_split(broken, build_channel_split("left"))
+
+
+def test_augment_names_line_empty_and_nonempty():
+    from jasper.multiroom.channel_split import _augment_names_line
+    assert _augment_names_line("    names: []", ("sub_crossover",)) == \
+        "    names: [sub_crossover]"
+    assert _augment_names_line("    names: [a, b]", ("sub_crossover",)) == \
+        "    names: [a, b, sub_crossover]"
+
+
+def test_emit_sound_config_weaves_channel_split():
+    """The live apply path: emit_sound_config(channel_split=...) weaves, and a
+    passthrough/None leaves the config byte-for-byte."""
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SimpleEq, SoundProfile
+    profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=6.0))
+    base = emit_sound_config(profile)
+    assert emit_sound_config(profile, channel_split=build_channel_split("stereo")) == base
+    assert emit_sound_config(profile, channel_split=None) == base
+    woven = emit_sound_config(profile, channel_split=build_channel_split("sub"))
+    doc = yaml.safe_load(woven)
+    assert CHANNEL_SELECT_MIXER in doc["mixers"]
+    assert "sub_crossover" in doc["filters"]

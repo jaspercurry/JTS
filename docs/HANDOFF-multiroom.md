@@ -182,19 +182,22 @@ has not been run on hardware. What exists:
   wake-arb, with full consolidation flagged as a follow-up. See §8 "Friendly
   names + identity".
 
-Not yet built (P1+, post-spike): the `BondedSet` entity, **live weaving
-of the channel-split fragment into the active CamillaDSP config** (P1.3;
-the pure generator landed — `channel_split.py` above), satellite
+Not yet built (P1+, post-spike): the `BondedSet` entity, satellite
 calibration, **2.1 / sub / >2-member bond setup on `/rooms/`** (the
 stereo-pair one-flow landed — `/bond` fans config out to both members;
 the multi-member channel/leader picker is the remaining UI), the
 **leader's own snapclient → outputd content lane** (§2 inv. 2 — so the
 leader plays the *buffered* stream in sync with followers, not its direct
-unsynced output) and **`rate_adjust=false`** on each member (§2 inv. 5),
-and the on-device end-to-end + acoustic sync validation. *(The producer
-AND its activation landed — `SnapfifoSink` + the reconciler tap wiring,
-§0/§2 below. Enabling a leader now makes audio FLOW to followers;
-sample-lock still needs inv. 2.)*
+unsynced output), and the on-device end-to-end + acoustic sync validation.
+*(The producer AND its activation landed — `SnapfifoSink` + the reconciler
+tap wiring, §0/§2 below. Enabling a leader now makes audio FLOW to
+followers; sample-lock still needs inv. 2.)* **SHIPPED since:** inv. 5
+(`rate_adjust=false`, §2) AND the **live weave of the channel-split
+fragment into the active config** — `weave_channel_split()`
+(`channel_split.py`) splices the `channel_select` mixer + sub crossover
+into the generated config (validated YAML; `stereo` is byte-for-byte
+passthrough), and `emit_sound_config(channel_split=…)` weaves it on the
+live `/sound` apply path for an active member.
 
 ---
 
@@ -962,7 +965,23 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-09 (inv-5 SHIPPED — exactly one rate-adjuster per
+Last verified: 2026-06-09 (channel-split LIVE WEAVE SHIPPED — a bonded member
+that plays a single channel now actually filters it. `weave_channel_split(yaml,
+split)` (`jasper/multiroom/channel_split.py`) splices the P1.2 `ChannelSplit`
+fragment into a generated CamillaDSP config: the `channel_select` mixer under
+`mixers:`, the sub crossover under `filters:`, the `channel_select` Mixer step
+right after `master_gain` in the pipeline, and the crossover appended LAST to
+each per-channel `Filter`. `stereo` is byte-for-byte passthrough; the woven
+result is parsed + structurally validated (channel_select in mixers AND
+pipeline), failing LOUD on a config missing the anchors rather than emitting a
+broken DSP config. `emit_sound_config(channel_split=…)` weaves inside (before
+the out_path write); the live `/sound` apply path builds the split from the
+member's `cfg.channel` for an active member only. `master_gain` /
+`volume_limit: 0.0` untouched (Ducker + safety contracts hold). 127 weave/sound
+tests green, ruff clean. **Still on-device:** §2 inv. 2 (the leader content
+lane — the Rust outputd change) is now the ONLY remaining sample-lock piece,
+then end-to-end + acoustic validation. Earlier 2026-06-09 (inv-5 SHIPPED —
+exactly one rate-adjuster per
 chain: a grouped member's local CamillaDSP now runs `enable_rate_adjust:
 false` so it doesn't fight snapclient's sample-stuffing (the documented
 `rate_adjust`+`AsyncSinc` oscillation). `disables_local_rate_adjust(cfg)` /

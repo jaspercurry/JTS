@@ -626,15 +626,21 @@ async def _live_draft_profile(
                 "room correction before changing sound EQ."
             )
 
-        # inv-5: an active bond member emits rate_adjust OFF (snapclient is the
-        # sole rate-tracker). Reads grouping.env fresh; unchanged when solo.
-        from ..multiroom.config import disables_local_rate_adjust, load_config
+        # Grouping (read fresh once): an ACTIVE bond member emits rate_adjust
+        # OFF (inv-5 — snapclient is the sole rate-tracker) and weaves its
+        # channel-split (channel_select mixer + sub crossover). Solo/off/invalid
+        # leaves the config unchanged.
+        from ..multiroom.channel_split import build_channel_split
+        from ..multiroom.config import is_active_member, load_config
+        _grp = load_config()
+        _active = is_active_member(_grp)
         yaml = emit_sound_config(
             profile,
             room_peqs=room_peqs,
             profile_id=f"live-{time.time_ns()}",
             output_trim_db=output_trim_db,
-            enable_rate_adjust=not disables_local_rate_adjust(load_config()),
+            enable_rate_adjust=not _active,
+            channel_split=build_channel_split(_grp.channel) if _active else None,
         )
 
         try:
@@ -721,14 +727,18 @@ async def _load_profile_config(
                 "room correction before changing sound EQ."
             )
 
-        from ..multiroom.config import disables_local_rate_adjust, load_config
+        from ..multiroom.channel_split import build_channel_split
+        from ..multiroom.config import is_active_member, load_config
+        _grp = load_config()
+        _active = is_active_member(_grp)
         emit_sound_config(
             profile,
             room_peqs=room_peqs,
             out_path=out_path,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
-            enable_rate_adjust=not disables_local_rate_adjust(load_config()),
+            enable_rate_adjust=not _active,
+            channel_split=build_channel_split(_grp.channel) if _active else None,
         )
         return {
             "prior_config_path": current_path,

@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+from jasper.multiroom.channel_split import ChannelSplit, weave_channel_split
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -136,8 +137,15 @@ def emit_sound_config(
     profile_id: str | None = None,
     output_trim_db: float = 0.0,
     enable_rate_adjust: bool = True,
+    channel_split: ChannelSplit | None = None,
 ) -> str:
-    """Build a CamillaDSP YAML config for the preference profile."""
+    """Build a CamillaDSP YAML config for the preference profile.
+
+    ``channel_split`` (a :class:`jasper.multiroom.channel_split.ChannelSplit`)
+    is woven in for a bonded member that plays a single channel — the
+    ``channel_select`` mixer + (for a sub) the crossover. ``None`` or a
+    passthrough (``stereo``) split leaves the config untouched, so a solo
+    speaker is byte-for-byte unchanged."""
 
     filter_yaml, chain_names, trim_db = _emit_filter_definitions(
         profile,
@@ -194,6 +202,12 @@ mixers:
 pipeline:
 {pipeline_yaml}
 """
+
+    # Weave the bonded-member channel-split (channel_select mixer + sub
+    # crossover) BEFORE the out_path write so the written file is the woven
+    # config. Passthrough (stereo) / None leaves `yaml` byte-for-byte.
+    if channel_split is not None:
+        yaml = weave_channel_split(yaml, channel_split)
 
     if out_path is not None:
         out_path = Path(out_path)
