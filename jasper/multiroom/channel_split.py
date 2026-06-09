@@ -232,3 +232,98 @@ def build_channel_split(
         filter_chain_names=filter_chain_names,
         pipeline_mixer_step=_pipeline_mixer_step(),
     )
+
+
+def _augment_names_line(line: str, extra: tuple[str, ...]) -> str:
+    """Append `extra` filter names to a pipeline ``names: [...]`` line,
+    preserving indent. ``names: []`` -> ``names: [extra]``; ``names: [a, b]``
+    -> ``names: [a, b, extra]``."""
+    indent = line[: len(line) - len(line.lstrip())]
+    lb, rb = line.index("["), line.rindex("]")
+    existing = [n.strip() for n in line[lb + 1 : rb].split(",") if n.strip()]
+    return f"{indent}names: [{', '.join(existing + list(extra))}]"
+
+
+def _validate_woven(woven: str, split: ChannelSplit) -> None:
+    """Parse the woven config and assert the splice landed. A mis-spliced DSP
+    config would silence or mis-route the speaker, so fail LOUD here rather
+    than hand CamillaDSP a broken config."""
+    import yaml
+
+    try:
+        doc = yaml.safe_load(woven)
+    except yaml.YAMLError as e:  # pragma: no cover - defensive
+        raise ValueError(f"channel-split weave produced invalid YAML: {e}") from e
+    doc = doc or {}
+    if CHANNEL_SELECT_MIXER not in (doc.get("mixers") or {}):
+        raise ValueError("channel-split weave: channel_select missing from mixers")
+    pipeline = doc.get("pipeline") or []
+    if not any(
+        isinstance(s, dict)
+        and s.get("type") == "Mixer"
+        and s.get("name") == CHANNEL_SELECT_MIXER
+        for s in pipeline
+    ):
+        raise ValueError("channel-split weave: channel_select step missing from pipeline")
+    if split.channel == "sub" and SUB_CROSSOVER_FILTER not in (doc.get("filters") or {}):
+        raise ValueError("channel-split weave: sub_crossover missing from filters")
+
+
+def weave_channel_split(config_yaml: str, split: ChannelSplit) -> str:
+    """Splice a :class:`ChannelSplit` fragment into a JTS-generated CamillaDSP
+    config and return the woven YAML.
+
+    Performs the four operations documented on :class:`ChannelSplit`: insert
+    the ``channel_select`` mixer under ``mixers:``; insert the sub crossover
+    under ``filters:``; insert the ``channel_select`` Mixer step into the
+    pipeline immediately AFTER the ``master_gain`` step (so it runs after the
+    Ducker's fader, before the per-channel correction/EQ); and append the
+    crossover to each per-channel ``Filter`` step's ``names:`` list (so the
+    sub lowpass runs LAST, just before the DAC).
+
+    PASSTHROUGH (``stereo`` / solo) returns ``config_yaml`` BYTE-FOR-BYTE — a
+    solo speaker's config is untouched.
+
+    Only ever runs on a JTS-generated config (auto-generated, so the
+    ``mixers:`` / ``filters:`` / ``pipeline:`` section keys and the
+    ``name: master_gain`` pipeline step are stable anchors). The result is
+    parsed + structurally validated; a config missing the expected anchors
+    raises ValueError rather than emitting a broken DSP config."""
+    if split.is_passthrough:
+        return config_yaml
+
+    out: list[str] = []
+    in_pipeline = False
+    inserted_mixer = inserted_pipeline_step = False
+    inserted_filter = not split.filter_block  # nothing to insert when no filter
+
+    for line in config_yaml.split("\n"):
+        is_top_level = bool(line) and not line[0].isspace()
+        if is_top_level:
+            in_pipeline = line.rstrip() == "pipeline:"
+
+        out.append(line)
+        rstripped = line.rstrip()
+        stripped = line.strip()
+
+        if is_top_level and rstripped == "mixers:":
+            out.append(split.mixer_block)
+            inserted_mixer = True
+        elif is_top_level and split.filter_block and rstripped == "filters:":
+            out.append(split.filter_block)
+            inserted_filter = True
+        elif in_pipeline and stripped == "name: master_gain":
+            out.append(split.pipeline_mixer_step)
+            inserted_pipeline_step = True
+        elif in_pipeline and split.filter_chain_names and stripped.startswith("names:"):
+            out[-1] = _augment_names_line(line, split.filter_chain_names)
+
+    if not (inserted_mixer and inserted_pipeline_step and inserted_filter):
+        raise ValueError(
+            "channel-split weave failed: config missing expected anchors "
+            f"(mixers={inserted_mixer} pipeline_master_gain={inserted_pipeline_step} "
+            f"filters={inserted_filter})"
+        )
+    woven = "\n".join(out)
+    _validate_woven(woven, split)
+    return woven
