@@ -8,6 +8,7 @@ code must pass through before any sound-emitting action is added.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import uuid
@@ -15,10 +16,13 @@ from calendar import timegm
 from pathlib import Path
 from typing import Any, Callable
 
+from .calibration_level import MIN_TEST_LEVEL_DBFS
+
 SCHEMA_VERSION = 1
 SAFE_PLAYBACK_SESSION_KIND = "jts_active_speaker_safe_playback_session"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_safe_playback.json")
 DEFAULT_ARM_TTL_SEC = 120
+QUIET_START_POLICY_VERSION = "floor_first_per_target_v1"
 
 NowFn = Callable[[], float]
 
@@ -59,6 +63,7 @@ def _base_state(*, now_epoch: float) -> dict[str, Any]:
         "expires_at": None,
         "last_action": "status",
         "environment": {},
+        "quiet_start": _quiet_start_base(),
         "playback": {
             "status": "idle",
             "audio_emitted": False,
@@ -86,6 +91,85 @@ def _issue(severity: str, code: str, message: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "message": message}
 
 
+def _nonnegative_int(value: Any) -> int | None:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out >= 0 else None
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def playback_target_signature(target: Any) -> dict[str, Any] | None:
+    """Return the stable target identity used by the quiet-start gate."""
+
+    if not isinstance(target, dict):
+        return None
+    group_id = str(target.get("speaker_group_id") or "").strip() or None
+    role = str(target.get("driver_role") or target.get("role") or "").strip().lower()
+    output_index = _nonnegative_int(target.get("output_index"))
+    if not (group_id or role or output_index is not None):
+        return None
+    return {
+        "speaker_group_id": group_id,
+        "role": role or None,
+        "output_index": output_index,
+    }
+
+
+def _quiet_start_base() -> dict[str, Any]:
+    return {
+        "policy_version": QUIET_START_POLICY_VERSION,
+        "status": "floor_required",
+        "floor_audio_confirmed": False,
+        "current_target": None,
+        "last_level_dbfs": None,
+        "last_playback_at": None,
+    }
+
+
+def _normalise_quiet_start(raw: Any) -> dict[str, Any]:
+    quiet = _quiet_start_base()
+    if isinstance(raw, dict):
+        quiet.update({
+            key: raw.get(key)
+            for key in quiet
+            if key in raw
+        })
+    quiet["policy_version"] = QUIET_START_POLICY_VERSION
+    quiet["floor_audio_confirmed"] = bool(quiet.get("floor_audio_confirmed"))
+    if quiet.get("status") != "floor_confirmed" or not quiet["floor_audio_confirmed"]:
+        quiet["status"] = "floor_required"
+        quiet["floor_audio_confirmed"] = False
+    quiet["current_target"] = playback_target_signature(quiet.get("current_target"))
+    quiet["last_level_dbfs"] = _finite_float(quiet.get("last_level_dbfs"))
+    return quiet
+
+
+def floor_audio_confirmed_for_target(
+    safe_session: dict[str, Any],
+    target: Any,
+) -> bool:
+    """Return whether this armed session has floor audio evidence for target."""
+
+    quiet = _normalise_quiet_start(safe_session.get("quiet_start"))
+    target_sig = playback_target_signature(target)
+    return (
+        safe_session.get("status") == "armed"
+        and bool(target_sig)
+        and quiet.get("status") == "floor_confirmed"
+        and quiet.get("floor_audio_confirmed") is True
+        and quiet.get("current_target") == target_sig
+    )
+
+
 def _normalise_state(raw: Any, *, now_epoch: float) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return _base_state(now_epoch=now_epoch)
@@ -95,6 +179,7 @@ def _normalise_state(raw: Any, *, now_epoch: float) -> dict[str, Any]:
     state["tone_playback_implemented"] = False
     state.setdefault("issues", [])
     state.setdefault("playback", {"status": "idle", "audio_emitted": False})
+    state["quiet_start"] = _normalise_quiet_start(state.get("quiet_start"))
     return state
 
 
@@ -129,6 +214,7 @@ def load_safe_playback_state(
         if expires_epoch <= now_epoch:
             state["status"] = "expired"
             state["playback_allowed"] = False
+            state["quiet_start"] = _quiet_start_base()
     return state
 
 
@@ -190,6 +276,7 @@ def arm_safe_playback_session(
             "expires_at": _utc_from_epoch(expires_epoch),
             "last_action": "arm",
             "environment": env,
+            "quiet_start": _quiet_start_base(),
             "issues": [],
         }
     )
@@ -217,6 +304,7 @@ def stop_safe_playback_session(
             "expires_at": None,
             "last_action": reason or "operator_stop",
             "environment": prior.get("environment") or {},
+            "quiet_start": _quiet_start_base(),
             "playback": {
                 "status": "stopped" if prior.get("session_id") else "idle",
                 "playback_id": (prior.get("playback") or {}).get("playback_id"),
@@ -251,15 +339,59 @@ def record_safe_playback_result(
         "issue_count": len(result.get("issues") or []),
     }
     state = _normalise_state(prior, now_epoch=now_epoch)
+    quiet_start = _quiet_start_after_result(
+        state.get("quiet_start"),
+        result,
+        now_epoch=now_epoch,
+    )
     state.update(
         {
             "updated_at": _utc_from_epoch(now_epoch),
             "last_action": f"tone_playback_{playback['status']}",
             "playback": playback,
+            "quiet_start": quiet_start,
         }
     )
     _atomic_write_json(_state_path(state_path), state)
     return state
+
+
+def _quiet_start_after_result(
+    prior: Any,
+    result: dict[str, Any],
+    *,
+    now_epoch: float,
+) -> dict[str, Any]:
+    quiet = _normalise_quiet_start(prior)
+    target_sig = playback_target_signature(result.get("target"))
+    if target_sig and quiet.get("current_target") != target_sig:
+        quiet = _quiet_start_base()
+        quiet["current_target"] = target_sig
+    elif target_sig and not quiet.get("current_target"):
+        quiet["current_target"] = target_sig
+
+    tone = result.get("tone") if isinstance(result.get("tone"), dict) else {}
+    level = _finite_float(tone.get("level_dbfs"))
+    if level is not None:
+        quiet["last_level_dbfs"] = level
+
+    completed_audio = (
+        result.get("status") == "completed"
+        and bool(result.get("audio_emitted"))
+        and not result.get("issues")
+    )
+    if completed_audio:
+        quiet["last_playback_at"] = _utc_from_epoch(now_epoch)
+        if _level_at_floor(level):
+            quiet["status"] = "floor_confirmed"
+            quiet["floor_audio_confirmed"] = True
+        elif not quiet.get("floor_audio_confirmed"):
+            quiet["status"] = "floor_required"
+    return quiet
+
+
+def _level_at_floor(level: float | None) -> bool:
+    return level is not None and level <= MIN_TEST_LEVEL_DBFS + 1e-6
 
 
 def _artifact_summary(raw: Any) -> dict[str, Any] | None:

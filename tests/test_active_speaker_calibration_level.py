@@ -105,3 +105,39 @@ def test_calibration_level_state_resets_on_mic_clipping(tmp_path) -> None:
     assert clipped["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
     assert clipped["mic_meter"]["status"] == "clipping"
     assert clipped["issues"][0]["code"] == "mic_clipping_reset_to_floor"
+
+
+def test_calibration_level_observation_preserves_guarded_level(tmp_path) -> None:
+    path = tmp_path / "level.json"
+    update_calibration_level_state(action="raise", state_path=path)
+    update_calibration_level_state(action="raise", state_path=path)
+
+    observed = update_calibration_level_state(
+        action="observe",
+        observed_mic_dbfs=-30.2,
+        state_path=path,
+    )
+
+    assert observed["last_action"] == "observe"
+    assert observed["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS + 2
+    assert observed["applied_delta_db"] == 0
+    assert observed["mic_meter"]["status"] == "usable"
+    assert observed["mic_meter"]["observed_dbfs"] == -30.2
+
+
+def test_calibration_level_observation_clipping_resets_to_floor(tmp_path) -> None:
+    path = tmp_path / "level.json"
+    update_calibration_level_state(action="raise", state_path=path)
+    update_calibration_level_state(action="raise", state_path=path)
+
+    clipped = update_calibration_level_state(
+        action="observe",
+        observed_mic_dbfs=-18,
+        mic_clipping=True,
+        state_path=path,
+    )
+
+    assert clipped["last_action"] == "clip_reset"
+    assert clipped["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
+    assert clipped["mic_meter"]["status"] == "clipping"
+    assert clipped["issues"][0]["code"] == "mic_clipping_reset_to_floor"

@@ -27,6 +27,11 @@ from .audible_policy import (
 
 SCHEMA_VERSION = 1
 PLAYBACK_READINESS_KIND = "jts_active_speaker_playback_readiness"
+HORN_FLOOR_TEST_PREVIEW_KIND = "jts_active_speaker_horn_floor_test_preview"
+HORN_FLOOR_TEST_FREQUENCY_HZ = 3000.0
+HORN_FLOOR_TEST_HIGHPASS_HZ = 2000.0
+HORN_FLOOR_TEST_DURATION_MS = 100
+HORN_FLOOR_TEST_RAMP_MS = 20
 
 
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
@@ -84,6 +89,51 @@ def _bounded_level(calibration_level: dict[str, Any]) -> bool:
     )
 
 
+def _level_at_floor(calibration_level: dict[str, Any]) -> bool:
+    test_signal = calibration_level.get("test_signal") or {}
+    try:
+        requested = float(test_signal.get("requested_level_dbfs"))
+        minimum = float(test_signal.get("min_level_dbfs"))
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(requested) and math.isfinite(minimum) and (
+        requested <= minimum + 1e-6
+    )
+
+
+def _floor_level_dbfs(calibration_level: dict[str, Any]) -> float:
+    test_signal = calibration_level.get("test_signal") or {}
+    try:
+        level = float(test_signal.get("min_level_dbfs"))
+    except (TypeError, ValueError):
+        return -80.0
+    return level if math.isfinite(level) else -80.0
+
+
+def _mic_guidance(calibration_level: dict[str, Any]) -> dict[str, Any]:
+    meter = calibration_level.get("mic_meter")
+    if not isinstance(meter, dict):
+        meter = {}
+    status = str(meter.get("status") or "unmeasured")
+    observed = meter.get("observed_dbfs")
+    blocked = status in {"clipping", "too_loud"}
+    guided = status in {"low", "usable"} and not blocked
+    return {
+        "status": status,
+        "observed_dbfs": observed,
+        "recommendation": meter.get("recommendation"),
+        "blocked": blocked,
+        "guided_level_available": guided,
+        "message": (
+            "Mic observation is usable for relative horn guidance"
+            if guided
+            else "Lower or stop before continuing; mic level is unsafe"
+            if blocked
+            else "Record a mic observation before guided horn bring-up"
+        ),
+    }
+
+
 def _startup_load_payload(
     startup_load_state: dict[str, Any] | None,
     environment_report: dict[str, Any],
@@ -123,6 +173,212 @@ def _startup_load_payload(
         "current_config_matches_loaded": current_matches,
         "ready_for_playback": loaded and rollback_available and current_matches,
         "message": message,
+    }
+
+
+def _compression_driver_readiness(
+    *,
+    group: SpeakerGroup | None,
+    channel: SpeakerChannel | None,
+    assigned: bool,
+    identity_verified: bool,
+    clock: dict[str, Any],
+    environment_report: dict[str, Any],
+    startup_load: dict[str, Any],
+    safe_session: dict[str, Any],
+    calibration_level: dict[str, Any],
+    stop_control_available: bool,
+) -> dict[str, Any] | None:
+    """Return the no-audio readiness packet for a tweeter/horn target."""
+
+    if not channel or channel.role != "tweeter":
+        return None
+    protection_status = channel.protection_status
+    protection_accepted = (
+        channel.startup_muted
+        and channel.protection_required
+        and protection_status in {"present", "software_guard_requested"}
+    )
+    mic = _mic_guidance(calibration_level)
+    level_floor = _level_at_floor(calibration_level)
+    gates = [
+        _gate(
+            "target_assigned",
+            label="Horn target is assigned to one physical output",
+            passed=assigned,
+            message=(
+                "Horn target has a physical output"
+                if assigned
+                else "Assign the horn target to a physical output"
+            ),
+        ),
+        _gate(
+            "identity_verified",
+            label="Horn output identity is verified",
+            passed=identity_verified,
+            message=(
+                "Horn output identity is verified"
+                if identity_verified
+                else "Verify the physical output before connecting the horn"
+            ),
+        ),
+        _gate(
+            "single_clock_domain",
+            label="Output clock is coherent",
+            passed=clock.get("status") == "single_device_clock"
+            and not clock.get("multi_device_aggregate_supported"),
+            message=(
+                "Single-device output clock is in use"
+                if clock.get("status") == "single_device_clock"
+                else "Use one coherent multi-output DAC for horn bring-up"
+            ),
+        ),
+        _gate(
+            "protection_accepted",
+            label="Compression-driver protection path is accepted",
+            passed=protection_accepted,
+            message=(
+                "Software-guarded bring-up is accepted for this horn"
+                if protection_status == "software_guard_requested"
+                else "Physical protection is marked present"
+                if protection_status == "present"
+                else "Choose software-guarded bring-up or provide protection evidence"
+            ),
+        ),
+        _gate(
+            "protected_startup_loaded",
+            label="Protected startup DSP is loaded",
+            passed=bool(startup_load.get("ready_for_playback")),
+            message=str(startup_load.get("message") or "Load protected startup DSP"),
+        ),
+        _gate(
+            "safe_session_armed",
+            label="Safe session is armed",
+            passed=safe_session.get("status") == "armed",
+            message=(
+                "Safe session is armed"
+                if safe_session.get("status") == "armed"
+                else "Arm a safe session before horn bring-up"
+            ),
+        ),
+        _gate(
+            "calibration_level_at_floor",
+            label="Calibration level starts at the floor",
+            passed=level_floor,
+            message=(
+                "Calibration level is at the quiet floor"
+                if level_floor
+                else "Reset calibration level to the floor before horn bring-up"
+            ),
+        ),
+        _gate(
+            "mic_not_too_loud",
+            label="Mic observation is not clipping or too loud",
+            passed=not mic["blocked"],
+            message=mic["message"],
+        ),
+        _gate(
+            "stop_control_available",
+            label="Stop control is available",
+            passed=stop_control_available,
+            message=(
+                "Stop control is available"
+                if stop_control_available
+                else "Stop control must be available before horn bring-up"
+            ),
+        ),
+        _gate(
+            "active_environment_ready",
+            label="Active-speaker environment is ready",
+            passed=bool(environment_report.get("ok_to_load_active_config")),
+            message=(
+                "Active-speaker environment is ready"
+                if environment_report.get("ok_to_load_active_config")
+                else "Active-speaker environment is blocked"
+            ),
+        ),
+    ]
+    manual_passed = all(gate["passed"] for gate in gates)
+    guided_passed = manual_passed and bool(mic["guided_level_available"])
+    status = (
+        "guided_ready_no_audio" if guided_passed
+        else "manual_ready_no_audio" if manual_passed
+        else "blocked"
+    )
+    issues = [
+        _issue("blocker", gate["id"], gate["message"])
+        for gate in gates
+        if not gate["passed"]
+    ]
+    floor_level = _floor_level_dbfs(calibration_level)
+    preview_status = "preview_ready" if manual_passed else "blocked"
+    floor_test_preview = {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": HORN_FLOOR_TEST_PREVIEW_KIND,
+        "status": preview_status,
+        "would_play": False,
+        "audio_allowed": False,
+        "target": {
+            "speaker_group_id": group.id if group else None,
+            "speaker_label": group.label if group else None,
+            "role": channel.role,
+            "physical_output_index": channel.physical_output_index,
+        },
+        "tone": {
+            "waveform": "sine",
+            "frequency_hz": HORN_FLOOR_TEST_FREQUENCY_HZ,
+            "level_dbfs": floor_level,
+            "duration_ms": HORN_FLOOR_TEST_DURATION_MS,
+            "ramp_ms": HORN_FLOOR_TEST_RAMP_MS,
+            "band_limit": {
+                "type": "highpass",
+                "highpass_hz": HORN_FLOOR_TEST_HIGHPASS_HZ,
+            },
+        },
+        "safety": {
+            "requires_stop_control": True,
+            "requires_level_floor": True,
+            "requires_protected_startup_loaded": True,
+            "requires_operator_target_identity": True,
+            "requires_mic_not_too_loud": True,
+        },
+        "issues": issues,
+        "next_step": (
+            "This is a preview only; the future audible horn slice must explicitly enable playback."
+            if manual_passed
+            else "Resolve horn readiness blockers before using this floor-test preview."
+        ),
+    }
+    return {
+        "applies": True,
+        "status": status,
+        "audio_allowed": False,
+        "manual_floor_test_candidate": manual_passed,
+        "guided_floor_test_candidate": guided_passed,
+        "protection_mode": (
+            "software_guarded"
+            if protection_status == "software_guard_requested"
+            else "physical_protection"
+            if protection_status == "present"
+            else "missing"
+        ),
+        "target": {
+            "speaker_group_id": group.id if group else None,
+            "speaker_label": group.label if group else None,
+            "role": channel.role,
+            "physical_output_index": channel.physical_output_index,
+        },
+        "microphone": mic,
+        "floor_test_preview": floor_test_preview,
+        "required_gates": gates,
+        "issues": issues,
+        "next_step": (
+            "Horn evidence is ready for a future floor-level guided slice; audio stays disabled here."
+            if guided_passed
+            else "Manual horn guard evidence is ready; record a usable mic observation before guided horn work."
+            if manual_passed
+            else "Resolve the horn readiness blockers before enabling any horn output."
+        ),
     }
 
 
@@ -330,6 +586,18 @@ def build_playback_readiness(
                 audible_role_block_message(target_role),
             )
         )
+    compression_driver = _compression_driver_readiness(
+        group=group,
+        channel=channel,
+        assigned=assigned,
+        identity_verified=target_identity_verified,
+        clock=clock,
+        environment_report=environment_report,
+        startup_load=startup_load,
+        safe_session=safe_session,
+        calibration_level=calibration_level,
+        stop_control_available=stop_control_available,
+    )
     target_label = None
     if group and channel:
         output_label = channel.human_output_label or (
@@ -415,6 +683,7 @@ def build_playback_readiness(
             "issues": backend_issues,
         },
         "audible_test": audible_policy_payload(target_role),
+        "compression_driver": compression_driver,
         "required_gates": gates,
         "issues": issues,
         "next_step": (

@@ -96,6 +96,10 @@ from .staging import (
     stage_protected_startup_config,
 )
 from .bringup import BRINGUP_PREFLIGHT_KIND, build_bringup_preflight
+from .commissioning import (
+    COMMISSIONING_REHEARSAL_KIND,
+    build_commissioning_rehearsal,
+)
 from .startup_load import (
     STARTUP_LOAD_PREFLIGHT_KIND,
     STARTUP_LOAD_STATE_ENV,
@@ -144,6 +148,7 @@ __all__ = [
     "ActiveSpeakerPreset",
     "BaselineVerification",
     "BRINGUP_PREFLIGHT_KIND",
+    "COMMISSIONING_REHEARSAL_KIND",
     "CrossoverRegion",
     "DriverSpec",
     "OutputChannel",
@@ -161,6 +166,7 @@ __all__ = [
     "evaluate_path_safety_evidence",
     "build_safe_tone_plan",
     "build_bringup_preflight",
+    "build_commissioning_rehearsal",
     "build_startup_load_preflight",
     "build_startup_load_path_safety_evidence",
     "build_topology_tone_plan",

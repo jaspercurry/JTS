@@ -371,6 +371,29 @@
   .active-speaker-meter__label:nth-child(3) {
     background: color-mix(in oklch, var(--status-danger) 10%, transparent);
   }
+  .active-speaker-mic-observation {
+    display: flex; flex-direction: column; gap: 6px;
+    padding-top: 2px;
+  }
+  .active-speaker-mic-observation__fields {
+    display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(7rem, auto) auto;
+    align-items: end; gap: 8px;
+  }
+  .active-speaker-mic-observation__fields label {
+    font-size: 11px; font-weight: 700; color: var(--muted-foreground);
+  }
+  .active-speaker-mic-observation__fields > label:first-child {
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  .active-speaker-mic-observation__fields input[type="number"] {
+    width: 100%; padding: 9px 10px; border: 0; border-radius: var(--radius-sm);
+    background: var(--surface); color: var(--foreground);
+    box-shadow: inset 0 0 0 1px var(--border);
+    font: inherit; font-size: 12px; line-height: 1.35;
+  }
+  .active-speaker-mic-observation__check {
+    display: inline-flex; align-items: center; gap: 6px; min-height: 34px;
+  }
   .active-speaker-plan {
     border-top: 1px solid var(--line);
     padding-top: 10px;
@@ -503,6 +526,50 @@
     display: flex; flex-direction: column; gap: 6px;
   }
   .driver-research__error { color: var(--status-danger); }
+  .output-sequence {
+    display: grid; gap: 8px; margin-bottom: 10px;
+  }
+  .output-sequence__list {
+    margin: 0; padding: 0; list-style: none;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 8px;
+  }
+  .output-sequence__item {
+    display: grid; grid-template-columns: 4.2rem minmax(0, 1fr);
+    gap: 8px; align-items: start;
+    padding: 8px; border-radius: var(--radius-sm);
+    background: color-mix(in oklch, var(--foreground) 2%, transparent);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .output-sequence__marker {
+    padding: 3px 7px; border-radius: 999px;
+    background: var(--foreground-005);
+    color: var(--muted-foreground);
+    font-size: 10px; font-weight: 800; text-align: center;
+  }
+  .output-sequence__item--done .output-sequence__marker {
+    color: var(--status-ok);
+    background: color-mix(in oklch, var(--status-ok) 12%, transparent);
+  }
+  .output-sequence__item--active .output-sequence__marker {
+    color: var(--status-warn);
+    background: color-mix(in oklch, var(--status-warn) 14%, transparent);
+  }
+  .output-sequence__item--blocked .output-sequence__marker {
+    color: var(--status-danger);
+    background: color-mix(in oklch, var(--status-danger) 12%, transparent);
+  }
+  .output-sequence__text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .output-sequence__text strong {
+    font-size: 12px; font-weight: 700; color: var(--foreground);
+  }
+  .output-sequence__text small {
+    font-size: 11px; line-height: 1.3; color: var(--muted-foreground);
+    overflow-wrap: anywhere;
+  }
+  .output-readiness-summary { margin-bottom: 10px; }
+  .output-readiness-blockers {
+    display: grid; gap: 6px; margin-bottom: 10px;
+  }
   .output-stage {
     display: block; width: 100%; max-height: 180px;
     border-radius: var(--radius-sm);
@@ -649,6 +716,10 @@
       align-items: stretch; flex-direction: column;
     }
     .active-speaker-level__readout { text-align: left; }
+    .active-speaker-mic-observation__fields {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: stretch;
+    }
     .output-setup__head,
     .output-setup__state,
     .output-card__head,

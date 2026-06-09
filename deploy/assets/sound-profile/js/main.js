@@ -59,8 +59,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var activeSpeaker = {
     loading: false, action: '', payload: null, session: null, targets: null,
     stagedConfig: null, calibrationLevel: null, plan: null, playback: null,
-    bringup: null, startupLoad: null, error: '', levelDbfs: null
+    bringup: null, startupLoad: null, rehearsal: null, error: '', levelDbfs: null
   };
+  var activeSpeakerMicObservation = {observedDbfs: '', clipping: false};
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
     identity: null, clockDomain: null, identitySaving: '', protectionSaving: '',
@@ -1060,9 +1061,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Stage, load, and start quiet',
         'Check environment, stage protected startup, then use bounded readiness and level controls.',
         topology,
+        renderOutputCommissioningRehearsal() +
         '<div class="output-card output-card--active-status">' +
           '<div class="output-card__head"><div><p class="output-card__title">Environment and safe-session state</p>' +
           '<p class="setting-row__hint">These controls do not play sound unless the explicit lab backend is enabled and readiness passes.</p></div></div>' +
+          renderOutputBringupSequence() +
           renderActiveSpeakerStatus() +
         '</div>' +
         renderOutputReadinessCard() +
@@ -1278,6 +1281,296 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (unverified > 0 ? '<p class="setting-row__hint">Use this only after wiring inspection, dummy-load/DMM checks, or a future low-level channel test confirms the driver.</p>' : '') +
     '</div>';
   }
+  function sequenceStep(label, done, active, blocked, detail) {
+    var state = done ? 'done' : (blocked ? 'blocked' : (active ? 'active' : 'todo'));
+    var marker = done ? 'Done' : (blocked ? 'Blocked' : (active ? 'Now' : 'Next'));
+    return '<li class="output-sequence__item output-sequence__item--' + escapeHtml(state) + '">' +
+      '<span class="output-sequence__marker">' + escapeHtml(marker) + '</span>' +
+      '<span class="output-sequence__text"><strong>' + escapeHtml(label) + '</strong>' +
+        '<small>' + escapeHtml(detail || '') + '</small></span>' +
+    '</li>';
+  }
+  function renderOutputBringupSequence() {
+    var env = activeSpeaker.payload || {};
+    var staged = activeSpeaker.stagedConfig || {};
+    var startup = activeSpeaker.startupLoad || {};
+    var startupState = startup.state || {};
+    var startupPreflight = startup.preflight || {};
+    var pathSafety = startupPreflight.path_safety || {};
+    var session = activeSpeaker.session || {};
+    var readiness = outputTopology.readiness || {};
+    var envChecked = !!activeSpeaker.payload;
+    var envReady = !!env.ok_to_load_active_config;
+    var stagedReady = staged.status === 'staged';
+    var pathReady = pathSafety.load_gate === 'ready';
+    var startupReady = startupState.status === 'loaded' &&
+      !!startupState.rollback_available &&
+      !!startupState.current_config_matches_loaded;
+    var armed = session.status === 'armed';
+    var readinessChecked = !!outputTopology.readiness;
+    var readinessReady = !!readiness.preconditions_passed;
+    var atFloor = outputCurrentLevelAtFloor();
+    var floorConfirmed = outputFloorAudioConfirmedForReadiness(readiness);
+    var artifactReady = !!(outputTopology.readinessPlayback && outputTopology.readinessPlayback.artifact);
+    var rows = [
+      sequenceStep(
+        'Check environment',
+        envReady,
+        !envChecked,
+        envChecked && !envReady,
+        envReady ? 'Output path and config are load-gate ready.' :
+          (envChecked ? 'Resolve environment blockers before loading DSP.' : 'Run Check environment first.')
+      ),
+      sequenceStep(
+        'Stage protected startup',
+        stagedReady,
+        envReady && !stagedReady,
+        false,
+        stagedReady ? 'Muted, limited startup config is staged.' : 'Build a protected startup config for review.'
+      ),
+      sequenceStep(
+        'Check protected path',
+        pathReady,
+        stagedReady && !pathReady,
+        startupPreflight.status === 'blocked',
+        pathReady ? 'Path-safety evidence is bound to this startup load.' : 'Verify renderer/cue paths before loading.'
+      ),
+      sequenceStep(
+        'Load protected startup',
+        startupReady,
+        pathReady && !startupReady,
+        startupState.status === 'blocked',
+        startupReady ? 'CamillaDSP is on the protected graph with rollback.' : 'Reloads DSP only; it does not play sound.'
+      ),
+      sequenceStep(
+        'Arm safe session',
+        armed,
+        startupReady && !armed,
+        false,
+        armed ? 'Stop is available and the session is time-bounded.' : 'Arming records safety state only.'
+      ),
+      sequenceStep(
+        'Select target and check readiness',
+        readinessReady,
+        armed && !readinessChecked,
+        readinessChecked && !readinessReady,
+        readinessChecked ? (readiness.next_step || 'Review target readiness below.') : 'Use Check readiness on a saved output lane.'
+      ),
+      sequenceStep(
+        'Start at the floor',
+        atFloor || floorConfirmed,
+        readinessReady && !atFloor && !floorConfirmed,
+        false,
+        floorConfirmed ? 'Floor audio is confirmed for this target.' :
+          (atFloor ? 'Calibration level is at the quiet floor.' : 'Reset or lower test level before preparing tone.')
+      ),
+      sequenceStep(
+        'Verify artifact before audio',
+        artifactReady && (atFloor || floorConfirmed),
+        readinessReady && (atFloor || floorConfirmed) && !artifactReady,
+        false,
+        'Artifact-only verification remains the default; audible playback needs explicit lab enablement.'
+      ),
+      sequenceStep(
+        'Confirm floor audio',
+        floorConfirmed,
+        readinessReady && atFloor && !floorConfirmed,
+        false,
+        floorConfirmed ? 'Raised tests are unlocked for this target/session.' : 'First audible test must succeed at the floor.'
+      ),
+      sequenceStep(
+        'Raise slowly',
+        floorConfirmed && !atFloor,
+        floorConfirmed && atFloor,
+        false,
+        'After floor audio succeeds, raised audible tests remain bounded by 1 dB steps.'
+      )
+    ];
+    return '<div class="output-sequence">' +
+      '<p class="setting-row__title">Safe bring-up sequence</p>' +
+      '<ol class="output-sequence__list">' + rows.join('') + '</ol>' +
+    '</div>';
+  }
+  function renderOutputCommissioningRehearsal() {
+    var rehearsal = activeSpeaker.rehearsal || {};
+    var steps = Array.isArray(rehearsal.steps) ? rehearsal.steps : [];
+    var statusValue = rehearsal.status || 'not_checked';
+    if (!steps.length) {
+      return '<div class="output-card output-card--rehearsal">' +
+        '<div class="output-card__head"><div><p class="output-card__title">Commissioning rehearsal</p>' +
+        '<p class="setting-row__hint">Refresh active-speaker status to rehearse the durable safety sequence without sound.</p></div>' +
+        '<span class="status-pill">not checked</span></div>' +
+      '</div>';
+    }
+    return '<div class="output-card output-card--rehearsal">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Commissioning rehearsal</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(rehearsal.next_step || 'No sound is played by this rehearsal.') + '</p></div>' +
+        '<span class="status-pill' + outputStatusClass(statusValue === 'blocked' ? 'blocked' : 'valid') + '">' +
+          escapeHtml(statusValue.replace(/_/g, ' ')) + '</span></div>' +
+      '<ol class="output-sequence__list">' + steps.map(function(step) {
+        var stepStatus = step.status || 'pending';
+        return '<li class="output-sequence__item output-sequence__item--' + escapeHtml(stepStatus) + '">' +
+          '<span>' + escapeHtml(stepStatus.replace(/_/g, ' ')) + '</span>' +
+          '<strong>' + escapeHtml(step.label || step.id || 'Step') + '</strong>' +
+          '<p>' + escapeHtml(step.message || '') + '</p>' +
+        '</li>';
+      }).join('') + '</ol>' +
+    '</div>';
+  }
+  function outputCurrentLevelAtFloor() {
+    var level = activeSpeakerLevelConfig();
+    return Math.abs(Number(level.value) - Number(level.min)) < 0.001;
+  }
+  function outputTargetSignature(raw) {
+    raw = raw || {};
+    var output = raw.output_index != null ? raw.output_index : raw.physical_output_index;
+    output = output == null ? null : Number(output);
+    return {
+      speaker_group_id: raw.speaker_group_id || null,
+      role: String(raw.driver_role || raw.role || '').trim().toLowerCase() || null,
+      output_index: isFinite(output) && output >= 0 ? output : null
+    };
+  }
+  function outputSameTarget(a, b) {
+    return !!a && !!b &&
+      (a.speaker_group_id || null) === (b.speaker_group_id || null) &&
+      (a.role || null) === (b.role || null) &&
+      (a.output_index == null ? null : Number(a.output_index)) ===
+        (b.output_index == null ? null : Number(b.output_index));
+  }
+  function outputFloorAudioConfirmedForReadiness(readiness) {
+    var session = activeSpeaker.session || {};
+    var quiet = session.quiet_start || {};
+    return session.status === 'armed' &&
+      quiet.status === 'floor_confirmed' &&
+      quiet.floor_audio_confirmed === true &&
+      outputSameTarget(quiet.current_target, outputTargetSignature(readiness && readiness.target));
+  }
+  function quietStartTargetLabel(target) {
+    target = target || {};
+    var pieces = [];
+    if (target.speaker_group_id) pieces.push(String(target.speaker_group_id));
+    if (target.role) pieces.push(humanRole(target.role).toLowerCase());
+    if (target.output_index != null && isFinite(Number(target.output_index))) {
+      pieces.push('output ' + (Number(target.output_index) + 1));
+    }
+    return pieces.join(' ');
+  }
+  function quietStartLabel(session) {
+    var quiet = session && session.quiet_start || {};
+    if (session && session.status !== 'armed') return 'Not armed';
+    if (quiet.status === 'floor_confirmed' && quiet.floor_audio_confirmed) {
+      var targetLabel = quietStartTargetLabel(quiet.current_target);
+      return targetLabel ? 'Floor confirmed for ' + targetLabel : 'Floor confirmed for last target';
+    }
+    return 'Floor required';
+  }
+  function readinessTargetLockReason(readiness) {
+    var target = readiness && readiness.target || {};
+    var audible = readiness && readiness.audible_test || {};
+    if (target.role === 'tweeter') {
+      return 'Tweeter and horn audible tests are intentionally locked in this slice.';
+    }
+    if (audible.target_role_allowed === false) {
+      return 'Audible tests are limited to woofer, mid, and subwoofer targets in this slice.';
+    }
+    return '';
+  }
+  function readinessBlockedReasons(readiness) {
+    var reasons = [];
+    var gates = Array.isArray(readiness.required_gates) ? readiness.required_gates : [];
+    var issues = Array.isArray(readiness.issues) ? readiness.issues : [];
+    gates.forEach(function(gate) {
+      if (!gate || gate.passed) return;
+      reasons.push(gate.message || gate.label || gate.id || 'Readiness gate is blocked.');
+    });
+    issues.forEach(function(issue) {
+      if (!issue) return;
+      reasons.push(issue.message || issue.code || 'Readiness issue requires review.');
+    });
+    var lockReason = readinessTargetLockReason(readiness);
+    if (lockReason) {
+      reasons.unshift(lockReason);
+    }
+    return reasons.filter(function(reason, index, arr) {
+      return reason && arr.indexOf(reason) === index;
+    }).slice(0, 6);
+  }
+  function renderOutputReadinessSummary(readiness) {
+    var target = readiness.target || {};
+    var startup = readiness.startup_load || {};
+    var backend = readiness.tone_backend || {};
+    var level = readiness.calibration_level && readiness.calibration_level.test_signal || {};
+    var audible = readiness.audible_test || {};
+    var rows = [
+      ['Target', target.label || target.role || 'unknown'],
+      ['DAC output', target.physical_output_index == null ? 'unknown' : 'Output ' + (Number(target.physical_output_index) + 1)],
+      ['Role policy', audible.target_role_allowed === false ? 'Locked in this slice' : 'Eligible after gates'],
+      ['Backend', (backend.audio_enabled ? 'audible lab backend' : 'artifact-only') + (backend.test_pcm ? ' · ' + backend.test_pcm : '')],
+      ['Rollback', startup.rollback_available ? 'available' : 'not ready'],
+      ['Test level', level.requested_level_dbfs == null ? fmtDbfs(activeSpeakerLevelConfig().value) : fmtDbfs(level.requested_level_dbfs)]
+    ];
+    return '<dl class="active-speaker-facts output-readiness-summary">' + rows.map(function(row) {
+      return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+    }).join('') + '</dl>';
+  }
+  function renderOutputReadinessBlockers(readiness) {
+    var reasons = readinessBlockedReasons(readiness);
+    if (!reasons.length) {
+      return '<p class="setting-row__hint">' + escapeHtml(readiness.playback_allowed ?
+        'No blocking readiness reasons; the audible lab backend is enabled for this target.' :
+        'No blocking readiness reasons for artifact verification. Audible playback still requires explicit backend enablement.') + '</p>';
+    }
+    return '<div class="output-readiness-blockers">' +
+      '<p class="setting-row__title">Why sound is blocked</p>' +
+      '<ul class="active-speaker-issues">' + reasons.map(function(reason) {
+        return '<li>' + escapeHtml(reason) + '</li>';
+      }).join('') + '</ul>' +
+    '</div>';
+  }
+  function renderOutputCompressionDriverReadiness(readiness) {
+    var horn = readiness && readiness.compression_driver;
+    if (!horn || !horn.applies) return '';
+    var mic = horn.microphone || {};
+    var preview = horn.floor_test_preview || {};
+    var previewTone = preview.tone || {};
+    var gates = Array.isArray(horn.required_gates) ? horn.required_gates : [];
+    var statusLabel = {
+      guided_ready_no_audio: 'Guided evidence ready',
+      manual_ready_no_audio: 'Manual evidence ready',
+      blocked: 'Blocked'
+    }[horn.status] || horn.status || 'Unknown';
+    var rows = [
+      ['Audio allowed', horn.audio_allowed ? 'Yes' : 'No'],
+      ['Protection path', horn.protection_mode || 'unknown'],
+      ['Manual floor test', horn.manual_floor_test_candidate ? 'candidate' : 'blocked'],
+      ['Guided floor test', horn.guided_floor_test_candidate ? 'candidate' : 'blocked'],
+      ['Mic status', mic.status || 'unknown'],
+      ['Mic reading', mic.observed_dbfs == null ? 'none' : fmtDbfs(Number(mic.observed_dbfs))],
+      ['Floor-test preview', previewTone.frequency_hz ?
+        fmtFreq(previewTone.frequency_hz) + ' at ' + fmtDbfs(Number(previewTone.level_dbfs)) :
+        'not ready']
+    ];
+    return '<div class="active-speaker-plan output-horn-readiness">' +
+      '<div class="row-between active-speaker-level__head">' +
+        '<div><p class="setting-row__title">Horn bring-up readiness</p>' +
+        '<p class="setting-row__hint">No horn audio is enabled here; this only summarizes future bring-up evidence.</p></div>' +
+        '<span class="status-pill' + (horn.status === 'blocked' ? ' status-pill--blocked' : ' status-pill--ready') + '">' +
+          escapeHtml(statusLabel) + '</span></div>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      '<ul class="output-safety-list">' + gates.slice(0, 10).map(function(gate) {
+        return '<li class="output-safety-list__item output-safety-list__item--' + escapeHtml(gate.passed ? 'info' : 'blocker') + '">' +
+          '<span>' + escapeHtml(gate.label || gate.id || 'gate') + '</span>' +
+          '<p>' + escapeHtml(gate.message || (gate.passed ? 'Passed' : 'Blocked')) + '</p>' +
+        '</li>';
+      }).join('') + '</ul>' +
+      (preview.kind ? '<p class="setting-row__hint">Preview only: ' +
+        escapeHtml(preview.next_step || 'No audio will play from this preview.') + '</p>' : '') +
+      '<p class="setting-row__hint">' + escapeHtml(horn.next_step || 'Horn audio remains disabled.') + '</p>' +
+    '</div>';
+  }
   function renderOutputReadinessCard() {
     if (outputTopology.dirty) {
       return '<div class="output-card output-card--readiness">' +
@@ -1324,6 +1617,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<p class="setting-row__hint">' + escapeHtml(target.label || 'Selected channel') + '</p></div>' +
         '<span class="status-pill' + (readiness.preconditions_passed ? ' status-pill--ready' : ' status-pill--blocked') + '">' +
           escapeHtml(statusValue) + '</span></div>' +
+      renderOutputReadinessSummary(readiness) +
+      renderOutputReadinessBlockers(readiness) +
+      renderOutputCompressionDriverReadiness(readiness) +
       '<ul class="output-safety-list">' + rows.slice(0, 10).map(function(row) {
         return '<li class="output-safety-list__item output-safety-list__item--' + escapeHtml(row[0]) + '">' +
           '<span>' + escapeHtml(row[1]) + '</span>' +
@@ -1338,8 +1634,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderOutputReadinessActions(readiness) {
     var target = readiness && readiness.target || {};
-    var disabled = !readiness || !readiness.preconditions_passed ||
-      outputTopology.readinessPlaybackChecking;
+    var lockReason = readinessTargetLockReason(readiness);
+    var atFloor = outputCurrentLevelAtFloor();
+    var floorConfirmed = outputFloorAudioConfirmedForReadiness(readiness);
+    var disabled = !readiness || !readiness.preconditions_passed || !!lockReason ||
+      (!atFloor && !floorConfirmed) || outputTopology.readinessPlaybackChecking;
     var attrs = 'data-group-id="' + escapeHtml(target.speaker_group_id || '') + '" ' +
       'data-role="' + escapeHtml(target.role || '') + '" ' +
       'data-label="' + escapeHtml(target.label || '') + '"';
@@ -1348,7 +1647,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var roleLabel = humanRole(target.role || 'channel').toLowerCase();
     var playLabel = outputTopology.readinessPlaybackChecking === 'audio' ?
       'Playing' : 'Play quiet ' + roleLabel + ' test';
-    return '<div class="active-speaker-actions">' +
+    var hints = [];
+    if (lockReason) hints.push(lockReason + ' Artifact verification stays locked too so the UI cannot imply this target is ready for sound.');
+    if (readiness && readiness.preconditions_passed && !atFloor && !floorConfirmed) {
+      hints.push('Reset calibration level to the quiet floor before verifying an artifact or playing a test.');
+    }
+    if (readiness && readiness.preconditions_passed && floorConfirmed && !atFloor) {
+      hints.push('Floor audio is confirmed for this target/session; raised tests remain bounded by the calibration level guard.');
+    }
+    return hints.map(function(hint) {
+      return '<p class="setting-row__hint">' + escapeHtml(hint) + '</p>';
+    }).join('') +
+      '<div class="active-speaker-actions">' +
       '<button type="button" class="btn btn--ghost" data-act="play-output-readiness-tone" ' +
         attrs + ' data-audio="false"' + (disabled ? ' disabled' : '') + '>' +
         escapeHtml(artifactLabel) + '</button>' +
@@ -1454,6 +1764,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (activeSpeaker.startupLoad.state.status || 'idle') : 'idle'],
       ['Safe playback', safe.playback_allowed ? 'Allowed' : 'Not allowed yet'],
       ['Safety session', session.status || 'Not armed'],
+      ['Quiet start', quietStartLabel(session)],
       ['Calibration level', fmtDbfs(activeSpeakerLevelConfig().value)]
     ];
     var envIssues = Array.isArray(p.issues) ? p.issues.slice(0, 4) : [];
@@ -1495,6 +1806,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     value = clamp(value, min, max);
     return {min: min, max: max, step: step, def: def, value: value};
   }
+  function activeSpeakerMicRecommendation(code) {
+    return {
+      start_at_minimum: 'Start at the minimum level.',
+      raise_slowly: 'Raise slowly, one backend-approved step at a time.',
+      hold_level: 'Hold this level for the next check.',
+      lower_level: 'Lower the level before continuing.',
+      stop_or_lower: 'Stop or lower; clipping resets the level to the floor.'
+    }[code] || 'Record a mic reading before treating this as guided calibration.';
+  }
   function renderActiveSpeakerLevel() {
     var cfg = activeSpeakerLevelConfig();
     var contract = activeSpeaker.calibrationLevel ||
@@ -1513,6 +1833,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }[meter.status] || 'Mic unmeasured';
     var toneClass = meter.tone === 'danger' ? ' status-pill--blocked' :
       (meter.tone === 'ok' ? ' status-pill--ready' : '');
+    var observedInput = activeSpeakerMicObservation.observedDbfs;
+    if (!observedInput && meter.observed_dbfs != null) {
+      observedInput = String(meter.observed_dbfs);
+    }
+    var clippingChecked = activeSpeakerMicObservation.clipping ||
+      meter.status === 'clipping';
     return '<div class="active-speaker-level">' +
       '<div class="row-between active-speaker-level__head">' +
         '<div class="setting-row__text">' +
@@ -1539,6 +1865,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<span class="status-pill' + toneClass + '">' + escapeHtml(label) + '</span>' +
         '<span class="setting-row__hint">JTS caps this at ' + escapeHtml(fmtDbfs(cfg.max)) +
           ' and limits upward moves to ' + escapeHtml(fmtDb(Number(guard.upward_step_limit_db) || cfg.step)) + ' dB.</span>' +
+      '</div>' +
+      '<div class="active-speaker-mic-observation">' +
+        '<div class="active-speaker-mic-observation__fields">' +
+          '<label for="active-speaker-mic-dbfs">Mic reading dBFS' +
+            '<input type="number" id="active-speaker-mic-dbfs" inputmode="decimal" ' +
+              'min="-120" max="0" step="0.1" value="' + escapeHtml(observedInput) + '" ' +
+              'placeholder="-35.0"></label>' +
+          '<label class="active-speaker-mic-observation__check">' +
+            '<input type="checkbox" id="active-speaker-mic-clipping"' +
+              (clippingChecked ? ' checked' : '') + '> Clipping observed</label>' +
+          '<button type="button" class="btn btn--ghost" data-act="active-mic-observation">Record reading</button>' +
+        '</div>' +
+        '<p class="setting-row__hint">' + escapeHtml(activeSpeakerMicRecommendation(meter.recommendation)) + '</p>' +
+        '<p class="setting-row__hint">This records operator-observed capture level only. It does not play sound or claim calibrated SPL.</p>' +
       '</div>' +
       (issues.length ? '<ul class="active-speaker-issues">' + issues.slice(0, 3).map(function(issue) {
         return '<li>' + escapeHtml('Level guard: ' + (issue.code || 'issue')) + '</li>';
@@ -2173,6 +2513,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'active-level') {
       updateActiveSpeakerLevel(t.getAttribute('data-level-action') || 'set');
     }
+    else if (act === 'active-mic-observation') {
+      recordActiveSpeakerMicObservation();
+    }
     else if (act === 'prepare-active-tone') {
       activeSpeakerTonePlan({
         side: t.getAttribute('data-side') || '',
@@ -2266,6 +2609,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       return;
     }
+    if (ev.target.id === 'active-speaker-mic-dbfs') {
+      activeSpeakerMicObservation.observedDbfs = ev.target.value;
+      return;
+    }
     if (ev.target.id === 'set-headroom') {
       var ro = el('set-headroom-readout');           // live readout; commit on 'change'
       if (ro) ro.textContent = fmtTrim(ev.target.value);
@@ -2288,6 +2635,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (ev.target.id === 'active-speaker-level') {
       updateActiveSpeakerLevel('set', Number(ev.target.value));
+      return;
+    }
+    if (ev.target.id === 'active-speaker-mic-clipping') {
+      activeSpeakerMicObservation.clipping = ev.target.checked;
       return;
     }
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
@@ -2949,11 +3300,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: result.plan || activeSpeaker.plan,
         playback: result.playback || activeSpeaker.playback,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       status(audio ? 'Played quiet channel test.' : 'Verified channel test artifact. No sound was played.');
     } catch (e) {
       outputTopology.readinessPlaybackChecking = '';
@@ -2982,6 +3335,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -3011,6 +3365,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       status(payload.status === 'staged' ?
         'Staged protected startup config. No DSP graph was loaded.' :
         'Protected startup config is blocked; review the staging evidence.',
@@ -3025,6 +3380,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3049,6 +3405,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3080,6 +3437,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : cfg.value
       };
+      await refreshActiveSpeakerRehearsal();
       status(payload.issues && payload.issues.length ?
         'Level raised one guarded step; larger upward move was limited.' :
         'Calibration level updated.');
@@ -3093,6 +3451,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3102,10 +3461,112 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
+  async function recordActiveSpeakerMicObservation() {
+    var input = el('active-speaker-mic-dbfs');
+    var clippingInput = el('active-speaker-mic-clipping');
+    var raw = input ? String(input.value || '').trim() : '';
+    var clipping = !!(clippingInput && clippingInput.checked);
+    var observed = raw === '' ? null : Number(raw);
+    if (raw !== '' && !isFinite(observed)) {
+      status('Enter the observed mic level as dBFS, for example -35.0.', true);
+      return;
+    }
+    if (raw === '' && !clipping) {
+      status('Enter a mic reading or mark clipping before recording an observation.', true);
+      return;
+    }
+    activeSpeakerMicObservation = {observedDbfs: raw, clipping: clipping};
+    activeSpeaker = {
+      loading: false, action: 'Recording mic reading',
+      payload: activeSpeaker.payload,
+      session: activeSpeaker.session,
+      targets: activeSpeaker.targets,
+      stagedConfig: activeSpeaker.stagedConfig,
+      calibrationLevel: activeSpeaker.calibrationLevel,
+      bringup: activeSpeaker.bringup,
+      startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
+      plan: null,
+      playback: null,
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    };
+    render();
+    try {
+      var body = {action: 'observe', mic_clipping: clipping};
+      if (observed != null) body.observed_mic_dbfs = observed;
+      var resp = await fetch('./active-speaker/calibration-level', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(body)
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'mic observation update failed');
+      var meter = payload.mic_meter || {};
+      var accepted = payload && payload.test_signal ?
+        Number(payload.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs;
+      var bringupResp = await fetch('./active-speaker/bringup-preflight', {cache: 'no-store'});
+      if (!bringupResp.ok) throw new Error('bring-up preflight failed');
+      var startupLoad = await fetchActiveSpeakerStartupLoad();
+      activeSpeakerMicObservation = {
+        observedDbfs: meter.observed_dbfs != null ? String(meter.observed_dbfs) : raw,
+        clipping: meter.status === 'clipping'
+      };
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: payload,
+        bringup: await bringupResp.json(),
+        startupLoad: startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
+        plan: null,
+        playback: null,
+        error: '',
+        levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
+      };
+      await refreshActiveSpeakerRehearsal();
+      status(meter.status === 'clipping' ?
+        'Mic clipping recorded; calibration level reset to the floor.' :
+        'Mic observation recorded.');
+    } catch (e) {
+      activeSpeaker = {
+        loading: false, action: '',
+        payload: activeSpeaker.payload,
+        session: activeSpeaker.session,
+        targets: activeSpeaker.targets,
+        stagedConfig: activeSpeaker.stagedConfig,
+        calibrationLevel: activeSpeaker.calibrationLevel,
+        bringup: activeSpeaker.bringup,
+        startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
+        plan: activeSpeaker.plan,
+        playback: activeSpeaker.playback,
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      };
+      status('Could not record mic observation: ' + e.message, true);
+    }
+    render();
+  }
   async function fetchActiveSpeakerStartupLoad() {
     var resp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
     if (!resp.ok) throw new Error('startup load status failed');
     return await resp.json();
+  }
+  async function fetchActiveSpeakerCommissioningRehearsal() {
+    var resp = await fetch('./active-speaker/commissioning-rehearsal', {cache: 'no-store'});
+    if (!resp.ok) throw new Error('commissioning rehearsal failed');
+    return await resp.json();
+  }
+  async function refreshActiveSpeakerRehearsal() {
+    try {
+      activeSpeaker.rehearsal = await fetchActiveSpeakerCommissioningRehearsal();
+    } catch (e) {
+      activeSpeaker.rehearsal = activeSpeaker.rehearsal || null;
+    }
   }
   async function fetchActiveSpeakerEnvironment() {
     var resp = await fetch('./active-speaker/environment', {cache: 'no-store'});
@@ -3122,6 +3583,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3152,6 +3614,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       status(ready ?
         'Protected path check passed. No sound was played.' :
         'Protected path check found blockers. No sound was played.',
@@ -3166,6 +3629,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3191,6 +3655,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3222,6 +3687,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       var loaded = payload.load && payload.load.status === 'loaded';
       status(loaded ?
         'Protected startup config loaded. No sound was played.' :
@@ -3237,6 +3703,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: e.message,
@@ -3262,6 +3729,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3294,6 +3762,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       var rolledBack = payload.rollback && payload.rollback.status === 'rolled_back';
       status(rolledBack ?
         'Rolled back to the prior config. No sound was played.' :
@@ -3309,6 +3778,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: e.message,
@@ -3328,6 +3798,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3347,11 +3818,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!bringupResp.ok) throw new Error('bring-up preflight failed');
       var startupLoadResp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
       if (!startupLoadResp.ok) throw new Error('startup load status failed');
+      var rehearsalResp = await fetch('./active-speaker/commissioning-rehearsal', {cache: 'no-store'});
+      if (!rehearsalResp.ok) throw new Error('commissioning rehearsal failed');
       var targetsResp = await fetch('./active-speaker/tone-targets', {cache: 'no-store'});
       if (!targetsResp.ok) throw new Error('tone targets failed');
       var nextLevel = await levelResp.json();
       var nextBringup = await bringupResp.json();
       var nextStartupLoad = await startupLoadResp.json();
+      var nextRehearsal = await rehearsalResp.json();
       var nextTargets = await targetsResp.json();
       activeSpeaker = {
         loading: false, action: '',
@@ -3362,6 +3836,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: nextLevel,
         bringup: nextBringup,
         startupLoad: nextStartupLoad,
+        rehearsal: nextRehearsal,
         plan: null,
         playback: null,
         error: '',
@@ -3375,6 +3850,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: null, playback: null, error: e.message, levelDbfs: activeSpeaker.levelDbfs
       };
     }
@@ -3390,6 +3866,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
@@ -3426,6 +3903,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: nextLevel && nextLevel.test_signal ?
           Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
       outputTopology.readiness = null;
       outputTopology.readinessChecking = '';
       outputTopology.readinessError = '';
@@ -3441,6 +3919,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3459,6 +3938,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -3487,6 +3967,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: nextPlan.calibration_level || activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: nextPlan,
         playback: null,
         error: '',
@@ -3502,6 +3983,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,
@@ -3521,6 +4003,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       calibrationLevel: activeSpeaker.calibrationLevel,
       bringup: activeSpeaker.bringup,
       startupLoad: activeSpeaker.startupLoad,
+      rehearsal: activeSpeaker.rehearsal,
       plan: activeSpeaker.plan,
       playback: activeSpeaker.playback,
       error: '',
@@ -3549,12 +4032,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: result.plan && result.plan.calibration_level || activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: result.plan || activeSpeaker.plan,
         playback: playback,
         error: '',
         levelDbfs: playback && playback.tone && isFinite(Number(playback.tone.level_dbfs)) ?
           Number(playback.tone.level_dbfs) : activeSpeaker.levelDbfs
       };
+      await refreshActiveSpeakerRehearsal();
     } catch (e) {
       activeSpeaker = {
         loading: false, action: '',
@@ -3565,6 +4050,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: activeSpeaker.calibrationLevel,
         bringup: activeSpeaker.bringup,
         startupLoad: activeSpeaker.startupLoad,
+        rehearsal: activeSpeaker.rehearsal,
         plan: activeSpeaker.plan,
         playback: activeSpeaker.playback,
         error: e.message,

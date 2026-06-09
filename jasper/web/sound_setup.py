@@ -886,11 +886,14 @@ def _active_speaker_calibration_level_payload(
     )
     logger.info(
         "event=sound.active_speaker_calibration_level action=%s "
-        "level_dbfs=%s prior_level_dbfs=%s delta_db=%s issues=%d",
+        "level_dbfs=%s prior_level_dbfs=%s delta_db=%s mic_status=%s "
+        "mic_recommendation=%s issues=%d",
         payload.get("last_action"),
         payload.get("test_signal", {}).get("requested_level_dbfs"),
         payload.get("prior_level_dbfs"),
         payload.get("applied_delta_db"),
+        payload.get("mic_meter", {}).get("status"),
+        payload.get("mic_meter", {}).get("recommendation"),
         len(payload.get("issues") or []),
     )
     return payload
@@ -1020,6 +1023,37 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
         payload["state"].get("status"),
         payload["preflight"].get("status"),
         bool(payload["state"].get("rollback_available")),
+    )
+    return payload
+
+
+def _active_speaker_commissioning_rehearsal_payload() -> dict[str, Any]:
+    """Return the read-only durable active-speaker commissioning rehearsal."""
+
+    from jasper.active_speaker.commissioning import build_commissioning_rehearsal
+
+    topology = load_output_topology()
+    safe_session = _active_speaker_safe_playback_payload()
+    calibration_level = _active_speaker_calibration_level_payload()
+    payload = build_commissioning_rehearsal(
+        topology,
+        bringup_preflight=_active_speaker_bringup_preflight_payload(),
+        startup_load=_active_speaker_startup_load_payload(),
+        safe_session=safe_session,
+        calibration_level=calibration_level,
+    )
+    logger.info(
+        "event=sound.active_speaker_commissioning_rehearsal status=%s "
+        "durable_ready=%s completed=%s total=%s blockers=%d",
+        payload.get("status"),
+        bool(payload.get("durable_steps_ready")),
+        payload.get("completed_step_count"),
+        payload.get("total_step_count"),
+        sum(
+            1
+            for step in payload.get("steps", [])
+            if isinstance(step, dict) and step.get("status") == "blocked"
+        ),
     )
     return payload
 
@@ -1298,7 +1332,7 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
         "event=sound.active_speaker_tone_playback status=%s backend=%s "
         "source=%s side=%s group_id=%s driver_role=%s output_index=%s "
         "level_dbfs=%s duration_ms=%s audio_requested=%s audio_emitted=%s "
-        "blockers=%d artifact=%s",
+        "blockers=%d artifact=%s quiet_start=%s",
         playback.get("status"),
         playback.get("backend"),
         plan.get("source") or "preset",
@@ -1312,6 +1346,7 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
         bool(playback.get("audio_emitted")),
         len(playback.get("issues") or []),
         (playback.get("artifact") or {}).get("wav_basename"),
+        (session.get("quiet_start") or {}).get("status"),
     )
     return {
         "plan": plan,
@@ -1415,6 +1450,16 @@ def _make_handler(
                 except Exception as e:  # noqa: BLE001
                     logger.exception(
                         "event=sound.active_speaker_startup_load result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
+            if path == "/active-speaker/commissioning-rehearsal":
+                try:
+                    self._send_json(_active_speaker_commissioning_rehearsal_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_commissioning_rehearsal "
+                        "result=error"
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return

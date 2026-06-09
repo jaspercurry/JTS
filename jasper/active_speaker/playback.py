@@ -32,6 +32,7 @@ from .audible_policy import (
     audible_role_block_message,
 )
 from .camilla_yaml import _forbidden_playback_token
+from .safe_playback import floor_audio_confirmed_for_target
 from .tone_plan import (
     DEFAULT_TONE_DURATION_MS,
     MAX_TONE_DURATION_MS,
@@ -401,6 +402,10 @@ def _tone_fields(plan: dict[str, Any]) -> dict[str, Any]:
         "duration_ms": duration_ms,
         "ramp_ms": ramp_ms,
     }
+
+
+def _tone_at_floor(tone: dict[str, Any]) -> bool:
+    return float(tone.get("level_dbfs") or 0.0) <= MIN_TEST_LEVEL_DBFS + 1e-6
 
 
 def _plan_with_bounded_tone(plan: dict[str, Any], tone: dict[str, Any]) -> dict[str, Any]:
@@ -842,6 +847,22 @@ def start_tone_playback(
                 "blocker",
                 audible_role_block_code(driver_role),
                 audible_role_block_message(driver_role),
+            )
+        )
+    if (
+        audio_backend
+        and not _tone_at_floor(tone)
+        and not floor_audio_confirmed_for_target(safe_session, target)
+    ):
+        issues.append(
+            _issue(
+                "blocker",
+                "floor_audio_not_confirmed",
+                (
+                    "audible channel tests above the calibration floor require "
+                    "a successful floor-level audible test for the same target "
+                    "and safety session"
+                ),
             )
         )
     if issues:

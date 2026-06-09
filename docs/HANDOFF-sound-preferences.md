@@ -193,12 +193,13 @@ armed state also exposes a **Calibration level** slider backed by
 backend-owned bounds, and is separate from normal listening volume. The
 browser updates it through `/sound/active-speaker/calibration-level`; the
 backend accepts only one 1 dB upward step per transition and lets Lower,
-Reset, Stop, or future clipping evidence return to the floor. Tone-plan,
-readiness, and artifact routes consume the accepted persisted level rather
-than a caller-supplied `level_dbfs`. This is still only the software guard
-substrate: it does not write live CamillaDSP volume or emit samples. The
-current mic meter is a schema placeholder/classifier; real microphone
-observations are a future slice.
+Reset, Stop, or clipping evidence return to the floor. The same route accepts
+an `action=observe` mic observation from the operator; it records coarse
+capture-level guidance without changing the requested test level unless
+clipping is reported. Tone-plan, readiness, and artifact routes consume the
+accepted persisted level rather than a caller-supplied `level_dbfs`. This is
+still only the software guard substrate: it does not write live CamillaDSP
+volume, emit samples, read the microphone directly, or claim calibrated SPL.
 The card can also **Verify tone artifact** through
 `/sound/active-speaker/play-tone`: this validates the selected logical output
 target and writes a bounded multi-channel WAV artifact with only that output
@@ -261,7 +262,33 @@ the protected startup DSP is loaded, current, and rollbackable. The UI labels
 that action as a quiet role-specific test, confirms the selected target before
 the POST, and records the shared `woofer_mid_low_level_v1` policy in the
 returned evidence. Tweeter/compression-driver and unlisted-role audio remains
-disabled in this slice even with the lab backend enabled.
+disabled in this slice even with the lab backend enabled. When the selected
+target is a tweeter/compression driver, the readiness card also shows a
+no-audio **Horn bring-up readiness** section. It summarizes whether the saved
+target is blocked, only a manual floor-test candidate, or a guided floor-test
+candidate based on protection mode, loaded protected startup DSP, Stop/session
+state, calibration floor, and operator-observed mic status. It always reports
+`audio_allowed: false` and includes a preview-only floor-test intent: a short
+high-passed 3 kHz sine at the calibration floor, tied to the selected output,
+with `would_play: false`. The safe session now also records quiet-start evidence:
+every armed session starts at
+`floor_required`; the backend rejects raised audible tests until a successful
+floor-level audible result has been recorded for the same saved target and
+session; artifact-only results do not unlock raised playback; Stop, expiry, or
+target change resets the phase. The safety card now renders that intended
+operator sequence directly in `/sound/`: check environment, stage protected
+startup, check protected path, load protected startup, arm safe session, check
+one saved target, reset/lower to the test-level floor, verify an artifact
+before audio, confirm floor audio, then raise slowly. The readiness result
+summarizes the selected DAC output, role policy, backend, rollback state, test
+level, plus an explicit "Why sound is blocked" list; the adjacent safe-session
+status shows the quiet-start phase so the user does not have to infer missing
+gates from raw evidence rows. The same safety step now renders a read-only
+**Commissioning rehearsal** card from
+`/sound/active-speaker/commissioning-rehearsal`. That packet is derived from
+existing durable evidence only; it does not store wizard progress, play audio,
+or reload CamillaDSP, and it explicitly hands off target readiness/artifact
+verification/floor-audio confirmation to operator-selected channel actions.
 For Jasper's immediate mono 2-way build, the same row can now record
 compression-driver protection evidence through
 `/sound/active-speaker/channel-protection`, and the card can **Stage protected
@@ -291,8 +318,8 @@ The active-speaker runtime substrate starts in
 `jasper.output_topology`, and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 The next `/sound/` slice should exercise the lab-gated quiet woofer/mid path on
-hardware, then add the microphone-observed level loop before any horn output is
-enabled.
+hardware, then use the operator-observed microphone loop before any horn output
+is enabled.
 
 ## Files
 
@@ -619,4 +646,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-05
+Last verified: 2026-06-09

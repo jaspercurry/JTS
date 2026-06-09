@@ -68,7 +68,11 @@
 > is enabled. The backend also enforces its own artifact envelope (48 kHz max,
 > 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps a small rolling set of
 > generated artifacts so `/var/lib/jasper` cannot grow without bound during
-> repeated checks.
+> repeated checks. The safe-session state now owns a quiet-start lifecycle:
+> every armed session starts in `floor_required`; an audible test above the
+> calibration floor is rejected until the same session and target has a
+> successful floor-level audible result; Stop, expiry, or target change resets
+> the lifecycle back to `floor_required`.
 > `jasper.active_speaker.readiness` now provides the read-only
 > `/sound/active-speaker/playback-readiness` gate for one saved topology
 > target. It combines safe-session state, output topology, channel
@@ -79,7 +83,28 @@
 > enablement plus a loaded/current protected startup config can turn it true
 > for woofer, mid, and subwoofer topology targets. If CamillaDSP is no longer
 > running the loaded startup config path, readiness blocks before the playback
-> backend is reached.
+> backend is reached. The `/sound/` safety card now presents those same
+> gates as an operator sequence — check environment, stage protected
+> startup, check protected path, load protected startup, arm safe session,
+> check one target, reset to the level floor, then verify an artifact before
+> any audible test, confirm floor audio, then raise slowly. The readiness card
+> also summarizes the selected target, backend, rollback state, test level, and
+> "why sound is blocked" reasons. For tweeter/compression-driver targets it
+> also includes a no-audio **Horn bring-up readiness** packet that distinguishes
+> blocked, manual floor-test candidate, and guided floor-test candidate states
+> from topology/protection/startup-load/Stop/level/mic evidence; it still
+> reports `audio_allowed: false`. The same packet includes an inert floor-test
+> preview (`jts_active_speaker_horn_floor_test_preview`) with the target, short
+> high-passed sine intent, and calibration-floor level so a future audible slice
+> has an explicit contract to implement. Tweeter/horn target actions stay locked in
+> this UI slice even when a lab backend is enabled. The safety card now also
+> includes a read-only **Commissioning rehearsal** packet from
+> `jasper.active_speaker.commissioning` and
+> `/sound/active-speaker/commissioning-rehearsal`. It rehearses the durable
+> sequence from saved output map through safe-session/floor readiness without
+> playing sound, reloading CamillaDSP, or storing wizard progress; target
+> readiness, artifact verification, and floor-audio confirmation remain
+> explicit operator-selected actions.
 > `/sound/` also includes a driver-research helper for active-crossover
 > planning. It generates a prompt from the current output roles and accepts a
 > pasted JSON object with kind `jts_active_crossover_driver_research`.
@@ -633,7 +658,15 @@ CamillaDSP config with a rollback anchor. The playback backend requires the
 same role policy and loaded-startup proof before allowing `aplay`; the
 readiness route remains the layer that reads live startup/CamillaDSP state. The
 probe still does not perform physical channel verification or generate
-hardware-probe-backed path-safety evidence by itself.
+hardware-probe-backed path-safety evidence by itself. For a tweeter/
+compression-driver target, the report includes a `compression_driver` section
+with `audio_allowed: false` that distinguishes blocked evidence, manual
+floor-test candidate evidence, and guided floor-test candidate evidence from
+the saved output map, protection mode, loaded protected DSP, Stop/session
+state, calibration floor, and operator-observed mic status. That section also
+includes a no-audio `floor_test_preview` object: a 100 ms high-passed 3 kHz
+sine at the calibration floor, tied to the selected physical output and marked
+`would_play: false`.
 
 `jasper.active_speaker.safe_playback` is the first no-audio session substrate
 for that future work. It writes
@@ -644,6 +677,12 @@ only creates an armed session when `ok_to_load_active_config` is true;
 `/sound/active-speaker/stop` stops any existing session. Neither endpoint
 plays tones, reloads CamillaDSP, or changes volume. The persisted environment
 summary stores config classification and filename only, not full local paths.
+The same state file carries `quiet_start` evidence for the current safety
+session. Artifact-only results never confirm the floor. A completed audible
+floor-level result records `floor_confirmed` for the stable target signature
+(`speaker_group_id`, role, output index); raised audible tests are then allowed
+only for that same target and armed session. Changing target, stopping, or
+letting the session expire clears that evidence.
 
 `jasper.active_speaker.tone_plan` is the first deterministic channel-test
 intent contract. `/sound/active-speaker/tone-targets` lists preset-derived
@@ -685,14 +724,16 @@ small safe envelope, and the default is the minimum (`-80 dBFS`). As of
 `JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE`). The `/sound/` card updates
 that state through `/sound/active-speaker/calibration-level`; upward movement
 is limited to one 1 dB backend transition, while lowering, reset, Stop, and
-future mic-clipping resets can return directly to the floor. Tone-plan,
-readiness, and artifact routes read the accepted persisted level rather than
-trusting request-local `level_dbfs`. No current code raises listening volume,
-writes live CamillaDSP volume, emits samples, or treats the slider as
-permission to play. The same contract has a coarse future mic-meter classifier
-(`unmeasured`, `too_quiet`, `low`, `usable`, `too_loud`, `clipping`) so the
-first real playback slice can add observed microphone feedback without
-inventing a second level schema.
+mic-clipping resets can return directly to the floor. The same route also
+accepts `action=observe` with an operator-observed capture dBFS reading; that
+records the coarse mic-meter status (`unmeasured`, `too_quiet`, `low`,
+`usable`, `too_loud`, `clipping`) without changing the requested test level
+unless clipping forces a floor reset. Tone-plan, readiness, and artifact
+routes read the accepted persisted level rather than trusting request-local
+`level_dbfs`. No current code raises listening volume, writes live CamillaDSP
+volume, emits samples, or treats the slider or mic observation as permission to
+play. This is still not real microphone capture or calibrated SPL; it is the
+operator-observed feedback loop the first audible slice can consume.
 
 `jasper.active_speaker.bringup` owns the read-only preflight packet for the
 horn-bring-up product decision. It composes output topology, channel identity,

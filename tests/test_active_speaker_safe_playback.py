@@ -6,6 +6,7 @@ from jasper.active_speaker.safe_playback import (
     SAFE_PLAYBACK_SESSION_KIND,
     arm_safe_playback_session,
     load_safe_playback_state,
+    record_safe_playback_result,
     stop_safe_playback_session,
 )
 
@@ -81,6 +82,8 @@ def test_arm_safe_playback_creates_no_audio_session_when_environment_passes(
     assert state["session_id"]
     assert state["playback_allowed"] is False
     assert state["tone_playback_implemented"] is False
+    assert state["quiet_start"]["status"] == "floor_required"
+    assert state["quiet_start"]["floor_audio_confirmed"] is False
     assert state["expires_at"] == "1970-01-01T00:17:10Z"
     assert state["environment"]["ok_to_load_active_config"] is True
     assert state["environment"]["camilla_config_name"] == "active.yml"
@@ -115,6 +118,8 @@ def test_load_safe_playback_state_marks_expired_session(tmp_path: Path) -> None:
 
     assert state["status"] == "expired"
     assert state["playback_allowed"] is False
+    assert state["quiet_start"]["status"] == "floor_required"
+    assert state["quiet_start"]["floor_audio_confirmed"] is False
 
 
 def test_stop_safe_playback_is_idempotent(tmp_path: Path) -> None:
@@ -137,5 +142,171 @@ def test_stop_safe_playback_is_idempotent(tmp_path: Path) -> None:
     assert stopped["status"] == "stopped"
     assert stopped["session_id"] == armed["session_id"]
     assert stopped["playback_allowed"] is False
+    assert stopped["quiet_start"]["status"] == "floor_required"
+    assert stopped["quiet_start"]["floor_audio_confirmed"] is False
     assert stopped_again["status"] == "stopped"
     assert stopped_again["session_id"] == armed["session_id"]
+
+
+def test_record_safe_playback_confirms_floor_audio_for_target(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.json"
+    arm_safe_playback_session(
+        _env_report(ok=True),
+        state_path=path,
+        now=lambda: 1000,
+    )
+
+    state = record_safe_playback_result(
+        {
+            "status": "completed",
+            "backend": "aplay",
+            "playback_id": "play-1",
+            "audio_emitted": True,
+            "target": {
+                "speaker_group_id": "mono",
+                "driver_role": "woofer",
+                "output_index": 0,
+            },
+            "tone": {"level_dbfs": -80.0},
+            "issues": [],
+        },
+        state_path=path,
+        now=lambda: 1001,
+    )
+
+    quiet = state["quiet_start"]
+    assert quiet["status"] == "floor_confirmed"
+    assert quiet["floor_audio_confirmed"] is True
+    assert quiet["current_target"] == {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "output_index": 0,
+    }
+    assert quiet["last_level_dbfs"] == -80.0
+    assert quiet["last_playback_at"] == "1970-01-01T00:16:41Z"
+
+
+def test_record_safe_playback_does_not_confirm_artifact_only_result(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.json"
+    arm_safe_playback_session(
+        _env_report(ok=True),
+        state_path=path,
+        now=lambda: 1000,
+    )
+
+    state = record_safe_playback_result(
+        {
+            "status": "completed",
+            "backend": "wav_artifact",
+            "playback_id": "play-1",
+            "audio_emitted": False,
+            "target": {
+                "speaker_group_id": "mono",
+                "driver_role": "woofer",
+                "output_index": 0,
+            },
+            "tone": {"level_dbfs": -80.0},
+            "artifact": {"wav_basename": "tone.wav"},
+            "issues": [],
+        },
+        state_path=path,
+        now=lambda: 1001,
+    )
+
+    assert state["quiet_start"]["status"] == "floor_required"
+    assert state["quiet_start"]["floor_audio_confirmed"] is False
+    assert state["quiet_start"]["current_target"] == {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "output_index": 0,
+    }
+
+
+def test_record_safe_playback_does_not_confirm_result_with_issues(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.json"
+    arm_safe_playback_session(
+        _env_report(ok=True),
+        state_path=path,
+        now=lambda: 1000,
+    )
+
+    state = record_safe_playback_result(
+        {
+            "status": "completed",
+            "backend": "aplay",
+            "playback_id": "play-1",
+            "audio_emitted": True,
+            "target": {
+                "speaker_group_id": "mono",
+                "driver_role": "woofer",
+                "output_index": 0,
+            },
+            "tone": {"level_dbfs": -80.0},
+            "issues": [{"code": "backend_warning"}],
+        },
+        state_path=path,
+        now=lambda: 1001,
+    )
+
+    assert state["quiet_start"]["status"] == "floor_required"
+    assert state["quiet_start"]["floor_audio_confirmed"] is False
+
+
+def test_record_safe_playback_target_change_resets_floor_confirmation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.json"
+    arm_safe_playback_session(
+        _env_report(ok=True),
+        state_path=path,
+        now=lambda: 1000,
+    )
+    record_safe_playback_result(
+        {
+            "status": "completed",
+            "backend": "aplay",
+            "playback_id": "play-1",
+            "audio_emitted": True,
+            "target": {
+                "speaker_group_id": "mono",
+                "driver_role": "woofer",
+                "output_index": 0,
+            },
+            "tone": {"level_dbfs": -80.0},
+            "issues": [],
+        },
+        state_path=path,
+        now=lambda: 1001,
+    )
+
+    state = record_safe_playback_result(
+        {
+            "status": "blocked",
+            "backend": "aplay",
+            "playback_id": "play-2",
+            "audio_emitted": False,
+            "target": {
+                "speaker_group_id": "mono",
+                "driver_role": "mid",
+                "output_index": 1,
+            },
+            "tone": {"level_dbfs": -55.0},
+            "issues": [{"code": "floor_audio_not_confirmed"}],
+        },
+        state_path=path,
+        now=lambda: 1002,
+    )
+
+    assert state["quiet_start"]["status"] == "floor_required"
+    assert state["quiet_start"]["floor_audio_confirmed"] is False
+    assert state["quiet_start"]["current_target"] == {
+        "speaker_group_id": "mono",
+        "role": "mid",
+        "output_index": 1,
+    }

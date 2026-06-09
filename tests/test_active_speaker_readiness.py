@@ -4,6 +4,7 @@ from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.playback import tone_backend_status
 from jasper.active_speaker.readiness import (
+    HORN_FLOOR_TEST_PREVIEW_KIND,
     PLAYBACK_READINESS_KIND,
     build_playback_readiness,
 )
@@ -259,6 +260,69 @@ def test_playback_readiness_blocks_known_independent_composite_clock_domain() ->
     assert gates["single_clock_domain"] is False
     assert "single_clock_domain" in codes
     assert report["playback_allowed"] is False
+
+
+def test_playback_readiness_reports_horn_guided_readiness_without_audio() -> None:
+    report = build_playback_readiness(
+        _topology(protection="software_guard_requested"),
+        speaker_group_id="left",
+        role="tweeter",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(observed_mic_dbfs=-32),
+        startup_load_state=_startup_load(),
+        tone_backend=tone_backend_status({
+            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+        }),
+    )
+
+    horn = report["compression_driver"]
+
+    assert report["preconditions_passed"] is False
+    assert report["playback_allowed"] is False
+    assert horn["status"] == "guided_ready_no_audio"
+    assert horn["audio_allowed"] is False
+    assert horn["protection_mode"] == "software_guarded"
+    assert horn["manual_floor_test_candidate"] is True
+    assert horn["guided_floor_test_candidate"] is True
+    assert horn["microphone"]["status"] == "usable"
+    assert horn["floor_test_preview"]["kind"] == HORN_FLOOR_TEST_PREVIEW_KIND
+    assert horn["floor_test_preview"]["would_play"] is False
+    assert horn["floor_test_preview"]["audio_allowed"] is False
+    assert horn["floor_test_preview"]["tone"]["level_dbfs"] == -80.0
+    assert horn["floor_test_preview"]["tone"]["frequency_hz"] == 3000.0
+    assert horn["floor_test_preview"]["tone"]["band_limit"] == {
+        "type": "highpass",
+        "highpass_hz": 2000.0,
+    }
+
+
+def test_playback_readiness_blocks_horn_guidance_on_clipping() -> None:
+    report = build_playback_readiness(
+        _topology(protection="software_guard_requested"),
+        speaker_group_id="left",
+        role="tweeter",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(
+            observed_mic_dbfs=-18,
+            mic_clipping=True,
+        ),
+        startup_load_state=_startup_load(),
+    )
+
+    horn = report["compression_driver"]
+    codes = {issue["code"] for issue in horn["issues"]}
+
+    assert horn["status"] == "blocked"
+    assert horn["manual_floor_test_candidate"] is False
+    assert horn["guided_floor_test_candidate"] is False
+    assert horn["microphone"]["status"] == "clipping"
+    assert horn["floor_test_preview"]["status"] == "blocked"
+    assert horn["floor_test_preview"]["would_play"] is False
+    assert "mic_not_too_loud" in codes
 
 
 def test_playback_readiness_requires_environment_and_safe_session() -> None:
