@@ -335,8 +335,10 @@ write_leg_env() {
         outputd_chip_ref_period="${OUTPUTD_CHIP_REF_PERIOD_FRAMES}"
         outputd_chip_ref_buffer="${OUTPUTD_CHIP_REF_BUFFER_FRAMES}"
     elif [[ "$bridge_running" == "1" ]]; then
-        # Software-leg mode (today's default): raw/DTLN as configured,
-        # chip beams cleared.
+        # Software-leg mode: raw/DTLN as configured, chip beams cleared.
+        # The far-end reference still comes from outputd's final speaker
+        # monitor so software AEC, chip-AEC, corpus, and diagnostics all
+        # consume the same reference contract.
         if [[ "$leg_raw" == "1" ]]; then
             raw_udp="udp:${AEC_UDP_PORT_RAW}"
         else
@@ -352,11 +354,11 @@ write_leg_env() {
         chip_150_udp=""
         chip_210_udp=""
         chip_flag="0"
-        ref_source="alsa"
+        ref_source="outputd_udp"
         bridge_ref_host="127.0.0.1"
         bridge_ref_port="${AEC_OUTPUTD_REF_UDP_PORT}"
         outputd_chip_ref_pcm=""
-        outputd_ref_target=""
+        outputd_ref_target="${bridge_ref_host}:${bridge_ref_port}"
         outputd_chip_ref_rate="${OUTPUTD_CHIP_REF_SAMPLE_RATE}"
         outputd_chip_ref_period="${OUTPUTD_CHIP_REF_PERIOD_FRAMES}"
         outputd_chip_ref_buffer="${OUTPUTD_CHIP_REF_BUFFER_FRAMES}"

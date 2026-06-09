@@ -62,7 +62,7 @@ Use these instead of creating a parallel hardware stack:
   state.
 - `JASPER_AUDIO_DAC_ID` and `JASPER_AUDIO_DAC_CARD` are reconciler-owned runtime
   facts for the active final-output role.
-- `/run/jasper/output_hardware.json` records observed output hardware,
+- `/run/jasper-output-hardware/output_hardware.json` records observed output hardware,
   including composite dual-Apple readiness and partial states.
 - `/var/lib/jasper/output_topology.json` records the operator's physical output
   mapping, speaker groups, role identity, and safety state.
@@ -154,7 +154,9 @@ outputd process control inside the registry.
    now derives known DAC labels, physical output counts, clock-domain labels,
    and clock-coherence reports from the registry while retaining its no-audio
    authority boundary. It also reports composite-profile shape separately from
-   aggregate-output runtime enablement. `jasper-doctor` is still pending.
+   aggregate-output runtime enablement. `jasper-doctor` now consumes output
+   hardware state for Apple checks; a broader registry-only cleanup can remain
+   incremental.
 3. Replace hardcoded Apple/DAC8x identity checks in `audio_validation` and
    `jasper-doctor` with profile-derived expectations.
 4. Move mixer/headphone policy into profile data, but keep mutation in

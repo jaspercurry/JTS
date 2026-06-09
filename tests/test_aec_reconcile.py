@@ -365,7 +365,7 @@ def test_fresh_auto_profile_uses_chip_aec_on_6ch_xvf(tmp_path: Path) -> None:
                 "raw_udp": True,
                 "dtln_udp": False,
                 "chip_enabled": "0",
-                "ref_source": "alsa",
+                "ref_source": "outputd_udp",
             },
         ),
         (
@@ -579,9 +579,11 @@ def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
     assert "restart jasper-outputd.service" in commands
 
 
-def test_chip_aec_off_clears_chip_vars_keeps_raw_dtln(tmp_path: Path) -> None:
-    """Default (CHIP_AEC=0): chip vars cleared, raw/DTLN behave exactly as
-    before the promotion — the byte-identical-when-off guarantee."""
+def test_chip_aec_off_clears_chip_vars_keeps_raw_dtln_and_outputd_ref(
+    tmp_path: Path,
+) -> None:
+    """Default software AEC: chip vars cleared, raw/DTLN preserved, and
+    the far-end reference still comes from outputd's speaker monitor."""
     _write_env(tmp_path, "udp:9876")
     _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="1", chip_aec="0")
     _write_card(tmp_path, channels=6)
@@ -590,18 +592,21 @@ def test_chip_aec_off_clears_chip_vars_keeps_raw_dtln(tmp_path: Path) -> None:
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
-    assert "JASPER_AEC_REF_SOURCE=alsa" in body
+    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891" in body
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
     assert "JASPER_MIC_DEVICE_DTLN=udp:9878" in body
     assert "JASPER_AEC_DTLN_ENABLED=1" in body
     commands = _systemctl_log(tmp_path)
-    assert "restart jasper-outputd.service" not in commands
+    assert "restart jasper-outputd.service" in commands
 
 
-def test_chip_aec_off_clears_outputd_reference_and_restarts(tmp_path: Path) -> None:
-    """Leaving chip-AEC mode must also stop outputd's USB-IN/UDP
-    reference producer; otherwise the Pi keeps doing lab fanout work in
-    normal software-AEC mode."""
+def test_chip_aec_off_clears_chip_usb_reference_but_keeps_outputd_monitor(
+    tmp_path: Path,
+) -> None:
+    """Leaving chip-AEC mode stops the XVF USB-IN producer but keeps
+    outputd's UDP speaker monitor because software AEC now consumes it."""
     _write_env(
         tmp_path,
         "udp:9876",
@@ -615,9 +620,9 @@ def test_chip_aec_off_clears_outputd_reference_and_restarts(tmp_path: Path) -> N
     _write_card(tmp_path, channels=6)
     _run_reconcile(tmp_path, "--reason", "test")
     body = (tmp_path / "jasper.env").read_text()
-    assert "JASPER_AEC_REF_SOURCE=alsa" in body
+    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
-    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891" in body
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-outputd.service" in commands
 
@@ -634,6 +639,8 @@ def test_chip_aec_cleared_when_aec_disabled(tmp_path: Path) -> None:
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
+    assert "JASPER_AEC_REF_SOURCE=alsa" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
     mode_body = (tmp_path / "aec_mode.env").read_text()
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in mode_body
 
@@ -651,3 +658,4 @@ def test_chip_aec_not_armed_without_6ch_firmware(tmp_path: Path) -> None:
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
+    assert "JASPER_AEC_REF_SOURCE=alsa" in body

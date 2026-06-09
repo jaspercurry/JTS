@@ -947,7 +947,7 @@ def _dac_reference_check(outputd_status: Mapping[str, Any] | None) -> dict[str, 
     if not isinstance(outputd_status, Mapping):
         return _check(
             "unknown",
-            summary="outputd STATUS was unavailable; chip-reference state could not be read.",
+            summary="outputd STATUS was unavailable; speaker-reference state could not be read.",
         )
     refs = outputd_status.get("reference_outputs")
     if not isinstance(refs, Mapping):
@@ -956,19 +956,38 @@ def _dac_reference_check(outputd_status: Mapping[str, Any] | None) -> dict[str, 
             summary="outputd STATUS does not expose reference_outputs.",
         )
     observed = {
+        "speaker_reference_source": refs.get("speaker_reference_source"),
+        "speaker_reference_active": refs.get("speaker_reference_active"),
+        "speaker_reference_channels": refs.get("speaker_reference_channels"),
         "chip_ref_pcm": refs.get("chip_ref_pcm"),
         "chip_ref_sample_rate": refs.get("chip_ref_sample_rate"),
         "chip_ref_period_frames": refs.get("chip_ref_period_frames"),
         "chip_ref_buffer_frames": refs.get("chip_ref_buffer_frames"),
         "udp_target": refs.get("udp_target"),
     }
-    if observed["chip_ref_pcm"] and observed["udp_target"] and observed["chip_ref_sample_rate"] == 16000:
-        return _check("pass", summary="outputd exposes chip PCM and UDP reference outputs.", observed=observed)
+    if (
+        observed["speaker_reference_source"] == "outputd_final_electrical"
+        and observed["speaker_reference_channels"] == 2
+        and observed["chip_ref_pcm"]
+        and observed["udp_target"]
+        and observed["chip_ref_sample_rate"] == 16000
+    ):
+        return _check(
+            "pass",
+            summary="outputd exposes the speaker monitor plus chip PCM reference outputs.",
+            observed=observed,
+        )
     return _check(
         "fail",
-        summary="outputd chip-reference outputs are not fully configured.",
+        summary="outputd speaker/chip reference outputs are not fully configured.",
         observed=observed,
-        expected={"chip_ref_pcm": "non-empty", "udp_target": "non-empty", "chip_ref_sample_rate": 16000},
+        expected={
+            "speaker_reference_source": "outputd_final_electrical",
+            "speaker_reference_channels": 2,
+            "chip_ref_pcm": "non-empty",
+            "udp_target": "non-empty",
+            "chip_ref_sample_rate": 16000,
+        },
     )
 
 

@@ -18,6 +18,12 @@ from jasper import wake_models
 from jasper.cli import doctor
 from jasper.config import Config
 from jasper.correction import bundles
+from jasper.output_hardware import (
+    APPLE_USB_C_DONGLE_DEVICE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    OutputCardFact,
+    OutputHardwareState,
+)
 from jasper.voice.catalog import PROVIDERS, provider_ids_manifest_text
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
@@ -367,63 +373,87 @@ def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
     assert calls == [["amixer", "-c", "Apple2", "sget", "Headphone"]]
 
 
-def test_output_hardware_state_warns_on_observed_active_mismatch(monkeypatch):
-    monkeypatch.setattr(
-        doctor.audio,
-        "_load_output_hardware_state",
-        lambda: {
-            "artifact_schema_version": 1,
-            "kind": "jts_output_hardware_state",
-            "active": {
-                "profile_id": "apple_usb_c_dongle",
-                "recognized": True,
-                "runtime_ready": True,
-            },
-            "observed": {
-                "profile_id": "dual_apple_usb_c_dac_4ch",
-                "status": "ready",
-            },
-            "issues": [
-                {
-                    "severity": "warning",
-                    "code": "observed_active_profile_mismatch",
-                    "message": "mismatch",
-                }
-            ],
-        },
+def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
+    state = OutputHardwareState(
+        profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+        profile_label="Dual Apple USB-C DAC 4-channel pair",
+        status="partial",
+        physical_output_count=4,
+        apple_dac_count=1,
+        child_devices=(
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            ),
+        ),
     )
 
-    result = doctor.check_output_hardware_state()
+    def fake_run(cmd, *args, **kwargs):
+        if cmd == ["lsusb"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "Bus 001 Device 002: ID 05ac:110a Apple USB-C\n"
+                    "Bus 001 Device 003: ID 05ac:110a Apple USB-C\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
+    monkeypatch.setattr(doctor.audio, "_run", fake_run)
+
+    result = doctor.check_apple_dongle_audio()
 
     assert result.status == "warn"
-    assert "active=apple_usb_c_dongle" in result.detail
-    assert "observed=dual_apple_usb_c_dac_4ch" in result.detail
+    assert "only 1 Apple audio card(s)" in result.detail
 
 
-def test_output_hardware_state_fails_when_runtime_is_parked(monkeypatch):
-    monkeypatch.setattr(
-        doctor.audio,
-        "_load_output_hardware_state",
-        lambda: {
-            "artifact_schema_version": 1,
-            "kind": "jts_output_hardware_state",
-            "active": {
-                "profile_id": "unknown",
-                "recognized": False,
-                "runtime_ready": False,
-            },
-            "observed": {
-                "profile_id": "unknown",
-                "status": "missing",
-            },
-            "issues": [],
-        },
+def test_dual_apple_headphone_gain_checks_every_card(monkeypatch):
+    state = OutputHardwareState(
+        profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+        profile_label="Dual Apple USB-C DAC 4-channel pair",
+        status="ready",
+        physical_output_count=4,
+        apple_dac_count=2,
+        child_devices=(
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            ),
+        ),
     )
+    commands: list[list[str]] = []
 
-    result = doctor.check_output_hardware_state()
+    def fake_run(cmd, *args, **kwargs):
+        commands.append(cmd)
+        if cmd[:3] == ["amixer", "-c", "A"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Front Left: Playback 120 [100%] [0.00dB] [on]\n",
+                stderr="",
+            )
+        if cmd[:3] == ["amixer", "-c", "A_1"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Front Left: Playback 90 [75%] [-10.00dB] [on]\n",
+                stderr="",
+            )
+        raise AssertionError(cmd)
 
-    assert result.status == "fail"
-    assert "active output is parked" in result.detail
+    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
+    monkeypatch.setattr(doctor.audio, "_run", fake_run)
+
+    result = doctor.check_dongle_headphone_at_max()
+
+    assert result.status == "warn"
+    assert "A_1:75%" in result.detail
+    assert ["amixer", "-c", "A", "sget", "Headphone"] in commands
+    assert ["amixer", "-c", "A_1", "sget", "Headphone"] in commands
 
 
 def test_check_bluetooth_pairing_policy_ok(monkeypatch):
@@ -1239,7 +1269,7 @@ def test_assess_aec_output_silent_ref_with_healthy_window_is_ok():
     check must NOT fail — silent-ref windows have benign explanations
     when the ref path is demonstrably alive."""
     lines = [
-        # 5 mic-loud + ref-silent windows (TTS bypasses the loopback)
+        # 5 mic-loud + ref-silent windows from non-reference loud sound.
         _rms_log_line(ref=0, mic=2200, aec=2100, attn_db=-0.4),
         _rms_log_line(ref=0, mic=2400, aec=2300, attn_db=-0.4),
         _rms_log_line(ref=0, mic=2600, aec=2500, attn_db=-0.3),
@@ -1906,6 +1936,30 @@ def _fanin_status_payload(
             {"label": label, "pcm": pcm, "xrun_count": 0}
             for label, pcm in doctor._FANIN_EXPECTED_INPUTS
         ],
+        "tts": {
+            "enabled": True,
+            "pending_frames": 0,
+            "max_pending_frames": 96000,
+            "budget_frames": 96000,
+            "dropped_commands": 0,
+            "dropped_audio_frames": 0,
+            "flush_requests": 0,
+            "flushed_frames": 0,
+            "assistant_loudness": {
+                "content_short_lufs": -31.2,
+                "content_anchor_lufs": -30.8,
+                "decision_seen": False,
+                "calibrated": False,
+                "profile_confidence": 0.0,
+                "baseline_lufs": None,
+                "target_lufs": None,
+                "source_lufs": None,
+                "source_peak_dbfs": None,
+                "requested_gain_db": None,
+                "peak_cap_gain_db": None,
+                "final_gain_db": None,
+            },
+        },
         "watchdog": {"last_progress_age_ms": progress_age_ms},
     }).encode()
 
@@ -1913,15 +1967,18 @@ def _fanin_status_payload(
 def _outputd_status_payload(
     *,
     backend: str = "alsa",
+    sink_mode: str = "single_alsa",
     content_pcm: str = doctor._OUTPUTD_EXPECTED_CONTENT_PCM,
     dac_pcm: str = doctor._OUTPUTD_EXPECTED_DAC_PCM,
     content_buffer_frames: int = 4096,
     dac_buffer_frames: int = 3072,
     period_frames: int = 1024,
     progress_age_ms: int = 2,
+    dual_apple_status: dict | None = None,
 ) -> bytes:
-    return json.dumps({
+    payload = {
         "backend": backend,
+        "sink_mode": sink_mode,
         "content": {
             "pcm": content_pcm,
             "period_frames": period_frames,
@@ -1941,6 +1998,18 @@ def _outputd_status_payload(
             "xrun_count": 0,
         },
         "mix": {"reference_sequence": 1, "clipped_samples": 0},
+        "reference_outputs": {
+            "speaker_reference_source": "outputd_final_electrical",
+            "speaker_reference_is_fallback": False,
+            "speaker_reference_active": False,
+            "speaker_reference_sample_rate": 48000,
+            "speaker_reference_channels": 2,
+            "chip_ref_pcm": None,
+            "chip_ref_sample_rate": 16000,
+            "chip_ref_period_frames": 320,
+            "chip_ref_buffer_frames": 1280,
+            "udp_target": None,
+        },
         "content_bridge": {
             "mode": "direct",
             "enabled": False,
@@ -1988,7 +2057,18 @@ def _outputd_status_payload(
             "final_gain_db": None,
         },
         "watchdog": {"last_progress_age_ms": progress_age_ms},
-    }).encode()
+    }
+    if sink_mode == "dual_apple":
+        payload["dual_apple"] = dual_apple_status or {
+            "dac_a_pcm": "hw:CARD=A,DEV=0",
+            "dac_b_pcm": "hw:CARD=A_1,DEV=0",
+            "linked": True,
+            "delay_delta_frames": 0,
+            "delay_delta_baseline_frames": 0,
+            "delay_delta_error_frames": 0,
+            "max_delay_delta_frames": 2,
+        }
+    return json.dumps(payload).encode()
 
 
 def _patch_fanin_status_socket(monkeypatch, payload: bytes):
@@ -2006,6 +2086,59 @@ def test_check_fanin_service_ok_with_expected_status(monkeypatch):
     assert r.status == "ok"
     assert "input_buffer_frames=4096" in r.detail
     assert "output_buffer_frames=3072" in r.detail
+    assert "tts_enabled=true" in r.detail
+    assert "assistant_loudness_decision=False" in r.detail
+
+
+def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    payload = json.loads(_fanin_status_payload().decode())
+    payload["tts"] = {
+        "enabled": True,
+        "pending_frames": 0,
+        "assistant_loudness": {
+            "content_short_lufs": -31.2,
+            "content_anchor_lufs": -30.8,
+            "decision_seen": True,
+            "calibrated": True,
+            "profile_confidence": 1.0,
+            "baseline_lufs": -38.0,
+            "target_lufs": -36.5,
+            "source_lufs": -25.0,
+            "source_peak_dbfs": -8.0,
+            "requested_gain_db": -11.5,
+            "peak_cap_gain_db": 5.0,
+            "final_gain_db": -11.5,
+        },
+    }
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_fanin_service()
+
+    assert r.status == "ok"
+    assert "tts_enabled=true" in r.detail
+    assert "assistant_loudness_decision=True" in r.detail
+    assert "assistant_final_gain_db=-11.5" in r.detail
+
+
+def test_check_fanin_service_warns_on_malformed_pre_dsp_tts_loudness(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    payload = json.loads(_fanin_status_payload().decode())
+    payload["tts"] = {
+        "enabled": True,
+        "pending_frames": 0,
+        "assistant_loudness": {
+            "decision_seen": True,
+            "calibrated": False,
+            "final_gain_db": None,
+        },
+    }
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_fanin_service()
+
+    assert r.status == "warn"
+    assert "decision_seen=true" in r.detail
 
 
 def test_check_fanin_service_fails_on_invalid_status_json(monkeypatch):
@@ -2064,13 +2197,78 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "dac_buffer_frames=3072" in r.detail
     assert "content_empty_periods=2" in r.detail
     assert "content_eagain_count=1" in r.detail
-    assert "tts_pending_frames=0" in r.detail
-    assert "tts_max_pending_frames=4096" in r.detail
-    assert "tts_dropped_commands=0" in r.detail
-    assert "tts_dropped_audio_frames=0" in r.detail
     assert "content_bridge=direct" in r.detail
-    assert "assistant_loudness_decision=False" in r.detail
-    assert "content_anchor_lufs=-30.8" in r.detail
+    assert "speaker_reference_source=outputd_final_electrical" in r.detail
+
+
+def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload.pop("assistant_loudness", None)
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "ok"
+    assert "assistant_loudness=fan-in-owned" in r.detail
+
+
+def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    payload = json.loads(
+        _outputd_status_payload(
+            sink_mode="dual_apple",
+            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
+            dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+        ).decode()
+    )
+    payload.pop("dual_apple", None)
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+    assert r.status == "fail"
+    assert "STATUS missing dual_apple runtime health" in r.detail
+
+
+def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(
+            sink_mode="dual_apple",
+            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
+            dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+            dual_apple_status={
+                "dac_a_pcm": "hw:CARD=A,DEV=0",
+                "dac_b_pcm": "hw:CARD=A_1,DEV=0",
+                "linked": False,
+                "delay_delta_frames": 0,
+                "delay_delta_baseline_frames": 0,
+                "delay_delta_error_frames": 0,
+                "max_delay_delta_frames": 2,
+            },
+        ),
+    )
+    r = doctor.check_outputd_service()
+    assert r.status == "warn"
+    assert "not ALSA-linked" in r.detail
+
+
+def test_outputd_service_ok_with_dual_apple_status(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(
+            sink_mode="dual_apple",
+            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
+            dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+        ),
+    )
+    r = doctor.check_outputd_service()
+    assert r.status == "ok"
+    assert "backend=alsa" in r.detail
+    assert "dual_a_pcm=hw:CARD=A,DEV=0" in r.detail
+    assert "dual_linked=True" in r.detail
 
 
 def test_outputd_service_fails_on_fake_backend(monkeypatch):
@@ -2095,19 +2293,16 @@ def test_outputd_service_fails_on_small_runtime_buffers(monkeypatch):
     assert "dac.buffer_frames=1024" in r.detail
 
 
-def test_outputd_service_warns_on_stuck_tts_queue(monkeypatch):
+def test_outputd_service_fails_when_reference_contract_missing(monkeypatch):
     payload = json.loads(_outputd_status_payload().decode())
-    payload["tts"]["pending_frames"] = 120000
-    payload["tts"]["over_budget"] = True
-    payload["tts"]["over_budget_streak_ms"] = 128
+    payload["reference_outputs"] = {}
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
 
     r = doctor.check_outputd_service()
 
-    assert r.status == "warn"
-    assert "tts.pending_frames=120000" in r.detail
-    assert "over_budget_streak_ms=128" in r.detail
+    assert r.status == "fail"
+    assert "speaker_reference_source" in r.detail
 
 
 def test_outputd_service_warns_on_content_bridge_anomalies(monkeypatch):
@@ -2134,29 +2329,6 @@ def test_outputd_service_warns_on_content_bridge_anomalies(monkeypatch):
     assert "bridge_fill_frames=4096" in r.detail
 
 
-def test_outputd_service_warns_when_loudness_telemetry_missing(monkeypatch):
-    payload = json.loads(_outputd_status_payload().decode())
-    payload.pop("assistant_loudness")
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "warn"
-    assert "missing assistant_loudness telemetry" in r.detail
-
-
-def test_outputd_service_warns_when_loudness_decision_has_no_gain(monkeypatch):
-    payload = json.loads(_outputd_status_payload().decode())
-    payload["assistant_loudness"]["decision_seen"] = True
-    payload["assistant_loudness"]["final_gain_db"] = None
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "warn"
-    assert "decision_seen=true without numeric final_gain_db" in r.detail
 
 
 def test_audio_path_no_swap_includes_fanin_and_outputd():

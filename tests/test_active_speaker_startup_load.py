@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
+import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
@@ -18,6 +20,11 @@ from jasper.active_speaker.startup_load import (
 )
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+
+
+class CompletedCommand:
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
 
 
 class FakeCamilla:
@@ -328,6 +335,23 @@ def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) ->
     assert fake.loaded_paths[-1] == str(prior)
     assert state["status"] == "rolled_back"
     assert state["rollback_available"] is False
+
+
+def test_startup_load_reconcile_trigger_warns_on_nonzero_systemctl(
+    monkeypatch,
+    caplog,
+) -> None:
+    def fake_run(*_args, **_kwargs):
+        return CompletedCommand(3)
+
+    monkeypatch.setattr(startup_load_mod.subprocess, "run", fake_run)
+    caplog.set_level(logging.INFO, logger=startup_load_mod.logger.name)
+
+    startup_load_mod._trigger_audio_hardware_reconcile(source="unit_test")
+
+    assert "event=active_speaker.audio_hardware_reconcile_trigger_failed" in caplog.text
+    assert "returncode=3" in caplog.text
+    assert "event=active_speaker.audio_hardware_reconcile_triggered" not in caplog.text
 
 
 def test_startup_rollback_reports_snapshot_failure(

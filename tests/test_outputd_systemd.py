@@ -59,10 +59,7 @@ def test_outputd_unit_runtime_and_exec_paths():
     unit = _read_unit()
     assert _value_for(unit, "RuntimeDirectory") == "jasper-outputd"
     assert _value_for(unit, "ExecStart") == "/opt/jasper/bin/jasper-outputd"
-    assert (
-        'Environment="JASPER_OUTPUTD_TTS_SOCKET=/run/jasper-outputd/tts.sock"'
-        in unit
-    )
+    assert "JASPER_OUTPUTD_TTS_SOCKET" not in unit
     for expected in [
         'Environment="JASPER_OUTPUTD_BACKEND=alsa"',
         'Environment="JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture"',
@@ -120,15 +117,18 @@ def test_install_builds_installs_and_enables_outputd():
     )
 
 
-def test_voice_unit_routes_tts_to_outputd_on_mainline():
+def test_voice_unit_routes_tts_to_fanin_pre_dsp_on_mainline():
     unit = VOICE_UNIT_PATH.read_text()
-    assert "After=jasper-camilla.service jasper-outputd.service network-online.target" in unit
+    assert (
+        "After=jasper-fanin.service jasper-camilla.service "
+        "jasper-outputd.service network-online.target"
+    ) in unit
+    assert "jasper-fanin.service" in _value_for(unit, "Wants")
     assert "jasper-outputd.service" in _value_for(unit, "Wants")
     assert 'Environment="JASPER_TTS_TRANSPORT=outputd"' in unit
-    assert (
-        'Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock"'
-        in unit
-    )
+    assert 'Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"' in unit
+    assert 'Environment="JASPER_DUCK_TRANSPORT=fanin"' in unit
+    assert "EnvironmentFile=-/var/lib/jasper/tts.env" not in unit
 
 
 def test_voice_unit_parks_cleanly_when_provider_is_unconfigured():

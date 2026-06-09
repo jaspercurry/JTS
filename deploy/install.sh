@@ -167,7 +167,7 @@ Run for real from a Pi-local checkout:
      headphone monitor, nginx, Avahi, CamillaGUI socket, and the WiFi
      guardian.
    - Require jasper-outputd to be active and answering STATUS before
-     voice is reconciled onto the outputd TTS socket.
+     voice starts against the final-output path.
    - Seed or validate the outputd Camilla statefile while preserving
      the normal production statefile. Rollback to a pre-outputd
      release/branch must also stop/disable jasper-outputd because that

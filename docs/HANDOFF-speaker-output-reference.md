@@ -36,43 +36,48 @@ MUSIC / CONTENT
 ASSISTANT AUDIO
   TTS / cues / chirps
     -> OutputdTtsPlayout
-    -> /run/jasper-outputd/tts.sock
-    -> jasper-outputd
-    -> dongle / amp / speaker
+    -> /run/jasper-fanin/tts.sock
+    -> jasper-fanin, mixed after program duck
+    -> jasper-camilla crossover/protection
+    -> outputd_content_playback/capture
+       (or outputd_active_content_* for dual Apple active output)
+    -> jasper-outputd final sink
+    -> DAC(s) / amp(s) / speaker(s)
 ```
 
-The two audible paths now converge inside `jasper-outputd`, which is
-the only normal writer to the physical DAC. The legacy `pcm.jasper_out`
-dmix remains defined in `/etc/asound.conf` for emergency rollback and
-older checkouts, but current production audio does not use it as the
-convergence point.
+The production paths converge inside `jasper-fanin`, pass through
+CamillaDSP, then enter `jasper-outputd`, which is the only normal writer
+to the physical DAC. The dual Apple active-output profile keeps the same
+TTS/cue semantics, but CamillaDSP emits a four-channel active lane and
+`jasper-outputd` splits it to two Apple DACs. The legacy `pcm.jasper_out`
+dmix remains defined in `/etc/asound.conf` for
+emergency rollback and older checkouts, but current production audio
+does not use it as the convergence point.
 
-The AEC bridge currently reads `pcm.jasper_ref`, a `plug` wrapper over
-`pcm.jasper_capture`, which is a `dsnoop` on fan-in's summed music
-substream. Therefore the AEC reference is:
+The production AEC bridge now consumes outputd's speaker monitor over
+localhost UDP. Outputd publishes the final electrical samples it is about
+to write to the configured DAC sink, with STATUS metadata describing the
+reference contract:
 
-- content/music only
-- pre-CamillaDSP
-- pre-ducking
-- pre-TTS/cues/chirps
-- a peer `dsnoop` reader beside CamillaDSP
+- `reference_outputs.speaker_reference_source=outputd_final_electrical`
+- 48 kHz stereo for software AEC/corpus/diagnostics
+- `speaker_reference_active=true` when a UDP or chip-reference consumer is
+  configured
+- for dual Apple active output, stereo monitor left/right are the average
+  of the speaker-local low/high driver lanes for each speaker
 
-That remains the practical compromise for music echo reduction. It is
-not yet the true speaker-output reference, even though outputd now owns
-the physical output loop.
+This is the final software/electrical reference. It includes renderer
+content, TTS/cues/chirps, fan-in ducking/gain, CamillaDSP
+filters/crossover/protection, and outputd sink selection. It still cannot
+include DAC analog behavior, amp/driver/cabinet response, or room
+acoustics except indirectly through the microphone.
 
-**Corpus-only exception (2026-05-29).** The wake-corpus recorder's
-chip-AEC comparison profile can temporarily ask outputd to publish the
-exact final speaker buffer to two side outputs: the XVF3800 USB-IN
-reference PCM (`JASPER_OUTPUTD_CHIP_REF_PCM`) and a localhost UDP tap
-consumed by `jasper-aec-bridge`
-(`JASPER_OUTPUTD_REFERENCE_UDP_TARGET`). This is deliberately not the
-production AEC reference path yet; it is a recorder-owned test mode that
-is enabled by `/var/lib/jasper/wake_corpus_bridge.env` and removed when
-the operator exits corpus test mode. The UDP tap stays at outputd's
-48 kHz graph rate for software AEC/corpus analysis; the chip-reference
-PCM is downsampled to the XVF3800 USB-IN contract (`16 kHz`, default
-`320`-frame periods, `1280`-frame buffer).
+The same outputd fanout feeds software AEC, chip-AEC, corpus capture, and
+diagnostics. Chip-AEC additionally needs the XVF3800 USB-IN reference PCM
+(`JASPER_OUTPUTD_CHIP_REF_PCM`), which is a hardware actuator separate
+from the software UDP monitor. The UDP tap stays at outputd's 48 kHz graph
+rate; the chip-reference PCM is downsampled to the XVF3800 USB-IN contract
+(`16 kHz`, default `320`-frame periods, `1280`-frame buffer).
 
 There is intentionally no production fan-in reference side feed. A
 short-lived 2026-05-27 spike explored a Unix-datagram content mirror
@@ -86,19 +91,25 @@ TTS is already a core realtime-voice component:
 
 - `OutputdTtsPlayout` preserves the `TtsPlayout` contract: it resamples
   provider audio to 48 kHz stereo, sends un-gained PCM plus
-  provider/model/voice profile metadata to outputd, tracks expected
-  drain, and supports `flush()` for interruption.
-- `jasper-outputd` owns assistant gain. It measures content loudness
-  before ducking, applies provider source-loudness profiles, and emits
-  `event=outputd.assistant_loudness` plus STATUS telemetry for the
-  latest decision. Python seeds and learns profiles but does not set
-  final gain.
-- Cues and chirps route through the same `TtsPlayout` object so they inherit
-  outputd routing, drain behavior, and profile/peak-capped gain policy
-  without training live assistant profiles. If a feedback sound arrives
-  with no wake-turn context and no measured content baseline, outputd
-  uses the configured default silence target rather than a fixed legacy
-  gain.
+  provider/model/voice profile metadata to the fan-in TTS IPC socket
+  (`/run/jasper-fanin/tts.sock`, using the outputd-compatible text
+  protocol), tracks expected drain, and supports `flush()` for
+  interruption. `jasper-outputd` no longer binds a TTS socket or keeps a
+  duplicate TTS protocol parser; TTS/cue ingress is a fan-in concern.
+- `jasper-fanin` owns assistant gain in the packaged topology. It
+  snapshots pre-duck content loudness, applies the provider
+  source-loudness profile and peak-capped gain policy, emits
+  `event=fanin.assistant_loudness`, and publishes the latest decision
+  under `tts.assistant_loudness` in its STATUS payload. Python seeds and
+  learns profiles but does not set final gain.
+- Cues and chirps route through the same `TtsPlayout` object. They
+  inherit fan-in routing, drain behavior, flush behavior, and
+  profile/peak-capped gain policy without training live assistant
+  profiles, then pass through CamillaDSP crossover/protection with the
+  rest of the audio stream. If a feedback sound arrives with no
+  wake-turn context and no measured content baseline, fan-in uses the
+  configured default
+  silence target rather than a fixed legacy gain.
 
 That is good groundwork, but it is not a complete "what did the user
 hear?" ledger. Robust barge-in needs both a true AEC reference and
@@ -117,19 +128,17 @@ Rechecked against the current tree on 2026-06-01:
   `_idle_watchdog` and `_end_turn` rely on `expected_drain_at()` to
   avoid ending a turn before queued audio drains.
 - `deploy/alsa/asoundrc.jasper` defines the outputd ALSA surfaces:
-  `outputd_content_playback`, `outputd_content_capture`, and
-  `outputd_dac`.
+  `outputd_content_playback`, `outputd_content_capture`,
+  `outputd_active_content_playback`, `outputd_active_content_capture`,
+  and `outputd_dac`.
 - `deploy/camilladsp/outputd-cutover.yml` sends Camilla playback to
   `outputd_content_playback`; `deploy/camilladsp/v1.yml` is retained
   as the pre-outputd rollback config that writes to `jasper_out`.
-- `jasper/cli/aec_bridge.py` opens `jasper_ref`, downsamples the 48 kHz
-  stereo content reference to 16 kHz mono, and tracks reference
-  starvation/queue drops. Under the hardware-conditional
-  `xvf_chip_aec` profile and the wake-corpus chip-AEC comparison
-  profile it receives outputd's final-buffer UDP tap via
-  `JASPER_AEC_REF_SOURCE=outputd_udp` while outputd also feeds the XVF
-  USB-IN reference PCM. The software-AEC profile still uses
-  `jasper_ref`.
+- `jasper/cli/aec_bridge.py` normally receives outputd's 48 kHz stereo
+  speaker monitor via `JASPER_AEC_REF_SOURCE=outputd_udp`, downsamples it
+  to 16 kHz mono, and tracks reference starvation/queue drops. Explicit
+  `JASPER_AEC_REF_SOURCE=alsa` fallback/diagnostic mode can still open
+  `jasper_ref`, a pre-DSP `pcm.jasper_capture` wrapper.
 - `rust/jasper-fanin` is already a good model for the Rust service
   style: blocking ALSA output as timing owner, non-blocking inputs,
   preallocated buffers, systemd watchdog, xrun counters, and small
@@ -166,35 +175,34 @@ What exists:
   hardware soak before enabling it outside the lab.
 - DAC output: `outputd_dac`, normally a direct hardware alias for the
   selected final-output card. Public/default installs use the Apple
-  USB-C dongle; DAC8x lab installs use the enumerated
+  USB-C dongle; DAC8x-family lab installs use the enumerated
   `snd_rpi_hifiberry_dac8x` card. `jasper-audio-hardware-reconcile`
   runs at install/boot and from udev `controlC*` add/remove/change
   events; it writes `JASPER_AUDIO_DAC_ID` (`apple_usb_c_dongle`,
-  `hifiberry_dac8x`, or the raw fallback card token when no known role
-  is detected) plus `JASPER_AUDIO_DAC_CARD` into
+  `hifiberry_dac8x`, `hifiberry_dac8x_studio`, or the raw fallback card
+  token when no known role is detected) plus `JASPER_AUDIO_DAC_CARD` into
   `/etc/jasper/jasper.env` so validation artifacts and status surfaces
   have stable hardware identity instead of only the generic
   `outputd_dac` PCM name. It also writes
-  `/run/jasper/output_hardware.json`, a structured observed-vs-active
-  state artifact: `active` is the runtime role actually published to
-  `/etc/jasper/jasper.env`; `observed` is the best attached hardware
-  shape, including the dual-Apple 4-output profile when two Apple
-  adapters are present. `/state` exposes this artifact as
-  `audio.output_hardware`, `/sound/output-topology` returns it alongside
-  the topology draft, and `jasper-doctor` has a first-line "Output
-  hardware state" check for parked output, observed/active mismatch, and
-  blocked dual-Apple USB topology evidence. `jasper-doctor` also uses
-  the DAC profile registry for Apple-specific USB/headphone-gain checks:
-  those checks are active only when the active output profile is
-  `apple_usb_c_dongle`, use the reconciled `JASPER_AUDIO_DAC_CARD`, and
-  are skipped for DAC8x or other selected output roles. For recognized
-  DAC8x hardware only,
+  `/run/jasper-output-hardware/output_hardware.json`, a structured observed-hardware
+  artifact with the current profile id, status, physical output count,
+  Apple child-device facts, and selected card/PCM for single-device
+  profiles. `/state` exposes this artifact as `audio.output_hardware`,
+  `/sound/output-topology` returns it alongside the topology draft, and
+  `jasper-doctor` has a first-line "Output hardware state" check for
+  missing, partial, blocked, or ready hardware. Runtime selection remains
+  owned by `/etc/jasper/jasper.env` plus `/var/lib/jasper/outputd.env`.
+  `jasper-doctor` uses the observed hardware profile to make
+  Apple-specific USB/headphone-gain checks active for one Apple dongle or
+  the dual-Apple pair, checks every Apple child card in the pair, and
+  skips those checks for DAC8x-family or other output roles. For
+  recognized DAC8x/DAC8x Studio hardware,
   `JASPER_OUTPUT_DAC_ROUTE=mono:N` renders a stereo-to-mono sum onto
   one 1-indexed physical DAC8x output, and
   `JASPER_OUTPUT_DAC_ROUTE=stereo:L,R` maps stereo left/right to two
   distinct 1-indexed physical outputs. Unset, `direct`, or
   `passthrough` keeps the direct alias. Invalid routes, duplicate
-  stereo channels, or routes on non-DAC8x hardware are ignored with
+  stereo channels, or routes on non-DAC8x-family hardware are ignored with
   structured `event=audio_hardware_reconcile.route_ignored` logs. This
   route knob is for lab/single-amp/commissioning wiring before active
   speaker profiles are loaded; active crossover channel ownership lives
@@ -226,17 +234,41 @@ What exists:
   topology and write a no-load protected Epique/F110M startup candidate plus
   startup-mute/high-pass/limiter/headroom evidence. That staging route still
   does not rewrite ALSA, load CamillaDSP, reload a graph, or emit sound.
-  The same topology payload includes a registry-backed clock-domain report for
-  the detected final-output hardware. A recognized coherent profile such as
-  DAC8x or one Apple USB-C dongle reports one coherent output clock. The
-  recognized dual-Apple composite reports four physical outputs but independent
-  child clocks and a separate "aggregate runtime not enabled" fact; topology
-  can expose that shape to setup surfaces only when
-  `/run/jasper/output_hardware.json` says the observed physical shape is ready
-  (including same-bus evidence). The active runtime path remains single-PCM
-  until outputd has a matching dual-Apple sink; the reconciler must not publish
-  the dual profile as the active env role before that graph can own both child
-  PCMs.
+  The same topology payload includes a clock-domain report for the detected
+  final-output hardware. Supported topology hardware IDs include
+  `apple_usb_c_dongle`, `hifiberry_dac8x`,
+  `hifiberry_dac8x_studio`, and
+  `dual_apple_usb_c_dac_4ch`. The normal playback runtime is still a
+  single-device contract: a recognized DAC8x/DAC8x Studio or Apple output
+  device can be described as one coherent output clock. The dual-Apple profile
+  is the constrained composite exception: the hardware shape is valid only for
+  exactly two Apple USB-C DAC children, each owning one speaker-local stereo
+  pair, with four physical outputs total and current reconciler observation
+  confirming the expected same USB controller/bus shape. Stored 900 s
+  common-clock drift evidence is surfaced as validation evidence and can block
+  if it failed, but missing long-run evidence is a warning rather than the
+  identity of the hardware profile. Missing, partial, or mismatched live
+  hardware observation blocks the composite clock report. When the live
+  profile is ready, the audio-hardware reconciler writes
+  `/var/lib/jasper/outputd.env` for `JASPER_OUTPUTD_SINK=dual_apple`
+  with two pinned child PCMs. TTS/cues plus duck commands already route
+  to fan-in for every output profile, so dual Apple does not need a
+  separate TTS override. Partial
+  dual states park normal output instead of routing stereo outputd to
+  the first dongle. Runtime sink activation is intentionally stricter
+  than hardware observation: `jasper-audio-hardware-reconcile` switches
+  `/var/lib/jasper/outputd.env` to `JASPER_OUTPUTD_SINK=dual_apple` only
+  when the active-speaker startup-load state is `loaded`, CamillaDSP's
+  outputd statefile points at that active config, and the active config
+  is the expected four-channel `outputd_active_content_playback` graph.
+  Until that graph evidence is present, the observed output-hardware
+  profile remains dual Apple for UI/diagnostics, but the runtime DAC role
+  is parked with `JASPER_OUTPUTD_BACKEND=fake` and logs
+  `event=audio_hardware_reconcile.dual_apple_detected action=park_until_active_graph`.
+  Active-speaker load and rollback trigger the reconciler once, matching
+  the existing udev/install triggers without adding a poller. This is not
+  a generic endorsement of ALSA
+  `multi`/`dmix`/`plug` or CamillaDSP multi-device output.
   The configured route takes effect when deploy, boot/udev reconcile, or a
   manual `jasper-audio-hardware-reconcile` run re-renders the managed
   ALSA template; hardware validation artifacts report the observed
@@ -269,13 +301,18 @@ What exists:
   or omits the non-positive Camilla `volume_limit` safety ceiling.
 - TTS transport: `JASPER_TTS_TRANSPORT=outputd` makes Python send
   resampled 48 kHz stereo PCM plus gain metadata over
-  `JASPER_TTS_OUTPUTD_SOCKET`; the outputd transport rejects any output
-  rate other than 48 kHz, and Python chunks long cached WAV payloads
-  into 250 ms stereo-frame-aligned IPC messages before the daemon's
-  bounded allocation limit. Assistant response chunks may also carry a
-  provider item id over the same IPC protocol; OpenAI wires
+  `JASPER_TTS_OUTPUTD_SOCKET`; in the packaged topology that socket is
+  `/run/jasper-fanin/tts.sock`. The outputd-compatible transport rejects any output rate
+  other than 48 kHz, and Python chunks long cached WAV payloads into
+  250 ms stereo-frame-aligned IPC messages before the daemon's bounded
+  allocation limit. Assistant response chunks may also carry a provider
+  item id over the same IPC protocol; OpenAI wires
   `response.output_item.added.item.id` into that field today, while
   providers without item ids leave it empty.
+- Voice duck transport: `JASPER_DUCK_TRANSPORT=fanin` sends
+  `PROGRAM_DUCK_ON/OFF` to `jasper-fanin`, which attenuates
+  renderer/program lanes before mixing TTS/cues. TTS therefore remains
+  audible and still flows through CamillaDSP crossover/protection.
 - Runtime `JASPER_TTS_TRANSPORT=sounddevice` is intentionally rejected
   in this outputd-loudness tree. That older PortAudio path no longer has
   the dynamic content/profile matching policy; rollback means deploying a
@@ -334,11 +371,13 @@ What exists:
 
 What is still intentionally not done:
 
-- Production AEC still consumes the old `pcm.jasper_ref` content
-  reference.
-- `speaker_reference_out` is still not a general public transport. The
-  only current external side outputs are recorder-owned chip-AEC corpus
-  taps, enabled by explicit env and removed on corpus-mode exit.
+- Software can expose the final electrical samples sent to the DAC, but
+  cannot expose the acoustic "what hit the room" signal after DAC, amp,
+  driver, cabinet, and room behavior. That still requires microphone-side
+  observation.
+- The chip USB-IN producer is intentionally separate from the software
+  speaker monitor. Software AEC/corpus/diagnostics should not depend on
+  chip hardware being present.
 - Provider truncation is not yet wired to outputd flush
   acknowledgements. The transport now returns the needed
   `audio_played_ms` and provider item identity; provider-specific
@@ -383,7 +422,7 @@ CONTENT PATH
                                       |
 
 ASSISTANT PATH                       v
-  TTS / cues / chirps -------> jasper-outputd -------> DAC / amp / speakers
+  TTS / cues / chirps -------> jasper-fanin -> jasper-camilla -> jasper-outputd
                                   |
                                   +--> speaker_output_reference
                                   |      -> AEC bridge
@@ -662,8 +701,8 @@ together.
   followed by i16 clamp, matching `jasper-fanin`'s simple and
   testable behavior.
 - Report clipped samples per period and per segment.
-- TTS/cues must be mixed after content ducking, not as part of the
-  Camilla `main_volume` path.
+- TTS/cues must be mixed after content ducking. In current production
+  that happens in `jasper-fanin` before CamillaDSP crossover/protection.
 - Future protection/limiting belongs after final mix and before both
   `dac_out` and `speaker_reference_out`.
 
@@ -696,11 +735,14 @@ datum: how much assistant audio was actually heard.
    socket, doctor, and system dashboard are in-tree.
 3. **Soak before AEC switch.** Verify normal music, AirPlay, Spotify,
    Bluetooth, USB input, TTS, cues, duck/restore, dongle recovery, and
-   zero output xruns. Keep AEC on the old reference during this soak so
-   playback and AEC regressions are separable.
+   zero output xruns. **Landed:** outputd is mandatory in the packaged
+   topology and exposes STATUS/doctor surfaces for DAC/reference health.
 4. **Move AEC reference.** Switch `jasper-aec-bridge` from
-   `pcm.jasper_ref` to `speaker_reference_out`. Treat reference drops
-   as capture-health degradation, not playback failure.
+   `pcm.jasper_ref` to outputd's speaker monitor. Treat reference drops
+   as capture-health degradation, not playback failure. **Landed
+   2026-06-08:** software AEC, chip-AEC, corpus, and diagnostics consume
+   the same outputd monitor contract; `pcm.jasper_ref` remains explicit
+   fallback/diagnostic mode.
 5. **Enable robust barge-in.** Wire outputd flush acknowledgements to
    provider truncation/cancel logic and capture barge-in telemetry.
 
@@ -770,9 +812,11 @@ datum: how much assistant audio was actually heard.
   `outputd_dac`, runtime xrun counters, negotiated buffer/period state,
   `/state`/doctor/dashboard surfaces, and structured `event=` logs.
 - 2026-05-28: Add production-polish observability: content
-  empty/partial/EAGAIN counters, TTS queue over-budget duration,
-  aggregate `event=outputd.tts_flush` traces, and source-handoff IDs
-  that correlate mux journal lines with `/source/state.last_handoff`.
+  empty/partial/EAGAIN counters, then-outputd TTS queue over-budget
+  duration, aggregate `event=outputd.tts_flush` traces, and source-handoff
+  IDs that correlate mux journal lines with `/source/state.last_handoff`.
+  The outputd TTS pieces in this historical entry were superseded by the
+  2026-06-08 fan-in TTS contract below.
 - 2026-05-28: Convert the work into branch-as-switch form for lab
   validation. Deploying `codex/outputd-cutover` enabled outputd and
   pointed Camilla at a separate outputd statefile. This was superseded
@@ -799,11 +843,11 @@ datum: how much assistant audio was actually heard.
   manual/operator starts. Added the outputd-only DAC8x validation profile
   `hifiberry_dac8x_outputd_stability` for content-pipeline soaks that
   should not fail just because chip-AEC/voice is parked.
-- 2026-06-02: Added the explicit DAC8x-only
+- 2026-06-02: Added the explicit DAC8x-family
   `JASPER_OUTPUT_DAC_ROUTE` render path (`mono:N`, `stereo:L,R`) so
   lab wiring like "single amp on DAC8x physical output 5" survives
   deploy/reconcile without a hand-edited `/etc/asound.conf`. The
-  default remains direct; non-DAC8x or invalid routes are ignored and
+  default remains direct; non-DAC8x-family or invalid routes are ignored and
   logged.
 - 2026-06-02: Added the first product speaker-output topology contract
   (`jasper.output_topology`, `/var/lib/jasper/output_topology.json`,
@@ -818,8 +862,7 @@ datum: how much assistant audio was actually heard.
 - 2026-06-04: `jasper-doctor` now gates Apple-dongle-specific USB and
   headphone-gain checks on `JASPER_AUDIO_DAC_ID=apple_usb_c_dongle`, so
   HiFiBerry/DAC8x systems report the selected output role instead of false
-  Apple-dongle failures. The 2026-06-09 profile-registry pass below replaces
-  this hardcoded check shape with registry-backed DAC profile checks.
+  Apple-dongle failures.
 - 2026-06-09: `jasper.output_topology` now consumes
   `jasper.audio_hardware.dac` for known DAC labels, physical output counts,
   clock-domain labels, and clock-coherence reports. This makes dual Apple a
@@ -827,11 +870,18 @@ datum: how much assistant audio was actually heard.
   clocks, distinguishing profile shape from aggregate runtime enablement, and
   leaving runtime activation with hardware reconcile/outputd.
 - 2026-06-09: Added `jasper.output_hardware` and
-  `/run/jasper/output_hardware.json` as the observed-vs-active output hardware
-  state contract. `jasper-audio-hardware-reconcile` writes the artifact during
-  install/boot/udev convergence, publishes active env only after the managed
-  ALSA template renders successfully, and leaves dual Apple observed but not
-  active until outputd has a real dual-Apple sink. `/state`,
+  `/run/jasper-output-hardware/output_hardware.json` as the observed output hardware state
+  contract. `jasper-audio-hardware-reconcile` writes the artifact during
+  install/boot/udev convergence, publishes outputd runtime env separately,
+  and parks dual Apple with the fake backend until outputd has a real
+  four-channel active graph. `/state`,
   `/sound/output-topology`, and `jasper-doctor` now read the same artifact.
+- 2026-06-08: Retired outputd's disabled TTS IPC implementation after
+  rollback no longer needed it. Fan-in is the sole production TTS/cue IPC
+  owner; outputd owns final electrical output and monitor/reference fanout.
+  Dual-Apple outputd activation is also graph-gated: hardware observation
+  alone records the composite profile, but outputd switches to the
+  four-channel sink only after the active-speaker startup config is loaded
+  and CamillaDSP's outputd statefile points at that active graph.
 
 Last verified: 2026-06-09

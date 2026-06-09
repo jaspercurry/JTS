@@ -6,7 +6,7 @@ from jasper.voice_daemon import _tts_ready_detail
 def test_tts_ready_detail_reports_outputd_socket() -> None:
     cfg = SimpleNamespace(
         tts_transport="outputd",
-        tts_outputd_socket="/run/jasper-outputd/tts.sock",
+        tts_outputd_socket="/run/jasper-fanin/tts.sock",
         tts_device="jasper_out",
     )
 
@@ -14,7 +14,8 @@ def test_tts_ready_detail_reports_outputd_socket() -> None:
 
     assert detail == (
         "tts_transport=outputd "
-        "tts_socket=/run/jasper-outputd/tts.sock"
+        "tts_owner=fanin "
+        "tts_socket=/run/jasper-fanin/tts.sock"
     )
     assert "jasper_out" not in detail
 
@@ -22,7 +23,7 @@ def test_tts_ready_detail_reports_outputd_socket() -> None:
 def test_tts_ready_detail_marks_non_outputd_transport_unsupported() -> None:
     cfg = SimpleNamespace(
         tts_transport="sounddevice",
-        tts_outputd_socket="/run/jasper-outputd/tts.sock",
+        tts_outputd_socket="/run/jasper-fanin/tts.sock",
         tts_device="jasper_out",
     )
 

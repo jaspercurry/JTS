@@ -25,6 +25,14 @@ jasper_asound_route_ignored() {
 }
 
 jasper_asound_direct_outputd_dac_pcm_block() {
+    if [[ "${OUTPUT_DAC_ID:-}" == "dual_apple_usb_c_dac_4ch" ]]; then
+        cat <<'EOF'
+pcm.outputd_dac {
+    type null
+}
+EOF
+        return
+    fi
     cat <<EOF
 pcm.outputd_dac {
     type hw
@@ -38,7 +46,7 @@ jasper_asound_routed_outputd_dac_pcm_block() {
     local route="$1"
     local left right left_idx right_idx mono_idx
 
-    if [[ "$OUTPUT_DAC_ID" != "hifiberry_dac8x" ]]; then
+    if [[ "$OUTPUT_DAC_ID" != "hifiberry_dac8x" && "$OUTPUT_DAC_ID" != "hifiberry_dac8x_studio" ]]; then
         jasper_asound_route_ignored "unsupported_dac" "$route"
         jasper_asound_direct_outputd_dac_pcm_block
         return

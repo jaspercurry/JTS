@@ -21,8 +21,10 @@
 //! clicks, add ramping in the mixer with tests and doctor visibility.
 
 mod config;
+mod loudness;
 mod mixer;
 mod state;
+mod tts;
 mod watchdog;
 mod xrun_log;
 
@@ -37,6 +39,7 @@ use log::{error, info, warn};
 use crate::config::Config;
 use crate::mixer::Mixer;
 use crate::state::StateServer;
+use crate::tts::{spawn_tts_server, tts_channels, TtsInput};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::XrunLog;
 
@@ -120,12 +123,38 @@ fn main() -> Result<()> {
         })
         .context("spawning xrun-log writer thread")?;
 
+    let (tts_input, tts_metrics) = if let Some(socket_path) = &config.tts_socket_path {
+        let (tts_tx, tts_rx, tts_flush_tx, tts_flush_rx, metrics, epoch) =
+            tts_channels(config.tts_max_pending_frames);
+        spawn_tts_server(
+            PathBuf::from(socket_path),
+            tts_tx,
+            tts_flush_tx,
+            epoch,
+            metrics.clone(),
+        )?;
+        (
+            Some(TtsInput {
+                rx: tts_rx,
+                flush_rx: tts_flush_rx,
+                metrics: metrics.clone(),
+                max_pending_frames: config.tts_max_pending_frames,
+                program_duck_db: config.tts_program_duck_db,
+                assistant_loudness: config.assistant_loudness,
+            }),
+            Some(metrics),
+        )
+    } else {
+        info!("event=fanin.tts_socket.disabled");
+        (None, None)
+    };
+
     // Open ALSA: N input PCMs + 1 output PCM. Every configured input is
     // required in the production fan-in topology; a missing lane means
     // one renderer can silently play without entering the summed music
     // reference.
     let mut mixer =
-        Mixer::new(&config, xrun_tx).context("opening ALSA PCMs")?;
+        Mixer::new(&config, xrun_tx, tts_input).context("opening ALSA PCMs")?;
     info!(
         "event=fanin.mixer.ready inputs_opened={} (of {} configured)",
         mixer.input_count(),
@@ -160,6 +189,7 @@ fn main() -> Result<()> {
         config.input_buffer_frames,
         config.output_buffer_frames,
         config.output_pcm.clone(),
+        tts_metrics,
     );
     let state_server_shutdown = Arc::clone(&shutdown);
     let state_thread = std::thread::Builder::new()

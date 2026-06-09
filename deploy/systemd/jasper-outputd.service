@@ -42,7 +42,6 @@ Environment="JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=4096"
 Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"
 Environment="JASPER_OUTPUTD_CONTENT_BRIDGE=direct"
 Environment="JASPER_OUTPUTD_CONTROL_SOCKET=/run/jasper-outputd/control.sock"
-Environment="JASPER_OUTPUTD_TTS_SOCKET=/run/jasper-outputd/tts.sock"
 # Optional operator retune file. Keep this after the packaged defaults so
 # outputd and jasper-apply-airplay-mode agree when DAC buffer sizing is
 # intentionally changed for lab validation.

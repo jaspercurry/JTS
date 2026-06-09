@@ -32,9 +32,10 @@
 ## TL;DR
 
 1. **The mic-swap boundary is narrow because the AEC reference is
-   already mic-independent.** The bridge sources its echo-cancellation
-   reference from the playback fan-in (`jasper_ref` →
-   `jasper_capture` → `hw:Loopback,1,7`), not from the mic. So the
+   already mic-independent.** The bridge normally sources its
+   echo-cancellation reference from outputd's speaker monitor, not from
+   the mic; explicit ALSA fallback can still use `jasper_ref` →
+   `jasper_capture` → `hw:Loopback,1,7`. So the
    three software legs — **aec3, raw, dtln** — run against *any* mic
    that delivers one mono 16 kHz voice frame. "Always have those three
    lines no matter the mic" is nearly free today. A mic only needs a
@@ -109,7 +110,7 @@ capture is actually coupled to the XVF3800:
 
 | Component | Mic-dependent? | Why |
 |---|---|---|
-| AEC3 reference signal | **No** | From the snd-aloop playback tap, not the mic (`_ref_thread` reads `jasper_ref`). Exists for any mic. |
+| AEC3 reference signal | **No** | From outputd's speaker monitor, not the mic. Explicit fallback can read the snd-aloop `jasper_ref` tap. Exists for any mic. |
 | AEC3 / DTLN engines | **No** | Pure `process(mono_mic, ref) → bytes` on 16 kHz mono. Already reused for the experimental `usb_webrtc` corpus leg. |
 | Voice-daemon consumption | **No** | `make_mic_capture(device, rate, channels)` handles UDP or PortAudio; polyphase-downsamples arbitrary rates. UMIK-2 is a documented working second device. |
 | Config layer | **No** | `mic_device`, `mic_capture_rate`, `mic_capture_channels` already parameterize the mic; comments anticipate non-XVF mics. |
@@ -131,8 +132,8 @@ come for free. That is the whole boundary.
 Three layers, two stable interfaces. ASCII:
 
 ```
-   playback fan-in (music being played)
-   hw:Loopback,1,7 ─▶ jasper_ref ──────────────┐  MIC-INDEPENDENT reference
+   outputd speaker monitor (final electrical playback)
+   UDP reference ──────────────────────────────┐  MIC-INDEPENDENT reference
                                                 │
    ┌───────────────┐   mono voice (+ raw)       ▼
    │ CaptureProfile │ ─────────────▶ ┌──────────────────────────────────────┐

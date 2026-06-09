@@ -1,10 +1,10 @@
 [Unit]
 Description=Software AEC bridge — WebRTC AEC3 cancels speaker echo from XVF raw mic
-# Captures from pcm.jasper_capture (host-clocked dsnoop on the
-# renderer→camilla loopback, the default software-AEC reference) AND
-# from hw:CARD=Array,DEV=0 channel 1 on the 6-ch firmware. In opt-in
-# chip-AEC mode, the reference comes from outputd's UDP final-speaker
-# tap and the bridge forwards a chip ASR beam to
+# Captures the far-end reference from outputd's UDP final-speaker
+# monitor and the near-end mic from hw:CARD=Array,DEV=0 channel 1 on
+# the 6-ch firmware. In opt-in chip-AEC mode, the same outputd
+# reference also feeds the XVF USB-IN chip reference path and the
+# bridge forwards a chip ASR beam to
 # 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876) instead of running
 # WebRTC AEC3.
 #
@@ -24,13 +24,13 @@ Description=Software AEC bridge — WebRTC AEC3 cancels speaker echo from XVF ra
 # path is WebRTC AEC3; the user-authorized chip-AEC carve-out is narrow
 # and opt-in, with outputd owning the XVF USB-IN reference producer.
 # See jasper/cli/aec_bridge.py and docs/CHIP-AEC-EXPERIMENT.md.
-After=jasper-fanin.service jasper-camilla.service jasper-aec-init.service sound.target
+After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service sound.target
 Requires=jasper-camilla.service
 # `Wants=` so init runs whenever bridge starts (init is a one-shot
 # that applies XVF tuning; bridge depends on chip being initialised).
 # Soft dep — bridge still tries to start even if init failed; AEC
 # quality degrades but the daemon is operational.
-Wants=jasper-fanin.service jasper-aec-init.service
+Wants=jasper-fanin.service jasper-outputd.service jasper-aec-init.service
 # `PartOf=` propagates camilla's stop / restart to this unit. Without
 # it, a camilla restart (e.g. during deploy) deactivates the bridge
 # via `Requires=` cascade — but `Restart=on-failure` doesn't trigger

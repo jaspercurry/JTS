@@ -7,7 +7,6 @@
 
 use anyhow::{Context, Result};
 
-use crate::loudness::AssistantLoudnessConfig;
 use crate::types::SAMPLE_RATE;
 
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
@@ -22,6 +21,7 @@ pub const DEFAULT_CHIP_REF_SAMPLE_RATE: u32 = 16_000;
 pub const DEFAULT_CHIP_REF_PERIOD_FRAMES: u32 = 320;
 pub const DEFAULT_CHIP_REF_BUFFER_FRAMES: u32 = 1280;
 pub const DEFAULT_STREAM_ID: u64 = 1;
+pub const DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES: i64 = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendMode {
@@ -44,6 +44,21 @@ pub enum ContentBridgeMode {
     RateMatch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkMode {
+    SingleAlsa,
+    DualApple,
+}
+
+impl SinkMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleAlsa => "single_alsa",
+            Self::DualApple => "dual_apple",
+        }
+    }
+}
+
 impl ContentBridgeMode {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -63,8 +78,14 @@ pub struct ContentBridgeConfig {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub backend: BackendMode,
+    pub sink_mode: SinkMode,
     pub content_pcm: String,
+    pub content_channels: u16,
     pub dac_pcm: String,
+    pub dual_dac_a_pcm: Option<String>,
+    pub dual_dac_b_pcm: Option<String>,
+    pub dual_require_link: bool,
+    pub dual_max_delay_delta_frames: i64,
     pub sample_rate: u32,
     pub period_frames: u32,
     pub content_buffer_frames: u32,
@@ -76,17 +97,8 @@ pub struct Config {
     pub chip_ref_period_frames: u32,
     pub chip_ref_buffer_frames: u32,
     pub reference_udp_target: Option<String>,
-    // Multi-room (grouping LEADER): when set, jasper-outputd taps a copy of
-    // the post-clamp stereo program into this FIFO for snapserver to stream.
-    // Unset on a solo speaker (and every follower) => no tap, zero cost.
-    // The reconciler sets JASPER_OUTPUTD_SNAPFIFO_PATH when this speaker
-    // becomes a leader (on-device wiring, pending). Separate from the AEC
-    // reference (reference_udp_target) — see HANDOFF-multiroom.md §2 inv. 4.
-    pub snapfifo_path: Option<String>,
     pub stream_id: u64,
-    pub tts_socket_path: Option<String>,
     pub control_socket_path: Option<String>,
-    pub assistant_loudness: AssistantLoudnessConfig,
 }
 
 impl Config {
@@ -114,6 +126,20 @@ impl Config {
             );
         }
 
+        let sink_mode = match env_str("JASPER_OUTPUTD_SINK", "single_alsa")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "single" | "single_alsa" | "alsa" => SinkMode::SingleAlsa,
+            "dual_apple" | "dual_apple_usb_c_dac_4ch" => SinkMode::DualApple,
+            other => {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_SINK must be one of single_alsa, dual_apple; got {:?}",
+                    other
+                )
+            }
+        };
         let period_frames = env_u32("JASPER_OUTPUTD_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
         let content_buffer_frames = env_u32(
             "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
@@ -198,10 +224,53 @@ impl Config {
             "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
         )?;
 
+        let default_content_pcm = match sink_mode {
+            SinkMode::SingleAlsa => "outputd_content_capture",
+            SinkMode::DualApple => "outputd_active_content_capture",
+        };
+        let default_dac_pcm = match sink_mode {
+            SinkMode::SingleAlsa => "outputd_dac",
+            SinkMode::DualApple => "dual_apple_usb_c_dac_4ch",
+        };
+        let content_channels = match sink_mode {
+            SinkMode::SingleAlsa => 2,
+            SinkMode::DualApple => 4,
+        };
+        let dual_dac_a_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_A_PCM");
+        let dual_dac_b_pcm = env_optional("JASPER_OUTPUTD_DUAL_DAC_B_PCM");
+        if sink_mode == SinkMode::DualApple
+            && (dual_dac_a_pcm.is_none() || dual_dac_b_pcm.is_none())
+        {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_SINK=dual_apple requires JASPER_OUTPUTD_DUAL_DAC_A_PCM and JASPER_OUTPUTD_DUAL_DAC_B_PCM"
+            );
+        }
+        if sink_mode == SinkMode::DualApple && dual_dac_a_pcm == dual_dac_b_pcm {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_SINK=dual_apple requires distinct JASPER_OUTPUTD_DUAL_DAC_A_PCM and JASPER_OUTPUTD_DUAL_DAC_B_PCM"
+            );
+        }
+        let dual_max_delay_delta_frames = env_i64(
+            "JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES",
+            DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES,
+        )?;
+        if dual_max_delay_delta_frames < 0 {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES={} must be >= 0",
+                dual_max_delay_delta_frames
+            );
+        }
+
         Ok(Self {
             backend,
-            content_pcm: env_str("JASPER_OUTPUTD_CONTENT_PCM", "outputd_content_capture"),
-            dac_pcm: env_str("JASPER_OUTPUTD_DAC_PCM", "outputd_dac"),
+            sink_mode,
+            content_pcm: env_str("JASPER_OUTPUTD_CONTENT_PCM", default_content_pcm),
+            content_channels,
+            dac_pcm: env_str("JASPER_OUTPUTD_DAC_PCM", default_dac_pcm),
+            dual_dac_a_pcm,
+            dual_dac_b_pcm,
+            dual_require_link: env_bool("JASPER_OUTPUTD_DUAL_REQUIRE_LINK", false),
+            dual_max_delay_delta_frames,
             sample_rate,
             period_frames,
             content_buffer_frames,
@@ -213,36 +282,8 @@ impl Config {
             chip_ref_period_frames,
             chip_ref_buffer_frames,
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
-            snapfifo_path: env_optional("JASPER_OUTPUTD_SNAPFIFO_PATH"),
             stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
-            tts_socket_path: env_optional("JASPER_OUTPUTD_TTS_SOCKET"),
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
-            assistant_loudness: AssistantLoudnessConfig {
-                assistant_offset_lu: env_f32(
-                    "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
-                    AssistantLoudnessConfig::default().assistant_offset_lu,
-                )?,
-                max_peak_dbfs: env_f32(
-                    "JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS",
-                    AssistantLoudnessConfig::default().max_peak_dbfs,
-                )?,
-                fallback_source_lufs: env_f32(
-                    "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS",
-                    AssistantLoudnessConfig::default().fallback_source_lufs,
-                )?,
-                fallback_source_peak_dbfs: env_f32(
-                    "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
-                    AssistantLoudnessConfig::default().fallback_source_peak_dbfs,
-                )?,
-                default_silence_target_lufs: env_f32(
-                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
-                    AssistantLoudnessConfig::default().default_silence_target_lufs,
-                )?,
-                content_silence_lufs: env_f32(
-                    "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
-                    AssistantLoudnessConfig::default().content_silence_lufs,
-                )?,
-            },
         })
     }
 }
@@ -352,6 +393,26 @@ fn env_u64(name: &str, default: u64) -> Result<u64> {
     }
 }
 
+fn env_i64(name: &str, default: i64) -> Result<i64> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => s
+            .trim()
+            .parse::<i64>()
+            .with_context(|| format!("{} must be an integer; got {:?}", name, s)),
+        _ => Ok(default),
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(s) => matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => default,
+    }
+}
+
 fn env_f32(name: &str, default: f32) -> Result<f32> {
     match std::env::var(name) {
         Ok(s) if !s.trim().is_empty() => {
@@ -408,8 +469,12 @@ mod tests {
         with_env(&[], || {
             let cfg = Config::from_env().unwrap();
             assert_eq!(cfg.backend, BackendMode::Fake);
+            assert_eq!(cfg.sink_mode, SinkMode::SingleAlsa);
             assert_eq!(cfg.content_pcm, "outputd_content_capture");
+            assert_eq!(cfg.content_channels, 2);
             assert_eq!(cfg.dac_pcm, "outputd_dac");
+            assert!(cfg.dual_dac_a_pcm.is_none());
+            assert!(cfg.dual_dac_b_pcm.is_none());
             assert_eq!(cfg.sample_rate, SAMPLE_RATE);
             assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
             assert_eq!(cfg.content_buffer_frames, DEFAULT_CONTENT_BUFFER_FRAMES);
@@ -428,15 +493,7 @@ mod tests {
             assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
             assert!(cfg.chip_ref_pcm.is_none());
             assert!(cfg.reference_udp_target.is_none());
-            assert!(cfg.snapfifo_path.is_none());
-            assert!(cfg.tts_socket_path.is_none());
             assert!(cfg.control_socket_path.is_none());
-            assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
-            assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
-            assert_eq!(
-                cfg.assistant_loudness.default_silence_target_lufs,
-                -41.0
-            );
         });
     }
 
@@ -445,10 +502,6 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_BACKEND", Some("alsa")),
-                (
-                    "JASPER_OUTPUTD_TTS_SOCKET",
-                    Some("/run/jasper-outputd/tts.sock"),
-                ),
                 (
                     "JASPER_OUTPUTD_CONTROL_SOCKET",
                     Some("/run/jasper-outputd/control.sock"),
@@ -464,18 +517,10 @@ mod tests {
                     "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
                     Some("127.0.0.1:9891"),
                 ),
-                (
-                    "JASPER_OUTPUTD_SNAPFIFO_PATH",
-                    Some("/run/jasper-snapserver/snapfifo"),
-                ),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.backend, BackendMode::Alsa);
-                assert_eq!(
-                    cfg.tts_socket_path.as_deref(),
-                    Some("/run/jasper-outputd/tts.sock")
-                );
                 assert_eq!(
                     cfg.control_socket_path.as_deref(),
                     Some("/run/jasper-outputd/control.sock")
@@ -485,10 +530,6 @@ mod tests {
                 assert_eq!(cfg.chip_ref_period_frames, 320);
                 assert_eq!(cfg.chip_ref_buffer_frames, 1280);
                 assert_eq!(cfg.reference_udp_target.as_deref(), Some("127.0.0.1:9891"));
-                assert_eq!(
-                    cfg.snapfifo_path.as_deref(),
-                    Some("/run/jasper-snapserver/snapfifo")
-                );
             },
         );
     }
@@ -513,6 +554,71 @@ mod tests {
             let err = Config::from_env().unwrap_err();
             assert!(err.to_string().contains("JASPER_OUTPUTD_BACKEND"));
         });
+    }
+
+    #[test]
+    fn parses_dual_apple_sink_contract() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.sink_mode, SinkMode::DualApple);
+                assert_eq!(cfg.content_pcm, "outputd_active_content_capture");
+                assert_eq!(cfg.content_channels, 4);
+                assert_eq!(cfg.dac_pcm, "dual_apple_usb_c_dac_4ch");
+                assert_eq!(cfg.dual_dac_a_pcm.as_deref(), Some("hw:CARD=A,DEV=0"));
+                assert_eq!(cfg.dual_dac_b_pcm.as_deref(), Some("hw:CARD=B,DEV=0"));
+                assert_eq!(
+                    cfg.dual_max_delay_delta_frames,
+                    DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn dual_apple_sink_requires_both_child_pcms() {
+        with_env(&[("JASPER_OUTPUTD_SINK", Some("dual_apple"))], || {
+            let err = Config::from_env().unwrap_err();
+            assert!(err.to_string().contains("JASPER_OUTPUTD_DUAL_DAC_A_PCM"));
+        });
+    }
+
+    #[test]
+    fn dual_apple_sink_rejects_identical_child_pcms() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=A,DEV=0")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err.to_string().contains("requires distinct"));
+            },
+        );
+    }
+
+    #[test]
+    fn dual_apple_sink_rejects_negative_delay_delta_budget() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES", Some("-1")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err
+                    .to_string()
+                    .contains("JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES"));
+            },
+        );
     }
 
     #[test]

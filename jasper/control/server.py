@@ -1466,7 +1466,12 @@ async def _get_state(
         logger.exception("grouping state read failed")
         grouping_state = None
     try:
-        output_hardware_state = _load_output_hardware_state()
+        output_hardware = _load_output_hardware_state()
+        output_hardware_state = (
+            output_hardware.to_dict()
+            if output_hardware is not None
+            else None
+        )
     except Exception:  # noqa: BLE001
         logger.exception("output hardware state read failed")
         output_hardware_state = None

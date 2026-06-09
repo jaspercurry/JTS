@@ -5,48 +5,33 @@
 //! transport with `JASPER_OUTPUTD_BACKEND=alsa`, reading
 //! CamillaDSP's post-DSP loopback lane and writing the DAC directly.
 
-use std::fmt::Write as FmtWrite;
-use std::fs;
-use std::io::{self, BufReader, Write};
+use std::io;
 use std::mem;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::fd::RawFd;
-use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
+use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::TrySendError;
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
-use jasper_outputd::alsa_backend::{open_playback_pcm, AlsaBackend, ContentRead, IoCounters};
-use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode};
+use jasper_outputd::alsa_backend::{
+    open_playback_pcm, AlsaBackend, ContentRead, DualAppleBackend, IoCounters,
+};
+use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
-use jasper_outputd::ledger::{PlayoutEvent, SegmentId, SegmentStatus};
-use jasper_outputd::mixer::MAX_TTS_GAIN_DB;
-use jasper_outputd::protocol::{read_command, TtsCommand};
-use jasper_outputd::snapfifo::SnapfifoSink;
-use jasper_outputd::state::{OutputdState, StateServer, TtsQueueMetrics};
-use jasper_outputd::types::SegmentKind;
+use jasper_outputd::state::{OutputdState, StateServer};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
-const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
-// snapfifo reference-fanout slots (drained every period, rarely holds >1).
-const SNAPFIFO_REF_CAPACITY: usize = 8;
-// Bounded writer-thread backlog (~32 periods ≈ 0.7 s). Drop-on-full here is
-// what keeps the DAC loop from ever back-pressuring on a slow snapserver.
-const SNAPFIFO_QUEUE_CAPACITY: usize = 32;
 const MAX_CONTENT_BRIDGE_DRAIN_READS: usize = 8;
-const MAX_PENDING_ASSISTANT_FRAMES: u64 = SAMPLE_RATE as u64 * 2;
-const TTS_QUEUE_LOG_STREAK_MS: u64 = 500;
-const TTS_QUEUE_LOG_MARGIN_FRAMES: u64 = SAMPLE_RATE as u64 / 2;
 
 fn main() -> Result<()> {
     let config = Config::from_env()?;
@@ -55,22 +40,6 @@ fn main() -> Result<()> {
     flag::register(SIGTERM, Arc::clone(&shutdown)).context("registering SIGTERM handler")?;
     flag::register(SIGINT, Arc::clone(&shutdown)).context("registering SIGINT handler")?;
 
-    let mut core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
-    core.set_assistant_loudness_config(config.assistant_loudness);
-    let reference_consumer =
-        if config.chip_ref_pcm.is_some() || config.reference_udp_target.is_some() {
-            Some(core.add_reference_consumer("external-aec", 128))
-        } else {
-            None
-        };
-    // Multi-room: a SEPARATE reference consumer from the AEC one above
-    // (§2 invariant 4 — never share a sender). Present only when this
-    // speaker is a grouping leader (JASPER_OUTPUTD_SNAPFIFO_PATH set).
-    let snapfifo_consumer = if config.snapfifo_path.is_some() {
-        Some(core.add_reference_consumer("snapfifo", SNAPFIFO_REF_CAPACITY))
-    } else {
-        None
-    };
     let state = Arc::new(OutputdState::new(&config));
 
     if let Some(socket_path) = &config.control_socket_path {
@@ -81,42 +50,17 @@ fn main() -> Result<()> {
         )?;
     }
 
-    let (tts_tx, tts_rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
-    let (tts_flush_tx, tts_flush_rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
-    let tts_epoch = Arc::new(AtomicU64::new(0));
-    if let Some(socket_path) = &config.tts_socket_path {
-        spawn_tts_server(
-            PathBuf::from(socket_path),
-            tts_tx,
-            tts_flush_tx,
-            Arc::clone(&tts_epoch),
-            Arc::clone(&state),
-        )?;
-    }
-
     lock_memory();
 
     let result = match config.backend {
-        BackendMode::Fake => run_fake(
-            &config,
-            &mut core,
-            &tts_rx,
-            &tts_flush_rx,
-            &state,
-            once,
-            &shutdown,
-        ),
-        BackendMode::Alsa => run_alsa(
-            &config,
-            &mut core,
-            reference_consumer,
-            snapfifo_consumer,
-            &tts_rx,
-            &tts_flush_rx,
-            &state,
-            once,
-            &shutdown,
-        ),
+        BackendMode::Fake => {
+            let mut core = OutputCore::new_for_daemon(config.period_frames, config.stream_id);
+            run_fake(&config, &mut core, &state, once, &shutdown)
+        }
+        BackendMode::Alsa if config.sink_mode == SinkMode::DualApple => {
+            run_alsa_dual_apple(&config, &state, once, &shutdown)
+        }
+        BackendMode::Alsa => run_alsa(&config, &state, once, &shutdown),
     };
 
     notify_systemd("STOPPING=1")?;
@@ -126,8 +70,6 @@ fn main() -> Result<()> {
 fn run_fake(
     config: &Config,
     core: &mut OutputCore,
-    tts_rx: &Receiver<QueuedTtsCommand>,
-    tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
     once: bool,
     shutdown: &Arc<AtomicBool>,
@@ -135,33 +77,14 @@ fn run_fake(
     let period = period_duration(config.period_frames);
     let watchdog_interval = watchdog_interval();
     let mut last_watchdog = Instant::now();
-    let mut current_gain_db = MAX_TTS_GAIN_DB;
-    let mut tts_queue = TtsQueueTracker::new(MAX_PENDING_ASSISTANT_FRAMES, config.period_frames);
-    let mut active_tts_epoch = 0u64;
-    let mut active_tts_segment = None;
     notify_ready(config)?;
 
     while !shutdown.load(Ordering::Relaxed) {
-        drain_tts_commands(
-            tts_rx,
-            tts_flush_rx,
-            core,
-            &mut current_gain_db,
-            &mut active_tts_epoch,
-            &mut active_tts_segment,
-        );
         let report = core.step();
-        let tts_metrics = tts_queue.mark_period(core.pending_assistant_frames());
         state.mark_period(
             fake_counters(core.frames_written()),
             report.reference_sequence,
             report.clipped_samples,
-            tts_metrics,
-        );
-        state.mark_loudness(
-            core.content_short_lufs(),
-            core.content_anchor_lufs(),
-            core.last_assistant_loudness_decision(),
         );
         if once {
             log_once(report);
@@ -179,28 +102,16 @@ fn run_fake(
 
 fn run_alsa(
     config: &Config,
-    core: &mut OutputCore,
-    reference_consumer: Option<jasper_outputd::reference::ConsumerId>,
-    snapfifo_consumer: Option<jasper_outputd::reference::ConsumerId>,
-    tts_rx: &Receiver<QueuedTtsCommand>,
-    tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
     once: bool,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut backend = AlsaBackend::new(config)?;
     let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
-    // Multi-room leader: the snapfifo writer thread (lazy-open, drop-safe).
-    // None on a solo speaker / follower. The thread does the blocking FIFO
-    // writes; the DAC loop only ever does a bounded non-blocking try_send.
-    let snapfifo_tx = match &config.snapfifo_path {
-        Some(path) => Some(spawn_snapfifo_writer(path.clone(), Arc::clone(shutdown))?),
-        None => None,
-    };
-    let mut snapfifo_drops: u64 = 0;
     state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
-    let mut content_buf = vec![0i16; core.period_samples()];
-    let mut content_read_buf = vec![0i16; core.period_samples()];
+    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+    let mut content_buf = vec![0i16; period_samples];
+    let mut content_read_buf = vec![0i16; period_samples];
     let mut content_bridge = match config.content_bridge_mode {
         ContentBridgeMode::Direct => None,
         ContentBridgeMode::RateMatch => {
@@ -217,30 +128,29 @@ fn run_alsa(
             )?)
         }
     };
-    let zero_period = vec![0i16; core.period_samples()];
-    backend
-        .write_dac_period(&zero_period)
-        .context("priming outputd DAC with silence")?;
+    let zero_period = vec![0i16; period_samples];
+    let prime_periods = prime_periods(
+        backend.dac_negotiated.buffer_frames,
+        backend.dac_negotiated.period_frames,
+    );
+    for _ in 0..prime_periods {
+        backend
+            .write_dac_period(&zero_period)
+            .context("priming outputd DAC with silence")?;
+    }
     backend.start_dac()?;
+    eprintln!(
+        "event=outputd.alsa.primed prime_periods={} buffer_frames={} period_frames={}",
+        prime_periods, backend.dac_negotiated.buffer_frames, backend.dac_negotiated.period_frames,
+    );
     notify_ready(config)?;
 
     let watchdog_interval = watchdog_interval();
     let mut last_watchdog = Instant::now();
-    let mut current_gain_db = MAX_TTS_GAIN_DB;
-    let mut tts_queue = TtsQueueTracker::new(MAX_PENDING_ASSISTANT_FRAMES, config.period_frames);
-    let mut active_tts_epoch = 0u64;
-    let mut active_tts_segment = None;
     let mut dac_delay_warning_logged = false;
+    let mut reference_sequence = 0u64;
 
     while !shutdown.load(Ordering::Relaxed) {
-        drain_tts_commands(
-            tts_rx,
-            tts_flush_rx,
-            core,
-            &mut current_gain_db,
-            &mut active_tts_epoch,
-            &mut active_tts_segment,
-        );
         if let Some(bridge) = content_bridge.as_mut() {
             read_content_bridge_period(
                 &mut backend,
@@ -252,9 +162,8 @@ fn run_alsa(
         } else {
             let _frames_read = backend.read_content_period(&mut content_buf)?;
         }
-        core.prepare_period_with_content(&content_buf);
-        backend.write_dac_period(core.output_period())?;
-        let dac_delay_frames = match backend.dac_delay_frames() {
+        backend.write_dac_period(&content_buf)?;
+        let _dac_delay_frames = match backend.dac_delay_frames() {
             Ok(frames) => frames,
             Err(e) => {
                 if !dac_delay_warning_logged {
@@ -264,48 +173,15 @@ fn run_alsa(
                 backend.dac_negotiated.buffer_frames as u64
             }
         };
-        let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
-        if let Some(consumer) = reference_consumer {
-            for packet in core.drain_reference_consumer(consumer) {
-                ref_outputs.publish(&packet.samples);
-            }
-        }
-        // Multi-room leader: hand each post-clamp stereo packet to the
-        // snapfifo writer thread. try_send is non-blocking and drops on a
-        // full backlog, so a slow/wedged snapserver can never stall the DAC
-        // loop (§2 invariant 1). The writer thread owns the FIFO write.
-        if let (Some(consumer), Some(tx)) = (snapfifo_consumer, snapfifo_tx.as_ref()) {
-            for packet in core.drain_reference_consumer(consumer) {
-                match tx.try_send(packet.samples) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(_)) => {
-                        snapfifo_drops += 1;
-                        if snapfifo_drops % 256 == 1 {
-                            eprintln!(
-                                "event=outputd.snapfifo.queue_full action=drop_period drops={snapfifo_drops}"
-                            );
-                        }
-                    }
-                    Err(TrySendError::Disconnected(_)) => {
-                        eprintln!("event=outputd.snapfifo.disconnected action=drop_period");
-                    }
-                }
-            }
-        }
-        let tts_metrics = tts_queue.mark_period(core.pending_assistant_frames());
-        state.mark_period(
-            backend.counters(),
-            report.reference_sequence,
-            report.clipped_samples,
-            tts_metrics,
-        );
-        state.mark_loudness(
-            core.content_short_lufs(),
-            core.content_anchor_lufs(),
-            core.last_assistant_loudness_decision(),
-        );
+        ref_outputs.publish(&content_buf);
+        reference_sequence = reference_sequence.saturating_add(1);
+        state.mark_period(backend.counters(), reference_sequence, 0);
         if once {
-            log_once(report);
+            eprintln!(
+                "event=outputd.once frames_written={} reference_sequence={} clipped_samples=0",
+                backend.counters().dac_frames_written,
+                reference_sequence,
+            );
             return Ok(());
         }
         if last_watchdog.elapsed() >= watchdog_interval {
@@ -315,6 +191,96 @@ fn run_alsa(
         }
     }
     Ok(())
+}
+
+fn run_alsa_dual_apple(
+    config: &Config,
+    state: &OutputdState,
+    once: bool,
+    shutdown: &Arc<AtomicBool>,
+) -> Result<()> {
+    let mut backend = DualAppleBackend::new(config)?;
+    let mut ref_outputs = ReferenceSideOutputs::new(config, shutdown)?;
+    state.set_negotiated(backend.content_negotiated, backend.dac_negotiated);
+    state.mark_dual_apple_status(&backend.dual_status());
+    let content_channels = config.content_channels as usize;
+    let mut content_buf = vec![0i16; (config.period_frames as usize) * content_channels];
+    let mut reference_buf = vec![0i16; (config.period_frames as usize) * (CHANNELS as usize)];
+    let zero_period = vec![0i16; (config.period_frames as usize) * content_channels];
+    let prime_periods = prime_periods(
+        backend.dac_negotiated.buffer_frames,
+        backend.dac_negotiated.period_frames,
+    );
+    for _ in 0..prime_periods {
+        backend
+            .write_dual_period(&zero_period)
+            .context("priming dual Apple DACs with silence")?;
+    }
+    backend.start_dacs()?;
+    eprintln!(
+        "event=outputd.dual_apple.primed prime_periods={} buffer_frames={} period_frames={}",
+        prime_periods, backend.dac_negotiated.buffer_frames, backend.dac_negotiated.period_frames,
+    );
+    notify_ready(config)?;
+
+    let watchdog_interval = watchdog_interval();
+    let mut last_watchdog = Instant::now();
+    let mut dac_delay_warning_logged = false;
+    let mut reference_sequence = 0u64;
+
+    while !shutdown.load(Ordering::Relaxed) {
+        let _frames_read = backend.read_content_period(&mut content_buf)?;
+        backend.write_dual_period(&content_buf)?;
+        state.mark_dual_apple_status(&backend.dual_status());
+        downmix_dual_active_reference(&content_buf, &mut reference_buf);
+        ref_outputs.publish(&reference_buf);
+        reference_sequence = reference_sequence.saturating_add(1);
+        let _dac_delay_frames = match backend.dac_delay_frames() {
+            Ok(frames) => frames,
+            Err(e) => {
+                if !dac_delay_warning_logged {
+                    eprintln!("event=outputd.dual_apple.dac_delay_unavailable detail={e:#}");
+                    dac_delay_warning_logged = true;
+                }
+                backend.dac_negotiated.buffer_frames as u64
+            }
+        };
+        state.mark_period(backend.counters(), reference_sequence, 0);
+        if once {
+            eprintln!(
+                "event=outputd.once frames_written={} reference_sequence={} clipped_samples=0",
+                backend.counters().dac_frames_written,
+                reference_sequence,
+            );
+            return Ok(());
+        }
+        if last_watchdog.elapsed() >= watchdog_interval {
+            notify_systemd("WATCHDOG=1")?;
+            state.mark_watchdog_ping();
+            last_watchdog = Instant::now();
+        }
+    }
+    Ok(())
+}
+
+fn downmix_dual_active_reference(samples_4ch: &[i16], out_stereo: &mut [i16]) {
+    assert_eq!(samples_4ch.len() % 4, 0);
+    assert_eq!(out_stereo.len(), (samples_4ch.len() / 4) * (CHANNELS as usize));
+    for (frame, out) in samples_4ch.chunks_exact(4).zip(out_stereo.chunks_exact_mut(2)) {
+        out[0] = average_i16(frame[0], frame[1]);
+        out[1] = average_i16(frame[2], frame[3]);
+    }
+}
+
+fn average_i16(a: i16, b: i16) -> i16 {
+    (((a as i32) + (b as i32)) / 2) as i16
+}
+
+fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
+    if period_frames == 0 {
+        return 1;
+    }
+    ((buffer_frames / period_frames).saturating_sub(1)).max(1)
 }
 
 fn read_content_bridge_period(
@@ -346,8 +312,9 @@ fn read_content_bridge_period(
 fn notify_ready(config: &Config) -> Result<()> {
     notify_systemd("READY=1").context("notifying systemd READY=1")?;
     eprintln!(
-        "event=outputd.ready backend={} period_frames={} stream_id={}",
+        "event=outputd.ready backend={} sink_mode={} period_frames={} stream_id={}",
         config.backend.as_str(),
+        config.sink_mode.as_str(),
         config.period_frames,
         config.stream_id
     );
@@ -509,35 +476,6 @@ fn bytemuck_i16(samples: &[i16]) -> &[u8] {
     }
 }
 
-fn spawn_snapfifo_writer(
-    path: String,
-    shutdown: Arc<AtomicBool>,
-) -> Result<SyncSender<Vec<i16>>> {
-    let (tx, rx) = mpsc::sync_channel(SNAPFIFO_QUEUE_CAPACITY);
-    thread::Builder::new()
-        .name("outputd-snapfifo".to_string())
-        .spawn(move || run_snapfifo_writer(&path, &rx, &shutdown))
-        .context("spawning outputd snapfifo writer")?;
-    Ok(tx)
-}
-
-fn run_snapfifo_writer(path: &str, rx: &Receiver<Vec<i16>>, shutdown: &AtomicBool) {
-    // No startup gate (unlike the chip-ref PCM): the FIFO opens lazily inside
-    // SnapfifoSink, so outputd readiness never waits on snapserver. The sink
-    // drops packets until snapserver is reading, then streams whole packets.
-    let mut sink = SnapfifoSink::new(path);
-    eprintln!("event=outputd.snapfifo.writer_started path={path}");
-    while !shutdown.load(Ordering::Relaxed) {
-        match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(samples) => {
-                sink.write(&samples);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-}
-
 fn spawn_chip_ref_writer(
     pcm_name: String,
     sample_rate: u32,
@@ -668,248 +606,6 @@ fn log_once(report: PeriodReport) {
     );
 }
 
-#[derive(Debug)]
-struct QueuedTtsCommand {
-    epoch: u64,
-    command: TtsCommand,
-}
-
-#[derive(Debug)]
-struct QueuedFlush {
-    epoch: u64,
-    ack: Option<SyncSender<FlushSummary>>,
-}
-
-#[derive(Debug, Clone)]
-struct FlushSummary {
-    requests: usize,
-    pending_frames: u64,
-    segments: usize,
-    flushed_frames: u64,
-    max_audio_played_ms: u64,
-    events: Vec<PlayoutEvent>,
-}
-
-fn drain_tts_commands(
-    rx: &Receiver<QueuedTtsCommand>,
-    flush_rx: &Receiver<QueuedFlush>,
-    core: &mut OutputCore,
-    current_gain_db: &mut f32,
-    active_epoch: &mut u64,
-    active_segment: &mut Option<SegmentId>,
-) {
-    drain_tts_flushes(flush_rx, core, active_epoch, active_segment);
-    while core.pending_assistant_frames() < MAX_PENDING_ASSISTANT_FRAMES {
-        let Ok(queued) = rx.try_recv() else {
-            break;
-        };
-        if queued.epoch != *active_epoch {
-            // A queued command from an older epoch is stale after a flush. A
-            // future epoch has not had its flush observed by the audio loop yet,
-            // so accepting it here would let post-flush audio bypass the flush
-            // barrier.
-            continue;
-        }
-        match queued.command {
-            TtsCommand::GainDb(db) => {
-                *current_gain_db = db;
-            }
-            TtsCommand::PrepareAssistant {
-                provider,
-                model,
-                voice,
-                silence_target_lufs,
-            } => {
-                core.prepare_assistant_context(provider, model, voice, silence_target_lufs);
-            }
-            TtsCommand::ContentMeterPause => {
-                core.pause_content_meter();
-            }
-            TtsCommand::ContentMeterResume => {
-                core.resume_content_meter();
-            }
-            TtsCommand::SegmentStart {
-                kind,
-                provider_item_id,
-                profile,
-            } => {
-                if let Some(id) = active_segment.take() {
-                    core.end_assistant_segment(id);
-                }
-                *active_segment = Some(core.start_assistant_segment_with_profile(
-                    provider_item_id,
-                    kind,
-                    *current_gain_db,
-                    profile,
-                ));
-            }
-            TtsCommand::Audio(samples) => {
-                if samples.is_empty() {
-                    continue;
-                }
-                let id = if let Some(id) = *active_segment {
-                    id
-                } else {
-                    let id = core.start_assistant_segment(
-                        None,
-                        SegmentKind::Assistant,
-                        *current_gain_db,
-                    );
-                    *active_segment = Some(id);
-                    id
-                };
-                core.append_assistant_audio_with_segment_gain(id, samples);
-            }
-            TtsCommand::SegmentEnd => {
-                if let Some(id) = active_segment.take() {
-                    core.end_assistant_segment(id);
-                }
-            }
-            TtsCommand::Flush | TtsCommand::FlushSync => {
-                if let Some(id) = active_segment.take() {
-                    core.end_assistant_segment(id);
-                }
-                let _summary = flush_tts(core, 1);
-            }
-            TtsCommand::Close => {}
-        }
-    }
-}
-
-fn drain_tts_flushes(
-    flush_rx: &Receiver<QueuedFlush>,
-    core: &mut OutputCore,
-    active_epoch: &mut u64,
-    active_segment: &mut Option<SegmentId>,
-) {
-    let mut requests = 0usize;
-    let mut newest_epoch = *active_epoch;
-    let mut ack_txs = Vec::new();
-    while let Ok(flush) = flush_rx.try_recv() {
-        requests += 1;
-        newest_epoch = newest_epoch.max(flush.epoch);
-        if let Some(ack) = flush.ack {
-            ack_txs.push(ack);
-        }
-    }
-    if requests > 0 {
-        *active_epoch = newest_epoch;
-        if let Some(id) = active_segment.take() {
-            core.end_assistant_segment(id);
-        }
-        let summary = flush_tts(core, requests);
-        for ack in ack_txs {
-            let _ = ack.send(summary.clone());
-        }
-    }
-}
-
-fn flush_tts(core: &mut OutputCore, requests: usize) -> FlushSummary {
-    let pending_before = core.pending_assistant_frames();
-    let events = core.flush_assistant();
-    let flushed_frames = events.iter().map(|event| event.flushed_frames).sum::<u64>();
-    let played_ms = events
-        .iter()
-        .map(|event| event.audio_played_ms)
-        .max()
-        .unwrap_or(0);
-    eprintln!(
-        "event=outputd.tts_flush requests={} pending_frames={} segments={} flushed_frames={} max_audio_played_ms={}",
-        requests,
-        pending_before,
-        events.len(),
-        flushed_frames,
-        played_ms
-    );
-    FlushSummary {
-        requests,
-        pending_frames: pending_before,
-        segments: events.len(),
-        flushed_frames,
-        max_audio_played_ms: played_ms,
-        events,
-    }
-}
-
-struct TtsQueueTracker {
-    metrics: TtsQueueMetrics,
-    period_ms: u64,
-    incident_logged: bool,
-    incident_max_pending_frames: u64,
-}
-
-impl TtsQueueTracker {
-    fn new(budget_frames: u64, period_frames: u32) -> Self {
-        Self {
-            metrics: TtsQueueMetrics {
-                budget_frames,
-                ..TtsQueueMetrics::default()
-            },
-            period_ms: ((period_frames as u64) * 1000 / (SAMPLE_RATE as u64)).max(1),
-            incident_logged: false,
-            incident_max_pending_frames: 0,
-        }
-    }
-
-    fn mark_period(&mut self, pending_frames: u64) -> TtsQueueMetrics {
-        self.metrics.pending_frames = pending_frames;
-        self.metrics.max_pending_frames = self.metrics.max_pending_frames.max(pending_frames);
-        let was_over_budget = self.metrics.over_budget;
-        let over_budget = pending_frames >= self.metrics.budget_frames;
-        if over_budget {
-            if !was_over_budget {
-                self.incident_max_pending_frames = pending_frames;
-            } else {
-                self.incident_max_pending_frames =
-                    self.incident_max_pending_frames.max(pending_frames);
-            }
-            self.metrics.over_budget_periods = self.metrics.over_budget_periods.saturating_add(1);
-            self.metrics.over_budget_ms =
-                self.metrics.over_budget_ms.saturating_add(self.period_ms);
-            self.metrics.over_budget_streak_ms = self
-                .metrics
-                .over_budget_streak_ms
-                .saturating_add(self.period_ms);
-            if !self.incident_logged && self.should_log_incident(pending_frames) {
-                eprintln!(
-                    "event=outputd.tts_queue_over_budget pending_frames={} budget_frames={} streak_ms={} max_pending_frames={} margin_frames={} total_over_budget_ms={}",
-                    pending_frames,
-                    self.metrics.budget_frames,
-                    self.metrics.over_budget_streak_ms,
-                    self.incident_max_pending_frames,
-                    pending_frames.saturating_sub(self.metrics.budget_frames),
-                    self.metrics.over_budget_ms
-                );
-                self.incident_logged = true;
-            }
-        } else if was_over_budget {
-            if self.incident_logged {
-                eprintln!(
-                    "event=outputd.tts_queue_recovered pending_frames={} streak_ms={} max_pending_frames={} total_over_budget_ms={}",
-                    pending_frames,
-                    self.metrics.over_budget_streak_ms,
-                    self.incident_max_pending_frames,
-                    self.metrics.over_budget_ms
-                );
-            }
-            self.metrics.over_budget_streak_ms = 0;
-            self.incident_logged = false;
-            self.incident_max_pending_frames = 0;
-        }
-        self.metrics.over_budget = over_budget;
-        self.metrics
-    }
-
-    fn should_log_incident(&self, pending_frames: u64) -> bool {
-        self.metrics.over_budget_streak_ms >= TTS_QUEUE_LOG_STREAK_MS
-            || pending_frames
-                >= self
-                    .metrics
-                    .budget_frames
-                    .saturating_add(TTS_QUEUE_LOG_MARGIN_FRAMES)
-    }
-}
-
 fn spawn_state_server(
     path: PathBuf,
     state: Arc<OutputdState>,
@@ -925,282 +621,6 @@ fn spawn_state_server(
         })
         .context("spawning outputd state thread")?;
     Ok(())
-}
-
-fn spawn_tts_server(
-    path: PathBuf,
-    tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<QueuedFlush>,
-    epoch: Arc<AtomicU64>,
-    state: Arc<OutputdState>,
-) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating outputd TTS socket parent {}", parent.display()))?;
-    }
-    let _ = fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)
-        .with_context(|| format!("binding outputd TTS socket {}", path.display()))?;
-    eprintln!("event=outputd.tts_socket.listening path={}", path.display());
-    thread::Builder::new()
-        .name("outputd-tts-ipc".to_string())
-        .spawn(move || {
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => spawn_tts_client(
-                        stream,
-                        tx.clone(),
-                        flush_tx.clone(),
-                        Arc::clone(&epoch),
-                        Arc::clone(&state),
-                    )
-                    .unwrap_or_else(|e| {
-                        eprintln!("event=outputd.tts_socket.spawn_failed detail={e}");
-                    }),
-                    Err(e) => {
-                        eprintln!("event=outputd.tts_socket.accept_failed detail={e}");
-                    }
-                }
-            }
-        })
-        .context("spawning outputd TTS IPC accept thread")?;
-    Ok(())
-}
-
-fn spawn_tts_client(
-    stream: UnixStream,
-    tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<QueuedFlush>,
-    epoch: Arc<AtomicU64>,
-    state: Arc<OutputdState>,
-) -> io::Result<()> {
-    thread::Builder::new()
-        .name("outputd-tts-client".to_string())
-        .spawn(move || handle_tts_client(stream, tx, flush_tx, epoch, state))
-        .map(|_| ())
-}
-
-fn handle_tts_client(
-    stream: UnixStream,
-    tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<QueuedFlush>,
-    epoch: Arc<AtomicU64>,
-    state: Arc<OutputdState>,
-) {
-    let mut reader = BufReader::new(stream);
-    loop {
-        match read_command(&mut reader) {
-            Ok(Some(TtsCommand::Close)) | Ok(None) => return,
-            Ok(Some(TtsCommand::Flush)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, false) {
-                    return;
-                }
-            }
-            Ok(Some(TtsCommand::FlushSync)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, true) {
-                    return;
-                }
-            }
-            Ok(Some(command)) => {
-                let current_epoch = epoch.load(Ordering::SeqCst);
-                if !try_enqueue_tts_command(
-                    &tx,
-                    QueuedTtsCommand {
-                        epoch: current_epoch,
-                        command,
-                    },
-                    &state,
-                ) {
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("event=outputd.tts_socket.protocol_error detail={e}");
-                return;
-            }
-        }
-    }
-}
-
-fn queue_flush(
-    reader: &mut BufReader<UnixStream>,
-    flush_tx: &SyncSender<QueuedFlush>,
-    epoch: &AtomicU64,
-    sync: bool,
-) -> bool {
-    let next_epoch = epoch.fetch_add(1, Ordering::SeqCst) + 1;
-    if sync {
-        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-        if flush_tx
-            .send(QueuedFlush {
-                epoch: next_epoch,
-                ack: Some(ack_tx),
-            })
-            .is_err()
-        {
-            return false;
-        }
-        let response = match ack_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(summary) => summary.to_json_line(),
-            Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
-        };
-        if reader.get_mut().write_all(response.as_bytes()).is_err() {
-            return false;
-        }
-        return true;
-    }
-    flush_tx
-        .send(QueuedFlush {
-            epoch: next_epoch,
-            ack: None,
-        })
-        .is_ok()
-}
-
-impl FlushSummary {
-    fn to_json_line(&self) -> String {
-        let mut out = String::new();
-        let _ = write!(
-            out,
-            "{{\"ok\":true,\"requests\":{},\"pending_frames\":{},\"segments\":{},\"flushed_frames\":{},\"max_audio_played_ms\":{},\"events\":[",
-            self.requests,
-            self.pending_frames,
-            self.segments,
-            self.flushed_frames,
-            self.max_audio_played_ms
-        );
-        for (idx, event) in self.events.iter().enumerate() {
-            if idx > 0 {
-                out.push(',');
-            }
-            let provider = event
-                .provider_item_id
-                .as_deref()
-                .map(json_string)
-                .unwrap_or_else(|| "null".to_string());
-            let _ = write!(
-                out,
-                "{{\"local_segment_id\":{},\"provider_item_id\":{},\"kind\":\"{}\",\"status\":\"{}\",\"queued_frames\":{},\"written_frames\":{},\"estimated_drained_frames\":{},\"flushed_frames\":{},\"audio_played_ms\":{}}}",
-                event.local_segment_id.0,
-                provider,
-                event.kind.as_str(),
-                segment_status_str(event.status),
-                event.queued_frames,
-                event.written_frames,
-                event.estimated_drained_frames,
-                event.flushed_frames,
-                event.audio_played_ms
-            );
-        }
-        out.push_str("]}\n");
-        out
-    }
-}
-
-fn segment_status_str(status: SegmentStatus) -> &'static str {
-    match status {
-        SegmentStatus::Queued => "queued",
-        SegmentStatus::Playing => "playing",
-        SegmentStatus::Drained => "drained",
-        SegmentStatus::Flushed => "flushed",
-    }
-}
-
-fn json_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-fn try_enqueue_tts_command(
-    tx: &SyncSender<QueuedTtsCommand>,
-    queued: QueuedTtsCommand,
-    state: &OutputdState,
-) -> bool {
-    if !matches!(queued.command, TtsCommand::Audio(_)) {
-        return enqueue_reliable_tts_command(tx, queued);
-    }
-    match tx.try_send(queued) {
-        Ok(()) => true,
-        Err(TrySendError::Full(queued)) => {
-            state.mark_tts_command_dropped(dropped_audio_frames(&queued));
-            log_dropped_tts_command(&queued);
-            true
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-fn enqueue_reliable_tts_command(
-    tx: &SyncSender<QueuedTtsCommand>,
-    queued: QueuedTtsCommand,
-) -> bool {
-    match tx.try_send(queued) {
-        Ok(()) => true,
-        Err(TrySendError::Full(queued)) => {
-            log_tts_command_backpressure(&queued);
-            tx.send(queued).is_ok()
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
-    match &queued.command {
-        TtsCommand::Audio(samples) => (samples.len() / (CHANNELS as usize)) as u64,
-        _ => 0,
-    }
-}
-
-fn log_dropped_tts_command(queued: &QueuedTtsCommand) {
-    match &queued.command {
-        TtsCommand::Audio(samples) => {
-            let frames = samples.len() / (CHANNELS as usize);
-            eprintln!(
-                "event=outputd.tts_command_dropped reason=queue_full command=audio epoch={} frames={}",
-                queued.epoch, frames
-            );
-        }
-        _ => {
-            eprintln!(
-                "event=outputd.tts_command_dropped_unexpected reason=queue_full epoch={}",
-                queued.epoch
-            );
-        }
-    }
-}
-
-fn log_tts_command_backpressure(queued: &QueuedTtsCommand) {
-    let command = match &queued.command {
-        TtsCommand::Audio(_) => "audio",
-        TtsCommand::GainDb(_) => "gain",
-        TtsCommand::SegmentStart { .. } => "segment_start",
-        TtsCommand::ContentMeterPause => "content_meter_pause",
-        TtsCommand::ContentMeterResume => "content_meter_resume",
-        TtsCommand::PrepareAssistant { .. } => "prepare_assistant",
-        TtsCommand::SegmentEnd => "segment_end",
-        TtsCommand::Flush => "flush",
-        TtsCommand::FlushSync => "flush_sync",
-        TtsCommand::Close => "close",
-    };
-    eprintln!(
-        "event=outputd.tts_command_backpressure reason=queue_full command={} epoch={}",
-        command, queued.epoch
-    );
 }
 
 fn lock_memory() {
@@ -1331,11 +751,6 @@ fn _period_samples(period_frames: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jasper_outputd::config::{
-        ContentBridgeConfig, DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
-        DEFAULT_CONTENT_BRIDGE_RING_FRAMES, DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
-    };
-    use jasper_outputd::loudness::AssistantLoudnessConfig;
     use std::os::fd::FromRawFd;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1368,6 +783,30 @@ mod tests {
     }
 
     #[test]
+    fn dual_active_reference_downmixes_driver_lanes_to_stereo_monitor() {
+        let mut out = vec![0; 4];
+
+        downmix_dual_active_reference(
+            &[
+                100, 300, 1000, 3000,
+                -100, -300, -1000, -3000,
+            ],
+            &mut out,
+        );
+
+        assert_eq!(out, vec![200, 2000, -200, -2000]);
+    }
+
+    #[test]
+    fn prime_periods_leave_one_period_of_buffer_headroom() {
+        assert_eq!(prime_periods(3072, 1024), 2);
+        assert_eq!(prime_periods(4096, 1024), 3);
+        assert_eq!(prime_periods(1024, 1024), 1);
+        assert_eq!(prime_periods(0, 1024), 1);
+        assert_eq!(prime_periods(3072, 0), 1);
+    }
+
+    #[test]
     fn notify_systemd_supports_abstract_notify_socket() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1391,320 +830,6 @@ mod tests {
         let err = notify_systemd_abstract("@", "READY=1").unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn tts_queue_tracker_counts_over_budget_periods_and_recovery() {
-        let mut tracker = TtsQueueTracker::new(96_000, 1024);
-
-        let first = tracker.mark_period(95_999);
-        assert!(!first.over_budget);
-        assert_eq!(first.over_budget_ms, 0);
-
-        let over = tracker.mark_period(96_000);
-        assert!(over.over_budget);
-        assert_eq!(over.over_budget_periods, 1);
-        assert_eq!(over.over_budget_ms, 21);
-        assert_eq!(over.over_budget_streak_ms, 21);
-        assert_eq!(over.max_pending_frames, 96_000);
-        assert!(!tracker.incident_logged);
-
-        let recovered = tracker.mark_period(1_024);
-        assert!(!recovered.over_budget);
-        assert_eq!(recovered.over_budget_periods, 1);
-        assert_eq!(recovered.over_budget_ms, 21);
-        assert_eq!(recovered.over_budget_streak_ms, 0);
-        assert_eq!(recovered.max_pending_frames, 96_000);
-        assert!(!tracker.incident_logged);
-    }
-
-    #[test]
-    fn tts_queue_tracker_logs_only_sustained_or_large_incidents() {
-        let mut tracker = TtsQueueTracker::new(96_000, 1024);
-
-        for _ in 0..20 {
-            tracker.mark_period(96_001);
-            tracker.mark_period(95_999);
-        }
-        assert_eq!(tracker.metrics.over_budget_periods, 20);
-        assert_eq!(tracker.metrics.over_budget_ms, 420);
-        assert_eq!(tracker.metrics.over_budget_streak_ms, 0);
-        assert!(!tracker.incident_logged);
-
-        for _ in 0..24 {
-            tracker.mark_period(96_001);
-        }
-        assert_eq!(tracker.metrics.over_budget_streak_ms, 504);
-        assert!(tracker.incident_logged);
-        assert_eq!(tracker.incident_max_pending_frames, 96_001);
-
-        tracker.mark_period(0);
-        assert!(!tracker.incident_logged);
-        assert_eq!(tracker.incident_max_pending_frames, 0);
-    }
-
-    #[test]
-    fn tts_queue_tracker_logs_large_overshoot_without_waiting() {
-        let mut tracker = TtsQueueTracker::new(96_000, 1024);
-
-        let metrics = tracker.mark_period(120_000);
-
-        assert!(metrics.over_budget);
-        assert_eq!(metrics.over_budget_streak_ms, 21);
-        assert!(tracker.incident_logged);
-        assert_eq!(tracker.incident_max_pending_frames, 120_000);
-    }
-
-    #[test]
-    fn tts_flush_bypasses_audio_backpressure() {
-        let (_tx, rx) = mpsc::sync_channel::<QueuedTtsCommand>(1);
-        let (flush_tx, flush_rx) = mpsc::sync_channel(1);
-        let mut core = OutputCore::new(1024, 99);
-        let mut gain = MAX_TTS_GAIN_DB;
-        let mut active_epoch = 0u64;
-        let mut active_segment = None;
-        core.enqueue_assistant_segment(
-            None,
-            SegmentKind::Assistant,
-            MAX_TTS_GAIN_DB,
-            vec![0; (MAX_PENDING_ASSISTANT_FRAMES as usize) * (CHANNELS as usize)],
-        );
-        assert_eq!(
-            core.pending_assistant_frames(),
-            MAX_PENDING_ASSISTANT_FRAMES
-        );
-
-        flush_tx
-            .send(QueuedFlush {
-                epoch: 1,
-                ack: None,
-            })
-            .unwrap();
-        drain_tts_commands(
-            &rx,
-            &flush_rx,
-            &mut core,
-            &mut gain,
-            &mut active_epoch,
-            &mut active_segment,
-        );
-
-        assert_eq!(core.pending_assistant_frames(), 0);
-        assert_eq!(active_epoch, 1);
-    }
-
-    #[test]
-    fn tts_flush_discards_stale_audio_already_in_command_queue() {
-        let (tx, rx) = mpsc::sync_channel(4);
-        let (flush_tx, flush_rx) = mpsc::sync_channel(1);
-        let mut core = OutputCore::new(1024, 99);
-        let mut gain = MAX_TTS_GAIN_DB;
-        let mut active_epoch = 0u64;
-        let mut active_segment = None;
-
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
-        })
-        .unwrap();
-        flush_tx
-            .send(QueuedFlush {
-                epoch: 1,
-                ack: None,
-            })
-            .unwrap();
-        tx.send(QueuedTtsCommand {
-            epoch: 1,
-            command: TtsCommand::Audio(vec![2; 3 * (CHANNELS as usize)]),
-        })
-        .unwrap();
-
-        drain_tts_commands(
-            &rx,
-            &flush_rx,
-            &mut core,
-            &mut gain,
-            &mut active_epoch,
-            &mut active_segment,
-        );
-
-        assert_eq!(core.pending_assistant_frames(), 3);
-        assert_eq!(active_epoch, 1);
-    }
-
-    #[test]
-    fn tts_future_epoch_audio_does_not_advance_without_observed_flush() {
-        let (tx, rx) = mpsc::sync_channel(4);
-        let (_flush_tx, flush_rx) = mpsc::sync_channel(1);
-        let mut core = OutputCore::new(1024, 99);
-        let mut gain = MAX_TTS_GAIN_DB;
-        let mut active_epoch = 0u64;
-        let mut active_segment = None;
-
-        tx.send(QueuedTtsCommand {
-            epoch: 1,
-            command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
-        })
-        .unwrap();
-
-        drain_tts_commands(
-            &rx,
-            &flush_rx,
-            &mut core,
-            &mut gain,
-            &mut active_epoch,
-            &mut active_segment,
-        );
-
-        assert_eq!(core.pending_assistant_frames(), 0);
-        assert_eq!(active_epoch, 0);
-    }
-
-    #[test]
-    fn tts_segment_metadata_is_preserved_through_command_drain() {
-        let (tx, rx) = mpsc::sync_channel(4);
-        let (_flush_tx, flush_rx) = mpsc::sync_channel(1);
-        let mut core = OutputCore::new(1024, 99);
-        let mut gain = MAX_TTS_GAIN_DB;
-        let mut active_epoch = 0u64;
-        let mut active_segment = None;
-
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::SegmentStart {
-                kind: SegmentKind::Assistant,
-                provider_item_id: Some("msg_abc123".to_string()),
-                profile: None,
-            },
-        })
-        .unwrap();
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
-        })
-        .unwrap();
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::SegmentEnd,
-        })
-        .unwrap();
-
-        drain_tts_commands(
-            &rx,
-            &flush_rx,
-            &mut core,
-            &mut gain,
-            &mut active_epoch,
-            &mut active_segment,
-        );
-        let events = core.flush_assistant();
-
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].provider_item_id.as_deref(), Some("msg_abc123"));
-        assert_eq!(events[0].kind, SegmentKind::Assistant);
-        assert!(events[0].ended);
-    }
-
-    #[test]
-    fn tts_audio_enqueue_is_drop_not_block_when_command_queue_is_full() {
-        let (tx, rx) = mpsc::sync_channel(1);
-        let state = test_state();
-
-        assert!(try_enqueue_tts_command(
-            &tx,
-            QueuedTtsCommand {
-                epoch: 0,
-                command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
-            },
-            &state,
-        ));
-        assert!(try_enqueue_tts_command(
-            &tx,
-            QueuedTtsCommand {
-                epoch: 0,
-                command: TtsCommand::Audio(vec![2; 2 * (CHANNELS as usize)]),
-            },
-            &state,
-        ));
-
-        let first = rx.try_recv().unwrap();
-        assert_eq!(first.epoch, 0);
-        assert!(matches!(first.command, TtsCommand::Audio(_)));
-        assert!(rx.try_recv().is_err());
-        let snapshot = state.snapshot_json();
-        assert!(snapshot.contains(r#""dropped_commands":1"#));
-        assert!(snapshot.contains(r#""dropped_audio_frames":2"#));
-    }
-
-    #[test]
-    fn tts_state_enqueue_waits_instead_of_dropping_when_queue_is_full() {
-        let (tx, rx) = mpsc::sync_channel(1);
-        let state = Arc::new(test_state());
-
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
-        })
-        .unwrap();
-
-        let tx2 = tx.clone();
-        let state2 = state.clone();
-        let handle = thread::spawn(move || {
-            try_enqueue_tts_command(
-                &tx2,
-                QueuedTtsCommand {
-                    epoch: 0,
-                    command: TtsCommand::PrepareAssistant {
-                        provider: "openai".to_string(),
-                        model: "gpt-realtime-2".to_string(),
-                        voice: "marin".to_string(),
-                        silence_target_lufs: -41.0,
-                    },
-                },
-                &state2,
-            )
-        });
-
-        let first = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(matches!(first.command, TtsCommand::Audio(_)));
-        assert!(handle.join().unwrap());
-
-        let second = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(matches!(
-            second.command,
-            TtsCommand::PrepareAssistant { .. }
-        ));
-        let snapshot = state.snapshot_json();
-        assert!(snapshot.contains(r#""dropped_commands":0"#));
-        assert!(snapshot.contains(r#""dropped_audio_frames":0"#));
-    }
-
-    fn test_state() -> OutputdState {
-        OutputdState::new(&Config {
-            backend: BackendMode::Fake,
-            content_pcm: "outputd_content_capture".to_string(),
-            dac_pcm: "outputd_dac".to_string(),
-            sample_rate: SAMPLE_RATE,
-            period_frames: 1024,
-            content_buffer_frames: 4096,
-            dac_buffer_frames: 3072,
-            content_bridge_mode: ContentBridgeMode::Direct,
-            content_bridge: ContentBridgeConfig {
-                ring_frames: DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
-                target_fill_frames: DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
-                max_adjust_ppm: DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM,
-            },
-            chip_ref_pcm: None,
-            chip_ref_sample_rate: 16_000,
-            chip_ref_period_frames: 320,
-            chip_ref_buffer_frames: 1280,
-            reference_udp_target: None,
-            snapfifo_path: None,
-            stream_id: 99,
-            tts_socket_path: None,
-            control_socket_path: None,
-            assistant_loudness: AssistantLoudnessConfig::default(),
-        })
     }
 
     fn bind_abstract_datagram(name: &[u8]) -> io::Result<UnixDatagram> {
