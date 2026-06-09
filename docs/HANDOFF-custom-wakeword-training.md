@@ -201,6 +201,22 @@ Gate:
 If this fails, investigate openWakeWord's lower-level verifier/custom
 training path before building product UI.
 
+Current implementation state:
+
+- `scripts/export-wake-corpus-bundle.sh` (backed by
+  `scripts/_export_wake_corpus_bundle.py`) implements the first
+  training-oriented export for browser-recorded `/wake-corpus/` sessions.
+- It consumes `data/enrollment_positives/`, preserves same-utterance
+  sibling legs in one train/eval split, copies accepted WAVs into an
+  `audio/<split>/<condition>/<distance>/<leg>/<utterance>/` tree, and emits
+  `bundle.json`, `manifest.jsonl`, `manifest.csv`, `rejections.jsonl`,
+  and `SHA256SUMS`.
+- It is intentionally not a data-prep or training tool: no resampling,
+  end-alignment, feature extraction, LiveKit calls, cloud job launch, or
+  model evaluation.
+- The next Phase 0 slice should consume this manifest and produce the
+  first openWakeWord feature bank from a tiny bundle.
+
 ### Phase 1 — MVP Pipeline
 
 Goal: make the workflow repeatable for a technical operator.
@@ -266,7 +282,8 @@ Names are illustrative; keep final names aligned with existing local
 patterns.
 
 - `jts-corpus-export`: bundle WAVs, manifest, hashes, consent, capture
-  graph, hardware/profile facts.
+  graph, hardware/profile facts. First implementation:
+  `scripts/export-wake-corpus-bundle.sh`.
 - `jts-wake-dataprep`: resample, normalize, segment/end-align, compute
   features, build train/validation/test banks.
 - `jts-livekit-train`: generate synthetic positives, inject real
@@ -388,6 +405,6 @@ should be promoted into clear modules before building UX.
 - openWakeWord repo:
   <https://github.com/dscripka/openWakeWord>
 
-Last verified: 2026-06-09 (created from the 2026-06-09 LiveKit/custom
-wake-word research report, checked against the current JTS corpus,
-profile, and fusion direction; implementation pipeline not yet built).
+Last verified: 2026-06-09 (updated after adding the first corpus-bundle
+exporter; feature extraction, real-positive injection, cloud training,
+evaluation, registry, and deployment stages remain future work).
