@@ -6,7 +6,7 @@ provider lives in its own module under `jasper.transit.providers.`,
 declares its bounding box + credentials, and implements two methods:
 
   - `find_stops_near(lat, lon)` — used by the setup wizard
-  - `validate_credential(env_key, value)` — cheap probe before save
+  - `validate_credentials(credentials)` — cheap probe before save
 
 See `jasper.transit.base.TransitProvider` for the contract. The
 wizard at `/transit/` iterates this REGISTRY to discover which
@@ -15,9 +15,12 @@ providers cover a user's geocoded coordinates.
 **Adding a new provider — concretely.** The discovery layer (bbox
 coverage, `find_stops_near`, credential probe) is fully data-driven
 over `REGISTRY` — drop a provider in and the wizard's geocode flow
-picks it up. But the *full* contribution touches a handful of other
-files. None of them are sneaky; this list exists so a contributor
-isn't surprised half-way through.
+picks it up. But the *full* contribution is NOT "three places": it
+lands ~9-12 edits across six files. None of them are sneaky, but the
+count is bigger than the data-driven `REGISTRY` makes it look, so this
+list exists so a contributor isn't surprised half-way through. Each
+numbered item is one logical edit point; the `voice_daemon.py` wiring
+(item 7) is genuinely three separate edits in one file.
 
   1. Provider module: drop `jasper/transit/providers/<slug>.py`
      exposing a `PROVIDER` instance that satisfies `TransitProvider`
@@ -25,31 +28,57 @@ isn't surprised half-way through.
      `find_stops_near` and `validate_credentials`). Mirror
      `nyc_subway.py` (keyless) or `nyc_bus.py` (credentialed).
   2. Registry: append `<module>.PROVIDER` to `REGISTRY` below.
-  3. Wizard card: add an `elif p.id == "<slug>":` branch in
-     `jasper.web.transit_setup._index_html`. Each provider's card is
-     bespoke enough (subway has a direction radio, bus has the
-     locked-on-key flow, Citi Bike would have a dock-capacity readout)
-     that this dispatch is honest. The fallback renders a placeholder
-     for unknown providers so the page still works while a contributor
-     wires this up.
-  4. Voice tool: add a `make_<slug>_tools(client)` factory under
-     `jasper/tools/` and register it from `jasper/voice_daemon.py`
-     near the existing `make_subway_tools` / `make_bus_tools` calls.
-     The tool's docstring is what the LLM reads — match the
-     subway/bus docstring shape.
-  5. Install migration: add the new provider's env keys to the
+  3. Wizard card dispatch: add an `elif p.id == "<slug>":` branch in
+     `jasper.web.transit_setup._index_html` (next to the existing
+     `nyc_subway` / `nyc_bus` / `citibike` cases). The unknown-id
+     fallback there renders a "no UI yet" placeholder so the page
+     still works while a contributor wires the rest up.
+  4. Bespoke card renderer: write the `_<slug>_card_html(p, state)`
+     function that item 3 dispatches to. There is no generic card —
+     each provider's is hand-written (`_subway_card_html` has a
+     direction radio, `_bus_card_html` has the locked-until-keyed
+     flow, `_citibike_card_html` has the live dock/bike snapshot).
+     This is the single biggest chunk of new code.
+  5. Voice tool factory: add a `make_<slug>_tools(client)` factory
+     under `jasper/tools/<slug>.py`. The tool's docstring is what the
+     LLM reads — match the subway/bus docstring shape.
+  6. Runtime client class: the `<Slug>Client` that item 5 wraps and
+     item 7 constructs (mirror `jasper/subway.py`, `jasper/bus.py`,
+     `jasper/citibike.py`). Owns the live arrival/status fetch.
+  7. Voice daemon wiring — THREE separate edits in
+     `jasper/voice_daemon.py`, easy to miss because they're far apart
+     in the file:
+       a. Client construction: import the client at the top, build it
+          in `run()` as `<slug> = (<Slug>Client(...) if
+          cfg.<slug>_enabled else None)` next to the `subway = (...)`
+          / `bus = (...)` / `citibike = (...)` blocks, then thread it
+          into the `_build_registry(...)` call AND add the matching
+          keyword param to the `_build_registry` signature.
+       b. Tool import + registration: import the factory at the top
+          (`from .tools.<slug> import make_<slug>_tools`) and add the
+          `for fn in make_<slug>_tools(<slug>): registry.register(fn)`
+          loop inside `_build_registry`, near the existing
+          `make_subway_tools` / `make_bus_tools` calls.
+       c. The `transit_configured` boolean: add
+          `or bool(<slug> and <slug>.enabled)` to the
+          `transit_configured = (...)` expression in `run()` so the
+          system-prompt transit nudge stays off whenever ANY transit
+          mode is live.
+  8. Install migration: add the new provider's env keys to the
      `keys=(...)` array in `migrate_transit_config` (in
-     `deploy/install.sh`). This is the one currently-duplicated list
-     — the wizard already learns the same keys from
-     `transit.all_env_keys()`, but `install.sh` reads from a bash
-     literal because it runs before Python is available. Drift here
-     is benign (operator-edited values stay in `jasper.env` instead
-     of migrating to `transit.env`), but worth keeping in sync.
+     `deploy/install.sh`). This list duplicates
+     `transit.all_env_keys()` — the wizard already learns the same
+     keys from Python, but `install.sh` reads from a bash literal
+     because it runs before Python is available. Drift here is benign
+     (operator-edited values stay in `jasper.env` instead of migrating
+     to `transit.env`), but worth keeping in sync.
 
-Steps 1+2 are the pure-data part. Steps 3+4 are bespoke (UI dispatch
-and the voice tool surface) and there's no clean way to avoid them
-without baking provider kind into deeper abstractions — for v1 the
-"3 places to touch" cost beats the abstraction tax.
+Items 1+2 are the pure-data part the `REGISTRY` abstraction buys you.
+Items 3-7 are bespoke (UI cards + the per-provider tool/client surface
++ the voice-daemon wiring) and there's no clean way to fold them into
+deeper abstractions without baking provider kind everywhere — for v1
+the explicit per-provider cost beats the abstraction tax. Just know
+it's ~9-12 edits, not three.
 """
 from __future__ import annotations
 

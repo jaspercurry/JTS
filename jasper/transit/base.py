@@ -62,9 +62,26 @@ class Stop:
     """One stop returned by `find_stops_near`. Provider-agnostic shape
     so the wizard can render any provider's results the same way.
 
-    `lines` is what the user picks AT this stop — subway lines for a
-    station, bus routes for a stop, dock spaces for a bike station.
-    Empty tuple means "not applicable" or "couldn't determine".
+    `lines` is what the user picks AT this stop. **This field is
+    overloaded across providers and the overload is undocumented at the
+    call sites — read this before adding a provider.** Two distinct
+    meanings live in the same tuple:
+
+      - Route-id list (nyc_subway, nyc_bus): one route identifier per
+        element — subway lines (`("D", "N", "R")`) or bus route
+        short-names (`("B70", "B35")`). The bus wizard card treats it
+        as exactly that, unioning it with SIRI-probed routes into a
+        set of route ids (`_bus_card_html`: `live or s.lines`); the
+        subway display formatter joins it as labels.
+      - Display string (citibike): a SINGLE element holding a
+        human-readable snapshot, not a route id — e.g.
+        `("3 classic, 2 e-bikes, 5 docks",)`. `_citibike_card_html`
+        joins it straight to text for the picker.
+
+    Empty tuple means "not applicable" or "couldn't determine". A new
+    provider should follow whichever convention its card renderer
+    expects; if it needs both route ids and a display blurb, add a
+    dedicated field rather than overloading this one further.
 
     `direction_hint` carries provider-specific direction context that's
     too fragmentary for `lines` (e.g. "Northbound" on a bus stop). The

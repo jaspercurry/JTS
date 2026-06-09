@@ -222,9 +222,13 @@ when the configured AEC mic is present with 6-channel firmware — see
   same answer). Citi Bike multi-station picker with a household-wide
   "only e-bikes" toggle; voice answers always split classic from
   e-bike counts unless the toggle is on. Modular over
-  `jasper.transit.REGISTRY` so future cities/modes (Berlin BVG,
-  Capital Bikeshare DC, …) are a single new module under
-  `jasper/transit/providers/`. NYC subway and Citi Bike are keyless;
+  `jasper.transit.REGISTRY`: discovery (bbox + stop lookup) for a new
+  city/mode (Berlin BVG, Capital Bikeshare DC, …) is data-driven from
+  one new module under `jasper/transit/providers/`, but the full
+  contribution is ~9-12 edits across six files (bespoke wizard card,
+  voice tool + client, three `voice_daemon.py` wiring edits, an
+  install.sh migration) — see the checklist in
+  `jasper/transit/__init__.py`. NYC subway and Citi Bike are keyless;
   NYC bus requires a free MTA BusTime API key — that card is locked
   until the user pastes one.
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
