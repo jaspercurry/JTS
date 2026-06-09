@@ -1,6 +1,6 @@
 # HANDOFF - Wake-corpus audio quality audit
 
-> **Current operational truth as of 2026-06-01.** This doc is the
+> **Current operational truth as of 2026-06-09.** This doc is the
 > canonical methodology for programmatic quality analysis of deliberate
 > wake-corpus WAVs captured by the browser recorder at
 > `http://jts.local/wake-corpus/`.
@@ -24,9 +24,10 @@ It is not a deep audio-quality analyzer.
 turns audited browser-recorder sessions into a hashed, split, training-
 oriented bundle for
 [`HANDOFF-custom-wakeword-training.md`](HANDOFF-custom-wakeword-training.md).
-It should run after the fast audit and before feature extraction. Do not
-fold export semantics into this quality analyzer; this doc owns artifact
-review, not training dataset assembly.
+`scripts/build-wake-feature-bank.sh` then turns that bundle into
+openWakeWord-compatible real-positive feature arrays. These should run after
+the fast audit. Do not fold export or feature-bank semantics into this quality
+analyzer; this doc owns artifact review, not training dataset assembly.
 
 **Quality analysis starts with deterministic signal metrics.** For 1-3 s
 wake-word clips, trust sample-domain and frame-domain facts first:
@@ -593,7 +594,7 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-06-09 (v16 - rechecked against the corpus export
-handoff; quality analyzer still owns review/QA, while training dataset
-assembly lives in scripts/export-wake-corpus-bundle.sh and
-HANDOFF-custom-wakeword-training.md.)
+Last verified: 2026-06-09 (v17 - rechecked against the corpus export and
+feature-bank handoff; quality analyzer still owns review/QA, while training
+dataset assembly lives in scripts/export-wake-corpus-bundle.sh,
+scripts/build-wake-feature-bank.sh, and HANDOFF-custom-wakeword-training.md.)
