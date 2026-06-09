@@ -198,14 +198,14 @@ shared libs deduplicated) on a Pi 5 running Raspberry Pi OS Lite Trixie.
 |---|---|---|
 | libcomposite + u_audio kernel modules | ~60 KB | Loaded by `jasper-usbsink-init` |
 | ConfigFS gadget descriptor | <1 KB | Just in-kernel state |
-| `jasper-usbsink.service` (Python daemon) | **18-22 MB** | sounddevice (PortAudio) + alsa-mixer subscriber + RMS + state publisher |
+| `jasper-usbsink.service` (Python daemon) | **18-22 MB** | sounddevice (PortAudio) + `amixer`-cget mixer poller + RMS + state publisher |
 | **Total new RAM (enabled)** | **~22 MB** | Comparable to `jasper-mux` (~13 MB) and `jasper-input` (~28 MB) |
 
 The daemon budget breakdown:
 - Python 3.11 interpreter: ~10 MB
 - sounddevice + PortAudio: ~6 MB
 - numpy (only for RMS computation, can be omitted if needed): ~3 MB
-- pyalsa (or fallback `alsactl monitor` subprocess): ~1-2 MB
+- `amixer` polling (subprocess spawned per 4 Hz poll; no resident ALSA binding): negligible
 - Daemon code: <1 MB
 
 If we end up needing to trim further, the RMS computation can be done
@@ -359,13 +359,14 @@ sliders.
 
 UAC2 Volume Control is signed 16.16 dB (or signed 8.8 on some hosts).
 The Linux `u_audio` driver normalizes this to ALSA `Volume` integer
-units. The mapping pyalsa exposes is straightforward:
+units. The mapping is straightforward — `amixer cget` reports the control's
+`min`/`max` integer units alongside the current value:
 
 ```python
-# pyalsa: mixer element's volume range is queryable via .getrange()
-# Returns (min, max) integer units that map 1:1 to dB at 0.01-dB
-# resolution on UAC2.
-min_v, max_v = elem.getrange()  # e.g. (-12800, 0) for -128.00 to 0.00 dB
+# `amixer cget numid=N` reports `min=..,max=..` for the control;
+# volume_bridge.py parses those (regex) — no Python ALSA binding.
+# Integer units map 1:1 to dB at 0.01-dB resolution on UAC2.
+min_v, max_v = (-12800, 0)   # parsed from amixer cget; e.g. -128.00..0.00 dB
 def gadget_to_pct(raw: int) -> int:
     # Linear-in-dB mapping from gadget range to 0..100%
     # 0.00 dB at host slider 100%, min_v at host slider 0%.
@@ -616,7 +617,7 @@ jasper/usbsink/
   __init__.py
   daemon.py            # Main async loop, wires the pieces together
   audio_bridge.py      # sounddevice InputStream → ALSA OutputStream
-  volume_bridge.py     # pyalsa mixer event subscription
+  volume_bridge.py     # amixer-cget mixer poller (4 Hz)
   state_publisher.py   # /run/jasper-usbsink/state.json writer
   preempt_listener.py  # localhost HTTP receiver for mux preempt
 ```
@@ -718,69 +719,22 @@ class AudioBridge:
 single callback fires per block. PortAudio handles the rate matching;
 both ends are 48 kHz so it's a straight copy.
 
-#### `volume_bridge.py` — pyalsa mixer observer
+#### `volume_bridge.py` — `amixer` mixer poller
 
-```python
-import asyncio
-from pyalsa import alsamixer
-from jasper.volume_coordinator import Source
+Polls the gadget's `PCM Capture Volume` and `PCM Capture Switch`
+controls at 4 Hz via `amixer cget` (subprocess), maps the raw value to
+a 0-100 listening-level, and POSTs changes to jasper-control's
+`/volume/set` with `source="usbsink"`. Polling — not pyalsa event
+subscription — was chosen for restart robustness and one fewer
+dependency: `amixer` ships with `alsa-utils`, which install.sh already
+requires. The 4 Hz cadence (`POLL_INTERVAL_SEC = 0.25`) is imperceptible
+for the sparse, user-driven slider moves it tracks.
 
-class VolumeBridge:
-    """Subscribes to PCM Capture Volume + Switch events on the gadget
-    card. On each event, computes the listening-level equivalent and
-    POSTs to jasper-control's /volume/set endpoint."""
-
-    POLL_INTERVAL_SEC = 0.2  # event-driven, this is just fallback
-
-    def __init__(self, card_name: str, control_url: str):
-        self.card_name = card_name  # "UAC2Gadget"
-        self.control_url = control_url  # "http://127.0.0.1:8780"
-        self._mixer = alsamixer.Mixer()
-        self._mixer.attach(f"hw:{card_name}")
-        self._mixer.load()
-        self._vol_elem = alsamixer.Element(self._mixer, "PCM Capture Volume")
-        self._mute_elem = alsamixer.Element(self._mixer, "PCM Capture Switch")
-        self._last_published: int | None = None
-
-    async def run(self):
-        # pyalsa's poll-based event API: register fds, asyncio.add_reader
-        # on each one, on event call handle_events() and process.
-        fds = self._mixer.poll_fds()  # returns list of (fd, events)
-        loop = asyncio.get_event_loop()
-        ready_event = asyncio.Event()
-        for fd, _events in fds:
-            loop.add_reader(fd, ready_event.set)
-        try:
-            while True:
-                await ready_event.wait()
-                ready_event.clear()
-                self._mixer.handle_events()
-                await self._publish_if_changed()
-        finally:
-            for fd, _events in fds:
-                loop.remove_reader(fd)
-
-    async def _publish_if_changed(self):
-        raw = self._vol_elem.getvolume()[0]  # left channel; right tracks
-        muted = self._mute_elem.getmute()[0]
-        pct = 0 if muted else _raw_to_pct(raw, *self._vol_elem.getrange())
-        if pct == self._last_published:
-            return
-        self._last_published = pct
-        await self._post_volume(pct)
-
-    async def _post_volume(self, pct: int):
-        async with httpx.AsyncClient(timeout=2.0) as c:
-            try:
-                r = await c.post(
-                    f"{self.control_url}/volume/set",
-                    json={"percent": pct, "source": "usbsink"},
-                )
-                if r.status_code != 200:
-                    logger.warning("volume POST failed: %s", r.status_code)
-            except httpx.HTTPError as e:
-                logger.warning("volume POST exception: %s", e)
-```
+The canonical implementation (and the full polling-vs-event rationale)
+lives in
+[`jasper/usbsink/volume_bridge.py`](../jasper/usbsink/volume_bridge.py)
+— intentionally not reproduced here, since a code sketch duplicated into
+this doc is exactly what drifted out of sync with the shipped daemon.
 
 The `source: "usbsink"` field is new — jasper-control's `/volume/set`
 gains a `source` field so the coordinator can call
@@ -1190,7 +1144,7 @@ reboot". UI surfaces the specific reason in the row's note text.
 | `jasper/usbsink/__init__.py` | Package marker | ~5 |
 | `jasper/usbsink/daemon.py` | Orchestration | ~120 |
 | `jasper/usbsink/audio_bridge.py` | sounddevice loop | ~80 |
-| `jasper/usbsink/volume_bridge.py` | pyalsa mixer observer | ~100 |
+| `jasper/usbsink/volume_bridge.py` | amixer-cget mixer poller | ~100 |
 | `jasper/usbsink/state_publisher.py` | /run/jasper-usbsink/state.json | ~60 |
 | `jasper/usbsink/preempt_listener.py` | localhost HTTP receiver | ~50 |
 | `jasper/cli/usbsink_main.py` | Entry point | ~30 |
@@ -1212,7 +1166,7 @@ reboot". UI surfaces the specific reason in the row's note text.
 | `jasper/control/server.py` | `/volume/set` accepts optional `source` field |
 | `jasper/control/system_metrics.py` | `/state` exposes `usbsink` section |
 | `jasper/cli/doctor.py` | Three new checks |
-| `pyproject.toml` | Register `jasper-usbsink` script, add `pyalsa` dep |
+| `pyproject.toml` | Register `jasper-usbsink` script (no new mixer dep — uses `amixer` from alsa-utils) |
 | `BRINGUP.md` | New phase: 8086 splitter setup + reboot for dtoverlay |
 | `README.md` | Sources list gains USB; RAM table gains usbsink row |
 | `CLAUDE.md` / `AGENTS.md` | Operational section: how to debug, on/off, doctor checks |

@@ -14,7 +14,7 @@ Package layout:
                     publisher + preempt listener + volume bridge.
   state_publisher.py (Phase 3) /run/jasper-usbsink/state.json writer.
   preempt_listener.py (Phase 3) localhost HTTP receiver for mux preempt.
-  volume_bridge.py  (Phase 4) pyalsa mixer observer → jasper-control.
+  volume_bridge.py  (Phase 4) amixer-cget mixer poller → jasper-control.
 
 See docs/HANDOFF-usbsink.md for the full design.
 """
