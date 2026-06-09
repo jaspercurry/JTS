@@ -535,6 +535,20 @@ the P1.3 producer ships, an enabled leader correctly reads as `degraded`
 (snapserver has no FIFO to read yet) — the honest state, not a false
 green.
 
+**Blast radius scales with bond size — leader-failover priority rises with
+N.** The fixed-leader model's leader-crash cost grows with the group: losing
+the leader of a stereo pair drops half the image (obvious, recovered by
+re-forming the pair), but losing the leader of a six-speaker synced group
+silences all six at once. The boot-reconciler election (modeled on
+`jasper-wifi-guardian`, the leader-crash row above) is correctly deferred
+while bonds are pair-shaped — building election for a two-device pair is
+astronaut engineering — but its priority climbs with N. **A >2-member group
+is the trigger to build it**, not a stereo pair. The related resilience floor
+is already in: the concurrent dissolve discovery (a single hung/offline peer
+can no longer wedge a bond teardown for the whole group — §8 "Known scaling
+boundaries") and best-effort dissolve (an offline member self-corrects via the
+`degraded` health, never strands the local leave).
+
 ### Networked loud-output safety (critical for the dumb tier)
 
 A dumb endpoint has none of JTS's software safety floors, so safety
@@ -855,11 +869,14 @@ front-run the complexity nor forget where it belongs.
 - **Cross-speaker peer-control client.** The HTTP-to-a-peer's-control-API
   pattern lives as two helpers in `jasper/web/rooms_setup.py`
   (`_post_grouping_to_member`, `_get_member_grouping`) sharing the
-  `_lan_target` SSRF guard — the right size for two call sites. **Trigger to
-  extract a `PeerControlClient`:** the THIRD cross-speaker call (e.g.
-  bond-wide volume sync, status aggregation). Then lift the guard + the
-  GET/POST + the `:8780` base into one client so the SSRF policy, timeouts,
-  and never-raise contract have a single home — not three copies.
+  `_lan_target` SSRF guard and the `_map_peers` bounded-concurrency primitive
+  — the right size for two call sites. (Concurrency is already DRY: `_map_peers`
+  is the one pool used by the POST fan-out AND the discovery GETs, so adding a
+  client wouldn't re-derive it.) **Trigger to extract a `PeerControlClient`:**
+  the THIRD cross-speaker call (e.g. bond-wide volume sync, status
+  aggregation). Then lift the guard + the GET/POST + the `:8780` base + the
+  `known`-set threading into one client so the SSRF policy, timeouts, and
+  never-raise contract have a single home — not three copies.
 
 - **The GET /grouping wire contract has ONE home — keep it that way.**
   `grouping_response` / `parse_grouping_response` (+ `GROUPING_RESPONSE_KEY`)

@@ -546,7 +546,7 @@ def _generate_bond_id() -> str:
     return "bond-" + uuid.uuid4().hex[:8]
 
 
-def _lan_target(addr: str) -> str | None:
+def _lan_target(addr: str, known: set[str] | None = None) -> str | None:
     """Resolve ``addr`` to a host safe to call on the home LAN, or None to
     refuse it. The SSRF guard for every cross-speaker control call.
 
@@ -556,8 +556,16 @@ def _lan_target(addr: str) -> str | None:
     surface, never a public host, and bare hostnames are refused (no DNS
     rebind surface). Returns the host string on accept, None on refuse.
     Shared by _post_grouping_to_member (POST) and _get_member_grouping (GET)
-    so both apply the EXACT same guard."""
-    if not addr or addr in _self_addresses():
+    so both apply the EXACT same guard.
+
+    ``known`` is this host's own addresses (the self-routing set). Pass a
+    precomputed set — as the fan-out callers do — to compute it ONCE per
+    operation instead of per peer (``_self_addresses`` does a socket probe +
+    ``getaddrinfo``); mirrors :func:`_self_address`'s ``known=`` param. ``None``
+    → computed fresh (the standalone-call default)."""
+    if known is None:
+        known = _self_addresses()
+    if not addr or addr in known:
         return "127.0.0.1"
     try:
         ip = ipaddress.ip_address(addr)
@@ -568,7 +576,9 @@ def _lan_target(addr: str) -> str | None:
     return addr
 
 
-def _post_grouping_to_member(addr: str, body: dict) -> tuple[bool, str]:
+def _post_grouping_to_member(
+    addr: str, body: dict, known: set[str] | None = None,
+) -> tuple[bool, str]:
     """Configure ONE member by POSTing to its jasper-control /grouping/set.
 
     This is the cross-speaker call that makes bond-forming one-flow: the
@@ -577,9 +587,11 @@ def _post_grouping_to_member(addr: str, body: dict) -> tuple[bool, str]:
     the dial uses. ``addr`` empty or one of this host's own addresses routes
     to loopback (configure self). SSRF guard (via :func:`_lan_target`): a
     remote target must be a PRIVATE / loopback IPv4 — the control API is a
-    home-LAN surface, never a public host. Returns (ok, detail); never raises.
+    home-LAN surface, never a public host. ``known`` is forwarded to the guard
+    so a fan-out computes the self-address set once. Returns (ok, detail);
+    never raises.
     """
-    target = _lan_target(addr)
+    target = _lan_target(addr, known)
     if target is None:
         try:
             ipaddress.ip_address(addr)
@@ -606,39 +618,68 @@ def _post_grouping_to_member(addr: str, body: dict) -> tuple[bool, str]:
         return False, str(e)
 
 
-def _fan_out_grouping(targets: list[tuple[str, dict]]) -> list[tuple[bool, str]]:
-    """POST a grouping config to several members concurrently and return the
-    ``(ok, detail)`` results in INPUT order.
+# Bounded concurrency for every cross-speaker fan-out / discovery. Caps the
+# pool so a large household (or a wide bond) can't spawn an unbounded number of
+# blocking-HTTP threads; 8 covers any realistic bond in a single wave.
+_PEER_FANOUT_MAX_WORKERS = 8
 
-    Each ``(addr, body)`` is sent via :func:`_post_grouping_to_member` on a
-    bounded thread pool, so a slow/unreachable member doesn't serialize the
-    whole fan-out (a stereo pair is two HTTP calls — without this the failing
-    one blocks the other until its 5 s timeout). ``executor.map`` yields
-    results in the order the iterable was submitted, so a slow or failing
-    member can never REORDER the results relative to ``targets`` (the caller
-    pairs results back to members positionally). Empty input → empty list."""
-    if not targets:
+
+def _map_peers(fn, items):
+    """Run ``fn(item)`` over ``items`` on a bounded thread pool, returning
+    results in INPUT order. The ONE concurrency primitive for cross-speaker
+    I/O.
+
+    Both the bond/unbond POST fan-out (:func:`_fan_out_grouping`) and the
+    /unbond discovery GETs use it, so neither path serializes on a slow/offline
+    peer — at six speakers a serial dissolve would otherwise block ~5 s PER
+    unreachable peer (10–25 s of dead spinner) — and both share one bounded-pool
+    policy instead of two hand-rolled executors. ``fn`` MUST NOT raise: the
+    peer-call helpers (:func:`_post_grouping_to_member`, :func:`_get_member_grouping`)
+    return a value on every failure, and ``pool.map`` would otherwise surface
+    the first exception out of the batch. ``pool.map`` preserves submission
+    order, so a slow item never reorders results (callers pair them back
+    positionally). Empty input → empty list (and no pool is created)."""
+    items = list(items)
+    if not items:
         return []
-    max_workers = min(8, len(targets))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        return list(pool.map(lambda t: _post_grouping_to_member(*t), targets))
+    workers = min(_PEER_FANOUT_MAX_WORKERS, len(items))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(fn, items))
 
 
-def _get_member_grouping(addr: str) -> dict | None:
+def _fan_out_grouping(
+    targets: list[tuple[str, dict]], *, known: set[str] | None = None,
+) -> list[tuple[bool, str]]:
+    """POST a grouping config to several members concurrently, ``(ok, detail)``
+    results in INPUT order (the caller pairs them back positionally).
+
+    A thin wrapper over :func:`_map_peers`. The self-address set is computed
+    ONCE here and shared across every member's SSRF guard (``known=``) rather
+    than recomputed per call inside the pool — ``_self_addresses`` does a
+    socket probe + ``getaddrinfo``, so per-peer recompute was N redundant
+    lookups across N pool threads. Callers that already hold the set (e.g.
+    :func:`_unbond`, which also used it for discovery) pass it in."""
+    if known is None:
+        known = _self_addresses()
+    return _map_peers(lambda t: _post_grouping_to_member(t[0], t[1], known), targets)
+
+
+def _get_member_grouping(addr: str, known: set[str] | None = None) -> dict | None:
     """Read ONE member's grouping state by GETting its jasper-control
     ``/grouping`` (the same no-auth LAN surface :func:`_post_grouping_to_member`
     POSTs to). Used by :func:`_unbond` to find which siblings share this
     speaker's bond before dissolving it.
 
     Same SSRF guard as the POST path (via :func:`_lan_target`): a refused /
-    non-LAN / non-IP target returns None. Returns the peer's grouping dict —
-    UNWRAPPED from the ``{"grouping": …}`` envelope that GET /grouping emits
-    (see jasper/control/server.py; the envelope lets a fail-soft read return
-    ``{"grouping": null}`` unambiguously) — or None on ANY failure (refused,
-    network error, non-2xx, malformed/truncated HTTP, a body that isn't a
-    JSON object, or a null/absent grouping block) — never raises, so a single
-    unreachable peer can't break a dissolve."""
-    target = _lan_target(addr)
+    non-LAN / non-IP target returns None; ``known`` is forwarded so the
+    discovery fan-out computes the self-address set once. Returns the peer's
+    grouping dict — UNWRAPPED from the ``{"grouping": …}`` envelope that GET
+    /grouping emits (see jasper/control/server.py; the envelope lets a
+    fail-soft read return ``{"grouping": null}`` unambiguously) — or None on
+    ANY failure (refused, network error, non-2xx, malformed/truncated HTTP, a
+    body that isn't a JSON object, or a null/absent grouping block) — never
+    raises, so a single unreachable peer can't break a dissolve."""
+    target = _lan_target(addr, known)
     if target is None:
         return None
     url = f"http://{target}:{CONTROL_HTTP_PORT}/grouping"
@@ -765,25 +806,34 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
         )
         return
 
-    # Find siblings sharing our bond_id. A peer we can't reach (GET fails →
-    # None) or one in a different bond is simply not added to the disable set.
-    peer_addrs: list[str] = []
-    for s in _discover_speakers_cached():
-        addr = str(s.get("address") or "").strip()
-        if not addr:
-            continue
-        peer_grouping = _get_member_grouping(addr)
-        if peer_grouping is None:
-            continue
-        if str(peer_grouping.get("bond_id") or "").strip() == bond_id:
-            peer_addrs.append(addr)
+    # Find siblings sharing our bond_id. Read every candidate's /grouping
+    # CONCURRENTLY (via _map_peers) behind ONE self-address computation: a
+    # serial loop here would block ~5 s per slow/offline peer, so at six
+    # speakers dissolving could hang 10–25 s. Self is excluded from the
+    # candidates (it's in `known`) — it's disabled explicitly below, not
+    # rediscovered. A peer we can't reach (GET → None) or one in a different
+    # bond is simply not added to the disable set.
+    known = _self_addresses()
+    candidate_addrs = [
+        a for a in (
+            str(s.get("address") or "").strip() for s in _discover_speakers_cached()
+        ) if a and a not in known
+    ]
+    candidate_groupings = _map_peers(
+        lambda a: _get_member_grouping(a, known), candidate_addrs,
+    )
+    peer_addrs = [
+        a for a, pg in zip(candidate_addrs, candidate_groupings)
+        if pg is not None and str(pg.get("bond_id") or "").strip() == bond_id
+    ]
 
-    # Self first (empty addr → loopback), then each matching peer.
+    # Self first (empty addr → loopback), then each matching peer. Reuse the
+    # same `known` set for the disable fan-out's SSRF guard.
     targets: list[tuple[str, dict]] = [("", {"enabled": False})]
     targets += [(addr, {"enabled": False}) for addr in peer_addrs]
     addrs = [t[0] for t in targets]
 
-    fan_results = _fan_out_grouping(targets)
+    fan_results = _fan_out_grouping(targets, known=known)
     results = [
         {"addr": addr, "ok": ok, "detail": detail}
         for addr, (ok, detail) in zip(addrs, fan_results)
@@ -801,9 +851,17 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
                 "event=rooms.unbond.member_failed bond=%s addr=%s detail=%s",
                 bond_id, r["addr"] or "(self)", r["detail"],
             )
+    # `unreachable` = candidates whose discovery GET failed. A same-bond
+    # follower offline at dissolve time lands here (we can't read its bond_id,
+    # so it never becomes a disable target and is left stranded) — surfacing
+    # the count explains a "I dissolved but a speaker stayed grouped" report
+    # without a per-candidate line.
+    unreachable = sum(1 for pg in candidate_groupings if pg is None)
     logger.info(
-        "event=rooms.unbond bond=%s peers=%d self_ok=%s dissolved=%d",
-        bond_id, len(peer_addrs), self_ok, len(dissolved),
+        "event=rooms.unbond bond=%s candidates=%d unreachable=%d peers=%d "
+        "self_ok=%s dissolved=%d",
+        bond_id, len(candidate_addrs), unreachable, len(peer_addrs),
+        self_ok, len(dissolved),
     )
     _send_json(
         handler,
