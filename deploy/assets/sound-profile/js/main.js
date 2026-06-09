@@ -1297,7 +1297,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var pathSafety = startupPreflight.path_safety || {};
     var session = activeSpeaker.session || {};
     var readiness = outputTopology.readiness || {};
-    var level = activeSpeakerLevelConfig();
     var envChecked = !!activeSpeaker.payload;
     var envReady = !!env.ok_to_load_active_config;
     var stagedReady = staged.status === 'staged';
@@ -1308,7 +1307,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var armed = session.status === 'armed';
     var readinessChecked = !!outputTopology.readiness;
     var readinessReady = !!readiness.preconditions_passed;
-    var atFloor = Math.abs(Number(level.value) - Number(level.min)) < 0.001;
+    var atFloor = outputCurrentLevelAtFloor();
+    var floorConfirmed = outputFloorAudioConfirmedForReadiness(readiness);
     var artifactReady = !!(outputTopology.readinessPlayback && outputTopology.readinessPlayback.artifact);
     var rows = [
       sequenceStep(
@@ -1356,17 +1356,32 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ),
       sequenceStep(
         'Start at the floor',
-        atFloor,
-        readinessReady && !atFloor,
+        atFloor || floorConfirmed,
+        readinessReady && !atFloor && !floorConfirmed,
         false,
-        atFloor ? 'Calibration level is at the quiet floor.' : 'Reset or lower test level before preparing tone.'
+        floorConfirmed ? 'Floor audio is confirmed for this target.' :
+          (atFloor ? 'Calibration level is at the quiet floor.' : 'Reset or lower test level before preparing tone.')
       ),
       sequenceStep(
         'Verify artifact before audio',
-        artifactReady,
-        readinessReady && atFloor,
+        artifactReady && (atFloor || floorConfirmed),
+        readinessReady && (atFloor || floorConfirmed) && !artifactReady,
         false,
         'Artifact-only verification remains the default; audible playback needs explicit lab enablement.'
+      ),
+      sequenceStep(
+        'Confirm floor audio',
+        floorConfirmed,
+        readinessReady && atFloor && !floorConfirmed,
+        false,
+        floorConfirmed ? 'Raised tests are unlocked for this target/session.' : 'First audible test must succeed at the floor.'
+      ),
+      sequenceStep(
+        'Raise slowly',
+        floorConfirmed && !atFloor,
+        floorConfirmed && atFloor,
+        false,
+        'After floor audio succeeds, raised audible tests remain bounded by 1 dB steps.'
       )
     ];
     return '<div class="output-sequence">' +
@@ -1374,10 +1389,64 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<ol class="output-sequence__list">' + rows.join('') + '</ol>' +
     '</div>';
   }
-  function readinessTargetLocked(readiness) {
+  function outputCurrentLevelAtFloor() {
+    var level = activeSpeakerLevelConfig();
+    return Math.abs(Number(level.value) - Number(level.min)) < 0.001;
+  }
+  function outputTargetSignature(raw) {
+    raw = raw || {};
+    var output = raw.output_index != null ? raw.output_index : raw.physical_output_index;
+    output = output == null ? null : Number(output);
+    return {
+      speaker_group_id: raw.speaker_group_id || null,
+      role: String(raw.driver_role || raw.role || '').trim().toLowerCase() || null,
+      output_index: isFinite(output) && output >= 0 ? output : null
+    };
+  }
+  function outputSameTarget(a, b) {
+    return !!a && !!b &&
+      (a.speaker_group_id || null) === (b.speaker_group_id || null) &&
+      (a.role || null) === (b.role || null) &&
+      (a.output_index == null ? null : Number(a.output_index)) ===
+        (b.output_index == null ? null : Number(b.output_index));
+  }
+  function outputFloorAudioConfirmedForReadiness(readiness) {
+    var session = activeSpeaker.session || {};
+    var quiet = session.quiet_start || {};
+    return session.status === 'armed' &&
+      quiet.status === 'floor_confirmed' &&
+      quiet.floor_audio_confirmed === true &&
+      outputSameTarget(quiet.current_target, outputTargetSignature(readiness && readiness.target));
+  }
+  function quietStartTargetLabel(target) {
+    target = target || {};
+    var pieces = [];
+    if (target.speaker_group_id) pieces.push(String(target.speaker_group_id));
+    if (target.role) pieces.push(humanRole(target.role).toLowerCase());
+    if (target.output_index != null && isFinite(Number(target.output_index))) {
+      pieces.push('output ' + (Number(target.output_index) + 1));
+    }
+    return pieces.join(' ');
+  }
+  function quietStartLabel(session) {
+    var quiet = session && session.quiet_start || {};
+    if (session && session.status !== 'armed') return 'Not armed';
+    if (quiet.status === 'floor_confirmed' && quiet.floor_audio_confirmed) {
+      var targetLabel = quietStartTargetLabel(quiet.current_target);
+      return targetLabel ? 'Floor confirmed for ' + targetLabel : 'Floor confirmed for last target';
+    }
+    return 'Floor required';
+  }
+  function readinessTargetLockReason(readiness) {
     var target = readiness && readiness.target || {};
     var audible = readiness && readiness.audible_test || {};
-    return target.role === 'tweeter' || audible.target_role_allowed === false;
+    if (target.role === 'tweeter') {
+      return 'Tweeter and horn audible tests are intentionally locked in this slice.';
+    }
+    if (audible.target_role_allowed === false) {
+      return 'Audible tests are limited to woofer, mid, and subwoofer targets in this slice.';
+    }
+    return '';
   }
   function readinessBlockedReasons(readiness) {
     var reasons = [];
@@ -1391,8 +1460,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!issue) return;
       reasons.push(issue.message || issue.code || 'Readiness issue requires review.');
     });
-    if (readinessTargetLocked(readiness)) {
-      reasons.unshift('Tweeter and horn audible tests are intentionally locked in this slice.');
+    var lockReason = readinessTargetLockReason(readiness);
+    if (lockReason) {
+      reasons.unshift(lockReason);
     }
     return reasons.filter(function(reason, index, arr) {
       return reason && arr.indexOf(reason) === index;
@@ -1492,9 +1562,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderOutputReadinessActions(readiness) {
     var target = readiness && readiness.target || {};
-    var locked = readinessTargetLocked(readiness);
-    var disabled = !readiness || !readiness.preconditions_passed || locked ||
-      outputTopology.readinessPlaybackChecking;
+    var lockReason = readinessTargetLockReason(readiness);
+    var atFloor = outputCurrentLevelAtFloor();
+    var floorConfirmed = outputFloorAudioConfirmedForReadiness(readiness);
+    var disabled = !readiness || !readiness.preconditions_passed || !!lockReason ||
+      (!atFloor && !floorConfirmed) || outputTopology.readinessPlaybackChecking;
     var attrs = 'data-group-id="' + escapeHtml(target.speaker_group_id || '') + '" ' +
       'data-role="' + escapeHtml(target.role || '') + '" ' +
       'data-label="' + escapeHtml(target.label || '') + '"';
@@ -1503,7 +1575,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var roleLabel = humanRole(target.role || 'channel').toLowerCase();
     var playLabel = outputTopology.readinessPlaybackChecking === 'audio' ?
       'Playing' : 'Play quiet ' + roleLabel + ' test';
-    return (locked ? '<p class="setting-row__hint">Audible and artifact test actions stay locked for tweeter/horn targets in this slice.</p>' : '') +
+    var hints = [];
+    if (lockReason) hints.push(lockReason + ' Artifact verification stays locked too so the UI cannot imply this target is ready for sound.');
+    if (readiness && readiness.preconditions_passed && !atFloor && !floorConfirmed) {
+      hints.push('Reset calibration level to the quiet floor before verifying an artifact or playing a test.');
+    }
+    if (readiness && readiness.preconditions_passed && floorConfirmed && !atFloor) {
+      hints.push('Floor audio is confirmed for this target/session; raised tests remain bounded by the calibration level guard.');
+    }
+    return hints.map(function(hint) {
+      return '<p class="setting-row__hint">' + escapeHtml(hint) + '</p>';
+    }).join('') +
       '<div class="active-speaker-actions">' +
       '<button type="button" class="btn btn--ghost" data-act="play-output-readiness-tone" ' +
         attrs + ' data-audio="false"' + (disabled ? ' disabled' : '') + '>' +
@@ -1610,6 +1692,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         (activeSpeaker.startupLoad.state.status || 'idle') : 'idle'],
       ['Safe playback', safe.playback_allowed ? 'Allowed' : 'Not allowed yet'],
       ['Safety session', session.status || 'Not armed'],
+      ['Quiet start', quietStartLabel(session)],
       ['Calibration level', fmtDbfs(activeSpeakerLevelConfig().value)]
     ];
     var envIssues = Array.isArray(p.issues) ? p.issues.slice(0, 4) : [];

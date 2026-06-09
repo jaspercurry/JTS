@@ -224,6 +224,8 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Check protected path" in js
     assert "Safe bring-up sequence" in js
     assert "Verify artifact before audio" in js
+    assert "Confirm floor audio" in js
+    assert "Raise slowly" in js
     assert "Artifact-only verification remains the default" in js
     assert "function checkActivePathSafety()" in js
     assert "var environment = await fetchActiveSpeakerEnvironment()" in js
@@ -277,10 +279,17 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Playback readiness" in js
     assert "function renderOutputReadinessSummary(readiness)" in js
     assert "function renderOutputReadinessBlockers(readiness)" in js
-    assert "function readinessTargetLocked(readiness)" in js
+    assert "function outputCurrentLevelAtFloor()" in js
+    assert "function outputFloorAudioConfirmedForReadiness(readiness)" in js
+    assert "function quietStartTargetLabel(target)" in js
+    assert "function readinessTargetLockReason(readiness)" in js
     assert "Why sound is blocked" in js
     assert "Tweeter and horn audible tests are intentionally locked in this slice." in js
-    assert "Audible and artifact test actions stay locked for tweeter/horn targets in this slice." in js
+    assert "Audible tests are limited to woofer, mid, and subwoofer targets in this slice." in js
+    assert "Reset calibration level to the quiet floor before verifying an artifact or playing a test." in js
+    assert "Floor audio is confirmed for this target/session" in js
+    assert "Floor confirmed for last target" in js
+    assert "Quiet start" in js
     assert "Role policy" in js
     assert "artifact-only" in js
     assert "Preconditions passed" in js

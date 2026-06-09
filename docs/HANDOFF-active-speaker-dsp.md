@@ -68,7 +68,11 @@
 > is enabled. The backend also enforces its own artifact envelope (48 kHz max,
 > 16 channels max, 100-500 ms, -80..-45 dBFS) and keeps a small rolling set of
 > generated artifacts so `/var/lib/jasper` cannot grow without bound during
-> repeated checks.
+> repeated checks. The safe-session state now owns a quiet-start lifecycle:
+> every armed session starts in `floor_required`; an audible test above the
+> calibration floor is rejected until the same session and target has a
+> successful floor-level audible result; Stop, expiry, or target change resets
+> the lifecycle back to `floor_required`.
 > `jasper.active_speaker.readiness` now provides the read-only
 > `/sound/active-speaker/playback-readiness` gate for one saved topology
 > target. It combines safe-session state, output topology, channel
@@ -83,10 +87,10 @@
 > gates as an operator sequence — check environment, stage protected
 > startup, check protected path, load protected startup, arm safe session,
 > check one target, reset to the level floor, then verify an artifact before
-> any audible test. The readiness card also summarizes the selected target,
-> backend, rollback state, test level, and "why sound is blocked" reasons;
-> tweeter/horn target actions stay locked in this UI slice even when a lab
-> backend is enabled.
+> any audible test, confirm floor audio, then raise slowly. The readiness card
+> also summarizes the selected target, backend, rollback state, test level, and
+> "why sound is blocked" reasons; tweeter/horn target actions stay locked in
+> this UI slice even when a lab backend is enabled.
 > `/sound/` also includes a driver-research helper for active-crossover
 > planning. It generates a prompt from the current output roles and accepts a
 > pasted JSON object with kind `jts_active_crossover_driver_research`.
@@ -651,6 +655,12 @@ only creates an armed session when `ok_to_load_active_config` is true;
 `/sound/active-speaker/stop` stops any existing session. Neither endpoint
 plays tones, reloads CamillaDSP, or changes volume. The persisted environment
 summary stores config classification and filename only, not full local paths.
+The same state file carries `quiet_start` evidence for the current safety
+session. Artifact-only results never confirm the floor. A completed audible
+floor-level result records `floor_confirmed` for the stable target signature
+(`speaker_group_id`, role, output index); raised audible tests are then allowed
+only for that same target and armed session. Changing target, stopping, or
+letting the session expire clears that evidence.
 
 `jasper.active_speaker.tone_plan` is the first deterministic channel-test
 intent contract. `/sound/active-speaker/tone-targets` lists preset-derived

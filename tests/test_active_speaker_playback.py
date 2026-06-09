@@ -111,6 +111,43 @@ def _with_loaded_startup(plan: dict) -> dict:
     }
 
 
+def _woofer_audio_plan(*, level_dbfs: float = -80.0) -> dict:
+    plan = {
+        **_with_loaded_startup(_plan()),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+        "target": {
+            **_plan()["target"],
+            "driver_role": "woofer",
+            "output_index": 0,
+        },
+    }
+    plan["tone"] = {
+        **(plan.get("tone") if isinstance(plan.get("tone"), dict) else {}),
+        "level_dbfs": level_dbfs,
+    }
+    return plan
+
+
+def _floor_confirmed_session(plan: dict) -> dict:
+    target = plan["target"]
+    return {
+        "status": "armed",
+        "session_id": "session-test",
+        "quiet_start": {
+            "policy_version": "floor_first_per_target_v1",
+            "status": "floor_confirmed",
+            "floor_audio_confirmed": True,
+            "current_target": {
+                "speaker_group_id": target.get("speaker_group_id"),
+                "role": target.get("driver_role") or target.get("role"),
+                "output_index": target.get("output_index"),
+            },
+        },
+    }
+
+
 def test_wav_artifact_backend_renders_only_target_output_channel(
     tmp_path: Path,
 ) -> None:
@@ -402,17 +439,7 @@ def test_aplay_backend_runs_generated_artifact_when_audio_is_authorized(
         calls.append((list(argv), timeout))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    plan = {
-        **_with_loaded_startup(_plan()),
-        "playback_allowed": True,
-        "would_play": True,
-        "tone_playback_implemented": True,
-        "target": {
-            **_plan()["target"],
-            "driver_role": "woofer",
-            "output_index": 0,
-        },
-    }
+    plan = _woofer_audio_plan(level_dbfs=-80.0)
 
     result = start_tone_playback(
         plan,
@@ -441,6 +468,83 @@ def test_aplay_backend_runs_generated_artifact_when_audio_is_authorized(
     assert calls
     assert calls[0][0][:4] == ["/usr/bin/aplay", "-q", "-D", "hw:Active"]
     assert calls[0][0][4].endswith(".wav")
+
+
+def test_audio_backend_blocks_raised_level_before_floor_audio_is_confirmed(
+    tmp_path: Path,
+) -> None:
+    result = start_tone_playback(
+        _woofer_audio_plan(level_dbfs=-55.0),
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["audio_emitted"] is False
+    assert "floor_audio_not_confirmed" in {
+        issue["code"] for issue in result["issues"]
+    }
+
+
+def test_audio_backend_allows_raised_level_after_same_target_floor_audio(
+    tmp_path: Path,
+) -> None:
+    plan = _woofer_audio_plan(level_dbfs=-55.0)
+
+    result = start_tone_playback(
+        plan,
+        safe_session=_floor_confirmed_session(plan),
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "completed"
+    assert result["audio_emitted"] is True
+    assert result["tone"]["level_dbfs"] == -55.0
+
+
+def test_audio_backend_resets_floor_requirement_when_target_changes(
+    tmp_path: Path,
+) -> None:
+    plan = _woofer_audio_plan(level_dbfs=-55.0)
+    other_plan = {
+        **plan,
+        "target": {
+            **plan["target"],
+            "driver_role": "mid",
+            "role": "mid",
+            "output_index": 1,
+        },
+    }
+
+    result = start_tone_playback(
+        other_plan,
+        safe_session=_floor_confirmed_session(plan),
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["audio_emitted"] is False
+    assert "floor_audio_not_confirmed" in {
+        issue["code"] for issue in result["issues"]
+    }
 
 
 def test_audio_backend_refuses_tweeter_in_first_audible_slice(
