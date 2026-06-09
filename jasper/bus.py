@@ -48,7 +48,7 @@ from datetime import datetime
 
 import httpx
 
-from .transit.base import scrub_secrets
+from .transit.base import TransitError, scrub_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,12 @@ class BusClient:
         `route` (optional): filter to a single short name like 'B35'.
         Empty string returns every route at every stop — direction-
         specific stops already shape the result; the `route` arg is
-        for ad-hoc filtering when the user names a specific one."""
+        for ad-hoc filtering when the user names a specific one.
+
+        Raises `TransitError` when EVERY configured stop failed upstream
+        and none had a cache to serve — i.e. a total BusTime outage. The
+        caller must distinguish that from a genuinely empty result ("no
+        buses coming"); an empty list means at least one stop answered."""
         if not self.enabled:
             return []
 
@@ -204,12 +209,25 @@ class BusClient:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         arrivals: list[BusArrival] = []
+        served = 0
         for r in results:
             if isinstance(r, BaseException):
                 # Per-stop failure shouldn't kill the others; we logged
                 # the cause inside _fetch_for_stop already.
                 continue
+            served += 1
             arrivals.extend(r)
+
+        # Total outage: every stop raised AND none served a (possibly
+        # stale-cached or empty) list. Don't narrate this as "no buses"
+        # — surface it so the tool can speak an error. Mirrors
+        # subway's all-sources-down return.
+        if served == 0:
+            logger.warning(
+                "event=transit.bus.arrivals.error stops=%d reason=all-stops-failed",
+                len(self._stop_ids),
+            )
+            raise TransitError("the MTA bus feed is unreachable")
 
         if route:
             target = route.strip().upper()
@@ -220,12 +238,18 @@ class BusClient:
 
     async def _fetch_for_stop_cached(self, stop_id: str) -> list[BusArrival]:
         """Per-stop cached fetch. Returns the cached list when fresh,
-        the fresh fetch on a hit, or `[]` if the upstream is failing
-        AND we have no cached entry to serve. Critically, transient
-        fetch failures do NOT poison the cache — `_fetch_for_stop`
-        returns None on error, and we skip the cache write so the
-        next call retries upstream rather than serving a confident
-        empty-list fallback for the full cache window."""
+        the fresh fetch on a hit, the stale cache when the upstream is
+        failing but we have a prior entry, or raises `TransitError` when
+        the upstream is failing AND we have no cached entry to serve.
+        Critically, transient fetch failures do NOT poison the cache —
+        `_fetch_for_stop` returns None on error, and we skip the cache
+        write so the next call retries upstream rather than serving a
+        confident empty-list fallback for the full cache window.
+
+        The raise (rather than an empty list) lets `get_arrivals`
+        distinguish a per-stop outage from a genuinely empty stop: it
+        catches the per-stop failure via `gather(return_exceptions=True)`
+        and only surfaces an error when EVERY stop failed."""
         now_mono = time.monotonic()
         cached = self._cache.get(stop_id)
         if cached is not None and now_mono - cached[0] < CACHE_WINDOW_SEC:
@@ -233,10 +257,12 @@ class BusClient:
         arrivals = await self._fetch_for_stop(stop_id)
         if arrivals is None:
             # Upstream failed — don't overwrite a previously-good cache
-            # entry; let the user see whatever stale data is still
-            # within the window if there is any, otherwise return
-            # empty for this call only.
-            return cached[1] if cached is not None else []
+            # entry; serve whatever stale data is still around if there
+            # is any. With nothing cached, raise so get_arrivals can
+            # tell a stop outage apart from an empty stop.
+            if cached is not None:
+                return cached[1]
+            raise TransitError(f"BusTime fetch failed for stop {stop_id}")
         self._cache[stop_id] = (now_mono, arrivals)
         return arrivals
 
