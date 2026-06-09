@@ -43,7 +43,21 @@ yet** and the gating spike has not been run. What exists:
   the thin injectable I/O edge; on a solo speaker there is NO probe and NO
   `runtime` key (zero added cost). The same pure derive feeds
   `jasper-doctor`'s `check_grouping` (warn on degraded). §7 "make it
-  visible, not invisible".
+  visible, not invisible". **A leader that is configured but whose outputd
+  is not actually tapping the snapfifo (env unset / writer down → snapserver
+  reads a dry FIFO → followers get silence) now reads `degraded` too** — the
+  pure derive takes the leader's current tap path as an injected arg
+  (`leader_tap_path`); `read_grouping_state` / `check_grouping` read it via
+  `reconcile._read_outputd_snapfifo_path` only for a valid leader.
+- **`jasper/atomic_io.py`** — the single home for atomic text-file writes
+  (`atomic_write_text(path, text, *, mode=0o644)`: same-dir tempfile →
+  `chmod`-before-`os.replace`, parent created, RAISES on failure + cleans up
+  the temp; fail-soft is a caller policy). Extracted from the ~39 hand-rolled
+  `tempfile`+`os.replace` sites the staff review flagged; the multi-room
+  reconciler's two env writers (`_write_args_file`,
+  `_write_outputd_snapfifo_env`) now delegate to it (keeping their fail-soft
+  log+`return False` wrappers). The other sites migrate incrementally
+  (separate PRs) — `atomic_io` is purely additive.
 - **`jasper/camilla_emit.py`** — shared CamillaDSP YAML *emission*
   primitives (`fmt`, `emit_gain_filter`, `emit_peaking_biquad`,
   `emit_linkwitz_riley`, `emit_mixer`): the single home for *how* a
@@ -796,7 +810,15 @@ resolving):
 
 ---
 
-Last verified: 2026-06-09 (P1.3 producer activation: `reconcile.py` sets
+Last verified: 2026-06-09 (staff-review fixes: extracted shared
+`jasper/atomic_io.py` (atomic_write_text) and migrated the reconciler's two
+env writers onto it — the canonical home for the ~39 hand-rolled
+tempfile+os.replace sites, migrated incrementally; and surfaced the leader
+outputd-TAP status on `/state` + doctor (a configured leader not actually
+feeding the snapfifo now reads `degraded`, via an injected `leader_tap_path`
+into the pure derive). Built via a 6-agent workflow + adversarial verify;
+786 affected-suite tests green, ruff clean. Earlier 2026-06-09 (P1.3 producer
+activation): `reconcile.py` sets
 `JASPER_OUTPUTD_SNAPFIFO_PATH` for a leader (pure `desired_snapfifo_path` +
 `outputd_tap_action` change-gate) via a reconciler-owned env file that
 `jasper-outputd.service` layers in optionally; `systemctl try-restart`s

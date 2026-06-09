@@ -5566,14 +5566,21 @@ def check_grouping() -> CheckResult:
         that jasper.multiroom.config carries on GroupingConfig.error;
       - **runtime degraded** — configured-valid but a snap unit the
         reconciler's plan wants running is not `active` (e.g. a follower
-        whose snapclient can't reach its leader, or — until the P1.3
-        producer ships — a leader whose snapserver has no FIFO to read).
-        This is §7's "make it visible, not invisible": a green config
-        with silent breakage underneath is exactly what we refuse to
-        show. Runtime health is derived by the same pure
-        `derive_grouping_runtime` the /state surface uses."""
+        whose snapclient can't reach its leader, a leader whose snapserver
+        is down), OR a leader whose snap units are up but whose outputd is
+        not tapping the snapfifo — snapserver reads green `active` while the
+        FIFO is empty and followers get silence. This is §7's "make it
+        visible, not invisible": a green config with silent breakage
+        underneath is exactly what we refuse to show. Runtime health is
+        derived by the same pure `derive_grouping_runtime` the /state
+        surface uses, with the leader's current tap injected."""
     from ..multiroom.config import load_config as _load_grouping_config
-    from ..multiroom.reconcile import plan as _grouping_plan
+    from ..multiroom.reconcile import (
+        _read_outputd_snapfifo_path as _read_tap,
+    )
+    from ..multiroom.reconcile import (
+        plan as _grouping_plan,
+    )
     from ..multiroom.state import derive_grouping_runtime
 
     label = "grouping: mode"
@@ -5592,7 +5599,10 @@ def check_grouping() -> CheckResult:
         if len(out) == len(units)
         else {u: "unknown" for u in units}
     )
-    runtime = derive_grouping_runtime(cfg, states)
+    # Only a valid leader taps outputd into the snapfifo; read its current
+    # tap so a dry stream surfaces as degraded. Followers/solo skip this.
+    tap = _read_tap() if cfg.role == "leader" else ""
+    runtime = derive_grouping_runtime(cfg, states, leader_tap_path=tap)
 
     base = (
         f"on — role={cfg.role} channel={cfg.channel} "
