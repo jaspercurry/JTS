@@ -863,10 +863,13 @@ def _state_connected_html(state: dict[str, str], csrf_token: str = "") -> str:
     # agent_id is registry-free user text; the voice-pack prompt is a
     # trusted in-repo constant. Both are JSON-encoded into a typed data
     # island the module reads — never interpolated into executable JS.
+    # `</script>` can't appear literally inside an inline <script>; escape the
+    # `<` of any `</` so the JSON island can't be closed early. json.dumps has
+    # already escaped quotes/backslashes.
     page_data = json.dumps({
         "currentAgent": agent_id,
         "voicePackPrompt": VOICE_PACK_PROMPT,
-    })
+    }).replace("</", "<\\/")
     return f"""
 <p class="form-hint">Connected. The speaker will delegate smart-home requests
 to this Home Assistant instance.</p>
