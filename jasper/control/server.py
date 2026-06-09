@@ -2277,12 +2277,13 @@ def _make_handler(
                     self._send_json({"error": str(e)}, status=502)
                     return
                 # Result codes from voice_daemon's manual_session_*:
-                #   OK / BUSY / CAP / PAUSED / NO_SESSION / ALREADY_ENDED / ERROR
+                #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING /
+                #   NO_SESSION / ALREADY_ENDED / ERROR
                 # Map non-OK outcomes to non-2xx so the dial's HTTP
                 # error path can show the right LED color.
                 http_status = 200
                 if result.get("result") not in ("OK", None):
-                    if result.get("result") in ("CAP", "PAUSED"):
+                    if result.get("result") in ("CAP", "PAUSED", "MUTED", "MEASURING"):
                         http_status = 503
                     elif result.get("result") in ("BUSY", "NO_SESSION", "ALREADY_ENDED"):
                         http_status = 409
