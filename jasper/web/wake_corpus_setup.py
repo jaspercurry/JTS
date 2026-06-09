@@ -198,6 +198,16 @@ DEFAULT_PORT = 8782
 DEFAULT_OUTPUT_DIR = Path("data/enrollment_positives")
 DEFAULT_METADATA_SUBDIR = "metadata"
 ACTIVE_SESSION_MARKER = ".active_session.json"
+# Crash-safety marker for corpus test mode. Entering test mode stops
+# jasper-voice (the UDP ports must be free to record), so an operator
+# who opens the recorder and just closes the tab would otherwise leave
+# the speaker permanently deaf — the socket-activated web service idle-
+# exits after 10 min and nothing restarts jasper-voice. This marker
+# records "test mode stopped voice" on disk; backend startup (which the
+# socket re-runs on the next /wake-corpus/ request after an idle exit)
+# restores production audio if the marker is stale and no session is
+# being resumed. Cleared on a clean test-mode exit.
+TEST_MODE_MARKER = ".corpus_test_mode.json"
 
 # CONDITIONS / DISTANCES are the operator-labelled input domains, imported
 # above from the shared single source of truth (jasper.wake_conditions) so
@@ -289,6 +299,15 @@ MAX_RECORDING_DURATION_SEC = 30.0
 # doesn't surprise the operator the next day with "wait, why does the
 # UI show clips from yesterday?"
 RESUME_WINDOW_SEC = 3600.0
+
+# How long after entering corpus test mode we treat the marker as
+# abandoned and self-heal jasper-voice back on. Kept well under the
+# jasper-web 10-min idle-exit window so that whenever the socket re-
+# spawns the service (the next /wake-corpus/ request after the operator
+# walked away), the marker is reliably stale and recovery fires. While a
+# tab is open it polls /api/status every ~2 s, so the service never idle-
+# exits and this never runs against a live session.
+TEST_MODE_STALE_SEC = 300.0
 
 # CSRF header name. Matches common JS framework conventions; the
 # embedded JS reads `<meta name="csrf-token">` and sends this header
@@ -2382,6 +2401,10 @@ class RecordingBackend:
         # is not enough: after a graceful test-mode exit, reopening the
         # page should feel like a fresh start.
         self._maybe_load_recent_session()
+        # Self-heal jasper-voice if a previous run entered corpus test
+        # mode (which stops voice) and never exited. Runs after session
+        # recovery so a resumed session keeps voice stopped.
+        self._maybe_recover_stale_test_mode()
 
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -2474,6 +2497,40 @@ class RecordingBackend:
             return
         except OSError as e:
             logger.warning("failed to clear active session marker: %s", e)
+
+    def _test_mode_marker_path(self) -> Path:
+        return self._metadata_dir / TEST_MODE_MARKER
+
+    def note_test_mode_entered(self) -> None:
+        """Record that corpus test mode just stopped jasper-voice.
+
+        The marker lets a later backend startup self-heal the speaker if
+        the operator entered test mode and then walked away without
+        exiting (see TEST_MODE_MARKER). Best-effort: a write failure must
+        not block the operator from recording.
+        """
+        self._metadata_dir.mkdir(parents=True, exist_ok=True)
+        path = self._test_mode_marker_path()
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        data = {
+            "entered_at": datetime.now(timezone.utc).isoformat(
+                timespec="seconds",
+            ),
+        }
+        try:
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            tmp.replace(path)
+        except OSError as e:
+            logger.warning("failed to write test-mode marker: %s", e)
+
+    def note_test_mode_exited(self) -> None:
+        try:
+            self._test_mode_marker_path().unlink()
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            logger.warning("failed to clear test-mode marker: %s", e)
 
     def _clear_session_state_locked(self) -> None:
         self._session_id = None
@@ -2667,6 +2724,56 @@ class RecordingBackend:
             result["session_id"], result["member"], result["clip_count"],
             ",".join(result["enabled_legs"]),
         )
+
+    def _maybe_recover_stale_test_mode(
+        self, now: float | None = None,
+    ) -> None:
+        """Restore production audio after an abandoned test-mode session.
+
+        Entering corpus test mode stops jasper-voice; a clean exit clears
+        the marker and restarts it. If the operator instead walks away,
+        the marker is left behind and the speaker stays deaf. On a later
+        backend startup (the socket re-spawns the service on the next
+        request after its idle exit) this restores production audio when
+        the marker is stale and nothing is actively recording.
+
+        Conservative by design — it does NOT tear down when:
+          - a recording is in progress, or
+          - a session was just resumed (operator is mid-corpus-session;
+            voice must stay stopped), or
+          - the marker is still fresh (tab open, operator working).
+        """
+        marker = self._test_mode_marker_path()
+        if not marker.is_file():
+            return
+        with self._lock:
+            recording = self._current is not None
+            session_active = self._session_id is not None
+        if recording or session_active:
+            return
+        now = now if now is not None else time.time()
+        age = now - marker.stat().st_mtime
+        if age <= TEST_MODE_STALE_SEC:
+            return
+        logger.warning(
+            "event=wake_corpus.test_mode_recover age=%.0fs (stale=%.0fs): "
+            "restoring production audio + restarting %s",
+            age, TEST_MODE_STALE_SEC, VOICE_UNIT,
+        )
+        try:
+            exit_corpus_test_mode()
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as e:
+            # Leave the marker so a later startup retries the recovery;
+            # never crash the recorder over a failed restart.
+            logger.warning(
+                "event=wake_corpus.test_mode_recover_failed error=%s", e,
+            )
+            return
+        self.note_test_mode_exited()
 
     def begin_session(
         self,
@@ -3930,8 +4037,12 @@ class _Handler(BaseHTTPRequestHandler):
                         ),
                         aec3_sweep_source=body.get("aec3_sweep_source"),
                     )
+                    # Mark only after voice was actually stopped, so a
+                    # later startup can self-heal an abandoned session.
+                    self.backend.note_test_mode_entered()
                 else:
                     exit_corpus_test_mode()
+                    self.backend.note_test_mode_exited()
                     self.backend.unload_session()
             except subprocess.CalledProcessError as e:
                 detail = (e.stderr or e.stdout or str(e)).strip()
