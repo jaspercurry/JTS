@@ -14,31 +14,27 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::alsa_backend::{IoCounters, NegotiatedPcm};
+use crate::alsa_backend::{DualAppleStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
-use crate::loudness::AssistantGainDecision;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const NEVER_MS: u64 = u64::MAX;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TtsQueueMetrics {
-    pub pending_frames: u64,
-    pub budget_frames: u64,
-    pub max_pending_frames: u64,
-    pub over_budget: bool,
-    pub over_budget_periods: u64,
-    pub over_budget_ms: u64,
-    pub over_budget_streak_ms: u64,
-}
-
 pub struct OutputdState {
     started_at: Instant,
     backend: String,
+    sink_mode: String,
     content_pcm: String,
     dac_pcm: String,
+    dual_dac_a_pcm: Option<String>,
+    dual_dac_b_pcm: Option<String>,
+    dual_linked: AtomicBool,
+    dual_delay_delta_frames: AtomicI64,
+    dual_delay_delta_baseline_frames: AtomicI64,
+    dual_delay_delta_error_frames: AtomicI64,
+    dual_max_delay_delta_frames: AtomicI64,
     chip_ref_pcm: Option<String>,
     reference_udp_target: Option<String>,
     sample_rate: AtomicU64,
@@ -79,27 +75,6 @@ pub struct OutputdState {
     total_clipped_samples: AtomicU64,
     last_period_clipped_samples: AtomicU64,
     reference_sequence: AtomicU64,
-    tts_pending_frames: AtomicU64,
-    tts_budget_frames: AtomicU64,
-    tts_max_pending_frames: AtomicU64,
-    tts_over_budget: AtomicBool,
-    tts_over_budget_periods: AtomicU64,
-    tts_over_budget_ms: AtomicU64,
-    tts_over_budget_streak_ms: AtomicU64,
-    tts_dropped_commands: AtomicU64,
-    tts_dropped_audio_frames: AtomicU64,
-    content_short_lufs_x10: AtomicI64,
-    content_anchor_lufs_x10: AtomicI64,
-    assistant_baseline_lufs_x10: AtomicI64,
-    assistant_target_lufs_x10: AtomicI64,
-    assistant_source_lufs_x10: AtomicI64,
-    assistant_source_peak_dbfs_x10: AtomicI64,
-    assistant_requested_gain_db_x10: AtomicI64,
-    assistant_peak_cap_gain_db_x10: AtomicI64,
-    assistant_final_gain_db_x10: AtomicI64,
-    assistant_profile_confidence_x100: AtomicU64,
-    assistant_calibrated: AtomicBool,
-    assistant_decision_seen: AtomicBool,
     last_progress_ms: AtomicU64,
     watchdog_pings_sent: AtomicU64,
 }
@@ -109,8 +84,16 @@ impl OutputdState {
         Self {
             started_at: Instant::now(),
             backend: config.backend.as_str().to_string(),
+            sink_mode: config.sink_mode.as_str().to_string(),
             content_pcm: config.content_pcm.clone(),
             dac_pcm: config.dac_pcm.clone(),
+            dual_dac_a_pcm: config.dual_dac_a_pcm.clone(),
+            dual_dac_b_pcm: config.dual_dac_b_pcm.clone(),
+            dual_linked: AtomicBool::new(false),
+            dual_delay_delta_frames: AtomicI64::new(pack_optional_i64(None)),
+            dual_delay_delta_baseline_frames: AtomicI64::new(pack_optional_i64(None)),
+            dual_delay_delta_error_frames: AtomicI64::new(pack_optional_i64(None)),
+            dual_max_delay_delta_frames: AtomicI64::new(config.dual_max_delay_delta_frames),
             chip_ref_pcm: config.chip_ref_pcm.clone(),
             reference_udp_target: config.reference_udp_target.clone(),
             sample_rate: AtomicU64::new(config.sample_rate as u64),
@@ -153,27 +136,6 @@ impl OutputdState {
             total_clipped_samples: AtomicU64::new(0),
             last_period_clipped_samples: AtomicU64::new(0),
             reference_sequence: AtomicU64::new(0),
-            tts_pending_frames: AtomicU64::new(0),
-            tts_budget_frames: AtomicU64::new(0),
-            tts_max_pending_frames: AtomicU64::new(0),
-            tts_over_budget: AtomicBool::new(false),
-            tts_over_budget_periods: AtomicU64::new(0),
-            tts_over_budget_ms: AtomicU64::new(0),
-            tts_over_budget_streak_ms: AtomicU64::new(0),
-            tts_dropped_commands: AtomicU64::new(0),
-            tts_dropped_audio_frames: AtomicU64::new(0),
-            content_short_lufs_x10: AtomicI64::new(pack_optional_db(None)),
-            content_anchor_lufs_x10: AtomicI64::new(pack_optional_db(None)),
-            assistant_baseline_lufs_x10: AtomicI64::new(pack_optional_db(None)),
-            assistant_target_lufs_x10: AtomicI64::new(pack_optional_db(None)),
-            assistant_source_lufs_x10: AtomicI64::new(pack_optional_db(None)),
-            assistant_source_peak_dbfs_x10: AtomicI64::new(pack_optional_db(None)),
-            assistant_requested_gain_db_x10: AtomicI64::new(pack_optional_db(None)),
-            assistant_peak_cap_gain_db_x10: AtomicI64::new(pack_optional_db(None)),
-            assistant_final_gain_db_x10: AtomicI64::new(pack_optional_db(None)),
-            assistant_profile_confidence_x100: AtomicU64::new(0),
-            assistant_calibrated: AtomicBool::new(false),
-            assistant_decision_seen: AtomicBool::new(false),
             last_progress_ms: AtomicU64::new(0),
             watchdog_pings_sent: AtomicU64::new(0),
         }
@@ -197,7 +159,6 @@ impl OutputdState {
         counters: IoCounters,
         reference_sequence: u64,
         clipped_samples: u32,
-        tts: TtsQueueMetrics,
     ) {
         let uptime_ms = self.uptime_ms();
         self.content_frames_read
@@ -225,20 +186,6 @@ impl OutputdState {
         }
         self.reference_sequence
             .store(reference_sequence, Ordering::Relaxed);
-        self.tts_pending_frames
-            .store(tts.pending_frames, Ordering::Relaxed);
-        self.tts_budget_frames
-            .store(tts.budget_frames, Ordering::Relaxed);
-        self.tts_max_pending_frames
-            .store(tts.max_pending_frames, Ordering::Relaxed);
-        self.tts_over_budget
-            .store(tts.over_budget, Ordering::Relaxed);
-        self.tts_over_budget_periods
-            .store(tts.over_budget_periods, Ordering::Relaxed);
-        self.tts_over_budget_ms
-            .store(tts.over_budget_ms, Ordering::Relaxed);
-        self.tts_over_budget_streak_ms
-            .store(tts.over_budget_streak_ms, Ordering::Relaxed);
         self.last_period_clipped_samples
             .store(clipped_samples as u64, Ordering::Relaxed);
         self.total_clipped_samples
@@ -248,6 +195,24 @@ impl OutputdState {
 
     pub fn mark_watchdog_ping(&self) {
         self.watchdog_pings_sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_dual_apple_status(&self, status: &DualAppleStatus) {
+        self.dual_linked.store(status.linked, Ordering::Relaxed);
+        self.dual_delay_delta_frames.store(
+            pack_optional_i64(status.delay_delta_frames),
+            Ordering::Relaxed,
+        );
+        self.dual_delay_delta_baseline_frames.store(
+            pack_optional_i64(status.delay_delta_baseline_frames),
+            Ordering::Relaxed,
+        );
+        self.dual_delay_delta_error_frames.store(
+            pack_optional_i64(status.delay_delta_error_frames),
+            Ordering::Relaxed,
+        );
+        self.dual_max_delay_delta_frames
+            .store(status.max_delay_delta_frames, Ordering::Relaxed);
     }
 
     pub fn mark_content_bridge(&self, metrics: ContentBridgeMetrics) {
@@ -289,55 +254,6 @@ impl OutputdState {
             .store(metrics.unlock_count, Ordering::Relaxed);
     }
 
-    pub fn mark_tts_command_dropped(&self, audio_frames: u64) {
-        self.tts_dropped_commands.fetch_add(1, Ordering::Relaxed);
-        if audio_frames > 0 {
-            self.tts_dropped_audio_frames
-                .fetch_add(audio_frames, Ordering::Relaxed);
-        }
-    }
-
-    pub fn mark_loudness(
-        &self,
-        content_short_lufs: Option<f32>,
-        content_anchor_lufs: Option<f32>,
-        decision: Option<&AssistantGainDecision>,
-    ) {
-        self.content_short_lufs_x10
-            .store(pack_optional_db(content_short_lufs), Ordering::Relaxed);
-        self.content_anchor_lufs_x10
-            .store(pack_optional_db(content_anchor_lufs), Ordering::Relaxed);
-        if let Some(decision) = decision {
-            self.assistant_decision_seen.store(true, Ordering::Relaxed);
-            self.assistant_baseline_lufs_x10
-                .store(pack_optional_db(Some(decision.baseline_lufs)), Ordering::Relaxed);
-            self.assistant_target_lufs_x10
-                .store(pack_optional_db(Some(decision.target_lufs)), Ordering::Relaxed);
-            self.assistant_source_lufs_x10
-                .store(pack_optional_db(Some(decision.source_lufs)), Ordering::Relaxed);
-            self.assistant_source_peak_dbfs_x10.store(
-                pack_optional_db(Some(decision.source_peak_dbfs)),
-                Ordering::Relaxed,
-            );
-            self.assistant_requested_gain_db_x10.store(
-                pack_optional_db(Some(decision.requested_gain_db)),
-                Ordering::Relaxed,
-            );
-            self.assistant_peak_cap_gain_db_x10.store(
-                pack_optional_db(Some(decision.peak_cap_gain_db)),
-                Ordering::Relaxed,
-            );
-            self.assistant_final_gain_db_x10
-                .store(pack_optional_db(Some(decision.final_gain_db)), Ordering::Relaxed);
-            self.assistant_profile_confidence_x100.store(
-                (decision.profile_confidence.clamp(0.0, 1.0) * 100.0).round() as u64,
-                Ordering::Relaxed,
-            );
-            self.assistant_calibrated
-                .store(decision.calibrated, Ordering::Relaxed);
-        }
-    }
-
     pub fn snapshot_json(&self) -> String {
         let mut buf = String::with_capacity(1024);
         let uptime_ms = self.uptime_ms();
@@ -347,6 +263,8 @@ impl OutputdState {
         push_kv_f64(&mut buf, "uptime_seconds", (uptime_ms as f64) / 1000.0, 2);
         buf.push(',');
         push_kv_str(&mut buf, "backend", &self.backend);
+        buf.push(',');
+        push_kv_str(&mut buf, "sink_mode", &self.sink_mode);
         buf.push(',');
 
         buf.push_str(r#""content":{"#);
@@ -565,6 +483,48 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
 
+        if self.sink_mode == "dual_apple" {
+            buf.push_str(r#""dual_apple":{"#);
+            push_kv_str_opt(&mut buf, "dac_a_pcm", self.dual_dac_a_pcm.as_deref());
+            buf.push(',');
+            push_kv_str_opt(&mut buf, "dac_b_pcm", self.dual_dac_b_pcm.as_deref());
+            buf.push(',');
+            push_kv_bool(
+                &mut buf,
+                "linked",
+                self.dual_linked.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_i64_opt(
+                &mut buf,
+                "delay_delta_frames",
+                unpack_optional_i64(self.dual_delay_delta_frames.load(Ordering::Relaxed)),
+            );
+            buf.push(',');
+            push_kv_i64_opt(
+                &mut buf,
+                "delay_delta_baseline_frames",
+                unpack_optional_i64(
+                    self.dual_delay_delta_baseline_frames
+                        .load(Ordering::Relaxed),
+                ),
+            );
+            buf.push(',');
+            push_kv_i64_opt(
+                &mut buf,
+                "delay_delta_error_frames",
+                unpack_optional_i64(self.dual_delay_delta_error_frames.load(Ordering::Relaxed)),
+            );
+            buf.push(',');
+            push_kv_i64(
+                &mut buf,
+                "max_delay_delta_frames",
+                self.dual_max_delay_delta_frames.load(Ordering::Relaxed),
+            );
+            buf.push('}');
+            buf.push(',');
+        }
+
         buf.push_str(r#""mix":{"#);
         push_kv_u64(
             &mut buf,
@@ -587,6 +547,28 @@ impl OutputdState {
         buf.push(',');
 
         buf.push_str(r#""reference_outputs":{"#);
+        push_kv_str(&mut buf, "speaker_reference_source", "outputd_final_electrical");
+        buf.push(',');
+        push_kv_bool(&mut buf, "speaker_reference_is_fallback", false);
+        buf.push(',');
+        push_kv_bool(
+            &mut buf,
+            "speaker_reference_active",
+            self.chip_ref_pcm.is_some() || self.reference_udp_target.is_some(),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "speaker_reference_sample_rate",
+            self.sample_rate.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "speaker_reference_channels",
+            crate::types::CHANNELS as u64,
+        );
+        buf.push(',');
         push_kv_str_opt(&mut buf, "chip_ref_pcm", self.chip_ref_pcm.as_deref());
         buf.push(',');
         push_kv_u64(
@@ -608,173 +590,6 @@ impl OutputdState {
         );
         buf.push(',');
         push_kv_str_opt(&mut buf, "udp_target", self.reference_udp_target.as_deref());
-        buf.push('}');
-        buf.push(',');
-
-        buf.push_str(r#""tts":{"#);
-        push_kv_u64(
-            &mut buf,
-            "pending_frames",
-            self.tts_pending_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "budget_frames",
-            self.tts_budget_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "max_pending_frames",
-            self.tts_max_pending_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_bool(
-            &mut buf,
-            "over_budget",
-            self.tts_over_budget.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "over_budget_periods",
-            self.tts_over_budget_periods.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "over_budget_ms",
-            self.tts_over_budget_ms.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "over_budget_streak_ms",
-            self.tts_over_budget_streak_ms.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "dropped_commands",
-            self.tts_dropped_commands.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "dropped_audio_frames",
-            self.tts_dropped_audio_frames.load(Ordering::Relaxed),
-        );
-        buf.push('}');
-        buf.push(',');
-
-        buf.push_str(r#""assistant_loudness":{"#);
-        push_kv_f64_opt(
-            &mut buf,
-            "content_short_lufs",
-            unpack_optional_db(self.content_short_lufs_x10.load(Ordering::Relaxed)),
-            1,
-        );
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "content_anchor_lufs",
-            unpack_optional_db(self.content_anchor_lufs_x10.load(Ordering::Relaxed)),
-            1,
-        );
-        buf.push(',');
-        let seen = self.assistant_decision_seen.load(Ordering::Relaxed);
-        push_kv_bool(&mut buf, "decision_seen", seen);
-        buf.push(',');
-        push_kv_bool(
-            &mut buf,
-            "calibrated",
-            self.assistant_calibrated.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_f64(
-            &mut buf,
-            "profile_confidence",
-            (self.assistant_profile_confidence_x100.load(Ordering::Relaxed) as f64) / 100.0,
-            2,
-        );
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "baseline_lufs",
-            if seen {
-                unpack_optional_db(self.assistant_baseline_lufs_x10.load(Ordering::Relaxed))
-            } else {
-                None
-            },
-            1,
-        );
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "target_lufs",
-            if seen {
-                unpack_optional_db(self.assistant_target_lufs_x10.load(Ordering::Relaxed))
-            } else {
-                None
-            },
-            1,
-        );
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "source_lufs",
-            if seen {
-                unpack_optional_db(self.assistant_source_lufs_x10.load(Ordering::Relaxed))
-            } else {
-                None
-            },
-            1,
-        );
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "source_peak_dbfs",
-            if seen {
-                unpack_optional_db(self.assistant_source_peak_dbfs_x10.load(Ordering::Relaxed))
-            } else {
-                None
-            },
-            1,
-        );
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "requested_gain_db",
-            if seen {
-                unpack_optional_db(self.assistant_requested_gain_db_x10.load(Ordering::Relaxed))
-            } else {
-                None
-            },
-            1,
-        );
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "peak_cap_gain_db",
-            if seen {
-                unpack_optional_db(self.assistant_peak_cap_gain_db_x10.load(Ordering::Relaxed))
-            } else {
-                None
-            },
-            1,
-        );
-        buf.push(',');
-        push_kv_f64_opt(
-            &mut buf,
-            "final_gain_db",
-            if seen {
-                unpack_optional_db(self.assistant_final_gain_db_x10.load(Ordering::Relaxed))
-            } else {
-                None
-            },
-            1,
-        );
         buf.push('}');
         buf.push(',');
 
@@ -918,6 +733,23 @@ fn push_kv_u64_opt(buf: &mut String, key: &str, value: Option<u64>) {
     }
 }
 
+fn push_kv_i64(buf: &mut String, key: &str, value: i64) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    buf.push_str(&value.to_string());
+}
+
+fn push_kv_i64_opt(buf: &mut String, key: &str, value: Option<i64>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    match value {
+        Some(value) => buf.push_str(&value.to_string()),
+        None => buf.push_str("null"),
+    }
+}
+
 fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
     buf.push('"');
     buf.push_str(key);
@@ -932,33 +764,18 @@ fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
     buf.push_str(&format!("{:.*}", decimals, value));
 }
 
-fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str(r#"":"#);
-    match value {
-        Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
-        None => buf.push_str("null"),
-    }
+const PACKED_I64_NONE: i64 = i64::MIN;
+
+fn pack_optional_i64(value: Option<i64>) -> i64 {
+    value.unwrap_or(PACKED_I64_NONE)
 }
 
-const PACKED_DB_NONE: i64 = i64::MIN;
-
-fn pack_optional_db(value: Option<f32>) -> i64 {
-    let Some(value) = value else {
-        return PACKED_DB_NONE;
-    };
-    if !value.is_finite() {
-        return PACKED_DB_NONE;
+fn unpack_optional_i64(value: i64) -> Option<i64> {
+    if value == PACKED_I64_NONE {
+        None
+    } else {
+        Some(value)
     }
-    (value * 10.0).round() as i64
-}
-
-fn unpack_optional_db(value: i64) -> Option<f64> {
-    if value == PACKED_DB_NONE {
-        return None;
-    }
-    Some(value as f64 / 10.0)
 }
 
 fn event_age_ms(uptime_ms: u64, event_ms: u64) -> Option<u64> {
@@ -998,17 +815,22 @@ fn escape_json(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        BackendMode, Config, ContentBridgeConfig, ContentBridgeMode,
+        BackendMode, Config, ContentBridgeConfig, ContentBridgeMode, SinkMode,
         DEFAULT_CONTENT_BRIDGE_MAX_ADJUST_PPM, DEFAULT_CONTENT_BRIDGE_RING_FRAMES,
         DEFAULT_CONTENT_BRIDGE_TARGET_FRAMES,
     };
-    use crate::loudness::AssistantLoudnessConfig;
 
     fn test_config() -> Config {
         Config {
             backend: BackendMode::Alsa,
+            sink_mode: SinkMode::SingleAlsa,
             content_pcm: "outputd_content_capture".to_string(),
+            content_channels: 2,
             dac_pcm: "outputd_dac".to_string(),
+            dual_dac_a_pcm: None,
+            dual_dac_b_pcm: None,
+            dual_require_link: false,
+            dual_max_delay_delta_frames: 2,
             sample_rate: 48_000,
             period_frames: 1024,
             content_buffer_frames: 4096,
@@ -1026,9 +848,19 @@ mod tests {
             reference_udp_target: None,
             snapfifo_path: None,
             stream_id: 1,
-            tts_socket_path: None,
             control_socket_path: None,
-            assistant_loudness: AssistantLoudnessConfig::default(),
+        }
+    }
+
+    fn dual_test_config() -> Config {
+        Config {
+            sink_mode: SinkMode::DualApple,
+            content_pcm: "outputd_active_content_capture".to_string(),
+            content_channels: 4,
+            dac_pcm: "dual_apple_usb_c_dac_4ch".to_string(),
+            dual_dac_a_pcm: Some("hw:CARD=A,DEV=0".to_string()),
+            dual_dac_b_pcm: Some("hw:CARD=B,DEV=0".to_string()),
+            ..test_config()
         }
     }
 
@@ -1047,15 +879,6 @@ mod tests {
             },
             42,
             3,
-            TtsQueueMetrics {
-                pending_frames: 512,
-                budget_frames: 96_000,
-                max_pending_frames: 120_000,
-                over_budget: true,
-                over_budget_periods: 7,
-                over_budget_ms: 149,
-                over_budget_streak_ms: 64,
-            },
         );
 
         let j = state.snapshot_json();
@@ -1076,64 +899,41 @@ mod tests {
             r#""reference_sequence":42"#,
             r#""last_period_clipped_samples":3"#,
             r#""clipped_samples":3"#,
-            r#""reference_outputs":{"chip_ref_pcm":null,"chip_ref_sample_rate":16000,"chip_ref_period_frames":320,"chip_ref_buffer_frames":4096,"udp_target":null}"#,
-            r#""tts":{"pending_frames":512,"budget_frames":96000,"max_pending_frames":120000,"over_budget":true,"over_budget_periods":7,"over_budget_ms":149,"over_budget_streak_ms":64,"dropped_commands":0,"dropped_audio_frames":0}"#,
+            r#""reference_outputs":{"speaker_reference_source":"outputd_final_electrical","speaker_reference_is_fallback":false,"speaker_reference_active":false,"speaker_reference_sample_rate":48000,"speaker_reference_channels":2,"chip_ref_pcm":null,"chip_ref_sample_rate":16000,"chip_ref_period_frames":320,"chip_ref_buffer_frames":4096,"udp_target":null}"#,
             r#""watchdog""#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+        assert!(!j.contains(r#""tts":"#), "retired outputd TTS state present in {j}");
+        assert!(
+            !j.contains(r#""assistant_loudness":"#),
+            "duplicate outputd loudness state present in {j}"
+        );
     }
 
     #[test]
-    fn snapshot_json_contains_assistant_loudness_fields() {
-        let state = OutputdState::new(&test_config());
-
-        let initial = state.snapshot_json();
-        for needle in [
-            r#""assistant_loudness":{"content_short_lufs":null"#,
-            r#""content_anchor_lufs":null"#,
-            r#""decision_seen":false"#,
-            r#""calibrated":false"#,
-            r#""profile_confidence":0.00"#,
-            r#""final_gain_db":null"#,
-        ] {
-            assert!(initial.contains(needle), "missing {needle} in {initial}");
-        }
-
-        state.mark_loudness(
-            Some(-31.24),
-            Some(-30.75),
-            Some(&AssistantGainDecision {
-                provider: Some("openai".to_string()),
-                model: Some("gpt-realtime-2".to_string()),
-                voice: Some("verse".to_string()),
-                calibrated: true,
-                profile_confidence: 0.83,
-                baseline_lufs: -31.2,
-                target_lufs: -29.7,
-                source_lufs: -18.2,
-                source_peak_dbfs: -2.5,
-                requested_gain_db: -11.5,
-                peak_cap_gain_db: -0.5,
-                final_gain_db: -11.5,
-                clamp_reason: "target",
-            }),
-        );
+    fn snapshot_json_contains_dual_apple_runtime_health() {
+        let state = OutputdState::new(&dual_test_config());
+        state.mark_dual_apple_status(&DualAppleStatus {
+            dac_a_pcm: "hw:CARD=A,DEV=0".to_string(),
+            dac_b_pcm: "hw:CARD=B,DEV=0".to_string(),
+            linked: true,
+            delay_delta_frames: Some(7),
+            delay_delta_baseline_frames: Some(5),
+            delay_delta_error_frames: Some(2),
+            max_delay_delta_frames: 2,
+        });
 
         let j = state.snapshot_json();
         for needle in [
-            r#""content_short_lufs":-31.2"#,
-            r#""content_anchor_lufs":-30.8"#,
-            r#""decision_seen":true"#,
-            r#""calibrated":true"#,
-            r#""profile_confidence":0.83"#,
-            r#""baseline_lufs":-31.2"#,
-            r#""target_lufs":-29.7"#,
-            r#""source_lufs":-18.2"#,
-            r#""source_peak_dbfs":-2.5"#,
-            r#""requested_gain_db":-11.5"#,
-            r#""peak_cap_gain_db":-0.5"#,
-            r#""final_gain_db":-11.5"#,
+            r#""sink_mode":"dual_apple""#,
+            r#""dual_apple":{"dac_a_pcm":"hw:CARD=A,DEV=0""#,
+            r#""dac_b_pcm":"hw:CARD=B,DEV=0""#,
+            r#""linked":true"#,
+            r#""delay_delta_frames":7"#,
+            r#""delay_delta_baseline_frames":5"#,
+            r#""delay_delta_error_frames":2"#,
+            r#""max_delay_delta_frames":2"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
@@ -1142,8 +942,8 @@ mod tests {
     #[test]
     fn snapshot_json_accumulates_clipping() {
         let state = OutputdState::new(&test_config());
-        state.mark_period(IoCounters::default(), 1, 2, TtsQueueMetrics::default());
-        state.mark_period(IoCounters::default(), 2, 5, TtsQueueMetrics::default());
+        state.mark_period(IoCounters::default(), 1, 2);
+        state.mark_period(IoCounters::default(), 2, 5);
 
         let j = state.snapshot_json();
         assert!(j.contains(r#""last_period_clipped_samples":5"#));
@@ -1153,7 +953,7 @@ mod tests {
     #[test]
     fn snapshot_json_reports_never_for_missing_xruns() {
         let state = OutputdState::new(&test_config());
-        state.mark_period(IoCounters::default(), 1, 0, TtsQueueMetrics::default());
+        state.mark_period(IoCounters::default(), 1, 0);
 
         let j = state.snapshot_json();
         assert_eq!(j.matches(r#""last_xrun_age_ms":null"#).count(), 2);

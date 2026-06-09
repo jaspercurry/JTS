@@ -115,6 +115,16 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError(
             "JASPER_TTS_TRANSPORT must be outputd"
         )
+    if cfg.duck_transport not in {"camilla", "fanin"}:
+        raise RuntimeError("JASPER_DUCK_TRANSPORT must be camilla or fanin")
+    if (
+        cfg.tts_outputd_socket == "/run/jasper-fanin/tts.sock"
+        and cfg.duck_transport != "fanin"
+    ):
+        raise RuntimeError(
+            "JASPER_DUCK_TRANSPORT=fanin is required when "
+            "JASPER_TTS_OUTPUTD_SOCKET points at jasper-fanin"
+        )
     if cfg.volume_regress_after_sec <= 0:
         raise RuntimeError("JASPER_VOLUME_REGRESS_AFTER_SEC must be > 0")
     for name, value in [
@@ -187,6 +197,7 @@ class Config:
     camilla_host: str
     camilla_port: int
     duck_db: float
+    duck_transport: str
     idle_timeout_sec: int
     # Per-provider idle context reset thresholds (seconds). 0 = disabled
     # (default). Without a reset, the persistent live session keeps
@@ -543,19 +554,18 @@ class Config:
                 "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
                 1024 * 1024 * 1024,
             ),
-            # JASPER_TTS_DEVICE: PortAudio device name (bare ALSA pcm
-            # name from /etc/asound.conf — `plug:` aliases aren't
-            # enumerated by PortAudio). `jasper_out` is the dongle dmix
-            # where TTS and CamillaDSP's processed renderer stream sum
-            # before the speaker.
+            # JASPER_TTS_DEVICE: legacy PortAudio device name retained
+            # for pre-outputd archaeology. Current runtime rejects the
+            # sounddevice transport and sends assistant audio over the
+            # local TTS IPC socket below.
             tts_device=_env("JASPER_TTS_DEVICE", "jasper_out"),
-            # Output-owner transport. Current main sends assistant audio
-            # to jasper-outputd's local socket. The old sounddevice ->
-            # jasper_out path requires deploying a pre-outputd revision;
-            # this tree rejects it at validation time.
+            # TTS IPC transport. The transport name stays `outputd` for
+            # Python API compatibility with the line protocol, but the
+            # packaged socket is fan-in so TTS/cues enter before
+            # CamillaDSP crossover/protection on every output profile.
             tts_transport=_env("JASPER_TTS_TRANSPORT", "outputd"),
             tts_outputd_socket=_env(
-                "JASPER_TTS_OUTPUTD_SOCKET", "/run/jasper-outputd/tts.sock",
+                "JASPER_TTS_OUTPUTD_SOCKET", "/run/jasper-fanin/tts.sock",
             ),
             # Top-level pcm.jasper_out runs at 48 kHz (matches the
             # dongle's native rate and CamillaDSP's chunk rate).
@@ -564,8 +574,8 @@ class Config:
             tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
             # Provider/model/voice source-loudness profiles. Python
             # can seed/learn these from silent calibration and live
-            # assistant PCM; outputd consumes them when choosing final
-            # assistant gain.
+            # assistant PCM; the active TTS IPC owner consumes them when
+            # choosing final assistant gain.
             assistant_loudness_profile_path=_env(
                 "JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH",
                 DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
@@ -615,6 +625,7 @@ class Config:
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
+            duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin").strip().lower(),
             # Pre-response idle watchdog: closes the turn after this
             # many seconds of pure model silence (no audio chunk
             # received, server hasn't sent turn_complete, no

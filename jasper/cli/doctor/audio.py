@@ -16,12 +16,16 @@ import time
 from pathlib import Path
 from ...audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
-    by_id as _dac_profile_by_id,
     mixer_control_groups_for as _dac_mixer_control_groups_for,
 )
 from ...camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
-from ...output_hardware import load_state as _load_output_hardware_state
+from ...output_hardware import (
+    APPLE_USB_C_DONGLE_DEVICE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    OutputHardwareState,
+    load_state as _load_output_hardware_state,
+)
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -313,7 +317,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
 
 @doctor_check(order=20, group="audio")
 def check_output_hardware_state() -> CheckResult:
-    """Surface reconciler-owned observed-vs-active output hardware state."""
+    """Surface reconciler-owned output hardware state."""
 
     state = _load_output_hardware_state()
     if state is None:
@@ -322,46 +326,58 @@ def check_output_hardware_state() -> CheckResult:
             "warn",
             "state file unavailable — run `sudo systemctl start jasper-audio-hardware-reconcile`",
         )
-    active = state.get("active") if isinstance(state.get("active"), dict) else {}
-    observed = state.get("observed") if isinstance(state.get("observed"), dict) else {}
-    issues = state.get("issues") if isinstance(state.get("issues"), list) else []
-    active_id = active.get("profile_id") or "unknown"
-    observed_id = observed.get("profile_id") or "unknown"
-    observed_status = observed.get("status") or "unknown"
-
     blocker_codes = [
-        item.get("code") for item in issues
-        if isinstance(item, dict) and item.get("severity") == "blocker"
+        str(item.get("code") or "unknown")
+        for item in state.issues
+        if item.get("severity") == "blocker"
     ]
-    if not active.get("recognized"):
+    detail = (
+        f"profile={state.profile_id} status={state.status} "
+        f"outputs={state.physical_output_count} apple_dacs={state.apple_dac_count}"
+    )
+    if blocker_codes or state.status not in {"ready"}:
         return CheckResult(
             "Output hardware state",
             "fail",
-            f"active output is parked; observed={observed_id} status={observed_status}",
-        )
-    if not active.get("runtime_ready"):
-        return CheckResult(
-            "Output hardware state",
-            "fail",
-            f"active output profile {active_id} is not runtime-ready",
-        )
-    if blocker_codes:
-        return CheckResult(
-            "Output hardware state",
-            "warn",
-            f"active={active_id}, observed={observed_id} blocked={','.join(blocker_codes)}",
-        )
-    if active_id != observed_id:
-        return CheckResult(
-            "Output hardware state",
-            "warn",
-            f"active={active_id}, observed={observed_id} status={observed_status}",
+            f"{detail} blocked={','.join(blocker_codes) or 'none'}",
         )
     return CheckResult(
         "Output hardware state",
         "ok",
-        f"active={active_id}, observed={observed_id} status={observed_status}",
+        detail,
     )
+
+
+def _output_hardware_state_or_none() -> OutputHardwareState | None:
+    try:
+        return _load_output_hardware_state()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _effective_output_dac_id(state: OutputHardwareState | None = None) -> str:
+    if state is not None and state.profile_id not in {"", "unknown"}:
+        return state.profile_id
+    return _active_audio_dac_id()
+
+
+def _apple_output_profile_active(profile_id: str) -> bool:
+    return profile_id in {
+        APPLE_USB_C_DONGLE_DEVICE_ID,
+        DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    }
+
+
+def _apple_dongle_cards_from_state(
+    state: OutputHardwareState | None,
+) -> list[str]:
+    if state is None:
+        return []
+    return [
+        child.card_id for child in state.child_devices
+        if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID and child.card_id
+    ]
+
 
 @doctor_check(order=21, group="audio")
 def check_apple_dongle_audio() -> CheckResult:
@@ -380,32 +396,46 @@ def check_apple_dongle_audio() -> CheckResult:
         actionable message (plug in speakers/headphones)
       - dongle audio active: card visible → ok
     """
-    dac_id = _active_audio_dac_id()
-    profile = _dac_profile_by_id(dac_id)
-    if profile is None or profile.id != APPLE_USB_C_DONGLE_ID:
+    state = _output_hardware_state_or_none()
+    dac_id = _effective_output_dac_id(state)
+    if not _apple_output_profile_active(dac_id):
         return CheckResult(
             "Apple dongle", "ok",
             f"skipped — active output DAC is {dac_id}",
         )
 
     p = _run(["lsusb"])
-    usb_pattern = "|".join(re.escape(item) for item in profile.usb_ids)
-    has_apple_dongle = bool(
-        usb_pattern and re.search(usb_pattern, p.stdout, re.IGNORECASE)
-    )
-    if not has_apple_dongle:
+    usb_count = len(re.findall(r"05ac:110a", p.stdout, re.IGNORECASE))
+    expected_count = 2 if dac_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID else 1
+    if usb_count < expected_count:
         return CheckResult(
             "Apple dongle", "fail",
-            "USB-C headphone adapter not detected (lsusb has no 05ac:110a). "
-            "Plug it into the Pi.",
+            f"expected {expected_count} Apple USB-C adapter(s), "
+            f"but lsusb shows {usb_count}",
+        )
+    cards = _apple_dongle_cards_from_state(state)
+    if len(cards) >= expected_count:
+        return CheckResult(
+            "Apple dongle",
+            "ok",
+            f"USB + audio interfaces present ({','.join(cards)})",
+        )
+    if state is not None:
+        return CheckResult(
+            "Apple dongle",
+            "warn",
+            f"USB present but only {len(cards)} Apple audio card(s) enumerated; "
+            "check analog loads on the 3.5mm jack(s).",
         )
     p = _run(["aplay", "-l"])
-    card_pattern = "|".join(profile.supported_card_matches)
-    has_audio_card = bool(
-        re.search(card_pattern, p.stdout, re.IGNORECASE)
-        or re.search(r"USB Audio.*USB Audio", p.stdout)
+    audio_count = len(
+        re.findall(
+            r"(?:USB Audio.*USB Audio|Apple USB-C to 3\.5mm|Apple.*USB)",
+            p.stdout,
+            re.IGNORECASE,
+        )
     )
-    if has_audio_card:
+    if audio_count >= expected_count:
         return CheckResult("Apple dongle", "ok", "USB + audio interfaces present")
     return CheckResult(
         "Apple dongle", "warn",
@@ -426,12 +456,11 @@ def check_dongle_headphone_at_max() -> CheckResult:
     this check catches it. -36 dB at 40% was the historical "safe test"
     setting and is what triggered the audible-loudness gap that led to
     this check existing."""
+    state = _output_hardware_state_or_none()
     dac = _active_audio_dac_env()
-    dac_id = dac["id"]
-    card_id = dac["card"]
-    profile = _dac_profile_by_id(dac_id)
-    control_groups = _dac_mixer_control_groups_for(dac_id)
-    if profile is None or profile.id != APPLE_USB_C_DONGLE_ID or not control_groups:
+    dac_id = _effective_output_dac_id(state)
+    control_groups = _dac_mixer_control_groups_for(APPLE_USB_C_DONGLE_ID)
+    if not _apple_output_profile_active(dac_id) or not control_groups:
         return CheckResult(
             "Dongle headphone gain", "ok",
             f"skipped — active output DAC is {dac_id}",
@@ -450,32 +479,39 @@ def check_dongle_headphone_at_max() -> CheckResult:
             f"skipped — active output DAC profile {dac_id} has no Headphone target",
         )
 
-    p = _run(["amixer", "-c", card_id, "sget", control.name])
-    if p.returncode != 0:
-        return CheckResult(
-            "Dongle headphone gain", "fail",
-            f"amixer -c {card_id} sget {control.name} failed — dongle not enumerated as "
-            f"card {card_id!r}?",
-        )
-    # amixer prints "Front Left: Playback NN [PP%] [-DD.DDdB] [on]";
-    # we want PP. If both channels are present, expect them equal.
-    pcts = re.findall(r"\[(\d+)%\]", p.stdout)
-    if not pcts:
-        return CheckResult(
-            "Dongle headphone gain", "warn",
-            "Could not parse percent from amixer output (format change?).",
-        )
-    pct = int(pcts[0])
     target_pct = int(control.target_percent or 100)
-    if pct < target_pct:
+    cards = _apple_dongle_cards_from_state(state) or [dac["card"]]
+    low_cards: list[str] = []
+    for card_id in cards:
+        p = _run(["amixer", "-c", card_id, "sget", control.name])
+        if p.returncode != 0:
+            return CheckResult(
+                "Dongle headphone gain", "fail",
+                f"amixer -c {card_id} sget {control.name} failed — dongle not "
+                f"enumerated as card {card_id!r}?",
+            )
+        # amixer prints "Front Left: Playback NN [PP%] [-DD.DDdB] [on]";
+        # we want PP. If both channels are present, expect them equal.
+        pcts = re.findall(r"\[(\d+)%\]", p.stdout)
+        if not pcts:
+            return CheckResult(
+                "Dongle headphone gain", "warn",
+                f"Could not parse percent from amixer output for {card_id} "
+                "(format change?).",
+            )
+        pct = int(pcts[0])
+        if pct < target_pct:
+            low_cards.append(f"{card_id}:{pct}%")
+    if low_cards:
         return CheckResult(
             "Dongle headphone gain", "warn",
-            f"Headphone control at {pct}% (analog attenuation engaged). "
+            f"Headphone control below {target_pct}% ({', '.join(low_cards)}). "
             "Run `sudo systemctl start jasper-dac-init` to pin at 100%.",
         )
     return CheckResult(
         "Dongle headphone gain", "ok",
-        f"Headphone at {target_pct}% (analog ceiling open)",
+        f"Headphone at {target_pct}% on {len(cards)} Apple card(s) "
+        "(analog ceiling open)",
     )
 
 @doctor_check(order=49, group="audio")
@@ -546,7 +582,11 @@ _FANIN_EXPECTED_OUTPUT_PCM = "hw:Loopback,0,7"
 
 _OUTPUTD_EXPECTED_CONTENT_PCM = "outputd_content_capture"
 
+_OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM = "outputd_active_content_capture"
+
 _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
+
+_OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
 
 _OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
@@ -869,6 +909,52 @@ def check_fanin_service() -> CheckResult:
             f"Check /var/lib/jasper/fanin.env and "
             f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES.",
         )
+    tts = data.get("tts", {})
+    if not isinstance(tts, dict) or not bool(tts.get("enabled", False)):
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "active but pre-DSP TTS socket is not enabled. Current "
+            "production topology requires TTS/cues to enter jasper-fanin "
+            "before CamillaDSP.",
+        )
+
+    tts_detail = "tts_enabled=true"
+    loudness = tts.get("assistant_loudness")
+    if not isinstance(loudness, dict):
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            "active with pre-DSP TTS enabled but STATUS is missing "
+            "tts.assistant_loudness telemetry; deploy current jasper-fanin "
+            "before evaluating TTS loudness.",
+        )
+    decision_seen = bool(loudness.get("decision_seen", False))
+    calibrated = bool(loudness.get("calibrated", False))
+    final_gain = loudness.get("final_gain_db")
+    if decision_seen and not isinstance(final_gain, (int, float)):
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            "active with pre-DSP TTS enabled but "
+            "tts.assistant_loudness.decision_seen=true without "
+            "numeric final_gain_db.",
+        )
+    if isinstance(final_gain, (int, float)) and not -60.0 <= float(final_gain) <= 0.0:
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            f"active with pre-DSP TTS enabled but "
+            f"tts.assistant_loudness.final_gain_db={final_gain!r}; "
+            "expected clamped [-60, 0] dB.",
+        )
+    tts_detail = (
+        f"tts_enabled=true, "
+        f"tts_pending_frames={tts.get('pending_frames', 0)}, "
+        f"assistant_loudness_decision={decision_seen}, "
+        f"assistant_loudness_calibrated={calibrated}, "
+        f"assistant_final_gain_db={final_gain}"
+    )
     return CheckResult(
         "jasper-fanin service",
         "ok",
@@ -876,7 +962,8 @@ def check_fanin_service() -> CheckResult:
         f"input_buffer_frames={input_buffer_frames}, "
         f"output_buffer_frames={output_buffer_frames}, "
         f"output xruns={xruns}, input xruns={','.join(input_xruns) or '0'}, "
-        f"progress_age_ms={progress_age}",
+        f"progress_age_ms={progress_age}, "
+        f"{tts_detail}",
     )
 
 @doctor_check(order=52, group="audio")
@@ -958,20 +1045,110 @@ def check_outputd_service() -> CheckResult:
             "fail",
             f"active but backend={data.get('backend')!r}; expected 'alsa'",
         )
+    sink_mode = data.get("sink_mode") or "single_alsa"
+    expected_content_pcm = (
+        _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM
+        if sink_mode == "dual_apple"
+        else _OUTPUTD_EXPECTED_CONTENT_PCM
+    )
+    expected_dac_pcm = (
+        _OUTPUTD_EXPECTED_DUAL_DAC_PCM
+        if sink_mode == "dual_apple"
+        else _OUTPUTD_EXPECTED_DAC_PCM
+    )
     content = data.get("content", {})
     dac = data.get("dac", {})
-    if content.get("pcm") != _OUTPUTD_EXPECTED_CONTENT_PCM:
+    if content.get("pcm") != expected_content_pcm:
         return CheckResult(
             "jasper-outputd",
             "fail",
             f"content.pcm={content.get('pcm')!r}; expected "
-            f"{_OUTPUTD_EXPECTED_CONTENT_PCM!r}",
+            f"{expected_content_pcm!r} for sink_mode={sink_mode!r}",
         )
-    if dac.get("pcm") != _OUTPUTD_EXPECTED_DAC_PCM:
+    if dac.get("pcm") != expected_dac_pcm:
         return CheckResult(
             "jasper-outputd",
             "fail",
-            f"dac.pcm={dac.get('pcm')!r}; expected {_OUTPUTD_EXPECTED_DAC_PCM!r}",
+            f"dac.pcm={dac.get('pcm')!r}; expected {expected_dac_pcm!r} "
+            f"for sink_mode={sink_mode!r}",
+        )
+    reference_outputs = data.get("reference_outputs")
+    if not isinstance(reference_outputs, dict):
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            "STATUS missing reference_outputs speaker-reference contract",
+        )
+    speaker_reference_source = reference_outputs.get("speaker_reference_source")
+    if speaker_reference_source != "outputd_final_electrical":
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            "reference_outputs.speaker_reference_source="
+            f"{speaker_reference_source!r}; expected 'outputd_final_electrical'",
+        )
+    reference_detail = (
+        "speaker_reference_source=outputd_final_electrical, "
+        "speaker_reference_active="
+        f"{bool(reference_outputs.get('speaker_reference_active', False))}, "
+        "speaker_reference_channels="
+        f"{reference_outputs.get('speaker_reference_channels')}, "
+        f"speaker_reference_udp={reference_outputs.get('udp_target')!r}, "
+        f"chip_ref_pcm={reference_outputs.get('chip_ref_pcm')!r}"
+    )
+    dual_detail = ""
+    dual_warning: str | None = None
+    if sink_mode == "dual_apple":
+        dual = data.get("dual_apple")
+        if not isinstance(dual, dict):
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "STATUS missing dual_apple runtime health for dual sink",
+            )
+        dual_a_pcm = dual.get("dac_a_pcm")
+        dual_b_pcm = dual.get("dac_b_pcm")
+        if not isinstance(dual_a_pcm, str) or not dual_a_pcm:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "dual_apple.dac_a_pcm is missing",
+            )
+        if not isinstance(dual_b_pcm, str) or not dual_b_pcm:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "dual_apple.dac_b_pcm is missing",
+            )
+        if dual_a_pcm == dual_b_pcm:
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "dual_apple DAC A/B PCMs are identical",
+            )
+        dual_linked = bool(dual.get("linked", False))
+        delay_delta = dual.get("delay_delta_frames")
+        delay_error = dual.get("delay_delta_error_frames")
+        max_delay = dual.get("max_delay_delta_frames")
+        if (
+            isinstance(delay_error, int)
+            and isinstance(max_delay, int)
+            and delay_error > max_delay
+        ):
+            return CheckResult(
+                "jasper-outputd",
+                "fail",
+                "dual_apple delay delta exceeds runtime budget: "
+                f"error={delay_error} max={max_delay}",
+            )
+        if not dual_linked:
+            dual_warning = "dual Apple PCMs are not ALSA-linked"
+        dual_detail = (
+            f", dual_a_pcm={dual_a_pcm}, dual_b_pcm={dual_b_pcm}, "
+            f"dual_linked={dual_linked}, "
+            f"dual_delay_delta_frames={delay_delta}, "
+            f"dual_delay_delta_error_frames={delay_error}, "
+            f"dual_max_delay_delta_frames={max_delay}"
         )
     sample_rate = dac.get("sample_rate")
     period_frames = dac.get("period_frames")
@@ -1115,6 +1292,12 @@ def check_outputd_service() -> CheckResult:
             f"active but last_progress_age_ms={progress_age} "
             "(work loop may be wedged; watchdog should fire soon)",
         )
+    if dual_warning is not None:
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            f"active but {dual_warning}. {dual_detail.lstrip(', ')}",
+        )
     if bridge_warning is not None:
         return CheckResult(
             "jasper-outputd",
@@ -1145,8 +1328,10 @@ def check_outputd_service() -> CheckResult:
         f"tts_dropped_commands={tts_dropped_commands}, "
         f"tts_dropped_audio_frames={tts_dropped_audio_frames}, "
         f"{bridge_detail}, "
+        f"{reference_detail}, "
         f"{loudness_detail}, "
-        f"progress_age_ms={progress_age}",
+        f"progress_age_ms={progress_age}"
+        f"{dual_detail}",
     )
 
 def _devices_volume_limit_from_text(text: str) -> float | None:

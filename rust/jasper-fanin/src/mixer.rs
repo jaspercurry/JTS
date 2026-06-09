@@ -49,6 +49,7 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use crate::config::Config;
+use crate::tts::{TtsInput, TtsMixer};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::{XrunEvent, XrunSource};
 
@@ -72,6 +73,9 @@ pub struct Mixer {
     /// Per-period output buffer (i16 interleaved). Same length as
     /// sum_buf.
     output_buf: Vec<i16>,
+    /// Per-period pre-duck program buffer for the assistant loudness
+    /// meter. Same length as sum_buf.
+    content_meter_buf: Vec<i16>,
     /// Cumulative output frames written since startup. Surfaced via
     /// the STATUS endpoint.
     pub frames_written: Arc<AtomicU64>,
@@ -91,6 +95,7 @@ pub struct Mixer {
     /// stuck on fdatasync.
     xrun_tx: Sender<XrunEvent>,
     period_frames: u32,
+    tts: Option<TtsMixer>,
 }
 
 pub struct Input {
@@ -111,6 +116,7 @@ impl Mixer {
     pub fn new(
         config: &Config,
         xrun_tx: Sender<XrunEvent>,
+        tts: Option<TtsInput>,
     ) -> Result<Self> {
         let period_samples =
             (config.period_frames as usize) * (CHANNELS as usize);
@@ -163,11 +169,13 @@ impl Mixer {
             output,
             sum_buf: vec![0i32; period_samples],
             output_buf: vec![0i16; period_samples],
+            content_meter_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
             output_xrun_count: Arc::new(AtomicU64::new(0)),
             selected_input_index: Arc::new(AtomicI32::new(-2)),
             xrun_tx,
             period_frames: config.period_frames,
+            tts: tts.map(TtsMixer::new),
         })
     }
 
@@ -244,7 +252,18 @@ impl Mixer {
         // 1. Clear the i32 sum scratch.
         self.sum_buf.fill(0);
 
-        // 2. Read from each input, accumulate into sum_buf.
+        // 2. Drain TTS/control commands once at the period boundary.
+        // When voice ducking is routed through fan-in, attenuate only
+        // renderer/program lanes. TTS is mixed after this step so it
+        // remains audible and then flows through CamillaDSP crossover.
+        let mut program_gain = 1.0f32;
+        if let Some(tts) = self.tts.as_mut() {
+            if tts.prepare_period() {
+                program_gain = tts.program_duck_gain();
+            }
+        }
+
+        // 3. Read from each input, accumulate into sum_buf.
         let period_frames = self.period_frames as usize;
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
@@ -260,11 +279,21 @@ impl Mixer {
             let active = frames * (CHANNELS as usize);
             mix_into(&mut self.sum_buf[..active], &input.read_buf[..active]);
         }
+        if let Some(tts) = self.tts.as_mut() {
+            saturate_to_i16(&self.sum_buf, &mut self.content_meter_buf);
+            tts.observe_content_period(&self.content_meter_buf);
+        }
+        if program_gain != 1.0 {
+            apply_gain_to_sum(&mut self.sum_buf, program_gain);
+        }
+        if let Some(tts) = self.tts.as_mut() {
+            tts.mix_period(&mut self.sum_buf);
+        }
 
-        // 3. Clamp i32 sum -> i16 output.
+        // 4. Clamp i32 sum -> i16 output.
         saturate_to_i16(&self.sum_buf, &mut self.output_buf);
 
-        // 4. Write to output (blocks; paces the loop).
+        // 5. Write to output (blocks; paces the loop).
         write_output(
             &self.output,
             &self.output_buf,
@@ -284,6 +313,30 @@ fn mix_into(sum: &mut [i32], input: &[i16]) {
     debug_assert_eq!(sum.len(), input.len());
     for (s, &i) in sum.iter_mut().zip(input) {
         *s = s.saturating_add(i as i32);
+    }
+}
+
+/// Sum input samples into the running i32 accumulator after applying a
+/// period-stable gain. Used for fan-in-owned voice ducking so TTS can
+/// be mixed after program attenuation and still pass through CamillaDSP.
+fn mix_into_with_gain(sum: &mut [i32], input: &[i16], gain: f32) {
+    debug_assert_eq!(sum.len(), input.len());
+    for (s, &i) in sum.iter_mut().zip(input) {
+        let scaled = ((i as f32) * gain)
+            .round()
+            .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        *s = s.saturating_add(scaled as i32);
+    }
+}
+
+/// Apply a period-stable gain to the accumulated program sum. Used
+/// after pre-duck content metering so the assistant loudness baseline
+/// tracks the listener-facing content, not the temporary ducked level.
+fn apply_gain_to_sum(sum: &mut [i32], gain: f32) {
+    for sample in sum {
+        *sample = ((*sample as f32) * gain)
+            .round()
+            .clamp(i32::MIN as f32, i32::MAX as f32) as i32;
     }
 }
 
@@ -548,6 +601,20 @@ mod tests {
         mix_into(&mut sum, &[5000, -3000]);
         mix_into(&mut sum, &[-5000, 3000]);
         assert_eq!(sum, vec![0, 0]);
+    }
+
+    #[test]
+    fn mix_into_with_gain_ducks_program_lane() {
+        let mut sum = vec![0i32; 4];
+        mix_into_with_gain(&mut sum, &[10_000, -10_000, 1_000, -1_000], 0.1);
+        assert_eq!(sum, vec![1_000, -1_000, 100, -100]);
+    }
+
+    #[test]
+    fn apply_gain_to_sum_ducks_after_program_sum() {
+        let mut sum = vec![20_000i32, -20_000, 1_500, -1_500];
+        apply_gain_to_sum(&mut sum, 0.1);
+        assert_eq!(sum, vec![2_000, -2_000, 150, -150]);
     }
 
     #[test]

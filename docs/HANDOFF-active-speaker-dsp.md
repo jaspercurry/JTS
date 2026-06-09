@@ -7,7 +7,7 @@
 > CamillaDSP directly drives woofer, midrange, and/or tweeter
 > amplifier channels. Current JTS production hardware still uses a
 > stereo Apple USB-C dongle passthrough path; active crossover
-> hardware is future work.
+> audible hardware ownership is future work.
 
 > **Implementation status, 2026-06-03:** A0 schema substrate has
 > started. `jasper.active_speaker` now defines import-cheap,
@@ -111,6 +111,17 @@
 > That JSON is only shape-checked and summarized client-side in this slice;
 > it is not persisted, trusted as measurement evidence, translated into
 > CamillaDSP filters, or applied.
+> The clock-domain gate now distinguishes the normal single-device
+> path from the dual-Apple USB-C DAC 4-channel pair. The latter is the
+> `dual_apple_usb_c_dac_4ch` hardware profile: exactly two Apple child
+> DACs, one speaker-local stereo pair per DAC, four physical outputs total,
+> and current reconciler observation showing the two children on the expected
+> same USB controller/bus. Stored 900 s common-clock drift evidence is
+> validation evidence, not the only source of hardware identity; missing
+> evidence is surfaced as a warning, while failed evidence blocks. Missing
+> or partial live hardware observation blocks. This does not authorize sound
+> by itself and does not permit generic ALSA/CamillaDSP multi-device
+> aggregation.
 > `jasper.active_speaker.staging` now provides the first build-specific
 > protected startup staging slice. The default preset is
 > `jasper/active_speaker/presets/epique_e150he44_eminence_f110m8_safe_v1.json`
@@ -237,11 +248,15 @@ For JTS, that means:
   speaker profile ID so later analysis knows what acoustic baseline
   was measured.
 
-The existing deployed audio topology is not yet active 2-way ready:
+The existing deployed audio topology now has the runtime substrate for
+the constrained dual Apple active-output profile, but commissioning
+still must satisfy the safety gates before sound-emitting active use:
 
-- Music flows through CamillaDSP to a stereo Apple USB-C dongle.
-- TTS/cues currently bypass CamillaDSP and enter `jasper-outputd`,
-  where they sum with post-DSP content before the Apple USB-C dongle.
+- All output profiles route TTS/cues to `jasper-fanin`. Fan-in applies
+  voice ducking to renderer/program lanes, mixes TTS after the duck, and
+  sends the complete signal through CamillaDSP crossover/protection.
+  The dual Apple active-output profile then has `jasper-outputd` split
+  the resulting four-channel lane to two pinned Apple DAC PCMs.
 - Active crossover output needs a stable multi-output map. For a
   mono active cabinet this is at least two physical outputs
   (`woofer`, `tweeter`). For a stereo active pair this is four
@@ -343,12 +358,17 @@ The persisted output topology sits between those two layers: it names
 which physical DAC lane belongs to which speaker/driver role, but it is
 not itself a CamillaDSP config and cannot authorize playback.
 It also records a clock-domain report for the detected final-output
-device. Today that report is intentionally a single-device boundary:
-JTS can describe a coherent DAC8x or Apple output device, but it does
-not product-support aggregating multiple USB DACs for active crossover.
-Multiple USB DACs remain future lab work until JTS can measure and
-compensate inter-device skew/drift before any sound-emitting path uses
-them.
+device. The supported clock-domain shapes are intentionally narrow:
+JTS can describe a coherent DAC8x/DAC8x Studio or single Apple output
+device, and it can now describe the `dual_apple_usb_c_dac_4ch` topology
+when the observed hardware has exactly two Apple child DACs on the same
+USB controller/bus and exactly four physical outputs. That dual path is
+one-DAC-per-speaker only and requires one `jasper-outputd` process to
+open both hardware PCMs. The topology layer still has no playback
+authority; it only lets downstream staging choose the active outputd
+four-channel lane. Generic USB DAC aggregation through ALSA
+`multi`/`dmix`/`plug` or CamillaDSP multi-device playback remains
+unsupported.
 
 ## Hard Safety Rules
 

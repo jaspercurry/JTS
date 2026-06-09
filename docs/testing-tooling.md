@@ -29,6 +29,7 @@
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
+| Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
@@ -427,9 +428,38 @@ Live Pi state without modifying anything:
 | `jasper-active-speaker path-audit --requirements` / `path-audit <evidence.json>` | List or evaluate the active-speaker audible-path safety checklist. Operator evidence can satisfy requirements but does not permit active config loading; `ok_to_load_active_config` stays false until future hardware-probe-backed evidence passes. |
 | `jasper-active-speaker environment-probe [--config <file.yml>] [--json]` | Read ALSA playback devices and the current/provided CamillaDSP config/statefile shape without playback, reloads, or mutation. Blocks the load gate unless the config is an active startup candidate, `camilladsp --check` passes, and hardware-probe-backed path-safety evidence is provided. Also reports the read-only safe-playback environment block; audible authority lives in the separate `/sound/active-speaker/playback-readiness` + tone-backend gate. |
 | `/sound/active-speaker/{environment,safe-playback,commissioning-rehearsal,channel-identity,tone-targets,arm,stop,playback-readiness,tone-plan,play-tone}` | Web active-speaker status/session/identity/readiness/plan/test surface. `environment`, `safe-playback`, `commissioning-rehearsal`, `channel-identity`, and `tone-targets` are read-only GETs; `arm`, `stop`, `channel-identity`, `playback-readiness`, `tone-plan`, and `play-tone` are CSRF-protected POSTs from `/sound/`. Arm records a safety session when the environment load gate passes; Stop is idempotent and resets quiet-start evidence; commissioning-rehearsal derives a no-audio durable-sequence packet from existing output/staging/startup/session evidence without storing wizard progress; channel-identity marks/clears operator-confirmed physical wiring evidence on the saved output topology; playback-readiness combines the saved target, channel identity, clock domain, active config/path safety, safe session, calibration-level bounds, Stop availability, and tone-backend status. Default `play-tone` renders a bounded artifact and records `audio_emitted: false`; audible tests require explicit lab env enablement (`JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`, `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, `JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`), passed topology readiness, and a non-tweeter target. Raised audible tests are rejected until the same armed session and target records a successful floor-level audible result; artifact-only results do not unlock raised audio. No endpoint reloads CamillaDSP or changes normal listening volume. |
+| `rust/jasper-dual-dac-lab/target/release/jasper-dual-dac-lab probe` / `run` | Lab-only dual Apple USB-C DAC validator. `probe` is passive. `run` opens two serial-pinned direct `hw:` PCMs, writes silence first, caps level, and aborts both outputs on xrun/suspend/disconnect/delay divergence. Not installed as a product daemon. |
 
 See [CLAUDE.md](../CLAUDE.md) "Debugging — fetch evidence before
 guessing" for the canonical recipes.
+
+---
+
+## Dual Apple DAC lab runner
+
+[`rust/jasper-dual-dac-lab`](../rust/jasper-dual-dac-lab) is a
+lab-only Rust binary for the experimental "one Apple USB-C DAC per
+speaker" topology. It is intentionally outside the product output path:
+no systemd unit, no install hook, and no CamillaDSP/ALSA aggregate
+device.
+
+Use it only from the Pi checkout after an explicit build:
+
+```sh
+cd /home/pi/jts/rust/jasper-dual-dac-lab
+cargo build --release --locked
+./target/release/jasper-dual-dac-lab probe
+```
+
+The `run` command is sound-capable and must follow
+[`dual-apple-dac-lab.md`](dual-apple-dac-lab.md): product audio owners
+stopped, serial-pinned Apple PCMs, dummy loads or capture inputs, no
+tweeters, explicit stop path, low level, and an evidence directory for
+stdout JSONL, ALSA/USB descriptors, kernel logs, and capture WAVs. The
+2026-06-03 evidence bundle shows a clean 15-minute low-level non-silence
+software stability pass and a Scarlett common-clock drift pass for one
+analog channel from each DAC. Right-channel identity, replug/reboot
+repeatability, and product-stack startup/reload safety remain unproven.
 
 ---
 

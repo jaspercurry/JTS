@@ -26,21 +26,20 @@ CONFIGURED_CARD="${1:-auto}"
 CONTROL="${2:-Headphone}"
 APPLE_DONGLE_REGEX="usb-c to 3.5mm"
 
-detect_apple_card() {
+detect_apple_cards() {
     aplay -L 2>/dev/null \
         | grep -B1 -iE "$APPLE_DONGLE_REGEX" \
         | grep -oE 'CARD=[^,]+' \
-        | head -1 \
         | sed 's/CARD=//' \
         || true
 }
 
-resolve_card() {
+resolve_cards() {
     if [[ -n "$CONFIGURED_CARD" && "$CONFIGURED_CARD" != "auto" ]]; then
         printf '%s\n' "$CONFIGURED_CARD"
         return 0
     fi
-    detect_apple_card
+    detect_apple_cards
 }
 
 event_state() {
@@ -73,54 +72,53 @@ maybe_reset() {
 }
 
 echo "event=apple_dongle.headphone_monitor.start configured_card=${CONFIGURED_CARD} control=${CONTROL}"
-last=""
-last_card=""
+declare -A last_by_card=()
 absent_logged=0
-unreadable_logged=0
+declare -A unreadable_by_card=()
 while true; do
-    card="$(resolve_card)"
-    if [[ -z "$card" ]]; then
+    mapfile -t cards < <(resolve_cards)
+    if [[ "${#cards[@]}" -eq 0 ]]; then
         if [[ "$absent_logged" != "1" ]]; then
             echo "event=apple_dongle.headphone_monitor.absent configured_card=${CONFIGURED_CARD} control=${CONTROL}"
             absent_logged=1
         fi
-        last=""
-        last_card=""
-        unreadable_logged=0
+        last_by_card=()
+        unreadable_by_card=()
         sleep 5
         continue
     fi
 
     absent_logged=0
-    if [[ "$card" != "$last_card" ]]; then
-        echo "event=apple_dongle.headphone_monitor.detected card=${card} control=${CONTROL}"
-        last=""
-        last_card="$card"
-        unreadable_logged=0
-    fi
+    for card in "${cards[@]}"; do
+        [[ -n "$card" ]] || continue
+        if [[ -z "${last_by_card[$card]+x}" ]]; then
+            echo "event=apple_dongle.headphone_monitor.detected card=${card} control=${CONTROL}"
+            unreadable_by_card["$card"]=0
+        fi
 
-    cur=$(read_state "$card")
-    if [[ -z "$cur" ]]; then
-        if [[ "$unreadable_logged" != "1" ]]; then
-            echo "event=apple_dongle.headphone_monitor.unreadable card=${card} control=${CONTROL}"
-            unreadable_logged=1
+        cur=$(read_state "$card")
+        if [[ -z "$cur" ]]; then
+            if [[ "${unreadable_by_card[$card]:-0}" != "1" ]]; then
+                echo "event=apple_dongle.headphone_monitor.unreadable card=${card} control=${CONTROL}"
+                unreadable_by_card["$card"]=1
+            fi
+            last_by_card["$card"]=""
+            continue
         fi
-        last=""
-        sleep 5
-        continue
-    fi
-    unreadable_logged=0
-    if [[ -n "$cur" && "$cur" != "$last" ]]; then
-        if [[ -z "$last" ]]; then
-            echo "event=apple_dongle.headphone_monitor.state card=${card} control=${CONTROL} state=$(event_state "$cur") initial=1"
-            # If we start up to a non-100% state (daemon restart
-            # while drift was already in effect), self-heal too.
-            maybe_reset "$card" "$cur"
-        else
-            echo "event=apple_dongle.headphone_monitor.change card=${card} control=${CONTROL} from=$(event_state "$last") to=$(event_state "$cur")"
-            maybe_reset "$card" "$cur"
+        unreadable_by_card["$card"]=0
+        last="${last_by_card[$card]:-}"
+        if [[ -n "$cur" && "$cur" != "$last" ]]; then
+            if [[ -z "$last" ]]; then
+                echo "event=apple_dongle.headphone_monitor.state card=${card} control=${CONTROL} state=$(event_state "$cur") initial=1"
+                # If we start up to a non-100% state (daemon restart
+                # while drift was already in effect), self-heal too.
+                maybe_reset "$card" "$cur"
+            else
+                echo "event=apple_dongle.headphone_monitor.change card=${card} control=${CONTROL} from=$(event_state "$last") to=$(event_state "$cur")"
+                maybe_reset "$card" "$cur"
+            fi
+            last_by_card["$card"]="$cur"
         fi
-        last="$cur"
-    fi
+    done
     sleep 1
 done

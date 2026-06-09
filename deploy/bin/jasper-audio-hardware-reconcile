@@ -8,18 +8,25 @@
 set -euo pipefail
 
 ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
+OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 ASOUND_SOURCE_TEMPLATE="${JASPER_ASOUND_SOURCE_TEMPLATE:-/etc/jasper/asoundrc.jasper.source}"
 ASOUND_TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}"
 RENDER_ASOUND_CONF="${JASPER_RENDER_ASOUND_CONF:-/usr/local/sbin/jasper-render-asound-conf}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 APLAY="${JASPER_APLAY:-aplay}"
+DEFAULT_OUTPUT_HARDWARE_PYTHON="python3"
+if [[ -x /opt/jasper/.venv/bin/python ]]; then
+    DEFAULT_OUTPUT_HARDWARE_PYTHON="/opt/jasper/.venv/bin/python"
+fi
+OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWARE_PYTHON}"
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper/output_hardware.json}"
-OUTPUT_HARDWARE_APLAY_LISTING="${JASPER_OUTPUT_HARDWARE_APLAY_LISTING:-}"
+OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
+ACTIVE_SPEAKER_STARTUP_LOAD_STATE="${JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE:-/var/lib/jasper/active_speaker_startup_load.json}"
+CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 REASON="manual"
 PRINT_ENV=0
 NO_RESTART=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." 2>/dev/null && pwd || true)"
 ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
 
 load_asound_render_lib() {
@@ -42,10 +49,10 @@ usage() {
 Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env] [--no-restart]
 
 Detect the current final-output DAC role and reconcile owned JTS state:
-  - DAC8x present -> outputd_dac targets DAC8x; Apple mixer helpers disabled
+  - DAC8x/DAC8x Studio present -> outputd_dac targets it; Apple mixer helpers disabled
   - Apple USB-C dongle present -> outputd_dac targets Apple; Apple helpers enabled
   - no recognized output DAC -> Apple helpers disabled; unknown/fallback id recorded
-  - optional DAC8x-only JASPER_OUTPUT_DAC_ROUTE renders a narrow ALSA
+  - optional DAC8x-family JASPER_OUTPUT_DAC_ROUTE renders a narrow ALSA
     channel route for lab/commissioning wiring
 
 --print-env prints shell-quoted role variables for install.sh and performs no mutations.
@@ -107,14 +114,34 @@ find_card() {
         || true
 }
 
-find_cards() {
-    local regex="$1"
-    "$APLAY" -L 2>/dev/null \
-        | grep -B1 -iE "$regex" \
-        | grep -oE 'CARD=[^,]+' \
-        | sed 's/CARD=//' \
-        | awk '!seen[$0]++' \
-        || true
+observe_output_hardware_state() {
+    local should_write="${1:-0}"
+    local payload profile_id profile_status
+    local action="observed"
+    local args=()
+    if [[ "$should_write" == "1" ]]; then
+        args+=(--write)
+        action="written"
+    fi
+    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+        log_event "state_${action}_skip" "reason=python_unavailable path=${OUTPUT_HARDWARE_STATE_PATH}"
+        return 0
+    fi
+    if ! payload="$(
+        JASPER_APLAY="$APLAY" \
+        JASPER_OUTPUT_HARDWARE_STATE_PATH="$OUTPUT_HARDWARE_STATE_PATH" \
+        "$OUTPUT_HARDWARE_PYTHON" -m jasper.output_hardware "${args[@]}" 2>/dev/null
+    )"; then
+        log_event "state_${action}_failed" "path=${OUTPUT_HARDWARE_STATE_PATH}"
+        return 0
+    fi
+    OBSERVED_OUTPUT_PAYLOAD="$payload"
+    profile_id="$(printf '%s' "$payload" | sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p')"
+    profile_status="$(printf '%s' "$payload" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p')"
+    OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
+    OBSERVED_OUTPUT_PROFILE_STATUS="$profile_status"
+    log_event "state_${action}" \
+        "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${profile_id:-unknown} status=${profile_status:-unknown}"
 }
 
 env_file_value() {
@@ -174,6 +201,14 @@ set_env_var() {
 set_env_var_if_changed() {
     local key="$1" value="$2"
     local current
+    if [[ ! -f "$ENV_FILE" ]]; then
+        set_env_var "$key" "$value"
+        return 0
+    fi
+    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$ENV_FILE"; then
+        set_env_var "$key" "$value"
+        return 0
+    fi
     current="$(env_file_value "$key")"
     if [[ "$current" == "$value" ]]; then
         return 1
@@ -182,17 +217,95 @@ set_env_var_if_changed() {
     return 0
 }
 
+env_file_value_from() {
+    local file="$1" key="$2"
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+    awk -v key="$key" '
+        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            value = $0
+            sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", value)
+            found = value
+            seen = 1
+        }
+        END {
+            if (seen) {
+                print found
+            }
+        }
+    ' "$file" \
+        | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
+}
+
+set_env_file_var() {
+    local file="$1" key="$2" value="$3"
+    local dir tmp quoted
+
+    dir="$(dirname "$file")"
+    install -d -m 0750 "$dir"
+    tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
+    quoted="$(quote_env_value "$value")"
+
+    if [[ -f "$file" ]]; then
+        awk -v key="$key" -v line="${key}=${quoted}" '
+            $0 ~ "^[[:space:]]*" key "=" {
+                if (!done) {
+                    print line
+                    done = 1
+                }
+                next
+            }
+            { print }
+            END {
+                if (!done) {
+                    print line
+                }
+            }
+        ' "$file" > "$tmp"
+    else
+        printf '%s=%s\n' "$key" "$quoted" > "$tmp"
+    fi
+
+    chmod 0640 "$tmp"
+    mv "$tmp" "$file"
+}
+
+set_env_file_var_if_changed() {
+    local file="$1" key="$2" value="$3"
+    local current
+    if [[ ! -f "$file" ]]; then
+        set_env_file_var "$file" "$key" "$value"
+        return 0
+    fi
+    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+        set_env_file_var "$file" "$key" "$value"
+        return 0
+    fi
+    current="$(env_file_value_from "$file" "$key")"
+    if [[ "$current" == "$value" ]]; then
+        return 1
+    fi
+    set_env_file_var "$file" "$key" "$value"
+    return 0
+}
+
 APPLE_DONGLE_CARD=""
-APPLE_DONGLE_CARDS=()
-APPLE_DONGLE_COUNT=0
 APPLE_DONGLE_PRESENT=0
 APPLE_DONGLE_SERVICE_CARD="auto"
 DAC8X_OUTPUT_CARD=""
+DAC8X_STUDIO_OUTPUT_CARD=""
 DONGLE_CARD="A"
 OUTPUT_DAC_CARD="A"
 OUTPUT_DAC_ID="A"
 OUTPUT_DAC_RECOGNIZED=0
 OUTPUT_DAC_ROUTE="${JASPER_OUTPUT_DAC_ROUTE:-}"
+OBSERVED_OUTPUT_PROFILE_ID=""
+OBSERVED_OUTPUT_PROFILE_STATUS=""
+OBSERVED_OUTPUT_PAYLOAD=""
+DUAL_APPLE_DAC_A_PCM=""
+DUAL_APPLE_DAC_B_PCM=""
+DUAL_APPLE_ORDER_SOURCE=""
 
 load_output_dac_route() {
     if [[ -n "${OUTPUT_DAC_ROUTE}" ]]; then
@@ -202,20 +315,20 @@ load_output_dac_route() {
 }
 
 detect_roles() {
-    APPLE_DONGLE_CARDS=()
-    while IFS= read -r card; do
-        [[ -n "$card" ]] && APPLE_DONGLE_CARDS+=("$card")
-    done < <(find_cards 'usb-c to 3.5mm')
-    APPLE_DONGLE_COUNT="${#APPLE_DONGLE_CARDS[@]}"
-    if [[ "$APPLE_DONGLE_COUNT" -gt 0 ]]; then
-        APPLE_DONGLE_CARD="${APPLE_DONGLE_CARDS[0]}"
+    APPLE_DONGLE_CARD="$(find_card 'usb-c to 3.5mm')"
+    if [[ -n "$APPLE_DONGLE_CARD" ]]; then
         DONGLE_CARD="$APPLE_DONGLE_CARD"
         APPLE_DONGLE_PRESENT=1
         APPLE_DONGLE_SERVICE_CARD="$APPLE_DONGLE_CARD"
     fi
 
+    DAC8X_STUDIO_OUTPUT_CARD="$(find_card 'hifiberry.*dac8x.*studio|dac8x.*studio')"
     DAC8X_OUTPUT_CARD="$(find_card 'snd_rpi_hifiberry_dac8x|hifiberry.*dac8x|dac8x')"
-    if [[ -n "$DAC8X_OUTPUT_CARD" ]]; then
+    if [[ -n "$DAC8X_STUDIO_OUTPUT_CARD" ]]; then
+        OUTPUT_DAC_CARD="$DAC8X_STUDIO_OUTPUT_CARD"
+        OUTPUT_DAC_ID="hifiberry_dac8x_studio"
+        OUTPUT_DAC_RECOGNIZED=1
+    elif [[ -n "$DAC8X_OUTPUT_CARD" ]]; then
         OUTPUT_DAC_CARD="$DAC8X_OUTPUT_CARD"
         OUTPUT_DAC_ID="hifiberry_dac8x"
         OUTPUT_DAC_RECOGNIZED=1
@@ -227,10 +340,148 @@ detect_roles() {
     load_output_dac_route
 }
 
+apply_observed_composite_policy() {
+    if [[ "$OBSERVED_OUTPUT_PROFILE_ID" != "dual_apple_usb_c_dac_4ch" ]]; then
+        return
+    fi
+    if [[ "$OBSERVED_OUTPUT_PROFILE_STATUS" != "ready" ]]; then
+        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
+        OUTPUT_DAC_CARD=""
+        OUTPUT_DAC_RECOGNIZED=0
+        APPLE_DONGLE_PRESENT=1
+        APPLE_DONGLE_SERVICE_CARD="auto"
+        log_event "dual_apple_detected" \
+            "status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown} action=park_until_ready"
+        return
+    fi
+    local parsed
+    if ! parsed="$(
+        printf '%s' "$OBSERVED_OUTPUT_PAYLOAD" | JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" "$OUTPUT_HARDWARE_PYTHON" -c '
+import json, sys
+from jasper.output_hardware import OutputHardwareState, dual_apple_runtime_mapping
+
+state = OutputHardwareState.from_mapping(json.load(sys.stdin))
+mapping = dual_apple_runtime_mapping(state)
+if not mapping.ok:
+    print(mapping.reason, file=sys.stderr)
+    raise SystemExit(1)
+print(mapping.order_source)
+for child in mapping.child_devices:
+    print(child.pcm or "")
+'
+    )"; then
+        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
+        OUTPUT_DAC_CARD=""
+        OUTPUT_DAC_RECOGNIZED=0
+        APPLE_DONGLE_PRESENT=1
+        APPLE_DONGLE_SERVICE_CARD="auto"
+        log_event "dual_apple_detected" \
+            "status=ready action=park_unstable_child_order topology_path=${OUTPUT_TOPOLOGY_PATH}"
+        return
+    fi
+    DUAL_APPLE_ORDER_SOURCE="$(printf '%s\n' "$parsed" | sed -n '1p')"
+    DUAL_APPLE_DAC_A_PCM="$(printf '%s\n' "$parsed" | sed -n '2p')"
+    DUAL_APPLE_DAC_B_PCM="$(printf '%s\n' "$parsed" | sed -n '3p')"
+    local graph_status
+    if ! graph_status="$(dual_apple_active_graph_status)"; then
+        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
+        OUTPUT_DAC_CARD=""
+        OUTPUT_DAC_RECOGNIZED=0
+        APPLE_DONGLE_PRESENT=1
+        APPLE_DONGLE_SERVICE_CARD="auto"
+        DUAL_APPLE_DAC_A_PCM=""
+        DUAL_APPLE_DAC_B_PCM=""
+        log_event "dual_apple_detected" \
+            "status=ready action=park_until_active_graph reason=${graph_status:-unknown}"
+        return
+    fi
+    OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
+    OUTPUT_DAC_CARD="$DONGLE_CARD"
+    OUTPUT_DAC_RECOGNIZED=1
+    APPLE_DONGLE_PRESENT=1
+    APPLE_DONGLE_SERVICE_CARD="auto"
+    log_event "dual_apple_detected" \
+        "status=ready action=outputd_dual_sink order_source=${DUAL_APPLE_ORDER_SOURCE} dac_a_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_A_PCM") dac_b_pcm=$(jasper_asound_log_token "$DUAL_APPLE_DAC_B_PCM")"
+}
+
+dual_apple_active_graph_status() {
+    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+        printf 'python_unavailable'
+        return 1
+    fi
+    JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE="$ACTIVE_SPEAKER_STARTUP_LOAD_STATE" \
+    JASPER_CAMILLA_STATEFILE="$CAMILLA_STATEFILE" \
+    "$OUTPUT_HARDWARE_PYTHON" - <<'PY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+startup_state_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE"])
+camilla_statefile = Path(os.environ["JASPER_CAMILLA_STATEFILE"])
+
+try:
+    startup_state = json.loads(startup_state_path.read_text(encoding="utf-8"))
+except FileNotFoundError:
+    print("startup_load_state_missing")
+    raise SystemExit(1)
+except Exception as exc:
+    print(f"startup_load_state_unreadable:{type(exc).__name__}")
+    raise SystemExit(1)
+
+if startup_state.get("status") != "loaded" or startup_state.get("loaded") is not True:
+    print(f"startup_load_not_loaded:{startup_state.get('status') or 'unknown'}")
+    raise SystemExit(1)
+
+active_config = startup_state.get("active_config_path")
+if not isinstance(active_config, str) or not active_config.strip():
+    print("active_config_path_missing")
+    raise SystemExit(1)
+active_path = Path(active_config)
+if not active_path.exists():
+    print("active_config_missing")
+    raise SystemExit(1)
+
+try:
+    statefile_text = camilla_statefile.read_text(encoding="utf-8")
+except FileNotFoundError:
+    print("camilla_statefile_missing")
+    raise SystemExit(1)
+except Exception as exc:
+    print(f"camilla_statefile_unreadable:{type(exc).__name__}")
+    raise SystemExit(1)
+
+match = re.search(r"(?m)^config_path:\s*['\"]?([^'\"\n]+)['\"]?\s*$", statefile_text)
+if not match:
+    print("camilla_statefile_config_path_missing")
+    raise SystemExit(1)
+
+current_config = Path(match.group(1).strip())
+if str(current_config) != str(active_path):
+    print("camilla_config_mismatch")
+    raise SystemExit(1)
+
+try:
+    active_text = active_path.read_text(encoding="utf-8")
+except Exception as exc:
+    print(f"active_config_unreadable:{type(exc).__name__}")
+    raise SystemExit(1)
+
+if "outputd_active_content_playback" not in active_text:
+    print("active_outputd_lane_missing")
+    raise SystemExit(1)
+if not re.search(r"(?m)^\s*channels:\s*4\s*$", active_text):
+    print("active_four_channel_shape_missing")
+    raise SystemExit(1)
+
+print("ready")
+PY
+}
+
 print_env() {
     printf 'DONGLE_CARD=%s\n' "$(quote_env_value "$DONGLE_CARD")"
     printf 'APPLE_DONGLE_PRESENT=%s\n' "$(quote_env_value "$APPLE_DONGLE_PRESENT")"
-    printf 'APPLE_DONGLE_COUNT=%s\n' "$(quote_env_value "$APPLE_DONGLE_COUNT")"
     printf 'APPLE_DONGLE_SERVICE_CARD=%s\n' "$(quote_env_value "$APPLE_DONGLE_SERVICE_CARD")"
     printf 'OUTPUT_DAC_CARD=%s\n' "$(quote_env_value "$OUTPUT_DAC_CARD")"
     printf 'OUTPUT_DAC_ID=%s\n' "$(quote_env_value "$OUTPUT_DAC_ID")"
@@ -247,7 +498,7 @@ render_asound_if_needed() {
     fi
     if [[ ! -f "$ASOUND_SOURCE_TEMPLATE" ]]; then
         log_event "asound_skip" "source_template=${ASOUND_SOURCE_TEMPLATE} missing=1"
-        return 66
+        return 1
     fi
 
     install -d -m 0755 "$(dirname "$ASOUND_TEMPLATE")"
@@ -272,59 +523,8 @@ render_asound_if_needed() {
     return 1
 }
 
-output_hardware_python() {
-    if [[ -n "${JASPER_OUTPUT_HARDWARE_PYTHON:-}" && -x "${JASPER_OUTPUT_HARDWARE_PYTHON}" ]]; then
-        echo "${JASPER_OUTPUT_HARDWARE_PYTHON}"
-        return 0
-    fi
-    if [[ -x /opt/jasper/.venv/bin/python ]]; then
-        echo /opt/jasper/.venv/bin/python
-        return 0
-    fi
-    if command -v python3 >/dev/null 2>&1; then
-        command -v python3
-        return 0
-    fi
-    return 1
-}
-
-write_output_hardware_state() {
-    local python_bin
-    local cmd=()
-    local module_env=()
-
-    if ! python_bin="$(output_hardware_python)"; then
-        log_event "state_skip" "reason=no_python state_path=${OUTPUT_HARDWARE_STATE_PATH}"
-        return 0
-    fi
-    cmd=(
-        "$python_bin" -m jasper.output_hardware
-        --active-profile-id "$OUTPUT_DAC_ID"
-        --active-card-id "$OUTPUT_DAC_CARD"
-        --state-path "$OUTPUT_HARDWARE_STATE_PATH"
-    )
-    if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
-        cmd+=(--active-recognized)
-    fi
-    if [[ -n "$OUTPUT_HARDWARE_APLAY_LISTING" ]]; then
-        cmd+=(--aplay-listing "$OUTPUT_HARDWARE_APLAY_LISTING")
-    fi
-    if [[ -r "${REPO_ROOT}/jasper/output_hardware.py" ]]; then
-        module_env=(PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}")
-    fi
-    cmd+=(--write)
-    if [[ "${#module_env[@]}" -gt 0 ]]; then
-        cmd=(env "${module_env[@]}" "${cmd[@]}")
-    fi
-    if ! "${cmd[@]}" >/dev/null; then
-        log_event "state_skip" "reason=writer_failed state_path=${OUTPUT_HARDWARE_STATE_PATH}"
-        return 0
-    fi
-    log_event "state_written" "state_path=${OUTPUT_HARDWARE_STATE_PATH} output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
-}
-
 gate_role_services() {
-    if [[ "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
+    if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
         "$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service
         "$SYSTEMCTL" start jasper-dac-init.service || true
         "$SYSTEMCTL" restart jasper-headphone-monitor.service || true
@@ -358,25 +558,59 @@ restart_audio_if_needed() {
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
 }
 
+apply_audio_runtime_env() {
+    local changed=0
+    if [[ "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_SINK" "dual_apple" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_active_content_capture" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DAC_PCM" "dual_apple_usb_c_dac_4ch" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "$DUAL_APPLE_DAC_A_PCM" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "$DUAL_APPLE_DAC_B_PCM" && changed=1
+        log_event "runtime_env" \
+            "mode=dual_apple outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+    elif [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_SINK" "single_alsa" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_content_capture" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DAC_PCM" "outputd_dac" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
+        log_event "runtime_env" \
+            "mode=single_alsa outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+    else
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_BACKEND" "fake" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_SINK" "single_alsa" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "outputd_content_capture" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DAC_PCM" "outputd_dac" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
+        log_event "runtime_env" \
+            "mode=parked outputd_env=${OUTPUTD_ENV_FILE} changed=${changed}"
+    fi
+    if [[ "$changed" == "1" ]]; then
+        return 0
+    fi
+    return 1
+}
+
 detect_roles
 if [[ "$PRINT_ENV" == "1" ]]; then
+    observe_output_hardware_state 0
+    apply_observed_composite_policy
     print_env
     exit 0
 fi
+observe_output_hardware_state 1
+apply_observed_composite_policy
 
-render_changed=0
-render_rc=0
-render_asound_if_needed || render_rc=$?
-if [[ "$render_rc" -gt 1 ]]; then
-    exit "$render_rc"
-fi
-if [[ "$render_rc" == "0" ]]; then
-    render_changed=1
-fi
 env_changed=0
 set_env_var_if_changed "JASPER_AUDIO_DAC_ID" "$OUTPUT_DAC_ID" && env_changed=1
 set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && env_changed=1
-write_output_hardware_state
+apply_audio_runtime_env && env_changed=1
+
+render_changed=0
+render_asound_if_needed && render_changed=1
 gate_role_services
 if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     restart_needed=0

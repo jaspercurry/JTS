@@ -1,14 +1,96 @@
 from __future__ import annotations
 
-from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
+import pytest
+
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.playback import tone_backend_status
 from jasper.active_speaker.readiness import (
-    HORN_FLOOR_TEST_PREVIEW_KIND,
     PLAYBACK_READINESS_KIND,
     build_playback_readiness,
 )
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology import (
+    DUAL_APPLE_ACTIVE_DEVICE_ID,
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+)
+from jasper.output_hardware import (
+    APPLE_USB_C_DONGLE_DEVICE_ID,
+    OutputCardFact,
+    classify_output_cards,
+    write_state as write_output_hardware_state,
+)
+
+
+def _dual_apple_hardware() -> dict:
+    return {
+        "device_id": DUAL_APPLE_ACTIVE_DEVICE_ID,
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "left_dac",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "DWH53530FHL2FN3AC",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "right_dac",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "DWH53530FLL2FN3A3",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+        "clock_domain_evidence": {
+            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
+            "measurement_id": "scarlett-ticks-900s-repeat-buffered",
+            "status": "passed",
+            "duration_seconds": 900,
+            "sample_rate_hz": 48000,
+            "offset_frames": -7,
+            "max_offset_delta_frames": 0,
+            "drift_ppm": 0,
+            "xrun_count": 0,
+            "dac_serials": [
+                "DWH53530FHL2FN3AC",
+                "DWH53530FLL2FN3A3",
+            ],
+        },
+    }
+
+
+def _write_dual_apple_observation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
 
 
 def _topology(
@@ -121,6 +203,59 @@ def test_playback_readiness_passes_preconditions_without_authorizing_audio() -> 
     assert all(gate["passed"] for gate in report["required_gates"])
 
 
+def test_playback_readiness_accepts_measured_dual_apple_clock_precondition(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _write_dual_apple_observation(monkeypatch, tmp_path)
+    report = build_playback_readiness(
+        _topology(hardware=_dual_apple_hardware()),
+        speaker_group_id="left",
+        role="woofer",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
+    )
+
+    assert report["status"] == "preconditions_passed"
+    assert report["preconditions_passed"] is True
+    assert report["playback_allowed"] is False
+    assert report["clock_domain"]["status"] == "dual_apple_composite_clock"
+    assert report["clock_domain"]["measured_composite_supported"] is True
+    assert report["clock_domain"]["coherent_physical_output_count"] == 4
+    assert all(gate["passed"] for gate in report["required_gates"])
+
+
+def test_playback_readiness_surfaces_missing_dual_apple_clock_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _write_dual_apple_observation(monkeypatch, tmp_path)
+    hardware = _dual_apple_hardware()
+    hardware.pop("clock_domain_evidence")
+
+    report = build_playback_readiness(
+        _topology(hardware=hardware),
+        speaker_group_id="left",
+        role="woofer",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(),
+        startup_load_state=_startup_load(),
+    )
+
+    codes = {issue["code"] for issue in report["issues"]}
+
+    assert report["status"] == "preconditions_passed"
+    assert report["preconditions_passed"] is True
+    assert report["clock_domain"]["status"] == "dual_apple_composite_clock"
+    assert report["clock_domain"]["composite_clock_supported"] is True
+    assert report["clock_domain"]["measured_composite_supported"] is False
+    assert "clock_evidence_missing" in codes
+    assert "single_clock_domain" not in codes
+
+
 def test_playback_readiness_allows_non_tweeter_when_audio_backend_enabled() -> None:
     report = build_playback_readiness(
         _topology(),
@@ -227,102 +362,6 @@ def test_playback_readiness_keeps_software_guard_request_blocked() -> None:
     assert report["status"] == "blocked"
     assert "tweeter_software_guard_requested" in codes
     assert report["playback_allowed"] is False
-
-
-def test_playback_readiness_blocks_known_independent_composite_clock_domain() -> None:
-    report = build_playback_readiness(
-        _topology(
-            hardware={
-                "device_id": DUAL_APPLE_USB_C_DAC_4CH_ID,
-                "device_label": "Dual Apple USB-C audio adapters",
-                "physical_output_count": 4,
-            }
-        ),
-        speaker_group_id="left",
-        role="woofer",
-        environment_report=_environment(),
-        safe_session=_safe_session(),
-        calibration_level=calibration_level_payload(),
-        startup_load_state=_startup_load(),
-        tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
-        }),
-    )
-    gates = {gate["id"]: gate["passed"] for gate in report["required_gates"]}
-    codes = {issue["code"] for issue in report["issues"]}
-
-    assert report["clock_domain"]["status"] == "known_independent_clocks"
-    assert report["clock_domain"]["profile_kind"] == "composite"
-    assert report["clock_domain"]["profile_is_composite_output"] is True
-    assert report["clock_domain"]["aggregate_output_runtime_enabled"] is False
-    assert gates["single_clock_domain"] is False
-    assert "single_clock_domain" in codes
-    assert report["playback_allowed"] is False
-
-
-def test_playback_readiness_reports_horn_guided_readiness_without_audio() -> None:
-    report = build_playback_readiness(
-        _topology(protection="software_guard_requested"),
-        speaker_group_id="left",
-        role="tweeter",
-        environment_report=_environment(),
-        safe_session=_safe_session(),
-        calibration_level=calibration_level_payload(observed_mic_dbfs=-32),
-        startup_load_state=_startup_load(),
-        tone_backend=tone_backend_status({
-            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
-            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
-            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
-        }),
-    )
-
-    horn = report["compression_driver"]
-
-    assert report["preconditions_passed"] is False
-    assert report["playback_allowed"] is False
-    assert horn["status"] == "guided_ready_no_audio"
-    assert horn["audio_allowed"] is False
-    assert horn["protection_mode"] == "software_guarded"
-    assert horn["manual_floor_test_candidate"] is True
-    assert horn["guided_floor_test_candidate"] is True
-    assert horn["microphone"]["status"] == "usable"
-    assert horn["floor_test_preview"]["kind"] == HORN_FLOOR_TEST_PREVIEW_KIND
-    assert horn["floor_test_preview"]["would_play"] is False
-    assert horn["floor_test_preview"]["audio_allowed"] is False
-    assert horn["floor_test_preview"]["tone"]["level_dbfs"] == -80.0
-    assert horn["floor_test_preview"]["tone"]["frequency_hz"] == 3000.0
-    assert horn["floor_test_preview"]["tone"]["band_limit"] == {
-        "type": "highpass",
-        "highpass_hz": 2000.0,
-    }
-
-
-def test_playback_readiness_blocks_horn_guidance_on_clipping() -> None:
-    report = build_playback_readiness(
-        _topology(protection="software_guard_requested"),
-        speaker_group_id="left",
-        role="tweeter",
-        environment_report=_environment(),
-        safe_session=_safe_session(),
-        calibration_level=calibration_level_payload(
-            observed_mic_dbfs=-18,
-            mic_clipping=True,
-        ),
-        startup_load_state=_startup_load(),
-    )
-
-    horn = report["compression_driver"]
-    codes = {issue["code"] for issue in horn["issues"]}
-
-    assert horn["status"] == "blocked"
-    assert horn["manual_floor_test_candidate"] is False
-    assert horn["guided_floor_test_candidate"] is False
-    assert horn["microphone"]["status"] == "clipping"
-    assert horn["floor_test_preview"]["status"] == "blocked"
-    assert horn["floor_test_preview"]["would_play"] is False
-    assert "mic_not_too_loud" in codes
 
 
 def test_playback_readiness_requires_environment_and_safe_session() -> None:

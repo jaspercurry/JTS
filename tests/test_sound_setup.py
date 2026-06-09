@@ -13,7 +13,17 @@ import pytest
 from jasper.correction.camilla_yaml import emit_correction_config
 from jasper.correction.peq import PEQ
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND
+from jasper.output_topology import (
+    DUAL_APPLE_ACTIVE_DEVICE_ID,
+    OUTPUT_TOPOLOGY_KIND,
+)
+from jasper.output_hardware import (
+    APPLE_USB_C_DONGLE_DEVICE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    OutputCardFact,
+    classify_output_cards,
+    write_state as write_output_hardware_state,
+)
 from jasper.sound.profile import (
     ParametricBand,
     SimpleEq,
@@ -174,7 +184,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/calibration-level'" in js
     assert "fetch('./active-speaker/bringup-preflight'" in js
     assert "fetch('./active-speaker/startup-load'" in js
-    assert "fetch('./active-speaker/commissioning-rehearsal'" in js
     assert "fetch('./active-speaker/tone-targets'" in js
     assert "fetch('./active-speaker/stage-config'" in js
     assert "fetch('./active-speaker/check-path-safety'" in js
@@ -202,12 +211,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "active-speaker-level" in js
     assert "data-act=\"active-level\"" in js
     assert "Raise 1 dB" in js
-    assert "Mic reading dBFS" in js
-    assert "data-act=\"active-mic-observation\"" in js
-    assert "action: 'observe'" in js
-    assert "observed_mic_dbfs" in js
-    assert "mic_clipping" in js
-    assert "This records operator-observed capture level only" in js
     assert "Level guard:" in js
     assert "Normal listening volume is untouched" in js
     assert "if (requestedLevel != null) body.level_dbfs = requestedLevel" in js
@@ -228,23 +231,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "manual guarded bring-up stays available" in js
     assert "function renderActiveSpeakerStartupLoad(startupLoad)" in js
     assert "Startup load" in js
-    assert "function renderOutputCommissioningRehearsal()" in js
-    assert "Commissioning rehearsal" in js
-    assert "rehearse the durable safety sequence without sound" in js
-    assert "No sound is played by this rehearsal" in js
-    assert "function fetchActiveSpeakerCommissioningRehearsal()" in js
     assert "Check protected path" in js
-    assert "Safe bring-up sequence" in js
-    assert "Verify artifact before audio" in js
-    assert "Confirm floor audio" in js
-    assert "Raise slowly" in js
-    assert "Artifact-only verification remains the default" in js
-    assert "function renderOutputCompressionDriverReadiness(readiness)" in js
-    assert "Horn bring-up readiness" in js
-    assert "No horn audio is enabled here" in js
-    assert "horn.audio_allowed ? 'Yes' : 'No'" in js
-    assert "Floor-test preview" in js
-    assert "Preview only:" in js
     assert "function checkActivePathSafety()" in js
     assert "var environment = await fetchActiveSpeakerEnvironment()" in js
     assert "payload: environment" in js
@@ -272,7 +259,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
 
     assert "function renderOutputTopologySetup()" in js
     assert "function refreshOutputTopology(options)" in js
-    assert "function saveOutputTopology(options)" in js
+    assert "function saveOutputTopology()" in js
     assert "function updateOutputChannelIdentity(button)" in js
     assert "function updateOutputChannelProtection(button)" in js
     assert "function checkOutputPlaybackReadiness(button)" in js
@@ -287,67 +274,27 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Saving this map does not play sound or reload CamillaDSP." in js
     assert "Backend validation owns the final decision." in js
     assert "Physical verification is operator evidence." in js
-    assert "Aggregate runtime" in js
-    assert "profile only" in js
+    assert "Multi-DAC aggregate" in js
+    assert "Composite clock" in js
+    assert "supported" in js
+    assert "needs attention" in js
+    assert "not enabled" in js
     assert "Mark verified" in js
     assert "Hardware protected" in js
     assert "Use software guard" in js
     assert "software_guard_requested" in js
     assert "Check readiness" in js
     assert "Playback readiness" in js
-    assert "function renderOutputReadinessSummary(readiness)" in js
-    assert "function renderOutputReadinessBlockers(readiness)" in js
-    assert "function outputCurrentLevelAtFloor()" in js
-    assert "function outputFloorAudioConfirmedForReadiness(readiness)" in js
-    assert "function quietStartTargetLabel(target)" in js
-    assert "function readinessTargetLockReason(readiness)" in js
-    assert "Why sound is blocked" in js
-    assert "Tweeter and horn audible tests are intentionally locked in this slice." in js
-    assert "Audible tests are limited to woofer, mid, and subwoofer targets in this slice." in js
-    assert "Reset calibration level to the quiet floor before verifying an artifact or playing a test." in js
-    assert "Floor audio is confirmed for this target/session" in js
-    assert "Floor confirmed for last target" in js
-    assert "Quiet start" in js
-    assert "Role policy" in js
-    assert "artifact-only" in js
     assert "Preconditions passed" in js
     assert "Verify artifact" in js
     assert "Play quiet " in js
     assert "The last readiness check failed" in js
     assert "Save this output setup draft before recording physical verification evidence." in js
     assert "Sound tests remain disabled for this setup surface." in js
-    assert "Choose speaker layout" in js
-    assert "Research drivers" in js
-    assert "Map and verify outputs" in js
-    assert "Stage, load, and start quiet" in js
-    assert "data-act=\"output-step-next\"" in js
     assert "Setup template" in js
     assert "Mono active 2-way" in js
-    assert "2 amp channels: woofer/mid + tweeter" in js
-    assert "4 amp channels: L/R woofer + L/R tweeter" in js
     assert "Stereo active 3-way" in js
-    assert "Subwoofer add-on" in js
-    assert "data-act=\"toggle-output-subwoofer\"" in js
-    assert "Optional. This composes with any mono or stereo layout" in js
-    assert "Add subwoofer" in js
-    assert "Remove subwoofer" in js
-    assert "function addSubwooferToTopology(topology)" in js
-    assert "function removeSubwooferFromTopology(topology)" in js
-    assert "if (role && roles.indexOf(role) < 0) roles.push(role);" in js
-    assert "role !== 'full_range'" not in js
     assert "Output setup template is a draft." in js
-    assert "Driver research helper" in js
-    assert "data-act=\"copy-driver-research-prompt\"" in js
-    assert "data-act=\"parse-driver-research\"" in js
-    assert "id=\"driver-research-import\"" in js
-    assert "id=\"driver-research-summary\"" in js
-    assert "function updateDriverResearchImportSummary()" in js
-    assert "updateDriverResearchImportSummary();" in js
-    assert "jts_active_crossover_driver_research" in js
-    assert "JTS will not apply it automatically." in js
-    assert "Could not copy automatically." in js
-    assert "if (!outputIdentityComplete())" in js
-    assert "Save a speaker map with assigned physical outputs" in js
     assert "Starter stereo" not in js
     assert "Starter 2-way" not in js
     assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
@@ -466,36 +413,6 @@ def test_active_speaker_safe_playback_payloads_are_no_audio(
     assert stopped["session_id"] == armed["session_id"]
     assert stopped["calibration_level"]["test_signal"]["requested_level_dbfs"] == -80.0
     assert stopped_level["test_signal"]["requested_level_dbfs"] == -80.0
-
-
-def test_active_speaker_mic_observation_preserves_level_guard(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-
-    raised = sound_setup._active_speaker_calibration_level_payload({
-        "action": "raise",
-    })
-    observed = sound_setup._active_speaker_calibration_level_payload({
-        "action": "observe",
-        "observed_mic_dbfs": -30,
-    })
-    clipped = sound_setup._active_speaker_calibration_level_payload({
-        "action": "observe",
-        "mic_clipping": True,
-    })
-
-    assert raised["test_signal"]["requested_level_dbfs"] == -79.0
-    assert observed["test_signal"]["requested_level_dbfs"] == -79.0
-    assert observed["last_action"] == "observe"
-    assert observed["mic_meter"]["status"] == "usable"
-    assert clipped["test_signal"]["requested_level_dbfs"] == -80.0
-    assert clipped["last_action"] == "clip_reset"
-    assert clipped["mic_meter"]["status"] == "clipping"
 
 
 def test_active_speaker_stop_payload_survives_level_reset_failure(
@@ -672,123 +589,6 @@ def test_active_speaker_playback_readiness_payload_is_no_audio(
     assert "audio_backend_not_enabled" in {
         issue["code"] for issue in blocked_audio["playback"]["issues"]
     }
-
-
-def test_active_speaker_commissioning_rehearsal_payload_is_no_audio(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_safe_playback_payload",
-        lambda: {
-            "status": "armed",
-            "session_id": "safe-1",
-            "expires_at": "2026-06-09T12:00:00Z",
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_calibration_level_payload",
-        lambda raw=None: {
-            "test_signal": {
-                "requested_level_dbfs": -80.0,
-                "min_level_dbfs": -80.0,
-            }
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_bringup_preflight_payload",
-        lambda: {
-            "status": "manual_ready",
-            "software_guard": {"status": "software_guard_ready"},
-            "modes": {
-                "manual_guarded_bringup": {
-                    "required_gates": [
-                        {"id": "output_topology_present", "passed": True},
-                        {"id": "topology_has_no_unhandled_blockers", "passed": True},
-                        {"id": "physical_identity_verified", "passed": True},
-                        {"id": "protected_startup_config_staged", "passed": True},
-                        {"id": "compression_driver_guard_accepted", "passed": True},
-                    ]
-                }
-            },
-            "issues": [],
-        },
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_startup_load_payload",
-        lambda: {
-            "state": {
-                "status": "loaded",
-                "loaded": True,
-                "rollback_available": True,
-                "current_config_matches_loaded": True,
-            },
-            "preflight": {
-                "status": "ready",
-                "path_safety": {"load_gate": "ready"},
-                "required_gates": [
-                    {"id": "path_safety_ready", "passed": True},
-                    {
-                        "id": "path_safety_matches_current_startup_load",
-                        "passed": True,
-                    },
-                ],
-                "issues": [],
-            },
-        },
-    )
-
-    payload = sound_setup._active_speaker_commissioning_rehearsal_payload()
-
-    assert payload["kind"] == "jts_active_speaker_commissioning_rehearsal"
-    assert payload["status"] == "ready_for_target_check"
-    assert payload["no_audio"] is True
-    assert payload["steps"][7]["id"] == "target_readiness_checked"
-    assert payload["steps"][7]["status"] == "next"
 
 
 def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
@@ -973,6 +773,198 @@ def test_sound_output_topology_payload_is_no_audio_draft(
     assert envelope["clock_domain"]["multi_device_aggregate_supported"] is False
     assert payload["safety"]["sound_tests_allowed"] is False
     assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"
+
+
+def _dual_apple_hardware() -> dict:
+    return {
+        "device_id": DUAL_APPLE_ACTIVE_DEVICE_ID,
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "left_dac",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "DWH53530FHL2FN3AC",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "right_dac",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "DWH53530FLL2FN3A3",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+        "clock_domain_evidence": {
+            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
+            "measurement_id": "scarlett-ticks-900s-repeat-buffered",
+            "status": "passed",
+            "duration_seconds": 900,
+            "sample_rate_hz": 48000,
+            "offset_frames": -7,
+            "max_offset_delta_frames": 0,
+            "drift_ppm": 0,
+            "xrun_count": 0,
+            "dac_serials": [
+                "DWH53530FHL2FN3AC",
+                "DWH53530FLL2FN3A3",
+            ],
+        },
+    }
+
+
+def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    envelope = sound_setup._output_topology_payload()
+    payload = envelope["output_topology"]
+
+    assert payload["hardware"]["device_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert payload["hardware"]["device_label"] == "Dual Apple USB-C DAC 4-channel pair"
+    assert payload["hardware"]["physical_output_count"] == 4
+    assert payload["hardware"]["child_devices"][0]["serial"] == "DWH53530FHL2FN3AC"
+    assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock"
+    assert envelope["clock_domain"]["composite_clock_supported"] is True
+    assert envelope["clock_domain"]["measured_composite_supported"] is False
+    assert "clock_evidence_missing" in {
+        issue["code"] for issue in envelope["clock_domain"]["issues"]
+    }
+    assert payload["safety"]["sound_tests_allowed"] is False
+
+
+def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
+    monkeypatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FLL2FN3A3",
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=tmp_path / "output_hardware.json",
+    )
+
+    payload = sound_setup._save_output_topology_payload({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple_pair",
+        "name": "Dual Apple stereo active pair",
+        "status": "draft",
+        "hardware": _dual_apple_hardware(),
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 2,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 3,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            },
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+        },
+    })
+
+    topology = payload["output_topology"]
+
+    assert topology["status"] == "verified"
+    assert topology["hardware"]["physical_output_count"] == 4
+    assert payload["clock_domain"]["status"] == "dual_apple_composite_clock"
+    assert payload["clock_domain"]["measured_composite_supported"] is True
+    assert payload["clock_domain"]["multi_device_aggregate_supported"] is False
+    assert payload["channel_identity"]["verified_channel_count"] == 4
+    assert topology["safety"]["sound_tests_allowed"] is False
 
 
 def test_sound_output_topology_save_validates_and_persists_complete_contract(

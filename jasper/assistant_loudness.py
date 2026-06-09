@@ -7,7 +7,8 @@ This module gives Python two small responsibilities:
 * measure the actual assistant PCM we send to outputd so profiles improve
   from real live replies, not only from a synthetic test phrase.
 
-Final gain policy stays in jasper-outputd, the final-output owner.
+Final gain policy stays in the active TTS IPC owner. In the packaged
+topology that is jasper-fanin, so TTS/cues enter before CamillaDSP.
 """
 from __future__ import annotations
 

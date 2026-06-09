@@ -8,13 +8,13 @@ from ..tools import ToolRegistry
 
 @dataclass(frozen=True)
 class AudioOutChunk:
-    """Provider audio plus playout identity for outputd's ledger.
+    """Provider audio plus playout identity for fan-in flush accounting.
 
     `pcm` is still the same 24 kHz mono int16 payload yielded by the
     legacy `audio_out()` iterator. The optional provider item id is the
     stable handle needed by provider-specific truncation later (for
     OpenAI, `response.output_item.added.item.id`). Providers that do not
-    expose per-response item ids leave it unset; outputd still accounts
+    expose per-response item ids leave it unset; fan-in still accounts
     for the local segment and returns played duration on flush.
     """
 

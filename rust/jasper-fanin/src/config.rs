@@ -12,6 +12,8 @@
 
 use anyhow::{Context, Result};
 
+use crate::loudness::AssistantLoudnessConfig;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
@@ -69,6 +71,25 @@ pub struct Config {
     /// Path to the append-only xrun event log. Persisted across
     /// reboots for forensics. Ring-truncated at ~10 KB.
     pub xrun_log_path: String,
+
+    /// Outputd-compatible TTS socket. Production points Python's TTS
+    /// transport here so speech/cues enter before CamillaDSP
+    /// crossover/protection. Setting the env var to "disabled" is for
+    /// rollback/lab use only.
+    pub tts_socket_path: Option<String>,
+
+    /// Bounded pre-DSP TTS queue budget. Audio chunks over this limit
+    /// are dropped rather than allowing an unbounded queue to add
+    /// seconds of stale assistant speech.
+    pub tts_max_pending_frames: u64,
+
+    /// Program-lane attenuation while queued TTS/cue audio is being
+    /// mixed by fan-in. This ducks renderer lanes only; TTS remains
+    /// unattenuated before CamillaDSP crossover/protection.
+    pub tts_program_duck_db: f32,
+
+    /// Assistant loudness policy for the pre-DSP TTS socket.
+    pub assistant_loudness: AssistantLoudnessConfig,
 }
 
 impl Config {
@@ -139,6 +160,8 @@ impl Config {
             );
         }
 
+        let loudness_defaults = AssistantLoudnessConfig::default();
+
         Ok(Self {
             output_pcm,
             input_pcms,
@@ -152,6 +175,45 @@ impl Config {
                 "JASPER_FANIN_XRUN_LOG_PATH",
                 "/var/lib/jasper/fanin/xrun_history.jsonl",
             ),
+            tts_socket_path: env_optional_with_default(
+                "JASPER_FANIN_TTS_SOCKET",
+                "/run/jasper-fanin/tts.sock",
+            ),
+            tts_max_pending_frames: env_u64(
+                "JASPER_FANIN_TTS_MAX_PENDING_FRAMES",
+                crate::tts::DEFAULT_MAX_PENDING_FRAMES,
+            )?,
+            tts_program_duck_db: env_f32_fallback(
+                "JASPER_FANIN_TTS_PROGRAM_DUCK_DB",
+                "JASPER_DUCK_DB",
+                -25.0,
+            )?,
+            assistant_loudness: AssistantLoudnessConfig {
+                assistant_offset_lu: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
+                    loudness_defaults.assistant_offset_lu,
+                )?,
+                max_peak_dbfs: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS",
+                    loudness_defaults.max_peak_dbfs,
+                )?,
+                fallback_source_lufs: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS",
+                    loudness_defaults.fallback_source_lufs,
+                )?,
+                fallback_source_peak_dbfs: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
+                    loudness_defaults.fallback_source_peak_dbfs,
+                )?,
+                default_silence_target_lufs: env_f32(
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    loudness_defaults.default_silence_target_lufs,
+                )?,
+                content_silence_lufs: env_f32(
+                    "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
+                    loudness_defaults.content_silence_lufs,
+                )?,
+            },
         })
     }
 }
@@ -160,6 +222,16 @@ impl Config {
 
 fn env_str(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_optional_with_default(name: &str, default: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(s) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("disabled") => {
+            None
+        }
+        Ok(s) => Some(s),
+        Err(_) => Some(default.to_string()),
+    }
 }
 
 /// Parse a pipe-delimited list env var. Pipe rather than comma
@@ -187,6 +259,47 @@ fn env_u32(name: &str, default: u32) -> Result<u32> {
             }),
         _ => Ok(default),
     }
+}
+
+fn env_u64(name: &str, default: u64) -> Result<u64> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => s
+            .trim()
+            .parse::<u64>()
+            .with_context(|| {
+                format!("{} must be a non-negative integer; got {:?}", name, s)
+            }),
+        _ => Ok(default),
+    }
+}
+
+fn env_f32(name: &str, default: f32) -> Result<f32> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => parse_env_f32(name, &s),
+        _ => Ok(default),
+    }
+}
+
+fn env_f32_fallback(
+    name: &str,
+    fallback_name: &str,
+    default: f32,
+) -> Result<f32> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => parse_env_f32(name, &s),
+        _ => env_f32(fallback_name, default),
+    }
+}
+
+fn parse_env_f32(name: &str, raw: &str) -> Result<f32> {
+    let parsed = raw
+        .trim()
+        .parse::<f32>()
+        .with_context(|| format!("{} must be a number; got {:?}", name, raw))?;
+    if !parsed.is_finite() {
+        anyhow::bail!("{} must be finite", name);
+    }
+    Ok(parsed)
 }
 
 fn env_u32_fallback(name: &str, fallback_name: &str, default: u32) -> Result<u32> {
@@ -223,7 +336,7 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Test fixture: serialize on `ENV_LOCK`, snapshot ALL
-    /// `JASPER_FANIN_*` env vars, clear them, apply this test's
+    /// fan-in env vars, clear them, apply this test's
     /// per-var overrides, run the closure, restore.
     fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
         let _guard = ENV_LOCK
@@ -231,7 +344,12 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let snapshot: Vec<(String, String)> = std::env::vars()
-            .filter(|(k, _)| k.starts_with("JASPER_FANIN_"))
+            .filter(|(k, _)| {
+                k.starts_with("JASPER_FANIN_")
+                    || k.starts_with("JASPER_OUTPUTD_ASSISTANT_")
+                    || k == "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS"
+                    || k == "JASPER_DUCK_DB"
+            })
             .collect();
         for (k, _) in &snapshot {
             std::env::remove_var(k);
@@ -266,6 +384,19 @@ mod tests {
                 ("JASPER_FANIN_BUFFER_FRAMES", None),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", None),
                 ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", None),
+                ("JASPER_FANIN_TTS_SOCKET", None),
+                ("JASPER_FANIN_TTS_MAX_PENDING_FRAMES", None),
+                ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
+                ("JASPER_OUTPUTD_ASSISTANT_OFFSET_LU", None),
+                ("JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS", None),
+                ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
+                ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
+                (
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    None,
+                ),
+                ("JASPER_OUTPUTD_CONTENT_SILENCE_LUFS", None),
+                ("JASPER_DUCK_DB", None),
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
@@ -278,6 +409,57 @@ mod tests {
                 assert_eq!(cfg.period_frames, 256);
                 assert_eq!(cfg.input_buffer_frames, 4096);
                 assert_eq!(cfg.output_buffer_frames, 3072);
+                assert_eq!(
+                    cfg.tts_socket_path.as_deref(),
+                    Some("/run/jasper-fanin/tts.sock")
+                );
+                assert_eq!(cfg.tts_max_pending_frames, 96_000);
+                assert_eq!(cfg.tts_program_duck_db, -25.0);
+                assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
+                assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
+                assert_eq!(
+                    cfg.assistant_loudness.default_silence_target_lufs,
+                    -41.0
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn tts_socket_can_be_disabled() {
+        with_env(
+            &[("JASPER_FANIN_TTS_SOCKET", Some("disabled"))],
+            || {
+                let cfg = Config::from_env().expect("disabled TTS socket must parse");
+                assert_eq!(cfg.tts_socket_path, None);
+            },
+        );
+    }
+
+    #[test]
+    fn tts_program_duck_defaults_to_voice_duck_db() {
+        with_env(
+            &[
+                ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
+                ("JASPER_DUCK_DB", Some("-18.5")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("duck fallback must parse");
+                assert_eq!(cfg.tts_program_duck_db, -18.5);
+            },
+        );
+    }
+
+    #[test]
+    fn tts_program_duck_override_wins_over_voice_duck_db() {
+        with_env(
+            &[
+                ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", Some("-30.0")),
+                ("JASPER_DUCK_DB", Some("-18.5")),
+            ],
+            || {
+                let cfg = Config::from_env().expect("duck override must parse");
+                assert_eq!(cfg.tts_program_duck_db, -30.0);
             },
         );
     }

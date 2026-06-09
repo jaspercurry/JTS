@@ -74,6 +74,7 @@ from ..audio_validation import (
 )
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..env_load import subprocess_env_with_fresh_files
+from ..output_hardware import load_state as _load_output_hardware_state
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -1494,6 +1495,11 @@ async def _get_state(
             "main_volume_db": camilla_st["main_volume_db"],
             "listening_level_percent": listening_level,
             "volume_policy": volume_policy,
+            "output_hardware": (
+                output_hardware.to_dict()
+                if (output_hardware := _load_output_hardware_state()) is not None
+                else None
+            ),
             "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
             "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
             "clipped_samples": camilla_st["clipped_samples"],

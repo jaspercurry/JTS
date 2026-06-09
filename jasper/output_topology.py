@@ -20,10 +20,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.audio_hardware.dac import all_profiles, by_id
-from jasper.output_hardware import (
+from .output_hardware import (
+    APPLE_USB_C_DONGLE_DEVICE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    HIFIBERRY_DAC8X_DEVICE_ID,
+    HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
+    SUPPORTED_CLOCK_DOMAIN_LABELS,
+    SUPPORTED_DEVICE_LABELS,
+    SUPPORTED_DEVICE_OUTPUT_COUNTS,
+    OutputHardwareState,
     load_state as load_output_hardware_state,
-    topology_hardware_mapping,
+    normalize_output_device_id,
+    topology_hardware_from_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,9 +42,12 @@ CHANNEL_IDENTITY_REPORT_KIND = "jts_output_channel_identity_report"
 CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
-SUPPORTED_DEVICE_OUTPUT_COUNTS = {
-    profile.id: profile.physical_output_count for profile in all_profiles()
-}
+DUAL_APPLE_ACTIVE_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+DUAL_APPLE_CLOCK_EVIDENCE_KIND = "dual_apple_usb_c_dac_drift_measurement"
+MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS = 900.0
+MAX_DUAL_APPLE_CLOCK_DRIFT_PPM = 1.0
+MAX_DUAL_APPLE_CLOCK_DELTA_FRAMES = 1.0
+
 SUPPORTED_GROUP_KINDS = {"left", "right", "mono", "subwoofer"}
 SUPPORTED_GROUP_MODES = {
     "full_range_passive",
@@ -60,6 +71,7 @@ PROTECTION_STATUSES = {
     "software_guard_requested",
     "unknown",
 }
+DUAL_APPLE_CLOCK_EVIDENCE_STATUSES = {"passed", "failed", "unknown"}
 OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
 TOPOLOGY_STATUSES = {"draft", "valid", "blocked", "verified"}
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
@@ -102,15 +114,32 @@ def _optional_id(value: Any) -> str | None:
     return _require_id(value, "optional id")
 
 
-def _text(value: Any, field_name: str, *, default: str | None = None) -> str:
+def _text(
+    value: Any,
+    field_name: str,
+    *,
+    default: str | None = None,
+    max_length: int = 120,
+) -> str:
     if value is None and default is not None:
         return default
     if not isinstance(value, str) or not value.strip():
         raise OutputTopologyError(f"{field_name} is required")
     out = " ".join(value.split())
-    if len(out) > 120:
-        raise OutputTopologyError(f"{field_name} must be <=120 chars")
+    if len(out) > max_length:
+        raise OutputTopologyError(f"{field_name} must be <={max_length} chars")
     return out
+
+
+def _optional_text(
+    value: Any,
+    field_name: str,
+    *,
+    max_length: int = 240,
+) -> str | None:
+    if value is None or value == "":
+        return None
+    return _text(value, field_name, max_length=max_length)
 
 
 def _int(value: Any, field_name: str) -> int:
@@ -151,6 +180,12 @@ def _float(value: Any, field_name: str, *, default: float = 0.0) -> float:
     return out
 
 
+def _optional_float(value: Any, field_name: str) -> float | None:
+    if value is None or value == "":
+        return None
+    return _float(value, field_name)
+
+
 def _safe_id_fragment(value: str) -> str:
     out = re.sub(r"[^A-Za-z0-9_.:-]+", "_", value.strip())
     return out[:64] or "unknown"
@@ -164,6 +199,9 @@ def default_clock_domain_id(device_id: str, card_id: str | None = None) -> str:
     to replace rather than reverse-engineer from labels.
     """
 
+    device_id = normalize_output_device_id(device_id)
+    if device_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+        return "profile:dual-apple-usb-c-dac-4ch"
     if card_id:
         return f"alsa:{_safe_id_fragment(card_id)}"
     if device_id:
@@ -172,8 +210,197 @@ def default_clock_domain_id(device_id: str, card_id: str | None = None) -> str:
 
 
 def default_clock_domain_label(device_id: str) -> str:
-    profile = by_id(device_id)
-    return profile.clock_domain_label if profile else "Single output device clock"
+    device_id = normalize_output_device_id(device_id)
+    return SUPPORTED_CLOCK_DOMAIN_LABELS.get(device_id, "Single output device clock")
+
+
+@dataclass(frozen=True)
+class OutputChildDevice:
+    """One serial-pinned member of a measured composite output device."""
+
+    child_id: str
+    device_id: str
+    device_label: str
+    physical_output_indexes: tuple[int, ...] = field(default_factory=tuple)
+    serial: str | None = None
+    card_id: str | None = None
+    stable_path: str | None = None
+    usb_path: str | None = None
+    controller: str | None = None
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "OutputChildDevice":
+        raw = _require_mapping(raw, "hardware.child_devices[]")
+        indexes = tuple(
+            _int(item, "hardware.child_devices[].physical_output_indexes[]")
+            for item in _sequence(
+                raw.get("physical_output_indexes", []),
+                "hardware.child_devices[].physical_output_indexes",
+            )
+        )
+        child_device_id = normalize_output_device_id(
+            raw.get("device_id", APPLE_USB_C_DONGLE_DEVICE_ID)
+        )
+        return cls(
+            child_id=_require_id(
+                raw.get("child_id"),
+                "hardware.child_devices[].child_id",
+            ),
+            device_id=_require_id(child_device_id, "hardware.child_devices[].device_id"),
+            device_label=_text(
+                raw.get("device_label"),
+                "hardware.child_devices[].device_label",
+                default="Apple USB-C audio adapter",
+            ),
+            physical_output_indexes=indexes,
+            serial=_optional_text(
+                raw.get("serial"),
+                "hardware.child_devices[].serial",
+                max_length=120,
+            ),
+            card_id=_optional_id(raw.get("card_id")),
+            stable_path=_optional_text(
+                raw.get("stable_path"),
+                "hardware.child_devices[].stable_path",
+                max_length=320,
+            ),
+            usb_path=_optional_text(
+                raw.get("usb_path"),
+                "hardware.child_devices[].usb_path",
+                max_length=120,
+            ),
+            controller=_optional_text(
+                raw.get("controller"),
+                "hardware.child_devices[].controller",
+                max_length=120,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "child_id": self.child_id,
+            "device_id": self.device_id,
+            "device_label": self.device_label,
+            "physical_output_indexes": list(self.physical_output_indexes),
+        }
+        if self.serial:
+            out["serial"] = self.serial
+        if self.card_id:
+            out["card_id"] = self.card_id
+        if self.stable_path:
+            out["stable_path"] = self.stable_path
+        if self.usb_path:
+            out["usb_path"] = self.usb_path
+        if self.controller:
+            out["controller"] = self.controller
+        return out
+
+
+@dataclass(frozen=True)
+class ClockDomainEvidence:
+    """Measured drift/skew evidence for a composite output clock domain."""
+
+    evidence_kind: str
+    measurement_id: str
+    status: str
+    duration_seconds: float
+    sample_rate_hz: int | None = None
+    offset_frames: float | None = None
+    max_offset_delta_frames: float | None = None
+    drift_ppm: float | None = None
+    xrun_count: int | None = None
+    dac_serials: tuple[str, ...] = field(default_factory=tuple)
+    artifact_path: str | None = None
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "ClockDomainEvidence":
+        raw = _require_mapping(raw, "hardware.clock_domain_evidence")
+        duration = _float(
+            raw.get("duration_seconds"),
+            "hardware.clock_domain_evidence.duration_seconds",
+        )
+        if duration < 0:
+            raise OutputTopologyError("clock-domain evidence duration must be >= 0")
+        sample_rate_hz = _optional_int(
+            raw.get("sample_rate_hz"),
+            "hardware.clock_domain_evidence.sample_rate_hz",
+        )
+        if sample_rate_hz is not None and sample_rate_hz <= 0:
+            raise OutputTopologyError("clock-domain evidence sample rate must be > 0")
+        xrun_count = _optional_int(
+            raw.get("xrun_count"),
+            "hardware.clock_domain_evidence.xrun_count",
+        )
+        if xrun_count is not None and xrun_count < 0:
+            raise OutputTopologyError("clock-domain evidence xrun count must be >= 0")
+        return cls(
+            evidence_kind=_require_id(
+                raw.get("evidence_kind", DUAL_APPLE_CLOCK_EVIDENCE_KIND),
+                "hardware.clock_domain_evidence.evidence_kind",
+            ),
+            measurement_id=_require_id(
+                raw.get("measurement_id"),
+                "hardware.clock_domain_evidence.measurement_id",
+            ),
+            status=_enum(
+                raw.get("status", "unknown"),
+                "hardware.clock_domain_evidence.status",
+                DUAL_APPLE_CLOCK_EVIDENCE_STATUSES,
+            ),
+            duration_seconds=duration,
+            sample_rate_hz=sample_rate_hz,
+            offset_frames=_optional_float(
+                raw.get("offset_frames"),
+                "hardware.clock_domain_evidence.offset_frames",
+            ),
+            max_offset_delta_frames=_optional_float(
+                raw.get("max_offset_delta_frames"),
+                "hardware.clock_domain_evidence.max_offset_delta_frames",
+            ),
+            drift_ppm=_optional_float(
+                raw.get("drift_ppm"),
+                "hardware.clock_domain_evidence.drift_ppm",
+            ),
+            xrun_count=xrun_count,
+            dac_serials=tuple(
+                _text(
+                    item,
+                    "hardware.clock_domain_evidence.dac_serials[]",
+                    max_length=120,
+                )
+                for item in _sequence(
+                    raw.get("dac_serials", []),
+                    "hardware.clock_domain_evidence.dac_serials",
+                )
+            ),
+            artifact_path=_optional_text(
+                raw.get("artifact_path"),
+                "hardware.clock_domain_evidence.artifact_path",
+                max_length=320,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "evidence_kind": self.evidence_kind,
+            "measurement_id": self.measurement_id,
+            "status": self.status,
+            "duration_seconds": self.duration_seconds,
+            "dac_serials": list(self.dac_serials),
+        }
+        if self.sample_rate_hz is not None:
+            out["sample_rate_hz"] = self.sample_rate_hz
+        if self.offset_frames is not None:
+            out["offset_frames"] = self.offset_frames
+        if self.max_offset_delta_frames is not None:
+            out["max_offset_delta_frames"] = self.max_offset_delta_frames
+        if self.drift_ppm is not None:
+            out["drift_ppm"] = self.drift_ppm
+        if self.xrun_count is not None:
+            out["xrun_count"] = self.xrun_count
+        if self.artifact_path:
+            out["artifact_path"] = self.artifact_path
+        return out
 
 
 @dataclass(frozen=True)
@@ -231,6 +458,8 @@ class OutputHardware:
     clock_domain_id: str = "unknown"
     clock_domain_label: str = "Single output device clock"
     outputs: tuple[PhysicalOutput, ...] = field(default_factory=tuple)
+    child_devices: tuple[OutputChildDevice, ...] = field(default_factory=tuple)
+    clock_domain_evidence: ClockDomainEvidence | None = None
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "OutputHardware":
@@ -241,7 +470,10 @@ class OutputHardware:
         )
         if count < 0 or count > 64:
             raise OutputTopologyError("physical_output_count must be 0-64")
-        device_id = _require_id(raw.get("device_id"), "hardware.device_id")
+        device_id = _require_id(
+            normalize_output_device_id(raw.get("device_id")),
+            "hardware.device_id",
+        )
         card_id = _optional_id(raw.get("card_id"))
         clock_domain_id = _require_id(
             raw.get("clock_domain_id")
@@ -257,9 +489,25 @@ class OutputHardware:
             if outputs_raw is not None
             else default_physical_outputs(count)
         )
+        child_devices = tuple(
+            OutputChildDevice.from_mapping(item)
+            for item in _sequence(
+                raw.get("child_devices", []),
+                "hardware.child_devices",
+            )
+        )
+        clock_domain_evidence = (
+            ClockDomainEvidence.from_mapping(raw.get("clock_domain_evidence"))
+            if raw.get("clock_domain_evidence") is not None
+            else None
+        )
         hardware = cls(
             device_id=device_id,
-            device_label=_text(raw.get("device_label"), "hardware.device_label"),
+            device_label=_text(
+                raw.get("device_label"),
+                "hardware.device_label",
+                default=SUPPORTED_DEVICE_LABELS.get(device_id, device_id),
+            ),
             physical_output_count=count,
             card_id=card_id,
             route=raw.get("route") if isinstance(raw.get("route"), str) else None,
@@ -270,11 +518,18 @@ class OutputHardware:
                 default=default_clock_domain_label(device_id),
             ),
             outputs=outputs,
+            child_devices=child_devices,
+            clock_domain_evidence=clock_domain_evidence,
         )
         hardware.validate()
         return hardware
 
     def validate(self) -> None:
+        expected_count = SUPPORTED_DEVICE_OUTPUT_COUNTS.get(self.device_id)
+        if expected_count is not None and self.physical_output_count != expected_count:
+            raise OutputTopologyError(
+                f"{self.device_id} requires exactly {expected_count} physical outputs"
+            )
         seen: set[int] = set()
         for output in self.outputs:
             if output.index in seen:
@@ -287,6 +542,18 @@ class OutputHardware:
         expected = set(range(self.physical_output_count))
         if seen != expected:
             raise OutputTopologyError("hardware outputs must cover every physical lane")
+        child_seen: set[int] = set()
+        for child in self.child_devices:
+            for index in child.physical_output_indexes:
+                if index < 0 or index >= self.physical_output_count:
+                    raise OutputTopologyError(
+                        f"child device output {index} is outside hardware range"
+                    )
+                if index in child_seen:
+                    raise OutputTopologyError(
+                        f"child device output {index} is mapped more than once"
+                    )
+                child_seen.add(index)
 
     def output_label(self, index: int | None) -> str | None:
         if index is None:
@@ -309,6 +576,10 @@ class OutputHardware:
             out["card_id"] = self.card_id
         if self.route:
             out["route"] = self.route
+        if self.child_devices:
+            out["child_devices"] = [child.to_dict() for child in self.child_devices]
+        if self.clock_domain_evidence:
+            out["clock_domain_evidence"] = self.clock_domain_evidence.to_dict()
         return out
 
 
@@ -607,17 +878,15 @@ def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
     """Build read-only hardware inventory from reconciler-owned env facts."""
 
     env = env or os.environ
-    device_id = env.get("JASPER_AUDIO_DAC_ID") or "unknown"
+    device_id = normalize_output_device_id(env.get("JASPER_AUDIO_DAC_ID"))
     card_id = env.get("JASPER_AUDIO_DAC_CARD") or None
     route = env.get("JASPER_OUTPUT_DAC_ROUTE") or None
-    profile = by_id(device_id)
-    output_count = profile.physical_output_count if profile else 0
+    output_count = SUPPORTED_DEVICE_OUTPUT_COUNTS.get(device_id, 0)
     if output_count <= 0:
         output_count = 2 if card_id else 0
-    device_label = (
-        profile.label
-        if profile
-        else device_id if device_id != "unknown" else "Unknown output device"
+    device_label = SUPPORTED_DEVICE_LABELS.get(
+        device_id,
+        device_id if device_id != "unknown" else "Unknown output device",
     )
     return OutputHardware(
         device_id=device_id,
@@ -631,42 +900,28 @@ def hardware_from_env(env: Mapping[str, str] | None = None) -> OutputHardware:
     )
 
 
-def hardware_from_output_hardware_state(
-    state: Mapping[str, Any] | None = None,
-) -> OutputHardware | None:
-    """Build draft topology hardware from the reconciler state artifact."""
-
-    if state is None:
-        state = load_output_hardware_state()
-    if state is None:
-        return None
-    raw = topology_hardware_mapping(state)
-    if raw is None:
-        return None
-    try:
-        return OutputHardware.from_mapping(raw)
-    except OutputTopologyError as exc:
-        logger.warning(
-            "event=output_topology.output_hardware_state_ignored error=%s",
-            type(exc).__name__,
-        )
-        return None
-
-
 def new_topology_draft(
     *,
     topology_id: str = "default",
     name: str = "Speaker outputs",
     hardware: OutputHardware | None = None,
 ) -> OutputTopology:
+    if hardware is None:
+        observed = load_output_hardware_state()
+        if observed is not None and observed.physical_output_count > 0:
+            try:
+                hardware = OutputHardware.from_mapping(
+                    topology_hardware_from_state(observed)
+                )
+            except OutputTopologyError:
+                logger.warning(
+                    "event=output_topology.observed_hardware_invalid profile_id=%s",
+                    observed.profile_id,
+                )
     return OutputTopology(
         topology_id=topology_id,
         name=name,
-        hardware=(
-            hardware
-            or hardware_from_output_hardware_state()
-            or hardware_from_env()
-        ),
+        hardware=hardware or hardware_from_env(),
         speaker_groups=(),
         routing=TopologyRouting(),
         status="draft",
@@ -926,24 +1181,296 @@ def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
     }
 
 
+def _dual_apple_clock_issues(
+    hardware: OutputHardware,
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    child_devices = hardware.child_devices
+    if len(child_devices) != 2:
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_children_required",
+            "measured dual-Apple topology requires exactly two child DACs",
+        ))
+    child_serials: list[str] = []
+    mapped_outputs: list[int] = []
+    for child in child_devices:
+        if child.device_id != APPLE_USB_C_DONGLE_DEVICE_ID:
+            issues.append(_issue(
+                "blocker",
+                "dual_apple_child_device_required",
+                f"{child.child_id} is {child.device_id}, not "
+                f"{APPLE_USB_C_DONGLE_DEVICE_ID}",
+            ))
+        if not child.serial:
+            issues.append(_issue(
+                "blocker",
+                "dual_apple_child_serial_required",
+                f"{child.child_id} is missing a serial for stable pinning",
+            ))
+        else:
+            child_serials.append(child.serial)
+        if len(child.physical_output_indexes) != 2:
+            issues.append(_issue(
+                "blocker",
+                "dual_apple_child_output_pair_required",
+                f"{child.child_id} must own exactly two physical outputs",
+            ))
+        mapped_outputs.extend(child.physical_output_indexes)
+    if len(child_serials) == 2 and len(set(child_serials)) != 2:
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_child_serials_not_unique",
+            "measured dual-Apple topology requires two unique child DAC serials",
+        ))
+    if child_devices and sorted(mapped_outputs) != list(range(4)):
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_output_map_invalid",
+            "dual-Apple child outputs must cover physical outputs 1-4 exactly once",
+        ))
+    if hardware.physical_output_count != 4:
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_physical_output_count",
+            "dual-Apple topology requires exactly four physical outputs",
+        ))
+
+    evidence = hardware.clock_domain_evidence
+    if evidence is None:
+        issues.append(_issue(
+            "warning",
+            "clock_evidence_missing",
+            "dual-Apple topology has no stored long-run drift evidence yet",
+        ))
+        return issues
+    if evidence.evidence_kind != DUAL_APPLE_CLOCK_EVIDENCE_KIND:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_kind_mismatch",
+            "clock evidence is not a dual Apple USB-C DAC drift measurement",
+        ))
+    if evidence.status != "passed":
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_not_passed",
+            "dual-Apple drift measurement did not pass",
+        ))
+    if evidence.duration_seconds < MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_duration_short",
+            f"dual-Apple drift measurement must run at least "
+            f"{int(MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS)} seconds",
+        ))
+    if evidence.sample_rate_hz != 48_000:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_sample_rate_mismatch",
+            "dual-Apple active output requires 48 kHz measurement evidence",
+        ))
+    if evidence.max_offset_delta_frames is None:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_delta_missing",
+            "dual-Apple drift evidence must report max offset delta frames",
+        ))
+    elif evidence.max_offset_delta_frames > MAX_DUAL_APPLE_CLOCK_DELTA_FRAMES:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_delta_too_large",
+            "dual-Apple relative timing moved more than the allowed frame budget",
+        ))
+    if evidence.drift_ppm is None:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_drift_missing",
+            "dual-Apple drift evidence must report drift ppm",
+        ))
+    elif abs(evidence.drift_ppm) > MAX_DUAL_APPLE_CLOCK_DRIFT_PPM:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_drift_too_large",
+            "dual-Apple relative clock drift exceeds the allowed ppm budget",
+        ))
+    if evidence.xrun_count is None:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_xruns_missing",
+            "dual-Apple drift evidence must report output xrun count",
+        ))
+    elif evidence.xrun_count != 0:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_xruns",
+            "dual-Apple drift measurement reported one or more output xruns",
+        ))
+    if len(evidence.dac_serials) != 2:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_serials_required",
+            "dual-Apple drift evidence must list exactly two DAC serials",
+        ))
+    elif len(set(evidence.dac_serials)) != 2:
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_serials_not_unique",
+            "dual-Apple drift evidence must list two unique DAC serials",
+        ))
+    elif len(child_serials) == 2 and set(evidence.dac_serials) != set(child_serials):
+        issues.append(_issue(
+            "blocker",
+            "clock_evidence_serial_mismatch",
+            "clock evidence serials do not match the pinned child DAC serials",
+        ))
+    return issues
+
+
+def _observed_dual_apple_hardware_issues(
+    hardware: OutputHardware,
+    observed: OutputHardwareState | None,
+) -> list[dict[str, str]]:
+    """Return blockers/warnings from current runtime hardware observation."""
+
+    if observed is None:
+        return [
+            _issue(
+                "blocker",
+                "dual_apple_observation_missing",
+                "current dual-Apple output hardware state has not been observed",
+            )
+        ]
+    if observed.profile_id != DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+        return [
+            _issue(
+                "blocker",
+                "dual_apple_observed_profile_mismatch",
+                f"current output hardware is {observed.profile_id}, not "
+                f"{DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID}",
+            )
+        ]
+
+    issues: list[dict[str, str]] = []
+    for raw_issue in observed.issues:
+        severity = str(raw_issue.get("severity") or "warning")
+        if severity not in {"blocker", "warning"}:
+            severity = "warning"
+        code = str(raw_issue.get("code") or "dual_apple_observed_issue")
+        message = str(raw_issue.get("message") or "observed dual-Apple hardware issue")
+        issues.append(_issue(severity, code, message))
+
+    if observed.status != "ready" and not any(
+        issue.get("severity") == "blocker" for issue in issues
+    ):
+        issues.append(_issue(
+            "blocker",
+            "dual_apple_observed_hardware_not_ready",
+            f"current dual-Apple output hardware state is {observed.status}",
+        ))
+
+    topology_serials = {
+        child.serial for child in hardware.child_devices if child.serial
+    }
+    observed_serials = {
+        child.serial for child in observed.child_devices
+        if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID and child.serial
+    }
+    if topology_serials:
+        if len(observed_serials) != 2:
+            issues.append(_issue(
+                "blocker",
+                "dual_apple_observed_serials_missing",
+                "current dual-Apple hardware observation lacks two DAC serials",
+            ))
+        elif observed_serials != topology_serials:
+            issues.append(_issue(
+                "blocker",
+                "dual_apple_observed_serial_mismatch",
+                "current dual-Apple DAC serials do not match the saved topology",
+            ))
+
+    return issues
+
+
 def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
     """Return read-only output clocking evidence for the topology.
 
-    This intentionally does not authorize multi-DAC playback. It names the
-    active profile's declared clocking shape and preserves the product
-    boundary: topology evidence records the hardware clock contract, while
-    runtime owners must still prove graph safety, xrun behavior, and any
-    inter-device skew/drift constraints before playback.
+    This intentionally does not try to implement multi-DAC aggregation. It
+    names the current single-device clock-domain assumption and preserves the
+    product boundary: active-crossover playback should use one coherent
+    multi-output device until a future lab path proves multi-device skew/drift.
     """
 
     hardware = topology.hardware
-    profile = by_id(hardware.device_id)
-    profile_known = profile is not None
-    profile_kind = profile.kind if profile else "unknown"
-    profile_is_composite = bool(profile and profile.kind == "composite")
-    aggregate_output_runtime_enabled = False
     issues: list[dict[str, str]] = []
-    notes: list[str] = []
+    notes: list[str]
+    if hardware.device_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+        issues = _dual_apple_clock_issues(hardware)
+        observed = load_output_hardware_state()
+        issues.extend(_observed_dual_apple_hardware_issues(hardware, observed))
+        passed = not any(issue.get("severity") == "blocker" for issue in issues)
+        status = (
+            "dual_apple_composite_clock"
+            if passed
+            else "dual_apple_composite_clock_blocked"
+        )
+        evidence_passed = (
+            hardware.clock_domain_evidence is not None
+            and hardware.clock_domain_evidence.status == "passed"
+            and passed
+        )
+        notes = [
+            "This is a constrained dual-DAC output profile, not generic ALSA aggregation.",
+            "Each Apple DAC remains one speaker-local stereo device; JTS must own both sinks in one process.",
+        ]
+        return {
+            "artifact_schema_version": SCHEMA_VERSION,
+            "kind": CLOCK_DOMAIN_REPORT_KIND,
+            "status": status,
+            "clock_domain_id": hardware.clock_domain_id,
+            "clock_domain_label": hardware.clock_domain_label,
+            "clock_domain_count": len(hardware.child_devices) or 2,
+            "coherent_physical_output_count": (
+                hardware.physical_output_count if passed else 0
+            ),
+            "multi_device_aggregate_supported": False,
+            "composite_clock_supported": passed,
+            "measured_composite_supported": evidence_passed,
+            "future_multi_device_lab_path": not passed,
+            "sound_tests_allowed": False,
+            "issues": issues,
+            "notes": notes,
+            "child_devices": [
+                child.to_dict() for child in hardware.child_devices
+            ],
+            "observed_hardware": (
+                observed.to_dict()
+                if observed is not None else None
+            ),
+            "evidence": (
+                hardware.clock_domain_evidence.to_dict()
+                if hardware.clock_domain_evidence
+                else None
+            ),
+            "acceptance_thresholds": {
+                "minimum_duration_seconds": MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS,
+                "maximum_abs_drift_ppm": MAX_DUAL_APPLE_CLOCK_DRIFT_PPM,
+                "maximum_offset_delta_frames": MAX_DUAL_APPLE_CLOCK_DELTA_FRAMES,
+                "required_sample_rate_hz": 48_000,
+                "maximum_xrun_count": 0,
+            },
+            "recommendation": (
+                "Proceed only through the measured dual-Apple active-output "
+                "owner: one process opens both serial-pinned DACs, writes "
+                "silence first, monitors xruns/delay/frame counts, and aborts "
+                "both sinks on mismatch."
+            ),
+        }
+
+    notes = [
+        "All current physical outputs are assumed to belong to one output device clock domain.",
+        "Multiple independent USB DACs are not aggregated by this topology contract.",
+    ]
     if hardware.physical_output_count <= 0:
         status = "missing_hardware"
         issues.append(
@@ -953,10 +1480,7 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
                 "no recognized output hardware is available",
             )
         )
-        clock_domain_count = 0
-        coherent_physical_output_count = 0
-        notes.append("No final-output hardware is currently available.")
-    elif profile is None:
+    elif hardware.device_id not in SUPPORTED_DEVICE_OUTPUT_COUNTS:
         status = "unknown_device_clock"
         issues.append(
             _issue(
@@ -965,49 +1489,8 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
                 "output hardware clocking is not recognized by JTS",
             )
         )
-        clock_domain_count = 1
-        coherent_physical_output_count = 0
-        notes.extend([
-            "The active output device is not in the DAC profile registry.",
-            "Topology can record wiring, but clock coherence is unknown.",
-        ])
-    elif profile.coherent_clock_domain:
-        status = "single_device_clock"
-        clock_domain_count = 1
-        coherent_physical_output_count = hardware.physical_output_count
-        notes.extend([
-            f"{profile.label} is a known coherent output profile.",
-            "All declared physical outputs share one hardware clock domain.",
-        ])
     else:
-        status = "known_independent_clocks"
-        clock_domain_count = max(1, len(profile.child_profile_ids))
-        coherent_physical_output_count = 0
-        issues.append(
-            _issue(
-                "warning",
-                "independent_output_clocks",
-                "known output profile does not declare one coherent clock domain",
-            )
-        )
-        notes.extend([
-            f"{profile.label} is a known output profile with independent clocks.",
-            "Topology can expose the physical output shape, but runtime validation must prove aggregate-output safety.",
-        ])
-    if profile_is_composite:
-        notes.append(
-            "Composite output ordering and runtime readiness are owned by "
-            "hardware reconcile/outputd, not by this topology parser."
-        )
-
-    recommendation = (
-        "Use one coherent multi-output DAC/interface for active crossover."
-        if status in {"single_device_clock", "unknown_device_clock", "missing_hardware"}
-        else (
-            "Use this aggregate profile only after the output runtime has matching "
-            "graph, channel-identity, and clock-drift validation evidence."
-        )
-    )
+        status = "single_device_clock"
 
     return {
         "artifact_schema_version": SCHEMA_VERSION,
@@ -1015,19 +1498,20 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
         "status": status,
         "clock_domain_id": hardware.clock_domain_id,
         "clock_domain_label": hardware.clock_domain_label,
-        "clock_domain_count": clock_domain_count,
-        "coherent_physical_output_count": coherent_physical_output_count,
-        "profile_id": profile.id if profile else hardware.device_id,
-        "profile_known": profile_known,
-        "profile_kind": profile_kind,
-        "profile_is_composite_output": profile_is_composite,
-        "aggregate_output_runtime_enabled": aggregate_output_runtime_enabled,
+        "clock_domain_count": 1 if hardware.physical_output_count > 0 else 0,
+        "coherent_physical_output_count": hardware.physical_output_count
+        if status == "single_device_clock"
+        else 0,
         "multi_device_aggregate_supported": False,
         "future_multi_device_lab_path": True,
         "sound_tests_allowed": False,
         "issues": issues,
         "notes": notes,
-        "recommendation": recommendation,
+        "recommendation": (
+            "Use one coherent multi-output DAC/interface for active crossover. "
+            "Treat multiple USB DACs as future lab work until JTS can measure "
+            "and compensate inter-device skew and drift."
+        ),
     }
 
 

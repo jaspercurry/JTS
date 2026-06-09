@@ -17,7 +17,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
+from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from .camilla_yaml import (
@@ -196,6 +198,8 @@ def _resolve_playback_device(
     explicit = playback_device or os.environ.get(ACTIVE_PLAYBACK_DEVICE_ENV)
     if explicit and explicit.strip():
         return explicit.strip(), "explicit"
+    if topology.hardware.device_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+        return ACTIVE_OUTPUTD_PLAYBACK_DEVICE, "dual_apple_outputd_active_lane"
     if topology.hardware.card_id:
         return f"hw:{topology.hardware.card_id},0", "topology_hardware"
     return None, "missing"

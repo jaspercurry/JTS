@@ -9,7 +9,9 @@ from jasper.active_speaker import (
     load_staged_startup_config,
     stage_protected_startup_config,
 )
+from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
@@ -51,6 +53,30 @@ def _topology(*, protection_status: str = "present") -> OutputTopology:
         ],
         "routing": {"mono_group_id": "mono"},
     })
+
+
+def _dual_apple_topology(*, protection_status: str = "present") -> OutputTopology:
+    raw = _topology(protection_status=protection_status).to_dict()
+    raw["hardware"] = {
+        "device_id": DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "apple_dac_1",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "apple_dac_2",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+    }
+    return OutputTopology.from_mapping(raw)
 
 
 def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
@@ -101,6 +127,28 @@ def test_stage_protected_startup_config_writes_muted_candidate(
     assert "freq: 5000.0000" in text
     assert "mute: true" in text
     assert loaded["status"] == "staged"
+
+
+def test_stage_protected_startup_config_uses_outputd_active_lane_for_dual_apple(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "active_staged.yml"
+    meta = tmp_path / "active_staged.json"
+
+    payload = stage_protected_startup_config(
+        _dual_apple_topology(),
+        config_path=out,
+        metadata_path=meta,
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+
+    assert payload["status"] == "staged"
+    assert payload["config"]["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+    assert payload["config"]["playback_device_source"] == "dual_apple_outputd_active_lane"
+    assert f'device: "{ACTIVE_OUTPUTD_PLAYBACK_DEVICE}"' in out.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_stage_protected_startup_config_blocks_missing_tweeter_protection(

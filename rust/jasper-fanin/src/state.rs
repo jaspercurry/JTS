@@ -58,6 +58,7 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use crate::mixer::Mixer;
+use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
 
 /// Read timeout on accepted connections. Defends against a client
@@ -88,6 +89,7 @@ pub struct StateServer {
     period_frames: u32,
     input_buffer_frames: u32,
     output_buffer_frames: u32,
+    tts_metrics: Option<TtsMetrics>,
 }
 
 pub struct InputSnapshotSource {
@@ -107,6 +109,7 @@ impl StateServer {
         input_buffer_frames: u32,
         output_buffer_frames: u32,
         output_pcm: String,
+        tts_metrics: Option<TtsMetrics>,
     ) -> Self {
         let inputs = mixer
             .inputs()
@@ -131,6 +134,7 @@ impl StateServer {
             period_frames,
             input_buffer_frames,
             output_buffer_frames,
+            tts_metrics,
         }
     }
 
@@ -377,6 +381,93 @@ impl StateServer {
         buf.push('}');
         buf.push(',');
 
+        buf.push_str(r#""tts":{"#);
+        match &self.tts_metrics {
+            Some(metrics) => {
+                push_kv_bool(&mut buf, "enabled", true);
+                buf.push(',');
+                push_kv_u64(&mut buf, "pending_frames", metrics.pending_frames());
+                buf.push(',');
+                push_kv_u64(&mut buf, "max_pending_frames", metrics.max_pending_frames());
+                buf.push(',');
+                push_kv_u64(&mut buf, "budget_frames", metrics.budget_frames());
+                buf.push(',');
+                push_kv_u64(&mut buf, "dropped_commands", metrics.dropped_commands());
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "dropped_audio_frames",
+                    metrics.dropped_audio_frames(),
+                );
+                buf.push(',');
+                push_kv_u64(&mut buf, "flush_requests", metrics.flush_requests());
+                buf.push(',');
+                push_kv_u64(&mut buf, "flushed_frames", metrics.flushed_frames());
+                buf.push(',');
+                buf.push_str(r#""assistant_loudness":{"#);
+                let loudness = metrics.loudness_snapshot();
+                push_kv_f64_opt(
+                    &mut buf,
+                    "content_short_lufs",
+                    loudness.content_short_lufs,
+                    1,
+                );
+                buf.push(',');
+                push_kv_f64_opt(
+                    &mut buf,
+                    "content_anchor_lufs",
+                    loudness.content_anchor_lufs,
+                    1,
+                );
+                buf.push(',');
+                push_kv_bool(&mut buf, "decision_seen", loudness.decision_seen);
+                buf.push(',');
+                push_kv_bool(&mut buf, "calibrated", loudness.calibrated);
+                buf.push(',');
+                push_kv_f64(
+                    &mut buf,
+                    "profile_confidence",
+                    loudness.profile_confidence,
+                    2,
+                );
+                buf.push(',');
+                push_kv_f64_opt(&mut buf, "baseline_lufs", loudness.baseline_lufs, 1);
+                buf.push(',');
+                push_kv_f64_opt(&mut buf, "target_lufs", loudness.target_lufs, 1);
+                buf.push(',');
+                push_kv_f64_opt(&mut buf, "source_lufs", loudness.source_lufs, 1);
+                buf.push(',');
+                push_kv_f64_opt(
+                    &mut buf,
+                    "source_peak_dbfs",
+                    loudness.source_peak_dbfs,
+                    1,
+                );
+                buf.push(',');
+                push_kv_f64_opt(
+                    &mut buf,
+                    "requested_gain_db",
+                    loudness.requested_gain_db,
+                    1,
+                );
+                buf.push(',');
+                push_kv_f64_opt(
+                    &mut buf,
+                    "peak_cap_gain_db",
+                    loudness.peak_cap_gain_db,
+                    1,
+                );
+                buf.push(',');
+                push_kv_f64_opt(&mut buf, "final_gain_db", loudness.final_gain_db, 1);
+                buf.push('}');
+            }
+            None => {
+                push_kv_bool(&mut buf, "enabled", false);
+            }
+        }
+        buf.push('}');
+        buf.push(',');
+
         // watchdog object
         buf.push_str(r#""watchdog":{"#);
         push_kv_u64(
@@ -420,11 +511,28 @@ fn push_kv_u64(buf: &mut String, key: &str, value: u64) {
     buf.push_str(&value.to_string());
 }
 
+fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    buf.push_str(if value { "true" } else { "false" });
+}
+
 fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
     buf.push('"');
     buf.push_str(key);
     buf.push_str(r#"":"#);
     buf.push_str(&format!("{:.*}", decimals, value));
+}
+
+fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str(r#"":"#);
+    match value {
+        Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
+        None => buf.push_str("null"),
+    }
 }
 
 fn escape_json(s: &str) -> String {
@@ -476,6 +584,7 @@ mod tests {
             period_frames: 256,
             input_buffer_frames: 4096,
             output_buffer_frames: 2048,
+            tts_metrics: Some(TtsMetrics::new(96_000)),
         }
     }
 
@@ -489,6 +598,7 @@ mod tests {
             "selected_input",
             "inputs",
             "output",
+            "tts",
             "watchdog",
         ] {
             assert!(
@@ -518,6 +628,17 @@ mod tests {
         assert!(j.contains(r#""pcm":"hw:Loopback,0,7""#));
         assert!(j.contains(r#""sample_rate":48000"#));
         assert!(j.contains(r#""frames_written":98765"#));
+    }
+
+    #[test]
+    fn snapshot_json_tts_fields() {
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(j.contains(r#""tts":{"enabled":true"#));
+        assert!(j.contains(r#""budget_frames":96000"#));
+        assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));
+        assert!(j.contains(r#""decision_seen":false"#));
+        assert!(j.contains(r#""final_gain_db":null"#));
     }
 
     #[test]

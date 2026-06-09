@@ -28,8 +28,8 @@ is channel 0/1 — see HANDOFF-xvf3800.md §3.
 
 Topology:
 
-    pcm.jasper_capture (48k stereo, host clock)
-       or outputd UDP final-speaker tap in chip-AEC/corpus mode
+    outputd UDP final-speaker monitor (48k stereo speaker reference)
+       or explicit fallback pcm.jasper_capture (48k stereo, host clock)
        │  reference signal (what the speaker is being asked to play)
        ▼
     [downsample 48→16k, L+R summed to mono, HPF at 125 Hz]         16k mono ref
@@ -140,14 +140,12 @@ logger.info(
 FRAME_SAMPLES = 320
 SAMPLE_RATE = 16000
 
-# Capture device for the reference (host-clocked dsnoop on the
-# renderer→camilla loopback). `jasper_ref` is a plug-wrapped alias
-# of `jasper_capture` defined in /etc/asound.conf. The fan-in topology
-# pins the summed loopback to 48 kHz S16_LE; the plug wrapper remains
-# a defensive conversion layer if an operator changes the reference
-# tap shape.
-# CamillaDSP uses the same plug pattern via `plug:jasper_capture`
-# in v1.yml — this just extends it to the bridge.
+# Fallback capture device for the reference (host-clocked dsnoop on
+# the fan-in loopback). Production reconcile sets JASPER_AEC_REF_SOURCE
+# to outputd_udp so software AEC consumes outputd's final speaker
+# monitor. `jasper_ref` remains available for explicit diagnostics and
+# rollback because it is a plug-wrapped alias of `jasper_capture`
+# defined in /etc/asound.conf.
 REF_DEVICE = "jasper_ref"
 REF_RATE = 48000  # what we ask plug for; plug resamples slave to this
 REF_CHANNELS = 2
@@ -248,7 +246,7 @@ OUT_PORT_XVF_RAW0_WEBRTC_AEC3 = int(os.environ.get(
 OUT_PORT_XVF_RAW0_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_XVF_RAW0_DTLN", "9890"))
 OUTPUTD_REF_UDP_HOST = os.environ.get("JASPER_AEC_OUTPUTD_REF_UDP_HOST", "127.0.0.1")
 OUTPUTD_REF_UDP_PORT = int(os.environ.get("JASPER_AEC_OUTPUTD_REF_UDP_PORT", "9891"))
-REF_SOURCE = os.environ.get("JASPER_AEC_REF_SOURCE", "alsa").strip().lower()
+REF_SOURCE = os.environ.get("JASPER_AEC_REF_SOURCE", "outputd_udp").strip().lower()
 OUT_PORT_AEC3_SWEEP = {
     variant.leg: int(os.environ.get(variant.port_env, str(variant.default_port)))
     for variant in AEC3_SWEEP_VARIANTS
@@ -817,11 +815,10 @@ class _SimpleAGC:
 def _validate_mic_device() -> None:
     """Fail before opening the shared reference tap if the mic is absent.
 
-    The ref capture reads from `jasper_capture`, the same dsnoop PCM
-    CamillaDSP uses for music. If the mic device is missing, starting
-    the ref reader anyway creates a pointless second reader until the
-    stall watchdog exits. Validate the mic first so missing hardware
-    cannot perturb the music path.
+    Validate the mic first so missing hardware fails before we start
+    the far-end reference thread. In the normal outputd UDP path this
+    avoids useless socket work; in explicit ALSA fallback mode it also
+    avoids opening an unnecessary `jasper_ref` reader.
     """
     try:
         sd.query_devices(MIC_DEVICE, "input")
@@ -977,9 +974,9 @@ def _outputd_ref_udp_thread(ref_q: Queue) -> None:
     to the 16 kHz mono frames AEC3 consumes.
 
     Unlike `jasper_ref`, this is not a clocked ALSA capture loop: outputd
-    sends the exact post-mix buffer it writes to the DAC. Chip-corpus mode
-    uses this path so software AEC3 and chip AEC see the same final
-    speaker reference.
+    sends the exact post-mix buffer it writes to the DAC. Production
+    software AEC, chip-AEC, corpus, and diagnostics use this path so they
+    all see the same final speaker reference.
     """
     import socket
     import time as _time

@@ -35,7 +35,7 @@
 # (substituting the dongle's controlC node) — the RUN+= line should
 # appear in the output.
 
-ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ENV{JASPER_DONGLE_CARDNUM}="$attr{device/number}", RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} sset Headphone 100% unmute"
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ENV{JASPER_DONGLE_CARDNUM}="$attr{device/number}", RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} sset Headphone 100%% unmute"
 
 ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ATTR{power/control}="on"
 

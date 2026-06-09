@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -50,6 +51,7 @@ DEFAULT_STARTUP_LOAD_STATE_PATH = Path(
     "/var/lib/jasper/active_speaker_startup_load.json"
 )
 STARTUP_LOAD_STATE_ENV = "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE"
+AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
 PathLoader = Callable[[str], Awaitable[bool]]
 ConfigPathReader = Callable[[], Awaitable[str | None]]
@@ -164,6 +166,46 @@ def _record_state(
     payload["state_path"] = str(path)
     payload["updated_at"] = payload.get("updated_at") or _utc_now()
     _atomic_write_json(path, payload)
+
+
+def _trigger_audio_hardware_reconcile(*, source: str) -> None:
+    """Ask PID 1 to reconcile outputd after Camilla graph transitions.
+
+    Dual-Apple outputd activation is gated on both hardware presence and the
+    active four-channel Camilla graph. Hardware events already trigger this
+    unit via udev; startup load/rollback are the matching graph events.
+    """
+
+    systemctl = os.environ.get("JASPER_SYSTEMCTL", "systemctl")
+    try:
+        completed = subprocess.run(
+            [systemctl, "start", AUDIO_HARDWARE_RECONCILE_UNIT],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "event=active_speaker.audio_hardware_reconcile_trigger_failed source=%s unit=%s error=%s",
+            source,
+            AUDIO_HARDWARE_RECONCILE_UNIT,
+            type(exc).__name__,
+        )
+        return
+    if completed.returncode != 0:
+        logger.warning(
+            "event=active_speaker.audio_hardware_reconcile_trigger_failed source=%s unit=%s returncode=%d",
+            source,
+            AUDIO_HARDWARE_RECONCILE_UNIT,
+            completed.returncode,
+        )
+        return
+    logger.info(
+        "event=active_speaker.audio_hardware_reconcile_triggered source=%s unit=%s",
+        source,
+        AUDIO_HARDWARE_RECONCILE_UNIT,
+    )
 
 
 def _level_value(calibration_level: dict[str, Any], key: str, default: float) -> float:
@@ -860,6 +902,7 @@ async def load_protected_startup_config(
         dsp_apply=apply_state.to_dict(),
     )
     _record_state(payload, state_path=state_path)
+    _trigger_audio_hardware_reconcile(source="active_speaker_startup_load")
     logger.info(
         "event=active_speaker.startup_load result=loaded candidate=%s prior=%s op_id=%s",
         payload["candidate_config_path"],
@@ -958,6 +1001,7 @@ async def rollback_protected_startup_config(
         dsp_apply=apply_state.to_dict(),
     )
     _record_state(payload, state_path=state_path)
+    _trigger_audio_hardware_reconcile(source="active_speaker_startup_rollback")
     logger.info(
         "event=active_speaker.startup_rollback result=rolled_back target=%s op_id=%s",
         previous,

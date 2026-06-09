@@ -389,14 +389,14 @@ class TtsPlayout:
     conversion. So we let the caller configure an `output_rate` and
     polyphase-upsample 24 kHz → output_rate inside `write()`.
 
-    Hearing-safety bounds on gain. TTS bypasses CamillaDSP entirely
-    (writes to the dongle's dmix alongside CamillaDSP's output — see
-    docs/audio-paths.md), so its level is set by us alone. A bug,
-    malformed env value, or bad upstream loudness decision must NEVER
-    be allowed to play TTS at a level that could damage hearing.
+    Hearing-safety bounds on gain. Current production sends TTS through
+    the local IPC path before CamillaDSP, but this class is still the
+    last Python-side gain boundary. A bug, malformed env value, or bad
+    upstream loudness decision must NEVER be allowed to play TTS at a
+    level that could damage hearing.
     `set_gain_db` clamps every input to [MIN_TTS_GAIN_DB,
-    MAX_TTS_GAIN_DB]; outputd also applies its own peak-aware ceiling
-    when it is the active transport.
+    MAX_TTS_GAIN_DB]; the active TTS IPC owner also applies its own
+    peak-aware ceiling.
     """
 
     INPUT_RATE = 24000
@@ -476,8 +476,9 @@ class TtsPlayout:
         # per change, not per write.
         self._gain_linear = float(10 ** (clamped / 20.0))
         self._gain_db = clamped
-        # DEBUG (not INFO): outputd owns the richer assistant loudness
-        # decision telemetry, and this low-level clamp log is noisy.
+        # DEBUG (not INFO): the active TTS IPC owner publishes the richer
+        # assistant loudness decision telemetry, and this low-level clamp
+        # log is noisy.
         if clamped != db:
             logger.debug(
                 "tts gain set: requested %.1f dB → clamped to %.1f dB",
@@ -707,7 +708,7 @@ _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
 
 
 def _outputd_audio_chunks(data: bytes):
-    """Split outputd AUDIO payloads below the daemon's protocol cap.
+    """Split TTS IPC AUDIO payloads below the daemon's protocol cap.
 
     Rust rejects AUDIO chunks above 2 MiB before allocation. Cached cue
     WAVs are normally short, but dynamic spoken text can occasionally
@@ -718,10 +719,10 @@ def _outputd_audio_chunks(data: bytes):
     if not data:
         return []
     if len(data) % _OUTPUTD_AUDIO_FRAME_BYTES != 0:
-        raise ValueError("outputd audio payload must contain whole stereo frames")
+        raise ValueError("TTS IPC audio payload must contain whole stereo frames")
     chunk_size = _OUTPUTD_MAX_AUDIO_CHUNK_BYTES
     if chunk_size % _OUTPUTD_AUDIO_FRAME_BYTES != 0:
-        raise AssertionError("outputd chunk size must align to stereo frames")
+        raise AssertionError("TTS IPC chunk size must align to stereo frames")
     for i in range(0, len(data), chunk_size):
         yield data[i:i + chunk_size]
 
@@ -730,7 +731,7 @@ def _outputd_segment_kind(kind: str) -> str:
     if kind in {"assistant", "cue", "chirp"}:
         return kind
     logger.warning(
-        "outputd TTS segment kind rejected: %r; falling back to assistant",
+        "fan-in TTS IPC segment kind rejected: %r; falling back to assistant",
         kind,
     )
     return "assistant"
@@ -741,7 +742,7 @@ def _outputd_provider_token(provider_item_id: str | None) -> str:
         return "-"
     if _outputd_token_ok(provider_item_id):
         return provider_item_id
-    logger.warning("outputd TTS provider item id rejected: %r", provider_item_id)
+    logger.warning("fan-in TTS IPC provider item id rejected: %r", provider_item_id)
     return "-"
 
 
@@ -755,7 +756,7 @@ def _outputd_profile_tokens(profile) -> list[str] | None:
     for field in (profile.provider, profile.model, profile.voice):
         if not _outputd_token_ok(field):
             logger.warning(
-                "outputd TTS profile token rejected: provider=%r model=%r voice=%r",
+                "fan-in TTS IPC profile token rejected: provider=%r model=%r voice=%r",
                 profile.provider, profile.model, profile.voice,
             )
             return None
@@ -775,7 +776,7 @@ class _OutputdStreamAdapter:
     OutputdTtsPlayout does resample, mono-to-stereo, and drain accounting
     before calling ``self._stream.write(bytes)`` in a worker thread. This
     adapter preserves the blocking stream shape while swapping the final
-    sink from PortAudio to outputd's local Unix socket.
+    sink from PortAudio to the local TTS Unix socket.
     """
 
     def __init__(self, sock: socket.socket) -> None:
@@ -827,7 +828,7 @@ class _OutputdStreamAdapter:
 
     def _sendall_locked(self, data: bytes) -> None:
         if self._closed:
-            raise BrokenPipeError("outputd TTS socket is closed")
+            raise BrokenPipeError("TTS IPC socket is closed")
         try:
             self._sock.sendall(data)
         except OSError:
@@ -852,7 +853,7 @@ class _OutputdStreamAdapter:
             and _outputd_token_ok(voice)
         ):
             logger.warning(
-                "outputd TTS prepare rejected invalid profile identity: "
+                "fan-in TTS IPC prepare rejected invalid profile identity: "
                 "provider=%r model=%r voice=%r",
                 provider, model, voice,
             )
@@ -920,14 +921,14 @@ class _OutputdStreamAdapter:
                 line = self._readline_locked(_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC)
             except TimeoutError:
                 logger.warning(
-                    "outputd TTS flush ack timed out after %.1fs; "
+                    "fan-in TTS IPC flush ack timed out after %.1fs; "
                     "closing socket",
                     _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC,
                 )
                 self._close_unlocked(send_close=False)
                 return None
             except OSError as e:
-                logger.warning("outputd TTS flush failed: %s", e)
+                logger.warning("fan-in TTS IPC flush failed: %s", e)
                 self._close_unlocked(send_close=False)
                 return None
         if not line:
@@ -935,10 +936,10 @@ class _OutputdStreamAdapter:
         try:
             ack = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            logger.warning("outputd TTS flush ack parse failed: %s", e)
+            logger.warning("fan-in TTS IPC flush ack parse failed: %s", e)
             return None
         if not isinstance(ack, dict):
-            logger.warning("outputd TTS flush ack had unexpected shape: %r", ack)
+            logger.warning("fan-in TTS IPC flush ack had unexpected shape: %r", ack)
             return None
         return ack
 
@@ -953,19 +954,19 @@ class _OutputdStreamAdapter:
 
 
 class OutputdTtsPlayout(TtsPlayout):
-    """TtsPlayout-compatible client for the jasper-outputd path.
+    """TtsPlayout-compatible client for the fan-in TTS IPC protocol.
 
-    The outputd transport keeps Python's input and drain contract intact:
-    provider PCM enters as 24 kHz mono, write() resamples to the
-    configured output rate, duplicates mono to stereo, updates the drain
-    deadline, and writes bytes to this class's socket adapter. Gain travels
-    as metadata so outputd remains the only final output owner and clamps
-    the level at its mix boundary.
+    The transport name is historical; the packaged socket is fan-in so
+    TTS/cues enter before CamillaDSP. Python's contract stays unchanged:
+    provider PCM enters as 24 kHz mono, write() resamples to 48 kHz,
+    duplicates mono to stereo, updates the drain deadline, and writes
+    bytes to this class's socket adapter. Gain travels as metadata so the
+    active TTS IPC owner can apply the final clamp at its mix boundary.
     """
 
     def __init__(
         self,
-        socket_path: str = "/run/jasper-outputd/tts.sock",
+        socket_path: str = "/run/jasper-fanin/tts.sock",
         output_rate: int = _OUTPUTD_SAMPLE_RATE,
         gain_db: float = 0.0,
         *,
@@ -977,7 +978,7 @@ class OutputdTtsPlayout(TtsPlayout):
     ) -> None:
         if output_rate != _OUTPUTD_SAMPLE_RATE:
             raise RuntimeError(
-                "outputd TTS transport requires 48 kHz stereo IPC; "
+                "fan-in TTS IPC transport requires 48 kHz stereo IPC; "
                 f"got output_rate={output_rate}"
             )
         super().__init__(
@@ -1002,7 +1003,7 @@ class OutputdTtsPlayout(TtsPlayout):
         except Exception as e:  # noqa: BLE001
             sock.close()
             logger.error(
-                "outputd TTS connect failed: socket=%s exc=%s: %s",
+                "fan-in TTS IPC connect failed: socket=%s exc=%s: %s",
                 self._socket_path, type(e).__name__, e,
             )
             raise
@@ -1012,7 +1013,7 @@ class OutputdTtsPlayout(TtsPlayout):
         except OSError:
             stream.close()
             raise
-        logger.info("outputd TTS connected: socket=%s", self._socket_path)
+        logger.info("fan-in TTS IPC connected: socket=%s", self._socket_path)
         return stream
 
     async def __aenter__(self) -> "OutputdTtsPlayout":
@@ -1025,14 +1026,14 @@ class OutputdTtsPlayout(TtsPlayout):
         stream = self._stream
         if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
             logger.info(
-                "event=tts_outputd.reconnect reason=closed_socket socket=%s",
+                "event=tts_fanin.reconnect reason=closed_socket socket=%s",
                 self._socket_path,
             )
             try:
                 stream = await self._connect_stream_adapter()
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "event=tts_outputd.reconnect_failed "
+                    "event=tts_fanin.reconnect_failed "
                     "reason=closed_socket socket=%s exc_type=%s err=%s",
                     self._socket_path,
                     type(e).__name__,
@@ -1051,7 +1052,7 @@ class OutputdTtsPlayout(TtsPlayout):
             try:
                 stream.set_gain_db(self.gain_db)
             except OSError as e:
-                logger.warning("outputd TTS gain update failed: %s", e)
+                logger.warning("fan-in TTS IPC gain update failed: %s", e)
 
     async def prepare_assistant_context(
         self,
@@ -1087,13 +1088,13 @@ class OutputdTtsPlayout(TtsPlayout):
                     and stream.closed
                 ):
                     logger.info(
-                        "event=tts_outputd.control_retry method=prepare_assistant "
+                        "event=tts_fanin.control_retry method=prepare_assistant "
                         "reason=closed_socket exc_type=%s err=%s",
                         type(e).__name__,
                         e,
                     )
                     continue
-                logger.warning("outputd TTS prepare assistant failed: %s", e)
+                logger.warning("fan-in TTS IPC prepare assistant failed: %s", e)
                 return
 
     async def pause_content_meter(self) -> None:
@@ -1120,14 +1121,14 @@ class OutputdTtsPlayout(TtsPlayout):
                     and stream.closed
                 ):
                     logger.info(
-                        "event=tts_outputd.control_retry method=%s "
+                        "event=tts_fanin.control_retry method=%s "
                         "reason=closed_socket exc_type=%s err=%s",
                         method,
                         type(e).__name__,
                         e,
                     )
                     continue
-                logger.warning("outputd TTS %s failed: %s", method, e)
+                logger.warning("fan-in TTS IPC %s failed: %s", method, e)
                 return
 
     async def write(self, pcm: bytes) -> None:
@@ -1141,9 +1142,9 @@ class OutputdTtsPlayout(TtsPlayout):
         segment_kind: str = "assistant",
         source_profile=None,
     ) -> None:
-        """Send un-gained 48 kHz stereo PCM to outputd.
+        """Send un-gained 48 kHz stereo PCM to the TTS IPC owner.
 
-        Gain is sent as metadata and enforced by outputd's final mix
+        Gain is sent as metadata and enforced by fan-in's final mix
         clamp. Drain accounting mirrors TtsPlayout.write so the voice
         daemon's turn-ending contract stays identical.
         """
@@ -1204,7 +1205,7 @@ class OutputdTtsPlayout(TtsPlayout):
                     and stream.closed
                 ):
                     logger.info(
-                        "event=tts_outputd.segment_setup_retry "
+                        "event=tts_fanin.segment_setup_retry "
                         "reason=closed_socket exc_type=%s err=%s",
                         type(e).__name__,
                         e,
@@ -1220,7 +1221,7 @@ class OutputdTtsPlayout(TtsPlayout):
             except OSError:
                 if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
                     logger.warning(
-                        "event=tts_outputd.audio_write_failed "
+                        "event=tts_fanin.audio_write_failed "
                         "reason=closed_socket",
                     )
                 raise
@@ -1233,7 +1234,7 @@ class OutputdTtsPlayout(TtsPlayout):
         chunk_ms = chunk_duration_sec * 1000
         if write_ms > chunk_ms + 100:
             logger.warning(
-                "outputd tts.write slow: %.0fms for %.0fms of audio "
+                "fan-in TTS IPC write slow: %.0fms for %.0fms of audio "
                 "(%d frames @ %d Hz)",
                 write_ms, chunk_ms, len(mono_i16), self._output_rate,
             )
@@ -1270,7 +1271,7 @@ class OutputdTtsPlayout(TtsPlayout):
             try:
                 await asyncio.to_thread(end)
             except OSError as e:
-                logger.warning("outputd TTS segment end failed: %s", e)
+                logger.warning("fan-in TTS IPC segment end failed: %s", e)
         await self._save_assistant_source_profile()
 
     async def _save_assistant_source_profile(self) -> None:
@@ -1313,11 +1314,11 @@ class OutputdTtsPlayout(TtsPlayout):
                 await asyncio.to_thread(stream.abort)
                 await asyncio.to_thread(stream.start)
         except Exception as e:  # noqa: BLE001
-            logger.warning("outputd TTS flush failed: %s", e)
+            logger.warning("fan-in TTS IPC flush failed: %s", e)
         self._ring_end_monotonic = None
         if ack is not None:
             logger.info(
-                "event=tts_flush.ack transport=outputd ok=%s segments=%s "
+                "event=tts_flush.ack transport=fanin ok=%s segments=%s "
                 "flushed_frames=%s max_audio_played_ms=%s",
                 ack.get("ok"),
                 ack.get("segments"),
@@ -1343,7 +1344,7 @@ def make_tts_playout(
     output_rate: int,
     gain_db: float,
     drain_tail_sec: float,
-    outputd_socket: str = "/run/jasper-outputd/tts.sock",
+    outputd_socket: str = "/run/jasper-fanin/tts.sock",
     provider: str = "",
     model: str = "",
     voice: str = "",
