@@ -147,6 +147,46 @@ def _parse_buffer_ms(raw: str) -> int:
     return max(BUFFER_MS_LO, min(BUFFER_MS_HI, val))
 
 
+def validate_grouping(
+    *,
+    role: str,
+    channel: str,
+    bond_id: str,
+    leader_addr: str,
+    codec: str = DEFAULT_CODEC,
+) -> str | None:
+    """The single grouping-validation rule for an ENABLED config.
+
+    Returns a human-readable error string when the config is internally
+    inconsistent (the fail-LOUD reason the doctor/dashboard surface), or
+    None when valid. This is the ONE source of truth, used by
+    :func:`load_config` (validating a file on read) AND the
+    ``/grouping/set`` control endpoint (validating a write before it
+    persists) — so the two can never drift. Checked in order: bond_id,
+    channel, codec, role, follower-needs-leader_addr.
+    """
+    if not bond_id:
+        return "JASPER_GROUPING_BOND_ID is empty (grouping is on)"
+    if channel not in ALLOWED_CHANNELS:
+        return (
+            f"JASPER_GROUPING_CHANNEL={channel!r} is not one of "
+            f"{', '.join(ALLOWED_CHANNELS)}"
+        )
+    if codec not in ALLOWED_CODECS:
+        return (
+            f"JASPER_GROUPING_CODEC={codec!r} is not one of "
+            f"{', '.join(ALLOWED_CODECS)}"
+        )
+    if role not in ALLOWED_ROLES:
+        return (
+            f"JASPER_GROUPING_ROLE={role!r} is not one of "
+            f"{', '.join(ALLOWED_ROLES)}"
+        )
+    if role == "follower" and not leader_addr:
+        return "JASPER_GROUPING_LEADER_ADDR is empty for role=follower"
+    return None
+
+
 def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
     """Load the GroupingConfig from the wizard-owned env file.
 
@@ -179,26 +219,13 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
     buffer_ms = _parse_buffer_ms(src.get("JASPER_GROUPING_BUFFER_MS", ""))
     codec = src.get("JASPER_GROUPING_CODEC", "").strip() or DEFAULT_CODEC
 
-    error: str | None = None
-    if not bond_id:
-        error = "JASPER_GROUPING_BOND_ID is empty (grouping is on)"
-    elif channel not in ALLOWED_CHANNELS:
-        error = (
-            f"JASPER_GROUPING_CHANNEL={channel!r} is not one of "
-            f"{', '.join(ALLOWED_CHANNELS)}"
-        )
-    elif codec not in ALLOWED_CODECS:
-        error = (
-            f"JASPER_GROUPING_CODEC={codec!r} is not one of "
-            f"{', '.join(ALLOWED_CODECS)}"
-        )
-    elif role not in ALLOWED_ROLES:
-        error = (
-            f"JASPER_GROUPING_ROLE={role!r} is not one of "
-            f"{', '.join(ALLOWED_ROLES)}"
-        )
-    elif role == "follower" and not leader_addr:
-        error = "JASPER_GROUPING_LEADER_ADDR is empty for role=follower"
+    error = validate_grouping(
+        role=role,
+        channel=channel,
+        bond_id=bond_id,
+        leader_addr=leader_addr,
+        codec=codec,
+    )
 
     return GroupingConfig(
         enabled=True,

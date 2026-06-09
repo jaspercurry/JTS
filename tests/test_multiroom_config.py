@@ -17,7 +17,51 @@ from jasper.multiroom.config import (
     DEFAULT_CODEC,
     is_enabled,
     load_config,
+    validate_grouping,
 )
+
+
+# ---------- validate_grouping: the shared rule (load_config + endpoint) ----
+
+
+def test_validate_grouping_valid_leader_and_follower():
+    assert validate_grouping(
+        role="leader", channel="left", bond_id="lr", leader_addr="",
+    ) is None
+    assert validate_grouping(
+        role="follower", channel="right", bond_id="lr", leader_addr="10.0.0.7",
+    ) is None
+
+
+def test_validate_grouping_missing_bond_id():
+    assert "BOND_ID" in validate_grouping(
+        role="leader", channel="left", bond_id="", leader_addr="",
+    )
+
+
+def test_validate_grouping_bad_channel():
+    assert "CHANNEL" in validate_grouping(
+        role="leader", channel="surround", bond_id="lr", leader_addr="",
+    )
+
+
+def test_validate_grouping_bad_role():
+    assert "ROLE" in validate_grouping(
+        role="boss", channel="left", bond_id="lr", leader_addr="",
+    )
+
+
+def test_validate_grouping_follower_needs_leader_addr():
+    assert "LEADER_ADDR" in validate_grouping(
+        role="follower", channel="right", bond_id="lr", leader_addr="",
+    )
+
+
+def test_validate_grouping_bad_codec():
+    assert "CODEC" in validate_grouping(
+        role="leader", channel="left", bond_id="lr", leader_addr="",
+        codec="mp3",
+    )
 
 
 # ---------- helpers ----------
