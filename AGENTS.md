@@ -1172,28 +1172,42 @@ the address field.
 
 **Modular provider registry.** The discovery layer (bbox, find-
 stops-near, credential probe) is fully data-driven from `REGISTRY`
-at [`jasper/transit/__init__.py`](jasper/transit/__init__.py).
-Adding a new city or transit system also touches **four** other
-spots — none of them load-bearing for the abstraction, but you'll
-need to know they exist:
+at [`jasper/transit/__init__.py`](jasper/transit/__init__.py). That
+part is one line. The *full* contribution is not — adding a new city
+or transit system is **~9-12 edits across six files**. None are
+load-bearing for the abstraction, but the count is bigger than
+`REGISTRY` makes it look, so know the real shape going in:
   1. New provider module under [`jasper/transit/providers/`](jasper/transit/providers/)
   2. One line in REGISTRY
-  3. One `elif p.id == "<slug>":` branch in
-     `_index_html` at [`jasper/web/transit_setup.py`](jasper/web/transit_setup.py)
-     (each provider's wizard card is bespoke — subway has a direction
-     radio, bus has the locked-on-key flow)
-  4. A `make_<slug>_tools(client)` factory under
-     [`jasper/tools/`](jasper/tools/) wired into `voice_daemon.py`'s
-     tool registration list
-  5. The `keys=(...)` bash array in `migrate_transit_config` at
-     [`deploy/install.sh`](deploy/install.sh:624) — duplicates
+  3. One `elif p.id == "<slug>":` dispatch branch in `_index_html`
+     at [`jasper/web/transit_setup.py`](jasper/web/transit_setup.py)
+  4. A bespoke `_<slug>_card_html(p, state)` renderer in that same
+     file — there is no generic card (subway has a direction radio,
+     bus has the locked-until-keyed flow, Citi Bike has the live
+     dock/bike snapshot); this is the biggest chunk of new code
+  5. A `make_<slug>_tools(client)` factory under
+     [`jasper/tools/`](jasper/tools/)
+  6. A `<Slug>Client` runtime class (mirror `jasper/subway.py`,
+     `jasper/bus.py`, `jasper/citibike.py`)
+  7. **Three separate edits in
+     [`jasper/voice_daemon.py`](jasper/voice_daemon.py)**, far apart
+     in the file and easy to miss: (a) construct the client (import +
+     `<slug> = (...) if cfg.<slug>_enabled else None`, thread it into
+     the `_build_registry(...)` call and its signature); (b) import +
+     register the tool factory inside `_build_registry`; (c) extend
+     the `transit_configured` boolean with
+     `or bool(<slug> and <slug>.enabled)` so the system-prompt transit
+     nudge stays off whenever any transit mode is live
+  8. The `keys=(...)` bash array in `migrate_transit_config` in
+     [`deploy/install.sh`](deploy/install.sh) — duplicates
      `transit.all_env_keys()` because install.sh runs before Python
      is available
 
 See `nyc_subway.py` (keyless, CSV-backed) and `nyc_bus.py`
-(credentialed, REST-backed) for the two shapes. The registry's own
-module docstring at `jasper/transit/__init__.py` walks through these
-5 steps in more detail.
+(credentialed, REST-backed) for the two provider shapes. The
+registry's own module docstring at `jasper/transit/__init__.py`
+enumerates all of these — including the three `voice_daemon.py`
+edits — in more detail.
 
 **Refreshing subway data.** The bundled CSV at
 [`jasper/data/mta_stations.csv`](jasper/data/mta_stations.csv) is
