@@ -7,14 +7,16 @@ this page is canonical. The page title is "Speakers".
 
 Two parts:
 
-1. READ-ONLY directory (per docs/HANDOFF-multiroom.md §6): "see every JTS
-   speaker on the LAN and click through to configure each on its own web
-   UI, plus show this speaker's grouping status." Bond-forming controls
-   (stereo pair / 2.1 / sub, role/leader/channel) would write grouping
-   config that does nothing until the P1 sync engine lands — shipping a
-   toggle that silently no-ops is dishonest — so the directory stays
-   surface-and-links with an honest forward note (§8). The bond write
-   surface arrives once the on-hardware sync spike validates the engine.
+1. DIRECTORY + bond-forming (per docs/HANDOFF-multiroom.md §6): see every
+   JTS speaker on the LAN, click through to configure each on its own web
+   UI, see this speaker's grouping status (incl. the runtime-degraded health
+   from §0), and **create a stereo pair in one flow** — pick the speaker for
+   the right channel and Save. Bond-forming POSTs /bond, which fans the
+   config out SERVER-side to each member's jasper-control /grouping/set (this
+   speaker → leader/left, the picked one → follower/right). Configuration is
+   automatic — no per-speaker tinkering. Perfect sample-lock across the pair
+   is the remaining on-hardware validation, so the UI carries an honest
+   "preview" note (§8) rather than pretending the audio half is done.
 
 2. WAKE-RESPONSE toggle (peering): when several speakers hear "Hey
    Jarvis", only one answers. This is a real, working control. The page
@@ -51,17 +53,24 @@ URL surface (after nginx strips the /rooms/ prefix):
                     `peering` block (the module fetches this on a poll)
   POST /peering     write the wake-response state into peering.env +
                     restart voice/control (JSON body, CSRF-verified)
+  POST /bond        form a stereo pair: mint a bond id, then fan the
+                    grouping config out SERVER-side to each member's
+                    jasper-control /grouping/set (JSON body, CSRF-verified)
 """
 from __future__ import annotations
 
 import argparse
 import asyncio  # noqa: F401 — kept so tests can patch rooms_setup.asyncio.run
+import ipaddress
 import json
 import logging
 import os
 import socket
 import threading
 import time
+import urllib.error
+import urllib.request
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -511,6 +520,112 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     )
 
 
+def _generate_bond_id() -> str:
+    """A short, unique bond identifier. The bond_id is just an opaque label
+    shared by a bond's members (the wizard auto-generates it; the user never
+    types it)."""
+    return "bond-" + uuid.uuid4().hex[:8]
+
+
+def _post_grouping_to_member(addr: str, body: dict) -> tuple[bool, str]:
+    """Configure ONE member by POSTing to its jasper-control /grouping/set.
+
+    This is the cross-speaker call that makes bond-forming one-flow: the
+    browser hands us the member list, and we fan the config out SERVER-side
+    (no CORS) to each member's control API — the same no-auth LAN surface
+    the dial uses. ``addr`` empty or one of this host's own addresses routes
+    to loopback (configure self). SSRF guard: a remote target must be a
+    PRIVATE / loopback IPv4 — the control API is a home-LAN surface, never a
+    public host. Returns (ok, detail); never raises.
+    """
+    if not addr or addr in _self_addresses():
+        target = "127.0.0.1"
+    else:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False, f"not an IP address: {addr!r}"
+        if not (ip.is_private or ip.is_loopback):
+            return False, f"refusing non-LAN target {addr}"
+        target = addr
+    url = f"http://{target}:{CONTROL_HTTP_PORT}/grouping/set"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return (200 <= r.status < 300), f"HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        detail = (e.read() or b"").decode(errors="replace")[:200] if e.fp else ""
+        return False, f"HTTP {e.code}: {detail}".strip()
+    except (urllib.error.URLError, OSError) as e:
+        return False, str(e)
+
+
+def _save_bond(handler: BaseHTTPRequestHandler) -> None:
+    """Handle POST /bond: form a bond by configuring every member's role.
+
+    One-flow Sonos-style: the browser sends ``{members: [{addr, role,
+    channel}, …]}`` (this speaker + the picked speaker(s), with their roles
+    and channels). We mint a bond_id, then fan the config out to each
+    member's control API via :func:`_post_grouping_to_member` — the leader is
+    this speaker (it hosts this page), so followers get its address as
+    ``leader_addr``. No env editing, no per-speaker tinkering.
+
+    Per-member outcomes are returned so the UI can show exactly which
+    speaker failed. A partial failure (some members configured, one
+    unreachable) is surfaced, not auto-rolled-back — the household retries;
+    the `/state` runtime health shows the half-formed bond as degraded.
+    """
+    parsed, err = _read_json_body(handler)
+    if err is not None:
+        logger.warning("event=rooms.bond.save.reject reason=%s", err)
+        _send_json(handler, {"ok": False, "error": err}, status=HTTPStatus.BAD_REQUEST)
+        return
+
+    members = parsed.get("members")
+    if not isinstance(members, list) or not members:
+        _send_json(
+            handler, {"ok": False, "error": "members must be a non-empty list"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+
+    bond_id = str(parsed.get("bond_id") or "").strip() or _generate_bond_id()
+    leader_addr = _self_address()  # this speaker leads the bond it forms
+
+    results: list[dict] = []
+    for m in members:
+        if not isinstance(m, dict):
+            results.append({"ok": False, "detail": "member must be an object"})
+            continue
+        addr = str(m.get("addr") or "").strip()
+        role = str(m.get("role") or "").strip()
+        channel = str(m.get("channel") or "").strip()
+        ok, detail = _post_grouping_to_member(addr, {
+            "enabled": True,
+            "role": role,
+            "channel": channel,
+            "bond_id": bond_id,
+            "leader_addr": "" if role == "leader" else leader_addr,
+        })
+        results.append({"addr": addr, "role": role, "ok": ok, "detail": detail})
+
+    all_ok = all(r["ok"] for r in results)
+    logger.info(
+        "event=rooms.bond.save bond=%s members=%d ok=%s",
+        bond_id, len(members), all_ok,
+    )
+    _send_json(
+        handler,
+        {"ok": all_ok, "bond_id": bond_id, "results": results},
+        status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
+    )
+
+
 def _make_handler():
     """Build the request handler class. No state-path binding — the
     directory pulls everything live (mDNS browse + grouping + peering SSOT),
@@ -534,7 +649,7 @@ def _make_handler():
         def do_POST(self):  # noqa: N802
             # Route-check BEFORE the CSRF guard (project convention): a bogus
             # path 404s without revealing CSRF state.
-            if self.path != "/peering":
+            if self.path not in ("/peering", "/bond"):
                 self.send_response(HTTPStatus.NOT_FOUND)
                 self.end_headers()
                 return
@@ -543,7 +658,10 @@ def _make_handler():
             if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
-            _save_peering(self)
+            if self.path == "/bond":
+                _save_bond(self)
+            else:
+                _save_peering(self)
 
     return _Handler
 

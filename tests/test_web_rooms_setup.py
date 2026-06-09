@@ -518,8 +518,8 @@ def test_rooms_json_renders_empty_directory_when_discovery_fails(monkeypatch):
 
 
 def test_handler_has_do_post_for_peering():
-    """The combined surface adds exactly one write path — POST /peering, the
-    wake-response toggle. (Bond-forming controls remain deferred.)"""
+    """Two write paths now: POST /peering (the wake-response toggle) and
+    POST /bond (the bond-forming one-flow that fans config out to members)."""
     handler_cls = rooms_setup._make_handler()
     assert hasattr(handler_cls, "do_POST")
 
@@ -861,3 +861,166 @@ def test_discovery_cache_empty_result_does_not_poison(monkeypatch):
     assert rooms_setup._discover_speakers_cached() == [
         {"name": "jts3", "room": "", "address": "192.168.1.9", "port": 8780}
     ]
+
+
+# ----------------------------------------------------------------------
+# POST /bond — the bond-forming one-flow.
+#
+# The browser sends the member list; rooms_setup fans the config out
+# SERVER-side to each member's /grouping/set. These pin the orchestration
+# (leader_addr wiring, per-member results, partial failure, CSRF, the SSRF
+# guard) with the cross-speaker HTTP call stubbed.
+# ----------------------------------------------------------------------
+
+
+def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
+    """Drive POST /bond with the cross-speaker call stubbed. Returns
+    (handler, calls) where calls is the list of (addr, body) fanned out."""
+    calls: list[tuple[str, dict]] = []
+
+    def fake_member_post(addr, member_body):
+        calls.append((addr, member_body))
+        if member_results and addr in member_results:
+            return member_results[addr]
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", fake_member_post)
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
+    monkeypatch.setattr(rooms_setup, "reject_csrf",
+                        lambda h: h.send_response(403) or h.end_headers())
+    monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "192.168.1.5")
+
+    handler_cls = rooms_setup._make_handler()
+    raw = json.dumps(body).encode()
+    h = _FakeHandler("/bond")
+    h.headers["Content-Length"] = str(len(raw))
+    h.rfile = BytesIO(raw)
+    handler_cls.do_POST(h)
+    return h, calls
+
+
+def _stereo_pair_members():
+    return [
+        {"addr": "192.168.1.5", "role": "leader", "channel": "left"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "right"},
+    ]
+
+
+def test_post_bond_configures_all_members_and_wires_leader_addr(monkeypatch):
+    h, calls = _post_bond({"members": _stereo_pair_members()}, monkeypatch=monkeypatch)
+    assert h.status == 200
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is True
+    assert body["bond_id"].startswith("bond-")
+    assert len(calls) == 2
+    by_role = {c[1]["role"]: c[1] for c in calls}
+    # leader gets no leader_addr; the follower gets THIS speaker's address.
+    assert by_role["leader"]["leader_addr"] == ""
+    assert by_role["follower"]["leader_addr"] == "192.168.1.5"
+    assert by_role["follower"]["channel"] == "right"
+    assert all(c[1]["enabled"] is True for c in calls)
+    # one shared bond_id across both members
+    assert {c[1]["bond_id"] for c in calls} == {body["bond_id"]}
+
+
+def test_post_bond_rejects_bad_csrf_without_fanning_out(monkeypatch):
+    h, calls = _post_bond({"members": _stereo_pair_members()},
+                          csrf_ok=False, monkeypatch=monkeypatch)
+    assert h.status == 403
+    assert calls == []  # nothing configured on a rejected request
+
+
+def test_post_bond_empty_members_is_400(monkeypatch):
+    h, calls = _post_bond({"members": []}, monkeypatch=monkeypatch)
+    assert h.status == 400
+    assert calls == []
+
+
+def test_post_bond_partial_failure_is_502_with_per_member_results(monkeypatch):
+    h, calls = _post_bond(
+        {"members": _stereo_pair_members()},
+        monkeypatch=monkeypatch,
+        member_results={"192.168.1.9": (False, "Connection refused")},
+    )
+    assert h.status == 502
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is False
+    results = {r["addr"]: r for r in body["results"]}
+    assert results["192.168.1.5"]["ok"] is True
+    assert results["192.168.1.9"]["ok"] is False
+    assert "Connection refused" in results["192.168.1.9"]["detail"]
+
+
+def test_post_bond_unknown_path_still_404s_before_csrf(monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("CSRF must not run on an unknown POST path")
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/bond-typo")
+    h.headers["Content-Length"] = "2"
+    h.rfile = BytesIO(b"{}")
+    handler_cls.do_POST(h)
+    assert h.status == 404
+
+
+# ---- _post_grouping_to_member: the cross-speaker call + SSRF guard ----
+
+
+def test_member_post_refuses_non_lan_target(monkeypatch):
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    ok, detail = rooms_setup._post_grouping_to_member("8.8.8.8", {})
+    assert ok is False
+    assert "non-LAN" in detail
+
+
+def test_member_post_rejects_non_ip_address(monkeypatch):
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    ok, detail = rooms_setup._post_grouping_to_member("evil.example.com", {})
+    assert ok is False
+    assert "not an IP" in detail
+
+
+def test_member_post_self_routes_to_loopback(monkeypatch):
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: {"192.168.1.5"})
+    urls: list[str] = []
+
+    class FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        urls.append(req.full_url)
+        return FakeResp()
+
+    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fake_urlopen)
+    ok, _detail = rooms_setup._post_grouping_to_member("192.168.1.5", {"x": 1})
+    assert ok is True
+    assert urls == ["http://127.0.0.1:8780/grouping/set"]
+
+
+def test_member_post_lan_peer_targets_its_control_port(monkeypatch):
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: {"192.168.1.5"})
+    urls: list[str] = []
+
+    class FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        rooms_setup.urllib.request, "urlopen",
+        lambda req, timeout=None: urls.append(req.full_url) or FakeResp(),
+    )
+    ok, _detail = rooms_setup._post_grouping_to_member("192.168.1.9", {"x": 1})
+    assert ok is True
+    assert urls == ["http://192.168.1.9:8780/grouping/set"]

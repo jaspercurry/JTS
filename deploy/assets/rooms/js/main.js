@@ -394,6 +394,116 @@ function makeWakeCard() {
 }
 
 // ---------------------------------------------------------------------------
+// Bond-forming card — the one-flow "create a stereo pair". The user picks one
+// other discovered speaker for the RIGHT channel; THIS speaker is the
+// LEFT/leader. Save POSTs /bond, which fans the config out to both speakers'
+// control APIs (this one → leader, the picked one → follower). Built ONCE (it
+// holds a pending-save state + a selection a per-poll rebuild would stomp);
+// sync() refreshes the peer options only when no save is in flight. Untrusted
+// peer name/address reach the DOM through h() text nodes and the option value
+// — never innerHTML.
+// ---------------------------------------------------------------------------
+function makeBondCard() {
+  let saving = false;
+  let selfAddr = "";
+
+  const select = h("select.bond-select", {
+    "attr:aria-label": "Speaker for the right channel",
+  });
+  const createBtn = h("button.btn.btn--primary",
+    { type: "button" }, "Create stereo pair");
+  const status = h("p.bond-status.info-card__note",
+    { "attr:aria-live": "polite" });
+
+  const picker = h("div.bond-row", null,
+    h("span.bond-row__label", null, "This speaker is Left — pair with"),
+    select,
+    createBtn,
+  );
+
+  const body = h("div.info-card", null,
+    h("p.info-card__note", null,
+      "Create a stereo pair: this speaker plays the left channel and the one " +
+      "you pick plays the right. Both are configured automatically — no " +
+      "settings files, no per-speaker setup."),
+    picker,
+    status,
+  );
+  const card = h("section.section", null,
+    h("div.section__head", null,
+      h("h2.section__title", null, "Create a stereo pair")),
+    body,
+  );
+
+  function setEnabled(on) {
+    select.disabled = !on;
+    createBtn.disabled = !on;
+  }
+
+  // Refresh the peer options from the latest snapshot. Skipped while saving so
+  // a mid-flight poll can't yank the selection out from under the user.
+  function sync(snap) {
+    if (saving) return;
+    const self = (snap && snap.self) || {};
+    selfAddr = self.address || "";
+    const peers = Array.isArray(snap && snap.peers) ? snap.peers : [];
+    const reachable = peers.filter((p) => p && p.address);  // need an address to pair
+    const prev = select.value;
+    select.textContent = "";
+    if (!selfAddr || !reachable.length) {
+      select.appendChild(h("option", { value: "" },
+        !selfAddr
+          ? "This speaker has no network address yet"
+          : "No other speakers found — add one to pair"));
+      setEnabled(false);
+      return;
+    }
+    for (const p of reachable) {
+      const label = (p.name || p.address) + " (" + p.address + ")";
+      select.appendChild(h("option", { value: p.address }, label));
+    }
+    if (reachable.some((p) => p.address === prev)) select.value = prev;  // keep selection
+    setEnabled(true);
+  }
+
+  async function create() {
+    const rightAddr = select.value;
+    if (!selfAddr || !rightAddr) return;
+    saving = true;
+    setEnabled(false);
+    status.textContent = "Creating the pair…";
+    try {
+      const data = await postJSON("bond", {
+        members: [
+          { addr: selfAddr, role: "leader", channel: "left" },
+          { addr: rightAddr, role: "follower", channel: "right" },
+        ],
+      });
+      if (data && data.ok) {
+        status.textContent =
+          "Stereo pair created — both speakers are configuring (~10s).";
+      } else {
+        // Surface which member failed so the household can fix it.
+        const failed = ((data && data.results) || []).filter((r) => r && !r.ok);
+        const why = failed
+          .map((r) => (r.addr || "?") + ": " + (r.detail || "failed"))
+          .join("; ");
+        status.textContent = "Couldn't pair — " + (why || "unknown error");
+      }
+    } catch (e) {
+      console.error("rooms: bond create failed", e);
+      status.textContent = "Couldn't pair — " + e.message;
+    } finally {
+      saving = false;
+      setEnabled(true);
+    }
+  }
+
+  createBtn.addEventListener("click", create);
+  return { el: card, sync };
+}
+
+// ---------------------------------------------------------------------------
 // Build the page shell once; the poll loop swaps card bodies in place.
 // ---------------------------------------------------------------------------
 function buildPage(mount) {
@@ -407,9 +517,10 @@ function buildPage(mount) {
     selfCard,
   );
 
-  // The wake-response card is built ONCE (interactive state); the poll only
-  // reconciles its controls via wakeCard.sync().
+  // The wake-response + bond cards are built ONCE (interactive state); the
+  // poll only reconciles their controls via .sync().
   const wakeCard = makeWakeCard();
+  const bondCard = makeBondCard();
 
   const peersCard = h("div.info-card");
   const peersSection = h("section.section", null,
@@ -417,13 +528,14 @@ function buildPage(mount) {
     peersCard,
   );
 
-  // Honest forward note — bond setup is not shipped yet (no functional engine).
+  // Honest note — configuration is automatic now; perfect sample-lock across a
+  // pair is the remaining on-hardware validation step (see §0/§2).
   const note = h("section.section.room-note", null,
     h("div.info-card", null,
       h("p.info-card__hint", null,
-        "This is a directory: it shows every JTS speaker on your network and " +
-        "links to each one's settings. Bond setup — stereo pairs, 2.1, a " +
-        "dedicated sub — arrives once the on-hardware sync engine is validated. ",
+        "Creating a pair configures both speakers automatically. Perfect " +
+        "sample-lock across the pair is still being validated on hardware, so " +
+        "treat stereo pairing as a preview for now. ",
         h("a", { href: "https://github.com/jaspercurry/JTS/blob/main/docs/HANDOFF-multiroom.md" },
           "Details"),
         ".",
@@ -437,13 +549,14 @@ function buildPage(mount) {
       staleness,
     ),
     selfSection,
-    wakeCard.el,
+    bondCard.el,
     peersSection,
+    wakeCard.el,
     note,
   );
   mount.appendChild(wrap);
 
-  return { staleness, selfCard, wakeCard, peersCard };
+  return { staleness, selfCard, wakeCard, bondCard, peersCard };
 }
 
 // Per-section isolated render: a throw in one section is logged and contained
@@ -467,6 +580,13 @@ function update(refs, snap) {
     refs.wakeCard.sync((snap.self || {}).peering);
   } catch (e) {
     console.error("rooms: failed to sync wake card", e);
+  }
+  // Bond card is persistent too (selection + pending save); reconcile its
+  // peer options from the full snapshot, guarded so a bad field can't blank.
+  try {
+    refs.bondCard.sync(snap);
+  } catch (e) {
+    console.error("rooms: failed to sync bond card", e);
   }
   renderInto(refs.peersCard, "peers", () => peersBody(snap.peers));
   const count = Array.isArray(snap.peers) ? snap.peers.length : 0;

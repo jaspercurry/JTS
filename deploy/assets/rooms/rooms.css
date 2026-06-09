@@ -148,3 +148,33 @@ a.room-row:hover .room-row__go {
 .wake-status {
   margin-top: 0.7rem;
 }
+
+/* Bond-forming row: "This speaker is Left — pair with [select] [Create]".
+ * Wraps on narrow screens; the select grows, the button stays its size. */
+.bond-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.9rem;
+}
+.bond-row__label {
+  font-weight: 600;
+}
+.bond-select {
+  flex: 1 1 12rem;
+  min-width: 0;
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+  font: inherit;
+}
+.bond-select:disabled {
+  opacity: 0.6;
+}
+/* Bond save status — aria-live=polite (set in JS); hidden until it has text. */
+.bond-status:empty {
+  display: none;
+}
+.bond-status {
+  margin-top: 0.7rem;
+}
