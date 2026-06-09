@@ -1888,6 +1888,23 @@ def _make_handler(
                     return
                 self._send_json(state)
                 return
+            if self.path == "/grouping":
+                # Multiroom grouping block, nested under "grouping" so a
+                # fail-soft read returns {"grouping": null} unambiguously.
+                # Read SERVER-SIDE by another speaker's /rooms /unbond
+                # fan-out (rooms_setup._get_member_grouping) to discover which
+                # siblings share a bond_id before dissolving it — NOT by the
+                # browser (the page reads self.grouping from /rooms.json).
+                # NO CSRF: a read on the same no-auth LAN surface as /state
+                # and /healthz. Fail-soft like /state's grouping section —
+                # a broken read returns 200 with null rather than 500.
+                try:
+                    grouping = read_grouping_state()
+                except Exception:  # noqa: BLE001
+                    logger.exception("grouping state read failed")
+                    grouping = None
+                self._send_json({"grouping": grouping})
+                return
             if self.path == "/dial/status":
                 # Heartbeat snapshot — used by jasper-doctor's
                 # "is the dial actually talking to us?" check.

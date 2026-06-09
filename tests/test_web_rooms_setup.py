@@ -889,6 +889,10 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
     monkeypatch.setattr(rooms_setup, "reject_csrf",
                         lambda h: h.send_response(403) or h.end_headers())
     monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "192.168.1.5")
+    # The follower's leader_addr is now the leader's STABLE mDNS handle
+    # (read_identity().hostname), not a NIC IP — stub the helper so the bond
+    # tests don't depend on the real identity reader.
+    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
 
     handler_cls = rooms_setup._make_handler()
     raw = json.dumps(body).encode()
@@ -914,9 +918,11 @@ def test_post_bond_configures_all_members_and_wires_leader_addr(monkeypatch):
     assert body["bond_id"].startswith("bond-")
     assert len(calls) == 2
     by_role = {c[1]["role"]: c[1] for c in calls}
-    # leader gets no leader_addr; the follower gets THIS speaker's address.
+    # leader gets no leader_addr; the follower gets the leader's STABLE mDNS
+    # handle (read_identity().hostname), NOT a NIC IP — so the bond survives
+    # DHCP lease churn. snapclient resolves the .local name via mDNS.
     assert by_role["leader"]["leader_addr"] == ""
-    assert by_role["follower"]["leader_addr"] == "192.168.1.5"
+    assert by_role["follower"]["leader_addr"] == "jts-living.local"
     assert by_role["follower"]["channel"] == "right"
     assert all(c[1]["enabled"] is True for c in calls)
     # one shared bond_id across both members
@@ -1024,3 +1030,272 @@ def test_member_post_lan_peer_targets_its_control_port(monkeypatch):
     ok, _detail = rooms_setup._post_grouping_to_member("192.168.1.9", {"x": 1})
     assert ok is True
     assert urls == ["http://192.168.1.9:8780/grouping/set"]
+
+
+# ---- _fan_out_grouping: concurrent, INPUT-ORDER-preserving fan-out ----
+
+
+def test_fan_out_grouping_preserves_input_order_despite_slow_failing_member(monkeypatch):
+    """A slow or failing member must NOT reorder results — the caller pairs
+    results back to members positionally. We make the FIRST target slow + a
+    failure and the SECOND fast + ok; the results must still come back in the
+    input order ([first, second]), not completion order."""
+    import threading
+    import time as _time
+
+    started = threading.Event()
+
+    def fake_member_post(addr, body):
+        if addr == "192.168.1.5":
+            # First target: block until the second has had a chance to finish,
+            # then fail. If results were ordered by completion this would land
+            # second.
+            started.set()
+            _time.sleep(0.05)
+            return (False, "slow boom")
+        # Second target: wait for the first to have started, return fast + ok.
+        started.wait(timeout=1.0)
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", fake_member_post)
+    targets = [
+        ("192.168.1.5", {"enabled": True}),
+        ("192.168.1.9", {"enabled": True}),
+    ]
+    results = rooms_setup._fan_out_grouping(targets)
+    # Strictly input order: the slow/failed first target stays first.
+    assert results == [(False, "slow boom"), (True, "HTTP 200")]
+
+
+def test_fan_out_grouping_empty_targets_is_empty_list():
+    assert rooms_setup._fan_out_grouping([]) == []
+
+
+# ---- _get_member_grouping: GET a peer's /grouping behind the SSRF guard ----
+
+
+def test_get_member_grouping_refuses_non_lan_and_non_ip_target(monkeypatch):
+    """The GET helper reuses _lan_target, so a public IP or a bare hostname is
+    refused outright (returns None) — it never issues an HTTP request."""
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+
+    def _boom(*_a, **_k):
+        raise AssertionError("must not issue a request for a refused target")
+
+    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", _boom)
+    assert rooms_setup._get_member_grouping("8.8.8.8") is None         # non-LAN
+    assert rooms_setup._get_member_grouping("evil.example.com") is None  # non-IP
+
+
+def _fake_grouping_urlopen(monkeypatch, body, *, status=200):
+    """Stub urlopen to return `body` (a dict, serialized) from a /grouping GET.
+    Returns the list the URLs are appended to so tests can assert the path."""
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    urls: list[str] = []
+
+    class FakeResp:
+        def __init__(self):
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(body).encode()
+
+    def fake_urlopen(req, timeout=None):
+        urls.append(req.full_url)
+        return FakeResp()
+
+    monkeypatch.setattr(rooms_setup.urllib.request, "urlopen", fake_urlopen)
+    return urls
+
+
+def test_get_member_grouping_unwraps_grouping_envelope(monkeypatch):
+    """The control-server GET /grouping nests the snapshot under a "grouping"
+    key ({"grouping": {...}}; see test_control_server.py). _get_member_grouping
+    must UNWRAP that envelope and return the inner flat dict — the bond_id the
+    dissolve filter compares lives inside it, not at top level. (Regression:
+    returning the raw body left bond_id unreadable, so /unbond matched no real
+    peer and dissolved only self.)"""
+    inner = {"enabled": True, "role": "follower", "bond_id": "bond-abc"}
+    urls = _fake_grouping_urlopen(monkeypatch, {"grouping": inner})
+    got = rooms_setup._get_member_grouping("192.168.1.9")
+    assert got == inner
+    assert urls == ["http://192.168.1.9:8780/grouping"]
+
+
+def test_get_member_grouping_none_when_envelope_missing_or_null(monkeypatch):
+    """A body without a dict `grouping` block (flat, null, or absent) reads as
+    "unknown" → None, so it can never spuriously match a bond_id. Guards the
+    unwrap against the pre-fix flat-shape assumption."""
+    _fake_grouping_urlopen(monkeypatch, {"grouping": None})
+    assert rooms_setup._get_member_grouping("192.168.1.9") is None
+    # A flat body (no envelope) — the shape the live endpoint does NOT emit.
+    _fake_grouping_urlopen(monkeypatch, {"enabled": True, "bond_id": "x"})
+    assert rooms_setup._get_member_grouping("192.168.1.9") is None
+
+
+# ----------------------------------------------------------------------
+# POST /unbond — dissolve the bond this speaker is in.
+#
+# Reads self grouping (read_grouping_state), browses siblings, GETs each
+# peer's /grouping, and disables self + every peer sharing this bond_id.
+# A peer in a DIFFERENT bond is left alone; self is ALWAYS disabled so the
+# local "leave the bond" always works.
+# ----------------------------------------------------------------------
+
+
+def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
+                 speakers=(), peer_grouping=None, member_results=None):
+    """Drive POST /unbond with the cross-speaker GET/POST stubbed. Returns
+    (handler, posts) where posts is the list of (addr, body) disabled.
+
+    self_grouping  — what read_grouping_state() returns for THIS speaker.
+    speakers       — discovered siblings ({address: ...} dicts).
+    peer_grouping  — {address: grouping_dict | None} the per-peer GET returns.
+    member_results — {address: (ok, detail)} overriding the disable POST."""
+    posts: list[tuple[str, dict]] = []
+
+    def fake_member_post(addr, body):
+        posts.append((addr, body))
+        if member_results and addr in member_results:
+            return member_results[addr]
+        return (True, "HTTP 200")
+
+    def fake_get_grouping(addr):
+        return (peer_grouping or {}).get(addr)
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
+    monkeypatch.setattr(rooms_setup, "reject_csrf",
+                        lambda h: h.send_response(403) or h.end_headers())
+    monkeypatch.setattr(rooms_setup, "read_grouping_state",
+                        lambda *a, **k: dict(self_grouping))
+    monkeypatch.setattr(rooms_setup, "_discover_speakers_cached",
+                        lambda: list(speakers))
+    monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", fake_member_post)
+
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/unbond")
+    h.headers["Content-Length"] = "2"
+    h.rfile = BytesIO(b"{}")
+    handler_cls.do_POST(h)
+    return h, posts
+
+
+def test_post_unbond_disables_self_and_matching_peer_only(monkeypatch):
+    """Happy path: self + the peer sharing our bond_id get {enabled:false}; a
+    peer in a DIFFERENT bond is NOT touched."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "bond_id": "bond-1"},
+        speakers=[
+            {"address": "192.168.1.9"},   # same bond -> disabled
+            {"address": "192.168.1.20"},  # different bond -> left alone
+        ],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "bond_id": "bond-1"},
+            "192.168.1.20": {"enabled": True, "bond_id": "bond-OTHER"},
+        },
+    )
+    assert h.status == 200
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is True
+    assert body["bond_id"] == "bond-1"
+    # Self ("") + the matching peer were disabled; the other-bond peer was not.
+    disabled_addrs = [a for a, _b in posts]
+    assert disabled_addrs == ["", "192.168.1.9"]
+    assert all(b == {"enabled": False} for _a, b in posts)
+    assert "192.168.1.20" not in disabled_addrs
+    assert set(body["dissolved"]) == {"", "192.168.1.9"}
+
+
+def test_post_unbond_400_when_not_in_a_bond(monkeypatch):
+    """If this speaker isn't in a bond, there's nothing to dissolve -> 400 and
+    no cross-speaker calls."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": False, "role": "", "bond_id": ""},
+        speakers=[{"address": "192.168.1.9"}],
+    )
+    assert h.status == 400
+    assert json.loads(h.wfile.getvalue()) == {"ok": False, "error": "not in a bond"}
+    assert posts == []  # never browsed/disabled anything
+
+
+def test_post_unbond_enabled_but_no_bond_id_is_400(monkeypatch):
+    """enabled=True but an empty bond_id is still 'not in a bond' (nothing to
+    dissolve) — guards the `or not bond_id` branch."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "bond_id": ""},
+    )
+    assert h.status == 400
+    assert posts == []
+
+
+def test_post_unbond_still_disables_self_when_peer_unreachable(monkeypatch):
+    """Self must ALWAYS be disabled so 'leave the bond' works locally even when
+    a peer GET fails (returns None -> peer not in the disable set) AND a peer
+    POST would fail. Here the matching peer is unreachable on GET, so only self
+    is disabled — and self succeeds, so HTTP 200."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "follower", "bond_id": "bond-1"},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={"192.168.1.9": None},  # GET failed -> excluded
+    )
+    assert h.status == 200
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is True
+    # Only self was disabled (peer GET failed, so it never joined the set).
+    assert [a for a, _b in posts] == [""]
+    assert body["dissolved"] == [""]
+
+
+def test_post_unbond_502_when_self_disable_fails(monkeypatch):
+    """If even the self-disable POST fails, the local leave didn't take -> 502,
+    but the call still attempted self (no peers matched here)."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "bond_id": "bond-1"},
+        speakers=[],
+        member_results={"": (False, "write failed")},
+    )
+    assert h.status == 502
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is False
+    assert body["dissolved"] == []  # self failed -> nothing confirmed disabled
+    assert [a for a, _b in posts] == [""]
+
+
+def test_post_unbond_rejects_bad_csrf(monkeypatch):
+    """CSRF guard fires before any dissolve work."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        csrf_ok=False,
+        self_grouping={"enabled": True, "role": "leader", "bond_id": "bond-1"},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={"192.168.1.9": {"enabled": True, "bond_id": "bond-1"}},
+    )
+    assert h.status == 403
+    assert posts == []
+
+
+def test_post_unbond_unknown_path_404s_before_csrf(monkeypatch):
+    """/unbond is in the route allow-list; a near-miss path still 404s before
+    the CSRF guard runs."""
+    def _boom(*_a, **_k):
+        raise AssertionError("CSRF must not run on an unknown POST path")
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/unbond-typo")
+    h.headers["Content-Length"] = "2"
+    h.rfile = BytesIO(b"{}")
+    handler_cls.do_POST(h)
+    assert h.status == 404

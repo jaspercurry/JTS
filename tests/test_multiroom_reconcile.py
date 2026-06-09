@@ -291,6 +291,15 @@ def test_snapclient_argv_host_flag_present():
     assert argv[argv.index("--host") + 1] == "10.0.0.7"
 
 
+def test_snapclient_argv_follower_passes_stable_mdns_host_verbatim():
+    """A stable mDNS .local handle (what the bond wizard mints, surviving the
+    leader's DHCP-IP churn) is passed verbatim to --host — snapclient resolves
+    it at connect time. The handle is NOT rewritten to an IP here."""
+    argv = snapclient_argv(_follower(leader_addr="jts3.local"))
+    assert "--host" in argv
+    assert argv[argv.index("--host") + 1] == "jts3.local"
+
+
 # ---------- _assemble_args(): pure derivation of the two env keys ----------
 #
 # These mirror the snap*_argv tests but assert on the env-key VALUES the

@@ -207,6 +207,13 @@ def snapclient_argv(cfg: GroupingConfig) -> list[str]:
     Channel selection (which of L/R/sub this client plays) is a later
     CamillaDSP concern and is intentionally NOT decided here.
     """
+    # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond
+    # wizard now mints it as a STABLE mDNS .local handle (the leader's
+    # JASPER_HOSTNAME, e.g. "jts3.local"), not a raw DHCP IP, so a follower
+    # survives the leader changing IP: snapclient re-resolves the name via
+    # mDNS at connect/reconnect time. A literal IPv4 is still accepted (and
+    # works) — see config.GroupingConfig.leader_addr — but the .local handle
+    # is what the wizard writes, so no reconcile change was needed for it.
     host = "127.0.0.1" if cfg.role == "leader" else cfg.leader_addr
     return [
         "snapclient",

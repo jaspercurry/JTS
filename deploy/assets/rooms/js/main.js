@@ -29,11 +29,13 @@
 // become document.createTextNode (escaped by construction). There is NO
 // innerHTML path and NO inline onclick with interpolated strings. The peer
 // click-through href is additionally scheme-guarded (http/https only) as
-// defense-in-depth against a poisoned mDNS address. The wake-response card
-// uses no native confirm()/alert() (a toggle needs no confirm); a save error
-// surfaces inline in the card's status line.
+// defense-in-depth against a poisoned mDNS address. The wake-response toggle
+// needs no confirm; the bond card's destructive "Dissolve pair" action uses
+// jtsConfirm (the styled <dialog>, never native confirm/alert — a static test
+// forbids the natives). A save error surfaces inline in the card's status line.
 
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
+import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
 const POLL_MS = 7000;
 const root = document.getElementById("app");
@@ -394,44 +396,65 @@ function makeWakeCard() {
 }
 
 // ---------------------------------------------------------------------------
-// Bond-forming card — the one-flow "create a stereo pair". The user picks one
-// other discovered speaker for the RIGHT channel; THIS speaker is the
-// LEFT/leader. Save POSTs /bond, which fans the config out to both speakers'
-// control APIs (this one → leader, the picked one → follower). Built ONCE (it
+// Bond card — two faces, one card. When this speaker is NOT in a bond it is the
+// one-flow "create a stereo pair": the user picks one other discovered speaker
+// for the RIGHT channel (THIS speaker is the LEFT/leader); Save POSTs /bond,
+// which fans the config out to both speakers' control APIs. When this speaker
+// IS already in a bond (snap.self.grouping.enabled + bond_id set), the picker
+// hides and the card instead shows a one-line legible summary of the current
+// bond plus a DANGER "Dissolve pair" button (POST /unbond). Built ONCE (it
 // holds a pending-save state + a selection a per-poll rebuild would stomp);
-// sync() refreshes the peer options only when no save is in flight. Untrusted
-// peer name/address reach the DOM through h() text nodes and the option value
-// — never innerHTML.
+// sync() reconciles the two faces and refreshes the peer options only when no
+// save is in flight. Untrusted peer name/address and the grouping fields
+// (channel, leader_addr) reach the DOM through h() text nodes and the option
+// value — never innerHTML, never inline onclick.
 // ---------------------------------------------------------------------------
 function makeBondCard() {
   let saving = false;
   let selfAddr = "";
 
+  // --- Create face: pick a sibling for the right channel ------------------
   const select = h("select.bond-select", {
     "attr:aria-label": "Speaker for the right channel",
   });
   const createBtn = h("button.btn.btn--primary",
     { type: "button" }, "Create stereo pair");
-  const status = h("p.bond-status.info-card__note",
-    { "attr:aria-live": "polite" });
 
+  const createIntro = h("p.info-card__note", null,
+    "Create a stereo pair: this speaker plays the left channel and the one " +
+    "you pick plays the right. Both are configured automatically — no " +
+    "settings files, no per-speaker setup.");
   const picker = h("div.bond-row", null,
     h("span.bond-row__label", null, "This speaker is Left — pair with"),
     select,
     createBtn,
   );
 
+  // --- Dissolve face: a legible summary + the danger button ---------------
+  // The summary line is filled per-sync (it depends on role/channel); kept as
+  // a single element so sync() can rewrite its text children safely.
+  const currentSummary = h("p.bond-current");
+  const dissolveBtn = h("button.btn.btn--danger",
+    { type: "button" }, "Dissolve pair");
+  const dissolveIntro = h("p.info-card__note", null,
+    "This speaker is part of a stereo pair. Dissolving sends both speakers " +
+    "back to playing on their own.");
+  const dissolveRow = h("div.bond-dissolve", null, dissolveBtn);
+
+  const status = h("p.bond-status.info-card__note",
+    { "attr:aria-live": "polite" });
+
   const body = h("div.info-card", null,
-    h("p.info-card__note", null,
-      "Create a stereo pair: this speaker plays the left channel and the one " +
-      "you pick plays the right. Both are configured automatically — no " +
-      "settings files, no per-speaker setup."),
+    createIntro,
     picker,
+    dissolveIntro,
+    currentSummary,
+    dissolveRow,
     status,
   );
+  const title = h("h2.section__title", null, "Create a stereo pair");
   const card = h("section.section", null,
-    h("div.section__head", null,
-      h("h2.section__title", null, "Create a stereo pair")),
+    h("div.section__head", null, title),
     body,
   );
 
@@ -440,12 +463,65 @@ function makeBondCard() {
     createBtn.disabled = !on;
   }
 
-  // Refresh the peer options from the latest snapshot. Skipped while saving so
-  // a mid-flight poll can't yank the selection out from under the user.
+  // Show exactly one face (create vs. dissolve). Bonded → dissolve; else create.
+  function showFace(bonded) {
+    createIntro.style.display = bonded ? "none" : "";
+    picker.style.display = bonded ? "none" : "";
+    dissolveIntro.style.display = bonded ? "" : "none";
+    currentSummary.style.display = bonded ? "" : "none";
+    dissolveRow.style.display = bonded ? "" : "none";
+    title.textContent = bonded ? "Stereo pair" : "Create a stereo pair";
+  }
+
+  // One-line legible summary of the current bond. Untrusted channel/leader_addr
+  // are passed as h() text-node children (escaped). Returns child nodes/strings.
+  function summarize(g) {
+    const channel = g.channel || "";
+    if (g.role === "follower") {
+      const parts = [
+        "Paired — this speaker plays the ",
+        h("strong", null, channel || "second"),
+        " channel.",
+      ];
+      if (g.leader_addr) {
+        parts.push(" Following ", h("code.bond-current__addr", null, g.leader_addr), ".");
+      }
+      return parts;
+    }
+    if (g.role === "leader") {
+      return [
+        "Leading this pair — ",
+        h("strong", null, channel || "first"),
+        " channel.",
+      ];
+    }
+    // Enabled + bonded but an unrecognised role: still legible, no throw.
+    return [
+      "Paired",
+      channel ? [" — ", h("strong", null, channel), " channel."] : ".",
+    ];
+  }
+
+  // Reconcile both faces from the latest snapshot. Skipped while saving so a
+  // mid-flight poll can't yank the selection / swap the face under the user.
   function sync(snap) {
     if (saving) return;
     const self = (snap && snap.self) || {};
     selfAddr = self.address || "";
+    const g = (self.grouping && typeof self.grouping === "object") ? self.grouping : {};
+    const bonded = !!(g.enabled && g.bond_id && !g.error);
+
+    showFace(bonded);
+
+    if (bonded) {
+      // Dissolve face: rebuild the summary text from the current grouping.
+      currentSummary.textContent = "";
+      appendChildren(currentSummary, summarize(g));
+      dissolveBtn.disabled = false;
+      return;
+    }
+
+    // Create face: refresh the peer options.
     const peers = Array.isArray(snap && snap.peers) ? snap.peers : [];
     const reachable = peers.filter((p) => p && p.address);  // need an address to pair
     const prev = select.value;
@@ -499,7 +575,43 @@ function makeBondCard() {
     }
   }
 
+  async function dissolve() {
+    const ok = await jtsConfirm(
+      "Dissolve this stereo pair? Both speakers go back to playing on their own.",
+      { danger: true },
+    );
+    if (!ok) return;
+    saving = true;
+    dissolveBtn.disabled = true;
+    status.textContent = "Dissolving…";
+    try {
+      // POST /unbond returns {ok, results?, error?}. On ok the speakers are
+      // already reconfiguring; otherwise surface a short reason.
+      const data = await postJSON("unbond", {});
+      if (data && data.ok) {
+        status.textContent = "Pair dissolved.";
+      } else {
+        const failed = ((data && data.results) || []).filter((r) => r && !r.ok);
+        const why = failed
+          .map((r) => (r.addr || "?") + ": " + (r.detail || "failed"))
+          .join("; ");
+        status.textContent =
+          "Couldn't dissolve — " + (why || (data && data.error) || "unknown error");
+      }
+    } catch (e) {
+      console.error("rooms: bond dissolve failed", e);
+      status.textContent = "Couldn't dissolve — " + e.message;
+    } finally {
+      saving = false;
+      dissolveBtn.disabled = false;
+    }
+  }
+
   createBtn.addEventListener("click", create);
+  dissolveBtn.addEventListener("click", dissolve);
+  // Default to the create face until the first sync() proves we're bonded, so
+  // both faces are never visible at once during the initial paint.
+  showFace(false);
   return { el: card, sync };
 }
 
