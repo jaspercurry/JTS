@@ -269,6 +269,38 @@ Those later stages are owned by
 
 ---
 
+## Wake-corpus feature-bank builder
+
+Laptop-side or training-host-side, offline. Consumes the bundle produced by
+`scripts/export-wake-corpus-bundle.sh` and extracts the first
+openWakeWord-compatible real-positive feature arrays.
+
+```sh
+bash scripts/build-wake-feature-bank.sh logs/wake-corpus-export/20260609T120000Z
+bash scripts/build-wake-feature-bank.sh logs/wake-corpus-export/20260609T120000Z logs/wake-features --leg chip_aec_150
+```
+
+Outputs:
+
+- `positive_features_train.npy`
+- `positive_features_eval.npy`
+- `feature_manifest.jsonl`
+- `feature_rejections.jsonl`
+- `feature_bank.json`
+
+The builder keeps the bundle split as source of truth, end-aligns each WAV into
+a 2-second / 32,000-sample window, and extracts `(16, 96)` embeddings through
+`openwakeword.utils.AudioFeatures` with ONNX feature models. It requires
+`openwakeword==0.6.0`, `onnxruntime`, `numpy`, and staged
+`melspectrogram.onnx` / `embedding_model.onnx` assets; pass
+`--melspec-model` and `--embedding-model` when running outside the JTS runtime
+environment.
+
+It does not inject the features into LiveKit, build negative banks, train,
+score, or alter Pi runtime state.
+
+---
+
 ## Wake-corpus quality analyzer
 
 Laptop-side, offline. Deterministic first-pass signal-quality analysis of a

@@ -214,8 +214,22 @@ Current implementation state:
 - It is intentionally not a data-prep or training tool: no resampling,
   end-alignment, feature extraction, LiveKit calls, cloud job launch, or
   model evaluation.
-- The next Phase 0 slice should consume this manifest and produce the
-  first openWakeWord feature bank from a tiny bundle.
+- `scripts/build-wake-feature-bank.sh` (backed by
+  `scripts/_build_wake_feature_bank.py`) implements the first
+  real-positive feature-bank builder. It consumes the bundle manifest,
+  end-aligns each accepted 16 kHz mono WAV into a 2-second /
+  32,000-sample openWakeWord training window, extracts ONNX
+  openWakeWord speech-embedding features in batches, and writes
+  `positive_features_train.npy`, `positive_features_eval.npy`,
+  `feature_manifest.jsonl`, `feature_rejections.jsonl`, and
+  `feature_bank.json`.
+- The feature-bank builder is intentionally still not a trainer: no
+  LiveKit calls, synthetic data generation, negative feature banks,
+  threshold tuning, cloud job launch, model registry writes, or runtime
+  changes.
+- The next Phase 0 slice should prove the real-positive injection step:
+  append the JTS `positive_features_*.npy` arrays into a LiveKit/openWakeWord
+  training workdir and run one tiny off-Pi model train/eval loop.
 
 ### Phase 1 — MVP Pipeline
 
@@ -285,7 +299,8 @@ patterns.
   graph, hardware/profile facts. First implementation:
   `scripts/export-wake-corpus-bundle.sh`.
 - `jts-wake-dataprep`: resample, normalize, segment/end-align, compute
-  features, build train/validation/test banks.
+  features, build train/validation/test banks. First implementation:
+  `scripts/build-wake-feature-bank.sh` for already-16 kHz bundle WAVs.
 - `jts-livekit-train`: generate synthetic positives, inject real
   positives, run LiveKit training/export off-Pi.
 - `jts-wake-eval`: DET/ROC, false accepts/hour, stratified recall,
@@ -405,6 +420,7 @@ should be promoted into clear modules before building UX.
 - openWakeWord repo:
   <https://github.com/dscripka/openWakeWord>
 
-Last verified: 2026-06-09 (updated after adding the first corpus-bundle
-exporter; feature extraction, real-positive injection, cloud training,
-evaluation, registry, and deployment stages remain future work).
+Last verified: 2026-06-09 (updated after adding the corpus-bundle exporter
+and first openWakeWord-compatible positive feature-bank builder;
+real-positive injection, cloud training, evaluation, registry, and deployment
+stages remain future work).
