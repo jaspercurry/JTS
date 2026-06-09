@@ -199,6 +199,7 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-wake-training-experiment.md",
+  "docs/HANDOFF-custom-wakeword-training.md",
   "docs/HANDOFF-wake-telemetry.md",
   "docs/HANDOFF-wake-corpus-quality.md",
   "docs/HANDOFF-usb-mic-wake.md",

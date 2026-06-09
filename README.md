@@ -369,6 +369,7 @@ deploy/
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-wake-training-experiment.md  Primary active workstream: custom wake-model training
+  HANDOFF-custom-wakeword-training.md  Off-Pi custom wake model training/deploy workflow
   HANDOFF-wake-corpus-quality.md  Methodology for wake-corpus audio QA / artifact review
   HANDOFF-usb-mic-wake.md   Parked cheap-USB mic wake/AEC follow-up plan
   HANDOFF-mic-quality-v2.md     Empirical history: AEC sweeps, BEST_A, triple-stream architecture
@@ -585,6 +586,13 @@ reference. Currently:
   a 4th `raw0` leg and corpus-only cheap USB mic/reference/DTLN legs
   for future cheaper-mic experiments. Read this before working on wake-
   word reliability, training data collection, or testing methodology.
+- [`HANDOFF-custom-wakeword-training.md`](docs/HANDOFF-custom-wakeword-training.md) —
+  Productization plan for converting JTS wake-corpus recordings into
+  custom wake-word models trained off-Pi with LiveKit/openWakeWord-
+  compatible tooling, then evaluated, thresholded, and deployed back
+  into the existing JTS multi-leg fusion runtime. Read this before
+  building corpus export, feature extraction, cloud training, model
+  registry, shadow-mode, or one-click training UX.
 - [`HANDOFF-wake-corpus-quality.md`](docs/HANDOFF-wake-corpus-quality.md) —
   Current methodology for programmatic audio-quality review of the
   deliberate wake corpus: deterministic artifact metrics, tear/click
