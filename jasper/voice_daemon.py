@@ -2946,11 +2946,27 @@ class WakeLoop:
     async def manual_session_start(self) -> str:
         """Trigger a voice session from external IPC (dial hold-to-talk).
         Bypasses the openWakeWord trigger but honors the same gates
-        wake does: spend cap and connection-paused. Returns one of
-        OK / BUSY / CAP / PAUSED / ERROR for the caller's logging.
+        wake does: the user-deliberate stop-listening signals
+        (mic-mute, room-correction measurement window), spend cap, and
+        connection-paused. Returns one of
+        OK / BUSY / MUTED / MEASURING / CAP / PAUSED / ERROR for the
+        caller's logging.
         """
         if self._state is State.SESSION:
             return "BUSY"
+        # User-deliberate "stop listening" gates — mirror the wake
+        # path's _wake_late_cancelled. Mic-mute and an open room-
+        # correction measurement window both mean the household has
+        # asked the speaker not to listen; opening a paid LLM turn and
+        # ducking music from the dial long-press / POST /session/start
+        # would bypass that. Refuse silently — like the wake path, no
+        # cue and no duck (see _handle_wake_acquire Step 0).
+        if self._mic_muted:
+            logger.info("event=session.manual_refused reason=mic_muted")
+            return "MUTED"
+        if self._measurement_active.is_set():
+            logger.info("event=session.manual_refused reason=measurement")
+            return "MEASURING"
         if not self._spend_cap.allowed():
             return "CAP"
         if self._connection.is_paused():
