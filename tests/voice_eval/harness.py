@@ -79,6 +79,8 @@ from jasper.bus import BusClient
 from jasper.subway import SubwayClient
 from jasper.timers import TimerScheduler
 from jasper.tools import ToolRegistry
+from jasper.tools.diagnostic import make_diagnostic_tools
+from jasper.tools.home_assistant import make_home_assistant_tools
 from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.bus import make_bus_tools
 from jasper.tools.subway import make_subway_tools
@@ -197,9 +199,12 @@ def _build_test_registry(
 
     **Side-effect warning**: registering `spotify_play` and the
     transport tools means a scenario that exercises them WILL
-    affect live playback on the speaker. The Spotify scenarios
-    honour `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1` for the dinner-time
-    case. Subway/weather/time scenarios are read-only.
+    affect live playback on the speaker. The `home_assistant` tool
+    performs REAL smart-home actions (lights, locks, scenes) on the
+    configured HA. Both classes of scenario honour
+    `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1`. `flag_recent_issue` only
+    writes a SQLite row to a throwaway tmp store, so it's low-risk.
+    Subway/weather/time scenarios are read-only.
 
     As new tools land, extend this builder alongside the matching
     scenario file. The model only sees what's registered."""
@@ -286,6 +291,37 @@ def _build_test_registry(
             router, renderer, cfg.spotify_device_name, cfg.spotify_setup_url,
         ):
             registry.register(fn)
+
+    # Home Assistant — single tool surface that relays the utterance to
+    # HA's conversation pipeline, so a call performs a REAL smart-home
+    # action (lights, locks, scenes). Gated on `ha being non-None` exactly
+    # like the daemon's `_build_registry`; when HA isn't configured the
+    # model never sees the tool and the HA scenario skips. The client is
+    # exposed via `test_state` so a scenario can read `ha.url` without
+    # re-deriving config. See jasper/tools/home_assistant.py.
+    from jasper.home_assistant import build_ha_client
+    ha = build_ha_client(cfg)
+    if ha is not None:
+        for fn in make_home_assistant_tools(ha):
+            registry.register(fn)
+    if test_state is not None:
+        test_state["ha_client"] = ha
+
+    # Diagnostic — flag_recent_issue. Backed by a WakeEventStore in a tmp
+    # dir so a flag call actually writes a row (the scenario reads the
+    # store back via `test_state` instead of making a second paid LLM
+    # call). Gated on the store being open, same as the daemon. The store
+    # is seeded with one synthetic prior event in the scenario so
+    # record_flag has something real to flag — see test_diagnostic.py.
+    from jasper.wake_events import WakeEventStore
+    wake_events_dir = tempfile.mkdtemp(prefix="voice-eval-wake-")
+    wake_event_store = WakeEventStore(wake_events_dir)
+    wake_event_store.open()
+    for fn in make_diagnostic_tools(wake_event_store):
+        registry.register(fn)
+    if test_state is not None:
+        test_state["wake_event_store"] = wake_event_store
+        test_state["wake_events_dir"] = wake_events_dir
 
     # Future: get_current_time tool registration goes here once the
     # tool lands. Until then, the time scenario fails meaningfully
@@ -551,6 +587,17 @@ class VoiceEvalHarness:
                 os.unlink(db_path)
             except OSError:
                 pass
+        store = self.test_state.get("wake_event_store")
+        if store is not None:
+            try:
+                store.close()  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                logger.warning("voice-eval: wake_event_store close raised",
+                               exc_info=True)
+        wake_dir = self.test_state.get("wake_events_dir")
+        if isinstance(wake_dir, str):
+            import shutil
+            shutil.rmtree(wake_dir, ignore_errors=True)
 
     async def ask(
         self,
