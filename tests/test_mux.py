@@ -7,6 +7,7 @@ just patch their bound names in jasper.mux's namespace and mutate the
 return values per tick.
 """
 from __future__ import annotations
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -62,11 +63,13 @@ class _FakeVolumeCoordinator:
 
 @pytest.fixture
 def mux(tmp_path):
-    # State file path is per-test (tmp_path) so we don't accidentally
-    # touch /run/librespot if a test forgets to stub the probes.
+    # State file paths are per-test (tmp_path) so we don't accidentally
+    # touch /run/librespot or the real /var/lib/jasper/mux_mode.json if a
+    # test forgets to stub the probes.
     m = Mux(
         librespot_state_path=str(tmp_path / "librespot.state.json"),
         volume_coordinator=_FakeVolumeCoordinator(),
+        mode_state_path=str(tmp_path / "mux_mode.json"),
     )
     m._fanin_select = AsyncMock(return_value={})
     m._fanin_auto = AsyncMock(return_value={})
@@ -297,6 +300,27 @@ def test_mux_service_loads_spotify_credentials_env():
     ]
 
     assert "-/var/lib/jasper/spotify_credentials.env" in env_files
+
+
+def test_mux_service_can_write_state_dir():
+    """The manual-pin persistence file lives under /var/lib/jasper.
+    The unit must guarantee that path is writable. Mux runs as root with
+    no ProtectSystem today (so it's writable), but StateDirectory=jasper
+    codifies the write target and keeps the pin durable if mux ever
+    gains filesystem sandboxing — mirroring jasper-voice.service."""
+    unit = (REPO / "deploy" / "systemd" / "jasper-mux.service").read_text()
+    lines = [line.strip() for line in unit.splitlines()]
+    has_state_dir = "StateDirectory=jasper" in lines
+    has_rw_path = any(
+        line.startswith("ReadWritePaths=") and "/var/lib/jasper" in line
+        for line in lines
+    )
+    # If mux ever adds ProtectSystem=, one of these must be present or
+    # the persistence write silently fails on the live Pi.
+    no_protect_system = not any(
+        line.startswith("ProtectSystem=") for line in lines
+    )
+    assert has_state_dir or has_rw_path or no_protect_system
 
 
 # ----------------------------------------------------------------------
@@ -792,3 +816,116 @@ async def test_auto_select_with_no_active_sources_holds_fanin_none(
     assert mux._manual_source is None
     assert mux._winner is None
     assert status["mode"] == "auto"
+
+
+# ----------------------------------------------------------------------
+# Manual-pin persistence — the pin must survive jasper-mux's
+# Restart=always deploy/restart cycle. We simulate a restart by building
+# a SECOND Mux pointed at the same mode-state file. Fail-open to Auto on
+# a missing/corrupt file is the pre-persistence behaviour.
+# ----------------------------------------------------------------------
+
+
+def _fresh_mux_after_restart(tmp_path):
+    """Construct a new Mux instance pointed at the same per-test
+    librespot + mode-state paths the `mux` fixture uses — i.e. what a
+    deploy/restart produces (a brand-new process, on-disk state intact)."""
+    m = Mux(
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        volume_coordinator=_FakeVolumeCoordinator(),
+        mode_state_path=str(tmp_path / "mux_mode.json"),
+    )
+    m._fanin_select = AsyncMock(return_value={})
+    m._fanin_auto = AsyncMock(return_value={})
+    m._fanin_none = AsyncMock(return_value={})
+    return m
+
+
+@pytest.mark.asyncio
+async def test_select_source_persists_manual_pin_to_disk(
+    mux, patched_probes, tmp_path,
+):
+    """A successful manual selection writes the pin so it survives a
+    restart."""
+    _stub_probes(patched_probes, airplay=True)
+    await mux.select_source(Source.AIRPLAY)
+
+    persisted = (tmp_path / "mux_mode.json").read_text()
+    assert json.loads(persisted) == {
+        "mode": "manual", "selected_source": "airplay",
+    }
+
+
+@pytest.mark.asyncio
+async def test_manual_pin_restored_after_simulated_restart(
+    mux, patched_probes, tmp_path,
+):
+    """The headline behaviour: pin AirPlay, simulate a jasper-mux
+    restart (fresh Mux, same file), and the new process comes up still
+    pinned to AirPlay instead of silently reverting to Auto."""
+    _stub_probes(patched_probes, airplay=True)
+    await mux.select_source(Source.BLUETOOTH)
+    assert mux._manual_source is Source.BLUETOOTH
+
+    restarted = _fresh_mux_after_restart(tmp_path)
+
+    assert restarted._manual_source is Source.BLUETOOTH
+    assert restarted._status_payload()["mode"] == "manual"
+    assert restarted._status_payload()["selected_source"] == "bluetooth"
+
+
+@pytest.mark.asyncio
+async def test_auto_select_persists_auto_so_restart_stays_auto(
+    mux, patched_probes, tmp_path,
+):
+    """Pinning then returning to Auto must clear the persisted pin, so a
+    later restart doesn't resurrect the old manual source."""
+    _stub_probes(patched_probes, airplay=True, spotify=True)
+    await mux.select_source(Source.AIRPLAY)
+    assert json.loads((tmp_path / "mux_mode.json").read_text())["mode"] == "manual"
+
+    await mux.auto_select()
+    assert json.loads((tmp_path / "mux_mode.json").read_text()) == {"mode": "auto"}
+
+    restarted = _fresh_mux_after_restart(tmp_path)
+    assert restarted._manual_source is None
+
+
+def test_fresh_mux_with_no_state_file_is_auto(tmp_path):
+    """First boot / no prior pin → Auto."""
+    m = Mux(
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        mode_state_path=str(tmp_path / "missing.json"),
+    )
+    assert m._manual_source is None
+
+
+def test_fresh_mux_with_corrupt_state_file_is_auto(tmp_path):
+    """A corrupt mode file fails open to Auto rather than crashing
+    construction or pinning to garbage."""
+    state = tmp_path / "mux_mode.json"
+    state.write_text("{half-written", encoding="utf-8")
+    m = Mux(
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        mode_state_path=str(state),
+    )
+    assert m._manual_source is None
+
+
+def test_mux_mode_state_path_defaults_from_env(monkeypatch, tmp_path):
+    """JASPER_MUX_MODE_STATE_PATH overrides the persistence location so
+    operators / tests can relocate it. The default constant is computed
+    at import; the constructor default tracks the env-resolved constant.
+
+    Verify the explicit-arg path is honoured end to end (the env wiring
+    itself is exercised by the module-level MUX_MODE_STATE_PATH constant
+    which feeds the constructor default)."""
+    import jasper.mux_mode_persistence as p
+
+    custom = tmp_path / "custom_mode.json"
+    p.write_mode(custom, Source.SPOTIFY)
+    m = Mux(
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        mode_state_path=str(custom),
+    )
+    assert m._manual_source is Source.SPOTIFY

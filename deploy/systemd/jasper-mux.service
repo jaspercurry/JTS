@@ -25,6 +25,14 @@ MemoryMax=120M
 Nice=-3
 RuntimeDirectory=jasper-mux
 RuntimeDirectoryMode=0750
+# StateDirectory guarantees /var/lib/jasper exists + is writable for the
+# durable source-selection mode file (mux_mode.json), so a household's
+# manual source pin survives the Restart=always deploy/restart cycle.
+# Mux runs as root with no ProtectSystem today, so /var/lib/jasper is
+# already writable; this codifies the write target and keeps the pin
+# durable if mux ever gains filesystem sandboxing. Mirrors jasper-voice.
+StateDirectory=jasper
+StateDirectoryMode=0750
 
 # OOM protection (Stage 1 of memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Mux is restartable but now sits on the
