@@ -238,22 +238,28 @@ def _build_test_registry(
         test_state["timer_scheduler"] = timer_scheduler
         test_state["timer_db_path"] = timer_db.name
 
-    # Subway — stateless HTTP client. Read-only.
+    # Subway — stateless HTTP client. Read-only. Construction mirrors
+    # the daemon's `_build_registry` (jasper/voice_daemon.py) exactly —
+    # `Config` exposes neither `subway_lines` nor a `configured_routes`
+    # constructor arg, so any drift here is a silent AttributeError/
+    # TypeError that only surfaces inside a paid `harness.ask()`. The
+    # hardware-free `tests/test_voice_eval_registry.py` guards it.
     if cfg.subway_enabled:
         subway = SubwayClient(
             cfg.subway_station_id,
             cfg.subway_default_direction,
-            list(cfg.subway_lines) or None,
         )
         for fn in make_subway_tools(subway):
             registry.register(fn)
 
-    # Bus — MTA BusTime SIRI client. Read-only.
+    # Bus — MTA BusTime SIRI client. Read-only. Mirror the daemon's
+    # `_build_registry`: BusClient takes `stop_ids` (plural) + a
+    # `stop_labels` map derived from `cfg.bus_stops`.
     if cfg.bus_enabled:
         bus = BusClient(
-            stop_id=cfg.bus_stop_id,
+            stop_ids=[sid for sid, _ in cfg.bus_stops],
             api_key=cfg.mta_bustime_key,
-            configured_routes=list(cfg.bus_routes) or None,
+            stop_labels={sid: label for sid, label in cfg.bus_stops if label},
         )
         for fn in make_bus_tools(bus):
             registry.register(fn)
