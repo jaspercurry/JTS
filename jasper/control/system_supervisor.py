@@ -31,6 +31,16 @@ rate-limited at 1 reboot per 24 hours, we issue `systemctl reboot`
 sync). This is one tier *below* the kernel hardware watchdog (Tier
 5) and one *above* per-service `Restart=on-failure` (Tier 2).
 
+The 24-hour rate-limit is enforced against a WALL-CLOCK timestamp
+persisted to `/var/lib/jasper/system_supervisor_reboot.json`, loaded
+on construction. This is load-bearing: the rate-limit must survive the
+reboot it just issued, or a *permanent* userspace wedge would
+reboot-loop roughly every cold-start window (~3.5 min) forever and the
+household could never reach jts.local to fix it. An in-memory or
+monotonic-clock window would reset to nothing on the fresh post-reboot
+process. The persisted read fails open — a missing or corrupt file
+never blocks a genuinely-needed reboot.
+
 Why not session-gated like ShairportSupervisor
 -----------------------------------------------
 A live voice session implies functioning mic capture + audio
@@ -56,14 +66,25 @@ docs/HANDOFF-tier5-watchdog-liveness.md "Option A".
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Wall-clock timestamp of the last supervisor-driven reboot, persisted so
+# the 24-hour rate-limit survives the reboot it just issued. Without this,
+# a *permanent* userspace wedge reboots ~every 3.5 min forever (cold-start
+# 120 s + 3 failures × 30 s) and the household never reaches jts.local —
+# the fresh post-reboot process starts with no in-memory record and
+# CLOCK_MONOTONIC resets to ~0. Stored as wall-clock (time.time()), not
+# monotonic, precisely because it must outlive the boot.
+DEFAULT_REBOOT_STATE_PATH = Path("/var/lib/jasper/system_supervisor_reboot.json")
 
 
 class SystemSupervisor:
@@ -93,6 +114,7 @@ class SystemSupervisor:
         failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
         rate_limit_sec: float = DEFAULT_RATE_LIMIT_SEC,
         cold_start_sec: float = DEFAULT_COLD_START_SEC,
+        reboot_state_path: Path | str = DEFAULT_REBOOT_STATE_PATH,
     ) -> None:
         self._sshd_host = sshd_host
         self._sshd_port = sshd_port
@@ -104,18 +126,24 @@ class SystemSupervisor:
         self._threshold = failure_threshold
         self._rate_limit = rate_limit_sec
         self._cold_start = cold_start_sec
+        self._reboot_state_path = Path(reboot_state_path)
         # Observable state — read by snapshot() for /state.
         self.consecutive_failures: int = 0
         self.last_probe_at: float | None = None
         self.last_probe_ok: bool | None = None
         self.last_failed_probe: str | None = None
-        self.last_reboot_at: float | None = None
         self.reboot_count: int = 0
         self.suppressed_count: int = 0
-        # Monotonic clock for rate-limit math — separated from
-        # last_reboot_at so display and arithmetic don't share a time
-        # base. time.monotonic() can't go backwards on NTP jumps.
-        self._last_reboot_monotonic: float | None = None
+        # Wall-clock timestamp of the last supervisor-driven reboot. The
+        # rate-limit window is enforced against this. It is the same value
+        # surfaced as last_reboot_at in snapshot(). Loaded from the persisted
+        # state file on construction so the window survives reboots — the
+        # whole point of T5.2's rate-limit hardening. Fail-open: a missing or
+        # corrupt file leaves it None (a genuinely-needed reboot is never
+        # blocked by a bad byte on disk).
+        self.last_reboot_at: float | None = _read_reboot_state(
+            self._reboot_state_path,
+        )
 
     # ---- main loop ----
 
@@ -161,22 +189,25 @@ class SystemSupervisor:
         # Rate-limit: at most one supervisor-driven reboot per window.
         # 24 h is the default — a wedge that recurs within a day is
         # not something a second reboot will fix; surface to the
-        # operator instead.
-        mono = self._now()
+        # operator instead. The clock is WALL-CLOCK (not monotonic) and
+        # the last-reboot time is persisted to disk, so this window
+        # holds across the reboot it just issued — otherwise a permanent
+        # wedge would reboot-loop forever past the bare cold-start delay.
+        now = self._now()
         if (
-            self._last_reboot_monotonic is not None
-            and mono - self._last_reboot_monotonic < self._rate_limit
+            self.last_reboot_at is not None
+            and now - self.last_reboot_at < self._rate_limit
         ):
             self.suppressed_count += 1
             logger.warning(
                 "event=system_supervisor.reboot_rate_limited "
                 "since_last_reboot=%.0fs limit=%.0fs suppressed=%d",
-                mono - self._last_reboot_monotonic, self._rate_limit,
+                now - self.last_reboot_at, self._rate_limit,
                 self.suppressed_count,
             )
             return
-        self._last_reboot_monotonic = mono
-        self.last_reboot_at = time.time()
+        self.last_reboot_at = now
+        _write_reboot_state(self._reboot_state_path, now)
         self.reboot_count += 1
         self.consecutive_failures = 0
         logger.error(
@@ -321,8 +352,11 @@ class SystemSupervisor:
     # ---- accessors ----
 
     def _now(self) -> float:
-        # Seam for rate-limit testing — overridden in tests.
-        return time.monotonic()
+        # Seam for rate-limit testing — overridden in tests. Wall-clock,
+        # not monotonic: the rate-limit window is enforced against a
+        # persisted last-reboot time that must survive reboots, and
+        # CLOCK_MONOTONIC resets to ~0 on every boot.
+        return time.time()
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -342,6 +376,48 @@ def _read_loadavg() -> str:
     of the read doesn't block the event loop."""
     with open("/proc/loadavg") as f:
         return f.read()
+
+
+def _read_reboot_state(path: Path) -> float | None:
+    """Return the persisted wall-clock last-reboot time, or None.
+
+    Fail-open by design: a missing, unreadable, corrupt, or malformed
+    file resolves to None so a genuinely-needed reboot is never blocked
+    by one bad byte on disk. Mirrors the conservative read in
+    `jasper/wifi_scan_repair.py`."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("last_reboot_at")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_reboot_state(path: Path, last_reboot_at: float) -> None:
+    """Atomically persist the wall-clock last-reboot time.
+
+    Tempfile + os.replace mirrors `jasper/wifi_scan_repair.py._write_state`.
+    A write failure is logged and swallowed — losing the persisted
+    timestamp degrades to today's in-memory-only behaviour rather than
+    blocking the reboot we're about to issue."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp")
+        tmp.write_text(
+            json.dumps({"last_reboot_at": last_reboot_at}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning(
+            "event=system_supervisor.reboot_state_write_failed path=%s err=%r",
+            path, e,
+        )
 
 
 # Module-level supervisor instance, set by start_supervisor() when
