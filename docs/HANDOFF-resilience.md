@@ -1008,7 +1008,7 @@ For anyone touching the resilience code:
   event-driven shape for output DAC roles. The oneshot classifies the
   selected final-output DAC, updates JTS-owned DAC identity/asound
   state for recognized roles, writes
-  `/run/jasper/output_hardware.json` with observed-vs-active hardware
+  `/run/jasper-output-hardware/output_hardware.json` with observed-vs-active hardware
   facts, applies the explicit DAC8x-only `JASPER_OUTPUT_DAC_ROUTE`
   render path when configured, and enables Apple mixer helpers only for
   the Apple output role. A recognized role must render the managed ALSA

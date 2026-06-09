@@ -426,7 +426,7 @@ udev `controlC*` add/remove/change events, so USB DAC changes converge
 without a deploy-only scan. The helper scripts remain runtime-safe for
 manual/operator starts. `outputd_dac` still points at the detected
 single-device final-output card. The same reconcile pass writes
-`/run/jasper/output_hardware.json`, the observed output-hardware state that
+`/run/jasper-output-hardware/output_hardware.json`, the observed output-hardware state that
 `/state` exposes as `audio.output_hardware`; `/sound/output-topology` uses a
 ready observed shape to seed an unsaved output-map draft when no saved topology
 exists. Two Apple USB-C adapters can therefore be visible as an observed

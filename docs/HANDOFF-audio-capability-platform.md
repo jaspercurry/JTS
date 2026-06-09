@@ -96,7 +96,7 @@ The foundation is partly built:
 - `jasper/audio_hardware/dac.py` is the static DAC profile registry.
   `jasper/output_hardware.py` is the output-side runtime classifier:
   `jasper-audio-hardware-reconcile` writes
-  `/run/jasper/output_hardware.json` with separate `active` runtime
+  `/run/jasper-output-hardware/output_hardware.json` with separate `active` runtime
   hardware and best `observed` hardware shape. `/state`,
   `/sound/output-topology`, and `jasper-doctor` consume that artifact
   instead of each reconstructing DAC semantics from raw env/card names.
@@ -365,7 +365,7 @@ parallel truth:
 | `jasper/mics/xvf3800.py` | XVF identity, firmware, mixer, channel constants | Needs richer capabilities, but should not become a fake generic interface. |
 | `jasper/wake_legs.py` | Stable leg identity and ports | Good spine; future profile code should reference this instead of strings. |
 | `deploy/bin/jasper-aec-reconcile` | Intent → env/service runtime policy | Bash duplicates mic/chip facts and owns mutual exclusion. |
-| `deploy/bin/jasper-audio-hardware-reconcile` | Output DAC role convergence and `/run/jasper/output_hardware.json` | Correct output-side policy owner; should keep profile data minimal and publish state instead of making each UI/doctor surface probe hardware. |
+| `deploy/bin/jasper-audio-hardware-reconcile` | Output DAC role convergence and `/run/jasper-output-hardware/output_hardware.json` | Correct output-side policy owner; should keep profile data minimal and publish state instead of making each UI/doctor surface probe hardware. |
 | `jasper/cli/aec_init.py` | Volatile XVF profile application/readback | Correct place for chip writes; should emit profile/readback state. |
 | `jasper/cli/aec_bridge.py` | Leg producers, mic/ref capture, corpus streams | High risk for scattered profile flags. |
 | `rust/jasper-outputd` | Final output/DAC timing + chip reference fanout | Correct place for DAC/reference health counters. |

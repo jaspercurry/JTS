@@ -2201,6 +2201,18 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
 
 
+def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload.pop("assistant_loudness", None)
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "ok"
+    assert "assistant_loudness=fan-in-owned" in r.detail
+
+
 def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     payload = json.loads(

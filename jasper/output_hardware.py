@@ -22,7 +22,7 @@ from typing import Any, Iterable, Mapping
 
 SCHEMA_VERSION = 1
 OUTPUT_HARDWARE_STATE_KIND = "jts_output_hardware_state"
-DEFAULT_STATE_PATH = "/run/jasper/output_hardware.json"
+DEFAULT_STATE_PATH = "/run/jasper-output-hardware/output_hardware.json"
 DEFAULT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 
 APPLE_USB_C_DONGLE_DEVICE_ID = "apple_usb_c_dongle"

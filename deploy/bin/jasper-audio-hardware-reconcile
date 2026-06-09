@@ -19,7 +19,7 @@ if [[ -x /opt/jasper/.venv/bin/python ]]; then
     DEFAULT_OUTPUT_HARDWARE_PYTHON="/opt/jasper/.venv/bin/python"
 fi
 OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWARE_PYTHON}"
-OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper/output_hardware.json}"
+OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 ACTIVE_SPEAKER_STARTUP_LOAD_STATE="${JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE:-/var/lib/jasper/active_speaker_startup_load.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"

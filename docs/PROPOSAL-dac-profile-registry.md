@@ -62,7 +62,7 @@ Use these instead of creating a parallel hardware stack:
   state.
 - `JASPER_AUDIO_DAC_ID` and `JASPER_AUDIO_DAC_CARD` are reconciler-owned runtime
   facts for the active final-output role.
-- `/run/jasper/output_hardware.json` records observed output hardware,
+- `/run/jasper-output-hardware/output_hardware.json` records observed output hardware,
   including composite dual-Apple readiness and partial states.
 - `/var/lib/jasper/output_topology.json` records the operator's physical output
   mapping, speaker groups, role identity, and safety state.

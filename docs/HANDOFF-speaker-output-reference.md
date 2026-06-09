@@ -184,7 +184,7 @@ What exists:
   `/etc/jasper/jasper.env` so validation artifacts and status surfaces
   have stable hardware identity instead of only the generic
   `outputd_dac` PCM name. It also writes
-  `/run/jasper/output_hardware.json`, a structured observed-hardware
+  `/run/jasper-output-hardware/output_hardware.json`, a structured observed-hardware
   artifact with the current profile id, status, physical output count,
   Apple child-device facts, and selected card/PCM for single-device
   profiles. `/state` exposes this artifact as `audio.output_hardware`,
@@ -870,7 +870,7 @@ datum: how much assistant audio was actually heard.
   clocks, distinguishing profile shape from aggregate runtime enablement, and
   leaving runtime activation with hardware reconcile/outputd.
 - 2026-06-09: Added `jasper.output_hardware` and
-  `/run/jasper/output_hardware.json` as the observed output hardware state
+  `/run/jasper-output-hardware/output_hardware.json` as the observed output hardware state
   contract. `jasper-audio-hardware-reconcile` writes the artifact during
   install/boot/udev convergence, publishes outputd runtime env separately,
   and parks dual Apple with the fake backend until outputd has a real

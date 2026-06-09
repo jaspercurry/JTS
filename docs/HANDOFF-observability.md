@@ -118,7 +118,7 @@ extension of the debug card below.
 
 **Output hardware state is observable without probing audio streams:**
 `jasper-audio-hardware-reconcile` writes
-`/run/jasper/output_hardware.json` and logs
+`/run/jasper-output-hardware/output_hardware.json` and logs
 `event=audio_hardware_reconcile.state_written` after each install/boot/udev
 convergence pass. `/state.audio.output_hardware`, `/sound/output-topology`,
 and `jasper-doctor` read that same artifact so output hardware diagnostics can
