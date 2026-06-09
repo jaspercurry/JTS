@@ -390,7 +390,7 @@ title = "Testing tools, diagnostics, and evidence capture"
 safety = "safe-ci"
 code = [
   "docs/testing-tooling.md",
-  "jasper/cli/doctor.py",
+  "jasper/cli/doctor/**",
   "jasper/cli/system_soak.py",
   "jasper/tools/diagnostic.py",
   "scripts/fetch-pi-logs.sh",

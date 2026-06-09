@@ -115,7 +115,7 @@ _PEERING_FILES = [
     "jasper/web/__main__.py",
     "jasper/voice_daemon.py",
     "jasper/control/server.py",
-    "jasper/cli/doctor.py",
+    "jasper/cli/doctor/",  # whole subtree — doctor is a package since the decomposition
 ]
 
 

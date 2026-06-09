@@ -23,6 +23,18 @@ from jasper.voice.catalog import PROVIDERS, provider_ids_manifest_text
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
 
+def _registered_check_names() -> set[str]:
+    """Function names of every check registered to run via ``run_async``.
+
+    The doctor's run order/membership moved from a hand-ordered literal
+    list inside ``run_async`` into the ordered registry
+    (``doctor.registered_checks()``). These tests used to source-grep
+    ``run_async`` to prove a check was wired in; the registry is now the
+    source of truth, so we assert against it instead.
+    """
+    return {c.func.__name__ for c in doctor.registered_checks()}
+
+
 # ---------------------------------------------------------------- env loading
 
 
@@ -113,7 +125,7 @@ def test_check_service_runtime_state_fails_on_failed_unit(monkeypatch):
             "NRestarts=5\n"
         )
 
-    monkeypatch.setattr(doctor, "_run", lambda *a, **kw: FakeRun())
+    monkeypatch.setattr(doctor._shared, "_run", lambda *a, **kw: FakeRun())
 
     r = doctor.check_service_runtime_state()
 
@@ -133,7 +145,7 @@ def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
             "NRestarts=2\n"
         )
 
-    monkeypatch.setattr(doctor, "_run", lambda *a, **kw: FakeRun())
+    monkeypatch.setattr(doctor._shared, "_run", lambda *a, **kw: FakeRun())
 
     r = doctor.check_service_runtime_state()
 
@@ -168,7 +180,7 @@ def _patch_grouping(monkeypatch, cfg, is_active_stdout, tap_path="/run/jasper-sn
     class FakeRun:
         stdout = is_active_stdout
 
-    monkeypatch.setattr(doctor, "_run", lambda *a, **kw: FakeRun())
+    monkeypatch.setattr(doctor.grouping, "_run", lambda *a, **kw: FakeRun())
     # check_grouping reads the leader's outputd tap via the reconcile I/O
     # edge; stub it so tests never touch a real /run file. Default to a
     # tapping leader (non-empty path) so the unit-only tests stay green;
@@ -261,11 +273,11 @@ def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
 
     monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
     monkeypatch.setattr(
-        doctor,
+        doctor._shared,
         "_shared_parse_env_file",
         lambda _path: {"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"},
     )
-    monkeypatch.setattr(doctor, "_run", fail_probe)
+    monkeypatch.setattr(doctor.audio, "_run", fail_probe)
 
     result = doctor.check_apple_dongle_audio()
 
@@ -278,7 +290,7 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
 
     monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
     monkeypatch.setattr(
-        doctor,
+        doctor._shared,
         "_shared_parse_env_file",
         lambda _path: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
@@ -299,7 +311,7 @@ def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.audio, "_run", fake_run)
 
     result = doctor.check_apple_dongle_audio()
 
@@ -313,11 +325,11 @@ def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch)
 
     monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
     monkeypatch.setattr(
-        doctor,
+        doctor._shared,
         "_shared_parse_env_file",
         lambda _path: {"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"},
     )
-    monkeypatch.setattr(doctor, "_run", fail_probe)
+    monkeypatch.setattr(doctor.audio, "_run", fail_probe)
 
     result = doctor.check_dongle_headphone_at_max()
 
@@ -331,7 +343,7 @@ def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
     monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
     monkeypatch.delenv("JASPER_AUDIO_DAC_CARD", raising=False)
     monkeypatch.setattr(
-        doctor,
+        doctor._shared,
         "_shared_parse_env_file",
         lambda _path: {
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
@@ -347,7 +359,7 @@ def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.audio, "_run", fake_run)
 
     result = doctor.check_dongle_headphone_at_max()
 
@@ -357,7 +369,7 @@ def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
 
 def test_output_hardware_state_warns_on_observed_active_mismatch(monkeypatch):
     monkeypatch.setattr(
-        doctor,
+        doctor.audio,
         "_load_output_hardware_state",
         lambda: {
             "artifact_schema_version": 1,
@@ -390,7 +402,7 @@ def test_output_hardware_state_warns_on_observed_active_mismatch(monkeypatch):
 
 def test_output_hardware_state_fails_when_runtime_is_parked(monkeypatch):
     monkeypatch.setattr(
-        doctor,
+        doctor.audio,
         "_load_output_hardware_state",
         lambda: {
             "artifact_schema_version": 1,
@@ -438,7 +450,7 @@ def test_check_bluetooth_pairing_policy_ok(monkeypatch):
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
 
     r = doctor.check_bluetooth_pairing_policy()
 
@@ -460,7 +472,7 @@ def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
 
     r = doctor.check_bluetooth_pairing_policy()
 
@@ -492,7 +504,7 @@ def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypat
             )
         raise AssertionError(cmd)
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
 
     r = doctor.check_bluetooth_pairing_policy()
 
@@ -1034,7 +1046,7 @@ def test_check_arecord_l_card_device_match():
         "card 7: LoopbackAEC [Loopback], device 1: Loopback PCM\n"
     )
     with patch.object(
-        doctor, "_run",
+        doctor.audio, "_run",
         return_value=type("FakeProc", (), {"stdout": fake_output, "returncode": 0})(),
     ), patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"):
         assert doctor._check_arecord_l_card_device(7, 1) is True
@@ -1050,7 +1062,7 @@ def test_check_arecord_l_does_not_match_wrong_card():
         "card 7: LoopbackAEC [Loopback], device 0: Loopback PCM\n"
     )
     with patch.object(
-        doctor, "_run",
+        doctor.audio, "_run",
         return_value=type("FakeProc", (), {"stdout": fake_output, "returncode": 0})(),
     ), patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"):
         assert doctor._check_arecord_l_card_device(7, 1) is False
@@ -1066,7 +1078,7 @@ def test_check_mic_card_routes_shorthand_through_arecord_l(monkeypatch):
         "card 7: LoopbackAEC [Loopback], device 1: Loopback PCM\n"
     )
     with patch.object(
-        doctor, "_run",
+        doctor.audio, "_run",
         return_value=type("FakeProc", (), {"stdout": fake_output, "returncode": 0})(),
     ), patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"):
         r = doctor.check_mic_card_matches_config(cfg)
@@ -1102,7 +1114,7 @@ def test_check_mic_capture_falls_back_to_daemon_active(monkeypatch):
     import sys
     sys.modules["sounddevice"] = fake_sd
     try:
-        with patch.object(doctor, "_jasper_voice_active", return_value=True):
+        with patch.object(doctor.audio, "_jasper_voice_active", return_value=True):
             r = doctor.check_mic_capture(cfg)
         assert r.status == "ok"
         assert "skipped" in r.detail
@@ -1127,7 +1139,7 @@ def test_check_mic_capture_fails_hard_when_daemon_inactive(monkeypatch):
     import sys
     sys.modules["sounddevice"] = FakeSD()
     try:
-        with patch.object(doctor, "_jasper_voice_active", return_value=False):
+        with patch.object(doctor.audio, "_jasper_voice_active", return_value=False):
             r = doctor.check_mic_capture(cfg)
         assert r.status == "fail"
     finally:
@@ -1145,7 +1157,7 @@ def test_check_mic_card_shorthand_failure_actionable(monkeypatch):
     )
     fake_output = "card 0: dongle [USB Audio], device 0: USB Audio\n"
     with patch.object(
-        doctor, "_run",
+        doctor.audio, "_run",
         return_value=type("FakeProc", (), {"stdout": fake_output, "returncode": 0})(),
     ), patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"):
         r = doctor.check_mic_card_matches_config(cfg)
@@ -1468,7 +1480,7 @@ def test_check_dtln_uses_configured_model_size(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
     monkeypatch.setenv("JASPER_AEC_DTLN_SIZE", "128")
     monkeypatch.setattr(
-        doctor,
+        doctor.aec,
         "_run",
         lambda *_args, **_kwargs: SimpleNamespace(stdout="inactive"),
     )
@@ -1520,7 +1532,7 @@ def test_check_peering_mode_no_file_returns_ok_default(monkeypatch, tmp_path):
     """When /var/lib/jasper/peering.env doesn't exist, peering is off
     by design — the default. Doctor should return ok with a hint."""
     fake = tmp_path / "peering.env"  # does not exist
-    with patch("jasper.cli.doctor.Path", side_effect=lambda p: fake if "peering.env" in p else Path(p)):
+    with patch("jasper.cli.doctor.peering.Path", side_effect=lambda p: fake if "peering.env" in p else Path(p)):
         r = doctor.check_peering_mode()
     assert r.status == "ok"
     assert "off" in r.detail.lower()
@@ -1531,7 +1543,7 @@ def test_check_peering_mode_off_explicit(tmp_path, monkeypatch):
     message (operator made the choice deliberately)."""
     env = tmp_path / "peering.env"
     env.write_text("JASPER_PEERING=off\n")
-    monkeypatch.setattr("jasper.cli.doctor.Path", lambda p: env if "peering.env" in p else Path(p))
+    monkeypatch.setattr("jasper.cli.doctor.peering.Path", lambda p: env if "peering.env" in p else Path(p))
     r = doctor.check_peering_mode()
     assert r.status == "ok"
     assert "off" in r.detail.lower()
@@ -1540,7 +1552,7 @@ def test_check_peering_mode_off_explicit(tmp_path, monkeypatch):
 def test_check_peering_mode_on(tmp_path, monkeypatch):
     env = tmp_path / "peering.env"
     env.write_text("JASPER_PEERING=on\nJASPER_PEER_ROOM=kitchen\n")
-    monkeypatch.setattr("jasper.cli.doctor.Path", lambda p: env if "peering.env" in p else Path(p))
+    monkeypatch.setattr("jasper.cli.doctor.peering.Path", lambda p: env if "peering.env" in p else Path(p))
     r = doctor.check_peering_mode()
     assert r.status == "ok"
     assert "on" in r.detail.lower()
@@ -1552,7 +1564,7 @@ def test_check_peering_mode_garbage_warns(tmp_path, monkeypatch):
     when it actually resolved to off."""
     env = tmp_path / "peering.env"
     env.write_text("JASPER_PEERING=banana\n")
-    monkeypatch.setattr("jasper.cli.doctor.Path", lambda p: env if "peering.env" in p else Path(p))
+    monkeypatch.setattr("jasper.cli.doctor.peering.Path", lambda p: env if "peering.env" in p else Path(p))
     r = doctor.check_peering_mode()
     assert r.status == "warn"
     assert "banana" in r.detail
@@ -1563,7 +1575,7 @@ def test_check_peering_discovery_no_peers(monkeypatch):
     fake_output = "+ eth0 IPv4 SomeOtherService _foo._tcp local\n"
     monkeypatch.setattr("jasper.cli.doctor.shutil.which", lambda p: "/usr/bin/avahi-browse")
     monkeypatch.setattr(
-        "jasper.cli.doctor._run",
+        "jasper.cli.doctor.peering._run",
         lambda *a, **kw: type("P", (), {"returncode": 0, "stdout": fake_output})(),
     )
     r = doctor.check_peering_discovery()
@@ -1585,11 +1597,11 @@ def test_check_peering_discovery_sees_siblings(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("jasper.cli.doctor.shutil.which", lambda p: "/usr/bin/avahi-browse")
     monkeypatch.setattr(
-        "jasper.cli.doctor._run",
+        "jasper.cli.doctor.peering._run",
         lambda *a, **kw: type("P", (), {"returncode": 0, "stdout": fake_output})(),
     )
     # Pretend we're alice — filter ourselves out.
-    monkeypatch.setattr("jasper.cli.doctor._local_peer_id", lambda: "alice-uuid")
+    monkeypatch.setattr("jasper.cli.doctor.peering._local_peer_id", lambda: "alice-uuid")
     r = doctor.check_peering_discovery()
     assert r.status == "ok"
     assert "1 sibling" in r.detail
@@ -1730,7 +1742,7 @@ def _patch_asound_conf(
             return stale
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor, "Path", fake_path)
+    monkeypatch.setattr(doctor.audio, "Path", fake_path)
 
 
 _FANIN_ASOUND = """
@@ -1873,7 +1885,7 @@ def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
             stdout = active + "\n"
         return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.audio, "_run", fake_run)
 
 
 def _fanin_status_payload(
@@ -2203,7 +2215,7 @@ def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
             return target
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor, "Path", fake_path)
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
 
 
 def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
@@ -2296,19 +2308,19 @@ def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
 def test_renderer_resolvable_all_ok(monkeypatch):
     """Happy path: every renderer has a discoverable device and the
     probe succeeds for each."""
-    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport",
                         lambda: "shairport_substream")
-    monkeypatch.setattr(doctor, "_renderer_device_librespot",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot",
                         lambda: "librespot_substream")
-    monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa",
                         lambda: "bluealsa_substream")
-    monkeypatch.setattr(doctor, "_systemd_user_for",
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for",
                         lambda unit: {
                             "shairport-sync.service": "shairport-sync",
                             "librespot.service": "pi",
                             "bluealsa-aplay.service": None,  # root
                         }[unit])
-    monkeypatch.setattr(doctor, "_probe_open_as_user",
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user",
                         lambda dev, user: (True, ""))
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -2320,15 +2332,15 @@ def test_renderer_resolvable_all_ok(monkeypatch):
 def test_renderer_resolvable_accepts_busy_private_fanin_lane(monkeypatch):
     """An active renderer already owns its private lane, so a second
     aplay probe can return EBUSY. That is not an Unknown-PCM failure."""
-    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport",
                         lambda: "shairport_substream")
-    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
-    monkeypatch.setattr(doctor, "_systemd_user_for",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for",
                         lambda unit: "shairport-sync")
-    monkeypatch.setattr(doctor, "_probe_open_as_user",
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user",
                         lambda dev, user: (False, "Device or resource busy"))
-    monkeypatch.setattr(doctor, "_fanin_lane_busy_owner_matches",
+    monkeypatch.setattr(doctor.renderers, "_fanin_lane_busy_owner_matches",
                         lambda dev, unit: (True, "busy/owned pid=123"))
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -2338,16 +2350,16 @@ def test_renderer_resolvable_accepts_busy_private_fanin_lane(monkeypatch):
 def test_renderer_resolvable_rejects_busy_lane_owned_by_wrong_unit(monkeypatch):
     """EBUSY is okay only when /proc shows the expected renderer owns
     the private fan-in lane."""
-    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport",
                         lambda: "shairport_substream")
-    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
-    monkeypatch.setattr(doctor, "_systemd_user_for",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for",
                         lambda unit: "shairport-sync")
-    monkeypatch.setattr(doctor, "_probe_open_as_user",
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user",
                         lambda dev, user: (False, "Device or resource busy"))
     monkeypatch.setattr(
-        doctor,
+        doctor.renderers,
         "_fanin_lane_busy_owner_matches",
         lambda dev, unit: (False, "busy but owner pid=999 cgroup='other.service'"),
     )
@@ -2361,13 +2373,13 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     active, but shairport-sync's runtime user can't open the device.
     Pre-#223 the doctor missed this entirely. This test pins that the
     new check would have caught it."""
-    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport",
                         lambda: "shairport_substream")
-    monkeypatch.setattr(doctor, "_renderer_device_librespot",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot",
                         lambda: "librespot_substream")
-    monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa",
                         lambda: "bluealsa_substream")
-    monkeypatch.setattr(doctor, "_systemd_user_for",
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for",
                         lambda unit: {
                             "shairport-sync.service": "shairport-sync",
                             "librespot.service": "pi",
@@ -2381,7 +2393,7 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
         if user == "shairport-sync":
             return (False, 'ALSA lib pcm.c:2722: Unknown PCM shairport_substream')
         return (True, "")
-    monkeypatch.setattr(doctor, "_probe_open_as_user", fake_probe)
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
 
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "fail"
@@ -2395,13 +2407,13 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
     """Failure details must name the failing user — that's the key
     diagnostic for any "device works as root, fails as non-root" bug
     of which the PR #214 regression is the canonical example."""
-    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport",
                         lambda: "weird-device")
-    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
-    monkeypatch.setattr(doctor, "_systemd_user_for",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for",
                         lambda unit: "shairport-sync")
-    monkeypatch.setattr(doctor, "_probe_open_as_user",
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user",
                         lambda d, u: (False, "open failed"))
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "fail"
@@ -2411,13 +2423,13 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
 def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
     """A stripped image without all renderers installed should
     `ok` for what works, `warn` only if nothing was probeable."""
-    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport",
                         lambda: "shairport_substream")
-    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
-    monkeypatch.setattr(doctor, "_systemd_user_for",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for",
                         lambda unit: "shairport-sync")
-    monkeypatch.setattr(doctor, "_probe_open_as_user",
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user",
                         lambda d, u: (True, ""))
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -2429,9 +2441,9 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
 def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
     """If literally nothing is configured, no audio path exists —
     surface as warn, not fail (could be a doctor-only image)."""
-    monkeypatch.setattr(doctor, "_renderer_device_shairport", lambda: None)
-    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "warn"
 
@@ -2441,13 +2453,13 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
     The doctor's check must resolve those env vars via `systemctl show
     -p Environment` before probing, otherwise it false-positives with
     'Unknown PCM ${JASPER_LIBRESPOT_DEVICE}'."""
-    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport",
                         lambda: "shairport_substream")  # already literal
-    monkeypatch.setattr(doctor, "_renderer_device_librespot",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot",
                         lambda: "${JASPER_LIBRESPOT_DEVICE}")
-    monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa",
                         lambda: "${JASPER_BLUEALSA_DEVICE}")
-    monkeypatch.setattr(doctor, "_systemd_user_for",
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for",
                         lambda unit: {
                             "shairport-sync.service": "shairport-sync",
                             "librespot.service": "pi",
@@ -2471,7 +2483,7 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
             lambda m: env.get(m.group(1), m.group(0)),
             device,
         )
-    monkeypatch.setattr(doctor, "_resolve_systemd_env_vars", fake_resolve)
+    monkeypatch.setattr(doctor.renderers, "_resolve_systemd_env_vars", fake_resolve)
 
     # Probe sees the RESOLVED device — record what it gets called with.
     received: list[str] = []
@@ -2479,7 +2491,7 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
     def fake_probe(device, user):
         received.append(device)
         return (True, "")
-    monkeypatch.setattr(doctor, "_probe_open_as_user", fake_probe)
+    monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
 
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -2544,7 +2556,7 @@ def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
             return conf
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor, "Path", fake_path)
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
     assert doctor._renderer_device_shairport() == "shairport_substream"
 
 
@@ -2567,7 +2579,7 @@ def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
             return unit
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor, "Path", fake_path)
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
     assert doctor._renderer_device_librespot() == "librespot_substream"
 
 
@@ -2591,7 +2603,7 @@ def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
             return tmp_path / "does-not-exist"
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor, "Path", fake_path)
+    monkeypatch.setattr(doctor.renderers, "Path", fake_path)
     assert doctor._renderer_device_bluealsa() == "bluealsa_substream"
 
 
@@ -2607,7 +2619,7 @@ def _patch_doctor_iw_reg_get(monkeypatch, stdout: str, returncode: int = 0):
             stderr="boom" if returncode else "",
         )
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
 
 
 def test_check_wifi_regdom_ok_when_global_country_valid_and_phy_unlabeled(
@@ -2705,7 +2717,7 @@ def _patch_doctor_nmcli(monkeypatch, response_stack):
             return _mock_nmcli_proc(stdout=r)
         return r
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.network, "_run", fake_run)
 
 
 def test_check_wifi_guardian_ok_when_stash_matches_active(
@@ -2807,12 +2819,10 @@ def test_check_wifi_guardian_skipped_without_nmcli(monkeypatch):
 
 
 def test_check_wifi_guardian_registered_in_sync_checks():
-    """Make sure the check is actually called from `run_async`'s
-    sync_checks list, not just defined. Mirrors the spirit of the
-    `check_wifi_regdom` registration this check sits next to."""
-    import inspect
-    src = inspect.getsource(doctor.run_async)
-    assert "check_wifi_guardian" in src
+    """Make sure the check is actually registered to run (not just
+    defined). Mirrors the spirit of the `check_wifi_regdom` registration
+    this check sits next to."""
+    assert "check_wifi_guardian" in _registered_check_names()
 
 
 def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
@@ -2821,16 +2831,14 @@ def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
         out = "active\n" if unit.endswith(".socket") else "inactive\n"
         return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
-    monkeypatch.setattr(doctor, "_run", fake_run)
+    monkeypatch.setattr(doctor.correction, "_run", fake_run)
     r = doctor.check_correction_web_service()
     assert r.status == "ok"
     assert "socket active" in r.detail
 
 
 def test_check_correction_https_assets_registered_in_sync_checks():
-    import inspect
-    src = inspect.getsource(doctor.run_async)
-    assert "check_correction_https_assets" in src
+    assert "check_correction_https_assets" in _registered_check_names()
 
 
 def _web_root_with_app_css(tmp_path: Path) -> Path:
@@ -2841,7 +2849,7 @@ def _web_root_with_app_css(tmp_path: Path) -> Path:
 
 def test_check_correction_https_assets_ok_on_200(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
-    monkeypatch.setattr(doctor, "_probe_https_status", lambda *a, **k: (200, ""))
+    monkeypatch.setattr(doctor.correction, "_probe_https_status", lambda *a, **k: (200, ""))
     r = doctor.check_correction_https_assets()
     assert r.status == "ok"
     assert "200" in r.detail
@@ -2851,7 +2859,7 @@ def test_check_correction_https_assets_warns_on_http_downgrade(monkeypatch, tmp_
     # The bug signature: a 308 down to http:// → browsers mixed-content-block it.
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
     monkeypatch.setattr(
-        doctor, "_probe_https_status",
+        doctor.correction, "_probe_https_status",
         lambda *a, **k: (308, "http://jts.local/assets/app.css"),
     )
     r = doctor.check_correction_https_assets()
@@ -2867,7 +2875,7 @@ def test_check_correction_https_assets_skips_without_web_root(monkeypatch, tmp_p
     def _boom(*a, **k):
         raise AssertionError("must not probe when the web root is absent")
 
-    monkeypatch.setattr(doctor, "_probe_https_status", _boom)
+    monkeypatch.setattr(doctor.correction, "_probe_https_status", _boom)
     r = doctor.check_correction_https_assets()
     assert r.status == "ok"
     assert "skip" in r.detail.lower()
@@ -2879,7 +2887,7 @@ def test_check_correction_https_assets_skips_when_443_unreachable(monkeypatch, t
     def _refused(*a, **k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(doctor, "_probe_https_status", _refused)
+    monkeypatch.setattr(doctor.correction, "_probe_https_status", _refused)
     r = doctor.check_correction_https_assets()
     assert r.status == "ok"
     assert "not reachable" in r.detail.lower()
@@ -2998,9 +3006,7 @@ def test_check_camilla_volume_limit_fails_when_positive(monkeypatch, tmp_path):
 
 
 def test_check_camilla_volume_limit_registered_in_sync_checks():
-    import inspect
-    src = inspect.getsource(doctor.run_async)
-    assert "check_camilla_volume_limit" in src
+    assert "check_camilla_volume_limit" in _registered_check_names()
 
 
 def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path):
@@ -3174,14 +3180,13 @@ def test_check_correction_latest_bundle_reports_bundle_collection(
 
 
 def test_correction_doctor_checks_registered():
-    import inspect
-    src = inspect.getsource(doctor.run_async)
-    assert "check_correction_web_service" in src
-    assert "check_correction_state_dirs" in src
-    assert "check_correction_current_config" in src
-    assert "check_sound_profile" in src
-    assert "check_dsp_apply_state" in src
-    assert "check_correction_latest_bundle" in src
+    names = _registered_check_names()
+    assert "check_correction_web_service" in names
+    assert "check_correction_state_dirs" in names
+    assert "check_correction_current_config" in names
+    assert "check_sound_profile" in names
+    assert "check_dsp_apply_state" in names
+    assert "check_correction_latest_bundle" in names
 
 
 def test_web_design_assets_ok_when_installed(monkeypatch, tmp_path: Path):
@@ -3239,9 +3244,7 @@ def test_web_design_assets_skips_when_not_installed(
 
 
 def test_web_design_assets_check_registered():
-    import inspect
-    src = inspect.getsource(doctor.run_async)
-    assert "check_web_design_assets" in src
+    assert "check_web_design_assets" in _registered_check_names()
 
 
 # ---------------------------------------------------------------------------
@@ -3347,14 +3350,14 @@ def test_assess_wake_legs_chip_aec_intent_when_daemon_unreachable():
 
 
 def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
-    monkeypatch.setattr(doctor, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     settings = {
         "JASPER_WAKE_LEG_RAW": True,
         "JASPER_WAKE_LEG_DTLN": False,
         "JASPER_WAKE_LEG_CHIP_AEC": True,
     }
     monkeypatch.setattr(
-        doctor,
+        doctor.aec,
         "_wake_leg_setting",
         lambda key, default: settings.get(key, default),
     )
@@ -3383,14 +3386,14 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
 
 
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
-    monkeypatch.setattr(doctor, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     settings = {
         "JASPER_WAKE_LEG_RAW": True,
         "JASPER_WAKE_LEG_DTLN": False,
         "JASPER_WAKE_LEG_CHIP_AEC": True,
     }
     monkeypatch.setattr(
-        doctor,
+        doctor.aec,
         "_wake_leg_setting",
         lambda key, default: settings.get(key, default),
     )
@@ -3558,17 +3561,17 @@ def test_audio_validation_readiness_filters_current_hardware(monkeypatch):
     captured = {}
 
     monkeypatch.setattr(
-        doctor,
+        doctor.aec,
         "_audio_profile_status_for_doctor",
         lambda: {"audio_profile": {"requested": "xvf_chip_aec"}},
     )
     monkeypatch.setattr(
-        doctor,
+        doctor.aec,
         "_shared_parse_env_file",
         lambda _path: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
     monkeypatch.setattr(
-        doctor,
+        doctor.aec,
         "_audio_validation_filter_kwargs",
         lambda **kwargs: {
             "requested_profile": kwargs["requested_profile"],
@@ -3585,7 +3588,7 @@ def test_audio_validation_readiness_filters_current_hardware(monkeypatch):
             "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
         }
 
-    monkeypatch.setattr(doctor, "_audio_validation_summary", fake_summary)
+    monkeypatch.setattr(doctor.aec, "_audio_validation_summary", fake_summary)
 
     result = doctor.check_audio_validation_readiness()
 
