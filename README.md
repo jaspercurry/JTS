@@ -926,7 +926,7 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
 | `jasper-usbsink` (USB audio source) | **Disabled by default**, ~22 MB when on | 0 MB off, ~22 MB on | ~3% of one core while host streams |
 | `jasper-usbsink-init` (gadget ConfigFS oneshot) | follows usbsink | one-shot, ~0 | ~0 |
-| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit / Home Assistant / Weather / Sound wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
+| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
@@ -936,9 +936,10 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 
 The five web-wizard daemons are socket-activated — systemd holds
 their ports open and only spawns the daemon when a tab opens any of
-its pages. `jasper-web` alone hosts thirteen URL surfaces (Spotify,
+its pages. `jasper-web` alone hosts fifteen URL surfaces (Spotify,
 voice, Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit, Home
-Assistant, Weather, Sound, Wake-Corpus) on thirteen loopback ports; the
+Assistant, Weather, Sound, Wake-Corpus, Speaker, Rooms) on fifteen
+loopback ports; the
 other four daemons each host one. All five exit after 10 min of no
 requests, so the resident cost is zero between
 admin sessions. First request after idle takes ~500-800 ms (Python
@@ -947,7 +948,10 @@ startup); invisible during the OAuth round-trip or BT pair flow.
 **Total Pss baseline with AEC on**: ~318 MB jasper-* daemons +
 ~80 MB system/OS plumbing + page cache → typically ~770 MB used
 out of 2 GB. On a 1 GB Pi, ~200 MB headroom with AEC on; ~280 MB
-with AEC off.
+with AEC off. (The ~318 MB also covers two always-on Rust audio
+daemons not broken out as rows above — `jasper-fanin` (renderer
+fan-in summing) and `jasper-outputd` (final-output owner); both are
+small native binaries.)
 
 The single-card music-chain snd-aloop and the dsnoop tap stay loaded
 even when the bridge is disabled — they cost essentially nothing and

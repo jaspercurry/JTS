@@ -1700,4 +1700,4 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-04
+Last verified: 2026-06-09
