@@ -43,6 +43,9 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     assert APPLE_USB_C_DONGLE.kind == "single"
     assert APPLE_USB_C_DONGLE.physical_output_count == 2
     assert APPLE_USB_C_DONGLE.coherent_clock_domain is True
+    assert APPLE_USB_C_DONGLE.clock_domain_label == (
+        "Single Apple USB audio device clock"
+    )
     assert APPLE_USB_C_DONGLE.outputd_sink == "alsa"
     assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
     assert APPLE_USB_C_DONGLE.usb_ids == ("05ac:110a",)
@@ -63,6 +66,9 @@ def test_hifiberry_dac8x_family_profile_keeps_existing_runtime_id() -> None:
     assert HIFIBERRY_DAC8X.kind == "single"
     assert HIFIBERRY_DAC8X.physical_output_count == 8
     assert HIFIBERRY_DAC8X.coherent_clock_domain is True
+    assert HIFIBERRY_DAC8X.clock_domain_label == (
+        "Single HiFiBerry DAC8x device clock"
+    )
     assert HIFIBERRY_DAC8X.outputd_sink == "alsa"
     assert HIFIBERRY_DAC8X.supports_active_outputd_lane is True
     assert "snd_rpi_hifiberry_dac8x" in HIFIBERRY_DAC8X.supported_card_matches
@@ -75,6 +81,9 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
     assert DUAL_APPLE_USB_C_DAC_4CH.kind == "composite"
     assert DUAL_APPLE_USB_C_DAC_4CH.physical_output_count == 4
     assert DUAL_APPLE_USB_C_DAC_4CH.coherent_clock_domain is False
+    assert DUAL_APPLE_USB_C_DAC_4CH.clock_domain_label == (
+        "Dual Apple USB-C adapter independent clocks"
+    )
     assert DUAL_APPLE_USB_C_DAC_4CH.outputd_sink == "dual_apple"
     assert DUAL_APPLE_USB_C_DAC_4CH.child_profile_ids == (
         APPLE_USB_C_DONGLE_ID,
@@ -99,6 +108,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             kind="single",
             physical_output_count=2,
             coherent_clock_domain=True,
+            clock_domain_label="Bad clock",
             outputd_sink="alsa",
             supported_card_matches=("bad",),
         )
@@ -110,6 +120,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             kind="composite",
             physical_output_count=4,
             coherent_clock_domain=False,
+            clock_domain_label="Bad clock",
             outputd_sink="dual_apple",
             supported_card_matches=("usb",),
             child_profile_ids=(APPLE_USB_C_DONGLE_ID,),
@@ -125,6 +136,7 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             kind="composite",
             physical_output_count=4,
             coherent_clock_domain=False,
+            clock_domain_label="Bad clock",
             outputd_sink="dual_apple",
             supported_card_matches=("usb",),
             child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),

@@ -431,10 +431,13 @@ The topology itself still grants no playback authority; the separate
 active-speaker lab tone backend can emit only after explicit env enablement,
 passed readiness, and a non-tweeter target. Software never touches downstream
 amp gain. The amp gain is a physical knob set at install time.
-The same topology surface reports the detected output clock domain. Current
-product support assumes one coherent final-output device (for example DAC8x or
-one Apple dongle); multiple USB DAC aggregation is a future lab feature, not a
-supported active-crossover playback path.
+The same topology surface reports the detected output clock domain from the DAC
+profile registry. Coherent profiles (for example DAC8x or one Apple dongle)
+report one output clock; the dual-Apple 4ch profile reports four physical
+outputs with independent child clocks and an explicit aggregate-runtime-disabled
+fact. That makes the setup shape visible without granting playback authority:
+active-crossover playback still needs the separate runtime graph,
+channel-identity, and clock/drift evidence before sound can be emitted.
 
 ## AEC bridge implications
 
@@ -474,4 +477,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-04 (0% content-mute invariant, USB Camilla-master note, assistant loudness matching note, and outputd STATUS telemetry path rechecked)
+Last verified: 2026-06-09 (output topology clock-domain report and DAC profile registry consumer rechecked)

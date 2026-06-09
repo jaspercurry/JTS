@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from jasper.output_topology import (
     CHANNEL_IDENTITY_REPORT_KIND,
     CLOCK_DOMAIN_REPORT_KIND,
@@ -53,14 +54,23 @@ def test_hardware_from_env_reports_known_output_counts() -> None:
         "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
         "JASPER_AUDIO_DAC_CARD": "A",
     })
+    dual_apple = hardware_from_env({
+        "JASPER_AUDIO_DAC_ID": DUAL_APPLE_USB_C_DAC_4CH_ID,
+    })
     unknown = hardware_from_env({})
 
     assert dac8x.physical_output_count == 8
+    assert dac8x.device_label == "HiFiBerry DAC8x / Studio DAC8x"
     assert dac8x.outputs[4].human_label == "DAC output 5"
     assert dac8x.route == "stereo:5,6"
     assert dac8x.clock_domain_id == "alsa:sndrpihifiberry"
     assert apple.physical_output_count == 2
     assert apple.clock_domain_label == "Single Apple USB audio device clock"
+    assert dual_apple.physical_output_count == 4
+    assert dual_apple.device_label == "Dual Apple USB-C audio adapters"
+    assert dual_apple.clock_domain_label == (
+        "Dual Apple USB-C adapter independent clocks"
+    )
     assert unknown.physical_output_count == 0
     assert unknown.outputs == ()
 
@@ -254,6 +264,10 @@ def test_clock_domain_report_records_single_device_boundary() -> None:
     assert report["status"] == "single_device_clock"
     assert report["clock_domain_count"] == 1
     assert report["coherent_physical_output_count"] == 8
+    assert report["profile_known"] is True
+    assert report["profile_kind"] == "single"
+    assert report["profile_is_composite_output"] is False
+    assert report["aggregate_output_runtime_enabled"] is False
     assert report["multi_device_aggregate_supported"] is False
     assert report["sound_tests_allowed"] is False
     assert "one coherent multi-output DAC" in report["recommendation"]
@@ -270,8 +284,31 @@ def test_clock_domain_report_flags_unknown_output_clocking() -> None:
     report = clock_domain_report(topology)
 
     assert report["status"] == "unknown_device_clock"
+    assert report["profile_known"] is False
+    assert report["profile_kind"] == "unknown"
     assert report["coherent_physical_output_count"] == 0
     assert report["issues"][0]["code"] == "unknown_clock_domain"
+
+
+def test_clock_domain_report_flags_known_independent_composite_clocking() -> None:
+    topology = new_topology_draft(
+        hardware=hardware_from_env({
+            "JASPER_AUDIO_DAC_ID": DUAL_APPLE_USB_C_DAC_4CH_ID,
+        })
+    )
+
+    report = clock_domain_report(topology)
+
+    assert report["status"] == "known_independent_clocks"
+    assert report["clock_domain_count"] == 2
+    assert report["coherent_physical_output_count"] == 0
+    assert report["profile_known"] is True
+    assert report["profile_kind"] == "composite"
+    assert report["profile_is_composite_output"] is True
+    assert report["aggregate_output_runtime_enabled"] is False
+    assert report["multi_device_aggregate_supported"] is False
+    assert report["issues"][0]["code"] == "independent_output_clocks"
+    assert "runtime validation" in " ".join(report["notes"])
 
 
 def test_set_channel_identity_verified_updates_one_channel_only() -> None:

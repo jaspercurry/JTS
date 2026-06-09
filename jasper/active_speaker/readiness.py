@@ -174,6 +174,9 @@ def build_playback_readiness(
     ]
     calibration_bounded = _bounded_level(calibration_level)
     backend = tone_backend if isinstance(tone_backend, dict) else {}
+    aggregate_output_runtime_enabled = bool(
+        clock.get("aggregate_output_runtime_enabled")
+    )
     gates = [
         _gate(
             "topology_valid",
@@ -219,7 +222,7 @@ def build_playback_readiness(
             "single_clock_domain",
             label="Outputs use one coherent device clock",
             passed=clock.get("status") == "single_device_clock"
-            and not clock.get("multi_device_aggregate_supported"),
+            and not aggregate_output_runtime_enabled,
             message=(
                 "Single-device output clock is in use"
                 if clock.get("status") == "single_device_clock"
@@ -371,6 +374,12 @@ def build_playback_readiness(
         "clock_domain": {
             "status": clock.get("status"),
             "clock_domain_id": clock.get("clock_domain_id"),
+            "profile_known": bool(clock.get("profile_known")),
+            "profile_kind": clock.get("profile_kind"),
+            "profile_is_composite_output": bool(
+                clock.get("profile_is_composite_output")
+            ),
+            "aggregate_output_runtime_enabled": aggregate_output_runtime_enabled,
             "multi_device_aggregate_supported": bool(
                 clock.get("multi_device_aggregate_supported")
             ),

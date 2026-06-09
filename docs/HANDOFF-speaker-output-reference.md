@@ -215,12 +215,14 @@ What exists:
   topology and write a no-load protected Epique/F110M startup candidate plus
   startup-mute/high-pass/limiter/headroom evidence. That staging route still
   does not rewrite ALSA, load CamillaDSP, reload a graph, or emit sound.
-  The same topology payload includes a clock-domain report for the detected
-  final-output hardware. Today that report is a single-device contract: a
-  recognized DAC8x or Apple output device can be described as one coherent
-  output clock, but JTS does not product-support aggregating multiple USB DACs
-  for active-crossover playback. That remains future lab work until skew/drift
-  can be measured and compensated before any sound-emitting path uses it.
+  The same topology payload includes a registry-backed clock-domain report for
+  the detected final-output hardware. A recognized coherent profile such as
+  DAC8x or one Apple USB-C dongle reports one coherent output clock. The
+  recognized dual-Apple composite reports four physical outputs but independent
+  child clocks and a separate "aggregate runtime not enabled" fact; topology
+  can expose that shape to setup surfaces, but the runtime output path still
+  needs matching graph, identity, and clock/drift evidence before any
+  sound-emitting path may use it.
   The configured route takes effect when deploy, boot/udev reconcile, or a
   manual `jasper-audio-hardware-reconcile` run re-renders the managed
   ALSA template; hardware validation artifacts report the observed
@@ -803,5 +805,11 @@ datum: how much assistant audio was actually heard.
   headphone-gain checks on `JASPER_AUDIO_DAC_ID=apple_usb_c_dongle`, so
   HiFiBerry/DAC8x systems report the selected output role instead of false
   Apple-dongle failures.
+- 2026-06-09: `jasper.output_topology` now consumes
+  `jasper.audio_hardware.dac` for known DAC labels, physical output counts,
+  clock-domain labels, and clock-coherence reports. This makes dual Apple a
+  known four-output topology shape while still reporting its independent child
+  clocks, distinguishing profile shape from aggregate runtime enablement, and
+  leaving runtime activation with hardware reconcile/outputd.
 
-Last verified: 2026-06-04
+Last verified: 2026-06-09

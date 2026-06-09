@@ -236,9 +236,12 @@ The existing deployed audio topology is not yet active 2-way ready:
   `/var/lib/jasper/output_topology.json`. It can describe physical DAC
   lanes, speaker groups, passive/active modes, up-to-3-way driver
   roles, subwoofers, approximate placement, identity verification, and
-  tweeter protection status. It deliberately has no audio side effects;
-  active-speaker tone playback and active CamillaDSP loading must still
-  pass through their own safety gates.
+  tweeter protection status. Its hardware shape comes from the static
+  DAC profile registry, so known profiles such as Apple USB-C, DAC8x,
+  and dual-Apple 4ch get consistent labels/output counts and clock-domain
+  reporting. It deliberately has no audio side effects; active-speaker tone
+  playback and active CamillaDSP loading must still pass through their own
+  safety gates.
 - The current `/sound/` UI composes one optional subwoofer add-on with
   any mono/stereo draft when a spare physical output exists. Keep that
   compositional model; do not add separate `stereo_active_2way_plus_sub`
@@ -920,4 +923,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-05
+Last verified: 2026-06-09
