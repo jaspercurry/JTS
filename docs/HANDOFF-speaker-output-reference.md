@@ -436,7 +436,13 @@ The useful lessons are smaller and specific:
   copies through bounded queues/rings. If they fall behind, they drop
   frames with counters; they do not block playback. PipeWire's async
   links use the same idea and add a cycle of latency rather than
-  putting side work in the synchronous graph completion path.
+  putting side work in the synchronous graph completion path. The
+  multi-room **snapfifo** consumer (a grouping leader's post-clamp tap
+  to `snapserver`, `rust/jasper-outputd/src/snapfifo.rs`) is a new
+  instance of exactly this contract — a separate bounded, drop-on-full
+  side reader handed to a dedicated FIFO-writer thread, never in the DAC
+  path; off-by-default, design in
+  [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2.
 - **Explicit ring semantics.** Use bounded storage, monotonic sequence
   numbers, underrun/overrun counters, and clear drop policy rather
   than hidden buffering. PipeWire's `spa_ringbuffer` is only two

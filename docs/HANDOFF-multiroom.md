@@ -68,6 +68,19 @@ yet** and the gating spike has not been run. What exists:
   composes with `output_topology.SpeakerChannel`'s intra-speaker driver
   axis because channel-select is interface-preserving 2→2 (§4). Pure /
   hardware-free; live weaving into the active config is P1.3.
+- **`jasper-outputd` snapfifo producer** — `rust/jasper-outputd/src/snapfifo.rs`
+  (`SnapfifoSink`) + a writer thread in `main.rs`. A grouping LEADER adds a
+  **separate** reference-fanout consumer (`"snapfifo"`, distinct from the AEC
+  `"external-aec"` consumer — §2 inv. 4) and hands each post-clamp stereo
+  packet to a bounded, **drop-on-full** channel; a dedicated writer thread
+  does the blocking whole-packet FIFO write, so the DAC loop is never
+  back-pressured (§2 inv. 1). `SnapfifoSink` opens the FIFO lazily +
+  non-blocking (a not-yet-reading snapserver is a harmless drop, not an
+  error) and reopens on a broken pipe. Gated on `JASPER_OUTPUTD_SNAPFIFO_PATH`
+  — **unset on a solo speaker / follower → no consumer, no thread, zero
+  cost**. Tested hardware-free with a real temp FIFO (`cargo test`). What
+  remains (P1.3 follow-on, on-device): the reconciler setting that env on a
+  leader + restarting outputd, and the end-to-end + acoustic validation.
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -117,9 +130,10 @@ Not yet built (P1+, post-spike): the `BondedSet` entity, **live weaving
 of the channel-split fragment into the active CamillaDSP config** (P1.3;
 the pure generator landed — `channel_split.py` above), satellite
 calibration, the **bond-forming controls on `/rooms/`** (role/leader/
-channel assignment, stereo-pair / 2.1 / sub setup), the `jasper-outputd`
-snapfifo reference consumer, and live validation of the snapcast process
-lifecycle.
+channel assignment, stereo-pair / 2.1 / sub setup), the **reconciler
+wiring that sets `JASPER_OUTPUTD_SNAPFIFO_PATH` on a leader + restarts
+outputd** (the producer itself landed — `SnapfifoSink` below), and live
+validation of the snapcast process lifecycle.
 
 ---
 
@@ -224,9 +238,15 @@ The leader streams to followers from a **new reference consumer on
 post-mix / post-CamillaDSP / post-TTS / **post-safety-clamp**
 samples to bounded lossy per-consumer ring queues. We add one more
 consumer that writes 48k/S16/stereo into a bounded non-blocking
-FIFO (`/run/jasper/snapfifo`); `snapserver` reads it as a `pipe`
-input. Tapping *after* the clamp is what makes the streamed audio
-inherit JTS's hardware-safety ceiling (§7).
+FIFO; `snapserver` reads it as a `pipe` input. Tapping *after* the
+clamp is what makes the streamed audio inherit JTS's hardware-safety
+ceiling (§7). **Built (P1.3, `SnapfifoSink` — see §0):** the
+consumer + writer thread land off-by-default behind
+`JASPER_OUTPUTD_SNAPFIFO_PATH`. The FIFO lives at
+`/run/jasper-snapserver/snapfifo` (snapserver's own `RuntimeDirectory`,
+the reconciler's canonical `SNAPFIFO` — *not* the bare `/run/jasper/`
+of an earlier draft, which would collide with `jasper-voice`'s sockets;
+see `reconcile.py`).
 
 **Five timing invariants (load-bearing):**
 
@@ -762,7 +782,15 @@ resolving):
 
 ---
 
-Last verified: 2026-06-08 (grouping runtime observability: `state.py`
+Last verified: 2026-06-08 (P1.3 snapfifo producer: `jasper-outputd` gained
+`SnapfifoSink` (`rust/jasper-outputd/src/snapfifo.rs`) + a writer thread —
+a grouping leader taps post-clamp stereo to a bounded drop-on-full channel,
+a dedicated thread does the blocking FIFO write (DAC loop never
+back-pressured, §2 inv. 1; separate consumer from AEC, inv. 4); lazy
+non-blocking FIFO open, reopen-on-broken-pipe; off-by-default behind
+`JASPER_OUTPUTD_SNAPFIFO_PATH`. Hardware-free temp-FIFO `cargo test`;
+reconciler-sets-env + end-to-end are the on-device follow-ons. §0/§2
+updated. Earlier 2026-06-08 — grouping runtime observability: `state.py`
 gained a pure `derive_grouping_runtime` + injectable `systemctl is-active`
 probe, so `/state.grouping` carries a live `runtime` health block
 (off/invalid/ok/degraded) and `jasper-doctor`'s `check_grouping` warns on
