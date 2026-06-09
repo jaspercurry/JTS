@@ -273,6 +273,40 @@ def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
     assert "active output DAC is hifiberry_dac8x" in result.detail
 
 
+def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
+    calls = []
+
+    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
+    monkeypatch.setattr(
+        doctor,
+        "_shared_parse_env_file",
+        lambda _path: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+    )
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        if cmd == ["lsusb"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Bus 001 Device 002: ID 05AC:110A Apple\n",
+                stderr="",
+            )
+        if cmd == ["aplay", "-l"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="card 2: Apple [Apple USB-C to 3.5mm Headphone Jack]\n",
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+    result = doctor.check_apple_dongle_audio()
+
+    assert result.status == "ok"
+    assert calls == [["lsusb"], ["aplay", "-l"]]
+
+
 def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple mixer probe should not run")
@@ -289,6 +323,95 @@ def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch)
 
     assert result.status == "ok"
     assert "active output DAC is hifiberry_dac8x" in result.detail
+
+
+def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
+    calls = []
+
+    monkeypatch.delenv("JASPER_AUDIO_DAC_ID", raising=False)
+    monkeypatch.delenv("JASPER_AUDIO_DAC_CARD", raising=False)
+    monkeypatch.setattr(
+        doctor,
+        "_shared_parse_env_file",
+        lambda _path: {
+            "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
+            "JASPER_AUDIO_DAC_CARD": "Apple2",
+        },
+    )
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="Front Left: Playback 100 [100%] [0.00dB] [on]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+    result = doctor.check_dongle_headphone_at_max()
+
+    assert result.status == "ok"
+    assert calls == [["amixer", "-c", "Apple2", "sget", "Headphone"]]
+
+
+def test_output_hardware_state_warns_on_observed_active_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        doctor,
+        "_load_output_hardware_state",
+        lambda: {
+            "artifact_schema_version": 1,
+            "kind": "jts_output_hardware_state",
+            "active": {
+                "profile_id": "apple_usb_c_dongle",
+                "recognized": True,
+                "runtime_ready": True,
+            },
+            "observed": {
+                "profile_id": "dual_apple_usb_c_dac_4ch",
+                "status": "ready",
+            },
+            "issues": [
+                {
+                    "severity": "warning",
+                    "code": "observed_active_profile_mismatch",
+                    "message": "mismatch",
+                }
+            ],
+        },
+    )
+
+    result = doctor.check_output_hardware_state()
+
+    assert result.status == "warn"
+    assert "active=apple_usb_c_dongle" in result.detail
+    assert "observed=dual_apple_usb_c_dac_4ch" in result.detail
+
+
+def test_output_hardware_state_fails_when_runtime_is_parked(monkeypatch):
+    monkeypatch.setattr(
+        doctor,
+        "_load_output_hardware_state",
+        lambda: {
+            "artifact_schema_version": 1,
+            "kind": "jts_output_hardware_state",
+            "active": {
+                "profile_id": "unknown",
+                "recognized": False,
+                "runtime_ready": False,
+            },
+            "observed": {
+                "profile_id": "unknown",
+                "status": "missing",
+            },
+            "issues": [],
+        },
+    )
+
+    result = doctor.check_output_hardware_state()
+
+    assert result.status == "fail"
+    assert "active output is parked" in result.detail
 
 
 def test_check_bluetooth_pairing_policy_ok(monkeypatch):

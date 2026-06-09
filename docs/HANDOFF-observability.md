@@ -25,8 +25,9 @@ JTS intentionally separates:
    `jasper-doctor --json`, daemon STATUS sockets, and structured
    `event=` journal lines. This plane may add low-cost fields such
    as service `ActiveState`/`SubState`/`NRestarts`, outputd bridge
-   counters, restart/failure warnings, and installed wake-asset
-   checks. It must not include raw log bundles, PSS scans, profilers,
+   counters, output hardware observed-vs-active state, restart/failure
+   warnings, and installed wake-asset checks. It must not include raw
+   log bundles, PSS scans, profilers,
    or long soak history.
 2. **Temporary debug verbosity:** the `/system` Debug card and
    `/var/lib/jasper/debug.env` raise scoped daemon logging for a
@@ -113,6 +114,14 @@ checks, and the `event=*` journal lines. Note: the `/system/`
 dashboard does **not** render a resilience card today (the docs
 correctly never claim it does) — adding one is a natural
 extension of the debug card below.
+
+**Output hardware state is observable without probing audio streams:**
+`jasper-audio-hardware-reconcile` writes
+`/run/jasper/output_hardware.json` and logs
+`event=audio_hardware_reconcile.state_written` after each install/boot/udev
+convergence pass. `/state.audio.output_hardware`, `/sound/output-topology`,
+and `jasper-doctor` read that same artifact so output hardware diagnostics can
+distinguish the active runtime role from the best observed physical shape.
 
 ---
 
@@ -364,4 +373,4 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-06-04
+Last verified: 2026-06-09

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -53,18 +54,20 @@ def _run_reconcile(
     *args: str,
     initial_env: str | None = None,
     initial_template: str | None = None,
+    create_source_template: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
     fake_renderer, render_log = _fake_renderer(tmp_path)
     source_template = tmp_path / "asoundrc.jasper.source"
-    source_template.write_text(
-        "__OUTPUTD_DAC_PCM_BLOCK__\n"
-        "ctl.outputd_dac { card __OUTPUT_DAC_CARD__ }\n"
-        "pcm.jasper_out { card __DONGLE_CARD__ }\n"
-        "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n",
-        encoding="utf-8",
-    )
+    if create_source_template:
+        source_template.write_text(
+            "__OUTPUTD_DAC_PCM_BLOCK__\n"
+            "ctl.outputd_dac { card __OUTPUT_DAC_CARD__ }\n"
+            "pcm.jasper_out { card __DONGLE_CARD__ }\n"
+            "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n",
+            encoding="utf-8",
+        )
     audio_quality = tmp_path / "audio_quality.env"
     audio_quality.write_text(
         "JASPER_ALSA_RATE_CONVERTER=samplerate_medium\n",
@@ -77,6 +80,10 @@ def _run_reconcile(
             initial_template,
             encoding="utf-8",
         )
+    sys_sound = tmp_path / "sys" / "class" / "sound"
+    proc_asound = tmp_path / "proc" / "asound"
+    sys_sound.mkdir(parents=True)
+    proc_asound.mkdir(parents=True)
 
     env = os.environ.copy()
     env.update(
@@ -92,6 +99,12 @@ def _run_reconcile(
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
             "JASPER_APLAY": str(fake_aplay),
             "JASPER_FAKE_APLAY_LISTING": str(tmp_path / "aplay-L.txt"),
+            "JASPER_OUTPUT_HARDWARE_APLAY_LISTING": str(tmp_path / "aplay-L.txt"),
+            "JASPER_OUTPUT_HARDWARE_STATE_PATH": str(
+                tmp_path / "output_hardware.json"
+            ),
+            "JASPER_SYS_CLASS_SOUND": str(sys_sound),
+            "JASPER_PROC_ASOUND": str(proc_asound),
         }
     )
     return subprocess.run(
@@ -120,6 +133,14 @@ hw:CARD=A,DEV=0
 """
 
 
+DUAL_APPLE_LISTING = """
+hw:CARD=A,DEV=0
+    Apple USB-C to 3.5mm Headphone Jack, USB Audio
+hw:CARD=B,DEV=0
+    Apple USB-C to 3.5mm Headphone Jack, USB Audio
+"""
+
+
 DAC8X_AND_APPLE_LISTING = """
 hw:CARD=A,DEV=0
     Apple USB-C to 3.5mm Headphone Jack, USB Audio
@@ -138,6 +159,7 @@ def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert "DONGLE_CARD=A" in result.stdout
     assert "APPLE_DONGLE_PRESENT=1" in result.stdout
+    assert "APPLE_DONGLE_COUNT=1" in result.stdout
     assert "APPLE_DONGLE_SERVICE_CARD=A" in result.stdout
     assert "OUTPUT_DAC_CARD=sndrpihifiberry" in result.stdout
     assert "OUTPUT_DAC_ID=hifiberry_dac8x" in result.stdout
@@ -153,6 +175,12 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
     assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
     assert "JASPER_AUDIO_DAC_CARD=A" in env_text
+    state = json.loads((tmp_path / "output_hardware.json").read_text(encoding="utf-8"))
+    assert state["kind"] == "jts_output_hardware_state"
+    assert state["active"]["profile_id"] == "apple_usb_c_dongle"
+    assert state["active"]["runtime_ready"] is True
+    assert state["observed"]["profile_id"] == "apple_usb_c_dongle"
+    assert state["observed"]["physical_output_count"] == 2
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac" in template
     assert "type hw" in template
@@ -175,6 +203,10 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
     assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x" in env_text
     assert "JASPER_AUDIO_DAC_CARD=sndrpihifiberry" in env_text
+    state = json.loads((tmp_path / "output_hardware.json").read_text(encoding="utf-8"))
+    assert state["active"]["profile_id"] == "hifiberry_dac8x"
+    assert state["observed"]["profile_id"] == "hifiberry_dac8x"
+    assert state["observed"]["apple_dac_count"] == 1
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     assert "pcm.outputd_dac" in template
     assert "type hw" in template
@@ -205,6 +237,53 @@ def test_reconcile_unknown_role_parks_output_without_rerender(tmp_path: Path):
     assert "restart jasper-outputd.service" not in commands
     assert "restart jasper-aec-reconcile.service" not in commands
     assert "event=audio_hardware_reconcile.output_parked" in result.stderr
+    state = json.loads((tmp_path / "output_hardware.json").read_text(encoding="utf-8"))
+    assert state["active"]["profile_id"] == "unknown"
+    assert state["active"]["status"] == "parked"
+    assert state["observed"]["status"] == "missing"
+
+
+def test_reconcile_dual_apple_observes_composite_without_runtime_handoff(
+    tmp_path: Path,
+):
+    result = _run_reconcile(tmp_path, DUAL_APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
+    assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
+    assert "JASPER_AUDIO_DAC_CARD=A" in env_text
+    state = json.loads((tmp_path / "output_hardware.json").read_text(encoding="utf-8"))
+    assert state["active"]["profile_id"] == "apple_usb_c_dongle"
+    assert state["active"]["runtime_ready"] is True
+    assert state["observed"]["profile_id"] == "dual_apple_usb_c_dac_4ch"
+    assert state["observed"]["physical_output_count"] == 4
+    assert state["observed"]["status"] == "blocked"
+    assert [child["card_id"] for child in state["child_devices"]] == ["A", "B"]
+    assert {
+        issue["code"] for issue in state["issues"]
+    } >= {
+        "dual_apple_usb_topology_unknown",
+        "dual_apple_stable_identity_missing",
+        "observed_active_profile_mismatch",
+        "dual_apple_runtime_handoff_pending",
+    }
+
+
+def test_reconcile_does_not_publish_active_env_when_render_template_missing(
+    tmp_path: Path,
+):
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        create_source_template=False,
+    )
+
+    assert result.returncode == 66
+    assert not (tmp_path / "jasper.env").exists()
+    assert not (tmp_path / "output_hardware.json").exists()
+    assert "source_template=" in result.stderr
 
 
 def test_reconcile_recognized_role_restarts_outputd_after_unknown_state(

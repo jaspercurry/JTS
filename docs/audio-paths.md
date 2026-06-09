@@ -409,8 +409,17 @@ DAC as the Apple USB-C dongle; DAC8x and unknown-output states disable
 the Apple-specific units. The reconciler runs at install/boot and from
 udev `controlC*` add/remove/change events, so USB DAC changes converge
 without a deploy-only scan. The helper scripts remain runtime-safe for
-manual/operator starts. `outputd_dac` still points at the detected
-final-output card. For explicit DAC8x lab wiring, operators may set
+manual/operator starts. `outputd_dac` still points at the active
+single-PCM final-output card. The same reconcile pass writes
+`/run/jasper/output_hardware.json`, which separates `active` runtime
+hardware from the best `observed` hardware shape. `/state` exposes this
+as `audio.output_hardware`, and `/sound/output-topology` uses a ready
+observed shape to seed an unsaved output-map draft when no saved topology
+exists. Two Apple USB-C adapters can therefore be visible as an observed
+four-output shape without implying that outputd has switched to a
+dual-sink runtime graph.
+
+For explicit DAC8x lab wiring, operators may set
 `JASPER_OUTPUT_DAC_ROUTE=mono:N` or `stereo:L,R` in
 `/etc/jasper/jasper.env`; the route is applied only for recognized
 DAC8x hardware and uses 1-indexed physical output numbers. It takes
@@ -437,7 +446,11 @@ report one output clock; the dual-Apple 4ch profile reports four physical
 outputs with independent child clocks and an explicit aggregate-runtime-disabled
 fact. That makes the setup shape visible without granting playback authority:
 active-crossover playback still needs the separate runtime graph,
-channel-identity, and clock/drift evidence before sound can be emitted.
+channel-identity, and clock/drift evidence before sound can be emitted. A
+recognized active DAC role is published to `/etc/jasper/jasper.env` only after
+the managed ALSA template renders successfully; a render failure leaves the
+previous active runtime env in place rather than advertising a role that outputd
+cannot open.
 
 ## AEC bridge implications
 

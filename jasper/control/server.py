@@ -1129,6 +1129,7 @@ async def _get_state(
 
     from .. import librespot_state
     from ..camilla import CamillaController
+    from ..output_hardware import load_state as _load_output_hardware_state
     from ..speaker_name import read_state as _read_speaker_name_state
     from ..voice.provider_state import read_active_provider_and_model
 
@@ -1459,6 +1460,11 @@ async def _get_state(
     except Exception:  # noqa: BLE001
         logger.exception("grouping state read failed")
         grouping_state = None
+    try:
+        output_hardware_state = _load_output_hardware_state()
+    except Exception:  # noqa: BLE001
+        logger.exception("output hardware state read failed")
+        output_hardware_state = None
 
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -1488,6 +1494,7 @@ async def _get_state(
             "clipped_samples": camilla_st["clipped_samples"],
             "camilla_active_config_path": camilla_st["active_config_path"],
             "sound": sound_profile,
+            "output_hardware": output_hardware_state,
         },
         "renderers": {
             "spotify": spotify,
