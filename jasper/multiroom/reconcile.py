@@ -28,12 +28,11 @@ from __future__ import annotations
 
 import logging
 import argparse
-import os
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 
+from .. import atomic_io
 from .config import GroupingConfig, load_config
 
 logger = logging.getLogger(__name__)
@@ -338,12 +337,11 @@ def _apply(plan_: ReconcilePlan) -> int:
 def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
     """Atomically write the derived snapcast args to ``path``. Fail-soft.
 
-    Mirrors the in-repo atomic-write idiom (mic_mute_persistence.write_mic_muted)
-    and the aec-reconcile `set_env_var` shape: makedirs the parent (mode
-    0755), write a temp file in the SAME dir, ``chmod 0644`` the temp
-    file BEFORE the rename (so the published file never has a wider
-    permission window), then ``os.replace`` (atomic on a same-FS POSIX
-    rename). One ``KEY=value`` line per key, order preserved.
+    Delegates the atomic tempfile+rename mechanics to
+    ``atomic_io.atomic_write_text`` (makedirs the parent, write a temp file
+    in the SAME dir, ``chmod 0644`` BEFORE the rename so the published file
+    never has a wider permission window, then ``os.replace``). One
+    ``KEY=value`` line per key, order preserved.
 
     Returns True on success, False on any failure. NEVER raises — a lost
     args write must not crash the reconcile path (the plan still
@@ -351,28 +349,8 @@ def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
     The file carries no secrets, so mode 0644 (matches grouping.env).
     """
     body = "".join(f"{k}={v}\n" for k, v in keys.items())
-    # Derive the dir from `path` (not the module ARGS_DIR) so the temp
-    # file lands on the SAME filesystem as the final path — os.replace is
-    # only atomic within one FS — and so a test passing a tmp path writes
-    # there, not into /run. In production `path` is ARGS_FILE, so this is
-    # ARGS_DIR; the 0755 mode matches the reconciler-owned-dir contract.
-    parent = os.path.dirname(path) or "."
     try:
-        os.makedirs(parent, mode=0o755, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            prefix=".snapcast-args.", suffix=".tmp", dir=parent,
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(body)
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, path)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        atomic_io.atomic_write_text(path, body, mode=0o644)
     except OSError as e:
         logger.warning(
             "event=multiroom.reconcile.args_failed path=%s error=%s",
@@ -414,26 +392,12 @@ def _write_outputd_snapfifo_env(
     ``desired`` non-empty => one ``JASPER_OUTPUTD_SNAPFIFO_PATH=<path>``
     line. ``desired`` empty (not a leader) => an EMPTY file, so a restarted
     outputd has NO tap key set. Same atomic tempfile+rename + 0644 mode as
-    ``_write_args_file``; carries no secrets.
+    ``_write_args_file`` (delegated to ``atomic_io.atomic_write_text``);
+    carries no secrets.
     """
     body = f"{_OUTPUTD_SNAPFIFO_KEY}={desired}\n" if desired else ""
-    parent = os.path.dirname(path) or "."
     try:
-        os.makedirs(parent, mode=0o755, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            prefix=".outputd-snapfifo.", suffix=".tmp", dir=parent,
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(body)
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, path)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        atomic_io.atomic_write_text(path, body, mode=0o644)
     except OSError as e:
         logger.warning(
             "event=multiroom.reconcile.outputd_tap_write_failed path=%s error=%s",
