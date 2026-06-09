@@ -899,8 +899,8 @@ missing.
 ### What's installed and at what cost
 
 Numbers are **Pss** (proportional set size — shared libs deduplicated;
-the honest "private cost" measure) on a Pi 5, after the lazy-import
-and openwakeword stub diet landed.
+the honest "private cost" measure) on a Pi 5, after the lazy-import,
+openwakeword stub diet, and jasper-input httpx removal landed.
 
 | Component | Default | RAM (Pss) | CPU |
 |---|---|---|---|
@@ -910,7 +910,7 @@ and openwakeword stub diet landed.
 | `jasper-wifi-guardian` (boot-time NM keyfile self-heal) | Active (oneshot) | one-shot, ~0 | ~3-5 ms |
 | `jasper-camilla` (always-on CamillaDSP, ducking) | Active | ~12 MB | <1% |
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
-| `jasper-input` (HID accessory bridge) | Active | ~28 MB | ~0% idle |
+| `jasper-input` (HID accessory bridge) | Active | ~16 MB | ~0% idle |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
 | `jasper-usbsink` (USB audio source) | **Disabled by default**, ~22 MB when on | 0 MB off, ~22 MB on | ~3% of one core while host streams |
 | `jasper-usbsink-init` (gadget ConfigFS oneshot) | follows usbsink | one-shot, ~0 | ~0 |
@@ -932,7 +932,7 @@ requests, so the resident cost is zero between
 admin sessions. First request after idle takes ~500-800 ms (Python
 startup); invisible during the OAuth round-trip or BT pair flow.
 
-**Total Pss baseline with AEC on**: ~330 MB jasper-* daemons +
+**Total Pss baseline with AEC on**: ~318 MB jasper-* daemons +
 ~80 MB system/OS plumbing + page cache → typically ~770 MB used
 out of 2 GB. On a 1 GB Pi, ~200 MB headroom with AEC on; ~280 MB
 with AEC off.
