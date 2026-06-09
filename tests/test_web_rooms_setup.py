@@ -879,7 +879,7 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
     (handler, calls) where calls is the list of (addr, body) fanned out."""
     calls: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, member_body):
+    def fake_member_post(addr, member_body, known=None):
         calls.append((addr, member_body))
         if member_results and addr in member_results:
             return member_results[addr]
@@ -890,6 +890,9 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
     monkeypatch.setattr(rooms_setup, "reject_csrf",
                         lambda h: h.send_response(403) or h.end_headers())
     monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "192.168.1.5")
+    # Hermetic self-address set (the fan-out computes it once for the SSRF
+    # guard); empty so no real socket probe / getaddrinfo runs under test.
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
     # The follower's leader_addr is now the leader's STABLE mDNS handle
     # (read_identity().hostname), not a NIC IP — stub the helper so the bond
     # tests don't depend on the real identity reader.
@@ -1046,7 +1049,7 @@ def test_fan_out_grouping_preserves_input_order_despite_slow_failing_member(monk
 
     started = threading.Event()
 
-    def fake_member_post(addr, body):
+    def fake_member_post(addr, body, known=None):
         if addr == "192.168.1.5":
             # First target: block until the second has had a chance to finish,
             # then fail. If results were ordered by completion this would land
@@ -1070,6 +1073,94 @@ def test_fan_out_grouping_preserves_input_order_despite_slow_failing_member(monk
 
 def test_fan_out_grouping_empty_targets_is_empty_list():
     assert rooms_setup._fan_out_grouping([]) == []
+
+
+def test_fan_out_grouping_computes_self_addresses_once_not_per_member(monkeypatch):
+    """The SSRF guard's self-address set is computed ONCE per fan-out and
+    shared across members (_self_addresses does a socket probe + getaddrinfo).
+    A 3-member fan-out must call it once, not three times (the N-redundant-
+    lookups smell the `known=` threading removes)."""
+    calls = {"n": 0}
+
+    def counting_self_addresses():
+        calls["n"] += 1
+        return {"192.168.1.5"}
+
+    monkeypatch.setattr(rooms_setup, "_self_addresses", counting_self_addresses)
+    monkeypatch.setattr(
+        rooms_setup, "_post_grouping_to_member",
+        lambda addr, body, known=None: (True, "HTTP 200"),
+    )
+    out = rooms_setup._fan_out_grouping([(f"192.168.1.{i}", {}) for i in (10, 11, 12)])
+    assert len(out) == 3
+    assert calls["n"] == 1  # computed once, shared across all three members
+
+
+# ---- _map_peers: the one bounded-concurrency primitive ----
+
+
+def test_map_peers_runs_concurrently_and_preserves_input_order():
+    """_map_peers runs items concurrently (wall-clock << sum of per-item
+    sleeps) and returns results in INPUT order regardless of completion
+    order — the property both the fan-out and the discovery rely on."""
+    import threading
+    import time as _time
+
+    started = threading.Event()
+
+    def fn(i):
+        if i == 0:
+            started.set()
+            _time.sleep(0.05)   # first item slow...
+            return "a"
+        started.wait(timeout=1.0)
+        return "b"              # ...second finishes first
+
+    t0 = _time.monotonic()
+    out = rooms_setup._map_peers(fn, [0, 1])
+    elapsed = _time.monotonic() - t0
+    assert out == ["a", "b"]          # input order, not completion order
+    assert elapsed < 0.2              # concurrent: not 0.05 + serialized wait
+
+
+def test_map_peers_empty_is_empty_list():
+    assert rooms_setup._map_peers(lambda x: x, []) == []
+
+
+def test_map_peers_caps_worker_count():
+    """The pool is bounded by _PEER_FANOUT_MAX_WORKERS — a large household
+    can't spawn an unbounded number of blocking-HTTP threads."""
+    import threading
+
+    peak = {"n": 0}
+    live = {"n": 0}
+    lock = threading.Lock()
+    release = threading.Event()
+
+    def fn(_i):
+        with lock:
+            live["n"] += 1
+            peak["n"] = max(peak["n"], live["n"])
+        release.wait(timeout=1.0)
+        with lock:
+            live["n"] -= 1
+        return None
+
+    # 20 items, cap 8 -> never more than 8 run at once.
+    items = list(range(20))
+    done = []
+
+    def run():
+        done.append(rooms_setup._map_peers(fn, items))
+
+    t = threading.Thread(target=run)
+    t.start()
+    # Let the first wave saturate the pool, then release.
+    import time as _time
+    _time.sleep(0.1)
+    release.set()
+    t.join(timeout=2.0)
+    assert peak["n"] <= rooms_setup._PEER_FANOUT_MAX_WORKERS
 
 
 # ---- _get_member_grouping: GET a peer's /grouping behind the SSRF guard ----
@@ -1161,13 +1252,13 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
     member_results — {address: (ok, detail)} overriding the disable POST."""
     posts: list[tuple[str, dict]] = []
 
-    def fake_member_post(addr, body):
+    def fake_member_post(addr, body, known=None):
         posts.append((addr, body))
         if member_results and addr in member_results:
             return member_results[addr]
         return (True, "HTTP 200")
 
-    def fake_get_grouping(addr):
+    def fake_get_grouping(addr, known=None):
         return (peer_grouping or {}).get(addr)
 
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
@@ -1177,6 +1268,9 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
                         lambda *a, **k: dict(self_grouping))
     monkeypatch.setattr(rooms_setup, "_discover_speakers_cached",
                         lambda: list(speakers))
+    # Empty self-address set: hermetic (no socket probe) and so the candidate
+    # filter (`a not in known`) keeps every test speaker — none is "self".
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
     monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", fake_member_post)
 
@@ -1341,4 +1435,27 @@ def test_post_unbond_logs_per_member_failure(monkeypatch, caplog):
         "event=rooms.unbond.member_failed" in m
         and "192.168.1.9" in m and "Connection refused" in m
         for m in warns
+    )
+
+
+def test_post_unbond_logs_unreachable_candidate_count(monkeypatch, caplog):
+    """A same-bond follower unreachable during discovery (GET → None) is
+    counted as `unreachable` in the aggregate log — it explains a "dissolved
+    but a speaker stayed grouped" report (we couldn't read its bond_id, so it
+    never became a disable target)."""
+    caplog.set_level(logging.INFO, logger="jasper.web.rooms_setup")
+    _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "bond_id": "bond-1"},
+        speakers=[{"address": "192.168.1.9"}, {"address": "192.168.1.20"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "bond_id": "bond-1"},  # matched
+            "192.168.1.20": None,                                   # unreachable
+        },
+    )
+    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any(
+        "event=rooms.unbond " in m
+        and "candidates=2" in m and "unreachable=1" in m and "peers=1" in m
+        for m in infos
     )
