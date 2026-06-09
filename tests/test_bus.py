@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from jasper.bus import BusClient, parse_bus_stops
+from jasper.transit.base import TransitError
 
 
 def _siri_response(visits):
@@ -268,7 +269,10 @@ async def test_sorts_by_eta_ascending():
 
 
 @pytest.mark.asyncio
-async def test_handles_http_error_returns_empty():
+async def test_handles_http_error_raises_when_all_stops_fail():
+    """A total outage (the only configured stop 503s, no cache) raises
+    TransitError so the tool can speak an error rather than narrate it
+    as 'no buses'. Distinguishing outage from empty is the bug fix."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
@@ -279,10 +283,10 @@ async def test_handles_http_error_returns_empty():
         stop_ids=["MTA_302680"], api_key="k", http=http, clock=lambda: now,
     )
     try:
-        arrivals = await client.get_arrivals()
+        with pytest.raises(TransitError):
+            await client.get_arrivals()
     finally:
         await client.aclose()
-    assert arrivals == []
 
 
 @pytest.mark.asyncio
@@ -408,10 +412,10 @@ async def test_multi_stop_caps_at_limit_across_stops():
 
 @pytest.mark.asyncio
 async def test_failed_fetch_does_not_poison_cache():
-    """First call: upstream 503 → empty result, no cache entry.
-    Second call: upstream recovers → fresh fetch returns arrivals.
-    Without the fix, the second call would have hit the cached []
-    and returned no buses."""
+    """First call: upstream 503 → raises (the only stop failed, no
+    cache). Second call: upstream recovers → fresh fetch returns
+    arrivals. Without the no-poison fix, the failure would have cached
+    [] and the second call would have returned no buses confidently."""
     now = datetime(2026, 5, 21, 16, 30, 0, tzinfo=timezone.utc)
     good = _siri_response([
         _visit("B35", "BROWNSVILLE", "2026-05-21T16:33:00+00:00"),
@@ -430,11 +434,11 @@ async def test_failed_fetch_does_not_poison_cache():
         stop_ids=["MTA_302680"], api_key="k", http=http, clock=lambda: now,
     )
     try:
-        first = await client.get_arrivals()
+        with pytest.raises(TransitError):
+            await client.get_arrivals()   # nothing to show on failure
         second = await client.get_arrivals()
     finally:
         await client.aclose()
-    assert first == []                  # nothing to show on failure
     assert len(second) == 1             # cache was NOT poisoned
     assert second[0].route == "B35"
     assert call_state["n"] == 2         # upstream was hit twice

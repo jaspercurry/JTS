@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import logging
+
+from ..transit.base import TransitError
 from . import tool
+
+logger = logging.getLogger(__name__)
 
 
 def make_bus_tools(bus):
@@ -64,10 +69,30 @@ def make_bus_tools(bus):
           'B35 approaching now.'                    (0 minutes)
           'No buses in the next half hour.'         (empty list)
 
-        On error returns {error: ...}; speak the error verbatim so
-        the user knows what to clarify.
+        On error returns {error: ...}; speak the error verbatim so the
+        user knows what happened. The error fires only on a total
+        BusTime outage (every configured stop unreachable); a reachable
+        feed with nothing coming returns an empty `arrivals` list — say
+        'no buses in the next half hour' for that, NOT the error.
         """
-        arrivals = await bus.get_arrivals(route)
+        try:
+            arrivals = await bus.get_arrivals(route)
+        except TransitError as exc:
+            # Every configured stop failed AND none had a cache to serve
+            # — a total BusTime outage. Surface a single LLM-visible
+            # error string rather than narrating it as "no buses"; the
+            # voice prompt says "speak the error verbatim".
+            logger.warning(
+                "event=transit.bus.tool.error outcome=fetch_failed "
+                "route=%r err=%s",
+                route, exc,
+            )
+            return {
+                "error": (
+                    "I can't reach the MTA bus feed right now. "
+                    "Try again in a moment."
+                )
+            }
         return {
             "stops_queried": list(bus.stop_ids),
             "arrivals": [a.as_dict() for a in arrivals],
