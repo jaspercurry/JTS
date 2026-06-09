@@ -2,6 +2,11 @@
 // https://github.com/Elecrow-RD/CrowPanel-1.28inch-HMI-ESP32-Rotary-Display-240-240-IPS-Round-Touch-Knob-Screen
 //   /factory_soucecode/RotaryScreen_1_28/CST816D.{h,cpp}
 //
+// Upstream declares NO license (verified 2026-06-09: no LICENSE/COPYING/
+// NOTICE in the ELECROW repo), so this is all-rights-reserved and NOT
+// cleared for redistribution. No SPDX-License-Identifier is set because
+// none is known. See ../../THIRD_PARTY.md.
+//
 // We use the chip's I2C interface (Wire1, since the touch lines and
 // the main I2C bus are physically separate) and only read finger
 // position + gesture; the chip's other features (power management,
