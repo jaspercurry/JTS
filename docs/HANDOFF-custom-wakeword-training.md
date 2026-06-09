@@ -3,7 +3,8 @@
 > **Current operational truth.** This is the canonical plan for turning
 > JTS wake-corpus recordings into custom wake-word models trained off-Pi
 > and deployed back into the existing JTS openWakeWord fusion runtime.
-> It is a productization plan, not a shipped training pipeline.
+> It is a productization plan plus the current offline data-prep tooling,
+> not a shipped end-to-end training pipeline.
 >
 > Companion docs: [wake-training experiment](HANDOFF-wake-training-experiment.md)
 > for the original corpus/reliability rationale,
@@ -229,9 +230,25 @@ Current implementation state:
   LiveKit calls, synthetic data generation, negative feature banks,
   threshold tuning, cloud job launch, model registry writes, or runtime
   changes.
-- The next Phase 0 slice should prove the real-positive injection step:
-  append the JTS `positive_features_*.npy` arrays into a LiveKit/openWakeWord
-  training workdir and run one tiny off-Pi model train/eval loop.
+- `scripts/prepare-wake-training-workdir.sh` (backed by
+  `scripts/_prepare_wake_training_workdir.py`) implements the first
+  real-positive injection prep step. It consumes `feature_bank.json`,
+  `feature_manifest.jsonl`, `positive_features_train.npy`, and
+  `positive_features_eval.npy`, verifies the manifest/array contract,
+  maps the JTS eval split to LiveKit/openWakeWord's
+  `positive_features_test.npy` convention, repeats train positives with
+  an explicit configurable weight (default `3x`), and writes
+  `training_workdir.json`, `real_positive_injection.json`,
+  `real_positive_manifest.jsonl`, and `feature_data/positive_features_*`.
+- The training-workdir prep is intentionally still not a trainer: no
+  LiveKit calls, synthetic data generation, negative/background feature
+  banks, threshold tuning, cloud job launch, model registry writes, or
+  runtime changes.
+- The next Phase 0 slice should prove a tiny off-Pi train/eval loop:
+  merge the staged real-positive arrays into a complete LiveKit training
+  workdir that also contains synthetic positives, negatives, and
+  background banks, train one small ONNX model, and compare it against
+  the incumbent on held-out JTS audio.
 
 ### Phase 1 — MVP Pipeline
 
@@ -422,7 +439,7 @@ should be promoted into clear modules before building UX.
 - openWakeWord repo:
   <https://github.com/dscripka/openWakeWord>
 
-Last verified: 2026-06-09 (updated after adding the corpus-bundle exporter
-and first openWakeWord-compatible positive feature-bank builder;
-real-positive injection, cloud training, evaluation, registry, and deployment
-stages remain future work).
+Last verified: 2026-06-09 (updated after adding the corpus-bundle exporter,
+openWakeWord-compatible positive feature-bank builder, and training-workdir
+real-positive injection prep; cloud training, evaluation, registry, and
+deployment stages remain future work).
