@@ -66,7 +66,8 @@ class DacProfile:
     mixer_controls: tuple[MixerControl, ...] = ()
     headphone_pinned_100: bool = False
     validation_profile: str | None = None
-    deploy_hint: str | None = None
+    udev_rule: str | None = None
+    dtoverlay: str | None = None
 
     def __post_init__(self) -> None:
         if not _ID_RE.match(self.id):
@@ -89,6 +90,10 @@ class DacProfile:
             raise ValueError(f"{self.id}: single DAC profile cannot have children")
         if self.kind == "composite" and len(self.child_profile_ids) < 2:
             raise ValueError(f"{self.id}: composite DAC profile needs children")
+        if self.kind == "composite" and self.mixer_controls:
+            raise ValueError(
+                f"{self.id}: composite mixer controls must come from children"
+            )
         if self.requires_same_usb_bus and self.kind != "composite":
             raise ValueError(f"{self.id}: same-bus requirement only fits composites")
 
@@ -111,7 +116,7 @@ APPLE_USB_C_DONGLE = DacProfile(
     supports_active_outputd_lane=True,
     mixer_controls=(APPLE_HEADPHONE_CONTROL,),
     headphone_pinned_100=True,
-    deploy_hint="deploy/udev/99-jasper-apple-dongle.rules",
+    udev_rule="deploy/udev/99-jasper-apple-dongle.rules",
 )
 
 HIFIBERRY_DAC8X = DacProfile(
@@ -128,7 +133,7 @@ HIFIBERRY_DAC8X = DacProfile(
     ),
     supports_active_outputd_lane=True,
     validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
-    deploy_hint="dtoverlay=hifiberry-dac8x",
+    dtoverlay="hifiberry-dac8x",
 )
 
 DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
@@ -143,7 +148,6 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
     requires_same_usb_bus=True,
     supports_active_outputd_lane=True,
-    mixer_controls=(APPLE_HEADPHONE_CONTROL,),
     headphone_pinned_100=True,
 )
 
@@ -213,6 +217,30 @@ def supports_physical_output_count(profile_id: str, output_count: int) -> bool:
     return profile is not None and profile.physical_output_count == output_count
 
 
+def mixer_control_groups_for(
+    profile_id: str,
+) -> tuple[tuple[MixerControl, ...], ...] | None:
+    """Return mixer policies grouped by physical DAC child.
+
+    A single DAC returns one group. A composite profile returns one
+    group for each child profile, preserving cardinality for callers
+    that need to pin or monitor child-device controls.
+    """
+
+    profile = by_id(profile_id)
+    if profile is None:
+        return None
+    if profile.kind == "single":
+        return (profile.mixer_controls,)
+    groups: list[tuple[MixerControl, ...]] = []
+    for child_id in profile.child_profile_ids:
+        child = by_id(child_id)
+        if child is None:
+            return None
+        groups.append(child.mixer_controls)
+    return tuple(groups)
+
+
 __all__ = [
     "APPLE_HEADPHONE_CONTROL",
     "APPLE_USB_C_DONGLE",
@@ -230,6 +258,7 @@ __all__ = [
     "by_id",
     "is_known_profile_id",
     "known_profile_ids",
+    "mixer_control_groups_for",
     "physical_output_count_for",
     "supports_physical_output_count",
 ]

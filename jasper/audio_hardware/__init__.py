@@ -18,6 +18,7 @@ from .dac import (
     by_id,
     is_known_profile_id,
     known_profile_ids,
+    mixer_control_groups_for,
     physical_output_count_for,
     supports_physical_output_count,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "by_id",
     "is_known_profile_id",
     "known_profile_ids",
+    "mixer_control_groups_for",
     "physical_output_count_for",
     "supports_physical_output_count",
 ]

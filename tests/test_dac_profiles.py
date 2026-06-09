@@ -51,6 +51,10 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     assert APPLE_USB_C_DONGLE.mixer_controls[0].name == "Headphone"
     assert APPLE_USB_C_DONGLE.mixer_controls[0].target_percent == 100
     assert APPLE_USB_C_DONGLE.mixer_controls[0].unmute is True
+    assert (
+        APPLE_USB_C_DONGLE.udev_rule
+        == "deploy/udev/99-jasper-apple-dongle.rules"
+    )
 
 
 def test_hifiberry_dac8x_family_profile_keeps_existing_runtime_id() -> None:
@@ -64,6 +68,7 @@ def test_hifiberry_dac8x_family_profile_keeps_existing_runtime_id() -> None:
     assert "snd_rpi_hifiberry_dac8x" in HIFIBERRY_DAC8X.supported_card_matches
     assert "hifiberry.*dac8x" in HIFIBERRY_DAC8X.supported_card_matches
     assert HIFIBERRY_DAC8X.validation_profile == "hifiberry_dac8x_outputd_stability"
+    assert HIFIBERRY_DAC8X.dtoverlay == "hifiberry-dac8x"
 
 
 def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
@@ -78,8 +83,10 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
     assert DUAL_APPLE_USB_C_DAC_4CH.usb_ids == ("05ac:110a",)
     assert DUAL_APPLE_USB_C_DAC_4CH.requires_same_usb_bus is True
     assert DUAL_APPLE_USB_C_DAC_4CH.supports_active_outputd_lane is True
-    assert DUAL_APPLE_USB_C_DAC_4CH.mixer_controls == (
-        APPLE_USB_C_DONGLE.mixer_controls[0],
+    assert DUAL_APPLE_USB_C_DAC_4CH.mixer_controls == ()
+    assert dac.mixer_control_groups_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == (
+        APPLE_USB_C_DONGLE.mixer_controls,
+        APPLE_USB_C_DONGLE.mixer_controls,
     )
     assert DUAL_APPLE_USB_C_DAC_4CH.headphone_pinned_100 is True
 
@@ -110,6 +117,19 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
 
     with pytest.raises(ValueError, match="mixer target_percent"):
         dac.MixerControl("Headphone", target_percent=101)
+
+    with pytest.raises(ValueError, match="composite mixer controls"):
+        DacProfile(
+            id="bad_composite_mixer",
+            label="Bad composite mixer",
+            kind="composite",
+            physical_output_count=4,
+            coherent_clock_domain=False,
+            outputd_sink="dual_apple",
+            supported_card_matches=("usb",),
+            child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
+            mixer_controls=APPLE_USB_C_DONGLE.mixer_controls,
+        )
 
 
 def test_registry_children_reference_known_profiles() -> None:

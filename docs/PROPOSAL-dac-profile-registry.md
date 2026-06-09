@@ -94,7 +94,8 @@ class DacProfile:
     mixer_controls: tuple[MixerControl, ...] = ()
     headphone_pinned_100: bool = False
     validation_profile: str | None = None
-    deploy_hint: str | None = None
+    udev_rule: str | None = None
+    dtoverlay: str | None = None
 ```
 
 Initial profiles should include at least:
