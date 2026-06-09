@@ -111,6 +111,7 @@ def emit_correction_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     measurement_id: str | None = None,
+    enable_rate_adjust: bool = True,
 ) -> str:
     """Build a CamillaDSP YAML config with the given PEQ chain.
 
@@ -133,6 +134,10 @@ def emit_correction_config(
     filters_yaml = _emit_filter_definitions(peqs)
     pipeline_yaml = _emit_pipeline(peqs)
 
+    # inv-5: a grouped member runs rate_adjust off (snapclient is the sole
+    # rate-tracker). Caller passes enable_rate_adjust=False for an active
+    # bond member; default True keeps the solo path unchanged.
+    rate_adjust_literal = "true" if enable_rate_adjust else "false"
     header_id = f" (id={measurement_id})" if measurement_id else ""
     yaml = f"""---
 # Auto-generated room-correction config{header_id}.
@@ -152,7 +157,7 @@ devices:
   queuelimit: 4
   target_level: {target_level}
   volume_limit: {volume_limit_db:.1f}
-  enable_rate_adjust: true
+  enable_rate_adjust: {rate_adjust_literal}
   capture:
     type: Alsa
     channels: 2

@@ -262,6 +262,7 @@ from .peering import (
 from . import grouping as grouping
 from .grouping import (
     check_grouping,
+    check_grouping_rate_adjust,
 )
 from . import satellites as satellites
 from .satellites import (
@@ -459,6 +460,7 @@ __all__ = [
     "check_peering_discovery",
     "_local_peer_id",
     "check_grouping",
+    "check_grouping_rate_adjust",
     "check_dial_heartbeat",
     "_PROBE_REF_PASS_THRESHOLD",
     "_PROBE_SINE_PATH",
