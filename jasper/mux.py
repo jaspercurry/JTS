@@ -66,7 +66,7 @@ from typing import Any, Optional
 
 import httpx
 
-from . import librespot_state
+from . import librespot_state, mux_mode_persistence
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
     airplay_playing,
@@ -96,6 +96,13 @@ FANIN_CONTROL_SOCKET = os.environ.get(
 )
 MUX_CONTROL_SOCKET = os.environ.get(
     "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
+)
+# Durable home for the source-selection mode (auto vs manual + the
+# pinned source). Persisted so a household's manual pin survives the
+# Restart=always deploy/restart cycle. RuntimeDirectory is wiped on
+# restart, so this lives under /var/lib/jasper, not /run.
+MUX_MODE_STATE_PATH = os.environ.get(
+    "JASPER_MUX_MODE_STATE_PATH", mux_mode_persistence.DEFAULT_PATH,
 )
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
 SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
@@ -158,11 +165,24 @@ class Mux:
         self,
         librespot_state_path: str = librespot_state.DEFAULT_PATH,
         volume_coordinator: Any | None = None,
+        mode_state_path: str = MUX_MODE_STATE_PATH,
     ) -> None:
         self._librespot_state_path = librespot_state_path
+        self._mode_state_path = mode_state_path
         self._state = _State()
         self._winner: Optional[Source] = None
-        self._manual_source: Optional[Source] = None
+        # Restore a household's manual source pin across restarts. Fails
+        # open to None (auto / latest-source-wins) on a missing or
+        # corrupt file — the pre-persistence behaviour. The fan-in gate
+        # is reasserted from this on the first tick (_reassert_manual_source).
+        self._manual_source: Optional[Source] = mux_mode_persistence.read_manual_source(
+            mode_state_path,
+        )
+        if self._manual_source is not None:
+            logger.info(
+                "event=source.manual_restored source=%s from=%s",
+                self._manual_source.value, mode_state_path,
+            )
         self._winner_age_ticks = 0
         # Lazy router for Web API pause. Built on first use, kept
         # for the daemon's lifetime. None means Spotify env vars
@@ -354,6 +374,7 @@ class Mux:
                 self._pending_auto_target = None
                 self._winner = source
                 self._winner_age_ticks = 0
+                mux_mode_persistence.write_mode(self._mode_state_path, source)
                 if self._usbsink_preempted:
                     await self._usbsink_set_preempt(
                         False, reason="manual_select",
@@ -394,6 +415,7 @@ class Mux:
                     self._manual_source = None
                     self._pending_auto_target = None
                     self._winner_age_ticks = 0
+                    mux_mode_persistence.write_mode(self._mode_state_path, None)
                 else:
                     self._pending_auto_target = new_winner
                     if self._winner is None:
@@ -417,6 +439,7 @@ class Mux:
                 self._winner = None
                 self._manual_source = None
                 self._pending_auto_target = None
+                mux_mode_persistence.write_mode(self._mode_state_path, None)
                 await self._fanin_none()
 
         self._state.playing = current
