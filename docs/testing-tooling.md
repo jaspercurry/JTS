@@ -294,7 +294,8 @@ a 2-second / 32,000-sample window, and extracts `(16, 96)` embeddings through
 `openwakeword==0.6.0`, `onnxruntime`, `numpy`, and staged
 `melspectrogram.onnx` / `embedding_model.onnx` assets; pass
 `--melspec-model` and `--embedding-model` when running outside the JTS runtime
-environment.
+environment. It verifies each source WAV against the bundle manifest's SHA-256
+before extraction.
 
 It does not inject the features into LiveKit, build negative banks, train,
 score, or alter Pi runtime state.

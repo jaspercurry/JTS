@@ -223,6 +223,8 @@ Current implementation state:
   `positive_features_train.npy`, `positive_features_eval.npy`,
   `feature_manifest.jsonl`, `feature_rejections.jsonl`, and
   `feature_bank.json`.
+- It verifies each source WAV against the bundle manifest hash before
+  extraction, so feature banks are tied to the exact exported audio bytes.
 - The feature-bank builder is intentionally still not a trainer: no
   LiveKit calls, synthetic data generation, negative feature banks,
   threshold tuning, cloud job launch, model registry writes, or runtime
