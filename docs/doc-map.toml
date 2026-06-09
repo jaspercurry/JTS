@@ -74,6 +74,29 @@ verification = [
 ]
 
 [[subsystem]]
+id = "audio-hardware-profiles"
+title = "Output hardware profile registry"
+safety = "audio-output-risk"
+code = [
+  "jasper/audio_hardware/**",
+]
+docs = [
+  "docs/PROPOSAL-dac-profile-registry.md",
+  "docs/audio-paths.md",
+  "docs/HANDOFF-speaker-output-reference.md",
+  "docs/HANDOFF-active-speaker-dsp.md",
+]
+requires_docs_when = [
+  "A DAC profile id, physical output count, mixer/headphone policy, outputd sink, validation profile, or composite-output invariant changes.",
+  "A runtime consumer starts relying on the registry for topology, doctor, reconcile, ALSA, outputd, or commissioning behavior.",
+]
+verification = [
+  "pytest tests/test_dac_profiles.py",
+  "python3 scripts/docs-impact.py --validate-only",
+  "python3 scripts/docs-linkcheck.py --changed-file docs/PROPOSAL-dac-profile-registry.md",
+]
+
+[[subsystem]]
 id = "audio-routing-and-renderers"
 title = "Renderer source policy, fan-in, ALSA, and audio routing"
 safety = "audio-output-risk"

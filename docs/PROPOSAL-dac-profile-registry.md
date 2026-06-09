@@ -1,9 +1,11 @@
 # Proposal: DAC Profile Registry
 
-> **Status: proposal / design handoff, updated 2026-06-08.** This is not
-> shipped behavior. It supersedes the narrower 2026-06-04 sketch that modeled
-> only a single Apple dongle and a HiFiBerry DAC8x. Current operational truth
-> for output ownership lives in
+> **Status: proposal / implementation handoff, updated 2026-06-09.** The
+> initial IO-free registry scaffold exists in
+> [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py);
+> runtime consumers are not migrated yet. This supersedes the narrower
+> 2026-06-04 sketch that modeled only a single Apple dongle and a HiFiBerry
+> DAC8x. Current operational truth for output ownership lives in
 > [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
 > [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md), and
 > [audio-paths.md](audio-paths.md).
@@ -54,6 +56,9 @@ output shape that does not match the hardware actually present.
 
 Use these instead of creating a parallel hardware stack:
 
+- `jasper.audio_hardware.dac` records static DAC profile metadata and pure
+  lookup/output-count helpers. It does not probe hardware or mutate runtime
+  state.
 - `JASPER_AUDIO_DAC_ID` and `JASPER_AUDIO_DAC_CARD` are reconciler-owned runtime
   facts for the active final-output role.
 - `/run/jasper/output_hardware.json` records observed output hardware,
@@ -139,7 +144,8 @@ outputd process control inside the registry.
 
 1. Add the registry module and tests, with no behavior change. It should expose
    `by_id`, `all_profiles`, and pure helpers for validating known IDs and
-   output counts.
+   output counts. **Initial scaffold landed:** `jasper.audio_hardware.dac`
+   includes Apple USB-C, HiFiBerry DAC8x-family, and dual-Apple 4ch profiles.
 2. Replace duplicated labels/output counts in `output_topology` and doctor with
    registry lookups.
 3. Replace hardcoded Apple/DAC8x identity checks in `audio_validation` and
@@ -196,5 +202,5 @@ Specific follow-up from review:
   observed and graph-ready, while still warning on bad physical topology or
   partial hardware states.
 
-Last verified: 2026-06-08 (proposal updated against the dual-Apple
-active-output architecture and PR 454 review feedback).
+Last verified: 2026-06-09 (initial registry scaffold added and proposal
+rechecked against the dual-Apple active-output architecture).
