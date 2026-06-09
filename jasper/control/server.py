@@ -51,6 +51,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from . import debug_control, shairport_supervisor, system_supervisor, wifi_guardian_state
+from ..multiroom.config import GROUPING_ENV_FILE, validate_grouping
 from ..multiroom.state import read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..volume_diagnostics import (
@@ -580,6 +581,41 @@ def _kick_aec_reconciler() -> None:
         ["systemctl", "restart", "--no-block",
          "jasper-aec-reconcile.service"],
     )
+
+
+def _kick_grouping_reconciler() -> None:
+    """Apply a persisted grouping change through jasper-grouping-reconcile.
+
+    Mirror of _kick_aec_reconciler: `restart` (not `start`) the Type=oneshot
+    reconciler so a change written while a previous reconcile is still active
+    is not a no-op. The reconciler is the single writer of the snapcast unit
+    state + the outputd tap; this just nudges it to re-read grouping.env.
+    """
+    subprocess.Popen(
+        ["systemctl", "restart", "--no-block",
+         "jasper-grouping-reconcile.service"],
+    )
+
+
+def _write_grouping(
+    *, enabled: bool, role: str, channel: str, bond_id: str, leader_addr: str,
+) -> None:
+    """Persist a grouping role into the wizard-owned grouping.env.
+
+    Read-modify-write (via _atomic_rewrite_env) so operator-tuned
+    JASPER_GROUPING_BUFFER_MS / _CODEC survive a role change. This is the
+    single control-plane WRITER of grouping.env; jasper-grouping-reconcile is
+    the single READER->action. The endpoint that calls this is the same
+    no-auth LAN surface as the dial's /volume — so one speaker can configure
+    another by POSTing to its :PORT/grouping/set (the bond-forming flow).
+    """
+    _atomic_rewrite_env(GROUPING_ENV_FILE, {
+        "JASPER_GROUPING": "on" if enabled else "off",
+        "JASPER_GROUPING_ROLE": role,
+        "JASPER_GROUPING_CHANNEL": channel,
+        "JASPER_GROUPING_BOND_ID": bond_id,
+        "JASPER_GROUPING_LEADER_ADDR": leader_addr,
+    })
 
 
 def _fresh_jasper_env() -> dict[str, str]:
@@ -2050,6 +2086,53 @@ def _make_handler(
                     self.address_string(),
                 )
                 self._send_json(self._volume_payload(new_pct))
+                return
+
+            if self.path == "/grouping/set":
+                # Set this speaker's grouping role. Same no-auth LAN surface
+                # as /volume (the dial) — so the bond-forming UI on speaker A
+                # configures speaker B by POSTing here on B's port. The
+                # reconciler (kicked below) is the single applier of the
+                # snapcast units + the outputd tap.
+                body = self._read_json()
+                enabled = bool(body.get("enabled"))
+                role = str(body.get("role", "")).strip()
+                channel = str(body.get("channel", "")).strip()
+                bond_id = str(body.get("bond_id", "")).strip()
+                leader_addr = str(body.get("leader_addr", "")).strip()
+                # Validate an ENABLED request up front via the SHARED
+                # validate_grouping (same rule the config loader applies on
+                # read) so we never persist a fail-loud config. A disabled
+                # request needs no fields.
+                if enabled:
+                    err = validate_grouping(
+                        role=role, channel=channel,
+                        bond_id=bond_id, leader_addr=leader_addr,
+                    )
+                    if err:
+                        self._send_json({"error": err}, status=400)
+                        return
+                try:
+                    _write_grouping(
+                        enabled=enabled, role=role, channel=channel,
+                        bond_id=bond_id, leader_addr=leader_addr,
+                    )
+                    _kick_grouping_reconciler()
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("grouping set failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                logger.info(
+                    "event=grouping.set enabled=%s role=%s channel=%s "
+                    "bond=%s client=%s",
+                    enabled, role or "(none)", channel or "(none)",
+                    bond_id or "(none)", self.address_string(),
+                )
+                self._send_json({
+                    "ok": True, "enabled": enabled, "role": role,
+                    "channel": channel, "bond_id": bond_id,
+                    "leader_addr": leader_addr,
+                })
                 return
 
             if self.path == "/volume/mute":

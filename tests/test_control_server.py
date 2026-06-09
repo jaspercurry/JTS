@@ -507,6 +507,98 @@ def test_aec_profile_restarts_reconciler(monkeypatch, tmp_path, server_with_coor
     ]
 
 
+# ---------- POST /grouping/set (the bond-forming control endpoint) ----------
+
+
+def _grouping_test_setup(monkeypatch, tmp_path):
+    """Redirect grouping.env to a tmp file + capture reconciler kicks."""
+    import jasper.control.server as srv_mod
+
+    env = tmp_path / "grouping.env"
+    popens: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, cmd):
+            popens.append(cmd)
+
+    monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+    return env, popens
+
+
+_GROUPING_KICK = [
+    "systemctl", "restart", "--no-block", "jasper-grouping-reconcile.service",
+]
+
+
+def test_grouping_set_leader_writes_env_and_kicks_reconciler(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+
+    status, body = _post(f"{base}/grouping/set", {
+        "enabled": True, "role": "leader", "channel": "left",
+        "bond_id": "living-room",
+    })
+
+    assert status == 200
+    assert body["ok"] is True
+    assert body["role"] == "leader" and body["channel"] == "left"
+    text = env.read_text()
+    assert "JASPER_GROUPING=on" in text
+    assert "JASPER_GROUPING_ROLE=leader" in text
+    assert "JASPER_GROUPING_CHANNEL=left" in text
+    assert "JASPER_GROUPING_BOND_ID=living-room" in text
+    assert _GROUPING_KICK in popens
+
+
+def test_grouping_set_disabled_writes_off_and_kicks(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+
+    status, body = _post(f"{base}/grouping/set", {"enabled": False})
+
+    assert status == 200
+    assert body["enabled"] is False
+    assert "JASPER_GROUPING=off" in env.read_text()
+    assert _GROUPING_KICK in popens
+
+
+def test_grouping_set_rejects_invalid_role_without_writing(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+
+    status, body = _post(f"{base}/grouping/set", {
+        "enabled": True, "role": "boss", "channel": "left", "bond_id": "x",
+    })
+
+    assert status == 400
+    assert "ROLE" in body["error"]
+    assert not env.exists()   # nothing persisted on a rejected request
+    assert _GROUPING_KICK not in popens   # grouping reconciler not kicked
+
+
+def test_grouping_set_follower_requires_leader_addr(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+
+    status, body = _post(f"{base}/grouping/set", {
+        "enabled": True, "role": "follower", "channel": "right", "bond_id": "x",
+    })
+
+    assert status == 400
+    assert "LEADER_ADDR" in body["error"]
+    assert not env.exists()
+    assert _GROUPING_KICK not in popens
+
+
 def test_system_snapshot_audio_quality_fails_soft(
     monkeypatch,
 ):
