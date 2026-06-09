@@ -1528,6 +1528,42 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }).join('') + '</ul>' +
     '</div>';
   }
+  function renderOutputCompressionDriverReadiness(readiness) {
+    var horn = readiness && readiness.compression_driver;
+    if (!horn || !horn.applies) return '';
+    var mic = horn.microphone || {};
+    var gates = Array.isArray(horn.required_gates) ? horn.required_gates : [];
+    var statusLabel = {
+      guided_ready_no_audio: 'Guided evidence ready',
+      manual_ready_no_audio: 'Manual evidence ready',
+      blocked: 'Blocked'
+    }[horn.status] || horn.status || 'Unknown';
+    var rows = [
+      ['Audio allowed', horn.audio_allowed ? 'Yes' : 'No'],
+      ['Protection path', horn.protection_mode || 'unknown'],
+      ['Manual floor test', horn.manual_floor_test_candidate ? 'candidate' : 'blocked'],
+      ['Guided floor test', horn.guided_floor_test_candidate ? 'candidate' : 'blocked'],
+      ['Mic status', mic.status || 'unknown'],
+      ['Mic reading', mic.observed_dbfs == null ? 'none' : fmtDbfs(Number(mic.observed_dbfs))]
+    ];
+    return '<div class="active-speaker-plan output-horn-readiness">' +
+      '<div class="row-between active-speaker-level__head">' +
+        '<div><p class="setting-row__title">Horn bring-up readiness</p>' +
+        '<p class="setting-row__hint">No horn audio is enabled here; this only summarizes future bring-up evidence.</p></div>' +
+        '<span class="status-pill' + (horn.status === 'blocked' ? ' status-pill--blocked' : ' status-pill--ready') + '">' +
+          escapeHtml(statusLabel) + '</span></div>' +
+      '<dl class="active-speaker-facts">' + rows.map(function(row) {
+        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
+      }).join('') + '</dl>' +
+      '<ul class="output-safety-list">' + gates.slice(0, 10).map(function(gate) {
+        return '<li class="output-safety-list__item output-safety-list__item--' + escapeHtml(gate.passed ? 'info' : 'blocker') + '">' +
+          '<span>' + escapeHtml(gate.label || gate.id || 'gate') + '</span>' +
+          '<p>' + escapeHtml(gate.message || (gate.passed ? 'Passed' : 'Blocked')) + '</p>' +
+        '</li>';
+      }).join('') + '</ul>' +
+      '<p class="setting-row__hint">' + escapeHtml(horn.next_step || 'Horn audio remains disabled.') + '</p>' +
+    '</div>';
+  }
   function renderOutputReadinessCard() {
     if (outputTopology.dirty) {
       return '<div class="output-card output-card--readiness">' +
@@ -1576,6 +1612,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           escapeHtml(statusValue) + '</span></div>' +
       renderOutputReadinessSummary(readiness) +
       renderOutputReadinessBlockers(readiness) +
+      renderOutputCompressionDriverReadiness(readiness) +
       '<ul class="output-safety-list">' + rows.slice(0, 10).map(function(row) {
         return '<li class="output-safety-list__item output-safety-list__item--' + escapeHtml(row[0]) + '">' +
           '<span>' + escapeHtml(row[1]) + '</span>' +

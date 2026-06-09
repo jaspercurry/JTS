@@ -262,8 +262,14 @@ the protected startup DSP is loaded, current, and rollbackable. The UI labels
 that action as a quiet role-specific test, confirms the selected target before
 the POST, and records the shared `woofer_mid_low_level_v1` policy in the
 returned evidence. Tweeter/compression-driver and unlisted-role audio remains
-disabled in this slice even with the lab backend enabled. The safe session now
-also records quiet-start evidence: every armed session starts at
+disabled in this slice even with the lab backend enabled. When the selected
+target is a tweeter/compression driver, the readiness card also shows a
+no-audio **Horn bring-up readiness** section. It summarizes whether the saved
+target is blocked, only a manual floor-test candidate, or a guided floor-test
+candidate based on protection mode, loaded protected startup DSP, Stop/session
+state, calibration floor, and operator-observed mic status. It always reports
+`audio_allowed: false`. The safe session now also records quiet-start evidence:
+every armed session starts at
 `floor_required`; the backend rejects raised audible tests until a successful
 floor-level audible result has been recorded for the same saved target and
 session; artifact-only results do not unlock raised playback; Stop, expiry, or
