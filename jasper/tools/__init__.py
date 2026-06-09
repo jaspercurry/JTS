@@ -24,10 +24,15 @@ cross-provider principles that hold for any prompt edit.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
+import logging
+import time as _time
 import typing
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable
+
+logger = logging.getLogger(__name__)
 
 
 _PY_TO_JSON = {
@@ -251,3 +256,71 @@ def _annotation_to_schema(annotation: Any) -> dict[str, Any]:
     # current tool declares a structured dict param, so object-schema
     # generation would be speculative.
     return {"type": "string"}
+
+
+async def dispatch_tool(
+    registry: ToolRegistry, name: str, args: dict[str, Any],
+) -> dict[str, Any]:
+    """Run one model-issued tool call; return the JSON-able payload dict
+    the model should see back.
+
+    This is the single, cross-provider home for the tool-dispatch
+    contract. Every session adapter — Gemini, OpenAI, and Grok via the
+    OpenAI subclass — routes through it, so the behaviour the model
+    observes when a tool runs cannot drift between providers. Each
+    adapter keeps only its genuinely provider-specific parts: parsing the
+    call's arguments (Gemini hands us a dict, OpenAI a JSON string) and
+    packaging the returned `payload` onto the wire
+    (`types.FunctionResponse` vs a `conversation.item.create` event).
+
+    The contract owned here:
+      * unknown tool   -> ``{"error": "unknown tool <name>"}``
+      * per-tool timeout -> awaited with ``tool.timeout`` (default
+                          ``DEFAULT_TOOL_TIMEOUT_SEC``); on expiry returns
+                          ``{"error": "<name> timed out"}`` rather than
+                          hanging the session
+      * any other error  -> ``{"error": str(exc)}``
+      * dict result    -> passed straight through
+      * scalar result  -> wrapped as ``{"value": <result>}`` so the model
+                          never sees a bare scalar
+    plus the structured timing logs (``tool <name> start`` / ``fn done``
+    / ``TIMED OUT`` / ``RAISED``) journalctl shows for every call —
+    identical across providers.
+
+    A future provider adapter gets timeout, logging, and error-shaping
+    for free by calling this — see docs/HANDOFF-voice-providers.md
+    "Adding a fourth provider".
+    """
+    tool = registry.get(name)
+    if tool is None:
+        logger.warning("tool %s start args=%s → unknown tool", name, args)
+        return {"error": f"unknown tool {name}"}
+
+    logger.info("tool %s start args=%s", name, args)
+    t_fn = _time.monotonic()
+    try:
+        out = tool.fn(**args)
+        if asyncio.iscoroutine(out):
+            # Anything slower than the tool's budget probably means the
+            # upstream API is genuinely failing — report the timeout
+            # rather than hang the session further.
+            out = await asyncio.wait_for(out, timeout=tool.timeout)
+        # Pass dict outputs straight through; only wrap scalars so the
+        # model doesn't see {"result": {"ok": true}}.
+        payload = out if isinstance(out, dict) else {"value": out}
+        fn_ms = (_time.monotonic() - t_fn) * 1000
+        # Truncate the payload preview — weather/subway responses can be
+        # 4-8 KB and flood the journal.
+        preview = repr(payload)
+        if len(preview) > 240:
+            preview = preview[:237] + "..."
+        logger.info("tool %s fn done in %.0fms ok payload=%s", name, fn_ms, preview)
+        return payload
+    except asyncio.TimeoutError:
+        fn_ms = (_time.monotonic() - t_fn) * 1000
+        logger.warning("tool %s fn TIMED OUT after %.0fms", name, fn_ms)
+        return {"error": f"{name} timed out"}
+    except Exception as e:  # noqa: BLE001
+        fn_ms = (_time.monotonic() - t_fn) * 1000
+        logger.warning("tool %s fn RAISED after %.0fms: %s", name, fn_ms, e)
+        return {"error": str(e)}

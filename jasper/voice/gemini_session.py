@@ -10,7 +10,7 @@ from typing import Awaitable, AsyncIterator, Callable
 from google import genai
 from google.genai import types
 
-from ..tools import ToolRegistry
+from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     ESCALATION_CUE_SLUG,
     ESCALATION_RATE_LIMIT_SEC,
@@ -1618,51 +1618,9 @@ class GeminiLiveConnection(LiveConnection):
         responses = []
         t0 = _time.monotonic()
         for fc in tool_call.function_calls:
-            tool = self._registry.get(fc.name)
-            args = dict(fc.args or {})
-            if tool is None:
-                payload: dict = {"error": f"unknown tool {fc.name}"}
-                logger.warning("tool %s start args=%s → unknown tool", fc.name, args)
-            else:
-                logger.info("tool %s start args=%s", fc.name, args)
-                t_fn = _time.monotonic()
-                try:
-                    out = tool.fn(**args)
-                    if asyncio.iscoroutine(out):
-                        # Per-tool dispatch budget (default
-                        # DEFAULT_TOOL_TIMEOUT_SEC=12s; a slow backend
-                        # like an LLM-backed Home Assistant agent raises
-                        # it via @tool(timeout=...)). Anything slower than
-                        # the tool's budget probably means the upstream
-                        # API is genuinely failing — we'd rather report
-                        # the timeout than hang the session further.
-                        out = await asyncio.wait_for(out, timeout=tool.timeout)
-                    # Pass dict outputs straight through; only wrap scalars
-                    # so the model doesn't see {"result": {"ok": true}}.
-                    payload = out if isinstance(out, dict) else {"value": out}
-                    fn_ms = (_time.monotonic() - t_fn) * 1000
-                    # Truncate the payload preview — weather/subway
-                    # responses can be 4-8 KB and flood the journal.
-                    preview = repr(payload)
-                    if len(preview) > 240:
-                        preview = preview[:237] + "..."
-                    logger.info(
-                        "tool %s fn done in %.0fms ok payload=%s",
-                        fc.name, fn_ms, preview,
-                    )
-                except asyncio.TimeoutError:
-                    fn_ms = (_time.monotonic() - t_fn) * 1000
-                    payload = {"error": f"{fc.name} timed out"}
-                    logger.warning(
-                        "tool %s fn TIMED OUT after %.0fms", fc.name, fn_ms,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    fn_ms = (_time.monotonic() - t_fn) * 1000
-                    payload = {"error": str(e)}
-                    logger.warning(
-                        "tool %s fn RAISED after %.0fms: %s",
-                        fc.name, fn_ms, e,
-                    )
+            payload = await dispatch_tool(
+                self._registry, fc.name, dict(fc.args or {}),
+            )
             responses.append(
                 types.FunctionResponse(
                     id=fc.id, name=fc.name, response=payload
@@ -1997,51 +1955,9 @@ class GeminiLiveSession(VoiceSession):
         responses = []
         t0 = _time.monotonic()
         for fc in tool_call.function_calls:
-            tool = self._registry.get(fc.name)
-            args = dict(fc.args or {})
-            if tool is None:
-                payload: dict = {"error": f"unknown tool {fc.name}"}
-                logger.warning("tool %s start args=%s → unknown tool", fc.name, args)
-            else:
-                logger.info("tool %s start args=%s", fc.name, args)
-                t_fn = _time.monotonic()
-                try:
-                    out = tool.fn(**args)
-                    if asyncio.iscoroutine(out):
-                        # Per-tool dispatch budget (default
-                        # DEFAULT_TOOL_TIMEOUT_SEC=12s; a slow backend
-                        # like an LLM-backed Home Assistant agent raises
-                        # it via @tool(timeout=...)). Anything slower than
-                        # the tool's budget probably means the upstream
-                        # API is genuinely failing — we'd rather report
-                        # the timeout than hang the session further.
-                        out = await asyncio.wait_for(out, timeout=tool.timeout)
-                    # Pass dict outputs straight through; only wrap scalars
-                    # so the model doesn't see {"result": {"ok": true}}.
-                    payload = out if isinstance(out, dict) else {"value": out}
-                    fn_ms = (_time.monotonic() - t_fn) * 1000
-                    # Truncate the payload preview — weather/subway
-                    # responses can be 4-8 KB and flood the journal.
-                    preview = repr(payload)
-                    if len(preview) > 240:
-                        preview = preview[:237] + "..."
-                    logger.info(
-                        "tool %s fn done in %.0fms ok payload=%s",
-                        fc.name, fn_ms, preview,
-                    )
-                except asyncio.TimeoutError:
-                    fn_ms = (_time.monotonic() - t_fn) * 1000
-                    payload = {"error": f"{fc.name} timed out"}
-                    logger.warning(
-                        "tool %s fn TIMED OUT after %.0fms", fc.name, fn_ms,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    fn_ms = (_time.monotonic() - t_fn) * 1000
-                    payload = {"error": str(e)}
-                    logger.warning(
-                        "tool %s fn RAISED after %.0fms: %s",
-                        fc.name, fn_ms, e,
-                    )
+            payload = await dispatch_tool(
+                self._registry, fc.name, dict(fc.args or {}),
+            )
             responses.append(
                 types.FunctionResponse(
                     id=fc.id, name=fc.name, response=payload

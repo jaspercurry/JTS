@@ -59,7 +59,7 @@ from collections import deque
 from enum import Enum
 from typing import Awaitable, AsyncIterator, Callable
 
-from ..tools import ToolRegistry
+from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     ESCALATION_CUE_SLUG,
     ESCALATION_RATE_LIMIT_SEC,
@@ -1958,42 +1958,12 @@ class OpenAIRealtimeConnection(LiveConnection):
                 name, arguments_json,
             )
 
-        tool = self._registry.get(name)
+        # Grok inherits this dispatch path via
+        # GrokRealtimeConnection(OpenAIRealtimeConnection); `dispatch_tool`
+        # owns the per-tool timeout, scalar-wrapping, {"error": …} shapes,
+        # and timing logs uniformly across providers.
         t0 = _time.monotonic()
-        if tool is None:
-            payload: dict = {"error": f"unknown tool {name}"}
-            logger.warning("tool %s start args=%s → unknown tool", name, args)
-        else:
-            logger.info("tool %s start args=%s", name, args)
-            t_fn = _time.monotonic()
-            try:
-                out = tool.fn(**args)
-                if asyncio.iscoroutine(out):
-                    # Per-tool dispatch budget (default
-                    # DEFAULT_TOOL_TIMEOUT_SEC=12s; slow backends like an
-                    # LLM-backed Home Assistant agent raise it via
-                    # @tool(timeout=...)). Grok inherits this via
-                    # GrokRealtimeConnection(OpenAIRealtimeConnection).
-                    out = await asyncio.wait_for(out, timeout=tool.timeout)
-                payload = out if isinstance(out, dict) else {"value": out}
-                fn_ms = (_time.monotonic() - t_fn) * 1000
-                preview = repr(payload)
-                if len(preview) > 240:
-                    preview = preview[:237] + "..."
-                logger.info(
-                    "tool %s fn done in %.0fms ok payload=%s",
-                    name, fn_ms, preview,
-                )
-            except asyncio.TimeoutError:
-                fn_ms = (_time.monotonic() - t_fn) * 1000
-                payload = {"error": f"{name} timed out"}
-                logger.warning("tool %s fn TIMED OUT after %.0fms", name, fn_ms)
-            except Exception as e:  # noqa: BLE001
-                fn_ms = (_time.monotonic() - t_fn) * 1000
-                payload = {"error": str(e)}
-                logger.warning(
-                    "tool %s fn RAISED after %.0fms: %s", name, fn_ms, e,
-                )
+        payload = await dispatch_tool(self._registry, name, args)
 
         if self._conn is not None and call_id:
             t_send = _time.monotonic()
