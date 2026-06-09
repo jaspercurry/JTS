@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 #   "jasperine jams" vs "jaspany jams"    → 77   (above, mishear-tolerant)
 #   exact match (any)                      → 100
 _PLAY_THRESHOLD = 75
+_TRACK_PLAY_THRESHOLD = 55  # Looser gate for the explicit kind="track" path.
+                           # The user already told us it's a song, so reject
+                           # only egregious mismatches — e.g. a misrouted
+                           # "new song by <artist>" recency query that returns
+                           # an unrelated track. Sits in the empty band between
+                           # unrelated (~24-31) and mishear-tolerant legit
+                           # matches (~77+). Conservative on purpose; raise
+                           # toward _PLAY_THRESHOLD if wrong tracks slip through.
 _PLAYLIST_THRESHOLD = 55   # very loose: voice-to-text on user-coined
                            # playlist names is brutal ("Jaspany Jams" →
                            # "Jazz Knee Jams"). User said the word
@@ -306,7 +314,22 @@ async def _resolve_query(
         items = ((results or {}).get("tracks") or {}).get("items") or []
         if not items or not items[0]:
             return None
-        return items[0]["uri"], "track", items[0].get("name") or query
+        name = items[0].get("name") or ""
+        # Relevance gate — mirror the auto-path's WRatio check so a misrouted
+        # query (e.g. a "new song by <artist>" recency request that lands here
+        # instead of spotify_play_latest_by_artist) refuses rather than playing
+        # whatever Spotify's search happened to return. Only gate when we have a
+        # name to score against; a missing name can't be assessed.
+        if name:
+            score = int(fuzz.WRatio(query.lower(), name.lower()))
+            if score < _TRACK_PLAY_THRESHOLD:
+                logger.info(
+                    "spotify_play: track %r scored %d (< %d) against %r — "
+                    "refusing rather than playing an unrelated track",
+                    query, score, _TRACK_PLAY_THRESHOLD, name,
+                )
+                return None
+        return items[0]["uri"], "track", name or query
 
     # kind == "auto" or anything unrecognized — unified resolution.
     artist_q = f'artist:"{safe_q}"'

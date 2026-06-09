@@ -380,6 +380,50 @@ def test_track_search_passes_query_through_unqualified():
     assert sp.last_search_q == "Daylight by Matt and Kim"
 
 
+def test_track_kind_rejects_unrelated_result():
+    """Defense-in-depth relevance gate: a misrouted recency query ("new song
+    by X" that should have gone to spotify_play_latest_by_artist) lands on the
+    track path and Spotify returns an unrelated track. The WRatio gate refuses
+    rather than playing the wrong song. Regression for the 2026-05-23
+    "play the new song by Rainbow Kitten Surprise → Headshots" misroute."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={"track": ("spotify:track:rando", "Headshots (4r da Locals)")},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(
+        tools["spotify_play"](query="new song by Rainbow Kitten Surprise", kind="track")
+    )
+
+    assert result.get("ok") is not True
+    sp.start_playback.assert_not_called()
+
+
+def test_track_kind_accepts_relevant_result():
+    """The gate is conservative: a genuine track request still plays. The query
+    carries extra words ("by ...") but WRatio's partial match keeps a real hit
+    well above the loose track threshold."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={"track": ("spotify:track:abc", "Clocks")},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(tools["spotify_play"](query="Clocks by Coldplay", kind="track"))
+
+    assert result.get("ok") is True
+    sp.start_playback.assert_called_once()
+    _, kwargs = sp.start_playback.call_args
+    assert kwargs.get("uris") == ["spotify:track:abc"]
+
+
 def test_artist_search_strips_stray_quotes():
     """Defensive: a stray double-quote breaks the field syntax. Strip them."""
     sp = FakeSpotify(
