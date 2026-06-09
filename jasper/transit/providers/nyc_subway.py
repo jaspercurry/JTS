@@ -12,9 +12,13 @@ this module needs lat/lon, that one needs north_label/south_label.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from .._mta_stations import Station, load_stations
 from ..base import BoundingBox, Stop, haversine_miles
+
+if TYPE_CHECKING:
+    from ...config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +107,18 @@ class _NycSubway:
         # be calling this on a keyless provider — but we don't raise,
         # just report each unknown key as rejected.
         return {k: "nyc_subway is keyless" for k in credentials} or None
+
+    def build_client(self, cfg: Config) -> object | None:
+        if not cfg.subway_enabled:
+            return None
+        from ...subway import SubwayClient  # lazy: keep the wizard light
+
+        return SubwayClient(cfg.subway_station_id, cfg.subway_default_direction)
+
+    def make_tools(self, client: object):
+        from ...tools.subway import make_subway_tools  # lazy
+
+        return make_subway_tools(client)
 
 
 PROVIDER = _NycSubway()

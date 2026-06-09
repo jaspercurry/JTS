@@ -48,9 +48,7 @@ from .google_creds import GoogleClients, build_google_clients
 from .home_assistant import HAClient, build_ha_client
 from .renderer import RendererClient
 from .spotify_router import BuildResult, Router, build_clients
-from .bus import BusClient
-from .citibike import CitiBikeClient
-from .subway import SubwayClient
+from . import transit
 from .timers import Timer, TimerScheduler, announcement_text
 from .tools import ToolRegistry
 from .tools.audio import make_audio_tools
@@ -58,10 +56,7 @@ from .tools.calendar import make_calendar_tools
 from .tools.diagnostic import make_diagnostic_tools
 from .tools.gmail import make_gmail_tools
 from .tools.spotify import make_spotify_tools
-from .tools.bus import make_bus_tools
-from .tools.citibike import make_citibike_tools
 from .tools.home_assistant import make_home_assistant_tools
-from .tools.subway import make_subway_tools
 from .tools.time import make_time_tools
 from .tools.timer import make_timer_tools
 from .tools.transport import make_transport_tools
@@ -981,16 +976,14 @@ def _build_registry(
     camilla: CamillaController,
     renderer: RendererClient,
     weather: WeatherClient,
-    subway: SubwayClient | None,
+    transit_tools: list,
     volume_coordinator: "VolumeCoordinator",
     volume_persistence: VolumePersistence | None = None,
     spotify_router: Router | None = None,
     timer_scheduler: TimerScheduler | None = None,
     cues_manager: AudioCueManager | None = None,
     google_clients: GoogleClients | None = None,
-    bus: BusClient | None = None,
     ha: HAClient | None = None,
-    citibike: CitiBikeClient | None = None,
     wake_event_store: "WakeEventStore | None" = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
@@ -1008,15 +1001,12 @@ def _build_registry(
         registry.register(fn)
     for fn in make_weather_tools(weather):
         registry.register(fn)
-    for fn in make_subway_tools(subway):
-        registry.register(fn)
-    for fn in make_bus_tools(bus):
-        registry.register(fn)
-    # Citi Bike — keyless GBFS-backed. Gated on saved-station count
-    # (citibike.enabled) so the model never sees a tool whose every
-    # call would return zero stations. See jasper.citibike for the
-    # data layer (TTL cache, stale-on-error).
-    for fn in make_citibike_tools(citibike):
+    # Transit (subway / bus / Citi Bike, and future city packs): one flat
+    # list of tools the household's ENABLED city packs produced — built by
+    # jasper.transit.active_transit_tools. Each provider self-gates (a mode
+    # with no config, or a Citi Bike pack with no saved stations, yields no
+    # tool), so an empty list is correct, not a bug.
+    for fn in transit_tools:
         registry.register(fn)
     # Home Assistant — single tool surface (home_assistant) that wraps
     # HA's /api/conversation/process endpoint. Gated on ha being non-None
@@ -3638,47 +3628,25 @@ async def run() -> None:
         default_lon=cfg.weather_default_lon,
         default_name=cfg.weather_default_display_name,
     )
-    subway = (
-        SubwayClient(
-            cfg.subway_station_id,
-            cfg.subway_default_direction,
-        )
-        if cfg.subway_enabled else None
+    # Transit (subway / bus / Citi Bike today; future city packs add more).
+    # One call builds every provider in the household's ENABLED city packs
+    # (JASPER_TRANSIT_CITIES; unset = all packs, non-breaking) and returns
+    # the flat tool list, a `configured` flag for the system-prompt nudge,
+    # and the built client objects so shutdown can close any that own a
+    # connection pool. Each provider self-gates on its own config, so an
+    # enabled-but-unconfigured mode produces no tool — `transit_configured`
+    # is exactly "at least one transit tool registered", the same gate as
+    # before. Adding a city needs no edit here; see
+    # jasper.transit.active_transit_tools. os.environ carries
+    # JASPER_TRANSIT_CITIES via transit.env, sourced by jasper-voice.service.
+    transit_tools, transit_configured, transit_clients = (
+        transit.active_transit_tools(os.environ, cfg)
     )
-    # cfg.bus_stops is a list of (stop_id, label) pairs parsed from
-    # the wizard's JASPER_BUS_STOPS env var. Split into the two
-    # arguments BusClient expects: ids drive the SIRI fan-out;
-    # labels drive `stop_label` on each returned arrival so the
-    # voice model can name the stop in its answer.
-    bus = (
-        BusClient(
-            stop_ids=[sid for sid, _ in cfg.bus_stops],
-            api_key=cfg.mta_bustime_key,
-            stop_labels={
-                sid: label for sid, label in cfg.bus_stops if label
-            },
-        )
-        if cfg.bus_enabled else None
+    logger.info(
+        "transit: packs=%s tools=%d",
+        ",".join(transit.enabled_pack_ids(os.environ)) or "(none)",
+        len(transit_tools),
     )
-    # Citi Bike. None when no stations are saved; the tool factory
-    # short-circuits to [] in that case so the model never sees an
-    # always-empty tool. GBFS feeds are cached in-process (see
-    # jasper.citibike) so the per-call cost is two short HTTP GETs
-    # at worst, often zero.
-    citibike = (
-        CitiBikeClient(
-            saved_stations=list(cfg.citibike_stations),
-            ebike_only=cfg.citibike_ebike_only,
-        )
-        if cfg.citibike_enabled else None
-    )
-    if citibike is not None:
-        logger.info(
-            "citibike: enabled stations=%d ebike_only=%s",
-            len(cfg.citibike_stations), cfg.citibike_ebike_only,
-        )
-    else:
-        logger.info("citibike: disabled (no stations saved)")
     # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
     # is unset; the tool factory short-circuits to [] in that case so
     # the model never sees a tool whose every call would fail. The
@@ -3817,16 +3785,14 @@ async def run() -> None:
         wake_event_store = None
 
     registry = _build_registry(
-        cfg, camilla, renderer, weather, subway,
+        cfg, camilla, renderer, weather, transit_tools,
         volume_coordinator=volume_coordinator,
         volume_persistence=volume_persistence,
         spotify_router=volume_spotify_router,
         timer_scheduler=timer_scheduler,
         cues_manager=cues_manager,
         google_clients=google_clients,
-        bus=bus,
         ha=ha,
-        citibike=citibike,
         wake_event_store=wake_event_store,
     )
 
@@ -3891,17 +3857,12 @@ async def run() -> None:
         google_default_account = (
             google_clients.default_account_name() or ""
         ) if google_clients else ""
-        # transit_configured is true when ANY transit tool is live —
-        # the system prompt nudges the model toward /transit only when
-        # ALL transit options are absent. Partial configurations
-        # (e.g. subway set, bus/citibike not) don't need the nudge
-        # because the available tool surface still answers the modes
+        # transit_configured (computed at construction above) is true when
+        # ANY transit tool is live — the system prompt nudges the model
+        # toward /transit only when ALL transit options are absent. Partial
+        # configurations (e.g. subway set, bus/citibike not) don't need the
+        # nudge because the available tool surface still answers the modes
         # the household has actually configured.
-        transit_configured = (
-            bool(subway)
-            or bool(bus and bus.enabled)
-            or bool(citibike and citibike.enabled)
-        )
         # ha_configured drives the home_assistant nudge — when HA is
         # disabled, the model needs explicit guidance to redirect
         # smart-home requests to the wizard rather than misrouting to
@@ -4073,15 +4034,23 @@ async def run() -> None:
         await weather.aclose()
         if ha is not None:
             await ha.aclose()
-        if bus is not None:
-            # BusClient owns an httpx.AsyncClient with a connection
-            # pool; without aclose() the pool's idle connections +
-            # FDs leak across daemon restart cycles. Mirror the
-            # weather/ha pattern.
+        # Close any transit client that owns a resource — today only
+        # BusClient, which holds a long-lived httpx.AsyncClient pool whose
+        # idle connections + FDs would otherwise leak across daemon restart
+        # cycles. Duck-typed so per-call clients (subway, Citi Bike) are
+        # skipped and a future pooled provider is closed for free. Mirrors
+        # the weather/ha pattern.
+        for client in transit_clients:
+            aclose = getattr(client, "aclose", None)
+            if aclose is None:
+                continue
             try:
-                await bus.aclose()
+                await aclose()
             except Exception:  # noqa: BLE001
-                logger.exception("bus.aclose failed during shutdown")
+                logger.exception(
+                    "transit client %s aclose failed during shutdown",
+                    type(client).__name__,
+                )
 
 
 def main() -> None:

@@ -1098,6 +1098,13 @@ transit env var:
   shape as bus, parsed by `jasper.citibike.parse_saved_stations`),
   `JASPER_CITIBIKE_EBIKE_ONLY` (`"1"` to suppress classic-bike
   counts in voice answers; empty / `"0"` reports both kinds)
+- `JASPER_TRANSIT_CITIES` (comma-separated `CityPack` ids, e.g. `nyc`)
+  — the household's enabled city packs. A pack being on makes its
+  providers *eligible*; each still self-gates on its own config above.
+  **Unset = all packs** (`jasper.transit.enabled_pack_ids`), so installs
+  predating the toggle keep working untouched. `install.sh` seeds `nyc`
+  for households that already use NYC transit; the toggle UI lands with
+  the `/transit/` wizard's city-pack list.
 
 All live in **`/var/lib/jasper/transit.env`** at mode 0640 — same
 single-source-of-truth pattern as `voice_provider.env`. Never put
@@ -1170,15 +1177,30 @@ address is never persisted; only the resulting coords (3 decimals)
 land in `transit.env`. The wizard discloses this inline next to
 the address field.
 
-**Modular provider registry.** The discovery layer (bbox, find-
-stops-near, credential probe) is fully data-driven from `REGISTRY`
-at [`jasper/transit/__init__.py`](jasper/transit/__init__.py). That
-part is one line. The *full* contribution is not — adding a new city
-or transit system is **~9-12 edits across six files**. None are
-load-bearing for the abstraction, but the count is bigger than
-`REGISTRY` makes it look, so know the real shape going in:
+**Modular provider registry + city packs.** Providers are
+**self-contained**: each module under
+[`jasper/transit/providers/`](jasper/transit/providers/) owns both its
+wizard surface (`bbox`, `find_stops_near`, `validate_credentials`) AND its
+voice runtime (`build_client(cfg)` → client-or-None, `make_tools(client)`
+→ LLM tools, both lazy-importing heavy deps so the socket-activated wizard
+process stays light). Providers are grouped into `CityPack`s — one
+household-facing on/off per city via `JASPER_TRANSIT_CITIES` (wizard-owned;
+unset = all packs, non-breaking). The flat `REGISTRY` is **derived** from
+`CITY_PACKS`, so they never drift, and `jasper-voice` calls
+`active_transit_tools(env, cfg)` once — it walks the enabled packs and
+builds tools with **zero per-provider knowledge in the daemon**.
+
+So adding transit is now **no `voice_daemon.py` edit**. Two shapes: a new
+*mode in an existing city* appends a provider to that `CityPack`'s
+`providers` tuple; a new *city* adds one `CityPack` to `CITY_PACKS`. The
+remaining edits are genuinely per-provider (bespoke UI + the live
+tool/client surface):
   1. New provider module under [`jasper/transit/providers/`](jasper/transit/providers/)
-  2. One line in REGISTRY
+     — discovery + runtime surfaces (mirror `nyc_subway.py` keyless or
+     `nyc_bus.py` credentialed)
+  2. Add it to a `CityPack` in `CITY_PACKS` (new pack for a new city;
+     append to an existing pack's `providers` for a new mode). `REGISTRY`
+     derives automatically — no separate registry edit
   3. One `elif p.id == "<slug>":` dispatch branch in `_index_html`
      at [`jasper/web/transit_setup.py`](jasper/web/transit_setup.py)
   4. A bespoke `_<slug>_card_html(p, state)` renderer in that same
@@ -1186,28 +1208,24 @@ load-bearing for the abstraction, but the count is bigger than
      bus has the locked-until-keyed flow, Citi Bike has the live
      dock/bike snapshot); this is the biggest chunk of new code
   5. A `make_<slug>_tools(client)` factory under
-     [`jasper/tools/`](jasper/tools/)
+     [`jasper/tools/`](jasper/tools/) — what the provider's `make_tools`
+     lazy-imports
   6. A `<Slug>Client` runtime class (mirror `jasper/subway.py`,
-     `jasper/bus.py`, `jasper/citibike.py`)
-  7. **Three separate edits in
-     [`jasper/voice_daemon.py`](jasper/voice_daemon.py)**, far apart
-     in the file and easy to miss: (a) construct the client (import +
-     `<slug> = (...) if cfg.<slug>_enabled else None`, thread it into
-     the `_build_registry(...)` call and its signature); (b) import +
-     register the tool factory inside `_build_registry`; (c) extend
-     the `transit_configured` boolean with
-     `or bool(<slug> and <slug>.enabled)` so the system-prompt transit
-     nudge stays off whenever any transit mode is live
-  8. The `keys=(...)` bash array in `migrate_transit_config` in
+     `jasper/bus.py`, `jasper/citibike.py`) that `build_client`
+     constructs. If it owns a connection pool, give it `aclose()` — the
+     daemon closes every built transit client on shutdown (duck-typed),
+     so a pool is reclaimed with no daemon edit
+  7. The `keys=(...)` bash array in `migrate_transit_config` in
      [`deploy/install.sh`](deploy/install.sh) — duplicates
      `transit.all_env_keys()` because install.sh runs before Python
-     is available
+     is available (`JASPER_TRANSIT_CITIES` is a pack-level toggle, not a
+     provider env key, so it is NOT in that array — the migration seeds it
+     separately for households that already use NYC transit)
 
 See `nyc_subway.py` (keyless, CSV-backed) and `nyc_bus.py`
 (credentialed, REST-backed) for the two provider shapes. The
 registry's own module docstring at `jasper/transit/__init__.py`
-enumerates all of these — including the three `voice_daemon.py`
-edits — in more detail.
+enumerates all of these in more detail.
 
 **Refreshing subway data.** The bundled CSV at
 [`jasper/data/mta_stations.csv`](jasper/data/mta_stations.csv) is
