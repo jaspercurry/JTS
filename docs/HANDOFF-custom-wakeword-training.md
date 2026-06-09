@@ -244,11 +244,23 @@ Current implementation state:
   LiveKit calls, synthetic data generation, negative/background feature
   banks, threshold tuning, cloud job launch, model registry writes, or
   runtime changes.
-- The next Phase 0 slice should prove a tiny off-Pi train/eval loop:
-  merge the staged real-positive arrays into a complete LiveKit training
-  workdir that also contains synthetic positives, negatives, and
-  background banks, train one small ONNX model, and compare it against
-  the incumbent on held-out JTS audio.
+- `scripts/prepare-wake-livekit-smoke.sh` (backed by
+  `scripts/_prepare_wake_livekit_smoke.py`) implements the first
+  LiveKit mechanics proof harness. It consumes a JTS training workdir,
+  creates a LiveKit-compatible model output directory with
+  `positive_features_train.npy`, `positive_features_test.npy`,
+  `negative_features_train.npy`, and `negative_features_test.npy`,
+  writes a tiny LiveKit config, and can optionally run
+  `livekit-wakeword train`, `export`, and `eval` when an off-Pi host has
+  LiveKit training dependencies installed.
+- The smoke harness uses deterministic embedding-space placeholder
+  negatives unless the operator supplies real negative feature files.
+  That makes it useful for proving train/export/eval mechanics, not for
+  interpreting model quality. Do not deploy a smoke model.
+- The next Phase 0 slice should replace placeholder negatives with real
+  negative-hours feature banks and run one tiny off-Pi train/eval loop
+  whose metrics can be compared against the incumbent on held-out JTS
+  audio.
 
 ### Phase 1 — MVP Pipeline
 
@@ -440,6 +452,7 @@ should be promoted into clear modules before building UX.
   <https://github.com/dscripka/openWakeWord>
 
 Last verified: 2026-06-09 (updated after adding the corpus-bundle exporter,
-openWakeWord-compatible positive feature-bank builder, and training-workdir
-real-positive injection prep; cloud training, evaluation, registry, and
-deployment stages remain future work).
+openWakeWord-compatible positive feature-bank builder, training-workdir
+real-positive injection prep, and LiveKit train/export/eval smoke harness;
+real negative-hours feature banks, quality evaluation, registry, and deployment
+stages remain future work).
