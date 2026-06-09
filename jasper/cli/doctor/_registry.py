@@ -10,13 +10,17 @@ order survives the split *byte-for-byte*.
 
 Behaviour contract preserved from the old literal list:
 
-- **Order is an explicit integer.** ``order=`` on each
-  :func:`doctor_check` is the index the entry had in the original
-  ``sync_checks`` list (the async CamillaDSP websocket check is the
-  single tail entry). Registration happens as each per-domain module is
-  imported by the package ``__init__``; sorting by ``order`` makes the
-  final sequence independent of import order, so it equals the manifest
-  order regardless of how the package wires its imports.
+- **Order is a sparse sort KEY, not a contiguous index.** The current
+  ``order=`` values happen to be each entry's index in the original
+  ``sync_checks`` list, so the decomposition's run order is byte-for-byte
+  the original — but the registry only requires them to be UNIQUE, and
+  gaps are intentional. To insert a check between two existing ones, give
+  it any value strictly between their orders (e.g. ``20.5``); nothing else
+  renumbers. (The earlier "must be contiguous" rule was the thing that
+  forced a full renumber on every mid-list insert.) Registration happens
+  as each per-domain module is imported by the package ``__init__``;
+  sorting by ``order`` makes the final sequence independent of import
+  order.
 
 - **The bare-vs-tuple distinction is preserved.** In the old list a
   *bare* function reference got its crash-path label derived from
@@ -62,7 +66,7 @@ class RegisteredCheck:
     preserving the original behaviour exactly.
     """
 
-    order: int
+    order: float
     group: str
     func: Callable[..., CheckResult] | Callable[..., Awaitable[CheckResult]]
     needs_cfg: bool = False
@@ -75,7 +79,7 @@ _REGISTRY: list[RegisteredCheck] = []
 
 def doctor_check(
     *,
-    order: int,
+    order: float,
     group: str,
     label: str = "",
     needs_cfg: bool = False,
@@ -89,8 +93,9 @@ def doctor_check(
     directly importable and unit-testable, exactly as before).
 
     Args:
-        order: integer position in the canonical run sequence. Must be
-            unique across all registered checks.
+        order: sort key in the canonical run sequence — a sparse key, not
+            a contiguous index. To insert between two checks pass a value
+            between their orders (e.g. 20.5); no renumber. Must be unique.
         group: subsystem/domain the check belongs to (env, voice, audio,
             wake, renderers, integrations, web, correction, memory,
             resilience, aec, usbsink, network, satellites, peering,
