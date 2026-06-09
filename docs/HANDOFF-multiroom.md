@@ -78,9 +78,19 @@ yet** and the gating spike has not been run. What exists:
   non-blocking (a not-yet-reading snapserver is a harmless drop, not an
   error) and reopens on a broken pipe. Gated on `JASPER_OUTPUTD_SNAPFIFO_PATH`
   — **unset on a solo speaker / follower → no consumer, no thread, zero
-  cost**. Tested hardware-free with a real temp FIFO (`cargo test`). What
-  remains (P1.3 follow-on, on-device): the reconciler setting that env on a
-  leader + restarting outputd, and the end-to-end + acoustic validation.
+  cost**. Tested hardware-free with a real temp FIFO (`cargo test`).
+- **Producer activation (reconciler tap wiring)** — `reconcile.py` now sets
+  `JASPER_OUTPUTD_SNAPFIFO_PATH` for a valid **leader** and clears it
+  otherwise, via a reconciler-owned env file
+  (`/run/jasper-grouping/outputd-snapfifo.env`) that `jasper-outputd.service`
+  layers in as an OPTIONAL `EnvironmentFile=`. Pure `desired_snapfifo_path`
+  (leader → `SNAPFIFO`, else `""`) + `outputd_tap_action` (the change-gate);
+  the I/O **`systemctl try-restart`s outputd ONLY on an actual leader
+  transition** (never a steady-state reconcile) — load-bearing, since
+  outputd has `StartLimitAction=reboot`. `try-restart` (not `restart`) so a
+  boot reconcile never force-starts / couples to outputd. What remains
+  (on-device): §2 inv. 2 (leader's own snapclient) + inv. 5
+  (`rate_adjust=false`), then end-to-end + acoustic sync.
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -130,10 +140,14 @@ Not yet built (P1+, post-spike): the `BondedSet` entity, **live weaving
 of the channel-split fragment into the active CamillaDSP config** (P1.3;
 the pure generator landed — `channel_split.py` above), satellite
 calibration, the **bond-forming controls on `/rooms/`** (role/leader/
-channel assignment, stereo-pair / 2.1 / sub setup), the **reconciler
-wiring that sets `JASPER_OUTPUTD_SNAPFIFO_PATH` on a leader + restarts
-outputd** (the producer itself landed — `SnapfifoSink` below), and live
-validation of the snapcast process lifecycle.
+channel assignment, stereo-pair / 2.1 / sub setup), the **leader's own
+snapclient → outputd content lane** (§2 inv. 2 — so the leader plays the
+*buffered* stream in sync with followers, not its direct unsynced output)
+and **`rate_adjust=false`** on each member (§2 inv. 5), and the on-device
+end-to-end + acoustic sync validation. *(The producer AND its activation
+landed — `SnapfifoSink` + the reconciler tap wiring, §0/§2 below. Enabling
+a leader now makes audio FLOW to followers; sample-lock still needs
+inv. 2.)*
 
 ---
 
@@ -782,7 +796,14 @@ resolving):
 
 ---
 
-Last verified: 2026-06-08 (P1.3 snapfifo producer: `jasper-outputd` gained
+Last verified: 2026-06-09 (P1.3 producer activation: `reconcile.py` sets
+`JASPER_OUTPUTD_SNAPFIFO_PATH` for a leader (pure `desired_snapfifo_path` +
+`outputd_tap_action` change-gate) via a reconciler-owned env file that
+`jasper-outputd.service` layers in optionally; `systemctl try-restart`s
+outputd ONLY on an actual leader transition — never a steady-state reconcile
+(load-bearing, outputd reboots on StartLimit). 54 reconcile tests inc. the
+no-spurious-touch gate. Remaining: §2 inv. 2/5 + acoustic, on-device.
+Earlier 2026-06-08 (P1.3 snapfifo producer): `jasper-outputd` gained
 `SnapfifoSink` (`rust/jasper-outputd/src/snapfifo.rs`) + a writer thread —
 a grouping leader taps post-clamp stereo to a bounded drop-on-full channel,
 a dedicated thread does the blocking FIFO write (DAC loop never
