@@ -21,7 +21,15 @@ StartLimitBurst=4
 StartLimitAction=reboot
 
 [Service]
-Type=simple
+# Tier 1 — `Type=notify` + `WatchdogSec` mirror jasper-voice: the daemon
+# sends READY=1 at startup and `WATCHDOG=1` only while the HTTP accept
+# loop is actually spinning (ControlHTTPServer.service_actions bumps the
+# progress sentinel in jasper/watchdog.py from inside serve_forever's
+# poll loop). Before this a wedged loop was invisible to systemd — the
+# process looked alive while the dial / dashboard / /state surface was
+# dead. Restart=on-failure below also covers watchdog expiry.
+Type=notify
+WatchdogSec=30s
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Spotify creds live in /var/lib/jasper/spotify_credentials.env (written
