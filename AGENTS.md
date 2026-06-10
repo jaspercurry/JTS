@@ -2682,6 +2682,20 @@ specific project:
   why this default, recommended ranges if it's tunable). The
   template doubles as documentation — no separate "tuning knobs"
   page.
+- **Pin promises with tests.** A documented behavior, invariant,
+  or safety claim that no test asserts is where bugs hide. When a
+  comment, docstring, or doc says "X disables Y" / "A keeps B
+  safe" / "this never runs", that sentence gets a test in the
+  same PR. Evidence (2026-06-10 fix batch): the spend-cap disable
+  knob was inverted (blocked every wake), a documented mux
+  debounce was dead code, and two bash quoting bugs shipped —
+  each was untested prose, and each fix landed with a guard that
+  has since caught real regressions in CI that local verification
+  structurally could not (different bash/awk on the runner, the
+  doctor registry order invariant, the doc staleness sweep, the
+  doc-atlas rule). The reusable guard-pattern catalog lives in
+  [docs/testing-tooling.md](docs/testing-tooling.md) "Guard &
+  contract test patterns".
 - **Fix what you notice — tier the response.** When you spot
   something broken or stale that pre-existed your change (typo,
   dead link, comment contradicting the code), don't shrug "not

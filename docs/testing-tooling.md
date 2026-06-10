@@ -36,6 +36,7 @@
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Preview what install.sh would mutate | [Install dry-run plan](#install-dry-run-plan) |
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
+| Pin a documented invariant / convention with a test | [Guard & contract test patterns](#guard--contract-test-patterns) |
 | Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
 | Capture from a non-bridge source (satellite mic, raw chip) | [Capture: alternative sources](#capture-alternative-sources) |
@@ -76,6 +77,23 @@ python3 scripts/check-provenance.py
 
 The policy and update workflow live in
 [`docs/HANDOFF-supply-chain.md`](HANDOFF-supply-chain.md).
+
+---
+
+## Guard & contract test patterns
+
+Reusable exemplars for AGENTS.md's "Pin promises with tests" rule —
+when a comment, docstring, or doc states an invariant, one of these
+shapes usually fits. All run in normal hardware-free `pytest`. Mirror
+the closest one rather than inventing a new guard style:
+
+| If you want to … | Mirror |
+|---|---|
+| Keep constants a bash script re-hardcodes in sync with their Python SSOT | [`tests/test_reconciler_constants_match_python.py`](../tests/test_reconciler_constants_match_python.py) — reads the Python values, parses the script's hardcoded fallbacks, fails naming the drifted constant and both values |
+| Freeze a convention's current offenders and block new ones (burn-down list) | [`tests/test_atomic_io_conventions.py`](../tests/test_atomic_io_conventions.py) — two-sided allowlist ratchet: a new offender fails, and a stale allowlist entry fails too, so the list only shrinks |
+| Enforce a repo-wide code convention that otherwise lives only in a comment | [`tests/test_shell_awk_environ_convention.py`](../tests/test_shell_awk_environ_convention.py) — mutation-verified convention guard: scoped so the benign idiom stays legal while the exact bug shape fails, naming file:line and the sanctioned replacement |
+| Assert an import chain stays light (no heavy hard-deps in wizards/config) | [`tests/test_web_wizard_import_chain.py`](../tests/test_web_wizard_import_chain.py) + `tests/test_config.py::test_config_import_chain_does_not_require_httpx` — poisoned-import chain contract: import in a subprocess with the heavy module poisoned in `sys.modules`, so an installed copy can't mask a regression |
+| Keep a hand-written plan/summary covering an orchestrator's real steps | [`tests/test_install_plan_covers_main.py`](../tests/test_install_plan_covers_main.py) — orchestrator/plan coverage: parses `main()`'s calls, asserts each maps to a marker in the actual `--dry-run` output; meta-assertions fail stale mappings loudly |
 
 ---
 
