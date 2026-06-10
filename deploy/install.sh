@@ -164,8 +164,8 @@ Run for real from a Pi-local checkout:
      services.
    - Enable/start or restart renderer services, jasper-fanin,
      jasper-outputd, audio-hardware reconciliation, DAC init,
-     headphone monitor, nginx, Avahi, CamillaGUI socket, and the WiFi
-     guardian.
+     headphone monitor, nginx, Avahi, CamillaGUI socket, the WiFi
+     guardian, and the boot-loop guard.
    - Require jasper-outputd to be active and answering STATUS before
      voice starts against the final-output path.
    - Seed or validate the outputd Camilla statefile while preserving
