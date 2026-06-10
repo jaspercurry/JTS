@@ -864,3 +864,34 @@ def test_starvation_watchdog_disabled_when_max_windows_zero():
     wd = aec_bridge._MicStarvationWatchdog(max_starved_windows=0)
     for step in range(1000):
         assert not wd.stalled(step * 1.0)   # no frames ever, still never trips
+
+
+def test_bridge_stats_snapshot_carries_leg_engine_status(tmp_path):
+    """leg_engines is the journal-independent surface jasper-doctor's
+    check_aec_bridge_dtln_engine reads to catch a silent DTLN load
+    failure (bridge degrades to AEC3-only while voice keeps listening
+    on the unfed :9878 leg)."""
+    path = tmp_path / "aec_bridge_stats.json"
+    stats = aec_bridge._BridgeStats()
+    stats.set_leg_engine("dtln", enabled=True, loaded=False, error="no onnx")
+
+    stats.write_snapshot(path)
+
+    import json
+    data = json.loads(path.read_text())
+    assert data["leg_engines"]["dtln"] == {
+        "enabled": True,
+        "loaded": False,
+        "error": "no onnx",
+    }
+
+    stats.set_leg_engine("dtln", enabled=True, loaded=True)
+    stats.write_snapshot(path)
+    data = json.loads(path.read_text())
+    assert data["leg_engines"]["dtln"]["loaded"] is True
+    assert data["leg_engines"]["dtln"]["error"] is None
+
+    # reset() (bridge restart) clears the leg status with the counters.
+    stats.reset()
+    stats.write_snapshot(path)
+    assert json.loads(path.read_text())["leg_engines"] == {}

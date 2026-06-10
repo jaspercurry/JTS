@@ -3830,3 +3830,87 @@ def test_check_spend_cap_reports_disabled_not_zero_remaining(tmp_path: Path, mon
     assert result.status == "ok"
     assert "disabled" in result.detail
     assert "remaining" not in result.detail
+# DTLN engine — bridge stats snapshot surface (journal-independent)
+# ---------------------------------------------------------------------------
+
+
+def _dtln_stats(enabled: bool, loaded: bool, error=None, age_sec: float = 1.0):
+    import time as _time
+    return {
+        "schema_version": 1,
+        "updated_epoch_sec": _time.time() - age_sec,
+        "leg_engines": {
+            "dtln": {"enabled": enabled, "loaded": loaded, "error": error},
+        },
+    }
+
+
+def test_assess_dtln_stats_loaded_returns_ok():
+    import time as _time
+    r = doctor.aec._assess_dtln_engine_from_stats(
+        _dtln_stats(enabled=True, loaded=True), _time.time(),
+    )
+    assert r is not None and r.status == "ok"
+    assert "stats snapshot" in r.detail
+
+
+def test_assess_dtln_stats_load_failure_returns_fail_with_detail():
+    import time as _time
+    r = doctor.aec._assess_dtln_engine_from_stats(
+        _dtln_stats(enabled=True, loaded=False, error="onnx missing"),
+        _time.time(),
+    )
+    assert r is not None and r.status == "fail"
+    assert "onnx missing" in r.detail
+    assert ":9878" in r.detail  # names the unfed leg voice listens on
+
+
+def test_assess_dtln_stats_bridge_started_without_leg_warns():
+    import time as _time
+    r = doctor.aec._assess_dtln_engine_from_stats(
+        _dtln_stats(enabled=False, loaded=False), _time.time(),
+    )
+    assert r is not None and r.status == "warn"
+    assert "systemctl restart jasper-aec-bridge" in r.detail
+
+
+def test_assess_dtln_stats_stale_or_legacy_falls_back():
+    import time as _time
+    now = _time.time()
+    # Stale snapshot (dead/old bridge process) → journal fallback.
+    assert doctor.aec._assess_dtln_engine_from_stats(
+        _dtln_stats(enabled=True, loaded=True, age_sec=120.0), now,
+    ) is None
+    # Pre-leg_engines bridge build → journal fallback.
+    assert doctor.aec._assess_dtln_engine_from_stats(
+        {"updated_epoch_sec": now}, now,
+    ) is None
+
+
+def test_check_dtln_prefers_stats_snapshot_over_journal(
+    monkeypatch, tmp_path: Path,
+):
+    """End-to-end: with a fresh stats snapshot reporting a load
+    failure, the check fails from the snapshot and never shells out
+    to journalctl (whose 10-min window would miss an old failure)."""
+    _install_fake_dtln_registry(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    (tmp_path / "dtln_aec_256_1.onnx").write_bytes(b"model")
+    (tmp_path / "dtln_aec_256_2.onnx").write_bytes(b"model")
+    stats_path = tmp_path / "aec_bridge_stats.json"
+    stats_path.write_text(json.dumps(
+        _dtln_stats(enabled=True, loaded=False, error="no onnxruntime"),
+    ))
+    monkeypatch.setenv("JASPER_AEC_BRIDGE_STATS_PATH", str(stats_path))
+
+    def _fake_run(cmd, **kwargs):
+        if cmd[0] == "systemctl":
+            return SimpleNamespace(stdout="active", stderr="", returncode=0)
+        raise AssertionError(f"unexpected subprocess: {cmd}")
+
+    monkeypatch.setattr(doctor.aec, "_run", _fake_run)
+
+    r = doctor.check_aec_bridge_dtln_engine()
+
+    assert r.status == "fail"
+    assert "no onnxruntime" in r.detail

@@ -6,8 +6,10 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
 from pathlib import Path
 from ...audio_profile_state import (
     AecIntent,
@@ -590,6 +592,54 @@ def check_aec_bridge_output_health() -> CheckResult:
         music_chain_active=_loopback_playback_active(),
     )
 
+# How stale the bridge stats snapshot may be before the doctor falls
+# back to journal parsing. The bridge rewrites it every 0.5 s, so 30 s
+# of staleness means the snapshot belongs to a dead/old process.
+_BRIDGE_STATS_FRESH_SEC = 30.0
+
+
+def _assess_dtln_engine_from_stats(
+    stats: dict, now: float,
+) -> CheckResult | None:
+    """Authoritative DTLN-leg verdict from the bridge's live stats
+    snapshot (/run/jasper/aec_bridge_stats.json, `leg_engines.dtln`,
+    written at startup by jasper/cli/aec_bridge.py). Returns None when
+    the snapshot is stale or predates the leg_engines field — caller
+    falls back to journal parsing, which is window-limited (a load
+    failure ages out of the 10-min journal window; this surface
+    doesn't)."""
+    try:
+        updated = float(stats.get("updated_epoch_sec", 0.0))
+        leg = stats["leg_engines"]["dtln"]
+        enabled = bool(leg["enabled"])
+        loaded = bool(leg["loaded"])
+        error = leg.get("error")
+    except (KeyError, TypeError, ValueError):
+        return None
+    if now - updated > _BRIDGE_STATS_FRESH_SEC:
+        return None
+    if enabled and loaded:
+        return CheckResult(
+            "DTLN-aec engine", "ok",
+            "loaded (per bridge stats snapshot; triple-stream tertiary "
+            "leg active)",
+        )
+    if enabled:
+        return CheckResult(
+            "DTLN-aec engine", "fail",
+            "JASPER_AEC_DTLN_ENABLED=1 but the running bridge could not "
+            f"load the engine: {error or 'unknown error'}. Bridge "
+            "degraded to AEC3-only — triple-stream is silently "
+            "dual-stream and voice listens on an unfed :9878 leg. Check "
+            "/var/lib/jasper/dtln/ and `journalctl -u jasper-aec-bridge -e`.",
+        )
+    return CheckResult(
+        "DTLN-aec engine", "warn",
+        "JASPER_AEC_DTLN_ENABLED=1 but the running bridge was started "
+        "without the DTLN leg — bridge not restarted since the env "
+        "changed? Try: sudo systemctl restart jasper-aec-bridge",
+    )
+
 def _assess_dtln_engine(journal_text: str) -> CheckResult:
     """Pure-function parser for the bridge's DTLN-aec engine init
     line. Split out from `check_aec_bridge_dtln_engine` so the
@@ -667,6 +717,22 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
             "DTLN-aec engine", "ok",
             "(bridge not running — see AEC bridge service check above)",
         )
+
+    # Prefer the bridge's live stats snapshot — authoritative and not
+    # journal-window-limited (a load failure at a bridge start >10 min
+    # ago is invisible to the journal path below).
+    stats_path = Path(os.environ.get(
+        "JASPER_AEC_BRIDGE_STATS_PATH",
+        "/run/jasper/aec_bridge_stats.json",
+    ))
+    try:
+        stats = json.loads(stats_path.read_text())
+    except (OSError, ValueError):
+        stats = None
+    if isinstance(stats, dict):
+        result = _assess_dtln_engine_from_stats(stats, time.time())
+        if result is not None:
+            return result
 
     # 10-minute window covers a recent install.sh deploy + any
     # post-deploy restarts. The engine init line is logged once at
