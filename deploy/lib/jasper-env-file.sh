@@ -26,11 +26,17 @@ jasper_env_quote_value() {
     fi
     case "$value" in
         *[!A-Za-z0-9_./:@,+=-]*)
+            # Production values (ALSA pcm specs, profile ids, ports) are
+            # all in the safe charset above; reaching this splice path
+            # means an unexpected value shape. Quote it correctly anyway
+            # (defense in depth), but say so — quoting subtleties are
+            # where every bug in this lib's history has lived.
+            echo "event=env_file.quote_splice_engaged value_class=non_safe_charset" >&2
             printf "'"
-            # Pattern uses a quote-in-variable, not \' — the escaped-quote
-            # form inside ${...%%pattern} parses differently across bash
-            # 5.2/5.3 (CI's newer bash returned empty splices; the Pi's
-            # 5.2 was fine). "$q" is unambiguous on every bash.
+            # Quote-in-variable pattern ("$q") rather than an escaped \'
+            # in the expansion pattern — both work on the bashes tested
+            # (5.2.21, 5.3.0), but the variable form needs no reasoning
+            # about escape parsing inside ${...%%pattern} at all.
             local q="'"
             rest="$value"
             # Emit the '\'' idiom via %s ARGUMENTS, never via the printf

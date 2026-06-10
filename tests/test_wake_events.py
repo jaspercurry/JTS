@@ -1104,3 +1104,35 @@ async def test_retention_estimate_reseeds_from_scan_on_prune(tmp_path: Path):
         assert s._audio_bytes_estimate == on_disk
     finally:
         s.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_sweeps_do_not_double_scan(tmp_path):
+    """Two attach-driven sweeps overlapping must run the blocking
+    stat-walk once — the second caller skips while one is in flight
+    (the in-flight sweep re-seeds the estimate)."""
+    store = WakeEventStore(tmp_path / "we", max_audio_bytes=1)
+    store.open()
+    calls = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    def slow_scan():
+        nonlocal calls
+        calls += 1
+        started._loop.call_soon_threadsafe(started.set)
+        # block until the test releases us
+        import time
+        while not release.is_set():
+            time.sleep(0.01)
+        return [], 0
+
+    store._scan_and_prune_blocking = slow_scan
+    store._audio_bytes_estimate = None  # force scan path
+    t1 = asyncio.ensure_future(store._retention_sweep())
+    await started.wait()
+    await store._retention_sweep()  # should skip, not second-scan
+    release.set()
+    await t1
+    assert calls == 1
+    store.close()
