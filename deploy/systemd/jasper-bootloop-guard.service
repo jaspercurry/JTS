@@ -1,0 +1,33 @@
+[Unit]
+Description=Disarm StartLimitAction=reboot escalation when boots are looping
+Documentation=file:/opt/jasper/docs/HANDOFF-tier5-watchdog-liveness.md
+# Cross-boot circuit breaker for T5.1: a PERMANENT daemon failure
+# (corrupt config, dead binary) would otherwise reboot the Pi every few
+# minutes forever via the per-unit StartLimitAction=reboot ladder. On
+# the Nth boot inside the window, this oneshot writes RUNTIME drop-ins
+# (/run/systemd/system/<unit>.d) setting StartLimitAction=none, leaving
+# the sick unit restart-looping but the Pi reachable. /run is wiped at
+# boot, so a healthy boot self-clears the guard with no operator action.
+#
+# Ordered before the reboot-escalating daemons so the drop-ins land
+# ahead of any restart spiral. The script discovers guarded units
+# dynamically (grep for StartLimitAction=reboot in /etc/systemd/system),
+# so a unit missing from this Before= list is still guarded — ordering
+# here is belt-and-braces, not the correctness mechanism (a burst takes
+# tens of seconds to accumulate; the guard runs in milliseconds).
+After=local-fs.target
+Before=jasper-camilla.service jasper-fanin.service jasper-outputd.service
+Before=jasper-voice.service jasper-control.service jasper-aec-bridge.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jasper-bootloop-guard --reason systemd
+# Fail-open: the script always exits 0, and even a hang must not stall
+# boot for long. Nothing Requires= this unit, so a failure here cannot
+# block the daemons it orders itself before.
+TimeoutStartSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
