@@ -198,6 +198,52 @@ def _safe_token(value: str) -> str:
     return "_".join(part for part in out.split("_") if part) or "wakeword_smoke"
 
 
+def _yaml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    raise TypeError(f"unsupported YAML scalar type: {type(value).__name__}")
+
+
+def _yaml_lines(value: Any, *, indent: int = 0) -> list[str]:
+    pad = " " * indent
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise TypeError("YAML object keys must be non-empty strings")
+            if isinstance(item, dict):
+                if item:
+                    lines.append(f"{pad}{key}:")
+                    lines.extend(_yaml_lines(item, indent=indent + 2))
+                else:
+                    lines.append(f"{pad}{key}: {{}}")
+            elif isinstance(item, list):
+                if item:
+                    lines.append(f"{pad}{key}:")
+                    lines.extend(_yaml_lines(item, indent=indent + 2))
+                else:
+                    lines.append(f"{pad}{key}: []")
+            else:
+                lines.append(f"{pad}{key}: {_yaml_scalar(item)}")
+        return lines
+    if isinstance(value, list):
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                lines.append(f"{pad}-")
+                lines.extend(_yaml_lines(item, indent=indent + 2))
+            else:
+                lines.append(f"{pad}- {_yaml_scalar(item)}")
+        return lines or [f"{pad}[]"]
+    return [f"{pad}{_yaml_scalar(value)}"]
+
+
 def _write_config(
     path: Path,
     *,
@@ -243,7 +289,7 @@ def _write_config(
             "background_noise": 0,
         },
     }
-    path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+    path.write_text("\n".join(_yaml_lines(config)) + "\n")
 
 
 def _write_readme(path: Path, *, model_name: str, target_phrase: str, run_livekit: bool) -> None:
