@@ -1,13 +1,14 @@
 # Proposal: DAC Profile Registry
 
-> **Status: proposal / implementation handoff, updated 2026-06-09.** The
+> **Status: proposal / implementation handoff, updated 2026-06-10.** The
 > initial IO-free registry scaffold exists in
 > [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py);
-> `jasper.output_hardware` derives its static output metadata from it, and
-> `jasper.output_topology` consumes it for known DAC labels, physical output
-> counts, clock-domain labels, and clock-domain classification. This supersedes
-> the narrower 2026-06-04 sketch that modeled only a single Apple dongle and a
-> HiFiBerry DAC8x. Current operational truth for output ownership lives in
+> `jasper.output_hardware` derives static output metadata and card-label
+> matching from it, and `jasper.output_topology` consumes it for known DAC
+> labels, physical output counts, clock-domain labels, and clock-domain
+> contracts. This supersedes the narrower 2026-06-04 sketch that modeled only a
+> single Apple dongle and a HiFiBerry DAC8x. Current operational truth for
+> output ownership lives in
 > [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
 > [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md), and
 > [audio-paths.md](audio-paths.md).
@@ -160,23 +161,28 @@ outputd process control inside the registry.
 2. Replace duplicated labels/output counts in `output_hardware`,
    `output_topology`, and doctor with registry lookups. **Runtime metadata
    consumers landed:** `jasper.output_hardware` derives its supported-output
-   count, label, and clock-label maps from the registry, and
-   `jasper.output_topology` now derives known DAC labels, physical output
-   counts, clock-domain labels, and clock-domain reports from the same registry
-   while retaining its no-audio authority boundary. It also reports
-   composite-profile shape separately from aggregate-output runtime enablement.
-   `jasper-doctor` now consumes output hardware state for Apple checks; a
-   broader registry-only cleanup can remain incremental.
+   count, label, and clock-label maps from the registry, and uses
+   registry-owned `supported_card_matches` for `aplay`/sysfs card
+   classification. `jasper.output_topology` now derives known DAC labels,
+   physical output counts, clock-domain labels, and clock-domain report
+   branching from the same registry while retaining its no-audio authority
+   boundary. It also reports composite-profile shape separately from
+   aggregate-output runtime enablement. `jasper-doctor` now consumes output
+   hardware state for Apple checks; a broader registry-only cleanup can remain
+   incremental.
 3. Replace hardcoded Apple/DAC8x identity checks in `audio_validation` and
    `jasper-doctor` with profile-derived expectations.
 4. Move mixer/headphone policy into profile data, but keep mutation in
    `jasper-dac-init` and `jasper-headphone-monitor`.
 5. Teach `output_hardware` to emit profile IDs from the registry, including
-   composite dual-Apple states. **Partially landed:** `output_hardware` still
-   owns live probing and composite classification, but its static vocabulary now
-   aliases or derives from `jasper.audio_hardware.dac`.
+   composite dual-Apple states. **Mostly landed:** `output_hardware` still owns
+   live probing and composite classification, but its static vocabulary and
+   single-device card matching now derive from `jasper.audio_hardware.dac`.
 6. Keep `jasper-audio-hardware-reconcile` as the runtime owner, but have it
-   consume profile metadata rather than duplicating every device string.
+   consume profile metadata rather than duplicating every device string. The
+   remaining bash-side matching is intentionally small, covered by drift-guard
+   tests, and should not grow new hardware vocabulary without a matching
+   registry update.
 7. Burn down remaining hardcoded Apple/DAC8x references only when each consumer
    moves to the profile boundary. Do not do a broad mechanical rewrite without
    tests.
@@ -223,5 +229,5 @@ Specific follow-up from review:
   observed and graph-ready, while still warning on bad physical topology or
   partial hardware states.
 
-Last verified: 2026-06-09 (initial registry scaffold added and proposal
+Last verified: 2026-06-10 (registry consumers and remaining bash drift guards
 rechecked against the dual-Apple active-output architecture).

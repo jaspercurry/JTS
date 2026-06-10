@@ -40,6 +40,12 @@ def test_lookup_helpers_are_pure_and_unknown_safe() -> None:
     assert dac.is_known_profile_id("unknown_usb_dac") is False
     assert dac.physical_output_count_for(DUAL_APPLE_USB_C_DAC_4CH_ID) == 4
     assert dac.physical_output_count_for("unknown_usb_dac") is None
+    assert dac.clock_domain_contract_for(APPLE_USB_C_DONGLE_ID) == "single_device"
+    assert (
+        dac.clock_domain_contract_for(DUAL_APPLE_USB_C_DAC_4CH_ID)
+        == "measured_sync_required"
+    )
+    assert dac.clock_domain_contract_for("unknown_usb_dac") is None
     assert dac.supports_physical_output_count(HIFIBERRY_DAC8X_ID, 8) is True
     assert dac.supports_physical_output_count(HIFIBERRY_DAC8X_ID, 4) is False
     assert dac.supports_physical_output_count("unknown_usb_dac", 2) is False
@@ -109,6 +115,9 @@ def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
         re.search(pattern, studio_label, re.IGNORECASE)
         for pattern in HIFIBERRY_DAC8X_STUDIO.supported_card_matches
     )
+    assert dac.profile_for_card_label(base_label) is HIFIBERRY_DAC8X
+    assert dac.profile_for_card_label(studio_label) is HIFIBERRY_DAC8X_STUDIO
+    assert dac.profile_for_card_label("Mystery USB DAC") is None
 
 
 def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:

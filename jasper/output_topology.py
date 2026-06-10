@@ -16,7 +16,7 @@ import math
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -25,6 +25,7 @@ from .audio_hardware.dac import (
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     HIFIBERRY_DAC8X_ID as HIFIBERRY_DAC8X_DEVICE_ID,  # noqa: F401 - re-export.
     HIFIBERRY_DAC8X_STUDIO_ID as HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,  # noqa: F401 - re-export.
+    clock_domain_contract_for as _dac_clock_domain_contract_for,
     clock_domain_label_for as _dac_clock_domain_label_for,
     label_for as _dac_label_for,
     physical_output_count_for as _dac_physical_output_count_for,
@@ -1405,7 +1406,11 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
     hardware = topology.hardware
     issues: list[dict[str, str]] = []
     notes: list[str]
-    if hardware.device_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+    clock_contract = _dac_clock_domain_contract_for(hardware.device_id)
+    if (
+        clock_contract == "measured_sync_required"
+        and hardware.device_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    ):
         issues = _dual_apple_clock_issues(hardware)
         observed = load_output_hardware_state()
         issues.extend(_observed_dual_apple_hardware_issues(hardware, observed))
@@ -1481,7 +1486,7 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
                 "no recognized output hardware is available",
             )
         )
-    elif _dac_physical_output_count_for(hardware.device_id) is None:
+    elif clock_contract is None:
         status = "unknown_device_clock"
         issues.append(
             _issue(
@@ -1490,8 +1495,17 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
                 "output hardware clocking is not recognized by JTS",
             )
         )
-    else:
+    elif clock_contract == "single_device":
         status = "single_device_clock"
+    elif clock_contract in {"independent", "measured_sync_required"}:
+        status = "unsupported_clock_contract"
+        issues.append(
+            _issue(
+                "warning",
+                "unsupported_clock_contract",
+                f"output hardware clock contract {clock_contract} is not supported",
+            )
+        )
 
     return {
         "artifact_schema_version": SCHEMA_VERSION,
@@ -1551,31 +1565,9 @@ def set_channel_identity_verified(
             if channel.role != role_id:
                 channels.append(channel)
                 continue
-            channels.append(SpeakerChannel(
-                role=channel.role,
-                physical_output_index=channel.physical_output_index,
-                human_output_label=channel.human_output_label,
-                identity_verified=bool(identity_verified),
-                startup_muted=channel.startup_muted,
-                protection_required=channel.protection_required,
-                protection_status=channel.protection_status,
-            ))
-        groups.append(SpeakerGroup(
-            id=group.id,
-            label=group.label,
-            kind=group.kind,
-            mode=group.mode,
-            position=group.position,
-            channels=tuple(channels),
-        ))
-    return OutputTopology(
-        topology_id=topology.topology_id,
-        name=topology.name,
-        hardware=topology.hardware,
-        speaker_groups=tuple(groups),
-        routing=topology.routing,
-        status="draft",
-    )
+            channels.append(replace(channel, identity_verified=bool(identity_verified)))
+        groups.append(replace(group, channels=tuple(channels)))
+    return replace(topology, speaker_groups=tuple(groups), status="draft")
 
 
 def set_channel_protection_status(
@@ -1614,31 +1606,14 @@ def set_channel_protection_status(
                 channels.append(channel)
                 continue
             protection_required = channel.protection_required or role_id == "tweeter"
-            channels.append(SpeakerChannel(
-                role=channel.role,
-                physical_output_index=channel.physical_output_index,
-                human_output_label=channel.human_output_label,
-                identity_verified=channel.identity_verified,
+            channels.append(replace(
+                channel,
                 startup_muted=True if role_id == "tweeter" else channel.startup_muted,
                 protection_required=protection_required,
                 protection_status=status,
             ))
-        groups.append(SpeakerGroup(
-            id=group.id,
-            label=group.label,
-            kind=group.kind,
-            mode=group.mode,
-            position=group.position,
-            channels=tuple(channels),
-        ))
-    return OutputTopology(
-        topology_id=topology.topology_id,
-        name=topology.name,
-        hardware=topology.hardware,
-        speaker_groups=tuple(groups),
-        routing=topology.routing,
-        status="draft",
-    )
+        groups.append(replace(group, channels=tuple(channels)))
+    return replace(topology, speaker_groups=tuple(groups), status="draft")
 
 
 def topology_path(path: str | Path | None = None) -> Path:

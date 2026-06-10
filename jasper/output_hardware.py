@@ -26,6 +26,7 @@ from .audio_hardware.dac import (
     HIFIBERRY_DAC8X_ID,
     HIFIBERRY_DAC8X_STUDIO_ID,
     all_profiles as _all_dac_profiles,
+    profile_for_card_label as _dac_profile_for_card_label,
 )
 
 
@@ -417,19 +418,17 @@ def parse_aplay_listing(listing: str) -> tuple[OutputCardFact, ...]:
             continue
         card_id = match.group(1)
         label = lines[index + 1].strip() if index + 1 < len(lines) else ""
-        lower = label.lower()
-        if "usb-c to 3.5mm" in lower or (
-            "apple" in lower and "usb audio" in lower
+        profile = _dac_profile_for_card_label(label)
+        if profile is APPLE_USB_C_DONGLE or (
+            profile is None
+            and "apple" in label.lower()
+            and "usb audio" in label.lower()
         ):
             device_id = APPLE_USB_C_DONGLE_DEVICE_ID
             vendor_id = APPLE_USB_VENDOR_ID
             product_id = APPLE_USB_PRODUCT_ID
-        elif "dac8x" in lower and "studio" in lower:
-            device_id = HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
-            vendor_id = None
-            product_id = None
-        elif "snd_rpi_hifiberry_dac8x" in lower or "dac8x" in lower:
-            device_id = HIFIBERRY_DAC8X_DEVICE_ID
+        elif profile is not None:
+            device_id = profile.id
             vendor_id = None
             product_id = None
         else:
@@ -529,12 +528,9 @@ def probe_system_cards(
             and (product_id or "").lower() == APPLE_USB_PRODUCT_ID
         ):
             device_id = APPLE_USB_C_DONGLE_DEVICE_ID
-        elif product and "dac8x" in product.lower() and "studio" in product.lower():
-            device_id = HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
-        elif product and "dac8x" in product.lower():
-            device_id = HIFIBERRY_DAC8X_DEVICE_ID
         else:
-            device_id = "unknown"
+            profile = _dac_profile_for_card_label(product or "")
+            device_id = profile.id if profile is not None else "unknown"
         cards.append(OutputCardFact(
             card_id=card_id,
             card_index=card_index,

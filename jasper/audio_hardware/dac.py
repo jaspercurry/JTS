@@ -286,6 +286,32 @@ def clock_domain_label_for(profile_id: str) -> str | None:
     return profile.clock_domain_label
 
 
+def clock_domain_contract_for(profile_id: str) -> ClockDomainContract | None:
+    """Return the clock-domain contract for a known profile."""
+
+    profile = by_id(profile_id)
+    if profile is None:
+        return None
+    return profile.clock_domain_contract
+
+
+def profile_for_card_label(label: str) -> DacProfile | None:
+    """Return the first single-device profile matching an ALSA/sysfs label."""
+
+    text = label.strip()
+    if not text:
+        return None
+    for profile in REGISTRY:
+        if profile.kind != "single":
+            continue
+        if any(
+            re.search(pattern, text, re.IGNORECASE)
+            for pattern in profile.supported_card_matches
+        ):
+            return profile
+    return None
+
+
 def supports_physical_output_count(profile_id: str, output_count: int) -> bool:
     """Return whether a known profile has exactly ``output_count`` outputs."""
 
@@ -335,11 +361,13 @@ __all__ = [
     "REGISTRY",
     "all_profiles",
     "by_id",
+    "clock_domain_contract_for",
     "clock_domain_label_for",
     "is_known_profile_id",
     "known_profile_ids",
     "label_for",
     "mixer_control_groups_for",
+    "profile_for_card_label",
     "physical_output_count_for",
     "supports_physical_output_count",
 ]
