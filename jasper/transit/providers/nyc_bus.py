@@ -25,8 +25,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
-import httpx
+# httpx is imported lazily inside `_client()` and the request methods —
+# this provider module is imported by `jasper.transit` (and therefore by
+# `jasper.config`'s parse helpers) in every process, including the
+# socket-activated wizards and jasper-doctor, which must stay light.
+# This is the documented provider convention; the top-level import here
+# was the one violation that dragged httpx onto config's import chain.
+if TYPE_CHECKING:
+    import httpx
 
 from ..base import BoundingBox, CredentialSpec, Stop, TransitError, haversine_miles, scrub_secrets
 
@@ -92,6 +100,7 @@ class _NycBus:
         regardless of whether http was injected at construction."""
         if self._http is not None:
             return self._http, False
+        import httpx  # lazy — see import comment at top of module
         return httpx.Client(timeout=HTTP_TIMEOUT), True
 
     def find_stops_near(
@@ -108,6 +117,7 @@ class _NycBus:
             # this path is defensive — but if a future caller forgets,
             # the failure is loud and the message is actionable.
             raise TransitError("MTA BusTime API key required")
+        import httpx  # lazy — see import comment at top of module
         params = {
             "key": key,
             "lat": f"{lat:.6f}",
@@ -228,6 +238,7 @@ class _NycBus:
         key = (credentials or {}).get(CREDENTIAL.env_key, "").strip()
         if not key or not stop_id:
             return ()
+        import httpx  # lazy — see import comment at top of module
         bare = stop_id.removeprefix("MTA_").strip()
         params = {
             "key": key,
@@ -276,6 +287,7 @@ class _NycBus:
         if not value:
             return {CREDENTIAL.env_key: "key is empty"}
 
+        import httpx  # lazy — see import comment at top of module
         c, owns = self._client()
         try:
             r = c.get(

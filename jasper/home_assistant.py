@@ -51,9 +51,10 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +79,43 @@ HEALTH_PATH = "/api/"
 CONFIG_PATH = "/api/config"
 STATES_PATH = "/api/states"
 
+# httpx is imported lazily (inside the timeout helpers below and the
+# methods that actually perform I/O), never at module level: this module
+# is on `jasper.config`'s import chain for the JASPER_HA_* env-var names
+# alone, so a top-level `import httpx` made every process that loads
+# config — socket-activated wizards, jasper-doctor, tests in minimal
+# envs — pay httpx's import cost (and hard-require it) without ever
+# talking to HA. Mirrors the lazy-import pattern in
+# jasper/transit/providers/.
+
 # Split timeouts. Connect failures should fail FAST (HA down → model
 # speaks "I can't reach Home Assistant"); read failures should be
 # patient because LLM-backed HA agents (OpenAI Conversation, Anthropic,
 # Google Generative AI inside HA) legitimately take 30-60s for a
-# tool-using turn. 90s total is generous but not unbounded.
-DEFAULT_TIMEOUT = httpx.Timeout(timeout=90.0, connect=3.0)
+# tool-using turn. 90s total is generous but not unbounded. The raw
+# seconds are plain floats (not httpx.Timeout objects) so consumers
+# like jasper.tools.home_assistant can derive their own budgets from
+# the same numbers without importing httpx.
+DEFAULT_READ_TIMEOUT_SEC = 90.0
+DEFAULT_CONNECT_TIMEOUT_SEC = 3.0
 
 # Cheap health-check timeout — used by the wizard validation cascade.
 # Short because GET /api/ should return in <100ms on a healthy HA.
-HEALTH_TIMEOUT = httpx.Timeout(timeout=5.0, connect=3.0)
+HEALTH_READ_TIMEOUT_SEC = 5.0
+
+
+def _default_timeout() -> "httpx.Timeout":
+    import httpx
+    return httpx.Timeout(
+        timeout=DEFAULT_READ_TIMEOUT_SEC, connect=DEFAULT_CONNECT_TIMEOUT_SEC,
+    )
+
+
+def _health_timeout() -> "httpx.Timeout":
+    import httpx
+    return httpx.Timeout(
+        timeout=HEALTH_READ_TIMEOUT_SEC, connect=DEFAULT_CONNECT_TIMEOUT_SEC,
+    )
 
 # Conversation-ID idle reuse window. HA's empirical TTL is ~5 minutes;
 # we use 4 minutes with a safety margin. After this window, drop the
@@ -185,7 +213,7 @@ class HAClient:
         self._agent_id = agent_id.strip() if agent_id else ""
         self._language = language.strip() or "en"
         self._verify_ssl = verify_ssl
-        self._timeout = timeout or DEFAULT_TIMEOUT
+        self._timeout = timeout or _default_timeout()
         self._http: httpx.AsyncClient | None = http
         self._owns_http = http is None
         self._clock = clock or time.monotonic
@@ -214,6 +242,7 @@ class HAClient:
 
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None:
+            import httpx  # lazy — see module-level comment
             self._http = httpx.AsyncClient(
                 timeout=self._timeout,
                 verify=self._verify_ssl,
@@ -247,6 +276,8 @@ class HAClient:
         not idempotent (a retried 'turn off the lights' could double-fire
         a script). Six-bucket error categorization via `HAResponse.outcome`.
         """
+        import httpx  # lazy — see module-level comment
+
         query = (query or "").strip()
         if not query:
             return self._error(OUTCOME_PARSE_ERROR, "empty query", started=0.0)
@@ -431,12 +462,14 @@ class HAClient:
         `jasper-doctor` (skip-if-not-configured). Does NOT touch the
         conversation endpoint — that would cost money on LLM-backed
         HA agents."""
+        import httpx  # lazy — see module-level comment
+
         client = await self._client()
         try:
             resp = await client.get(
                 self._url + HEALTH_PATH,
                 headers=self._headers(),
-                timeout=HEALTH_TIMEOUT,
+                timeout=_health_timeout(),
             )
         except httpx.HTTPError as e:
             logger.debug("ha healthcheck: %r", e)
@@ -451,12 +484,14 @@ class HAClient:
     async def config(self) -> dict[str, Any] | None:
         """GET /api/config — used by the wizard to display location_name +
         version after a successful connect. Returns None on any error."""
+        import httpx  # lazy — see module-level comment
+
         client = await self._client()
         try:
             resp = await client.get(
                 self._url + CONFIG_PATH,
                 headers=self._headers(),
-                timeout=HEALTH_TIMEOUT,
+                timeout=_health_timeout(),
             )
             if resp.status_code != 200:
                 return None
@@ -470,12 +505,14 @@ class HAClient:
         to entity_id starting with `conversation.`. REST-only (avoids the
         WebSocket auth dance that `conversation/agent/list` would
         require). Returns a list of {"entity_id", "name"} dicts."""
+        import httpx  # lazy — see module-level comment
+
         client = await self._client()
         try:
             resp = await client.get(
                 self._url + STATES_PATH,
                 headers=self._headers(),
-                timeout=HEALTH_TIMEOUT,
+                timeout=_health_timeout(),
             )
             if resp.status_code != 200:
                 return []
@@ -515,7 +552,7 @@ def build_ha_client(cfg) -> HAClient | None:
 # /system/snapshot, and jasper-doctor. The dashboard polls
 # /system/snapshot every 5 seconds while it's open, which means without
 # caching, an unreachable HA would block each poll for up to 5 seconds
-# (HEALTH_TIMEOUT) — making the dashboard unusable when HA is down AND
+# (_health_timeout) — making the dashboard unusable when HA is down AND
 # burning ~12 wasted RPM against a dead URL. We cache the probe result
 # with a TTL of PROBE_CACHE_TTL_SEC. Doctor passes force=True to bypass
 # the cache so its output reflects ground truth at invocation time.

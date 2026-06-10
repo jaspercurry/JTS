@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import pytest
 
 from jasper.home_assistant import (
-    DEFAULT_TIMEOUT,
+    DEFAULT_READ_TIMEOUT_SEC,
     HAResponse,
     OUTCOME_NETWORK,
     OUTCOME_OK,
@@ -225,8 +225,8 @@ def test_tool_timeout_outlives_ha_client_read_timeout():
     """The dispatch budget must exceed HAClient's own read timeout so the
     HTTP layer surfaces HA's real outcome (or its own timeout/error)
     before the dispatch seam fires a generic 'timed out'. Derived from
-    DEFAULT_TIMEOUT so the 90s number stays single-sourced."""
+    DEFAULT_READ_TIMEOUT_SEC so the 90s number stays single-sourced."""
     fake = _FakeHAClient(_ok_response())
     [fn] = make_home_assistant_tools(fake)
     built = build_tool(fn)
-    assert built.timeout > DEFAULT_TIMEOUT.read
+    assert built.timeout > DEFAULT_READ_TIMEOUT_SEC

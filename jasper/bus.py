@@ -45,8 +45,14 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-import httpx
+# httpx is imported lazily inside the methods that perform I/O:
+# jasper.config imports this module for `parse_bus_stops` alone, so a
+# top-level import made every config-loading process pay httpx's import
+# cost. Mirrors the lazy-import pattern in jasper/transit/providers/.
+if TYPE_CHECKING:
+    import httpx
 
 from .transit.base import TransitError, scrub_secrets
 
@@ -156,8 +162,11 @@ class BusClient:
             for k, v in (stop_labels or {}).items()
         }
         self._api_key = api_key
-        self._http = http or httpx.AsyncClient(timeout=BUSTIME_TIMEOUT)
         self._owns_http = http is None
+        if http is None:
+            import httpx  # lazy — see import comment at top of module
+            http = httpx.AsyncClient(timeout=BUSTIME_TIMEOUT)
+        self._http = http
         self._clock = clock or (lambda: datetime.now().astimezone())
         # Per-stop cache: stop_id (normalised) -> (mono_ts, list[BusArrival]).
         self._cache: dict[str, tuple[float, list[BusArrival]]] = {}
@@ -267,6 +276,8 @@ class BusClient:
         return arrivals
 
     async def _fetch_for_stop(self, stop_id: str) -> list[BusArrival] | None:
+        import httpx  # lazy — see import comment at top of module
+
         params = {
             "key": self._api_key,
             "MonitoringRef": stop_id,
