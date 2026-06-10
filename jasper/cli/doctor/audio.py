@@ -31,6 +31,7 @@ from ._shared import (
     CheckResult,
     _active_audio_dac_env,
     _active_audio_dac_id,
+    _camilla_block_field,
     _run,
 )
 from .correction import _active_camilla_config_path
@@ -1331,25 +1332,13 @@ def check_outputd_service() -> CheckResult:
     )
 
 def _devices_volume_limit_from_text(text: str) -> float | None:
-    in_devices = False
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not raw.startswith((" ", "\t")):
-            in_devices = stripped == "devices:"
-            continue
-        if not in_devices:
-            continue
-        match = re.match(r"^\s+volume_limit:\s*([^#]+)", raw)
-        if not match:
-            continue
-        value = match.group(1).strip().strip("'\"")
-        if value in {"", "null", "~"}:
-            return None
-        return float(value)
-    return None
+    """``devices.volume_limit`` from a CamillaDSP config, or None if absent /
+    null. Raises ValueError on a non-numeric value (the caller surfaces it as a
+    fail). Reads via the shared :func:`_camilla_block_field` scanner."""
+    value = _camilla_block_field(text, "devices", "volume_limit")
+    if value is None or value in {"", "null", "~"}:
+        return None
+    return float(value)
 
 @doctor_check(order=28, group="audio")
 def check_camilla_volume_limit() -> CheckResult:

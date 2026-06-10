@@ -6,38 +6,24 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, _camilla_block_field, _run
 
 
 def _devices_rate_adjust_from_text(text: str) -> bool | None:
-    """Parse ``devices.enable_rate_adjust`` from a CamillaDSP config. PURE.
-
-    Returns True/False, or None when the key is absent / unparseable. Mirrors
-    :func:`jasper.cli.doctor.audio._devices_volume_limit_from_text`'s
-    devices-block scanner (top-level ``devices:`` then an indented key)."""
-    in_devices = False
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not raw.startswith((" ", "\t")):
-            in_devices = stripped == "devices:"
-            continue
-        if not in_devices:
-            continue
-        match = re.match(r"^\s+enable_rate_adjust:\s*([^#]+)", raw)
-        if not match:
-            continue
-        value = match.group(1).strip().strip("'\"").lower()
-        if value in {"true", "yes", "on", "1"}:
-            return True
-        if value in {"false", "no", "off", "0"}:
-            return False
+    """``devices.enable_rate_adjust`` from a CamillaDSP config — True/False, or
+    None when absent / unparseable. Reads via the shared
+    :func:`_camilla_block_field` scanner."""
+    value = _camilla_block_field(text, "devices", "enable_rate_adjust")
+    if value is None:
         return None
+    value = value.lower()
+    if value in {"true", "yes", "on", "1"}:
+        return True
+    if value in {"false", "no", "off", "0"}:
+        return False
     return None
 
 @doctor_check(order=71, group="grouping")
@@ -147,19 +133,10 @@ def check_grouping_rate_adjust() -> CheckResult:
 
 def _config_has_channel_select(text: str) -> bool:
     """True if the config's top-level ``mixers:`` block defines a
-    ``channel_select:`` mixer (the channel-split). Block-scoped, like
-    :func:`_devices_rate_adjust_from_text`."""
-    in_mixers = False
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not raw.startswith((" ", "\t")):
-            in_mixers = stripped == "mixers:"
-            continue
-        if in_mixers and stripped == "channel_select:":
-            return True
-    return False
+    ``channel_select:`` mixer (the channel-split). Reads via the shared
+    :func:`_camilla_block_field` scanner — presence is value-is-not-None (a
+    mixer name's value is the nested channels/mapping block, scanned as "")."""
+    return _camilla_block_field(text, "mixers", "channel_select") is not None
 
 
 @doctor_check(order=75, group="grouping")

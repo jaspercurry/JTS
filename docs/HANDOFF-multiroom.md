@@ -1077,8 +1077,19 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-09 (staff-review fixes on the sample-lock work — the
-member-config LAYERING. The inv-5 + channel-split transforms were threaded into
+Last verified: 2026-06-09 (review nit — DRY'd the doctor's config-field
+scanners. `check_camilla_volume_limit`, `check_grouping_rate_adjust`, and
+`check_grouping_channel_split` each hand-rolled the same "scan a CamillaDSP
+config field from a top-level block" line-scan (3×, a fragile parser
+proliferating). Collapsed onto ONE shared `_camilla_block_field(text, block,
+key)` in `jasper/cli/doctor/_shared.py` — the doctor's deliberately fail-soft
+(never-raises) alternative to `yaml.safe_load`. Also tightened the channel-split
+weave's 2-channel guard to reject a config that OMITS `channels` (not just one
+that sets it != 2). Behavior-preserving (270 existing scanner/doctor/weave tests
+green) + direct coverage for the shared scanner and the guard; 377 affected
+green, ruff clean. Earlier 2026-06-09 (staff-review fixes on the sample-lock
+work — the member-config LAYERING. The inv-5 + channel-split transforms were
+threaded into
 the `/sound` apply call sites only, leaving the `/correction` apply path
 uncovered (a bonded member correcting its OWN seat — the §4 path — got neither),
 with no observability for a missing channel-split. Fixed by collapsing the
