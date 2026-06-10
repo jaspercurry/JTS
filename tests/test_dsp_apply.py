@@ -34,7 +34,7 @@ def test_validate_camilla_config_uses_check_flag_with_positional_config(
     monkeypatch,
 ):
     cfg = tmp_path / "candidate.yml"
-    cfg.write_text("---\n")
+    cfg.write_text("---\ndevices:\n  volume_limit: 0.0\n")
     argv_capture = tmp_path / "argv.txt"
     binary = _fake_camilladsp(tmp_path)
     monkeypatch.setenv("JASPER_CAMILLADSP_BIN", str(binary))
@@ -76,7 +76,7 @@ def test_validate_camilla_config_classifies_invalid_config(
     monkeypatch,
 ):
     cfg = tmp_path / "candidate.yml"
-    cfg.write_text("---\n")
+    cfg.write_text("---\ndevices:\n  volume_limit: 0.0\n")
     binary = _fake_camilladsp(tmp_path, exit_code=101)
     monkeypatch.setenv("JASPER_CAMILLADSP_BIN", str(binary))
     monkeypatch.setenv("JASPER_ARGV_CAPTURE", str(tmp_path / "argv.txt"))
@@ -92,7 +92,7 @@ def test_validate_camilla_config_classifies_usage_error_as_runner_error(
     monkeypatch,
 ):
     cfg = tmp_path / "candidate.yml"
-    cfg.write_text("---\n")
+    cfg.write_text("---\ndevices:\n  volume_limit: 0.0\n")
     script = tmp_path / "camilladsp"
     script.write_text(
         "#!/bin/sh\n"
@@ -113,7 +113,7 @@ def test_validate_camilla_config_timeout_output_is_json_safe(
     monkeypatch,
 ):
     cfg = tmp_path / "candidate.yml"
-    cfg.write_text("---\n")
+    cfg.write_text("---\ndevices:\n  volume_limit: 0.0\n")
     monkeypatch.setenv("JASPER_CAMILLADSP_BIN", "/tmp/camilladsp")
 
     def fake_run(*args, **kwargs):  # noqa: ARG001
@@ -211,3 +211,71 @@ async def test_apply_dsp_config_rolls_back_when_reload_fails(tmp_path: Path):
         raise AssertionError("expected reload failure")
 
     assert calls == [str(cfg), "/etc/camilladsp/v1.yml"]
+
+
+# ---------------------------------------------------------------------------
+# Audit C6 — devices.volume_limit safety ceiling at the validate gate.
+# CamillaDSP's own --check accepts a positive limit and defaults the main
+# fader's maximum to +50 dB when the key is omitted; the JTS apply path
+# must reject both shapes before anything touches live audio.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_rejects_positive_volume_limit(tmp_path: Path, monkeypatch):
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\ndevices:\n  volume_limit: 3.0\n")
+    binary = _fake_camilladsp(tmp_path)
+    monkeypatch.setenv("JASPER_CAMILLADSP_BIN", str(binary))
+
+    result = validate_camilla_config(cfg)
+
+    assert result.status == ValidationStatus.INVALID_CONFIG
+    assert not result.ok_to_apply
+    assert "0 dB" in (result.error or "")
+
+
+def test_validate_rejects_missing_volume_limit(tmp_path: Path, monkeypatch):
+    """Omitted key means CamillaDSP defaults the fader ceiling to +50 dB —
+    a loud-output hazard, rejected like a positive limit."""
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\ndevices:\n  samplerate: 48000\n")
+    binary = _fake_camilladsp(tmp_path)
+    monkeypatch.setenv("JASPER_CAMILLADSP_BIN", str(binary))
+
+    result = validate_camilla_config(cfg)
+
+    assert result.status == ValidationStatus.INVALID_CONFIG
+    assert not result.ok_to_apply
+    assert "volume_limit" in (result.error or "")
+
+
+def test_validate_limit_check_applies_without_camilladsp_binary(
+    tmp_path: Path, monkeypatch,
+):
+    """Dev machines without CamillaDSP skip the CLI preflight (MISSING is
+    ok_to_apply) but must still get the pure-Python safety rejection."""
+    import jasper.dsp_apply as dsp_apply
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\ndevices:\n  volume_limit: 6.0\n")
+    monkeypatch.setattr(dsp_apply, "_camilladsp_binary", lambda: None)
+
+    result = validate_camilla_config(cfg)
+
+    assert result.status == ValidationStatus.INVALID_CONFIG
+    assert not result.ok_to_apply
+
+
+def test_validate_accepts_zero_volume_limit_without_binary(
+    tmp_path: Path, monkeypatch,
+):
+    import jasper.dsp_apply as dsp_apply
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\ndevices:\n  volume_limit: 0.0\n")
+    monkeypatch.setattr(dsp_apply, "_camilladsp_binary", lambda: None)
+
+    result = validate_camilla_config(cfg)
+
+    assert result.status == ValidationStatus.MISSING
+    assert result.ok_to_apply

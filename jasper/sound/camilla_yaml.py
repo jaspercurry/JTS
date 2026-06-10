@@ -26,6 +26,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_TARGET_LEVEL,
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
+    ensure_volume_limit_db,
 )
 from jasper.camilla_emit import emit_gain_filter, emit_peaking_biquad, fmt
 
@@ -147,6 +148,9 @@ def emit_sound_config(
     passthrough (``stereo``) split leaves the config untouched, so a solo
     speaker is byte-for-byte unchanged."""
 
+    # Loud-output safety: refuse to emit a config whose master fader
+    # could boost above full scale. Mirrors the active_speaker emitter.
+    volume_limit_db = ensure_volume_limit_db(volume_limit_db)
     filter_yaml, chain_names, trim_db = _emit_filter_definitions(
         profile,
         room_peqs or [],

@@ -143,3 +143,18 @@ def test_emits_pretty_floats_not_repr():
     assert "freq: 80.1235" in yaml
     assert "q: 4.1235" in yaml
     assert "gain: -3.1235" in yaml
+
+
+def test_emit_correction_config_rejects_positive_volume_limit():
+    """Loud-output safety (audit C6): the emitter refuses to build a
+    config whose master fader could boost above full scale. Mirrors the
+    guard in jasper.active_speaker.camilla_yaml."""
+    with pytest.raises(ValueError, match="must not exceed 0 dB"):
+        emit_correction_config([], volume_limit_db=0.1)
+
+
+def test_emit_correction_config_rejects_non_finite_volume_limit():
+    import math
+
+    with pytest.raises(ValueError, match="must be finite"):
+        emit_correction_config([], volume_limit_db=math.inf)
