@@ -1296,6 +1296,11 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["aec"]["microphone"]["processing_mode"] == "Software AEC3"
     assert body["active_source"] in {"idle", "airplay"}
     assert body["satellites"]["dial"]["online"] is False
+    # Transit city packs: a JSON-able {packs: [{id, label, enabled}]} block,
+    # read fresh from the wizard-owned transit.env (absent file here -> the
+    # legacy all-enabled default). Top-level shape guard.
+    assert isinstance(body["transit"]["packs"], list)
+    assert any(p["id"] == "nyc" for p in body["transit"]["packs"])
 
 
 def test_state_aec_probe_failure_is_fail_soft(
@@ -1314,6 +1319,26 @@ def test_state_aec_probe_failure_is_fail_soft(
     assert status == 200
     assert body["aec"] is None
     assert body["voice"]["reachable"] is False
+
+
+def test_state_transit_read_failure_is_fail_soft(
+    server_with_coordinator, monkeypatch,
+):
+    """If the transit SSOT read raises, /state still returns 200 with a null
+    transit section rather than 500 — mirrors the grouping/aec fail-soft
+    guard so one broken section never takes the whole snapshot down."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    def boom():
+        raise RuntimeError("transit read exploded")
+
+    monkeypatch.setattr(srv_mod, "read_transit_state", boom)
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["transit"] is None
 
 
 def test_state_voice_wake_legs_flows_from_session_status(

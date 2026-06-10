@@ -1109,7 +1109,10 @@ transit env var:
   present → exactly the listed packs, even when empty** — so unchecking
   every city writes an explicit empty value that means "no transit," not
   a fall-back to all. `install.sh` seeds `nyc` for households that
-  already use NYC transit.
+  already use NYC transit. Which packs are enabled is surfaced at
+  `/state.transit` (`{packs:[{id,label,enabled}]}`, read fresh from
+  transit.env by [`jasper/transit/state.py`](jasper/transit/state.py) —
+  never `os.environ`, since jasper-control isn't restarted on a save).
 
 All live in **`/var/lib/jasper/transit.env`** at mode 0640 — same
 single-source-of-truth pattern as `voice_provider.env`. Never put
