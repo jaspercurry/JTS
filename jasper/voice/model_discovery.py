@@ -10,13 +10,29 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
+# httpx is imported lazily inside the fetch helpers — this module is
+# imported at the top of the /voice wizard (for its cache readers),
+# which is socket-activated and must stay light (same documented
+# convention as jasper/transit/providers/nyc_bus.py). Page renders only
+# read the JSON cache; httpx loads when an operator presses "Refresh
+# available models".
+if TYPE_CHECKING:
+    import httpx
 
 
 DEFAULT_CACHE_PATH = "/var/lib/jasper/voice_model_discovery.json"
-DISCOVERY_TIMEOUT = httpx.Timeout(timeout=8.0, connect=3.0)
+DISCOVERY_TIMEOUT_SEC = 8.0
+DISCOVERY_CONNECT_TIMEOUT_SEC = 3.0
+
+
+def _discovery_timeout() -> httpx.Timeout:
+    import httpx  # lazy — see import comment at top of module
+
+    return httpx.Timeout(
+        timeout=DISCOVERY_TIMEOUT_SEC, connect=DISCOVERY_CONNECT_TIMEOUT_SEC,
+    )
 
 
 class ModelDiscoveryError(RuntimeError):
@@ -55,6 +71,8 @@ def _safe_get_json(
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    import httpx  # lazy — see import comment at top of module
+
     try:
         response = client.get(url, headers=headers, params=params)
     except httpx.TimeoutException as e:
@@ -165,8 +183,10 @@ def fetch_provider_model_ids(
     if not api_key:
         raise ModelDiscoveryError("missing API key")
 
+    import httpx  # lazy — see import comment at top of module
+
     own_client = http is None
-    client = http or httpx.Client(timeout=DISCOVERY_TIMEOUT)
+    client = http or httpx.Client(timeout=_discovery_timeout())
     try:
         if provider_id == "openai":
             data = _safe_get_json(
