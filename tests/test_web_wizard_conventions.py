@@ -147,6 +147,58 @@ def test_wizards_do_not_need_js_string_attribute_escaping_helper():
     assert _matches(r"function\s+jsArg\b") == []
 
 
+# AGENTS.md "Web wizard conventions": "Do not put untrusted strings into
+# generated inline JavaScript such as onclick=\"handler('...')\". Prefer
+# escaped data-* attributes with a delegated click handler." The fixed
+# risky-handler list above only catches names it knows about; these two
+# tripwires catch the *shape* — an inline on<event>= attribute whose value
+# interpolates a runtime value — wherever it next appears. (There is no
+# HTML-attribute-safe way to embed an arbitrary string inside inline JS;
+# every current page uses data-* + delegation, so the clean state is zero.)
+
+# Python f-string interpolation into an inline handler attribute:
+#   onclick="forget('{name}')"  /  onclick='forget("{name}")'
+_PY_INLINE_HANDLER_INTERP_RE = re.compile(
+    r"""\bon[a-z]+=(?:"[^"\n]*\{[^"\n]*"|'[^'\n]*\{[^'\n]*')"""
+)
+
+
+def test_wizard_python_does_not_interpolate_into_inline_handler_js():
+    offenders = []
+    for path in WEB_PY_FILES:
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _PY_INLINE_HANDLER_INTERP_RE.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
+    assert offenders == [], (
+        "interpolated value inside a generated inline on<event>= handler — "
+        "use an escaped data-* attribute + a delegated listener instead:\n"
+        + "\n".join(offenders)
+    )
+
+
+# Template-literal interpolation into an inline handler attribute built by
+# an ES module:  el.innerHTML = `... onclick="forget('${name}')" ...`
+_JS_INLINE_HANDLER_INTERP_RE = re.compile(
+    r"""\bon[a-z]+=(?:\\?"[^"\n]*\$\{|\\?'[^'\n]*\$\{)"""
+)
+
+
+def test_static_modules_do_not_interpolate_into_inline_handler_js():
+    assert WEB_MODULE_FILES, "expected web ES modules to scan"
+    offenders = []
+    for path in WEB_MODULE_FILES:
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _is_comment_line(line):
+                continue
+            if _JS_INLINE_HANDLER_INTERP_RE.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
+    assert offenders == [], (
+        "interpolated value inside a module-built inline on<event>= handler — "
+        "use an escaped data-* attribute + a delegated listener instead:\n"
+        + "\n".join(offenders)
+    )
+
+
 # Redesigned pages (/system/, /sound/) deliver their behaviour as static ES
 # modules under deploy/assets/<page>/js/ — outside the *_setup.py scan above.
 WEB_MODULE_FILES = tuple(Path("deploy/assets").glob("*/js/*.js"))
