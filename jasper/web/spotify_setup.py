@@ -1290,6 +1290,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 registry.default_name = name
                 registry.save()
                 _restart_spotify_consumers()
+                # Account-identity config (which account voice cold-starts from)
+                # + a 3-daemon restart — same audit category as link/unlink.
+                logger.info("event=spotify.default client=%s", self.address_string())
                 self._redirect(f"./?msg=Default+set+to+{urllib.parse.quote(name)}")
             else:
                 self._redirect("./?msg=Account+not+found")
