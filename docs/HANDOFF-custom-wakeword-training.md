@@ -278,9 +278,19 @@ Current implementation state:
   negatives unless the operator supplies real negative feature files.
   That makes it useful for proving train/export/eval mechanics, not for
   interpreting model quality. Do not deploy a smoke model.
-- The next Phase 0 slice should run one tiny off-Pi train/eval loop using
-  real positive features plus real negative feature banks, then compare the
-  exported ONNX against the incumbent on held-out JTS audio.
+- `scripts/run-wake-training-phase0.sh` (backed by
+  `scripts/_run_wake_training_phase0.py`) is the first end-to-end Phase 0
+  operator runner. It orchestrates corpus export, positive feature-bank
+  build, negative/hard-negative feature-bank build, real-positive workdir
+  prep, and LiveKit train/export/eval prep into one timestamped evidence
+  directory with `phase0_run.json` and `command_log.jsonl`.
+- The Phase 0 runner requires real negative input by default via
+  `--negative-corpus-dir` or `--negative-bundle-dir`. Operators can pass
+  `--allow-placeholder-negatives` for mechanics-only smoke tests, but that is
+  explicitly not model-quality evidence.
+- The next Phase 0 slice should run this runner off-Pi with real positive
+  features plus real negative feature banks, then compare the exported ONNX
+  against the incumbent on held-out JTS audio.
 
 ### Phase 1 — MVP Pipeline
 
