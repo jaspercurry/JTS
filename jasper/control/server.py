@@ -50,7 +50,13 @@ from ..audio_quality import (
     read_active_converter as _read_active_audio_converter,
     read_state as _read_audio_quality_state,
 )
-from . import debug_control, shairport_supervisor, system_supervisor, wifi_guardian_state
+from . import (
+    debug_control,
+    mpris,
+    shairport_supervisor,
+    system_supervisor,
+    wifi_guardian_state,
+)
 from ..multiroom.config import GROUPING_ENV_FILE, validate_grouping
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
@@ -1249,24 +1255,10 @@ async def _get_state(
             return status
 
     async def _airplay_playing() -> bool | None:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "busctl", "--system", "call",
-                "org.mpris.MediaPlayer2.ShairportSync",
-                "/org/mpris/MediaPlayer2",
-                "org.freedesktop.DBus.Properties", "Get", "ss",
-                "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=2.0,
-            )
-            if proc.returncode != 0:
-                return None
-            return b'"Playing"' in stdout
-        except (FileNotFoundError, asyncio.TimeoutError):
-            return None
+        # Shared probe owns the subprocess hygiene (kill-on-timeout so a
+        # DBus stall can't leak one busctl per /state poll; spawn OSError
+        # → None instead of 500ing the whole fail-soft aggregate).
+        return await mpris.shairport_playing(timeout=2.0)
 
     async def _voice_status() -> dict | None:
         try:
