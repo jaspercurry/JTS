@@ -159,10 +159,10 @@ def test_state_connected_page_data_island_carries_prompt_not_inline_js():
 def test_state_connected_page_data_island_escapes_script_breakout():
     # agent_id is a free-form POST field, not validated against the agent
     # dropdown, so an operator/attacker can stash a script-closing tag in it.
-    # json.dumps does NOT escape forward slashes, so without the </-sequence
-    # guard the value would close the application/json island at HTML-parse
-    # time and inject markup (reachable stored XSS). Mirror the sibling
-    # wake_corpus_setup.py guard: the </ must be escaped to <\/.
+    # json.dumps does NOT escape angle brackets, so without an escape the
+    # value would close the application/json island at HTML-parse time and
+    # inject markup (reachable stored XSS). The island is built by the
+    # shared `json_island()` helper, which JSON-unicode-escapes `<` / `>` / `&`.
     payload = "</script><img src=x onerror=alert(1)>"
     state = {
         **_state_connected(),
@@ -173,7 +173,7 @@ def test_state_connected_page_data_island_escapes_script_breakout():
     assert payload not in out
     assert "</script><img" not in out
     # The escaped form is what lands in the JSON island.
-    assert "<\\/script>" in out
+    assert "\\u003C/script\\u003E" in out
     # And the island still round-trips: pull the JSON text back out and parse
     # it, confirming currentAgent decodes to the original attacker payload
     # (the JS does the same JSON.parse at load time).

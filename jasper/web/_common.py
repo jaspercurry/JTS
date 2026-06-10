@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import html
 import http
+import json
 import logging
 import os
 import secrets
@@ -736,6 +737,48 @@ def canonical_banner(message: str) -> str:
     return (
         f'<div class="banner {tone}" role="status">'
         f'{html.escape(message)}</div>'
+    )
+
+
+# Translation applied to the serialized JSON of a data island. `<`, `>`,
+# and `&` can only appear inside JSON string values, never in JSON
+# structure, so a whole-text translate is safe. This is the same approach
+# as Django's `json_script` filter: escaping `<` kills both `</script>`
+# early-close breakouts and `<!--` script-data parser-state tricks.
+_JSON_ISLAND_ESCAPES = {
+    ord("<"): "\\u003C",
+    ord(">"): "\\u003E",
+    ord("&"): "\\u0026",
+}
+
+
+def json_island(element_id: str, payload: Any) -> str:
+    """Serialize ``payload`` into an inert JSON data island.
+
+    The returned element has this shape:
+
+        <script type="application/json" id="...">...</script>
+
+    This is the shared way a wizard hands Python-built page data to its
+    ES module. The module reads it back with::
+
+        JSON.parse(document.getElementById("...").textContent)
+
+    Why a helper: an inline ``<script>``'s content ends at the first
+    ``</script`` regardless of the ``type`` attribute, so untrusted
+    strings serialized into an island could close it early and inject
+    markup unless serialization guards ``<``. Centralizing the dumps and
+    escape here makes that guard hard to forget; a conventions test
+    asserts no page hand-rolls an ``application/json`` island.
+
+    ``element_id`` is developer-supplied by convention, but it is
+    attribute-escaped anyway, matching Django's ``json_script``. That
+    keeps a future dynamic id from breaking out of the attribute.
+    """
+    body = json.dumps(payload).translate(_JSON_ISLAND_ESCAPES)
+    safe_id = html.escape(element_id, quote=True)
+    return (
+        f'<script type="application/json" id="{safe_id}">{body}</script>'
     )
 
 
