@@ -27,6 +27,8 @@ import threading
 import time
 from typing import Any
 
+from . import mpris
+
 logger = logging.getLogger(__name__)
 
 
@@ -197,28 +199,16 @@ class ShairportSupervisor:
 
     async def is_session_active(self) -> bool:
         """True when MPRIS reports Playing, OR when the probe itself
-        errors (busctl missing, DBus stall, non-zero exit). Fail-safe
-        to "active" so we never risk disrupting a live session on an
-        unknown state — even if it means a wedge persists slightly
-        longer when DBus is also broken."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "busctl", "--system", "call",
-                "org.mpris.MediaPlayer2.ShairportSync",
-                "/org/mpris/MediaPlayer2",
-                "org.freedesktop.DBus.Properties", "Get", "ss",
-                "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=2.0,
-            )
-        except (FileNotFoundError, asyncio.TimeoutError):
+        errors (busctl missing, spawn failure, DBus stall, non-zero
+        exit). Fail-safe to "active" so we never risk disrupting a
+        live session on an unknown state — even if it means a wedge
+        persists slightly longer when DBus is also broken. The shared
+        probe owns the subprocess hygiene (kill-on-timeout, OSError
+        spawn family)."""
+        playing = await mpris.shairport_playing(timeout=2.0)
+        if playing is None:
             return True
-        if proc.returncode != 0:
-            return True
-        return b'"Playing"' in stdout
+        return playing
 
     async def restart_shairport(self) -> None:
         """`reset-failed` clears StartLimitBurst parking; `--no-block
