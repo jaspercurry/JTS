@@ -187,7 +187,7 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
     )
 
 
-@doctor_check(order=79, group="resilience")
+@doctor_check(order=80, group="resilience")
 def check_bootloop_guard() -> CheckResult:
     """Surface the boot-loop guard marker (T5.1 circuit breaker).
 
