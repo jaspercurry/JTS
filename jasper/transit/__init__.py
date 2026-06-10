@@ -72,7 +72,8 @@ plumbing. Each numbered item is one logical edit point:
      (operator-edited values stay in `jasper.env` instead of migrating
      to `transit.env`), but worth keeping in sync. (`JASPER_TRANSIT_CITIES`
      itself is a pack-level toggle, not a provider env key, so it is NOT
-     in that array; the migration seeds it separately.)
+     in that array; `migrate_transit_config` moves AND seeds it in its own
+     dedicated step.)
 
 Items 1+2 are the pure-data part the `REGISTRY`/`CityPack` abstraction
 buys you (and items 1+2 are ALL the daemon needs — no `voice_daemon.py`
