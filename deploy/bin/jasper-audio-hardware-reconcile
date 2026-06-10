@@ -28,6 +28,26 @@ PRINT_ENV=0
 NO_RESTART=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
+ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
+
+# Shared quoting helper (jasper_env_quote_value) — single
+# implementation for both reconcilers so the PR #534 bash-%q
+# comma-corruption bug class cannot fork again.
+load_env_file_lib() {
+    if [[ -z "$ENV_FILE_LIB" ]]; then
+        if [[ -r /usr/local/lib/jasper/jasper-env-file.sh ]]; then
+            ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
+        else
+            ENV_FILE_LIB="${SCRIPT_DIR}/../lib/jasper-env-file.sh"
+        fi
+    fi
+    if [[ ! -r "$ENV_FILE_LIB" ]]; then
+        echo "jasper-audio-hardware-reconcile: missing env-file library: ${ENV_FILE_LIB}" >&2
+        exit 66
+    fi
+    # shellcheck disable=SC1090
+    source "$ENV_FILE_LIB"
+}
 
 load_asound_render_lib() {
     if [[ -z "$ASOUND_RENDER_LIB" ]]; then
@@ -86,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+load_env_file_lib
 load_asound_render_lib
 
 log_event() {
@@ -100,26 +121,11 @@ jasper_asound_route_ignored() {
         "output_dac_id=${OUTPUT_DAC_ID} output_dac_route=$(jasper_asound_log_token "$route") reason=${reason}"
 }
 
+# Quoting is the shared lib's jasper_env_quote_value (sourced by
+# load_env_file_lib above); this thin alias keeps the script's many
+# call sites unchanged.
 quote_env_value() {
-    local value="$1" rest
-    if [[ -z "$value" ]]; then
-        printf "''"
-        return
-    fi
-    case "$value" in
-        *[!A-Za-z0-9_./:@,+=-]*)
-            printf "'"
-            rest="$value"
-            while [[ "$rest" == *"'"* ]]; do
-                printf "%s'\\\\''" "${rest%%\'*}"
-                rest="${rest#*\'}"
-            done
-            printf "%s'" "$rest"
-            ;;
-        *)
-            printf '%s' "$value"
-            ;;
-    esac
+    jasper_env_quote_value "$1"
 }
 
 find_card() {

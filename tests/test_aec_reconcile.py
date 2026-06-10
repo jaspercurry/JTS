@@ -47,6 +47,11 @@ def _run_reconcile(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[st
             "JASPER_ASOUND_ROOT": str(tmp_path / "asound"),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
+            # Hermetic: always source the repo's shared env-file lib, never
+            # a (possibly stale) installed copy under /usr/local/lib.
+            "JASPER_ENV_FILE_LIB": str(
+                ROOT / "deploy" / "lib" / "jasper-env-file.sh"
+            ),
         }
     )
     return subprocess.run(
@@ -577,6 +582,31 @@ def test_chip_aec_on_sets_chip_vars_and_clears_raw_dtln(tmp_path: Path) -> None:
     assert "JASPER_AEC_DTLN_ENABLED=1" not in body
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-outputd.service" in commands
+
+
+def test_chip_aec_comma_values_idempotent_across_runs(tmp_path: Path) -> None:
+    """Regression for the `printf %q` comma-corruption bug (PR #534's
+    bug class, in this script): bash 5.2 %q-escapes commas, turning
+    plughw:CARD=Array,DEV=0 into plughw:CARD=Array\\,DEV=0 — which
+    systemd EnvironmentFile= reads literally AND which breaks the
+    reconciler's own read-back, marking outputd for a restart on every
+    pass (restart churn). Two consecutive runs must converge: identical
+    env file, no second outputd restart."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode_with_legs(tmp_path, mode="auto", raw="0", dtln="0", chip_aec="1")
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+    assert result.returncode == 0, result.stderr
+    first_body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM=plughw:CARD=Array,DEV=0" in first_body
+    assert "restart jasper-outputd.service" in _systemctl_log(tmp_path)
+
+    (tmp_path / "systemctl.log").unlink()
+    result = _run_reconcile(tmp_path, "--reason", "test")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "jasper.env").read_text() == first_body
+    assert "restart jasper-outputd.service" not in _systemctl_log(tmp_path)
 
 
 def test_chip_aec_off_clears_chip_vars_keeps_raw_dtln_and_outputd_ref(
