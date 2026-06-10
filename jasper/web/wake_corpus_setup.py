@@ -188,6 +188,7 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
     TEST_MODE_MARKER,
     TEST_MODE_STALE_SEC,
     ClipMetadata,
+    MicMutedError,
     RecordingBackend,
     RecordingTask,
     StateError,
@@ -560,6 +561,23 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(
                 409,
                 "can't begin session: recording in progress",
+            )
+            return
+        # Mic mute is a privacy promise. Refuse BEFORE the bridge-output
+        # side effects below (env writes + bridge restart) so a muted
+        # household never has its bridge reconfigured for a session that
+        # the backend would refuse anyway. The backend re-checks at
+        # begin_session/start_recording (the authoritative gate); this is
+        # the wizard-side fast path with the same user-facing message.
+        if self.backend.mic_muted():
+            logger.warning(
+                "event=wake_corpus.mute_refused op=post_session",
+            )
+            self._send_error_json(
+                409,
+                "mic is muted — the wake-corpus recorder will not "
+                "capture audio while the household mic mute is on. "
+                "Unmute from the /system/ dashboard, then retry.",
             )
             return
         missing_outputs = bridge_session.missing_bridge_outputs_for_session(
