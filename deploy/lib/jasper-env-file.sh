@@ -66,10 +66,16 @@ jasper_env_file_set() {
     quoted="$(jasper_env_quote_value "$value")"
 
     if [[ -f "$file" ]]; then
-        awk -v key="$key" -v line="${key}=${quoted}" '
+        # The replacement line goes in via ENVIRON, never `awk -v`:
+        # -v values get escape-sequence processing (gawk and mawk
+        # disagree on unknown escapes like the \' inside a quoted
+        # value), which corrupted apostrophe-bearing lines on CI's
+        # mawk while passing on others. ENVIRON is escape-free by
+        # POSIX on every awk.
+        JASPER_ENV_FILE_LINE="${key}=${quoted}" awk -v key="$key" '
             $0 ~ "^[[:space:]]*" key "=" {
                 if (!done) {
-                    print line
+                    print ENVIRON["JASPER_ENV_FILE_LINE"]
                     done = 1
                 }
                 next
@@ -77,7 +83,7 @@ jasper_env_file_set() {
             { print }
             END {
                 if (!done) {
-                    print line
+                    print ENVIRON["JASPER_ENV_FILE_LINE"]
                 }
             }
         ' "$file" > "$tmp"
