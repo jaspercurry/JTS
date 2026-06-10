@@ -2755,6 +2755,19 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
 
+    # Boot-loop guard. Type=oneshot cross-boot circuit breaker for the
+    # T5.1 StartLimitAction=reboot ladder: on the Nth boot inside the
+    # window it writes runtime drop-ins (StartLimitAction=none) so a
+    # PERMANENT daemon failure leaves the Pi restart-looping but
+    # reachable instead of rebooting forever. Runtime drop-ins live in
+    # /run and self-clear on the next healthy boot.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-bootloop-guard.service" \
+        "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-bootloop-guard" \
+        /usr/local/sbin/jasper-bootloop-guard
+
     # jasper-usbsink: fourth music source (USB gadget audio in). The
     # init unit owns the ConfigFS gadget descriptor lifecycle; the
     # main service is the Python daemon that bridges gadget capture
@@ -3066,6 +3079,10 @@ install_systemd_units() {
     # wizard saves once. See migrate_wifi_guardian (called from
     # ensure_env_file above) for the SSH-driven-setup seed path.
     systemctl enable jasper-wifi-guardian.service
+    # Boot-loop guard: oneshot at boot; records the boot timestamp and
+    # disarms StartLimitAction=reboot via runtime drop-ins only when
+    # boots are looping. Safe on fresh installs (first boots never trip).
+    systemctl enable jasper-bootloop-guard.service
     echo
     echo "Units enabled. Start with: systemctl start jasper-fanin jasper-camilla jasper-outputd jasper-voice"
 }

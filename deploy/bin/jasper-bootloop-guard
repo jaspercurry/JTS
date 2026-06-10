@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# Cross-boot circuit breaker for the T5.1 StartLimitAction=reboot ladder.
+#
+# The gap (audit C1): jasper-camilla / -outputd / -fanin / -voice /
+# -control / -aec-bridge escalate a per-service restart spiral to a
+# system reboot (Tier 4.5). That escalation is correct for a *transient*
+# wedge — but it has no cross-boot memory, so a PERMANENT daemon failure
+# (corrupt config, dead binary, half-finished deploy) reboots the Pi
+# every few minutes forever. The household can never reach jts.local to
+# fix it. T5.2's SystemSupervisor already solved this shape for its own
+# reboots with persisted state; this guard is the same idea for the
+# unit-level ladder.
+#
+# What it does, once per boot (Type=oneshot, before the jasper daemons):
+#
+#   1. Append this boot's timestamp to /var/lib/jasper/bootloop_guard_boots
+#      and prune entries older than the window.
+#   2. If this is the THRESHOLD'th (or later) boot inside the window,
+#      assume a reboot loop: write RUNTIME drop-ins
+#      (/run/systemd/system/<unit>.d/90-jts-bootloop-guard.conf) that set
+#      StartLimitAction=none for every installed unit that declares
+#      StartLimitAction=reboot, then daemon-reload. The sick unit keeps
+#      restart-looping (Restart= policy untouched, visible to systemctl
+#      and jasper-doctor) but the Pi stays up and reachable.
+#   3. Write a marker JSON for /state either way.
+#
+# Self-clearing by construction: the drop-ins live in /run, which the
+# kernel wipes at boot. A healthy boot (fewer than THRESHOLD boots in
+# the window) writes no drop-ins, so the very next clean boot restores
+# the full T5.1 escalation with no operator action.
+#
+# Single-incident behaviour is unchanged: the first reboots inside the
+# window do not trip the guard, so a transient wedge still gets its
+# clean recovery reboot(s).
+#
+# Fail-open everywhere: this runs at boot on the recovery path, so any
+# internal error logs `event=bootloop_guard.error` and exits 0 — the
+# guard must never block or fail the boot. Worst case on guard failure
+# is exactly today's behaviour (escalation stays armed).
+#
+# Mirrors deploy/bin/jasper-wifi-guardian's shape and test seams; tested
+# hardware-free in tests/test_bootloop_guard_script.py.
+
+set -uo pipefail
+
+STATE_FILE="${JASPER_BOOTLOOP_STATE_FILE:-/var/lib/jasper/bootloop_guard_boots}"
+MARKER_FILE="${JASPER_BOOTLOOP_MARKER_FILE:-/run/jasper-bootloop-guard/state.json}"
+DROPIN_DIR="${JASPER_BOOTLOOP_DROPIN_DIR:-/run/systemd/system}"
+UNITS_DIR="${JASPER_BOOTLOOP_UNITS_DIR:-/etc/systemd/system}"
+WINDOW_SEC="${JASPER_BOOTLOOP_WINDOW_SEC:-3600}"
+THRESHOLD="${JASPER_BOOTLOOP_THRESHOLD:-3}"
+SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
+DROPIN_NAME="90-jts-bootloop-guard.conf"
+REASON="manual"
+
+usage() {
+    cat <<'EOF'
+Usage: jasper-bootloop-guard [--reason TEXT]
+
+Record this boot and, when too many boots land inside the window
+(default: 3 within 3600 s — a StartLimitAction=reboot loop), write
+runtime systemd drop-ins that set StartLimitAction=none for every
+installed unit that escalates to reboot, leaving the Pi reachable.
+Runtime drop-ins live under /run and self-clear on the next boot.
+
+Emits structured `event=bootloop_guard.<outcome>` lines on stderr.
+Always exits 0 (fail-open: a guard error must never block boot).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason)
+            REASON="${2:-manual}"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+log() {
+    echo "jasper-bootloop-guard[$REASON]: $*" >&2
+}
+
+emit() {
+    # Single-line structured event for journal grep — same shape as
+    # event=wifi_guardian.* / event=system_supervisor.*.
+    if [[ -n "${2:-}" ]]; then
+        printf 'event=bootloop_guard.%s %s\n' "$1" "$2" >&2
+    else
+        printf 'event=bootloop_guard.%s\n' "$1" >&2
+    fi
+}
+
+# Test seam: JASPER_BOOTLOOP_NOW pins the clock for deterministic
+# window math. Wall-clock (not monotonic) on purpose — the whole point
+# is surviving reboots, and CLOCK_MONOTONIC resets to ~0 each boot.
+NOW="${JASPER_BOOTLOOP_NOW:-$(date +%s)}"
+if ! [[ "$NOW" =~ ^[0-9]+$ ]]; then
+    emit error "reason=bad_clock now=${NOW@Q}"
+    exit 0
+fi
+
+# ---- 1. Record this boot; prune the window -------------------------------
+
+if ! mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null; then
+    emit error "reason=state_dir_unwritable dir=$(dirname "$STATE_FILE")"
+    exit 0
+fi
+
+recent=()
+if [[ -f "$STATE_FILE" ]]; then
+    while IFS= read -r line; do
+        # Tolerate a torn/corrupt file: keep only plain epoch integers
+        # inside the window; silently drop everything else (fail-open —
+        # a bad byte must reset history, never block boot).
+        [[ "$line" =~ ^[0-9]+$ ]] || continue
+        (( line > NOW )) && continue          # future timestamps: clock jumped; drop
+        (( NOW - line <= WINDOW_SEC )) || continue
+        recent+=("$line")
+    done < "$STATE_FILE"
+fi
+recent+=("$NOW")
+
+tmp="$(mktemp "$(dirname "$STATE_FILE")/.bootloop_guard.XXXXXX" 2>/dev/null)" || tmp=""
+if [[ -n "$tmp" ]]; then
+    printf '%s\n' "${recent[@]}" > "$tmp" && mv -f "$tmp" "$STATE_FILE" \
+        || { rm -f "$tmp"; emit error "reason=state_write_failed file=$STATE_FILE"; }
+else
+    emit error "reason=state_tmp_failed dir=$(dirname "$STATE_FILE")"
+fi
+
+count="${#recent[@]}"
+
+# ---- 2. Discover the reboot-escalating units ------------------------------
+
+# Self-maintaining: any installed unit that declares
+# StartLimitAction=reboot is guarded — a future unit added to the T5.1
+# ladder is covered with no edit here.
+units=()
+for f in "$UNITS_DIR"/*.service; do
+    [[ -f "$f" ]] || continue
+    if grep -q '^StartLimitAction=reboot$' "$f" 2>/dev/null; then
+        units+=("$(basename "$f")")
+    fi
+done
+
+units_json=""
+for u in "${units[@]:-}"; do
+    [[ -n "$u" ]] || continue
+    units_json+="${units_json:+, }\"${u}\""
+done
+
+write_marker() {
+    # $1 = "true"/"false" (tripped). Fail-open: a marker write failure
+    # is logged and ignored — observability must not block the boot.
+    local tripped="$1"
+    if ! mkdir -p "$(dirname "$MARKER_FILE")" 2>/dev/null; then
+        emit error "reason=marker_dir_unwritable dir=$(dirname "$MARKER_FILE")"
+        return 0
+    fi
+    printf '{"tripped": %s, "boots_in_window": %d, "threshold": %d, "window_sec": %d, "checked_at": %d, "reason": "%s", "units": [%s]}\n' \
+        "$tripped" "$count" "$THRESHOLD" "$WINDOW_SEC" "$NOW" "$REASON" \
+        "$units_json" > "$MARKER_FILE" 2>/dev/null \
+        || emit error "reason=marker_write_failed file=$MARKER_FILE"
+}
+
+# ---- 3. Healthy boot: arm and exit ----------------------------------------
+
+if (( count < THRESHOLD )); then
+    write_marker false
+    emit ok "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units=${#units[@]}"
+    exit 0
+fi
+
+# ---- 4. Tripped: neuter reboot escalation for THIS boot --------------------
+
+if [[ "${#units[@]}" -eq 0 ]]; then
+    write_marker false
+    emit ok "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units=0 note=no_reboot_units"
+    exit 0
+fi
+
+wrote=0
+for u in "${units[@]}"; do
+    d="$DROPIN_DIR/${u}.d"
+    if ! mkdir -p "$d" 2>/dev/null; then
+        emit error "reason=dropin_dir_failed dir=$d"
+        continue
+    fi
+    if cat > "$d/$DROPIN_NAME" 2>/dev/null <<EOF
+# Written by jasper-bootloop-guard: ${count} boots within ${WINDOW_SEC}s
+# looks like a StartLimitAction=reboot loop (permanent daemon failure).
+# Reboot escalation is disabled for THIS BOOT ONLY so the Pi stays
+# reachable; Restart= policy is untouched, so the sick unit keeps
+# retrying and stays visible to systemctl / jasper-doctor. This file
+# lives in /run and clears itself on the next boot.
+# See AGENTS.md "T5.2" + docs/HANDOFF-tier5-watchdog-liveness.md.
+[Unit]
+StartLimitAction=none
+EOF
+    then
+        wrote=$((wrote + 1))
+    else
+        emit error "reason=dropin_write_failed file=$d/$DROPIN_NAME"
+    fi
+done
+
+if (( wrote > 0 )); then
+    if ! "$SYSTEMCTL" daemon-reload >/dev/null 2>&1; then
+        emit error "reason=daemon_reload_failed"
+    fi
+fi
+
+write_marker true
+emit tripped "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units_guarded=${wrote}/${#units[@]}"
+log "reboot escalation disabled for this boot (${wrote} unit drop-ins in $DROPIN_DIR)." \
+    "Units keep restart-looping; fix the failing daemon, then reboot to re-arm."
+exit 0

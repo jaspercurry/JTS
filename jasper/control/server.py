@@ -51,6 +51,7 @@ from ..audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from . import (
+    bootloop_guard_state,
     debug_control,
     mpris,
     shairport_supervisor,
@@ -1555,6 +1556,13 @@ async def _get_state(
             # no resident daemon to ask (the guardian is Type=oneshot).
             # Fail-soft inside the snapshot itself; never raises.
             "wifi_guardian": wifi_guardian_state.snapshot(),
+            # Boot-loop guard (cross-boot circuit breaker for the T5.1
+            # StartLimitAction=reboot ladder). Fresh marker read per
+            # call; {"ran": false} when the oneshot hasn't run this
+            # boot. tripped=true means reboot escalation is disarmed
+            # for this boot via runtime drop-ins — fix the failing
+            # daemon, then reboot to re-arm.
+            "bootloop_guard": bootloop_guard_state.snapshot(),
         },
         "home_assistant": ha_status,
         # Multiroom grouping (off by default). null only if the fresh
