@@ -7,6 +7,7 @@ hardware-free — pure source / docstring inspection, no device or network.
 from __future__ import annotations
 
 import inspect
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -97,7 +98,12 @@ def test_wake_telemetry_doc_uses_1gb_not_500mb(monkeypatch):
     doc = _read("docs/HANDOFF-wake-telemetry.md")
     assert "500 MB" not in doc
     assert "once per hour" not in doc
-    assert "Last verified: 2026-06-05" in doc
+    # Footer must be at least as fresh as the 2026-06-04 sweep's
+    # re-verification. Not an exact-date pin: legitimate later
+    # re-verifications bump the footer (AGENTS.md doc rule 3).
+    m = re.search(r"Last verified: (\d{4}-\d{2}-\d{2})", doc)
+    assert m, "HANDOFF-wake-telemetry.md is missing its Last verified footer"
+    assert m.group(1) >= "2026-06-05"
 
 
 def test_correction_init_points_at_real_apply_path():

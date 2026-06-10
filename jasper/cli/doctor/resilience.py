@@ -187,7 +187,10 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
     )
 
 
-@doctor_check(order=80, group="resilience")
+# 78.5: slots between the last sync check (order=78) and the async
+# CamillaDSP websocket check (order=79), which must sort last — the
+# registry invariant pinned by tests/test_doctor_registry.py.
+@doctor_check(order=78.5, group="resilience")
 def check_bootloop_guard() -> CheckResult:
     """Surface the boot-loop guard marker (T5.1 circuit breaker).
 
