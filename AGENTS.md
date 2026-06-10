@@ -124,27 +124,34 @@ from a plain `Mapping[str, str]` (the daemon passes `os.environ`). A
 registry (`CITY_PACKS` → derived `REGISTRY`) groups them; the daemon calls
 one entry point (`active_transit(env)`) and iterates with **zero
 per-provider knowledge** — adding a provider/city needs no `config.py` and
-no `voice_daemon.py` edit. The next LLM voice provider is the same shape
-(the `LiveConnection` interface in
-[`jasper/voice/session.py`](jasper/voice/session.py) — a registry of
-interchangeable implementations behind one interface). The price: the
+no `voice_daemon.py` edit. The next LLM voice provider's *runtime* is the
+same shape (the `LiveConnection` interface in
+[`jasper/voice/session.py`](jasper/voice/session.py) + the `PROVIDERS`
+registry in [`jasper/voice/catalog.py`](jasper/voice/catalog.py) —
+interchangeable implementations behind one interface). It's a partial hybrid,
+though: a provider's API key + model ride **typed `Config`** (`gemini_api_key`,
+… — pattern 1), *not* a per-provider `build_client(env)`, so unlike transit,
+adding one DOES touch [`jasper/config.py`](jasper/config.py). The price: the
 plugin owns ALL its surfaces (wizard card, tool factory, client,
 validation) — see the 7-item checklist in
 [`jasper/transit/__init__.py`](jasper/transit/__init__.py)'s module
 docstring.
 
 **3 — Pure-data registry + reconciler owns env I/O (the wake-model / AEC /
-future-DAC pattern).** For hardware variants chosen at runtime where the
+DAC pattern).** For hardware variants chosen at runtime where the
 hardware may or may not be present. A pure-data registry *describes* the
 variants ([`jasper/wake_models.py`](jasper/wake_models.py)'s `REGISTRY` of
 `WakeModelEntry`; the `JASPER_AUDIO_INPUT_PROFILE` profiles); a
 **reconciler** owns writing the concrete device env — `jasper-aec-reconcile`
 is the *single writer* of `JASPER_MIC_DEVICE_*`, mapping "selected profile
 + hardware actually present" → resolved devices, and self-heals as hardware
-comes and goes. Daemons **read** the resolved env; they never choose. A
-future DAC registry should follow this: pure-data DAC descriptors + an
-init/reconciler that writes the ALSA / CamillaDSP device config, **not**
-typed `Config` fields per DAC. Why a reconciler and not the wizard alone:
+comes and goes. Daemons **read** the resolved env; they never choose. The
+DAC registry already follows this —
+[`jasper/audio_hardware/dac.py`](jasper/audio_hardware/dac.py)'s pure-data
+`DacProfile` `REGISTRY`, with `jasper-audio-hardware-reconcile` /
+`jasper-dac-init` writing the ALSA / CamillaDSP device config (**not** typed
+`Config` fields per DAC); a new DAC is one more `DacProfile` entry. Why a
+reconciler and not the wizard alone:
 hardware presence is dynamic, so resolution must re-run on boot / hotplug,
 not once at save time.
 
