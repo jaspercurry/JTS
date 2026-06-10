@@ -45,6 +45,7 @@ title = "Deploy, install, and first-run onboarding"
 safety = "boot-risk"
 code = [
   "deploy/install.sh",
+  "deploy/lib/install/**",
   "deploy/provenance.toml",
   "deploy/configure-bluez.sh",
   "deploy/nginx-jasper.conf",
