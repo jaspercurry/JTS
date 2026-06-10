@@ -220,6 +220,7 @@ code = [
   "jasper/wake_models.py",
   "jasper/wake_events.py",
   "jasper/wake_ports.py",
+  "jasper/wake_training/**",
   "jasper/web/wake_setup.py",
   "jasper/web/wake_corpus_setup.py",
   "jasper/wake_corpus/**",

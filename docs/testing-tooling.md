@@ -332,9 +332,11 @@ not the normal path.
 
 The negative builder reuses the same WAV format checks, SHA-256 verification,
 end-aligned 2-second window, and ONNX feature extraction contract as the
-positive feature-bank builder. Its summary includes selected duration hours by
-label kind and leg, because false-accept analysis is measured in hours, not
-clip counts.
+positive feature-bank builder through `jasper/wake_training/feature_bank.py`.
+Its summary includes selected duration hours by label kind and leg, because
+false-accept analysis is measured in hours, not clip counts. New wake-training
+data-prep scripts should reuse that shared module instead of importing private
+helpers from another CLI script.
 
 It does not generate positives, train, score, launch cloud jobs, register,
 deploy, activate, or alter Pi runtime state.
