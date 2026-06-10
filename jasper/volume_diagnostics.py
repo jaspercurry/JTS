@@ -13,11 +13,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .atomic_io import atomic_write_text
 from .music_sources import Source, VolumeMode, volume_mode
 
 logger = logging.getLogger(__name__)
@@ -69,23 +69,10 @@ def _read(path: str | None = None) -> dict[str, Any]:
 def _write(snapshot: dict[str, Any], path: str | None = None) -> None:
     p = Path(diagnostics_path(path))
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
         body = json.dumps(snapshot, indent=2, sort_keys=True)
-        fd, tmp = tempfile.mkstemp(
-            prefix=".volume_policy.",
-            suffix=".tmp",
-            dir=str(p.parent),
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(body)
-            os.replace(tmp, p)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        # mode=0o600 preserves the mode the previous hand-rolled mkstemp
+        # writer published (mkstemp creates 0600 and never chmod'd).
+        atomic_write_text(p, body, mode=0o600)
     except OSError as e:
         logger.debug("volume diagnostics write failed for %s: %s", p, e)
 

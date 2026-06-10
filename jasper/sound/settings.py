@@ -22,11 +22,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..atomic_io import atomic_write_text
 from .profile import SoundProfile, loudness_compensation_db
 
 logger = logging.getLogger(__name__)
@@ -105,18 +105,11 @@ def save_sound_settings(
     settings: SoundSettings, path: str | Path | None = None
 ) -> None:
     settings_path = _settings_path(path)
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(settings.to_dict(), indent=2, sort_keys=True) + "\n"
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=settings_path.parent,
-        prefix=f".{settings_path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as f:
-        f.write(data)
-        tmp_name = f.name
-    os.replace(tmp_name, settings_path)
+    # mode=0o600 preserves the mode the previous hand-rolled
+    # NamedTemporaryFile writer published (tempfiles are created 0600
+    # and the old writer never chmod'd before the rename).
+    atomic_write_text(settings_path, data, mode=0o600)
 
 
 def output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:
