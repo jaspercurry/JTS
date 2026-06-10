@@ -116,6 +116,7 @@ Separated by I/O profile so each piece is independently testable.
 | [jasper/web/peering_setup.py](../jasper/web/peering_setup.py) | New `/peers/` wizard on port 8776. Toggle + room label + primary flag. Writes `/var/lib/jasper/peering.env`, restarts both voice + control daemons. |
 | [deploy/avahi/jasper-peer.service.template](../deploy/avahi/jasper-peer.service.template) | mDNS service-file template with `__PEER_ID__` / `__ROOM__` / `__PRIMARY__` placeholders, rendered at runtime. |
 | [deploy/install.sh:install_peering_template()](../deploy/install.sh) | Installs the template, generates a stable `peer_id` UUID at `/var/lib/jasper/peer_id`. |
+| [deploy/systemd/jasper-voice.service](../deploy/systemd/jasper-voice.service) + [jasper-control.service](../deploy/systemd/jasper-control.service) | **Both** units must source `EnvironmentFile=-/var/lib/jasper/peering.env` so `JASPER_PEERING` reaches each daemon's `Config`. jasper-voice was missing the line — peering stayed off on the wake-arbitration side even when the wizard enabled it. Guarded by `tests/test_peering_plumbing.py`. |
 
 ---
 
@@ -585,5 +586,7 @@ If you are a fresh Claude or LLM landing here:
    the multi-mic-around-one-Pi case. This doc is the multi-Pi
    variant.
 
-Last verified: 2026-05-27 (footer/status check; peering code paths not
-changed in this PR)
+Last verified: 2026-06-10 (env-sourcing contract re-verified against code:
+jasper-voice.service was NOT sourcing peering.env, so Config.peering_enabled
+was pinned off on the wake-arbitration side; fixed + guarded by
+tests/test_peering_plumbing.py. Other peering code paths unchanged.)

@@ -91,6 +91,15 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 # so a missing file just leaves smart-home control disabled.
 # See docs/HANDOFF-homeassistant.md.
 EnvironmentFile=-/var/lib/jasper/home_assistant.env
+# Multi-device wake arbitration (JASPER_PEERING) written by the wizard at
+# http://jts.local/peers/. jasper-voice is a CLIENT of jasper-control's
+# peering UDS: Config.peering_enabled reads JASPER_PEERING here to decide
+# whether WakeLoop arbitrates each wake with peers or behaves solo. Without
+# this line the daemon never saw JASPER_PEERING, so peering stayed off even
+# after the wizard enabled it. Sourced AFTER /etc/jasper/jasper.env so
+# wizard values win; optional via leading `-` (absent => solo). MUST match
+# jasper-control.service, which also sources it — both daemons read it.
+EnvironmentFile=-/var/lib/jasper/peering.env
 # Assistant audio routes to fan-in's outputd-compatible local socket so
 # TTS/cues enter before CamillaDSP, then get the same crossover,
 # correction, and protection path as renderer audio. The transport name
