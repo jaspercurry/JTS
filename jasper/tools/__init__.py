@@ -200,6 +200,21 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     params = _params_schema(fn)
     decl_providers = getattr(fn, "__jasper_tool_providers__", None)
     decl_timeout = getattr(fn, "__jasper_tool_timeout__", DEFAULT_TOOL_TIMEOUT_SEC)
+    if not asyncio.iscoroutinefunction(fn):
+        # One line per registration (daemon startup), not per dispatch.
+        # `dispatch_tool` runs a non-coroutine fn INLINE on the voice
+        # event loop and its `asyncio.wait_for` budget only covers
+        # awaitables — a slow sync body stalls wake detection and audio
+        # playout with no timeout. Every shipped tool is `async def`
+        # (blocking backends go through asyncio.to_thread inside the
+        # tool); this flags the stragglers before they ship.
+        logger.warning(
+            "event=tool.sync_fn tool=%s — fn is not a coroutine function; "
+            "it runs inline on the event loop with no %.0fs dispatch "
+            "timeout. Make it `async def` and wrap blocking work in "
+            "asyncio.to_thread.",
+            declared, DEFAULT_TOOL_TIMEOUT_SEC,
+        )
     return Tool(
         name=declared,
         description=desc,
