@@ -561,7 +561,7 @@ def build_startup_load_preflight(
         ),
         _gate(
             "software_guard_ready",
-            label="Compression-driver guard evidence is ready",
+            label="High-frequency guard evidence is ready",
             passed=software_guard_ready,
             message=(
                 "Software-guarded startup evidence is ready"

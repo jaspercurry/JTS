@@ -14,6 +14,7 @@ from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from .audible_policy import audible_policy_payload
 from .calibration_level import calibration_level_payload, clamp_test_level_dbfs
+from .driver_protection import driver_protection_payload, driver_protection_profile
 from .tone_plan import (
     DEFAULT_TONE_DURATION_MS,
     MIN_TONE_DURATION_MS,
@@ -52,7 +53,14 @@ def _target(
     return None
 
 
-def _role_tone(role: str) -> tuple[float, dict[str, Any]]:
+def _role_tone(role: str, *, driver_style: Any = None) -> tuple[float, dict[str, Any]]:
+    profile = driver_protection_profile(role, driver_style=driver_style)
+    if profile.role_class == "high_frequency":
+        highpass = profile.min_highpass_hz or 5000.0
+        return profile.floor_test_frequency_hz, {
+            "type": "highpass",
+            "highpass_hz": highpass,
+        }
     if role == "subwoofer":
         return 50.0, {"type": "lowpass", "lowpass_hz": 120.0}
     if role == "woofer":
@@ -63,8 +71,6 @@ def _role_tone(role: str) -> tuple[float, dict[str, Any]]:
             "highpass_hz": 250.0,
             "lowpass_hz": 3000.0,
         }
-    if role == "tweeter":
-        return 3000.0, {"type": "highpass", "highpass_hz": 2000.0}
     return 500.0, {"type": "role_band_limited"}
 
 
@@ -149,7 +155,15 @@ def build_topology_tone_plan(
             )
         )
 
-    frequency_hz, band_limit = _role_tone(role_id)
+    driver_style = channel.driver_style if channel else None
+    protection_status = channel.protection_status if channel else None
+    frequency_hz, band_limit = _role_tone(role_id, driver_style=driver_style)
+    driver_protection = driver_protection_payload(
+        role_id,
+        driver_style=driver_style,
+        protection_status=protection_status,
+        band_limit=band_limit,
+    )
     level = calibration_level_payload(requested_level_dbfs=requested_level_dbfs)
     level_dbfs = _finite_level(requested_level_dbfs)
     duration_ms = _clamp_int(
@@ -188,6 +202,7 @@ def build_topology_tone_plan(
             "side": group.kind if group and group.kind in {"left", "right", "mono"} else None,
             "role": channel.role if channel else role_id,
             "driver_role": channel.role if channel else role_id,
+            "driver_style": driver_style,
             "output_index": channel.physical_output_index if channel else None,
             "label": label,
         },
@@ -200,6 +215,7 @@ def build_topology_tone_plan(
             "band_limit": band_limit,
         },
         "calibration_level": level,
+        "driver_protection": driver_protection,
         "clamps": {
             "min_duration_ms": MIN_TONE_DURATION_MS,
             "max_duration_ms": MAX_TONE_DURATION_MS,
@@ -220,7 +236,10 @@ def build_topology_tone_plan(
             "requires_emergency_stop": True,
             "artifact_verification_available": True,
             "audible_playback_allowed": playback_allowed,
-            "audible_test": audible_policy_payload(role_id),
+            "audible_test": audible_policy_payload(
+                role_id,
+                driver_protection=driver_protection,
+            ),
         },
         "issues": issues,
         "next_step": (

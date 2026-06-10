@@ -67,6 +67,14 @@ from .calibration_level import (
     load_calibration_level_state,
     update_calibration_level_state,
 )
+from .driver_protection import (
+    AUTO_LEVEL_DECISION_KIND,
+    DRIVER_PROTECTION_KIND,
+    DRIVER_PROTECTION_POLICY_VERSION,
+    auto_level_decision,
+    driver_protection_payload,
+    driver_protection_profile,
+)
 from .tone_plan import (
     DEFAULT_PRESET_RESOURCE,
     TONE_PLAN_KIND,
@@ -118,6 +126,8 @@ __all__ = [
     "DEFAULT_PRESET_RESOURCE",
     "DEFAULT_PATH_SAFETY_EVIDENCE_PATH",
     "DEFAULT_TEST_LEVEL_DBFS",
+    "DRIVER_PROTECTION_KIND",
+    "DRIVER_PROTECTION_POLICY_VERSION",
     "ENVIRONMENT_REPORT_KIND",
     "HARDWARE_PROBE_EVIDENCE_SOURCE",
     "MAX_TEST_LEVEL_DBFS",
@@ -141,6 +151,7 @@ __all__ = [
     "TONE_BACKEND_STATUS_KIND",
     "TONE_PLAYBACK_ARTIFACT_KIND",
     "TONE_PLAYBACK_RESULT_KIND",
+    "AUTO_LEVEL_DECISION_KIND",
     "ACTIVE_PLAYBACK_DEVICE_ENV",
     "AplayTonePlaybackBackend",
     "ActiveChannelMap",
@@ -161,6 +172,9 @@ __all__ = [
     "calibration_level_payload",
     "clamp_test_level_dbfs",
     "classify_mic_meter",
+    "auto_level_decision",
+    "driver_protection_payload",
+    "driver_protection_profile",
     "load_calibration_level_state",
     "emit_active_speaker_startup_config",
     "evaluate_path_safety_evidence",

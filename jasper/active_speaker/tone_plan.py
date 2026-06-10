@@ -20,6 +20,7 @@ from .calibration_level import (
     calibration_level_payload,
     clamp_test_level_dbfs,
 )
+from .driver_protection import driver_protection_payload, driver_protection_profile
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, OutputChannel
 
 SCHEMA_VERSION = 1
@@ -122,7 +123,17 @@ def _tone_frequency_hz(
     preset: ActiveSpeakerPreset,
     role: str,
 ) -> tuple[float, dict[str, Any]]:
+    profile = driver_protection_profile(role)
     lower_edge, upper_edge = _crossovers_for_role(preset, role)
+    if profile.role_class == "high_frequency":
+        highpass = max(
+            lower_edge or 0.0,
+            profile.min_highpass_hz or 5000.0,
+        )
+        return profile.floor_test_frequency_hz, {
+            "type": "highpass",
+            "highpass_hz": highpass,
+        }
     if lower_edge and upper_edge:
         frequency = math.sqrt(lower_edge * upper_edge)
         return round(frequency, 1), {
@@ -203,6 +214,11 @@ def build_safe_tone_plan(
 
     role = target.driver_role if target else (driver_role or "unknown")
     frequency_hz, band_limit = _tone_frequency_hz(preset, role)
+    driver_protection = driver_protection_payload(
+        role,
+        protection_status="software_guard_requested" if role == "tweeter" else None,
+        band_limit=band_limit,
+    )
     level = calibration_level_payload(requested_level_dbfs=requested_level_dbfs)
     level_dbfs = clamp_test_level_dbfs(requested_level_dbfs)
     duration_ms = _clamp_int(
@@ -240,6 +256,7 @@ def build_safe_tone_plan(
             "band_limit": band_limit,
         },
         "calibration_level": level,
+        "driver_protection": driver_protection,
         "clamps": {
             "min_level_dbfs": MIN_TONE_LEVEL_DBFS,
             "max_level_dbfs": MAX_TONE_LEVEL_DBFS,

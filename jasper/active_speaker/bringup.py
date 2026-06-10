@@ -1,6 +1,6 @@
 """Bring-up preflight contract for active-speaker commissioning.
 
-This module answers a narrow product question before any audible horn work:
+This module answers a narrow product question before audible driver work:
 "Can the operator continue in guided calibration mode, or only in manual
 software-guarded bring-up mode?"  It deliberately does not open microphones,
 play tones, load CamillaDSP, or mutate state.
@@ -102,7 +102,7 @@ def _guard_summary(
             "software_guard_ready": False,
             "required_tweeter_count": 0,
             "targets": [],
-            "message": "No compression-driver protection gate is required.",
+            "message": "No high-frequency protection gate is required.",
         }
 
     present = [
@@ -121,7 +121,7 @@ def _guard_summary(
     if missing:
         status = "missing"
         accepted = False
-        message = "Compression-driver protection is not declared for every tweeter."
+        message = "High-frequency protection is not declared for every tweeter."
     elif len(present) == len(tweeters):
         status = "hardware_present"
         accepted = True
@@ -311,8 +311,8 @@ def build_bringup_preflight(
             ),
         ),
         _gate(
-            "compression_driver_guard_accepted",
-            label="Compression-driver guard is accepted",
+            "high_frequency_guard_accepted",
+            label="High-frequency guard is accepted",
             passed=bool(guard["accepted_for_manual_bringup"]),
             message=str(guard["message"]),
         ),
@@ -400,11 +400,17 @@ def build_bringup_preflight(
         issue for issue in environment_report.get("issues", [])
         if isinstance(issue, dict)
     )
+    if not guard["accepted_for_manual_bringup"]:
+        issues.append(_issue(
+            "blocker",
+            "high_frequency_guard_not_ready",
+            str(guard["message"]),
+        ))
     if not level_at_floor:
         issues.append(_issue(
             "warning",
             "calibration_level_not_at_floor",
-            "reset calibration level before first horn bring-up",
+            "reset calibration level before first high-frequency bring-up",
         ))
     if not microphone["capture_works"]:
         issues.append(_issue(
@@ -457,6 +463,6 @@ def build_bringup_preflight(
             if guided["available"]
             else "Manual software-guarded bring-up can continue without a mic."
             if manual["available"]
-            else "Resolve preflight blockers before horn bring-up."
+            else "Resolve preflight blockers before high-frequency bring-up."
         ),
     }

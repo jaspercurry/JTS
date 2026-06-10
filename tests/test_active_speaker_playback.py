@@ -20,6 +20,8 @@ from jasper.active_speaker.playback import (
 )
 from jasper.active_speaker.safe_playback import (
     arm_safe_playback_session,
+    floor_audio_confirmed_for_target,
+    record_floor_audio_operator_result,
     record_safe_playback_result,
     stop_safe_playback_session,
 )
@@ -185,17 +187,43 @@ def test_wav_artifact_backend_renders_only_target_output_channel(
     metadata = json.loads(Path(artifact["metadata_path"]).read_text())
     assert metadata["audio_emitted"] is False
     assert metadata["target"]["output_index"] == 1
-    assert metadata["audible_test"] == {
-        "policy_version": "woofer_mid_low_level_v1",
-        "allowed_roles": ["mid", "subwoofer", "woofer"],
-        "target_role": "tweeter",
-        "target_role_allowed": False,
-    }
+    assert metadata["audible_test"]["policy_version"] == (
+        "driver_protection_auto_level_v1"
+    )
+    assert metadata["audible_test"]["target_role"] == "tweeter"
+    assert metadata["driver_protection"]["role_class"] == "high_frequency"
     assert metadata["safety"] == {
         "protected_startup_loaded": False,
         "safe_session_id": "session-test",
     }
     assert metadata["wav"]["channel_count"] == 2
+
+
+def test_wav_artifact_metadata_recomputes_stale_driver_protection(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        **_plan(),
+        "target": {
+            **_plan()["target"],
+            "driver_role": "woofer",
+            "output_index": 0,
+        },
+    }
+    backend = WavArtifactTonePlaybackBackend(artifact_dir=tmp_path)
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=backend,
+        now=lambda: 1000,
+    )
+
+    metadata = json.loads(Path(result["artifact"]["metadata_path"]).read_text())
+    assert metadata["target"]["output_index"] == 0
+    assert metadata["audible_test"]["target_role"] == "woofer"
+    assert metadata["driver_protection"]["role"] == "woofer"
+    assert metadata["driver_protection"]["role_class"] == "low_frequency"
 
 
 def test_wav_artifact_backend_enforces_writer_caps_for_direct_use(
@@ -308,7 +336,7 @@ def test_start_tone_playback_passes_bounded_tone_to_backend() -> None:
         assert backend.plan["tone"][key] == value
     assert backend.plan["tone"]["band_limit"] == {
         "type": "highpass",
-        "highpass_hz": 1600.0,
+        "highpass_hz": 5000.0,
     }
 
 
@@ -458,12 +486,12 @@ def test_aplay_backend_runs_generated_artifact_when_audio_is_authorized(
     assert result["backend"] == "aplay"
     assert result["audio_emitted"] is True
     assert result["audio_device"] == {"pcm": "hw:Active", "command": "aplay"}
-    assert result["audible_test"] == {
-        "policy_version": "woofer_mid_low_level_v1",
-        "allowed_roles": ["mid", "subwoofer", "woofer"],
-        "target_role": "woofer",
-        "target_role_allowed": True,
-    }
+    assert result["audible_test"]["policy_version"] == (
+        "driver_protection_auto_level_v1"
+    )
+    assert result["audible_test"]["target_role"] == "woofer"
+    assert result["audible_test"]["target_role_allowed"] is True
+    assert result["driver_protection"]["role_class"] == "low_frequency"
     assert result["artifact"]["wav_basename"].startswith("tone_")
     assert calls
     assert calls[0][0][:4] == ["/usr/bin/aplay", "-q", "-D", "hw:Active"]
@@ -547,7 +575,71 @@ def test_audio_backend_resets_floor_requirement_when_target_changes(
     }
 
 
-def test_audio_backend_refuses_tweeter_in_first_audible_slice(
+def test_audio_backend_allows_high_frequency_floor_when_protected(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        **_with_loaded_startup(_plan()),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+    }
+    plan["tone"] = {**plan["tone"], "level_dbfs": -80.0}
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "completed"
+    assert result["audio_emitted"] is True
+    assert result["audible_test"]["target_role_allowed"] is True
+    assert result["driver_protection"]["role_class"] == "high_frequency"
+
+
+def test_audio_backend_refuses_high_frequency_without_highpass(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        **_with_loaded_startup(_plan()),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+    }
+    plan["tone"] = {
+        **plan["tone"],
+        "frequency_hz": 1000.0,
+        "level_dbfs": -80.0,
+    }
+    plan["tone"].pop("band_limit", None)
+
+    result = start_tone_playback(
+        plan,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["audio_emitted"] is False
+    assert "high_frequency_highpass_missing" in {
+        issue["code"] for issue in result["issues"]
+    }
+
+
+def test_audio_backend_refuses_high_frequency_above_driver_cap(
     tmp_path: Path,
 ) -> None:
     plan = {
@@ -570,10 +662,48 @@ def test_audio_backend_refuses_tweeter_in_first_audible_slice(
     )
 
     assert result["status"] == "blocked"
-    assert "tweeter_audio_not_enabled" in {
+    assert "driver_auto_level_cap_exceeded" in {
         issue["code"] for issue in result["issues"]
     }
-    assert result["audible_test"]["target_role_allowed"] is False
+
+
+def test_audio_backend_ignores_plan_provided_high_frequency_cap(
+    tmp_path: Path,
+) -> None:
+    plan = {
+        **_with_loaded_startup(_plan()),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+    }
+    plan["tone"] = {
+        **plan["tone"],
+        "level_dbfs": -45.0,
+    }
+    plan["driver_protection"] = {
+        **plan["driver_protection"],
+        "audio_allowed": True,
+        "max_auto_level_dbfs": -45.0,
+    }
+
+    result = start_tone_playback(
+        plan,
+        safe_session=_floor_confirmed_session(plan),
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["audio_emitted"] is False
+    assert result["driver_protection"]["max_auto_level_dbfs"] == -65.0
+    assert "driver_auto_level_cap_exceeded" in {
+        issue["code"] for issue in result["issues"]
+    }
 
 
 def test_audio_backend_refuses_unlisted_role_in_first_audible_slice(
@@ -708,3 +838,123 @@ def test_safe_playback_state_records_and_stops_playback_result(
     assert stopped["status"] == "stopped"
     assert stopped["playback"]["status"] == "stopped"
     assert stopped["playback"]["playback_id"] == result["playback_id"]
+
+
+def test_floor_audio_requires_operator_confirmation(tmp_path: Path) -> None:
+    state_path = tmp_path / "safe-playback.json"
+    plan = _woofer_audio_plan(level_dbfs=-80.0)
+    armed = arm_safe_playback_session(
+        _environment(),
+        state_path=state_path,
+        now=lambda: 1000,
+    )
+    playback = start_tone_playback(
+        plan,
+        safe_session=armed,
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1001,
+    )
+
+    pending = record_safe_playback_result(
+        playback,
+        state_path=state_path,
+        now=lambda: 1002,
+    )
+
+    assert pending["quiet_start"]["status"] == "floor_pending_operator"
+    assert pending["quiet_start"]["floor_audio_confirmed"] is False
+    assert floor_audio_confirmed_for_target(pending, playback["target"]) is False
+
+    confirmed = record_floor_audio_operator_result(
+        outcome="heard_correct_driver",
+        playback_id=playback["playback_id"],
+        state_path=state_path,
+        now=lambda: 1003,
+    )
+
+    assert confirmed["quiet_start"]["status"] == "floor_confirmed"
+    assert confirmed["quiet_start"]["floor_audio_confirmed"] is True
+    assert floor_audio_confirmed_for_target(confirmed, playback["target"]) is True
+
+
+def test_bad_floor_audio_operator_result_resets_floor_gate(tmp_path: Path) -> None:
+    state_path = tmp_path / "safe-playback.json"
+    plan = _woofer_audio_plan(level_dbfs=-80.0)
+    armed = arm_safe_playback_session(
+        _environment(),
+        state_path=state_path,
+        now=lambda: 1000,
+    )
+    playback = start_tone_playback(
+        plan,
+        safe_session=armed,
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1001,
+    )
+    record_safe_playback_result(playback, state_path=state_path, now=lambda: 1002)
+
+    rejected = record_floor_audio_operator_result(
+        outcome="heard_wrong_driver",
+        playback_id=playback["playback_id"],
+        state_path=state_path,
+        now=lambda: 1003,
+    )
+
+    assert rejected["quiet_start"]["status"] == "floor_required"
+    assert rejected["quiet_start"]["floor_audio_confirmed"] is False
+    assert rejected["quiet_start"]["last_operator_result"]["outcome"] == (
+        "heard_wrong_driver"
+    )
+
+
+def test_stale_floor_audio_operator_result_preserves_pending_gate(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "safe-playback.json"
+    plan = _woofer_audio_plan(level_dbfs=-80.0)
+    armed = arm_safe_playback_session(
+        _environment(),
+        state_path=state_path,
+        now=lambda: 1000,
+    )
+    playback = start_tone_playback(
+        plan,
+        safe_session=armed,
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1001,
+    )
+    pending = record_safe_playback_result(
+        playback,
+        state_path=state_path,
+        now=lambda: 1002,
+    )
+
+    rejected = record_floor_audio_operator_result(
+        outcome="heard_correct_driver",
+        playback_id="stale-playback-id",
+        state_path=state_path,
+        now=lambda: 1003,
+    )
+
+    assert pending["quiet_start"]["status"] == "floor_pending_operator"
+    assert rejected["quiet_start"]["status"] == "floor_pending_operator"
+    assert rejected["quiet_start"]["pending_playback_id"] == playback["playback_id"]
+    assert rejected["quiet_start"]["floor_audio_confirmed"] is False
+    assert "playback_id_mismatch" in {
+        issue["code"] for issue in rejected["issues"]
+    }

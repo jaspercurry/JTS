@@ -196,10 +196,17 @@ backend accepts only one 1 dB upward step per transition and lets Lower,
 Reset, Stop, or clipping evidence return to the floor. The same route accepts
 an `action=observe` mic observation from the operator; it records coarse
 capture-level guidance without changing the requested test level unless
-clipping is reported. Tone-plan, readiness, and artifact routes consume the
-accepted persisted level rather than a caller-supplied `level_dbfs`. This is
-still only the software guard substrate: it does not write live CamillaDSP
-volume, emit samples, read the microphone directly, or claim calibrated SPL.
+clipping is reported. The same endpoint accepts `action=auto_step` only for a
+selected saved-channel readiness target; the backend resolves the target from
+the saved output map, reuses the current mic observation when the browser does
+not provide a new one, recomputes driver protection and same-target
+floor-audio evidence, and persists at most one bounded raise/lower/reset/hold
+transition. Every upward auto-level step requires same-target floor-audio
+evidence; missing evidence can still lower, reset, or hold. Tone-plan,
+readiness, and artifact routes consume the accepted
+persisted level rather than a caller-supplied `level_dbfs`. This is still only
+the software guard substrate: it does not write live CamillaDSP volume, emit
+samples, read the microphone directly, or claim calibrated SPL.
 The card can also **Verify tone artifact** through
 `/sound/active-speaker/play-tone`: this validates the selected logical output
 target and writes a bounded multi-channel WAV artifact with only that output
@@ -256,26 +263,29 @@ separately from
 and can verify artifacts only; explicit lab enablement
 (`JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
 `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
-`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`) can make saved woofer, mid, and
-subwoofer topology targets eligible for a short quiet audible test only after
-the protected startup DSP is loaded, current, and rollbackable. The UI labels
-that action as a quiet role-specific test, confirms the selected target before
-the POST, and records the shared `woofer_mid_low_level_v1` policy in the
-returned evidence. Tweeter/compression-driver and unlisted-role audio remains
-disabled in this slice even with the lab backend enabled. When the selected
-target is a tweeter/compression driver, the readiness card also shows a
-no-audio **Horn bring-up readiness** section. It summarizes whether the saved
-target is blocked, only a manual floor-test candidate, or a guided floor-test
-candidate based on protection mode, loaded protected startup DSP, Stop/session
-state, calibration floor, and operator-observed mic status. It always reports
-`audio_allowed: false` and includes a preview-only floor-test intent: a short
-high-passed 3 kHz sine at the calibration floor, tied to the selected output,
-with `would_play: false`. The safe session now also records quiet-start evidence:
+`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`) can make saved topology targets
+eligible for a short quiet audible test only after the protected startup DSP is
+loaded, current, rollbackable, and the selected driver role/style passes the
+driver-protection policy. The UI labels that action as a quiet role-specific
+test, confirms the selected target before the POST, and records the shared
+`driver_protection_auto_level_v1` policy in the returned evidence. Tweeter/
+high-frequency targets are no longer horn-specific: they require accepted
+physical or software-guarded protection, a protective high-pass, the
+driver-specific closed-loop cap, Stop/session gates, and the same floor-first
+quiet-start lifecycle. The playback endpoint recomputes that protection
+envelope from policy code and refuses missing high-pass evidence or
+plan-provided cap/allow overrides. When the selected target is a high-frequency
+driver, the readiness card shows a **High-frequency bring-up readiness** section
+with the protection profile, mic status, floor-test preview, and deterministic
+auto-level decision. Unknown high-frequency style defaults to a conservative
+5 kHz high-pass and -65 dBFS cap until the style is known. The safe session now
+also records quiet-start evidence:
 every armed session starts at
 `floor_required`; the backend rejects raised audible tests until a successful
-floor-level audible result has been recorded for the same saved target and
-session; artifact-only results do not unlock raised playback; Stop, expiry, or
-target change resets the phase. The safety card now renders that intended
+floor-level audible result has been operator-confirmed as the correct driver
+for the same saved target and session; artifact-only results and unconfirmed
+audio do not unlock raised playback; Stop, expiry, wrong-driver, silent, or
+too-loud outcomes reset the phase. The safety card now renders that intended
 operator sequence directly in `/sound/`: check environment, stage protected
 startup, check protected path, load protected startup, arm safe session, check
 one saved target, reset/lower to the test-level floor, verify an artifact
@@ -318,8 +328,8 @@ The active-speaker runtime substrate starts in
 `jasper.output_topology`, and the canonical safety/design plan lives in
 [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 The next `/sound/` slice should exercise the lab-gated quiet woofer/mid path on
-hardware, then use the operator-observed microphone loop before any horn output
-is enabled.
+hardware, then use the same driver-aware microphone loop for a protected
+high-frequency target.
 
 ## Files
 

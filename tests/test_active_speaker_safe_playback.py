@@ -6,6 +6,7 @@ from jasper.active_speaker.safe_playback import (
     SAFE_PLAYBACK_SESSION_KIND,
     arm_safe_playback_session,
     load_safe_playback_state,
+    record_floor_audio_operator_result,
     record_safe_playback_result,
     stop_safe_playback_session,
 )
@@ -148,7 +149,7 @@ def test_stop_safe_playback_is_idempotent(tmp_path: Path) -> None:
     assert stopped_again["session_id"] == armed["session_id"]
 
 
-def test_record_safe_playback_confirms_floor_audio_for_target(
+def test_record_safe_playback_marks_floor_audio_pending_operator_confirmation(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "state.json"
@@ -177,8 +178,9 @@ def test_record_safe_playback_confirms_floor_audio_for_target(
     )
 
     quiet = state["quiet_start"]
-    assert quiet["status"] == "floor_confirmed"
-    assert quiet["floor_audio_confirmed"] is True
+    assert quiet["status"] == "floor_pending_operator"
+    assert quiet["floor_audio_confirmed"] is False
+    assert quiet["pending_playback_id"] == "play-1"
     assert quiet["current_target"] == {
         "speaker_group_id": "mono",
         "role": "woofer",
@@ -186,6 +188,19 @@ def test_record_safe_playback_confirms_floor_audio_for_target(
     }
     assert quiet["last_level_dbfs"] == -80.0
     assert quiet["last_playback_at"] == "1970-01-01T00:16:41Z"
+
+    confirmed = record_floor_audio_operator_result(
+        outcome="heard_correct_driver",
+        playback_id="play-1",
+        state_path=path,
+        now=lambda: 1002,
+    )
+
+    assert confirmed["quiet_start"]["status"] == "floor_confirmed"
+    assert confirmed["quiet_start"]["floor_audio_confirmed"] is True
+    assert confirmed["quiet_start"]["last_operator_result"]["outcome"] == (
+        "heard_correct_driver"
+    )
 
 
 def test_record_safe_playback_does_not_confirm_artifact_only_result(
@@ -284,6 +299,12 @@ def test_record_safe_playback_target_change_resets_floor_confirmation(
         state_path=path,
         now=lambda: 1001,
     )
+    record_floor_audio_operator_result(
+        outcome="heard_correct_driver",
+        playback_id="play-1",
+        state_path=path,
+        now=lambda: 1002,
+    )
 
     state = record_safe_playback_result(
         {
@@ -300,7 +321,7 @@ def test_record_safe_playback_target_change_resets_floor_confirmation(
             "issues": [{"code": "floor_audio_not_confirmed"}],
         },
         state_path=path,
-        now=lambda: 1002,
+        now=lambda: 1003,
     )
 
     assert state["quiet_start"]["status"] == "floor_required"
@@ -310,3 +331,63 @@ def test_record_safe_playback_target_change_resets_floor_confirmation(
         "role": "mid",
         "output_index": 1,
     }
+
+
+def test_pending_floor_confirmation_survives_later_artifact_result(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.json"
+    arm_safe_playback_session(
+        _env_report(ok=True),
+        state_path=path,
+        now=lambda: 1000,
+    )
+    record_safe_playback_result(
+        {
+            "status": "completed",
+            "backend": "aplay",
+            "playback_id": "floor-1",
+            "audio_emitted": True,
+            "target": {
+                "speaker_group_id": "mono",
+                "driver_role": "woofer",
+                "output_index": 0,
+            },
+            "tone": {"level_dbfs": -80.0},
+            "issues": [],
+        },
+        state_path=path,
+        now=lambda: 1001,
+    )
+    state = record_safe_playback_result(
+        {
+            "status": "completed",
+            "backend": "wav_artifact",
+            "playback_id": "artifact-1",
+            "audio_emitted": False,
+            "target": {
+                "speaker_group_id": "mono",
+                "driver_role": "woofer",
+                "output_index": 0,
+            },
+            "tone": {"level_dbfs": -80.0},
+            "artifact": {"wav_basename": "tone.wav"},
+            "issues": [],
+        },
+        state_path=path,
+        now=lambda: 1002,
+    )
+
+    assert state["playback"]["playback_id"] == "artifact-1"
+    assert state["quiet_start"]["status"] == "floor_pending_operator"
+    assert state["quiet_start"]["pending_playback_id"] == "floor-1"
+
+    confirmed = record_floor_audio_operator_result(
+        outcome="heard_correct_driver",
+        playback_id="floor-1",
+        state_path=path,
+        now=lambda: 1003,
+    )
+
+    assert confirmed["quiet_start"]["status"] == "floor_confirmed"
+    assert confirmed["quiet_start"]["floor_audio_confirmed"] is True
