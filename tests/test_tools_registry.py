@@ -321,3 +321,40 @@ def test_real_spotify_play_kind_serializes_without_error():
     play = reg.get("spotify_play")
     assert play is not None
     assert "kind" in play.parameters["properties"]
+
+
+# ---------------------------------------------------------------------------
+# Sync-fn registration warning
+# ---------------------------------------------------------------------------
+def test_build_tool_warns_once_for_non_coroutine_fn(caplog):
+    """`dispatch_tool` runs a non-coroutine fn inline on the voice event
+    loop, outside the per-tool `asyncio.wait_for` budget — a slow sync
+    body stalls wake/audio with no timeout. Registration flags it once
+    (event=tool.sync_fn) so the straggler is visible at daemon startup,
+    not discovered as a mystery stall in production."""
+    @tool()
+    def blocking_lookup(q: str) -> dict:
+        """Engineer wrote a sync tool by mistake."""
+        return {"q": q}
+
+    with caplog.at_level("WARNING", logger="jasper.tools"):
+        built = build_tool(blocking_lookup)
+    assert built.name == "blocking_lookup"
+    warns = [
+        r for r in caplog.records if "event=tool.sync_fn" in r.getMessage()
+    ]
+    assert len(warns) == 1
+    assert "blocking_lookup" in warns[0].getMessage()
+
+
+def test_build_tool_is_silent_for_coroutine_fn(caplog):
+    @tool()
+    async def fine_tool() -> dict:
+        """The normal shape."""
+        return {"ok": True}
+
+    with caplog.at_level("WARNING", logger="jasper.tools"):
+        build_tool(fine_tool)
+    assert not [
+        r for r in caplog.records if "event=tool.sync_fn" in r.getMessage()
+    ]
