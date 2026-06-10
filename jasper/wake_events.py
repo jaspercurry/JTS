@@ -34,6 +34,14 @@ UPDATEs from different async tasks serialize cleanly. The DB calls
 are CPU-bound but short (~1ms each); we do NOT wrap them in
 `run_in_executor` because that adds more latency than it saves and
 SQLite's busy-handler covers the contention case.
+
+File I/O is the exception: WAV writes (up to 5 × ~190 KB per event)
+and the retention sweep's directory scan (~5k files at the 1 GB cap)
+run via `asyncio.to_thread` — on a busy SD card those stall for long
+enough to glitch the mic loop sharing the event loop. The sweep also
+keeps a running directory-size estimate between sweeps so the
+every-attach common case is O(1); the full scan only happens when the
+estimate crosses the cap (and once at startup to seed it).
 """
 from __future__ import annotations
 
@@ -243,8 +251,9 @@ def make_event_id(now: datetime | None = None, seq: int = 1) -> str:
     Sortability matters — flat file listings in
     /var/lib/jasper/wake-events/ stay chronological under the default
     `ls`. The 3-digit sequence handles burst-fires within the same
-    second (rare given the 0.7 s refractory, but possible after a
-    daemon restart in the same wall-clock second)."""
+    second (rare given the wake refractory window —
+    voice_daemon.WAKE_REFRACTORY_SEC — but possible after a daemon
+    restart in the same wall-clock second)."""
     now = now or datetime.now(timezone.utc)
     ts = now.strftime("%Y%m%dT%H%M%SZ")
     return f"{ts}-{seq:03d}"
@@ -296,6 +305,12 @@ class WakeEventStore:
         # then runs with a different loop. Initialising on first
         # async use side-steps this entirely.
         self._write_lock: asyncio.Lock | None = None
+        # Running estimate of total WAV bytes in the directory, kept
+        # current by attach_audio's writes and corrected by every full
+        # sweep scan. None until the first sweep seeds it. Lets the
+        # common (under-cap) retention check skip the O(n-files)
+        # directory stat walk entirely.
+        self._audio_bytes_estimate: int | None = None
 
     # ----- lifecycle ------------------------------------------------
 
@@ -457,8 +472,14 @@ class WakeEventStore:
 
         Any leg may be None — the audio path remains NULL for any
         leg that produced no audio (rare; bridge stalled, or
-        single-/dual-stream mode where the third leg isn't present)."""
+        single-/dual-stream mode where the third leg isn't present).
+
+        The WAV writes (up to 5 × ~190 KB) run on a worker thread —
+        a busy SD card can stall a synchronous write long enough to
+        glitch the mic loop that shares this event loop. Exceptions
+        still propagate; the caller's fail-soft wrapper owns them."""
         self._require_open()
+        to_write: list[tuple[str, bytes]] = []
         on_filename: str | None = None
         off_filename: str | None = None
         dtln_filename: str | None = None
@@ -466,19 +487,24 @@ class WakeEventStore:
         chip_aec_210_filename: str | None = None
         if audio_on is not None:
             on_filename = f"{event_id}.aec-on.wav"
-            _write_wav(self._base_dir / on_filename, audio_on)
+            to_write.append((on_filename, audio_on))
         if audio_off is not None:
             off_filename = f"{event_id}.aec-off.wav"
-            _write_wav(self._base_dir / off_filename, audio_off)
+            to_write.append((off_filename, audio_off))
         if audio_dtln is not None:
             dtln_filename = f"{event_id}.aec-dtln.wav"
-            _write_wav(self._base_dir / dtln_filename, audio_dtln)
+            to_write.append((dtln_filename, audio_dtln))
         if audio_chip_aec_150 is not None:
             chip_aec_150_filename = f"{event_id}.aec-chip-aec-150.wav"
-            _write_wav(self._base_dir / chip_aec_150_filename, audio_chip_aec_150)
+            to_write.append((chip_aec_150_filename, audio_chip_aec_150))
         if audio_chip_aec_210 is not None:
             chip_aec_210_filename = f"{event_id}.aec-chip-aec-210.wav"
-            _write_wav(self._base_dir / chip_aec_210_filename, audio_chip_aec_210)
+            to_write.append((chip_aec_210_filename, audio_chip_aec_210))
+        written_bytes = await asyncio.to_thread(
+            self._write_wavs_blocking, to_write,
+        )
+        if self._audio_bytes_estimate is not None:
+            self._audio_bytes_estimate += written_bytes
         async with self._lock():
             self._conn.execute(  # type: ignore[union-attr]
                 """
@@ -718,22 +744,62 @@ class WakeEventStore:
 
     # ----- retention ------------------------------------------------
 
+    def _write_wavs_blocking(
+        self, to_write: list[tuple[str, bytes]],
+    ) -> int:
+        """Write the per-leg WAVs (worker thread). Returns the total
+        on-disk bytes written so the caller can advance the running
+        directory-size estimate without a stat walk."""
+        written = 0
+        for filename, pcm in to_write:
+            path = self._base_dir / filename
+            _write_wav(path, pcm)
+            written += path.stat().st_size
+        return written
+
     async def _retention_sweep(self) -> None:
         """If total WAV bytes exceed the cap, delete oldest WAVs
         oldest-first until under the cap. The DB rows survive — only
         their audio_*_path values are rewritten to the sentinel so
         queries can still see which events used to have audio.
 
-        Called after every `attach_audio`. Cheap when under the cap
-        (a single dir-scan), more work when pruning kicks in (still
-        bounded — we never delete more than necessary)."""
+        Called after every `attach_audio`. Bounded cost: between
+        sweeps the directory size is tracked incrementally
+        (`_audio_bytes_estimate`), so the common under-cap case is a
+        single comparison — no per-attach stat walk over ~5k files at
+        the 1 GB cap. The full scan-and-prune (first call of a
+        process, or estimate over cap) runs on a worker thread and
+        re-seeds the estimate from real stat data, so estimate drift
+        (an operator rm, an external archive) self-corrects on the
+        next over-cap sweep."""
+        if (
+            self._audio_bytes_estimate is not None
+            and self._audio_bytes_estimate <= self._max_audio_bytes
+        ):
+            return
+        deleted_event_ids, total = await asyncio.to_thread(
+            self._scan_and_prune_blocking,
+        )
+        self._audio_bytes_estimate = total
+        if deleted_event_ids:
+            await self._mark_audio_rolled_off(deleted_event_ids)
+            logger.info(
+                "wake_events: retention pruned %d event(s) audio "
+                "(dir now %.1f MB / cap %.1f MB)",
+                len(deleted_event_ids),
+                total / (1024 * 1024),
+                self._max_audio_bytes / (1024 * 1024),
+            )
+
+    def _scan_and_prune_blocking(self) -> tuple[set[str], int]:
+        """Directory scan + oldest-first prune (worker thread).
+        Returns (event_ids whose audio was deleted, remaining total
+        WAV bytes)."""
         files = sorted(
             self._base_dir.glob("*.wav"),
             key=lambda p: (p.stat().st_mtime_ns, p.name),
         )
         total = sum(f.stat().st_size for f in files)
-        if total <= self._max_audio_bytes:
-            return
         deleted_event_ids: set[str] = set()
         for f in files:
             if total <= self._max_audio_bytes:
@@ -749,15 +815,7 @@ class WakeEventStore:
             # leg suffix to recover the event_id.
             event_id = f.name.rsplit(".aec-", 1)[0]
             deleted_event_ids.add(event_id)
-        if deleted_event_ids:
-            await self._mark_audio_rolled_off(deleted_event_ids)
-            logger.info(
-                "wake_events: retention pruned %d event(s) audio "
-                "(dir now %.1f MB / cap %.1f MB)",
-                len(deleted_event_ids),
-                total / (1024 * 1024),
-                self._max_audio_bytes / (1024 * 1024),
-            )
+        return deleted_event_ids, total
 
     async def _mark_audio_rolled_off(self, event_ids: Iterable[str]) -> None:
         """Bulk-UPDATE audio_*_path → sentinel for events whose WAVs

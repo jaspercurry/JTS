@@ -19,6 +19,7 @@ alone.
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import wave
 from datetime import datetime, timezone
@@ -1017,3 +1018,89 @@ async def test_record_flag_reason_with_pipe_character_preserved(
     # Pipe-laden reasons survive intact — parsers should split on
     # the FIRST pipe only.
     assert row["label_notes"].endswith("|said A|B|C as if")
+
+
+# ---------------------------------------------------------------------------
+# attach_audio / retention — blocking I/O stays off the event loop, and
+# the under-cap sweep is O(1) via the running size estimate.
+# ---------------------------------------------------------------------------
+
+
+async def test_attach_audio_file_io_runs_off_loop(store: WakeEventStore, monkeypatch):
+    """The WAV writes + the sweep's scan must go through
+    asyncio.to_thread — synchronous SD-card I/O on the loop glitches
+    the mic loop sharing it."""
+    offloaded: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def recording_to_thread(fn, *args, **kwargs):
+        offloaded.append(getattr(fn, "__name__", str(fn)))
+        return await real_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", recording_to_thread)
+    await store.begin_event(
+        event_id="evt-off-loop", trigger_kind="fire_aec_on",
+        peak_score_aec_on=0.9, peak_score_aec_off=None,
+        threshold=0.5, wake_model="jarvis_v2.onnx",
+    )
+    await store.attach_audio(
+        event_id="evt-off-loop", audio_on=_pcm(0.1), audio_off=_pcm(0.1),
+    )
+    assert "_write_wavs_blocking" in offloaded
+    assert "_scan_and_prune_blocking" in offloaded  # first sweep seeds estimate
+    row = await store.get_event("evt-off-loop")
+    assert row["audio_on_path"] == "evt-off-loop.aec-on.wav"
+
+
+async def test_retention_under_cap_skips_directory_scan_after_seed(
+    store: WakeEventStore, monkeypatch,
+):
+    """After the first sweep seeds the size estimate, under-cap
+    attaches must not stat-walk the directory again (~5k files at the
+    1 GB cap)."""
+
+    async def _attach(eid: str) -> None:
+        await store.begin_event(
+            event_id=eid, trigger_kind="fire_aec_on",
+            peak_score_aec_on=0.9, peak_score_aec_off=None,
+            threshold=0.5, wake_model="jarvis_v2.onnx",
+        )
+        await store.attach_audio(event_id=eid, audio_on=_pcm(0.1), audio_off=None)
+
+    await _attach("evt-seed")  # seeds the estimate via one full scan
+    assert store._audio_bytes_estimate is not None
+
+    scans = []
+    real_scan = store._scan_and_prune_blocking
+    monkeypatch.setattr(
+        store, "_scan_and_prune_blocking",
+        lambda: scans.append(1) or real_scan(),
+    )
+    await _attach("evt-cheap-1")
+    await _attach("evt-cheap-2")
+    assert scans == []  # under cap → estimate-only check, no scan
+    # Estimate tracked the writes (header + payload per file).
+    on_disk = sum(p.stat().st_size for p in store._base_dir.glob("*.wav"))
+    assert store._audio_bytes_estimate == on_disk
+
+
+async def test_retention_estimate_reseeds_from_scan_on_prune(tmp_path: Path):
+    """When the estimate crosses the cap, the sweep re-seeds it from
+    real stat data — drift (operator rm, external archive) self-
+    corrects instead of compounding."""
+    s = WakeEventStore(tmp_path, max_audio_bytes=100_000)
+    s.open()
+    try:
+        for i in range(1, 6):
+            eid = f"evt-{i:02d}"
+            await s.begin_event(
+                event_id=eid, trigger_kind="fire_aec_on",
+                peak_score_aec_on=0.9, peak_score_aec_off=None,
+                threshold=0.5, wake_model="jarvis_v2.onnx",
+            )
+            await s.attach_audio(event_id=eid, audio_on=_pcm(1.0), audio_off=None)
+        on_disk = sum(p.stat().st_size for p in tmp_path.glob("*.wav"))
+        assert on_disk <= 100_000
+        assert s._audio_bytes_estimate == on_disk
+    finally:
+        s.close()
