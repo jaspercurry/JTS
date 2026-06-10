@@ -32,8 +32,14 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import httpx
+# httpx is imported lazily inside `geocode()` and the per-service
+# request helpers — this module is imported at the top of the /transit/
+# and /weather/ wizards, which are socket-activated and must stay light
+# (same documented convention as jasper/transit/providers/nyc_bus.py).
+if TYPE_CHECKING:
+    import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +135,8 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
             source="cache",
         )
 
+    import httpx  # lazy — see import comment at top of module
+
     owns_client = http is None
     client = http or httpx.Client(
         timeout=HTTP_TIMEOUT, headers={"User-Agent": USER_AGENT},
@@ -169,6 +177,8 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
 
 
 def _nominatim(query: str, client: httpx.Client) -> GeocodeResult:
+    import httpx  # lazy — see import comment at top of module
+
     _throttle()
     try:
         r = client.get(
@@ -199,6 +209,8 @@ def _nominatim(query: str, client: httpx.Client) -> GeocodeResult:
 
 
 def _photon(query: str, client: httpx.Client) -> GeocodeResult:
+    import httpx  # lazy — see import comment at top of module
+
     try:
         r = client.get(PHOTON_URL, params={"q": query, "limit": 1})
         r.raise_for_status()

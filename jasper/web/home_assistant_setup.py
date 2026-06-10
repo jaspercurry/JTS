@@ -61,7 +61,10 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-import httpx
+# httpx is imported lazily inside `_verify_async` — the only network
+# path that needs it. This wizard module is socket-activated and must
+# import light (same documented convention as
+# jasper/transit/providers/nyc_bus.py); page renders never touch HA.
 
 from .. import home_assistant as _ha_mod
 from ._common import (
@@ -109,8 +112,10 @@ DISCOVERY_TIMEOUT_SEC = 4.0
 
 # Validation request timeout (GET /api/). Healthy HA responds in <100ms;
 # 5s gives generous slack for slow Pi hardware or busy networks while
-# still failing fast on dead/unreachable URLs.
-VERIFY_TIMEOUT = httpx.Timeout(timeout=5.0, connect=3.0)
+# still failing fast on dead/unreachable URLs. Kept as plain floats so
+# the httpx.Timeout construction stays inside the lazy-import scope.
+VERIFY_TIMEOUT_SEC = 5.0
+VERIFY_CONNECT_TIMEOUT_SEC = 3.0
 
 # How many recent URLs to keep. Three is enough for a multi-network
 # household ("home", "office", "parents' house") without UI clutter.
@@ -282,6 +287,8 @@ async def _verify_async(
     /api/states (for the conversation.* agent list). Failures map to
     user-facing error strings — no stack traces.
     """
+    import httpx  # lazy — see import comment at top of module
+
     url = _normalize_url(url)
     if not url:
         return {"ok": False, "error": "URL is empty or unparseable."}
@@ -290,7 +297,11 @@ async def _verify_async(
 
     headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(
-        timeout=VERIFY_TIMEOUT, headers=headers, verify=verify_ssl,
+        timeout=httpx.Timeout(
+            timeout=VERIFY_TIMEOUT_SEC, connect=VERIFY_CONNECT_TIMEOUT_SEC,
+        ),
+        headers=headers,
+        verify=verify_ssl,
     ) as client:
         try:
             r = await client.get(url + "/api/")
