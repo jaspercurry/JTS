@@ -23,8 +23,11 @@ DO NOT loop or increase PASS_K without explicit human approval.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
+from jasper.citibike import parse_saved_stations
 from tests.voice_eval import oracles
 
 
@@ -45,7 +48,7 @@ async def test_citibike_general_situation(harness, trial: int) -> None:
       3. Reality — every station_id the tool returned matches a saved
          station, and per-station bike/ebike counts are within +/-3
          of a direct GBFS oracle (counts move minute-to-minute)."""
-    if not harness.cfg.citibike_enabled:
+    if not parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", "")):
         pytest.skip(
             "voice-eval: Citi Bike not configured "
             "(JASPER_CITIBIKE_STATIONS required) — set it to run this scenario",
@@ -78,7 +81,7 @@ async def test_citibike_general_situation(harness, trial: int) -> None:
     tool_stations = (call.result or {}).get("stations") or []
     assert tool_stations, (
         f"[trial {trial}] tool returned no stations while "
-        f"{len(harness.cfg.citibike_stations)} are configured. "
+        f"{len(parse_saved_stations(os.environ.get('JASPER_CITIBIKE_STATIONS', '')))} are configured. "
         f"See transcript: {result.transcript_path}"
     )
     statuses = {s.get("status") for s in tool_stations}
@@ -88,7 +91,7 @@ async def test_citibike_general_situation(harness, trial: int) -> None:
     )
 
     # 3. Reality — compare against a direct GBFS oracle.
-    truth = await oracles.citibike_status(list(harness.cfg.citibike_stations))
+    truth = await oracles.citibike_status(list(parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", ""))))
     if truth is None:
         pytest.skip(
             f"[trial {trial}] GBFS oracle unreachable; can't validate. "
@@ -96,7 +99,7 @@ async def test_citibike_general_situation(harness, trial: int) -> None:
         )
 
     # All station_ids in the tool result must be saved stations.
-    saved_ids = {sid for sid, _ in harness.cfg.citibike_stations}
+    saved_ids = {sid for sid, _ in parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", ""))}
     tool_ids = {s.get("station_id") for s in tool_stations}
     assert tool_ids <= saved_ids, (
         f"[trial {trial}] tool returned unknown station_ids "
@@ -143,14 +146,14 @@ async def test_citibike_station_specific(harness, trial: int) -> None:
          no_match must be false.
       3. Reality — the returned station_ids all map to saved stations
          whose labels contain the passed filter."""
-    if not harness.cfg.citibike_enabled:
+    if not parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", "")):
         pytest.skip(
             "voice-eval: Citi Bike not configured "
             "(JASPER_CITIBIKE_STATIONS required) — set it to run this scenario",
         )
     # Pick the first saved label and use its first word as the
     # spoken substring (a label like "9 Av & 41 St" → "9 Av").
-    saved = list(harness.cfg.citibike_stations)
+    saved = list(parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", "")))
     first_label = saved[0][1]
     spoken_phrase = " ".join(first_label.split()[:2]) or first_label
 

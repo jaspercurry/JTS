@@ -64,6 +64,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import tempfile
 import time
 import uuid
@@ -73,12 +74,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from jasper import transit
 from jasper.camilla import CamillaController
 from jasper.config import Config
 from jasper.google_creds import build_google_clients
 from jasper.renderer import RendererClient
-from jasper.bus import BusClient
-from jasper.subway import SubwayClient
 from jasper.timers import TimerScheduler
 from jasper.tools import ToolRegistry
 from jasper.tools.audio import make_audio_tools
@@ -87,8 +87,6 @@ from jasper.tools.diagnostic import make_diagnostic_tools
 from jasper.tools.gmail import make_gmail_tools
 from jasper.tools.home_assistant import make_home_assistant_tools
 from jasper.tools.spotify import make_spotify_tools
-from jasper.tools.bus import make_bus_tools
-from jasper.tools.subway import make_subway_tools
 from jasper.tools.time import make_time_tools
 from jasper.tools.timer import make_timer_tools
 from jasper.tools.transport import make_transport_tools
@@ -281,42 +279,15 @@ def _build_test_registry(
         test_state["timer_scheduler"] = timer_scheduler
         test_state["timer_db_path"] = timer_db.name
 
-    # Subway — stateless HTTP client. Read-only. Construction mirrors
-    # the daemon's `_build_registry` (jasper/voice_daemon.py) exactly —
-    # `Config` exposes neither `subway_lines` nor a `configured_routes`
-    # constructor arg, so any drift here is a silent AttributeError/
-    # TypeError that only surfaces inside a paid `harness.ask()`. The
-    # hardware-free `tests/test_voice_eval_registry.py` guards it.
-    if cfg.subway_enabled:
-        subway = SubwayClient(
-            cfg.subway_station_id,
-            cfg.subway_default_direction,
-        )
-        for fn in make_subway_tools(subway):
-            registry.register(fn)
-
-    # Bus — MTA BusTime SIRI client. Read-only. Mirror the daemon's
-    # `_build_registry`: BusClient takes `stop_ids` (plural) + a
-    # `stop_labels` map derived from `cfg.bus_stops`.
-    if cfg.bus_enabled:
-        bus = BusClient(
-            stop_ids=[sid for sid, _ in cfg.bus_stops],
-            api_key=cfg.mta_bustime_key,
-            stop_labels={sid: label for sid, label in cfg.bus_stops if label},
-        )
-        for fn in make_bus_tools(bus):
-            registry.register(fn)
-
-    # Citi Bike — keyless GBFS client. Read-only.
-    if cfg.citibike_enabled:
-        from jasper.citibike import CitiBikeClient
-        from jasper.tools.citibike import make_citibike_tools
-        citibike = CitiBikeClient(
-            saved_stations=list(cfg.citibike_stations),
-            ebike_only=cfg.citibike_ebike_only,
-        )
-        for fn in make_citibike_tools(citibike):
-            registry.register(fn)
+    # Transit (subway / bus / Citi Bike, and future city packs) — read-only
+    # HTTP clients. Use the daemon's OWN entry point so this can't drift from
+    # production: each provider parses its own env keys and `active_transit`
+    # builds + registers the tools for the household's enabled city packs.
+    # (This replaced a hand-rolled mirror that read typed `Config` fields,
+    # which is exactly the drift the hardware-free
+    # `tests/test_voice_eval_registry.py` exists to catch.)
+    for fn in transit.active_transit(os.environ).tools:
+        registry.register(fn)
 
     # Spotify — has playback side-effects. We register the tools
     # whenever the router can be built; scenarios that exercise

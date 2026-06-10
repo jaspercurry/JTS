@@ -29,9 +29,11 @@ PASS_K without explicit human approval.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from jasper.bus import BusClient
+from jasper.bus import BusClient, parse_bus_stops
 from tests.voice_eval import oracles
 
 
@@ -56,7 +58,7 @@ async def test_next_bus_default_stop(harness, trial: int) -> None:
          than fails)
       3. Reality — the routes the tool returned match the routes
          MTA's SIRI API returned just now, in the same order"""
-    if not harness.cfg.bus_enabled:
+    if not (parse_bus_stops(os.environ.get("JASPER_BUS_STOPS", "")) and os.environ.get("JASPER_MTA_BUSTIME_KEY", "").strip()):
         pytest.skip(
             "voice-eval: bus not configured (JASPER_MTA_BUSTIME_KEY + "
             "JASPER_BUS_STOPS required) — set them to run this scenario",
@@ -81,9 +83,9 @@ async def test_next_bus_default_stop(harness, trial: int) -> None:
     # 2. Outcome — got arrivals back
     tool_arrivals = (call.result or {}).get("arrivals") or []
     truth = await oracles.bus_arrivals(
-        stop_id=harness.cfg.bus_stop_id,
-        api_key=harness.cfg.mta_bustime_key,
-        routes=list(harness.cfg.bus_routes) or None,
+        stop_id=(parse_bus_stops(os.environ.get("JASPER_BUS_STOPS", ""))[0][0]),
+        api_key=os.environ.get("JASPER_MTA_BUSTIME_KEY", ""),
+        routes=None,
     )
     if not truth:
         pytest.skip(
@@ -133,7 +135,7 @@ async def test_bus_outage_speaks_error(harness, trial: int, monkeypatch) -> None
 
     No real MTA call happens — the fetch is monkeypatched to fail — so
     this scenario doesn't depend on live BusTime weather/service."""
-    if not harness.cfg.bus_enabled:
+    if not (parse_bus_stops(os.environ.get("JASPER_BUS_STOPS", "")) and os.environ.get("JASPER_MTA_BUSTIME_KEY", "").strip()):
         pytest.skip(
             "voice-eval: bus not configured (JASPER_MTA_BUSTIME_KEY + "
             "JASPER_BUS_STOPS required) — set them to run this scenario",
