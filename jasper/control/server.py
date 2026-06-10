@@ -2775,6 +2775,15 @@ def _make_handler(
                 # incident wiped the NetworkManager keyfile.
                 units = []  # systemctl poweroff — no units
                 action = "poweroff"
+            # Audit BEFORE the action: reboot/poweroff take the system down, so
+            # a log-after might never flush. This is the line that
+            # distinguishes a dashboard-triggered restart/reboot/poweroff from a
+            # watchdog or crash reset when debugging "the speaker restarted on
+            # its own" (see AGENTS.md). No secrets — action + units + requester.
+            logger.info(
+                "event=system.action action=%s units=%s client=%s",
+                action, ",".join(units) or "-", self.address_string(),
+            )
             try:
                 if action == "reboot":
                     subprocess.Popen(["systemctl", "reboot"])
