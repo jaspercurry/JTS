@@ -35,6 +35,10 @@
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Preview what install.sh would mutate | [Install dry-run plan](#install-dry-run-plan) |
+| Check every shipped deploy unit/rule/script has an install step (and every install reference resolves) | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — two-sided orphan-artifact guard |
+| Check the "wizard env file wins" EnvironmentFile= ordering across systemd units | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — wizard-env precedence guard |
+| Check udev SYSTEMD_WANTS hotplug targets are shipped units | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — udev → unit chain guard |
+| Check wizard-socket ListenStream ports match nginx upstreams (PR #118 502 class) | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — two-sided socket↔nginx parity guard |
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
 | Pin a documented invariant / convention with a test | [Guard & contract test patterns](#guard--contract-test-patterns) |
 | Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
