@@ -122,7 +122,6 @@ SPIKE_TMP_DIR="/tmp/jts-spike"                 # test sources + generated conf
 SNAPFIFO="${SPIKE_RUN_DIR}/snapfifo"           # the hand-fed pipe snapserver reads
 SNAPSERVER_CONF="${SPIKE_TMP_DIR}/snapserver.conf"
 CHIRP_WAV="${SPIKE_TMP_DIR}/chirp.wav"         # known periodic chirp (acoustic GT)
-FEED_PID_FILE="${SPIKE_RUN_DIR}/feeder.pid"    # the cat/loop feeding the FIFO
 SNAPSERVER_TCP_PORT="1705"                     # JSON-RPC control (default snapcast)
 SNAPSERVER_STREAM_PORT="1704"                  # client audio (default snapcast)
 
@@ -486,9 +485,10 @@ do_record_chirp() {
   After this records, analyze with:
     python3 scripts/multiroom-spike-measure.py acoustic --wav <path printed below>
 EOF
-    local remote_wav="${SPIKE_TMP_DIR}/acoustic-$(date -u +%H%M%SZ).wav"
+    local remote_wav local_wav
+    remote_wav="${SPIKE_TMP_DIR}/acoustic-$(date -u +%H%M%SZ).wav"
     leader_ssh "arecord -d ${secs} -f S16_LE -r 48000 -c 1 ${remote_wav} && echo recorded"
-    local local_wav="${RESULTS_DIR}/$(basename "$remote_wav")"
+    local_wav="${RESULTS_DIR}/$(basename "$remote_wav")"
     mkdir -p "$RESULTS_DIR"
     scp -q "${LEADER_USER}@${LEADER_HOST}:${remote_wav}" "$local_wav"
     log "recorded WAV pulled to: ${local_wav}"
@@ -498,7 +498,6 @@ EOF
 # Teardown: remove every transient unit, FIFO, conf, and netem qdisc we made.
 # Safe to run anytime; never touches jasper-* or product units.
 do_teardown_quiet() {
-    local units="$UNIT_SERVER $UNIT_FEEDER $UNIT_CLIENT_LEADER"
     for host_user in "$LEADER_HOST:$LEADER_USER" "$FOLLOWER_HOST:$CLIENT_USER" "$SUB_HOST:$CLIENT_USER"; do
         local host="${host_user%%:*}" user="${host_user##*:}"
         [[ -z "$host" ]] && continue
@@ -548,6 +547,16 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# A reference run measures the SAME sweep over Ethernet (operator plugs
+# the cable; the harness doesn't switch transports). The flag's job is
+# to keep the best-case reference line in its own results dir so it
+# never overwrites — or gets summarized together with — the WiFi cells
+# the spike actually exists to judge.
+if [[ "$REFERENCE_ETHERNET" == "1" ]]; then
+    RESULTS_DIR="${RESULTS_DIR}-ethernet-reference"
+    log "REFERENCE-ETHERNET run: results land in ${RESULTS_DIR}"
+fi
 
 [[ -z "$ACTION" ]] && { usage; exit 2; }
 

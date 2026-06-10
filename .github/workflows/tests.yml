@@ -11,21 +11,22 @@ jobs:
     # installer and the deploy/operator scripts mutate a live speaker
     # as root, yet had no syntax/lint check before this job. Two layers:
     #   - `bash -n`: parse-only syntax check; zero false positives.
-    #   - `shellcheck --severity=error`: the real-breakage class only
-    #     (e.g. missing shell directives on sourced libs, unparseable
-    #     constructs shellcheck models that bash -n waves through).
-    # Warning/info/style severities are deliberately NOT gated yet:
-    # when this gate landed the tree carried 8 warning-level findings
-    # (3×SC2034 unused-var, 2×SC2155 declare-masks-rc, 2×SC1090
-    # non-constant source, 1×SC2010 ls|grep) and ~35 info/style ones —
-    # several intentional (ssh client-side expansion patterns).
-    # Tightening to --severity=warning is a follow-up once those are
-    # triaged file-by-file; do not loosen below error.
+    #   - `shellcheck --severity=warning`: real-breakage classes
+    #     (unparseable constructs, non-constant source) plus the
+    #     warning tier — SC2155 declare-and-assign masking exit codes
+    #     is a genuine hazard in these `set -e` scripts, and SC2034
+    #     unused-var catches flags that parse but silently do nothing.
+    # The 8 warning-level findings present when the error-only gate
+    # landed (3×SC2034, 2×SC2155, 2×SC1090, 1×SC2010) were fixed
+    # file-by-file before this tightened to warning. Info/style
+    # severities (~35 findings, several intentional ssh client-side
+    # expansion patterns) remain ungated; tightening further is a
+    # separate triage. Do not loosen below warning.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - name: bash -n + shellcheck (error severity)
+      - name: bash -n + shellcheck (warning severity)
         # deploy/bin mixes bash policy scripts with a python3 librespot
         # event hook — select shell files by shebang. The shebang-less
         # scripts/_*.sh source-only libs carry a `# shellcheck
@@ -45,8 +46,8 @@ jobs:
             bash -n "$f"
           done
           echo "bash -n ok over ${#shell_files[@]} shell files"
-          shellcheck --severity=error "${shell_files[@]}"
-          echo "shellcheck --severity=error clean"
+          shellcheck --severity=warning "${shell_files[@]}"
+          echo "shellcheck --severity=warning clean"
 
   pytest:
     runs-on: ubuntu-latest
