@@ -5,7 +5,8 @@ active NM WiFi profile during install, covering the SSH-driven setup
 case where the operator brought up WiFi via raspi-config or `nmcli`
 directly before ever opening the /wifi/ wizard.
 
-We exercise it by sourcing install.sh under bash with a fake nmcli on
+We exercise it by extracting the helper from its installer lib
+(deploy/lib/install/env-migrations.sh) under bash with a fake nmcli on
 PATH and JTS env vars (STATE_DIR, etc.) pointing at tmp_path.
 """
 from __future__ import annotations
@@ -17,7 +18,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALL_SH = ROOT / "deploy" / "install.sh"
+ENV_MIGRATIONS_LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
 
 
 def _write_fake_nmcli(
@@ -70,7 +71,7 @@ def _run_migrate(
     pre_stash: str | None = None,
     with_nmcli: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Source install.sh and run migrate_wifi_guardian against tmp_path."""
+    """Extract + run migrate_wifi_guardian against tmp_path."""
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     if pre_stash is not None:
@@ -91,12 +92,12 @@ def _run_migrate(
     # statements). We extract the function body via sed.
     helper = subprocess.run(
         ["bash", "-c",
-         rf"sed -n '/^migrate_wifi_guardian()/,/^}}/p' '{INSTALL_SH}'"],
+         rf"sed -n '/^migrate_wifi_guardian()/,/^}}/p' '{ENV_MIGRATIONS_LIB}'"],
         capture_output=True, text=True, check=True,
     ).stdout
     assert "migrate_wifi_guardian()" in helper, (
-        "couldn't extract helper from install.sh — has the function "
-        "been renamed or restructured?"
+        "couldn't extract helper from env-migrations.sh — has the "
+        "function been renamed or restructured?"
     )
 
     # Run the helper with a hermetic PATH so a real Pi's /usr/bin/nmcli
