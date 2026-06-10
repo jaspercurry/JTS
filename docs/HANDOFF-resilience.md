@@ -1174,4 +1174,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-09
+Last verified: 2026-06-10

@@ -669,9 +669,11 @@ listens on 9877 until PR 2 ships. PR 2 alone (without PR 3) gives
 dual-stream wake triggering with no persistence — still useful
 but loses the funnel data. The full value lands with PR 3.
 
-Last verified: 2026-06-05 (chip-AEC telemetry language rechecked
-against the profile-first input policy; audio ring-buffer cap still
+Last verified: 2026-06-10 (retention/off-loop language rechecked
+against `jasper/wake_events.py`: WAV writes and `_retention_sweep`
+run via `asyncio.to_thread`, gated by the running
+`_audio_bytes_estimate`, and the sweep still runs from the
+audio-attach path with no hourly timer; audio ring-buffer cap still
 matches the 1 GB production default,
-`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824`, and `_retention_sweep`
-still runs from the audio-attach path with no hourly timer. Prior
+`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824`. Prior
 schema/file-layout checks still apply.)

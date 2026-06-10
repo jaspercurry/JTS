@@ -114,6 +114,20 @@ def test_reconcilers_source_shared_lib_and_never_printf_q() -> None:
         assert "${rest%%\\'*}" not in text, script.name
 
 
+def test_reconcilers_prefer_script_dir_sibling_lib() -> None:
+    """Version-skew guard: install.sh runs the REPO copy of a reconciler
+    mid-install (install_alsa's --print-env) before install_systemd_units
+    refreshes /usr/local/lib, so the loader must prefer the readable
+    SCRIPT_DIR-relative sibling over the installed copy — otherwise one
+    mid-install call can pair a new script with a stale lib."""
+    sibling = '"${SCRIPT_DIR}/../lib/jasper-env-file.sh"'
+    installed = "/usr/local/lib/jasper/jasper-env-file.sh"
+    for script in RECONCILERS:
+        text = script.read_text()
+        body = text[text.index("load_env_file_lib() {"):]
+        assert body.index(sibling) < body.index(installed), script.name
+
+
 def test_install_sh_installs_env_file_lib() -> None:
     install_sh = (ROOT / "deploy" / "install.sh").read_text()
     assert "deploy/lib/jasper-env-file.sh" in install_sh
