@@ -307,6 +307,49 @@ Mode in the consumer apps and dictation in Claude Code.
   observability) records to the `wake_events` DB alongside the active
   endpointer's decision, for weekly corpus review.
 
+## Provider Interruption Contract
+
+Verified against provider docs on 2026-06-09:
+
+| Provider | Native behavior | JTS adapter obligation |
+| --- | --- | --- |
+| OpenAI Realtime | VAD can detect user speech and cancel an in-progress response. WebRTC/SIP can automatically truncate unplayed output because the server owns the playback buffer. With WebSocket playback, the client must stop playback, measure what played, and send `conversation.item.truncate`; push-to-talk/manual paths also use `response.cancel` when needed. | Keep local TTS flush first. Use the final playout ledger's provider item id and `audio_played_ms` to send `conversation.item.truncate`; send `response.cancel` for explicit/manual cancellation paths. |
+| Gemini Live | `START_OF_ACTIVITY_INTERRUPTS` is the default `ActivityHandling`; start of user activity cuts off the model response. Gemini also reports interrupted server-content turns. | Treat Gemini interruption as provider-side generation state only. Still flush local TTS playback, because Gemini does not know JTS's DAC queue depth or final playout ledger. There is no OpenAI-style item truncation call to synthesize. |
+| xAI Grok Voice | xAI's voice API exposes OpenAI-style `server_vad`, `input_audio_buffer.speech_started/stopped`, `conversation.item.truncate`, and `response.cancel`; docs state VAD-mode interruptions are automatic and `response.cancel` is for manual cancel outside VAD. | Reuse the OpenAI adapter shape where event support is confirmed, but keep feature probes/provider overrides because xAI documents OpenAI-compatible shapes with provider-specific event-name differences. |
+
+Sources:
+
+- OpenAI Realtime conversations — interruption/truncation and
+  push-to-talk WebSocket guidance:
+  <https://developers.openai.com/api/docs/guides/realtime-conversations#interruption-and-truncation>
+- Gemini Live WebSockets API reference — `ActivityHandling`,
+  `START_OF_ACTIVITY_INTERRUPTS`, and interrupted server-content turns:
+  <https://ai.google.dev/api/live#activityhandling>
+- xAI Voice API reference — Realtime client/server events, VAD speech
+  events, `conversation.item.truncate`, and `response.cancel`:
+  <https://docs.x.ai/developers/rest-api-reference/inference/voice>
+
+The provider-neutral interface should be capability-based, not
+provider-name-based:
+
+- `cancel_response(reason)` for explicit local interruption/manual
+  cancellation.
+- `truncate_assistant_audio(provider_item_id, audio_played_ms)` for
+  providers that need conversation history aligned to WebSocket
+  playout.
+- `supports_provider_vad()` remains separate from barge-in support:
+  provider VAD can help detect or commit turns, but local TTS flush is
+  still required to stop audible audio immediately.
+- Adapters must tolerate missing provider item ids. Gemini currently
+  has no OpenAI-style item id for audio truncation; OpenAI emits one and
+  JTS already carries it through the outputd-compatible TTS IPC used by
+  fan-in.
+
+The cross-provider invariant is owned by
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md#robust-barge-in-contract):
+provider cancel/truncate follows the local TTS flush and final
+playout-ledger acknowledgement.
+
 ## Adding a fourth provider
 
 When a new real-time backend lands (a self-hostable Ultravox-class
@@ -445,4 +488,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-06-08 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS)
+Last verified: 2026-06-09 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice)
