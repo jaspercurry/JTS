@@ -56,7 +56,7 @@ def test_cues_are_provider_agnostic():
     """No cue may name a specific provider — the project may switch
     voice backends, and audio files baked with provider names would
     mislead users post-switch (per the project's design memory)."""
-    forbidden = ("google", "gemini", "openai", "anthropic")
+    forbidden = ("google", "gemini", "openai", "anthropic", "grok", "xai")
     for cue in CUES:
         text = cue.template.lower()
         for word in forbidden:
