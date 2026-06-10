@@ -49,6 +49,23 @@ is_ipv4_host() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
+# Quote one value so it survives a remote shell (`ssh host "cmd $(shell_quote x)"`).
+# Single home for the helper — deploy-to-pi.sh and pi-run-diagnostic.sh
+# previously each carried their own copy.
+shell_quote() {
+    printf '%q' "$1"
+}
+
+# Quote every argument and join with spaces — a full command line that
+# can be passed through ssh to a remote shell unmangled.
+quote_args() {
+    local out="" arg
+    for arg in "$@"; do
+        out+="${out:+ }$(shell_quote "$arg")"
+    done
+    printf '%s' "$out"
+}
+
 normalize_speaker_hostname() {
     local host="${1%.}"
     if [[ -z "$host" ]] || is_ipv4_host "$host"; then

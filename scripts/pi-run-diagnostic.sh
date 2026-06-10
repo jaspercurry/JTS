@@ -43,19 +43,6 @@ if [[ $# -eq 0 ]]; then
     exit 2
 fi
 
-shell_quote() {
-    printf "%q" "$1"
-}
-
-quote_args() {
-    local out="" arg q
-    for arg in "$@"; do
-        q="$(shell_quote "$arg")"
-        out+="${out:+ }${q}"
-    done
-    printf "%s" "$out"
-}
-
 MEMORY_HIGH="${JTS_DIAG_MEMORY_HIGH:-256M}"
 MEMORY_MAX="${JTS_DIAG_MEMORY_MAX:-384M}"
 MEMORY_SWAP_MAX="${JTS_DIAG_MEMORY_SWAP_MAX:-0}"

@@ -50,10 +50,6 @@ REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-}"
 
 cd "$REPO_ROOT"
 
-remote_quote() {
-    printf '%q' "$1"
-}
-
 ssh_remote() {
     ssh "${SSH_BATCH_OPTS[@]}" "$SSH_TARGET" "$@"
 }
@@ -180,7 +176,7 @@ mark_airplay_health_maintenance() {
         return 0
     fi
     marker_command="printf \"%s\n\" \$((\$(date +%s) + ${ttl_sec})) > ${AIRPLAY_HEALTH_SUPPRESS_PATH}; chmod 0644 ${AIRPLAY_HEALTH_SUPPRESS_PATH}"
-    run_remote_sudo "sh -c $(remote_quote "$marker_command")" || \
+    run_remote_sudo "sh -c $(shell_quote "$marker_command")" || \
         echo "  (airplay health maintenance marker failed — deploy continuing)"
 }
 
@@ -222,7 +218,7 @@ fi
 # macOS ships BSD rsync 2.6.9 (no --info= flag); use --stats which
 # works on both BSD and GNU rsync. Suppress per-file output with
 # --quiet so the wrapper's output is just the start/end summary.
-ssh_remote "mkdir -p $(remote_quote "$REMOTE_REPO_DIR")"
+ssh_remote "mkdir -p $(shell_quote "$REMOTE_REPO_DIR")"
 rsync -az --delete --stats --quiet \
     --exclude .venv --exclude __pycache__ --exclude '.git' --exclude 'logs/*' \
     --exclude '.pio' --exclude '.claude/worktrees' --exclude '.claude/' \
@@ -258,11 +254,11 @@ echo "==> Running install.sh on ${PI_HOST}..."
 mark_airplay_health_maintenance "${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC}"
 trap 'finish_airplay_health_maintenance >/dev/null 2>&1 || true' EXIT
 
-run_remote_sudo "JASPER_DEPLOY_SHA=$(remote_quote "${SHA}${DIRTY}") \
-JASPER_DEPLOY_SHA_FULL=$(remote_quote "${SHA_FULL}${DIRTY}") \
-JASPER_DEPLOY_BRANCH=$(remote_quote "$BRANCH") \
-JASPER_HOSTNAME=$(remote_quote "$HOSTNAME_FOR_INSTALL") \
-bash $(remote_quote "${REMOTE_REPO_DIR}/deploy/install.sh")"
+run_remote_sudo "JASPER_DEPLOY_SHA=$(shell_quote "${SHA}${DIRTY}") \
+JASPER_DEPLOY_SHA_FULL=$(shell_quote "${SHA_FULL}${DIRTY}") \
+JASPER_DEPLOY_BRANCH=$(shell_quote "$BRANCH") \
+JASPER_HOSTNAME=$(shell_quote "$HOSTNAME_FOR_INSTALL") \
+bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")"
 
 echo "==> Build manifest now on Pi:"
 run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null || echo "(not present)"'

@@ -337,7 +337,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn(":/home/pi/jts/", text)
         self.assertIn('REMOTE_REPO_DIR="${remote_home}/jts"', text)
         self.assertIn(
-            'bash $(remote_quote "${REMOTE_REPO_DIR}/deploy/install.sh")',
+            'bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")',
             text,
         )
 
