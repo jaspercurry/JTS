@@ -99,6 +99,11 @@ def check_spend_cap(cfg: Config) -> CheckResult:
             cfg.daily_spend_cap_usd,
             cfg.daily_spend_cap_safety_multiplier,
         )
+        if cap.disabled:
+            return CheckResult(
+                "daily spend cap", "ok",
+                "disabled (JASPER_DAILY_SPEND_CAP_USD=0)",
+            )
         remaining = cap.remaining_usd()
         if not cap.allowed():
             return CheckResult(

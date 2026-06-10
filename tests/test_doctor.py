@@ -3809,3 +3809,24 @@ def test_pricing_warns_when_active_model_unpriced(monkeypatch):
         JASPER_GEMINI_MODEL="gemini-9.9-does-not-exist",
     )
     assert doctor.check_pricing(cfg).status == "warn"
+
+
+# ---------------------------------------------------------------------------
+# check_spend_cap — disabled cap renders as "disabled", not "$0.00 remaining"
+
+
+def test_check_spend_cap_reports_disabled_not_zero_remaining(tmp_path: Path, monkeypatch):
+    """With JASPER_DAILY_SPEND_CAP_USD=0 the cap is disabled (see
+    jasper.usage.SpendCap.disabled); doctor must say so instead of the
+    misleading "$0.0000 remaining of $0.00"."""
+    from jasper.cli.doctor.voice import check_spend_cap
+
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
+    monkeypatch.setenv("JASPER_USAGE_DB", str(tmp_path / "usage.sqlite3"))
+    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "0")
+    cfg = Config.from_env()
+    result = check_spend_cap(cfg)
+    assert result.status == "ok"
+    assert "disabled" in result.detail
+    assert "remaining" not in result.detail
