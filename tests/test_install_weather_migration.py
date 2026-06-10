@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALL_SH = ROOT / "deploy" / "install.sh"
+ENV_MIGRATIONS_LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
 
 
 def _run_migrate(tmp_path: Path) -> subprocess.CompletedProcess[str]:
@@ -19,7 +19,7 @@ def _run_migrate(tmp_path: Path) -> subprocess.CompletedProcess[str]:
         [
             "bash",
             "-c",
-            rf"sed -n '/^migrate_weather_config()/,/^}}/p' '{INSTALL_SH}'",
+            rf"sed -n '/^migrate_weather_config()/,/^}}/p' '{ENV_MIGRATIONS_LIB}'",
         ],
         capture_output=True,
         text=True,

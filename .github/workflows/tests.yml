@@ -36,7 +36,8 @@ jobs:
           shopt -s nullglob
           shell_files=()
           for f in deploy/install.sh deploy/configure-bluez.sh \
-                   deploy/bin/* deploy/lib/*.sh scripts/*.sh scripts/use; do
+                   deploy/bin/* deploy/lib/*.sh deploy/lib/install/*.sh \
+                   scripts/*.sh scripts/use; do
             case "$(head -n 1 "$f")" in
               '#!'*python*|'#!'*node*) echo "skip (non-shell): $f"; continue ;;
             esac

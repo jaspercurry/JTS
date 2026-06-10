@@ -326,8 +326,12 @@ def test_install_sh_enables_fanin_and_retires_topology_switch():
     """Fan-in is mandatory now: install.sh enables the daemon directly
     and removes the retired dmix/fanin switch state."""
     install_sh = (REPO / "deploy" / "install.sh").read_text()
-    assert "retire_audio_topology_switch()" in install_sh, (
-        "install.sh must define retire_audio_topology_switch helper"
+    env_migrations_lib = (
+        REPO / "deploy" / "lib" / "install" / "env-migrations.sh"
+    ).read_text()
+    assert "retire_audio_topology_switch()" in env_migrations_lib, (
+        "the installer's env-migrations lib must define the "
+        "retire_audio_topology_switch helper"
     )
     call_site = re.search(
         r"^\s*retire_audio_topology_switch(?:\s|$|\s*#)",
