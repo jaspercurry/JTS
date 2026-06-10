@@ -631,3 +631,64 @@ def test_main_preflights_build_user_before_mutation():
     text = _INSTALL_SH.read_text(encoding="utf-8")
     main_body = text[text.index("\nmain() {"):]
     assert main_body.index("require_build_user") < main_body.index("install_deps")
+
+
+# ----------------------------------------------------------------------
+# Pi-generated pip constraints (deploy/constraints-pi.txt)
+# ----------------------------------------------------------------------
+
+_GENERATE_CONSTRAINTS_SH = (
+    Path(__file__).parent.parent / "scripts" / "generate-pi-constraints.sh"
+)
+
+
+def _run_constraints_helper(repo_dir: Path) -> str:
+    """Source install.sh with REPO_DIR overridden; return the helper's
+    stdout (the constraints path, or empty when absent)."""
+    script = (
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+        f"REPO_DIR={shlex.quote(str(repo_dir))} && "
+        "jasper_pip_constraints_file"
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_install_and_generate_scripts_parse():
+    """bash -n over both shell surfaces of the constraints feature."""
+    for path in (_INSTALL_SH, _GENERATE_CONSTRAINTS_SH):
+        result = subprocess.run(
+            ["bash", "-n", str(path)],
+            capture_output=True, text=True, timeout=5,
+        )
+        assert result.returncode == 0, f"{path}: {result.stderr}"
+
+
+def test_pip_constraints_file_absent_is_graceful_noop(tmp_path):
+    """No deploy/constraints-pi.txt → empty output, rc 0 — installs run
+    open-range exactly as before the feature existed."""
+    (tmp_path / "deploy").mkdir()
+    assert _run_constraints_helper(tmp_path) == ""
+
+
+def test_pip_constraints_file_present_is_echoed(tmp_path):
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    constraints = deploy / "constraints-pi.txt"
+    constraints.write_text("httpx==0.28.1\n", encoding="utf-8")
+    assert _run_constraints_helper(tmp_path) == str(constraints)
+
+
+def test_unpinned_pip_installs_carry_the_constraints_args():
+    """Both open-range pip installs in install_jasper must expand the
+    pip_constraints array; the exact-pinned installs (pip/wheel,
+    openwakeword --no-deps) intentionally don't need it."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    assert text.count('pip" install "${pip_constraints[@]}"') == 2
+    assert 'install "${pip_constraints[@]}" -e "${INSTALL_DIR}"' in text
