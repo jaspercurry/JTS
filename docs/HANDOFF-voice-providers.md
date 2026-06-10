@@ -358,6 +358,14 @@ should be:
 
 1. New module `jasper/voice/<provider>_session.py` with a class
    implementing `LiveConnection` (and a corresponding `LiveTurn`).
+   Route every model-issued tool call through
+   `jasper.tools.dispatch_tool(registry, name, args)` — it owns the
+   per-tool timeout (`tool.timeout`), the `{"error": …}` failure
+   shapes, scalar wrapping, and the provider-uniform timing logs.
+   The adapter keeps only its wire-format parts: parsing the call's
+   args and packaging the returned payload. Do not re-inline the
+   dispatch body; all three existing adapters route through it
+   (Grok via the OpenAI subclass).
 2. New model entries (per model ID, with `as_of` bumped) in
    `jasper/data/model_pricing.json`, plus `pricing_url` + `pricing_buckets`
    on the provider's `ProviderCatalogEntry` (so the `/voice` editor and

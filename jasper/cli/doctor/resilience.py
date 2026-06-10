@@ -3,10 +3,20 @@
 Re-homed verbatim from the original monolithic
 ``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
 for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+preserved. No check logic changed in the split.
+
+``check_supervisor_reboot_state`` (order 76) was added after the
+split — it surfaces the T5.2 reboot rate-limit state file the same
+way the sibling resilience state files (WiFi guardian stash,
+wifi-scan-repair) get doctor lines."""
 from __future__ import annotations
 
+import json
 import subprocess
+import time
+from pathlib import Path
+
+from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -120,3 +130,70 @@ def check_service_runtime_state() -> CheckResult:
         "service runtime state", "ok",
         f"{len(_RUNTIME_STATE_UNITS)} tracked units have no failed state or restarts",
     )
+
+
+# Wall-clock skew tolerance before a future-dated last-reboot timestamp
+# is worth a warning. The Pi has no hardware RTC — fake-hwclock restores
+# an old time at boot and NTP corrects it within ~a minute — so small
+# negative ages are routine and harmless. Beyond this, the supervisor's
+# 24h rate-limit window reads as un-elapsed and a genuinely-needed
+# reboot is suppressed until the clock catches up (bounded by the skew,
+# but invisible without this line).
+_REBOOT_STATE_FUTURE_SKEW_SEC = 300.0
+
+
+def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResult:
+    """Classify the T5.2 persisted reboot rate-limit state at `path`.
+
+    Split from the check so tests can point it at a tmp file. Granular
+    on purpose — the supervisor's own `_read_reboot_state` deliberately
+    collapses missing/corrupt to None (fail-open), but the doctor's job
+    is to tell the operator WHICH of those states the file is in."""
+    name = "supervisor reboot state"
+    now = time.time() if now is None else now
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Normal on a fresh install or any Pi the supervisor has never
+        # had to reboot. Not a warning.
+        return CheckResult(name, "ok", "no supervisor reboot recorded")
+    except OSError as e:
+        return CheckResult(
+            name, "warn",
+            f"unreadable ({e.__class__.__name__}) — supervisor fails open "
+            f"(rate-limit unarmed). Check permissions on {path}",
+        )
+    try:
+        data = json.loads(raw)
+        last = float(data["last_reboot_at"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return CheckResult(
+            name, "warn",
+            f"corrupt — supervisor fails open (rate-limit unarmed). "
+            f"Delete to clear: {path}",
+        )
+    age = now - last
+    if age < -_REBOOT_STATE_FUTURE_SKEW_SEC:
+        return CheckResult(
+            name, "warn",
+            f"future-dated by {-age:.0f}s — T5.2 reboot rate-limit is "
+            "suppressed until wall-clock catches up (no RTC; is NTP "
+            "syncing?). Delete to re-arm: " + str(path),
+        )
+    return CheckResult(
+        name, "ok",
+        f"last supervisor reboot {age / 3600:.1f}h ago — 24h rate-limit armed",
+    )
+
+
+@doctor_check(order=76, group="resilience")
+def check_supervisor_reboot_state() -> CheckResult:
+    """Surface the T5.2 reboot rate-limit state file.
+
+    The supervisor itself reads this file fail-open (missing/corrupt →
+    rate-limit unarmed), which is the right runtime behaviour but means
+    a corrupt or future-dated file is silent in normal operation. The
+    doctor line makes those two states visible: corrupt → the
+    reboot-loop guard is unarmed; future-dated → a genuinely-needed
+    reboot is suppressed until the clock catches up."""
+    return _classify_reboot_state(DEFAULT_REBOOT_STATE_PATH)

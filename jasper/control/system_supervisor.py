@@ -75,6 +75,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..atomic_io import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 # Wall-clock timestamp of the last supervisor-driven reboot, persisted so
@@ -418,18 +420,17 @@ def _read_reboot_state(path: Path) -> float | None:
 def _write_reboot_state(path: Path, last_reboot_at: float) -> None:
     """Atomically persist the wall-clock last-reboot time.
 
-    Tempfile + os.replace mirrors `jasper/wifi_scan_repair.py._write_state`.
-    A write failure is logged and swallowed — losing the persisted
-    timestamp degrades to today's in-memory-only behaviour rather than
-    blocking the reboot we're about to issue."""
+    Uses the canonical `jasper.atomic_io.atomic_write_text` (tempfile in
+    the same directory + os.replace, mode applied before the rename) so
+    a power-yank mid-write can never publish a torn file. A write
+    failure is logged and swallowed — losing the persisted timestamp
+    degrades to today's in-memory-only behaviour rather than blocking
+    the reboot we're about to issue."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.tmp")
-        tmp.write_text(
+        atomic_write_text(
+            path,
             json.dumps({"last_reboot_at": last_reboot_at}, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
-        os.replace(tmp, path)
     except OSError as e:
         logger.warning(
             "event=system_supervisor.reboot_state_write_failed path=%s err=%r",

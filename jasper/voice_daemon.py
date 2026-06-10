@@ -2717,7 +2717,13 @@ class WakeLoop:
 
         `phase` is "pre_arb" or "post_arb" — included in the log so we
         can tell which side of the peering arbitration await caught
-        the late-cancel."""
+        the late-cancel.
+
+        Mirrored by `manual_session_start` (dial long-press /
+        POST /session/start) — the manual entry path bypasses wake
+        detection, so it checks the same two gates itself. If you add a
+        third stop-listening gate here, add it there too (or extract a
+        shared helper once there are three)."""
         if self._mic_muted:
             logger.info("event=wake.late_cancel reason=mic_muted phase=%s", phase)
             return True
@@ -3032,7 +3038,10 @@ class WakeLoop:
             logger.info("event=session.manual_refused reason=mic_muted")
             return "MUTED"
         if self._measurement_active.is_set():
-            logger.info("event=session.manual_refused reason=measurement")
+            # reason matches the wake path's `event=wake.late_cancel
+            # reason=measurement_active` so one exact-match query covers
+            # both refusal surfaces.
+            logger.info("event=session.manual_refused reason=measurement_active")
             return "MEASURING"
         if not self._spend_cap.allowed():
             return "CAP"
