@@ -664,15 +664,7 @@ class SpeakerChannel:
     def with_output_label(self, label: str | None) -> "SpeakerChannel":
         if label is None:
             return self
-        return SpeakerChannel(
-            role=self.role,
-            physical_output_index=self.physical_output_index,
-            human_output_label=label,
-            identity_verified=self.identity_verified,
-            startup_muted=self.startup_muted,
-            protection_required=self.protection_required,
-            protection_status=self.protection_status,
-        )
+        return replace(self, human_output_label=label)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
