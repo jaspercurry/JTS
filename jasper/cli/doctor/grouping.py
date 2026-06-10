@@ -116,12 +116,12 @@ def check_grouping_rate_adjust() -> CheckResult:
     warn when it IS an active member but the active config still has
     ``enable_rate_adjust: true`` — the fix is to regenerate the config
     (re-run /correction or /sound) so the member emits rate_adjust off."""
-    from ...multiroom.config import disables_local_rate_adjust, load_config
+    from ...multiroom.config import is_active_member, load_config
     from .correction import _active_camilla_config_path
 
     label = "grouping: rate_adjust"
     cfg = load_config()
-    if not disables_local_rate_adjust(cfg):
+    if not is_active_member(cfg):
         return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
 
     statefile, config_path = _active_camilla_config_path()
@@ -143,3 +143,64 @@ def check_grouping_rate_adjust() -> CheckResult:
             "regenerate the config (re-run /correction or /sound)",
         )
     return CheckResult(label, "ok", f"rate_adjust off for active member ({config_path})")
+
+
+def _config_has_channel_select(text: str) -> bool:
+    """True if the config's top-level ``mixers:`` block defines a
+    ``channel_select:`` mixer (the channel-split). Block-scoped, like
+    :func:`_devices_rate_adjust_from_text`."""
+    in_mixers = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not raw.startswith((" ", "\t")):
+            in_mixers = stripped == "mixers:"
+            continue
+        if in_mixers and stripped == "channel_select:":
+            return True
+    return False
+
+
+@doctor_check(order=75, group="grouping")
+def check_grouping_channel_split() -> CheckResult:
+    """A bonded member that plays a SINGLE channel (left/right/sub/mono) must
+    have the ``channel_select`` mixer in its ACTIVE config — else it plays the
+    full stereo program (the WRONG channel), silently.
+
+    This is the observability backstop for the channel-split: unlike
+    rate_adjust (which oscillates audibly), a missing channel-split is
+    *silent* — the speaker just plays both channels. So a wrong-channel member
+    is invisible without this check. Skip (ok) when solo / off / invalid, or
+    when the channel is ``stereo`` (passthrough — no channel_select expected).
+    Warn when a non-stereo active member's active config lacks
+    ``channel_select`` — regenerate (re-run /sound or /correction). NOTE:
+    auto-apply on bond-form is owned by the inv-2 reconciler (see §2 "inv-2
+    realization"); until it lands this check is how the gap stays visible."""
+    from ...multiroom.config import is_active_member, load_config
+    from .correction import _active_camilla_config_path
+
+    label = "grouping: channel-split"
+    cfg = load_config()
+    if not is_active_member(cfg) or cfg.channel == "stereo":
+        return CheckResult(label, "ok", "solo / stereo member (n/a)")
+
+    statefile, config_path = _active_camilla_config_path()
+    if config_path is None:
+        return CheckResult(label, "warn", f"could not read config_path from {statefile}")
+    path = Path(config_path)
+    if not path.exists():
+        return CheckResult(label, "warn", f"active config missing: {config_path}")
+    try:
+        has_split = _config_has_channel_select(path.read_text())
+    except OSError as e:
+        return CheckResult(label, "warn", f"could not read {config_path}: {e}")
+
+    if not has_split:
+        return CheckResult(
+            label, "warn",
+            f"{config_path} has no channel_select but this member plays "
+            f"channel={cfg.channel} — it will play the full stereo program "
+            "(wrong channel); regenerate the config (re-run /sound or /correction)",
+        )
+    return CheckResult(label, "ok", f"channel_select present for channel={cfg.channel}")

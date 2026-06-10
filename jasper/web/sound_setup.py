@@ -626,21 +626,17 @@ async def _live_draft_profile(
                 "room correction before changing sound EQ."
             )
 
-        # Grouping (read fresh once): an ACTIVE bond member emits rate_adjust
-        # OFF (inv-5 — snapclient is the sole rate-tracker) and weaves its
-        # channel-split (channel_select mixer + sub crossover). Solo/off/invalid
-        # leaves the config unchanged.
-        from ..multiroom.channel_split import build_channel_split
-        from ..multiroom.config import is_active_member, load_config
-        _grp = load_config()
-        _active = is_active_member(_grp)
+        # Grouping member-config policy (inv-5 rate_adjust off + channel-split)
+        # is owned by jasper.multiroom.member_config and applied identically on
+        # EVERY config path (/sound, /correction, and the inv-2 reconciler) —
+        # never threaded per call site. Solo/off/invalid → solo defaults.
+        from ..multiroom.member_config import member_camilla_kwargs
         yaml = emit_sound_config(
             profile,
             room_peqs=room_peqs,
             profile_id=f"live-{time.time_ns()}",
             output_trim_db=output_trim_db,
-            enable_rate_adjust=not _active,
-            channel_split=build_channel_split(_grp.channel) if _active else None,
+            **member_camilla_kwargs(),
         )
 
         try:
@@ -727,18 +723,14 @@ async def _load_profile_config(
                 "room correction before changing sound EQ."
             )
 
-        from ..multiroom.channel_split import build_channel_split
-        from ..multiroom.config import is_active_member, load_config
-        _grp = load_config()
-        _active = is_active_member(_grp)
+        from ..multiroom.member_config import member_camilla_kwargs
         emit_sound_config(
             profile,
             room_peqs=room_peqs,
             out_path=out_path,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
-            enable_rate_adjust=not _active,
-            channel_split=build_channel_split(_grp.channel) if _active else None,
+            **member_camilla_kwargs(),
         )
         return {
             "prior_config_path": current_path,

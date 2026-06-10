@@ -244,10 +244,24 @@ def _augment_names_line(line: str, extra: tuple[str, ...]) -> str:
     return f"{indent}names: [{', '.join(existing + list(extra))}]"
 
 
+# The pipeline Mixer step the channel_select must run immediately after — the
+# Ducker's identity fader. Owned by the generators (not this module), so it is
+# a string anchor, not a constant import.
+_MASTER_GAIN_STEP = "master_gain"
+
+
 def _validate_woven(woven: str, split: ChannelSplit) -> None:
-    """Parse the woven config and assert the splice landed. A mis-spliced DSP
-    config would silence or mis-route the speaker, so fail LOUD here rather
-    than hand CamillaDSP a broken config."""
+    """Parse the woven config and assert the splice landed CORRECTLY. A
+    mis-spliced DSP config would silence or mis-route the speaker, so fail LOUD
+    here rather than hand CamillaDSP a broken config.
+
+    Checks: (1) 2-channel only — the splice appends the crossover to EACH
+    per-channel Filter and routes a 2→2 ``channel_select``; a multi-channel
+    (e.g. active-speaker) config would mis-apply, so refuse it (active-speaker
+    weave is separate future work); (2) ``channel_select`` is in ``mixers:``;
+    (3) it runs in the pipeline IMMEDIATELY after ``master_gain`` (position, not
+    just presence — it must apply after the Ducker fader, before per-channel
+    correction); (4) the sub crossover is in ``filters:`` for a sub."""
     import yaml
 
     try:
@@ -255,16 +269,40 @@ def _validate_woven(woven: str, split: ChannelSplit) -> None:
     except yaml.YAMLError as e:  # pragma: no cover - defensive
         raise ValueError(f"channel-split weave produced invalid YAML: {e}") from e
     doc = doc or {}
+
+    # (1) 2-channel guard.
+    devices = doc.get("devices") or {}
+    for side in ("capture", "playback"):
+        ch = (devices.get(side) or {}).get("channels")
+        if ch is not None and ch != 2:
+            raise ValueError(
+                "channel-split weave supports 2-channel configs only; "
+                f"devices.{side}.channels={ch} (active-speaker / multi-driver "
+                "weave is future work, not this path)"
+            )
+
+    # (2) channel_select in mixers.
     if CHANNEL_SELECT_MIXER not in (doc.get("mixers") or {}):
         raise ValueError("channel-split weave: channel_select missing from mixers")
+
+    # (3) channel_select runs immediately after master_gain in the pipeline.
     pipeline = doc.get("pipeline") or []
-    if not any(
-        isinstance(s, dict)
-        and s.get("type") == "Mixer"
-        and s.get("name") == CHANNEL_SELECT_MIXER
-        for s in pipeline
-    ):
+    mixer_idx = {
+        s.get("name"): i
+        for i, s in enumerate(pipeline)
+        if isinstance(s, dict) and s.get("type") == "Mixer"
+    }
+    if CHANNEL_SELECT_MIXER not in mixer_idx:
         raise ValueError("channel-split weave: channel_select step missing from pipeline")
+    mg, cs = mixer_idx.get(_MASTER_GAIN_STEP), mixer_idx[CHANNEL_SELECT_MIXER]
+    if mg is None or cs != mg + 1:
+        raise ValueError(
+            "channel-split weave: channel_select must run immediately after "
+            f"{_MASTER_GAIN_STEP} in the pipeline "
+            f"({_MASTER_GAIN_STEP}@{mg}, channel_select@{cs})"
+        )
+
+    # (4) sub crossover present for a sub.
     if split.channel == "sub" and SUB_CROSSOVER_FILTER not in (doc.get("filters") or {}):
         raise ValueError("channel-split weave: sub_crossover missing from filters")
 

@@ -275,20 +275,3 @@ def is_active_member(cfg: GroupingConfig) -> bool:
     invalid config (nothing is streaming there, so it is NOT an active member).
     """
     return cfg.enabled and cfg.error is None
-
-
-def disables_local_rate_adjust(cfg: GroupingConfig) -> bool:
-    """inv-5 (docs/HANDOFF-multiroom.md §2): an ACTIVE bond member must run its
-    LOCAL CamillaDSP with ``enable_rate_adjust: false``.
-
-    snapclient's sample-stuffing is the single rate-tracker for the whole
-    synced chain; a second rate-adjuster in the member's local CamillaDSP
-    fights it and oscillates (the documented ``rate_adjust`` + ``AsyncSinc``
-    trap). True => the member's generated config must set rate_adjust off.
-    Solo / off / invalid => False (normal local rate_adjust, unchanged).
-
-    This is the predicate the CamillaDSP config generators consult and that
-    ``jasper-doctor`` checks the ACTIVE config against. Currently identical to
-    :func:`is_active_member`; kept as its own named intent so the inv-5 rule
-    has one home and reads clearly at every call site."""
-    return is_active_member(cfg)

@@ -2390,6 +2390,7 @@ class MeasurementSession:
                 PEQ(freq=p.freq_hz, q=p.q, gain=p.gain_db)
                 for p in self.peqs
             ]
+            from jasper.multiroom.member_config import member_camilla_kwargs
             from jasper.sound.camilla_yaml import (
                 emit_sound_config,
             )
@@ -2401,11 +2402,16 @@ class MeasurementSession:
 
         def _prepare_config() -> dict[str, int]:
             profile = load_profile()
+            # A bonded member correcting its own seat (/correction) needs the
+            # SAME grouping transforms as /sound — inv-5 rate_adjust off + its
+            # channel-split. One policy owns the decision (member_camilla_kwargs)
+            # so this path can't drift from /sound; solo → unchanged.
             emit_sound_config(
                 profile,
                 room_peqs=peq_objs,
                 out_path=out_path,
                 profile_id=self.session_id,
+                **member_camilla_kwargs(),
             )
             return {
                 "room_peq_count": len(peq_objs),

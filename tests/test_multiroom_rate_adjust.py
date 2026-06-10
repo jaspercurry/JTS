@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from jasper.multiroom.config import (
     GroupingConfig,
-    disables_local_rate_adjust,
     is_active_member,
 )
 
@@ -25,27 +24,63 @@ def _cfg(**kw) -> GroupingConfig:
 # ---------- the shared predicate ----------
 
 
-def test_active_members_disable_rate_adjust():
+def test_active_members_are_active():
     leader = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
     follower = _cfg(
         enabled=True, role="follower", channel="right",
         bond_id="b", leader_addr="jts.local",
     )
-    assert disables_local_rate_adjust(leader) is True
-    assert disables_local_rate_adjust(follower) is True
     assert is_active_member(leader) is True
+    assert is_active_member(follower) is True
 
 
-def test_solo_off_invalid_keep_rate_adjust():
-    assert disables_local_rate_adjust(_cfg()) is False  # grouping off
+def test_solo_off_invalid_are_not_active():
+    assert is_active_member(_cfg()) is False  # grouping off
     # Enabled-but-INVALID (fail-loud) is NOT an active member: nothing streams,
     # so the local rate_adjust stays as-is (the reconciler won't start a bond).
     invalid = _cfg(
         enabled=True, role="", channel="left", bond_id="",
         error="JASPER_GROUPING_BOND_ID is empty",
     )
-    assert disables_local_rate_adjust(invalid) is False
     assert is_active_member(invalid) is False
+
+
+# ---------- member-config policy: the ONE decision, applied path-independently --
+
+
+def test_member_camilla_kwargs_active_member():
+    """An active member's config needs rate_adjust off + a channel-split."""
+    from jasper.multiroom.member_config import member_camilla_kwargs
+    kw = member_camilla_kwargs(_cfg(enabled=True, role="follower", channel="right",
+                                    bond_id="b", leader_addr="jts.local"))
+    assert kw["enable_rate_adjust"] is False
+    assert kw["channel_split"] is not None
+    assert kw["channel_split"].channel == "right"
+
+
+def test_member_camilla_kwargs_solo_is_unchanged_defaults():
+    """Solo / off → the solo-speaker defaults (config byte-for-byte unchanged)."""
+    from jasper.multiroom.member_config import member_camilla_kwargs
+    kw = member_camilla_kwargs(_cfg())  # grouping off
+    assert kw["enable_rate_adjust"] is True
+    assert kw["channel_split"] is None
+
+
+def test_member_camilla_kwargs_stereo_member_no_split():
+    """An active member with channel=stereo gets a passthrough split (no weave)."""
+    from jasper.multiroom.member_config import member_camilla_kwargs
+    kw = member_camilla_kwargs(_cfg(enabled=True, role="leader", channel="stereo", bond_id="b"))
+    assert kw["enable_rate_adjust"] is False
+    assert kw["channel_split"].is_passthrough  # stereo = no-op weave
+
+
+def test_member_camilla_kwargs_invalid_member_unchanged():
+    """Enabled-but-invalid is NOT active → solo defaults (fail-safe)."""
+    from jasper.multiroom.member_config import member_camilla_kwargs
+    kw = member_camilla_kwargs(_cfg(enabled=True, role="", channel="left",
+                                    bond_id="", error="bond_id empty"))
+    assert kw["enable_rate_adjust"] is True
+    assert kw["channel_split"] is None
 
 
 # ---------- the generators emit the param ----------
@@ -130,3 +165,71 @@ def test_doctor_check_ok_active_member_rate_adjust_off(monkeypatch, tmp_path):
     from jasper.cli.doctor.grouping import check_grouping_rate_adjust
     result = check_grouping_rate_adjust()
     assert result.status == "ok"
+
+
+# ---------- jasper-doctor: channel-split observability backstop ----------
+#
+# A missing channel-split is SILENT (the speaker plays full stereo) — unlike
+# rate_adjust, which oscillates audibly. This check is the only way a
+# wrong-channel member is visible.
+
+_BASE_MIXERS = "mixers:\n  master_gain:\n    channels: { in: 2, out: 2 }\n"
+
+
+def _channel_split_check(monkeypatch, tmp_path, *, cfg, config_text):
+    import jasper.cli.doctor.correction as corrmod
+    import jasper.multiroom.config as cfgmod
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
+    config_file = tmp_path / "active.yml"
+    config_file.write_text(config_text)
+    monkeypatch.setattr(
+        corrmod, "_active_camilla_config_path",
+        lambda: ("statefile", str(config_file)),
+    )
+    from jasper.cli.doctor.grouping import check_grouping_channel_split
+    return check_grouping_channel_split()
+
+
+def test_channel_split_check_skips_solo_and_stereo(monkeypatch, tmp_path):
+    # solo
+    r = _channel_split_check(monkeypatch, tmp_path, cfg=_cfg(), config_text=_BASE_MIXERS)
+    assert r.status == "ok"
+    # active member but channel=stereo (passthrough — no channel_select expected)
+    r = _channel_split_check(
+        monkeypatch, tmp_path,
+        cfg=_cfg(enabled=True, role="leader", channel="stereo", bond_id="b"),
+        config_text=_BASE_MIXERS,
+    )
+    assert r.status == "ok"
+
+
+def test_channel_split_check_warns_when_missing_for_nonstereo_member(monkeypatch, tmp_path):
+    r = _channel_split_check(
+        monkeypatch, tmp_path,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+        config_text=_BASE_MIXERS,  # no channel_select
+    )
+    assert r.status == "warn"
+    assert "channel=right" in r.detail
+    assert "wrong channel" in r.detail
+
+
+def test_channel_split_check_ok_when_present(monkeypatch, tmp_path):
+    text = _BASE_MIXERS + "  channel_select:\n    channels: { in: 2, out: 2 }\n"
+    r = _channel_split_check(
+        monkeypatch, tmp_path,
+        cfg=_cfg(enabled=True, role="follower", channel="left",
+                 bond_id="b", leader_addr="jts.local"),
+        config_text=text,
+    )
+    assert r.status == "ok"
+
+
+def test_config_has_channel_select_is_block_scoped():
+    """channel_select must be a top-level mixer, not a stray match elsewhere."""
+    from jasper.cli.doctor.grouping import _config_has_channel_select
+    assert _config_has_channel_select(_BASE_MIXERS + "  channel_select:\n") is True
+    assert _config_has_channel_select(_BASE_MIXERS) is False
+    # A `channel_select:` outside the mixers block must NOT match.
+    assert _config_has_channel_select("filters:\n  channel_select:\n") is False
