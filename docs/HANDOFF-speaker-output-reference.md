@@ -115,6 +115,53 @@ That is good groundwork, but it is not a complete "what did the user
 hear?" ledger. Robust barge-in needs both a true AEC reference and
 precise playout accounting.
 
+## Robust Barge-In Contract
+
+As of 2026-06-09, robust assistant-speech barge-in is the next product
+contract to wire, and it is explicitly **JTS-owned**. Provider-native
+interruption is useful, but it does not replace local output ownership:
+JTS must stop audible assistant audio first, then reconcile provider
+conversation state to match what the listener actually heard.
+
+The runtime sequence should be:
+
+1. Detect real user speech while assistant audio is playing. The first
+   production trigger should be local speech activity on the active
+   chip-AEC input, not a provider-only event, because local TTS flush is
+   the latency-critical action.
+2. Send a synchronous flush through the active TTS transport. In the
+   packaged topology that is fan-in's TTS socket
+   (`/run/jasper-fanin/tts.sock`), using the outputd-compatible command
+   protocol.
+3. The TTS owner advances the TTS epoch and drops queued assistant
+   frames. Provider truncation must additionally consume a final playout
+   ledger acknowledgement containing local segment id, provider item id
+   when available, and `audio_played_ms`.
+4. The voice-provider adapter sends the provider-specific cancel /
+   truncate operation using the playout-ledger acknowledgement, not
+   arrival timestamps or queued-frame estimates.
+5. The interrupted user utterance continues into the current live
+   session and can produce the next response without requiring another
+   wake word.
+
+Acceptance test for the first slice:
+
+- Assistant is speaking.
+- User says a local command such as "volume down" without saying the
+  wake word again.
+- The local TTS path stops assistant audio immediately.
+- The volume command executes once.
+- Provider conversation history is truncated/canceled to match the
+  `audio_played_ms` reported by the final playout ledger.
+- JTS may give a short confirmation, but it must not replay stale
+  assistant audio after the flush.
+
+Provider semantics live in
+[HANDOFF-voice-providers.md](HANDOFF-voice-providers.md#provider-interruption-contract).
+The output-side invariant lives here: **provider truncation must be
+driven from the final playout ledger, not provider event arrival time or
+queued-frame estimates**.
+
 ## Codebase Validation
 
 Rechecked against the current tree on 2026-06-01:
@@ -317,22 +364,24 @@ What exists:
   in this outputd-loudness tree. That older PortAudio path no longer has
   the dynamic content/profile matching policy; rollback means deploying a
   pre-outputd revision, not flipping the env var in current main.
-- TTS interruption: outputd flushes are epoch-based. A flush advances
-  the TTS epoch, clears the already-enqueued assistant buffer, and
-  ignores any pre-flush audio commands that had been accepted onto the
-  bounded IPC queue but not yet mixed. That keeps barge-in from
-  resurrecting stale assistant audio after the interrupt path returns.
-  Python uses a synchronous `FLUSH_SYNC` path for interruption and gets
-  a compact JSON acknowledgement with per-segment `audio_played_ms`,
-  flushed frames, provider item id, and local segment id. The Python
-  client bounds this ack wait and closes the ordered TTS socket on
-  timeout so a late stale ack cannot be mistaken for a later flush.
-- Playout ledger: outputd keeps active assistant/cue segments plus a
-  bounded recent terminal history, so long uptimes do not accumulate
-  one segment per TTS chunk indefinitely. Written frames are not treated
-  as heard frames: the ALSA backend reads the DAC playback delay after
-  each successful write and the ledger estimates drained frames from
-  that output clock.
+- TTS interruption: the active TTS IPC flush is epoch-based. In the
+  packaged topology this is fan-in's TTS socket. A flush advances the
+  TTS epoch, clears the already-enqueued assistant buffer, and ignores
+  any pre-flush audio commands that had been accepted onto the bounded
+  IPC queue but not yet mixed. That keeps barge-in from resurrecting
+  stale assistant audio after the interrupt path returns. Python uses a
+  synchronous `FLUSH_SYNC` path for interruption and bounds this ack
+  wait; on timeout it closes the ordered TTS socket so a late stale ack
+  cannot be mistaken for a later flush.
+- Playout ledger: the off-path outputd core still contains the richer
+  per-segment ledger shape: active assistant/cue segments plus bounded
+  recent terminal history; provider item id; flushed frames; and
+  `audio_played_ms` estimated from the output clock and DAC delay rather
+  than treating written frames as heard frames. The packaged fan-in TTS
+  ack currently reports queue-level flush facts and an empty events list
+  (`max_audio_played_ms=0`, `events=[]`). Robust provider truncation
+  therefore still needs the final playout-ledger slice wired to the
+  active TTS/final-output path.
 - Runtime unit: `deploy/systemd/jasper-outputd.service` is enabled by
   `deploy/install.sh` and sets the ALSA/socket defaults.
   Optional lab retuning belongs in `/var/lib/jasper/outputd.env`; the
@@ -378,10 +427,11 @@ What is still intentionally not done:
 - The chip USB-IN producer is intentionally separate from the software
   speaker monitor. Software AEC/corpus/diagnostics should not depend on
   chip hardware being present.
-- Provider truncation is not yet wired to outputd flush
-  acknowledgements. The transport now returns the needed
-  `audio_played_ms` and provider item identity; provider-specific
-  truncate/cancel commands still need to consume it.
+- Provider truncation is not yet wired to the local TTS flush and final
+  playout-ledger acknowledgements. The contract is now documented here
+  and in `HANDOFF-voice-providers.md`; implementation still needs to
+  produce/consume the needed `audio_played_ms` and provider item
+  identity for provider-specific truncate/cancel commands.
 - The latest TTS ledger refinements (provider item id over IPC,
   synchronous flush acknowledgement, and DAC-delay-based drain
   accounting) still need Pi validation after an operator-approved
@@ -743,8 +793,10 @@ datum: how much assistant audio was actually heard.
    2026-06-08:** software AEC, chip-AEC, corpus, and diagnostics consume
    the same outputd monitor contract; `pcm.jasper_ref` remains explicit
    fallback/diagnostic mode.
-5. **Enable robust barge-in.** Wire outputd flush acknowledgements to
-   provider truncation/cancel logic and capture barge-in telemetry.
+5. **Enable robust barge-in.** Wire the local TTS flush and final
+   playout-ledger acknowledgement to provider truncation/cancel logic,
+   capture barge-in telemetry, and use the "volume down while assistant
+   is speaking" path as the first product acceptance test.
 
 ### Required Tests
 
@@ -759,9 +811,9 @@ datum: how much assistant audio was actually heard.
   Bluetooth, USB input, and TTS-over-music with no output xruns.
 - Corpus capture-health test proving reference packet loss/drops mark
   affected clips compromised.
-- Barge-in test: assistant speaks, user interrupts, outputd flushes,
-  and provider truncation receives an `audio_played_ms` within one
-  output period of the ledger estimate.
+- Barge-in test: assistant speaks, user interrupts, the local TTS path
+  flushes, and provider truncation receives an `audio_played_ms` within
+  one output period of the final playout-ledger estimate.
 
 ### Success Criteria
 
@@ -883,5 +935,11 @@ datum: how much assistant audio was actually heard.
   alone records the composite profile, but outputd switches to the
   four-channel sink only after the active-speaker startup config is loaded
   and CamillaDSP's outputd statefile points at that active graph.
+- 2026-06-09: Documented the current robust barge-in contract:
+  local speech detection triggers the active TTS transport flush first,
+  the final playout ledger supplies `audio_played_ms`, and provider
+  adapters reconcile conversation state after the local audio stop.
+  First acceptance target is interrupting assistant speech with a local
+  volume command and no second wake word.
 
 Last verified: 2026-06-09
