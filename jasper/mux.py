@@ -155,12 +155,6 @@ class _State:
 class Mux:
     POLL_INTERVAL_SEC = 1.0
 
-    # When the current "winner" source dropped below this many ticks
-    # ago, hold off on re-preempting toward a different source. Avoids
-    # flapping when two sources both report "playing" briefly during
-    # handover.
-    DEBOUNCE_TICKS = 2
-
     def __init__(
         self,
         librespot_state_path: str = librespot_state.DEFAULT_PATH,
@@ -295,17 +289,20 @@ class Mux:
                 transition_reason = "auto_startup_active"
 
         if target is not None and target != self._winner:
-            # If the new winner is USBSINK and it's currently in our
-            # preempted set, the daemon's bridge is silent. The fresh
-            # inactive→active edge means the user did "pause then
-            # play" on the host — release the preempt so we forward
-            # audio again.
-            if target == Source.USBSINK and self._usbsink_preempted:
-                await self._usbsink_set_preempt(False, reason="new_transition")
-
             async with self._transition_lock:
                 if self._manual_source is not None:
                     return
+                # If the new winner is USBSINK and it's currently in our
+                # preempted set, the daemon's bridge is silent. The fresh
+                # inactive→active edge means the user did "pause then
+                # play" on the host — release the preempt so we forward
+                # audio again. Inside the lock (like select_source /
+                # auto_select) so a concurrent manual selection can't
+                # interleave between the release and the handoff.
+                if target == Source.USBSINK and self._usbsink_preempted:
+                    await self._usbsink_set_preempt(
+                        False, reason="new_transition",
+                    )
                 prev_winner = self._winner or Source.IDLE
                 selected = await self._transition_to_source_locked(
                     prev_winner, target, reason=transition_reason,
@@ -326,10 +323,14 @@ class Mux:
 
             # Pause every OTHER source that's currently active after
             # the fan-in gate has moved. Slow cloud/Web API pause
-            # paths should not delay a safe source switch.
+            # paths should not delay a safe source switch. Best-effort
+            # per source: one renderer's pause raising (Web API error,
+            # busctl gone) must not abort pausing the rest.
             for source, is_playing in current.items():
                 if source != target and is_playing:
-                    await self._pause(source)
+                    await self._pause_best_effort(
+                        source, reason=transition_reason,
+                    )
         elif target is None:
             if self._winner is not None and current.get(self._winner, False):
                 await self._reassert_auto_winner(current)

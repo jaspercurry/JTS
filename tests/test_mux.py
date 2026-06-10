@@ -211,18 +211,16 @@ async def test_simultaneous_start_picks_one_deterministically(mux, patched_probe
 
 @pytest.mark.asyncio
 async def test_pause_is_resilient_to_action_failures(mux, patched_probes):
-    """If _pause throws, _tick should not crash — the polling loop's
-    try/except catches any exception. We test that here at the _pause
-    boundary specifically: a failing pause shouldn't hang the
-    mux's state-update logic."""
+    """If _pause throws, _tick should not crash. Post-handoff preemption
+    goes through _pause_best_effort (audit C5), so a failing pause is
+    logged and swallowed inside the tick rather than aborting the
+    remaining per-source pauses."""
     _stub_probes(patched_probes, spotify=True, airplay=False, bluetooth=False)
     await mux._tick()
     _stub_probes(patched_probes, spotify=True, airplay=True, bluetooth=False)
     mux._pause = AsyncMock(side_effect=RuntimeError("pause API down"))
-    # Tick should propagate the exception (run() handles it at the
-    # outer level, so per-tick can be fragile).
-    with pytest.raises(RuntimeError):
-        await mux._tick()
+    await mux._tick()  # must not raise
+    mux._pause.assert_awaited_once_with(Source.SPOTIFY)
     # State still updated despite the pause failure.
     assert mux._state.playing[Source.SPOTIFY] is True
     assert mux._state.playing[Source.AIRPLAY] is True
@@ -929,3 +927,61 @@ def test_mux_mode_state_path_defaults_from_env(monkeypatch, tmp_path):
         mode_state_path=str(custom),
     )
     assert m._manual_source is Source.SPOTIFY
+
+
+# ---------------------------------------------------------------------------
+# Audit C5 — _tick hygiene: preempt-release locking, best-effort pause
+# fan-out, and removal of the never-implemented DEBOUNCE_TICKS policy.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_usbsink_preempt_release_runs_inside_transition_lock(
+    mux, patched_probes,
+):
+    """The new-transition USB preempt release must hold _transition_lock —
+    otherwise a concurrent manual select_source can interleave between
+    the release and the handoff (the pre-fix shape)."""
+    held_during_release: list[bool] = []
+
+    async def recording_release(silenced, *, reason):
+        held_during_release.append(mux._transition_lock.locked())
+        mux._usbsink_preempted = silenced
+
+    mux._usbsink_set_preempt = recording_release
+    mux._usbsink_preempted = True
+    _stub_probes(patched_probes, usbsink=True)
+    _stub_pauses(mux)
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+    # First call is the new_transition release; it must be under the lock.
+    assert held_during_release and held_during_release[0] is True
+
+
+@pytest.mark.asyncio
+async def test_one_pause_failure_does_not_abort_pausing_the_rest(
+    mux, patched_probes,
+):
+    """Post-handoff preemption pauses every other active source. One
+    renderer's pause raising (Spotify Web API down, busctl missing)
+    must not skip the remaining sources or blow up the tick."""
+    _stub_probes(patched_probes, spotify=True, bluetooth=True)
+    _stub_pauses(mux)
+    await mux._tick()  # establish a winner with two sources up
+    mux._pause.reset_mock()
+
+    _stub_probes(patched_probes, spotify=True, bluetooth=True, airplay=True)
+    mux._pause = AsyncMock(side_effect=[RuntimeError("web api down"), None])
+    await mux._tick()  # AirPlay wins; both others get pause attempts
+    assert mux._winner is Source.AIRPLAY
+    pause_targets = {c.args[0] for c in mux._pause.await_args_list}
+    assert pause_targets == {Source.SPOTIFY, Source.BLUETOOTH}
+
+
+def test_debounce_ticks_constant_removed():
+    """DEBOUNCE_TICKS documented an anti-flap hold that was never
+    implemented (dead since the file's first commit). The constant was
+    deleted rather than activated — see the commit message rationale.
+    This guards against the comment/constant reappearing without an
+    actual implementation + tests."""
+    assert not hasattr(Mux, "DEBOUNCE_TICKS")
