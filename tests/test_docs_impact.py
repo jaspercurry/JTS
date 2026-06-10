@@ -79,3 +79,34 @@ def test_install_script_routes_to_deploy_docs():
     report = docs_impact.impact_report(subsystems, ("deploy/install.sh",))
 
     assert [item["id"] for item in report] == ["deploy-and-onboarding"]
+
+
+def test_doc_map_code_globs_match_at_least_one_tracked_file():
+    """Stale-glob guard: a moved/renamed file leaves a code glob in
+    doc-map.toml matching nothing, which silently un-routes the mapped
+    docs (the PR bot just stops mentioning them). Every code glob must
+    match at least one git-tracked file, using the same fnmatch
+    semantics scripts/docs-impact.py applies to changed paths."""
+    import subprocess
+
+    docs_impact = load_docs_impact()
+    subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.splitlines()
+
+    stale = [
+        f"{subsystem.id}: code glob matches no tracked file: {pattern}"
+        for subsystem in subsystems
+        # design-only entries deliberately pre-route ANTICIPATED code
+        # paths (e.g. jasper/apple_music/**) to their design docs, so a
+        # zero-match glob there is the point, not staleness.
+        if subsystem.safety != "design-only"
+        for pattern in subsystem.code
+        if not any(docs_impact.pattern_matches(pattern, path) for path in tracked)
+    ]
+    assert stale == [], (
+        "stale doc-map.toml code globs (file moved/renamed without "
+        "updating the routing map?):\n" + "\n".join(stale)
+    )

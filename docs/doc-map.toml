@@ -316,7 +316,6 @@ safety = "audio-output-risk"
 code = [
   "jasper/volume_*.py",
   "jasper/volume_coordinator.py",
-  "jasper/source_volume.py",
   "jasper/tools/audio.py",
   "jasper/sound/**",
   "jasper/web/sound_setup.py",
