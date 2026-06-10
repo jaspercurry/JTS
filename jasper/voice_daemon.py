@@ -1450,6 +1450,10 @@ class WakeLoop:
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
         self._cues = cues
+        # One-shot latch for the "cue requested but no cue manager"
+        # WARN in _play_cue — see that method for why it must not be
+        # silent, and why it logs once rather than per-cue.
+        self._warned_cues_unconfigured = False
         # Tier 1 of the resilience ladder. Bumped on every mic frame
         # — i.e. proof that audio capture is alive AND the async loop
         # is iterating. If either dies (PortAudio wedge, asyncio
@@ -1739,6 +1743,21 @@ class WakeLoop:
         when the duck didn't latch, so the finally is safe to call
         unconditionally."""
         if self._cues is None:
+            # Cues are the "no silent failure paths" promise — they're
+            # how the user hears WHY the speaker didn't respond. With no
+            # cue manager the speaker is silent on every failure, so
+            # make that state diagnosable in the journal. Once per
+            # daemon lifetime (not per cue): the condition is static
+            # config, repeating it would be journal spam.
+            if not self._warned_cues_unconfigured:
+                self._warned_cues_unconfigured = True
+                logger.warning(
+                    "event=cue.skipped reason=cues_unconfigured slug=%s "
+                    "— no cue manager; failure cues will be SILENT for "
+                    "this daemon run (check cue backend/API keys at "
+                    "startup logs)",
+                    slug,
+                )
             return
         try:
             try:
@@ -2084,6 +2103,17 @@ class WakeLoop:
             except Exception as e:  # noqa: BLE001
                 logger.warning("ending turn on mic mute: %s", e)
         self._mic_muted = True
+        # Drop already-buffered room audio, not just future frames. The
+        # pre-roll otherwise survives the mute and is replayed into the
+        # first turn after unmute (~560 ms of pre-mute room audio sent
+        # to the LLM); the telemetry capture rings would likewise write
+        # pre-mute audio to disk if a wake fired right after unmute.
+        # Mute means "everything captured before this instant is gone."
+        self._pre_roll.clear()
+        self._acquire_buffer.clear()
+        for _rt in self._legs.values():
+            if _rt.capture_ring is not None:
+                _rt.capture_ring.clear()
         write_mic_muted(self._cfg.mic_mute_state_path, True)
         logger.info("event=mic.mute")
         await self._play_mute_click(going_on=False)
