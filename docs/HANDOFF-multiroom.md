@@ -1,20 +1,27 @@
 # Handoff: multi-room / multi-speaker audio (stereo pair, 2.1, wireless sub)
 
-> **Status: proposed design — not yet implemented.** This is the
-> canonical design home for grouped/synchronized playback across
-> multiple JTS speakers (stereo pairs, 2.1 with a wireless sub,
-> and multi-room). No code exists yet; the numbers that gate the
-> whole feature (network sync error, FLAC RAM/CPU) are unmeasured.
-> The first deliverable is a throwaway **P0 measurement spike**, not
-> product code. Treat sections below as *intended* operational
-> truth, to be promoted to live HANDOFF prose as each phase ships.
-> The existing `jasper/peering/` subsystem
-> ([HANDOFF-peering.md](HANDOFF-peering.md)) is **wake arbitration
-> only** — picking which speaker *answers* "Hey Jarvis" — and is a
-> different subsystem from this one, though this design reuses its
-> discovery/identity substrate.
+> **Status: in progress — off-by-default scaffolding shipped; the audio path
+> does NOT work end-to-end yet.** This is the canonical design home for
+> grouped/synchronized playback across multiple JTS speakers (stereo pairs, 2.1
+> with a wireless sub, and multi-room). What has shipped is the
+> control/observability scaffolding — config/state/reconcile, the `/rooms`
+> bond-forming UI, the channel-split weave, inv-5 — all OFF by default. What is
+> NOT done: **no audio flows to followers yet** (the `jasper-outputd` snapfifo
+> producer is unwired, blocked on TTS separation —
+> `reconcile.SNAPFIFO_PRODUCER_WIRED` is `False`, §2), perfect sample-lock
+> (inv-2), and the gating **P0 measurement spike** (network sync error, FLAC
+> RAM/CPU) has **not** been run on hardware — those numbers still gate the
+> feature, and the scaffolding landed ahead of them on purpose (all inert until
+> measured). **§0 "Implementation status" is the live single source of truth**
+> for what exists; treat the design sections below as *intended* operational
+> truth, promoted to live prose as each phase ships. The existing
+> `jasper/peering/` subsystem ([HANDOFF-peering.md](HANDOFF-peering.md)) is
+> **wake arbitration only** — picking which speaker *answers* "Hey Jarvis" — a
+> different subsystem, though this design reuses its discovery/identity
+> substrate.
 >
-> Design dialogue + prior-art research: 2026-06-04.
+> Design dialogue + prior-art research: 2026-06-04. Status last reconciled with
+> code: 2026-06-10 (see §0 + the footer changelog).
 
 ---
 
