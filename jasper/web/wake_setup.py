@@ -82,7 +82,6 @@ from ._common import (
     canonical_header,
     canonical_page,
     csrf_field_html,
-    delete_env_file,
     proxy_get,
     proxy_post,
     read_env_file,
@@ -860,10 +859,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=err)
                 return
             try:
-                if new:
-                    write_env_file(cfg["state_path"], new, mode=0o644)
-                else:
-                    delete_env_file(cfg["state_path"])
+                # _apply_save always stamps JASPER_WAKE_MODEL on the success
+                # path (errors are guarded above via `err`), so `new` is never
+                # empty — always write, never delete.
+                write_env_file(cfg["state_path"], new, mode=0o644)
             except OSError as e:
                 logger.exception("could not write wake-model env file")
                 send_see_other(self, "./", flash=f"Could not save: {e}")

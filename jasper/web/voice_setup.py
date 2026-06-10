@@ -1302,10 +1302,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if err is not None:
                 return None, err
             try:
-                if new:
-                    write_env_file(cfg["state_path"], new)
-                else:
-                    delete_env_file(cfg["state_path"])
+                # _apply_save always sets JASPER_VOICE_PROVIDER to a valid id on
+                # the success path (errors guarded above), and it survives the
+                # blank-value filter — so `new` is never empty: always write,
+                # never delete.
+                write_env_file(cfg["state_path"], new)
             except OSError as e:
                 logger.exception("could not write voice provider env file")
                 return None, f"Could not save: {e}"
