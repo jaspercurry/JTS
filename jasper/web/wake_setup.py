@@ -869,6 +869,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             restart_voice_daemon()
             picked = new.get("JASPER_WAKE_MODEL", "")
+            # Parity with the wake.layer/profile/sensitivity sub-actions above —
+            # the primary model change was the one mutation this page didn't log.
+            # The model name is not a secret.
+            logger.info(
+                "event=wake.model model=%s client=%s",
+                picked, self.address_string(),
+            )
             entry = wake_models.by_model(picked)
             label = entry.label if entry else picked
             threshold_str = new.get("JASPER_WAKE_THRESHOLD", "")
