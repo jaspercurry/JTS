@@ -415,6 +415,41 @@ def test_system_audio_quality_rejects_missing_converter(
     assert body["error"] == "converter is required"
 
 
+def test_system_action_reboot_audits_and_invokes_systemctl(
+    monkeypatch,
+    server_with_coordinator,
+    caplog,
+):
+    """A destructive /system/ action emits an `event=system.action` audit line
+    (so a dashboard-triggered reboot is distinguishable from a watchdog/crash
+    reset when debugging "the speaker restarted on its own") and shells out to
+    the right systemctl command. subprocess.Popen is mocked so no test machine
+    reboots."""
+    import logging
+
+    import jasper.control.server as srv_mod
+
+    base, _ = server_with_coordinator
+    popens: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, cmd):
+            popens.append(cmd)
+
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+
+    with caplog.at_level(logging.INFO, logger="jasper.control.server"):
+        status, body = _post(f"{base}/system/reboot", {})
+
+    assert status == 200
+    assert body["action"] == "reboot"
+    assert popens == [["systemctl", "reboot"]]
+    assert any(
+        "event=system.action action=reboot" in rec.getMessage()
+        for rec in caplog.records
+    ), "reboot must emit an event=system.action audit line"
+
+
 def test_aec_toggle_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
     """AEC mode changes must restart the oneshot reconciler, not just start it.
 
