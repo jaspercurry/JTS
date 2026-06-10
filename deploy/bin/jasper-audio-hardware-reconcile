@@ -101,7 +101,25 @@ jasper_asound_route_ignored() {
 }
 
 quote_env_value() {
-    printf '%q' "$1"
+    local value="$1" rest
+    if [[ -z "$value" ]]; then
+        printf "''"
+        return
+    fi
+    case "$value" in
+        *[!A-Za-z0-9_./:@,+=-]*)
+            printf "'"
+            rest="$value"
+            while [[ "$rest" == *"'"* ]]; do
+                printf "%s'\\''" "${rest%%\'*}"
+                rest="${rest#*\'}"
+            done
+            printf "%s'" "$rest"
+            ;;
+        *)
+            printf '%s' "$value"
+            ;;
+    esac
 }
 
 find_card() {

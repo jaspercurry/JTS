@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from jasper.audio_hardware import dac
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -78,6 +80,27 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
     assert "APPLE_DONGLE_PRESENT=1" in reconcile
     assert "APPLE_DONGLE_PRESENT=0" in reconcile
     assert 'APPLE_DONGLE_SERVICE_CARD="auto"' in reconcile
+
+
+def test_bash_output_detection_literals_track_registered_dac_profiles():
+    reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+    install_sh = (REPO / "deploy" / "install.sh").read_text()
+
+    for profile_id in (
+        dac.APPLE_USB_C_DONGLE_ID,
+        dac.HIFIBERRY_DAC8X_ID,
+        dac.HIFIBERRY_DAC8X_STUDIO_ID,
+        dac.DUAL_APPLE_USB_C_DAC_4CH_ID,
+    ):
+        assert profile_id in reconcile
+
+    assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
+    assert "find_card 'usb-c to 3.5mm'" in reconcile
+    assert "find_card 'hifiberry.*dac8x.*studio|dac8x.*studio'" in reconcile
+    assert "find_card 'snd_rpi_hifiberry_dac8x|hifiberry.*dac8x|dac8x'" in reconcile
+    assert reconcile.index(
+        "DAC8X_STUDIO_OUTPUT_CARD=\"$(find_card"
+    ) < reconcile.index("DAC8X_OUTPUT_CARD=\"$(find_card")
 
 
 def test_output_dac_route_policy_is_narrow_and_dac8x_family_only():

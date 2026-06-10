@@ -269,6 +269,19 @@ def test_print_env_recognizes_dac8x_studio_role(tmp_path: Path):
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
 
 
+def test_print_env_keeps_comma_values_stable_across_bash_versions(tmp_path: Path):
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--print-env",
+        initial_env="JASPER_OUTPUT_DAC_ROUTE=stereo:5,6\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "OUTPUT_DAC_ROUTE=stereo:5,6" in result.stdout
+    assert r"OUTPUT_DAC_ROUTE=stereo:5\,6" not in result.stdout
+
+
 def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 
