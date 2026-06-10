@@ -942,6 +942,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if registry.get(name) is not None:
                 registry.default_name = name
                 registry.save()
+                # Account-identity config — symmetric with spotify.default.
+                # (No restart here: Google's default is read lazily, but the
+                # config change is still worth the audit line.)
+                logger.info("event=google.default client=%s", self.address_string())
                 self._redirect(
                     f"./?msg=Default+set+to+{urllib.parse.quote(name)}"
                 )
