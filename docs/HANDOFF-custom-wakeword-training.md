@@ -226,6 +226,12 @@ Current implementation state:
   `feature_bank.json`.
 - It verifies each source WAV against the bundle manifest hash before
   extraction, so feature banks are tied to the exact exported audio bytes.
+- Positive and negative feature-bank builders share their offline data-prep
+  contract through `jasper/wake_training/feature_bank.py`: bundle reads, WAV
+  format checks, SHA-256 verification, end-aligned windows, batched
+  openWakeWord feature extraction, and JSONL writing. New wake-training
+  data-prep scripts should extend that utility rather than importing private
+  helpers from another script.
 - The positive feature-bank builder is intentionally still not a trainer:
   no LiveKit calls, synthetic data generation, threshold tuning, cloud job
   launch, model registry writes, or runtime changes.

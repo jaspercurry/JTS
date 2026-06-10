@@ -24,19 +24,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-import _build_wake_feature_bank as feature_builder  # noqa: E402
+from jasper.wake_training import feature_bank as fb
 
 
 SCHEMA_VERSION = 1
-TRAIN_SPLIT = feature_builder.TRAIN_SPLIT
-EVAL_SPLIT = feature_builder.EVAL_SPLIT
-DEFAULT_SPLITS = feature_builder.DEFAULT_SPLITS
-DEFAULT_TOTAL_SAMPLES = feature_builder.DEFAULT_TOTAL_SAMPLES
-EMBEDDING_DIM = feature_builder.EMBEDDING_DIM
+TRAIN_SPLIT = fb.TRAIN_SPLIT
+EVAL_SPLIT = fb.EVAL_SPLIT
+DEFAULT_SPLITS = fb.DEFAULT_SPLITS
+DEFAULT_TOTAL_SAMPLES = fb.DEFAULT_TOTAL_SAMPLES
+EMBEDDING_DIM = fb.EMBEDDING_DIM
 DEFAULT_NEGATIVE_LABEL_KINDS = frozenset(
     {"negative", "hard_negative", "ambient_negative", "background"}
 )
@@ -89,7 +89,7 @@ def _row_matches(
     label_kinds: set[str],
     allow_unlabeled_as: str | None,
 ) -> bool:
-    if not feature_builder._row_matches(
+    if not fb.row_matches(
         row,
         splits=splits,
         legs=legs,
@@ -152,14 +152,14 @@ def build_negative_feature_bank(
     total_samples: int = DEFAULT_TOTAL_SAMPLES,
     batch_size: int = 32,
     ncpu: int = 1,
-    extractor: feature_builder.FeatureExtractor | None = None,
+    extractor: fb.FeatureExtractor | None = None,
     device: str = "cpu",
     melspec_model_path: Path | None = None,
     embedding_model_path: Path | None = None,
 ) -> dict[str, Any]:
     bundle_dir = bundle_dir.expanduser().resolve()
     output_dir = output_dir.expanduser().resolve()
-    feature_builder._require_numpy()
+    fb.require_numpy()
     manifest_path = bundle_dir / "manifest.jsonl"
     bundle_json_path = bundle_dir / "bundle.json"
     if not manifest_path.is_file():
@@ -189,10 +189,10 @@ def build_negative_feature_bank(
         _validate_negative_label_kind(kind, option_name="--label-kind")
         for kind in label_kinds
     }
-    feature_frames = feature_builder._feature_frame_count(total_samples)
+    feature_frames = fb.feature_frame_count(total_samples)
 
-    bundle_summary = feature_builder._read_json(bundle_json_path)
-    source_rows = feature_builder._read_jsonl(manifest_path)
+    bundle_summary = fb.read_json(bundle_json_path)
+    source_rows = fb.read_jsonl(manifest_path)
     selected_rows = [
         row
         for row in source_rows
@@ -209,12 +209,12 @@ def build_negative_feature_bank(
     ]
     _enrich_negative_rows(selected_rows, allow_unlabeled_as=allow_unlabeled_as)
 
-    prepared_by_split: dict[str, list[feature_builder.PreparedClip]] = {
+    prepared_by_split: dict[str, list[fb.PreparedClip]] = {
         split: [] for split in sorted(splits)
     }
     rejections: list[dict[str, Any]] = []
     for row in selected_rows:
-        prepared, rejection = feature_builder._prepare_clip(
+        prepared, rejection = fb.prepare_clip(
             bundle_dir=bundle_dir,
             row=row,
             total_samples=total_samples,
@@ -228,7 +228,7 @@ def build_negative_feature_bank(
 
     has_prepared_clips = any(prepared_by_split.values())
     if extractor is None and has_prepared_clips:
-        extractor = feature_builder.OpenWakeWordFeatureExtractor(
+        extractor = fb.OpenWakeWordFeatureExtractor(
             ncpu=ncpu,
             device=device,
             melspec_model_path=melspec_model_path,
@@ -242,7 +242,7 @@ def build_negative_feature_bank(
     feature_files: dict[str, str] = {}
     feature_counts: dict[str, int] = {}
     for split in sorted(splits):
-        features, feature_rows = feature_builder._extract_split_features(
+        features, feature_rows = fb.extract_split_features(
             split=split,
             prepared=prepared_by_split[split],
             extractor=extractor,
@@ -251,7 +251,7 @@ def build_negative_feature_bank(
             expected_feature_frames=feature_frames,
         )
         file_name = f"negative_features_{split}.npy"
-        feature_builder.np.save(output_dir / file_name, features)
+        fb.np.save(output_dir / file_name, features)
         feature_files[split] = file_name
         feature_counts[split] = int(features.shape[0])
         for row in feature_rows:
@@ -261,8 +261,8 @@ def build_negative_feature_bank(
             row["wake_positive"] = False
         all_feature_rows.extend(feature_rows)
 
-    feature_builder._write_jsonl(output_dir / "negative_feature_manifest.jsonl", all_feature_rows)
-    feature_builder._write_jsonl(
+    fb.write_jsonl(output_dir / "negative_feature_manifest.jsonl", all_feature_rows)
+    fb.write_jsonl(
         output_dir / "negative_feature_rejections.jsonl",
         rejections,
     )
@@ -274,8 +274,8 @@ def build_negative_feature_bank(
         "source_bundle": {
             "path": str(bundle_dir),
             "bundle_schema_version": bundle_summary.get("schema_version"),
-            "manifest_sha256": feature_builder._sha256(manifest_path),
-            "bundle_json_sha256": feature_builder._sha256(bundle_json_path),
+            "manifest_sha256": fb.sha256(manifest_path),
+            "bundle_json_sha256": fb.sha256(bundle_json_path),
         },
         "output_dir": str(output_dir),
         "selection": {
@@ -289,7 +289,7 @@ def build_negative_feature_bank(
         },
         "extraction": {
             "extractor": getattr(extractor, "name", type(extractor).__name__),
-            "sample_rate_hz": feature_builder.EXPECTED_SAMPLE_RATE,
+            "sample_rate_hz": fb.EXPECTED_SAMPLE_RATE,
             "total_samples": total_samples,
             "alignment": "end_aligned",
             "feature_shape": [feature_frames, EMBEDDING_DIM],
@@ -304,12 +304,12 @@ def build_negative_feature_bank(
             "feature_rows": len(all_feature_rows),
             "rejections": len(rejections),
             "features_by_split": feature_counts,
-            "selected_by_split": feature_builder._count_by(selected_rows, "split"),
-            "selected_by_profile": feature_builder._count_by(selected_rows, "profile"),
-            "selected_by_leg": feature_builder._count_by(selected_rows, "leg"),
-            "selected_by_condition": feature_builder._count_by(selected_rows, "condition"),
-            "selected_by_distance": feature_builder._count_by(selected_rows, "distance"),
-            "selected_by_label_kind": feature_builder._count_by(selected_rows, "label_kind"),
+            "selected_by_split": fb.count_by(selected_rows, "split"),
+            "selected_by_profile": fb.count_by(selected_rows, "profile"),
+            "selected_by_leg": fb.count_by(selected_rows, "leg"),
+            "selected_by_condition": fb.count_by(selected_rows, "condition"),
+            "selected_by_distance": fb.count_by(selected_rows, "distance"),
+            "selected_by_label_kind": fb.count_by(selected_rows, "label_kind"),
             "selected_duration_hours": _sum_duration_hours(selected_rows),
             "selected_duration_hours_by_label_kind": _count_duration_hours_by(
                 selected_rows,
@@ -360,7 +360,7 @@ def _looks_like_negative_feature_bank_output(path: Path) -> bool:
     if not marker.is_file():
         return False
     try:
-        data = feature_builder._read_json(marker)
+        data = fb.read_json(marker)
     except (OSError, json.JSONDecodeError, ValueError):
         return False
     artifacts = data.get("artifacts")
@@ -398,10 +398,6 @@ def _print_summary(summary: dict[str, Any]) -> str:
     for leg, count in summary["counts"]["selected_by_leg"].items():
         lines.append(f"    {leg:<24} {count}")
     return "\n".join(lines)
-
-
-def _parse_repeatable_csv(values: list[str] | None) -> set[str] | None:
-    return feature_builder._parse_repeatable_csv(values)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -477,12 +473,12 @@ def main(argv: list[str] | None = None) -> int:
         summary = build_negative_feature_bank(
             bundle_dir,
             output_dir,
-            splits=_parse_repeatable_csv(args.split) or set(DEFAULT_SPLITS),
-            legs=_parse_repeatable_csv(args.leg),
-            profiles=_parse_repeatable_csv(args.profile),
-            conditions=_parse_repeatable_csv(args.condition),
-            distances=_parse_repeatable_csv(args.distance),
-            label_kinds=_parse_repeatable_csv(args.label_kind),
+            splits=fb.parse_repeatable_csv(args.split) or set(DEFAULT_SPLITS),
+            legs=fb.parse_repeatable_csv(args.leg),
+            profiles=fb.parse_repeatable_csv(args.profile),
+            conditions=fb.parse_repeatable_csv(args.condition),
+            distances=fb.parse_repeatable_csv(args.distance),
+            label_kinds=fb.parse_repeatable_csv(args.label_kind),
             allow_unlabeled_as=args.allow_unlabeled_as,
             total_samples=args.total_samples,
             batch_size=args.batch_size,
