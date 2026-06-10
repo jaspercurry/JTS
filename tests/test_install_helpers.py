@@ -19,7 +19,20 @@ from pathlib import Path
 
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
+_INSTALL_LIB_DIR = Path(__file__).parent.parent / "deploy" / "lib" / "install"
+_RENDERERS_LIB = _INSTALL_LIB_DIR / "renderers.sh"
 _ENV_EXAMPLE = Path(__file__).parent.parent / ".env.example"
+
+
+def _installer_shell_texts() -> dict[Path, str]:
+    """install.sh plus the deploy/lib/install/*.sh libs it sources.
+
+    Invariant-style tests (bounded curl flags, no unpinned git
+    fetches, …) must keep covering function groups that the
+    install.sh decomposition moved into sourced libs."""
+    paths = [_INSTALL_SH, *sorted(_INSTALL_LIB_DIR.glob("*.sh"))]
+    assert _RENDERERS_LIB in paths
+    return {p: p.read_text(encoding="utf-8") for p in paths}
 
 
 def _compute_min_free_kbytes(memtotal_kb: int) -> int:
@@ -390,13 +403,14 @@ def test_base_source_builds_use_hash_checked_archives():
     ]:
         assert expected in text
 
-    for forbidden in [
-        "git clone --depth 1",
-        "git init ",
-        "git -C \"${tmpdir}",
-        "verify_git_head",
-    ]:
-        assert forbidden not in text
+    for path, source_text in _installer_shell_texts().items():
+        for forbidden in [
+            "git clone --depth 1",
+            "git init ",
+            "git -C \"${tmpdir}",
+            "verify_git_head",
+        ]:
+            assert forbidden not in source_text, (path, forbidden)
 
 
 def test_install_help_is_clean_and_non_root():
@@ -534,8 +548,9 @@ def test_shairport_build_completes_before_old_binary_is_removed():
     """install_renderers must fetch + compile the shairport-sync
     replacement BEFORE stopping the service and apt-removing the old
     binary. Under set -e, the old order stranded the Pi with no AirPlay
-    when the download or build failed."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    when the download or build failed. install_renderers lives in the
+    sourced deploy/lib/install/renderers.sh since the decomposition."""
+    text = _RENDERERS_LIB.read_text(encoding="utf-8")
 
     idx_fetch = text.index('"${tmpdir}/sps"')
     idx_stop = text.index("systemctl stop shairport-sync")
@@ -549,16 +564,16 @@ def test_shairport_build_completes_before_old_binary_is_removed():
 
 
 def test_install_curl_fetches_are_bounded_and_retried():
-    """Every direct multi-MB curl in install.sh carries bounded retries
-    and a transfer cap so flaky Pi WiFi doesn't abort (or hang) the
-    install."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("curl ", "if ! curl ")) and "-o" in stripped:
-            assert "--retry 3" in stripped, stripped
-            assert "--retry-connrefused" in stripped, stripped
-            assert "--max-time" in stripped, stripped
+    """Every direct multi-MB curl in install.sh (and its sourced
+    deploy/lib/install/ libs) carries bounded retries and a transfer
+    cap so flaky Pi WiFi doesn't abort (or hang) the install."""
+    for path, text in _installer_shell_texts().items():
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("curl ", "if ! curl ")) and "-o" in stripped:
+                assert "--retry 3" in stripped, (path, stripped)
+                assert "--retry-connrefused" in stripped, (path, stripped)
+                assert "--max-time" in stripped, (path, stripped)
 
 
 def test_pip_toolchain_bootstrap_is_exact_pinned():

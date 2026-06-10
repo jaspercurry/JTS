@@ -118,10 +118,16 @@ def test_install_writes_fanin_asound_conf_and_retires_switcher():
     assert "ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf" in install
     assert "chmod 0644 /var/lib/jasper-asound/asound.conf" in install
     assert 'grep -q "shairport_substream" /etc/asound.conf' in install
-    assert "rm -f /usr/local/sbin/jasper-audio-topology" in install
+    # install_renderers (which removes the retired switcher binary)
+    # lives in the sourced deploy/lib/install/renderers.sh now.
+    renderers_lib = (
+        REPO / "deploy" / "lib" / "install" / "renderers.sh"
+    ).read_text()
+    assert "rm -f /usr/local/sbin/jasper-audio-topology" in renderers_lib
     assert "retire_audio_topology_switch" in install
     assert "systemctl enable jasper-camilla.service jasper-fanin.service" in install
     assert "/usr/local/sbin/jasper-audio-topology fanin" not in install
+    assert "/usr/local/sbin/jasper-audio-topology fanin" not in renderers_lib
 
 
 def test_snd_aloop_modprobe_pins_substreams_and_notify():
