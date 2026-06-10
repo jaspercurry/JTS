@@ -31,7 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 from jasper.wake_training import feature_bank as fb
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = fb.SCHEMA_VERSION
 TRAIN_SPLIT = fb.TRAIN_SPLIT
 EVAL_SPLIT = fb.EVAL_SPLIT
 DEFAULT_SPLITS = fb.DEFAULT_SPLITS
