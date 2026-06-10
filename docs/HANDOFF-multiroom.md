@@ -114,10 +114,12 @@ has not been run on hardware. What exists:
   transition** (never a steady-state reconcile) — load-bearing, since
   outputd has `StartLimitAction=reboot`. `try-restart` (not `restart`) so a
   boot reconcile never force-starts / couples to outputd. What remains:
-  the §2 inv. 2 **outputd DAC-content reader** (the Rust build — the topology
-  is now DESIGNED in §2 "inv-2 realization"; env contract + gated-off
-  snapclient `file`-player scaffolding landed), then end-to-end + acoustic
-  sync on hardware. **SHIPPED:** inv. 5 (`rate_adjust=false`) and the
+  the §2 inv. 2 leader content lane — now **BLOCKED on TTS separation**: TTS is
+  pre-mixed into the streamed program by `jasper-fanin`, so a naive DAC-source
+  swap would drop the leader's assistant audio AND the shipped tap already
+  leaks TTS to followers (see the §2 "inv-2 realization" BLOCKER). Needs a
+  fanin music-only stream + post-round-trip TTS re-mix before the outputd
+  reader can be wired. **SHIPPED:** inv. 5 (`rate_adjust=false`) and the
   channel-split live weave (§2/§4).
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
@@ -344,11 +346,44 @@ see `reconcile.py`).
 
 ### inv-2 realization — the leader content lane (DESIGN; not yet built)
 
-> **Status: design, pending on-device build.** This resolves the "P1.3
-> integration decision" §4 defers. It is the LAST sample-lock piece and the
-> only one that cannot be unit-tested — it reroutes the leader's actual DAC
-> feed through the sync engine on the reboot-on-fail `jasper-outputd`. Build
-> behind an off-by-default flag and validate on ≥2 Pis + a DAC.
+> **Status: design BLOCKED on TTS separation (found 2026-06-09 building
+> PR-3b). The naive dual-read below is INCORRECT against the current TTS
+> architecture — read this blocker first.** It is the LAST sample-lock piece,
+> reroutes the leader's actual DAC feed through the sync engine on the
+> reboot-on-fail `jasper-outputd`, and cannot be unit-tested.
+
+> #### ⚠ BLOCKER — TTS is pre-mixed into the streamed program
+>
+> `jasper-outputd/src/lib.rs`: *"Assistant/TTS ingress is owned by
+> `jasper-fanin`."* So on the live ALSA path (`run_alsa`), TTS is mixed into
+> the music by fanin **upstream of outputd** — it is INSIDE the `content_buf`
+> that outputd reads, writes to the DAC (`write_dac_period(&content_buf)`), and
+> taps (`ref_outputs.publish(&content_buf)`). That breaks the dual-read in two
+> ways:
+>
+> 1. **The DAC swap would drop the leader's assistant audio.** If the leader's
+>    DAC reads the music-only buffered round-trip (`dac_content`) instead of
+>    `content_buf`, the TTS fanin mixed into `content_buf` never reaches the
+>    speaker — the leader goes *silent on the assistant* mid-session. A serious
+>    regression for a voice speaker.
+> 2. **The shipped `SnapfifoSink` already leaks TTS to followers.** It taps
+>    `content_buf` (= music + TTS), so followers hear the leader's TTS — a
+>    LATENT inv-3 violation in the already-merged producer (§6 / open-question
+>    #1 says V1 is leader-local TTS only).
+>
+> **What inv-2 actually requires (the corrected contract):** TTS must be
+> SEPARATED from the streamed music. The leader's snapfifo tap must carry
+> **music only** (so followers get no TTS — fixes the leak), and the leader's
+> DAC must play **`dac_content` (buffered music) + the leader's TTS re-mixed
+> post-round-trip** (so the leader still hears the assistant). Today fanin mixes
+> TTS into the single content stream, so this needs a `jasper-fanin` change (a
+> music-only stream for a leader's tap, with TTS held back) **plus** an outputd
+> stage that re-mixes the leader's TTS onto `dac_content` after the round-trip.
+> That is materially larger than "a DAC-content FIFO reader," and it re-opens
+> *where TTS mixes* — so PR-3b cannot be correctly built as a DAC-source swap
+> until TTS separation lands. The `DacContentSource` FIFO reader (a clean
+> mirror of `snapfifo.rs`) is still the right component for the music half; it
+> is not wired, because wiring it blind would ship the regression above.
 
 **The tension to resolve.** Two shipped/written facts pull in opposite
 directions:
@@ -1077,8 +1112,25 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-09 (review nit — DRY'd the doctor's config-field
-scanners. `check_camilla_volume_limit`, `check_grouping_rate_adjust`, and
+Last verified: 2026-06-09 (PR-3b attempt — found inv-2 is BLOCKED on TTS
+separation, design corrected instead of building a known-wrong reroute. Reading
+the real `jasper-outputd` `run_alsa` loop to wire the leader DAC-content reader
+surfaced that `lib.rs` states "Assistant/TTS ingress is owned by jasper-fanin"
+— so TTS is mixed into the music UPSTREAM of outputd, inside the `content_buf`
+that the loop writes to the DAC and taps to the snapfifo. Two consequences: (1)
+swapping the leader's DAC to the music-only buffered round-trip (`dac_content`)
+would DROP the leader's assistant audio mid-session; (2) the already-shipped
+`SnapfifoSink` taps `content_buf` = music+TTS, so it LEAKS the leader's TTS to
+followers (a latent inv-3 violation). The correct inv-2 needs TTS SEPARATED — a
+fanin music-only stream for the leader's tap + a post-round-trip TTS re-mix onto
+`dac_content` — which is materially larger than "a FIFO reader" and re-opens
+where TTS mixes. Recorded the BLOCKER + corrected contract at the top of §2
+"inv-2 realization"; §0 updated. The `DacContentSource` FIFO reader (a clean
+mirror of `snapfifo.rs`) is the right music-half component but is NOT wired —
+wiring it blind would ship the regression. No code shipped this round on
+purpose: a known-wrong gated reroute is a landmine, not progress. Earlier
+2026-06-09 (review nit — DRY'd the doctor's config-field scanners.
+`check_camilla_volume_limit`, `check_grouping_rate_adjust`, and
 `check_grouping_channel_split` each hand-rolled the same "scan a CamillaDSP
 config field from a top-level block" line-scan (3×, a fragile parser
 proliferating). Collapsed onto ONE shared `_camilla_block_field(text, block,
