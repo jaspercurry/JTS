@@ -676,6 +676,9 @@ docs = [
   "docs/HANDOFF-tier5-watchdog-liveness.md",
   "docs/HANDOFF-airplay.md",
   "docs/HANDOFF-management-ui.md",
+  # Session artifact: one-time hardware-validation runbook for the
+  # 2026-06-10 fix batch (boot-loop guard, watchdog, MemoryHigh).
+  "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md",
 ]
 requires_docs_when = [
   "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",
