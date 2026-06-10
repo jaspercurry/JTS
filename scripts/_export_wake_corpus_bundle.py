@@ -57,6 +57,9 @@ MANIFEST_CSV_FIELDS = (
     "clip_id",
     "seq",
     "member",
+    "label_kind",
+    "phrase",
+    "transcript",
     "profile",
     "split",
     "condition",
@@ -343,6 +346,25 @@ def _row_for_leg(
         "clip_id": clip_ref.clip_id,
         "seq": clip_ref.seq,
         "member": str(clip_ref.clip.get("member") or clip_ref.session.get("member") or ""),
+        "label_kind": str(
+            clip_ref.clip.get("label_kind")
+            or clip_ref.clip.get("target_kind")
+            or clip_ref.session.get("label_kind")
+            or clip_ref.session.get("target_kind")
+            or ""
+        ),
+        "phrase": str(
+            clip_ref.clip.get("phrase")
+            or clip_ref.clip.get("target_phrase")
+            or clip_ref.session.get("phrase")
+            or clip_ref.session.get("target_phrase")
+            or ""
+        ),
+        "transcript": str(
+            clip_ref.clip.get("transcript")
+            or clip_ref.clip.get("prompt")
+            or ""
+        ),
         "profile": str(clip_ref.session.get("corpus_profile") or "standard"),
         "split": split,
         "condition": str(clip_ref.clip.get("condition") or ""),

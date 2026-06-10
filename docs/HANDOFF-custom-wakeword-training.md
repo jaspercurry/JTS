@@ -226,10 +226,25 @@ Current implementation state:
   `feature_bank.json`.
 - It verifies each source WAV against the bundle manifest hash before
   extraction, so feature banks are tied to the exact exported audio bytes.
-- The feature-bank builder is intentionally still not a trainer: no
-  LiveKit calls, synthetic data generation, negative feature banks,
-  threshold tuning, cloud job launch, model registry writes, or runtime
-  changes.
+- The positive feature-bank builder is intentionally still not a trainer:
+  no LiveKit calls, synthetic data generation, threshold tuning, cloud job
+  launch, model registry writes, or runtime changes.
+- `scripts/build-wake-negative-feature-bank.sh` (backed by
+  `scripts/_build_wake_negative_feature_bank.py`) implements the first
+  negative-hours / hard-negative feature-bank builder. It consumes the same
+  bundle manifest, verifies each source WAV hash, end-aligns each accepted
+  16 kHz mono WAV into the same 2-second openWakeWord window, extracts ONNX
+  speech-embedding features, and writes `negative_features_train.npy`,
+  `negative_features_eval.npy`, `negative_feature_manifest.jsonl`,
+  `negative_feature_rejections.jsonl`, and `negative_feature_bank.json`.
+- Negative rows must be explicitly labeled as `negative`,
+  `hard_negative`, `ambient_negative`, or `background` unless the operator
+  passes `--allow-unlabeled-as <kind>` for a dedicated negative-only legacy
+  corpus. This keeps wake-positive clips out of the negative bank by default
+  while still letting old captured negative sessions be used deliberately.
+- The negative feature-bank builder is intentionally still not a trainer:
+  no positive generation, LiveKit calls, threshold tuning, cloud job launch,
+  model registry writes, or runtime changes.
 - `scripts/prepare-wake-training-workdir.sh` (backed by
   `scripts/_prepare_wake_training_workdir.py`) implements the first
   real-positive injection prep step. It consumes `feature_bank.json`,
@@ -257,10 +272,9 @@ Current implementation state:
   negatives unless the operator supplies real negative feature files.
   That makes it useful for proving train/export/eval mechanics, not for
   interpreting model quality. Do not deploy a smoke model.
-- The next Phase 0 slice should replace placeholder negatives with real
-  negative-hours feature banks and run one tiny off-Pi train/eval loop
-  whose metrics can be compared against the incumbent on held-out JTS
-  audio.
+- The next Phase 0 slice should run one tiny off-Pi train/eval loop using
+  real positive features plus real negative feature banks, then compare the
+  exported ONNX against the incumbent on held-out JTS audio.
 
 ### Phase 1 — MVP Pipeline
 
@@ -451,8 +465,8 @@ should be promoted into clear modules before building UX.
 - openWakeWord repo:
   <https://github.com/dscripka/openWakeWord>
 
-Last verified: 2026-06-09 (updated after adding the corpus-bundle exporter,
-openWakeWord-compatible positive feature-bank builder, training-workdir
-real-positive injection prep, and LiveKit train/export/eval smoke harness;
-real negative-hours feature banks, quality evaluation, registry, and deployment
-stages remain future work).
+Last verified: 2026-06-10 (updated after adding the corpus-bundle exporter,
+openWakeWord-compatible positive and negative feature-bank builders,
+training-workdir real-positive injection prep, and LiveKit train/export/eval
+smoke harness; quality evaluation, registry, and deployment stages remain
+future work).
