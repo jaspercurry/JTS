@@ -5,8 +5,10 @@ Documentation=file:/opt/jasper/docs/HANDOFF-tier5-watchdog-liveness.md
 # (corrupt config, dead binary) would otherwise reboot the Pi every few
 # minutes forever via the per-unit StartLimitAction=reboot ladder. On
 # the Nth boot inside the window, this oneshot writes RUNTIME drop-ins
-# (/run/systemd/system/<unit>.d) setting StartLimitAction=none, leaving
-# the sick unit restart-looping but the Pi reachable. /run is wiped at
+# (/run/systemd/system/<unit>.d) setting StartLimitAction=none: the sick
+# unit then parks failed once its StartLimitBurst is exhausted (recover
+# with systemctl reset-failed + start) instead of rebooting the Pi,
+# which stays reachable. /run is wiped at
 # boot, so a healthy boot self-clears the guard with no operator action.
 #
 # Ordered before the reboot-escalating daemons so the drop-ins land

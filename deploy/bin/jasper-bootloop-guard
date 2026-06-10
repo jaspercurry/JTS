@@ -19,9 +19,14 @@
 #      assume a reboot loop: write RUNTIME drop-ins
 #      (/run/systemd/system/<unit>.d/90-jts-bootloop-guard.conf) that set
 #      StartLimitAction=none for every installed unit that declares
-#      StartLimitAction=reboot, then daemon-reload. The sick unit keeps
-#      restart-looping (Restart= policy untouched, visible to systemctl
-#      and jasper-doctor) but the Pi stays up and reachable.
+#      StartLimitAction=reboot, then daemon-reload. StartLimitAction=none
+#      changes only the escalation, not the rate limit: once the sick
+#      unit exhausts its StartLimitBurst, systemd parks it failed (no
+#      reboot, no further restarts — visible to systemctl and
+#      jasper-doctor) and the Pi stays up and reachable. Operator
+#      recovery: fix the cause, then
+#      `systemctl reset-failed <unit> && systemctl start <unit>`
+#      (or reboot).
 #   3. Write a marker JSON for /state either way.
 #
 # Self-clearing by construction: the drop-ins live in /run, which the
@@ -40,6 +45,13 @@
 #
 # Mirrors deploy/bin/jasper-wifi-guardian's shape and test seams; tested
 # hardware-free in tests/test_bootloop_guard_script.py.
+#
+# JASPER_BOOTLOOP_WINDOW_SEC / JASPER_BOOTLOOP_THRESHOLD are TEST SEAMS
+# only, not production knobs: jasper-bootloop-guard.service sets no
+# EnvironmentFile=, so in production the defaults below always apply.
+# That is deliberate — tuning a safety circuit-breaker from jasper.env
+# invites misconfiguration. If the policy ever needs to change, change
+# the defaults here.
 
 set -uo pipefail
 
@@ -61,6 +73,9 @@ Record this boot and, when too many boots land inside the window
 (default: 3 within 3600 s — a StartLimitAction=reboot loop), write
 runtime systemd drop-ins that set StartLimitAction=none for every
 installed unit that escalates to reboot, leaving the Pi reachable.
+A unit that then exhausts its StartLimitBurst parks failed instead
+of rebooting the Pi; recover with
+`systemctl reset-failed <unit> && systemctl start <unit>`.
 Runtime drop-ins live under /run and self-clear on the next boot.
 
 Emits structured `event=bootloop_guard.<outcome>` lines on stderr.
@@ -108,9 +123,11 @@ if ! [[ "$NOW" =~ ^[0-9]+$ ]]; then
     emit error "reason=bad_clock now=${NOW@Q}"
     exit 0
 fi
-# Operator-tunable knobs must be sane integers, or bash arithmetic on
-# them silently misbehaves (an unset-variable name compares as 0, which
+# Tuning knobs must be sane integers, or bash arithmetic on them
+# silently misbehaves (an unset-variable name compares as 0, which
 # would bias toward TRIPPING). Fail open to the defaults instead.
+# These are test seams, not production knobs — the unit sets no
+# EnvironmentFile=, so production always runs the defaults (see header).
 if ! [[ "$WINDOW_SEC" =~ ^[0-9]+$ ]]; then
     emit error "reason=bad_window value=${WINDOW_SEC@Q} using=3600"
     WINDOW_SEC=3600
@@ -133,6 +150,7 @@ fi
 
 recent=()
 seen_this_boot=0
+dropped_clock_jump=0
 if [[ -f "$STATE_FILE" ]]; then
     while IFS=' ' read -r ts bid; do
         # Tolerate a torn/corrupt file: keep only `epoch boot_id` lines
@@ -140,7 +158,13 @@ if [[ -f "$STATE_FILE" ]]; then
         # drop everything else (fail-open — a bad byte must reset
         # history, never block boot).
         [[ "$ts" =~ ^[0-9]+$ ]] || continue
-        (( ts > NOW )) && continue            # future timestamps: clock jumped; drop
+        if (( ts > NOW )); then
+            # Future timestamp: the clock jumped (NTP not yet synced
+            # when a prior boot recorded it). Dropped + counted; one
+            # diagnostic line below.
+            dropped_clock_jump=$((dropped_clock_jump + 1))
+            continue
+        fi
         (( NOW - ts <= WINDOW_SEC )) || continue
         recent+=("$ts ${bid:-unknown}")
         if [[ "$bid" == "$BOOT_ID" && "$BOOT_ID" != "unknown" ]]; then
@@ -153,6 +177,14 @@ if [[ -f "$STATE_FILE" ]]; then
 fi
 if (( ! seen_this_boot )); then
     recent+=("$NOW $BOOT_ID")
+fi
+if (( dropped_clock_jump > 0 )); then
+    # Window-pruned entries are deliberately NOT reported: aging out of
+    # the window is the designed steady state (every healthy boot more
+    # than WINDOW_SEC after the last prunes one), so a line per boot
+    # would be journal noise with no diagnostic value. A clock jump is
+    # anomalous and worth one line.
+    emit history_dropped "reason=clock_jump count=${dropped_clock_jump}"
 fi
 
 tmp="$(mktemp "$(dirname "$STATE_FILE")/.bootloop_guard.XXXXXX" 2>/dev/null)" || tmp=""
@@ -178,10 +210,20 @@ for f in "$UNITS_DIR"/*.service; do
     fi
 done
 
+json_safe() {
+    # The marker JSON below interpolates REASON and unit names into a
+    # printf template unescaped. Restrict them to a safe charset (no
+    # quote, backslash, or control character can survive) rather than
+    # escaping — the simplest option that keeps the template valid
+    # JSON. Real unit names and --reason values are already inside
+    # this set; anything else degrades to underscores.
+    printf '%s' "${1//[^A-Za-z0-9 ._:@-]/_}"
+}
+
 units_json=""
 for u in "${units[@]:-}"; do
     [[ -n "$u" ]] || continue
-    units_json+="${units_json:+, }\"${u}\""
+    units_json+="${units_json:+, }\"$(json_safe "$u")\""
 done
 
 write_marker() {
@@ -193,7 +235,8 @@ write_marker() {
         return 0
     fi
     printf '{"tripped": %s, "boots_in_window": %d, "threshold": %d, "window_sec": %d, "checked_at": %d, "reason": "%s", "units": [%s]}\n' \
-        "$tripped" "$count" "$THRESHOLD" "$WINDOW_SEC" "$NOW" "$REASON" \
+        "$tripped" "$count" "$THRESHOLD" "$WINDOW_SEC" "$NOW" \
+        "$(json_safe "$REASON")" \
         "$units_json" > "$MARKER_FILE" 2>/dev/null \
         || emit error "reason=marker_write_failed file=$MARKER_FILE"
 }
@@ -225,9 +268,11 @@ for u in "${units[@]}"; do
 # Written by jasper-bootloop-guard: ${count} boots within ${WINDOW_SEC}s
 # looks like a StartLimitAction=reboot loop (permanent daemon failure).
 # Reboot escalation is disabled for THIS BOOT ONLY so the Pi stays
-# reachable; Restart= policy is untouched, so the sick unit keeps
-# retrying and stays visible to systemctl / jasper-doctor. This file
-# lives in /run and clears itself on the next boot.
+# reachable. The start rate limit still applies: once this unit
+# exhausts its StartLimitBurst, systemd parks it failed (no reboot, no
+# further restarts) — visible to systemctl / jasper-doctor. Recover
+# with: systemctl reset-failed <unit> && systemctl start <unit>.
+# This file lives in /run and clears itself on the next boot.
 # See AGENTS.md "T5.2" + docs/HANDOFF-tier5-watchdog-liveness.md.
 [Unit]
 StartLimitAction=none
@@ -248,5 +293,6 @@ fi
 write_marker true
 emit tripped "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units_guarded=${wrote}/${#units[@]}"
 log "reboot escalation disabled for this boot (${wrote} unit drop-ins in $DROPIN_DIR)." \
-    "Units keep restart-looping; fix the failing daemon, then reboot to re-arm."
+    "A unit that exhausts its restart budget now parks failed instead of rebooting the Pi." \
+    "Fix the failing daemon, then 'systemctl reset-failed <unit> && systemctl start <unit>' (or reboot) to recover."
 exit 0

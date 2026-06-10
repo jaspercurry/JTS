@@ -350,8 +350,13 @@ thinks the system is healthy.
   `/var/lib/jasper/bootloop_guard_boots`; on the 3rd boot inside a
   3600 s window it writes **runtime** drop-ins
   (`/run/systemd/system/<unit>.d/90-jts-bootloop-guard.conf`,
-  `StartLimitAction=none`) so the sick unit keeps restart-looping
-  visibly but the Pi stays reachable. Drop-ins live in `/run`, so a
+  `StartLimitAction=none`). The drop-in changes only the escalation,
+  not the rate limit: once the sick unit exhausts its
+  `StartLimitBurst`, systemd parks it failed (visible in
+  `systemctl`/`jasper-doctor`) instead of rebooting, and the Pi stays
+  reachable. Operator recovery: fix the cause, then
+  `systemctl reset-failed <unit> && systemctl start <unit>` (or
+  reboot). Drop-ins live in `/run`, so a
   healthy boot self-re-arms the ladder with zero operator action.
   Guarded units are discovered dynamically by grepping
   `StartLimitAction=reboot`; fail-open on every error path.
