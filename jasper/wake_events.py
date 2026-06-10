@@ -311,6 +311,12 @@ class WakeEventStore:
         # common (under-cap) retention check skip the O(n-files)
         # directory stat walk entirely.
         self._audio_bytes_estimate: int | None = None
+        # Loop-local guard: two rapid wake events could otherwise both
+        # pass the estimate check and run the stat-walk concurrently in
+        # two threads (double scan, racing unlinks). Checked and set on
+        # the event loop only, so a plain bool is race-free; skipping is
+        # correct because the in-flight sweep re-seeds the estimate.
+        self._sweep_running = False
 
     # ----- lifecycle ------------------------------------------------
 
@@ -778,9 +784,15 @@ class WakeEventStore:
             and self._audio_bytes_estimate <= self._max_audio_bytes
         ):
             return
-        deleted_event_ids, total = await asyncio.to_thread(
-            self._scan_and_prune_blocking,
-        )
+        if self._sweep_running:
+            return
+        self._sweep_running = True
+        try:
+            deleted_event_ids, total = await asyncio.to_thread(
+                self._scan_and_prune_blocking,
+            )
+        finally:
+            self._sweep_running = False
         self._audio_bytes_estimate = total
         if deleted_event_ids:
             await self._mark_audio_rolled_off(deleted_event_ids)

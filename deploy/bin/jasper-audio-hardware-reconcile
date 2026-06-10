@@ -199,10 +199,11 @@ set_env_var() {
     quoted="$(quote_env_value "$value")"
 
     if [[ -f "$ENV_FILE" ]]; then
-        awk -v key="$key" -v line="${key}=${quoted}" '
+        JASPER_ENV_FILE_LINE="${key}=${quoted}" \
+        awk -v key="$key" '
             $0 ~ "^[[:space:]]*" key "=" {
                 if (!done) {
-                    print line
+                    print ENVIRON["JASPER_ENV_FILE_LINE"]
                     done = 1
                 }
                 next
@@ -210,7 +211,7 @@ set_env_var() {
             { print }
             END {
                 if (!done) {
-                    print line
+                    print ENVIRON["JASPER_ENV_FILE_LINE"]
                 }
             }
         ' "$ENV_FILE" > "$tmp"
@@ -272,10 +273,11 @@ set_env_file_var() {
     quoted="$(quote_env_value "$value")"
 
     if [[ -f "$file" ]]; then
-        awk -v key="$key" -v line="${key}=${quoted}" '
+        JASPER_ENV_FILE_LINE="${key}=${quoted}" \
+        awk -v key="$key" '
             $0 ~ "^[[:space:]]*" key "=" {
                 if (!done) {
-                    print line
+                    print ENVIRON["JASPER_ENV_FILE_LINE"]
                     done = 1
                 }
                 next
@@ -283,7 +285,7 @@ set_env_file_var() {
             { print }
             END {
                 if (!done) {
-                    print line
+                    print ENVIRON["JASPER_ENV_FILE_LINE"]
                 }
             }
         ' "$file" > "$tmp"
