@@ -68,15 +68,16 @@ def test_prepares_livekit_smoke_workdir_with_placeholder_negatives(tmp_path: Pat
         "train",
         str(out / "livekit_smoke_config.yaml"),
     ]
-    config = json.loads((out / "livekit_smoke_config.yaml").read_text())
-    assert config["output_dir"] == str(out / "livekit-output")
-    assert config["model_name"] == model_name
-    assert config["batch_n_per_class"] == {
-        "ACAV100M_sample": 0,
-        "adversarial_negative": 4,
-        "background_noise": 0,
-        "positive": 3,
-    }
+    config_text = (out / "livekit_smoke_config.yaml").read_text()
+    assert not config_text.lstrip().startswith("{")
+    assert f'model_name: "{model_name}"' in config_text
+    assert '  - "hey jarvis"' in config_text
+    assert f'output_dir: "{out / "livekit-output"}"' in config_text
+    assert "batch_n_per_class:\n" in config_text
+    assert "  positive: 3\n" in config_text
+    assert "  adversarial_negative: 4\n" in config_text
+    assert "  ACAV100M_sample: 0\n" in config_text
+    assert "  background_noise: 0\n" in config_text
     assert (out / "README.md").is_file()
     assert (out / "livekit_smoke.json").is_file()
 
