@@ -216,6 +216,13 @@ primitive layer:
   paths return 404 without revealing CSRF state.
 - Use `send_html_response()` / `send_see_other()` rather than
   hand-rolled response helpers.
+- Hand page data to an ES module with `json_island(element_id, payload)`
+  (a typed `application/json` data island), never a hand-built
+  `<script>` + `json.dumps` — the helper owns the `<`/`>`/`&` escaping
+  that keeps an untrusted string from closing the inline element early
+  (the /ha/ stored-XSS bug class). A conventions test in
+  [`tests/test_web_json_island.py`](tests/test_web_json_island.py)
+  fails any page that hand-rolls an island.
 - Confirm/alert with `jtsConfirm(msg, {danger})` / `jtsAlert(msg)` (from
   `dialog_helpers_js()`), never native `confirm()`/`alert()` — the browser
   can suppress those, which silently broke the action guards. `await` the

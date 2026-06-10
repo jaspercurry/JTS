@@ -67,7 +67,7 @@ def test_render_leaves_no_template_placeholders() -> None:
     """A leaked .replace() placeholder would render broken markup."""
     html_text = wc._render_index_html("t")
     for stale in (
-        "{header}", "{config_json}", "{csrf_token}",
+        "{header}", "{config_island}", "{csrf_token}",
         "{nav_back_css}", "{nav_back_html}", "{dialog_helpers_js}",
         "{aec3_sweep_js_labels}", "{aec3_sweep_js_order}",
         "{usb_aec3_corpus_label}", "{usb_aec3_sweep_baseline_label}",
@@ -143,13 +143,15 @@ def test_config_island_carries_python_leg_data() -> None:
 
 def test_config_island_cannot_close_script_early() -> None:
     """A label containing '</' must not break out of the inline JSON
-    <script> — the renderer escapes the solidus."""
+    <script> — the renderer escapes the angle brackets."""
     html_text = wc._render_index_html("t")
     start = html_text.index('id="wake-corpus-config">') + len('id="wake-corpus-config">')
     end = html_text.index("</script>", start)
     island = html_text[start:end]
-    # No raw '</' survives inside the island content.
-    assert "</" not in island
+    # No raw angle brackets survive inside the island content, so neither
+    # `</script>` nor `<!--` can affect HTML parser state.
+    assert "<" not in island
+    assert ">" not in island
 
 
 def test_public_surface_and_lazy_load_contract_preserved() -> None:

@@ -809,7 +809,7 @@ def test_index_html_is_valid_shape() -> None:
     assert "</body>" in html_text
     assert "</html>" in html_text
     # No template placeholder should leak into the rendered page.
-    for stale in ("{header}", "{config_json}", "{csrf_token}", "{nav_back"):
+    for stale in ("{header}", "{config_island}", "{csrf_token}", "{nav_back"):
         assert stale not in html_text
     # Key API paths must be referenced from the behaviour module. The JS uses
     # RELATIVE paths ('api/status' not '/api/status') so the same page works

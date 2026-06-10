@@ -206,6 +206,7 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
 from jasper.web._common import (
     canonical_header,
     canonical_page,
+    json_island,
     toggle_html,
 )
 
@@ -1110,7 +1111,7 @@ _INDEX_BODY_TEMPLATE = """{header}
     <div id="clips-list"></div>
   </div>
 </main>
-<script type="application/json" id="wake-corpus-config">{config_json}</script>
+{config_island}
 <script type="module" src="/assets/wake-corpus/js/main.js"></script>
 """
 
@@ -1124,10 +1125,10 @@ def _render_index_html(csrf_token: str = "") -> str:
 
     The Python-built leg labels + playback order (which depend on the
     AEC3 sweep registry and so can't live in the cached ES module) are
-    serialized into a ``<script type="application/json">`` island the
-    behaviour module reads at load time. ``json.dumps`` escapes the
-    values; we additionally guard the ``</`` sequence so a label can
-    never close the inline ``<script>`` element early.
+    serialized into a JSON data island (``json_island()``) the
+    behaviour module reads at load time; the helper owns the
+    serialization + escaping that keeps a label from closing the inline
+    ``<script>`` element early.
     """
     aec3_playback_legs = AEC3_SWEEP_LEGS + LEGACY_AEC3_SWEEP_LEGS
     config = {
@@ -1138,13 +1139,9 @@ def _render_index_html(csrf_token: str = "") -> str:
         "usb_aec3_corpus_label": USB_AEC3_CORPUS_LABEL,
         "usb_aec3_sweep_baseline_label": USB_AEC3_SWEEP_BASELINE_LABEL,
     }
-    # `</script>` can't appear literally inside an inline <script>; escape the
-    # `<` of any `</` so the JSON island can't be closed early. json.dumps has
-    # already escaped quotes/backslashes.
-    config_json = json.dumps(config).replace("</", "<\\/")
     header = canonical_header("Wake-word corpus")
     body = _INDEX_BODY_TEMPLATE.replace("{header}", header).replace(
-        "{config_json}", config_json,
+        "{config_island}", json_island("wake-corpus-config", config),
     ).replace(
         "{capture_options}", _capture_options_html(),
     )
