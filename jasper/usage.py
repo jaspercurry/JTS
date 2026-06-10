@@ -684,7 +684,14 @@ class SpendCap:
     A safety multiplier never *weakens* the cap: values below 1.0 are
     floored to 1.0. Disabling the cap is solely the job of
     ``JASPER_DAILY_SPEND_CAP_USD=0`` — a multiplier of 0 must not silently
-    turn the breaker off."""
+    turn the breaker off.
+
+    ``cap_usd <= 0`` means **disabled**: ``allowed()`` is always True.
+    This matches the documented contract everywhere the knob is
+    described (``Config.from_env``'s validation message, ``.env.example``,
+    the /voice wizard). Before 2026-06 a cap of 0 inverted the contract —
+    ``padded < 0.0`` is False from the first wake, so the documented
+    "disable" value blocked every session instead."""
 
     def __init__(
         self,
@@ -695,14 +702,38 @@ class SpendCap:
         self._store = store
         self._cap_usd = cap_usd
         self._safety_multiplier = max(1.0, float(safety_multiplier))
+        if self.disabled:
+            # Once per construction (the daemon builds exactly one at
+            # startup) — never per-wake. An unbounded-spend posture is
+            # deliberate but worth one loud line in the journal.
+            logger.warning(
+                "event=spend_cap.disabled cap_usd=%s — daily spend cap "
+                "is OFF (JASPER_DAILY_SPEND_CAP_USD<=0); sessions are "
+                "not spend-limited",
+                self._cap_usd,
+            )
+
+    @property
+    def disabled(self) -> bool:
+        """True when no ceiling is configured (cap <= 0). Display
+        surfaces should branch on this before rendering
+        ``remaining_usd()`` — "remaining" is meaningless without a cap."""
+        return self._cap_usd <= 0
 
     def _padded_spend(self) -> float:
         return self._store.spend_last_24h_usd() * self._safety_multiplier
 
     def allowed(self) -> bool:
+        if self.disabled:
+            return True
         return self._padded_spend() < self._cap_usd
 
     def remaining_usd(self) -> float:
+        """Headroom left under the cap. Only meaningful when the cap is
+        enabled; returns 0.0 when ``disabled`` (check that first — the
+        /voice wizard renders "disabled" instead of a dollar figure)."""
+        if self.disabled:
+            return 0.0
         return max(0.0, self._cap_usd - self._padded_spend())
 
 
