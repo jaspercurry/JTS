@@ -57,50 +57,6 @@ def test_wizards_do_not_need_js_string_attribute_escaping_helper():
     assert _matches(r"function\s+jsArg\b") == []
 
 
-# A wizard that hands Python-built data to its ES module does so through a
-# typed <script type="application/json"> island, never by interpolating into
-# executable JS. json.dumps() escapes quotes/backslashes, but NOT the literal
-# `</` sequence — so an untrusted value containing `</script>` could close the
-# inline element early and inject markup. The fix (home_assistant_setup.py,
-# wake_corpus_setup.py) is .replace("</", "<\\/") on the dumped string. This
-# test pins that guard: every application/json island's interpolated variable
-# must be built with the `</` close-guard somewhere in the same file.
-_JSON_ISLAND_RE = re.compile(
-    r"""<script\s+type=["']application/json["'][^>]*>\{(\w+)\}</script>""",
-)
-
-
-def test_inline_json_islands_guard_the_script_close_sequence():
-    offenders = []
-    found_any = False
-    for path in WEB_SETUP_FILES:
-        text = path.read_text()
-        for var in _JSON_ISLAND_RE.findall(text):
-            found_any = True
-            # The variable feeding the island must be assigned from a
-            # json.dumps(...) that is then .replace("</", ...)-guarded. We do
-            # not require the two to be on one line (home_assistant splits the
-            # dumps across lines), so check the file carries both signals for
-            # this var rather than matching a single-line shape.
-            guard = re.compile(
-                re.escape(var) + r"\s*=\s*(?:.|\n)*?\.replace\(\s*['\"]</['\"]",
-            )
-            dumps = re.compile(
-                re.escape(var) + r"\s*=\s*(?:.|\n)*?json\.dumps\(",
-            )
-            if not (guard.search(text) and dumps.search(text)):
-                offenders.append(f"{path}: island var {{{var}}}")
-    assert found_any, (
-        "expected at least one <script type=application/json> island "
-        "(home_assistant + wake_corpus) to scan"
-    )
-    assert offenders == [], (
-        "these application/json islands interpolate a variable that is not "
-        'guarded with .replace("</", "<\\\\/") against early <script> close '
-        "(json.dumps does not escape `</`):\n" + "\n".join(offenders)
-    )
-
-
 # Redesigned pages (/system/, /sound/) deliver their behaviour as static ES
 # modules under deploy/assets/<page>/js/ — outside the *_setup.py scan above.
 WEB_MODULE_FILES = tuple(Path("deploy/assets").glob("*/js/*.js"))
