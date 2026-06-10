@@ -85,7 +85,10 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X.clock_domain_contract == "single_device"
     assert HIFIBERRY_DAC8X.outputd_sink == "alsa"
     assert HIFIBERRY_DAC8X.supports_active_outputd_lane is True
-    assert "snd_rpi_hifiberry_dac8x" in HIFIBERRY_DAC8X.supported_card_matches
+    assert (
+        "snd_rpi_hifiberry_dac8x(?!.*studio)"
+        in HIFIBERRY_DAC8X.supported_card_matches
+    )
     assert "hifiberry.*dac8x(?!.*studio)" in HIFIBERRY_DAC8X.supported_card_matches
     assert HIFIBERRY_DAC8X.validation_profile == "hifiberry_dac8x_outputd_stability"
     assert HIFIBERRY_DAC8X.dtoverlay == "hifiberry-dac8x"
@@ -102,6 +105,7 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
 def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
     base_label = "snd_rpi_hifiberry_dac8x, HiFiBerry DAC8x"
     studio_label = "HiFiBerry DAC8x Studio, USB Audio"
+    studio_kernel_label = "snd_rpi_hifiberry_dac8x_studio"
 
     assert any(
         re.search(pattern, base_label, re.IGNORECASE)
@@ -111,12 +115,17 @@ def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
         re.search(pattern, studio_label, re.IGNORECASE)
         for pattern in HIFIBERRY_DAC8X.supported_card_matches
     )
+    assert not any(
+        re.search(pattern, studio_kernel_label, re.IGNORECASE)
+        for pattern in HIFIBERRY_DAC8X.supported_card_matches
+    )
     assert any(
         re.search(pattern, studio_label, re.IGNORECASE)
         for pattern in HIFIBERRY_DAC8X_STUDIO.supported_card_matches
     )
     assert dac.profile_for_card_label(base_label) is HIFIBERRY_DAC8X
     assert dac.profile_for_card_label(studio_label) is HIFIBERRY_DAC8X_STUDIO
+    assert dac.profile_for_card_label(studio_kernel_label) is HIFIBERRY_DAC8X_STUDIO
     assert dac.profile_for_card_label("Mystery USB DAC") is None
 
 
