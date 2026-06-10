@@ -32,6 +32,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
     DEFAULT_VOLUME_LIMIT_DB,
+    ensure_volume_limit_db,
 )
 from jasper.camilla_emit import emit_peaking_biquad
 
@@ -131,6 +132,9 @@ def emit_correction_config(
     Returns:
       The YAML as a string (and writes to out_path if given).
     """
+    # Loud-output safety: refuse to emit a config whose master fader
+    # could boost above full scale. Mirrors the active_speaker emitter.
+    volume_limit_db = ensure_volume_limit_db(volume_limit_db)
     filters_yaml = _emit_filter_definitions(peqs)
     pipeline_yaml = _emit_pipeline(peqs)
 

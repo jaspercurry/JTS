@@ -130,8 +130,41 @@ def _camilladsp_binary() -> str | None:
     return shutil.which("camilladsp")
 
 
+def _volume_limit_safety_error(cfg_path: Path) -> str | None:
+    """Return an error string when the config's ``devices.volume_limit``
+    violates the JTS 0 dB safety ceiling, else None.
+
+    CamillaDSP's own ``--check`` accepts a positive limit (it's legal
+    Camilla config) and *defaults the main fader's maximum to +50 dB
+    when the key is omitted* — both are loud-output hazards on a JTS
+    speaker, so the apply gate rejects them here. Fail-open on an
+    unreadable file: the load step will fail loudly on its own, and a
+    read race must not invent a safety verdict.
+    """
+    from jasper.camilla_config_contract import parse_camilla_devices_config
+
+    try:
+        text = cfg_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    limit = parse_camilla_devices_config(text).get("volume_limit")
+    if limit is None:
+        return (
+            "config omits devices.volume_limit; CamillaDSP would default "
+            "the main fader ceiling above 0 dB"
+        )
+    if limit > 0:
+        return (
+            f"devices.volume_limit={limit:.1f} dB exceeds the 0 dB "
+            "JTS safety ceiling"
+        )
+    return None
+
+
 def validate_camilla_config(path: str | Path) -> CamillaConfigValidationResult:
-    """Validate a config using CamillaDSP's CLI contract.
+    """Validate a config using CamillaDSP's CLI contract, plus the JTS
+    ``devices.volume_limit`` safety ceiling (which Camilla's own
+    ``--check`` does not enforce).
 
     CamillaDSP treats the config file as a positional argument and
     ``-c``/``--check`` as the validation flag. Keep the exact argv tested:
@@ -140,6 +173,17 @@ def validate_camilla_config(path: str | Path) -> CamillaConfigValidationResult:
     """
 
     cfg_path = Path(path)
+    limit_error = _volume_limit_safety_error(cfg_path)
+    if limit_error:
+        logger.error(
+            "event=dsp.validate result=volume_limit_rejected path=%s err=%s",
+            cfg_path, limit_error,
+        )
+        return CamillaConfigValidationResult(
+            status=ValidationStatus.INVALID_CONFIG,
+            path=str(cfg_path),
+            error=limit_error,
+        )
     binary = _camilladsp_binary()
     if not binary:
         logger.info("camilladsp binary not found; skipping config preflight")
