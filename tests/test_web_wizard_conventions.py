@@ -159,3 +159,51 @@ def test_wizards_using_dialog_helper_have_it_wired():
         "wrap_page() call, no dialog_helpers_js() embed) — the dialog would be a "
         "ReferenceError at runtime:\n" + "\n".join(offenders)
     )
+
+
+# The HTML-entity escaper (the five-char & < > " ' table) was copied across the
+# wifi/bluetooth/dial/sound-profile/correction modules under two names
+# (escapeHtml / escapeText) before it was promoted to the shared module at
+# /assets/shared/js/escape.js (same shared-by-promotion path as dialog.js /
+# http.js). Pages now import escapeHtml (and the escapeAttr alias / cssIdSafe)
+# from there. This test keeps the duplication from creeping back: no canonical
+# module may declare its own escapeHtml/escapeText again — escape.js is the one
+# home.
+_SHARED_ESCAPE_MODULE = Path("deploy/assets/shared/js/escape.js")
+_LOCAL_ESCAPER_DEF_RE = re.compile(r"function\s+(?:escapeHtml|escapeText)\b")
+
+
+def test_shared_escape_module_exists_and_exports_the_escaper():
+    """The drift test below is only meaningful once the shared home exists and
+    exports the names pages import."""
+    assert _SHARED_ESCAPE_MODULE.is_file(), (
+        f"{_SHARED_ESCAPE_MODULE} (shared HTML escaper) is missing"
+    )
+    src = _SHARED_ESCAPE_MODULE.read_text()
+    assert re.search(r"export\s+function\s+escapeHtml\b", src), (
+        "escape.js must export escapeHtml"
+    )
+    # escapeAttr is an explicit alias; cssIdSafe rides along (wifi/bluetooth).
+    assert "escapeAttr" in src, "escape.js must expose the escapeAttr alias"
+    assert re.search(r"export\s+function\s+cssIdSafe\b", src), (
+        "escape.js must export cssIdSafe"
+    )
+
+
+def test_modules_do_not_redefine_the_shared_html_escaper():
+    """No deploy/assets module re-declares escapeHtml/escapeText now that the
+    shared escape.js owns it — they import from /assets/shared/js/escape.js
+    instead. escape.js itself is the canonical definition and is exempt."""
+    assert WEB_MODULE_FILES, "expected web ES modules to scan"
+    offenders = []
+    for path in WEB_MODULE_FILES:
+        if path.resolve() == _SHARED_ESCAPE_MODULE.resolve():
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _LOCAL_ESCAPER_DEF_RE.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
+    assert offenders == [], (
+        "these modules redefine the shared HTML escaper — import escapeHtml "
+        "(or escapeAttr / the escapeText alias) from /assets/shared/js/escape.js "
+        "instead:\n" + "\n".join(offenders)
+    )
