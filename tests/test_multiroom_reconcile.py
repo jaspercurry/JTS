@@ -300,6 +300,34 @@ def test_snapclient_argv_follower_passes_stable_mdns_host_verbatim():
     assert argv[argv.index("--host") + 1] == "jts3.local"
 
 
+# ---------- snapclient_argv(): inv-2 leader content lane (STAGED) ----------
+#
+# The DAC reroute is gated off behind LEADER_CONTENT_LANE_GATE; player_fifo
+# defaults to None so snapclient is unchanged until the outputd reader lands.
+
+
+def test_snapclient_argv_unchanged_when_player_fifo_unset():
+    """player_fifo=None (default) is BYTE-FOR-BYTE the pre-inv-2 command — the
+    gated-off reroute is a true no-op."""
+    cfg = _follower(leader_addr="jts3.local")
+    assert snapclient_argv(cfg) == [
+        "snapclient", "--host", "jts3.local", "--latency", str(cfg.buffer_ms),
+    ]
+    assert snapclient_argv(cfg, player_fifo=None) == snapclient_argv(cfg)
+    assert "--player" not in snapclient_argv(cfg)
+
+
+def test_snapclient_argv_adds_file_player_when_fifo_set():
+    """When staged on, snapclient writes raw PCM to the member-content FIFO via
+    its `file` player (never snd-aloop — inv-2); the leader still targets
+    loopback."""
+    fifo = "/run/jasper-grouping/member-content.fifo"
+    argv = snapclient_argv(_leader(), player_fifo=fifo)
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"  # leader -> own server
+    assert "--player" in argv
+    assert argv[argv.index("--player") + 1] == f"file:filename={fifo}"
+
+
 # ---------- _assemble_args(): pure derivation of the two env keys ----------
 #
 # These mirror the snap*_argv tests but assert on the env-key VALUES the

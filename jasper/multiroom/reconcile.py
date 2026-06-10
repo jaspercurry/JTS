@@ -92,6 +92,24 @@ OUTPUTD_UNIT = "jasper-outputd.service"
 OUTPUTD_SNAPFIFO_ENV_FILE = ARGS_DIR + "/outputd-snapfifo.env"
 _OUTPUTD_SNAPFIFO_KEY = "JASPER_OUTPUTD_SNAPFIFO_PATH"
 
+# ---------- inv-2 leader content lane (DESIGN — see HANDOFF §2 "inv-2 ----------
+#            realization"). NOT YET ACTIVE.
+#
+# The whole DAC reroute (leader/member plays the BUFFERED post-snapclient
+# stream, sample-locked) is STAGED behind this off-by-default gate so a deploy
+# can never activate an unvalidated audio path on the reboot-on-fail outputd.
+# The snapclient `file` output (below) and the outputd DAC-content reader (the
+# Rust PR) land together behind it; until then this is inert scaffolding +
+# the codified env contract the design references.
+LEADER_CONTENT_LANE_GATE = "JASPER_GROUPING_LEADER_CONTENT_LANE"
+# Raw-PCM FIFO snapclient writes the buffered round-trip into, for the member's
+# post-snapclient CamillaDSP (channel-select + correction) to read — never
+# snd-aloop, so snapclient's snd_pcm_delay can't lie (inv-2).
+MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
+# Reconciler-owned env the outputd DAC loop reads in member mode. Unset =
+# today's single-input behavior (DAC plays the tapped content directly).
+OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
+
 
 # ---------- Plan types ----------
 
@@ -197,15 +215,28 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
     ]
 
 
-def snapclient_argv(cfg: GroupingConfig) -> list[str]:
+def snapclient_argv(
+    cfg: GroupingConfig, *, player_fifo: str | None = None,
+) -> list[str]:
     """Build the snapclient command line from a GroupingConfig.
 
-    PURE: a deterministic function of `cfg`. The host is the loopback
-    when this speaker is the leader (it runs its own server), otherwise
-    the leader's address. The playout latency tracks cfg.buffer_ms.
+    PURE: a deterministic function of `cfg` (+ the optional `player_fifo`).
+    The host is the loopback when this speaker is the leader (it runs its own
+    server), otherwise the leader's address. The playout latency tracks
+    cfg.buffer_ms.
 
     Channel selection (which of L/R/sub this client plays) is a later
     CamillaDSP concern and is intentionally NOT decided here.
+
+    ``player_fifo`` (inv-2 leader content lane — STAGED, see HANDOFF §2 "inv-2
+    realization"): when set, snapclient writes raw PCM to that FIFO via its
+    ``file`` player instead of a default ALSA sink, so the buffered round-trip
+    feeds the member's post-snapclient CamillaDSP (channel-select + correction)
+    rather than snd-aloop (which would trip the ``snd_pcm_delay``-lies trap —
+    inv-2). ``None`` (the default) leaves the command BYTE-FOR-BYTE unchanged:
+    the reroute is gated off (``LEADER_CONTENT_LANE_GATE``) until the outputd
+    DAC-content reader lands. The exact snapclient ``file``-player option string
+    is confirmed on-device.
     """
     # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond
     # wizard now mints it as a STABLE mDNS .local handle (the leader's
@@ -215,13 +246,16 @@ def snapclient_argv(cfg: GroupingConfig) -> list[str]:
     # works) — see config.GroupingConfig.leader_addr — but the .local handle
     # is what the wizard writes, so no reconcile change was needed for it.
     host = "127.0.0.1" if cfg.role == "leader" else cfg.leader_addr
-    return [
+    argv = [
         "snapclient",
         "--host",
         host,
         "--latency",
         str(cfg.buffer_ms),
     ]
+    if player_fifo:
+        argv += ["--player", f"file:filename={player_fifo}"]
+    return argv
 
 
 def _assemble_args(cfg: GroupingConfig) -> dict[str, str]:
