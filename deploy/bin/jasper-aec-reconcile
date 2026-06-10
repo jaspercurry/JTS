@@ -21,14 +21,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 
 # Shared quoting/env-file writer (jasper_env_quote_value /
-# jasper_env_file_set). Installed path first, repo-relative fallback —
-# same pattern as jasper-audio-hardware-reconcile's asound render lib.
+# jasper_env_file_set). SCRIPT_DIR-relative sibling first, installed
+# path as fallback: install.sh can run the REPO copy of a reconciler
+# mid-install (install_alsa's --print-env) BEFORE install_systemd_units
+# refreshes /usr/local/lib, so installed-first could pair a new script
+# with a stale lib. Sibling-first keeps script and lib versions in
+# lockstep wherever the script runs from; the installed copy under
+# /usr/local/sbin has no ../lib/jasper-env-file.sh sibling, so it falls
+# through to the installed lib. This deliberately diverges from
+# load_asound_render_lib's installed-first order in
+# jasper-audio-hardware-reconcile — see the rationale comment there
+# (the render lib's functions are never exercised by a mid-install
+# repo-script run, so its order is left alone).
 load_env_file_lib() {
     if [[ -z "$ENV_FILE_LIB" ]]; then
-        if [[ -r /usr/local/lib/jasper/jasper-env-file.sh ]]; then
-            ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
-        else
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
             ENV_FILE_LIB="${SCRIPT_DIR}/../lib/jasper-env-file.sh"
+        else
+            ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
         fi
     fi
     if [[ ! -r "$ENV_FILE_LIB" ]]; then

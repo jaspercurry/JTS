@@ -33,12 +33,24 @@ ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 # Shared quoting helper (jasper_env_quote_value) — single
 # implementation for both reconcilers so the PR #534 bash-%q
 # comma-corruption bug class cannot fork again.
+# SCRIPT_DIR-relative sibling first, installed path as fallback:
+# install.sh runs THIS script from the repo mid-install (install_alsa's
+# --print-env) BEFORE install_systemd_units refreshes /usr/local/lib,
+# so installed-first could pair the new script with a stale lib.
+# Sibling-first keeps script and lib versions in lockstep; the
+# installed copy under /usr/local/sbin has no ../lib sibling and falls
+# through to the installed lib. Deliberately diverges from
+# load_asound_render_lib below (left installed-first): the mid-install
+# --print-env run exits before any asound rendering, and install.sh's
+# own rendering sources that lib straight from REPO_DIR at the top of
+# the file — so the render lib has no new-script/stale-lib exposure
+# worth churning its order for.
 load_env_file_lib() {
     if [[ -z "$ENV_FILE_LIB" ]]; then
-        if [[ -r /usr/local/lib/jasper/jasper-env-file.sh ]]; then
-            ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
-        else
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
             ENV_FILE_LIB="${SCRIPT_DIR}/../lib/jasper-env-file.sh"
+        else
+            ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
         fi
     fi
     if [[ ! -r "$ENV_FILE_LIB" ]]; then

@@ -8,8 +8,16 @@
 # EnvironmentFile= parser keeps that backslash literally, corrupting
 # ALSA device specs, and the reconcilers' own read-back no longer
 # matches the intended value — breaking idempotence and causing
-# restart churn. Single-quote wrapping is stable across bash versions
-# and is read identically by `source` and EnvironmentFile=.
+# restart churn. Single-quote wrapping is stable across bash versions.
+#
+# source/EnvironmentFile= parity caveat: bash `source` round-trips
+# every value this writer emits, but systemd's EnvironmentFile= parser
+# does NOT do shell quote-concatenation, so the '\'' idiom used for
+# embedded single quotes diverges between the two readers. That is
+# fine for every value written today (ALSA pcm specs, profile ids,
+# udp:PORT — none contain apostrophes); do not route apostrophe-
+# bearing values through this writer into a file systemd reads via
+# EnvironmentFile= without revisiting the quoting.
 # The %q bug was first fixed in jasper-audio-hardware-reconcile
 # (PR #534); this lib is the single shared implementation so the bug
 # class cannot fork between the reconcilers again.
