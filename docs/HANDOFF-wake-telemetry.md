@@ -313,7 +313,10 @@ debug dump).
   mode with `on` + two chip-beam files is ~575 KB. Five-leg review
   captures approach ~1 MB/event. The retention sweep runs after each
   wake-fire's audio attach (`_retention_sweep` is invoked from the
-  audio-attach path; there is no separate hourly timer).
+  audio-attach path; there is no separate hourly timer). Since
+  2026-06-10 the WAV writes and the sweep run off the event loop
+  (`asyncio.to_thread`), gated by a running size estimate so the
+  full directory stat-scan only happens near the cap.
 - **DB rows** — kept indefinitely. Per-row footprint is small
   (~500 B), so even 10 years at 50 events/day stays under 100 MB.
   The row is useful for funnel stats long after the audio has
@@ -438,9 +441,10 @@ threshold fires the wake.
   is dumped (both legs) + 2 s forward captured + WAV files written
   to `/var/lib/jasper/wake-events/`.
 - Retention sweep: runs after each wake-fire's audio attach (no
-  separate hourly timer), sums directory size; if over 1 GB, deletes
-  oldest WAVs (NOT the DB rows) until under cap, marks deleted rows
-  in DB.
+  separate hourly timer), off the event loop, gated by a running
+  size estimate (full stat-scan only when the estimate crosses the
+  cap); if over 1 GB, deletes oldest WAVs (NOT the DB rows) until
+  under cap, marks deleted rows in DB.
 
 **Files touched:**
 - `jasper/wake_events.py` — new module

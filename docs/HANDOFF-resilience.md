@@ -340,6 +340,23 @@ thinks the system is healthy.
   voice crashes still flow through T5.1. `jasper-doctor`'s
   `check_start_limit_action` surfaces
   drift if a Debian/RPi-OS update removes the directive.
+  **T5.1 circuit breaker** (2026-06-10): `StartLimitAction=reboot`
+  alone is unbounded across boots — a *permanent* daemon failure
+  (corrupt config, dead binary) would reboot the Pi every ~2-5
+  minutes forever. `jasper-bootloop-guard.service`
+  ([`deploy/bin/jasper-bootloop-guard`](../deploy/bin/jasper-bootloop-guard),
+  pure-bash oneshot mirroring the wifi-guardian shape, ordered
+  `Before=` the escalating units) persists boot timestamps to
+  `/var/lib/jasper/bootloop_guard_boots`; on the 3rd boot inside a
+  3600 s window it writes **runtime** drop-ins
+  (`/run/systemd/system/<unit>.d/90-jts-bootloop-guard.conf`,
+  `StartLimitAction=none`) so the sick unit keeps restart-looping
+  visibly but the Pi stays reachable. Drop-ins live in `/run`, so a
+  healthy boot self-re-arms the ladder with zero operator action.
+  Guarded units are discovered dynamically by grepping
+  `StartLimitAction=reboot`; fail-open on every error path.
+  Observability: `event=bootloop_guard.ok|tripped|error` +
+  `/state.resilience.bootloop_guard`.
 - **T5.2** ✅ **shipped**: new `SystemSupervisor` in
   [`jasper/control/system_supervisor.py`](../jasper/control/system_supervisor.py)
   mirroring the proven `ShairportSupervisor` Tier 3 shape. Probes

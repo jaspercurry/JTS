@@ -2083,7 +2083,10 @@ indicator). Pure-stdlib Python, ~instant.
   `audio_*_path` becomes the literal string `'rolled_off'` (not
   NULL — preserves the historical fact that audio existed).
 - Mute mic privacy preserved: when `JASPER_MIC_MUTED=1`, the
-  wake-event capture rings stop filling — nothing recorded.
+  wake-event capture rings stop filling — nothing recorded. The
+  wake-corpus recorder honors the same switch: it refuses to start
+  while muted and stops (labeling the clip `mute_stopped`) if mute
+  flips mid-recording.
 
 ### Reset the corpus to start a clean week of data
 
@@ -2116,7 +2119,9 @@ jasper-voice opens whichever ports are configured via `JASPER_MIC_DEVICE`
 (`udp:9876` always), `JASPER_MIC_DEVICE_RAW` (optional), and
 `JASPER_MIC_DEVICE_DTLN` (optional). Per-leg `WakeWordDetector`
 instances score every frame and OR-gate their fires with a shared
-0.7 s refractory. `WakeEventStore` (`jasper/wake_events.py`) writes
+refractory window (`WAKE_REFRACTORY_SEC` in
+[`jasper/voice_daemon.py`](jasper/voice_daemon.py) — the comment
+there carries the tuning history). `WakeEventStore` (`jasper/wake_events.py`) writes
 to SQLite at wake-fire + each funnel stage transition; a
 fire-and-forget task waits 2 s post-fire then snapshots each active
 leg's capture ring and writes one WAV per leg. The schema has
@@ -2847,8 +2852,10 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
 
 5. **What the CI gate covers — and does NOT.** It runs: hardware-free
    `pytest` (voice_eval is **excluded** — paid LLM suite, never CI), `ruff`,
-   the supply-chain provenance check, and a `cargo build --release --locked`
-   plus `cargo test --locked` of `rust/jasper-fanin` and `rust/jasper-outputd`.
+   the supply-chain provenance check, a `shell` job (`bash -n` over every
+   shell entry point + `shellcheck --severity=error`), and a
+   `cargo build --release --locked` plus `cargo test --locked` of
+   `rust/jasper-fanin`, `rust/jasper-outputd`, and `rust/jasper-dual-dac-lab`.
    It does **not** exercise real audio/mic/voice hardware or the Pi-side
    install — those still need a deploy + `jasper-doctor` / on-device check.
    "Green CI" means "safe to merge," not "validated on hardware."
