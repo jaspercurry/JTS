@@ -742,20 +742,21 @@ class WakeEventStore:
             cols = [d[0] for d in cur.description]
             return dict(zip(cols, row))
 
-    # ----- retention ------------------------------------------------
-
     def _write_wavs_blocking(
         self, to_write: list[tuple[str, bytes]],
     ) -> int:
-        """Write the per-leg WAVs (worker thread). Returns the total
-        on-disk bytes written so the caller can advance the running
-        directory-size estimate without a stat walk."""
+        """Write the per-leg WAVs (worker thread; attach_audio's I/O
+        half). Returns the total on-disk bytes written so the caller
+        can advance the running directory-size estimate without a
+        stat walk."""
         written = 0
         for filename, pcm in to_write:
             path = self._base_dir / filename
             _write_wav(path, pcm)
             written += path.stat().st_size
         return written
+
+    # ----- retention ------------------------------------------------
 
     async def _retention_sweep(self) -> None:
         """If total WAV bytes exceed the cap, delete oldest WAVs

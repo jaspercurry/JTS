@@ -322,6 +322,16 @@ class StateError(RuntimeError):
     (e.g. starting a recording while one is in progress)."""
 
 
+# Single user-facing refusal copy, shared by the backend's
+# MicMutedError and the wizard's pre-side-effect fast path so the
+# household sees one consistent message wherever the gate fires.
+MIC_MUTED_MESSAGE = (
+    "mic is muted — the wake-corpus recorder will not capture audio "
+    "while the household mic mute is on. Unmute from the /system/ "
+    "dashboard, then retry."
+)
+
+
 class MicMutedError(StateError):
     """Raised when the household mic-mute privacy switch is on.
 
@@ -491,11 +501,7 @@ class RecordingBackend:
             "mic mute is on; refusing to record",
             op, self._mic_mute_path,
         )
-        raise MicMutedError(
-            "mic is muted — the wake-corpus recorder will not capture "
-            "audio while the household mic mute is on. Unmute from the "
-            "/system/ dashboard, then retry.",
-        )
+        raise MicMutedError(MIC_MUTED_MESSAGE)
 
     def get_current_rms_dbfs(self) -> float | None:
         """Latest AEC-ON RMS in dBFS, or None if not recording.
@@ -1162,7 +1168,11 @@ class RecordingBackend:
 
     def _mute_stop_safe(self) -> None:
         try:
-            self.stop_recording(auto=True, mute_stopped=True)
+            # auto=False: this is not the duration-cap auto-stop — the
+            # pending auto-stop timer must be cancelled, and the clip's
+            # auto_stopped flag must stay False so downstream tools
+            # don't misread a privacy stop as a forgotten Stop click.
+            self.stop_recording(auto=False, mute_stopped=True)
         except Exception as e:  # noqa: BLE001
             logger.warning("mute-stop failed: %s", e)
 
