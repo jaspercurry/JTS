@@ -347,8 +347,12 @@ def test_install_sh_enables_fanin_and_retires_topology_switch():
         "install.sh must enable jasper-fanin.service directly; renderer "
         "audio depends on it."
     )
-    assert "rm -f /usr/local/sbin/jasper-audio-topology" in install_sh
+    renderers_lib = (
+        REPO / "deploy" / "lib" / "install" / "renderers.sh"
+    ).read_text()
+    assert "rm -f /usr/local/sbin/jasper-audio-topology" in renderers_lib
     assert "/usr/local/sbin/jasper-audio-topology fanin" not in install_sh
+    assert "/usr/local/sbin/jasper-audio-topology fanin" not in renderers_lib
 
 
 def test_install_sh_restarts_camilla_after_fanin():
