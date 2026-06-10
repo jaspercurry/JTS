@@ -608,13 +608,13 @@ def _bind_preset_to_topology(
     )
     gates.append(_gate(
         "tweeter_guard_declared",
-        label="Compression-driver guard mode is explicit",
+        label="High-frequency guard mode is explicit",
         passed=tweeter_guard_declared,
         message=(
-            "Compression-driver protection is present"
+            "High-frequency protection is present"
             if tweeter and tweeter.protection_status == "present"
             else (
-                "Software-only compression-driver guard was requested"
+                "Software-only high-frequency guard was requested"
                 if software_guard_requested
                 else "Choose physical protection or software-guarded bring-up before staging"
             )

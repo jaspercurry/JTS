@@ -23,6 +23,12 @@ SAFE_PLAYBACK_SESSION_KIND = "jts_active_speaker_safe_playback_session"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_safe_playback.json")
 DEFAULT_ARM_TTL_SEC = 120
 QUIET_START_POLICY_VERSION = "floor_first_per_target_v1"
+FLOOR_OPERATOR_OUTCOMES = frozenset({
+    "heard_correct_driver",
+    "heard_wrong_driver",
+    "too_loud",
+    "silent",
+})
 
 NowFn = Callable[[], float]
 
@@ -132,6 +138,8 @@ def _quiet_start_base() -> dict[str, Any]:
         "current_target": None,
         "last_level_dbfs": None,
         "last_playback_at": None,
+        "pending_playback_id": None,
+        "last_operator_result": None,
     }
 
 
@@ -144,12 +152,22 @@ def _normalise_quiet_start(raw: Any) -> dict[str, Any]:
             if key in raw
         })
     quiet["policy_version"] = QUIET_START_POLICY_VERSION
+    status = str(quiet.get("status") or "floor_required")
     quiet["floor_audio_confirmed"] = bool(quiet.get("floor_audio_confirmed"))
-    if quiet.get("status") != "floor_confirmed" or not quiet["floor_audio_confirmed"]:
+    if status == "floor_confirmed" and quiet["floor_audio_confirmed"]:
+        quiet["status"] = "floor_confirmed"
+    elif status == "floor_pending_operator":
+        quiet["status"] = "floor_pending_operator"
+        quiet["floor_audio_confirmed"] = False
+    else:
         quiet["status"] = "floor_required"
         quiet["floor_audio_confirmed"] = False
     quiet["current_target"] = playback_target_signature(quiet.get("current_target"))
     quiet["last_level_dbfs"] = _finite_float(quiet.get("last_level_dbfs"))
+    pending = quiet.get("pending_playback_id")
+    quiet["pending_playback_id"] = str(pending) if pending else None
+    if not isinstance(quiet.get("last_operator_result"), dict):
+        quiet["last_operator_result"] = None
     return quiet
 
 
@@ -363,6 +381,14 @@ def _quiet_start_after_result(
     now_epoch: float,
 ) -> dict[str, Any]:
     quiet = _normalise_quiet_start(prior)
+    completed_audio = (
+        result.get("status") == "completed"
+        and bool(result.get("audio_emitted"))
+        and not result.get("issues")
+    )
+    if quiet.get("status") == "floor_pending_operator" and not completed_audio:
+        return quiet
+
     target_sig = playback_target_signature(result.get("target"))
     if target_sig and quiet.get("current_target") != target_sig:
         quiet = _quiet_start_base()
@@ -375,19 +401,120 @@ def _quiet_start_after_result(
     if level is not None:
         quiet["last_level_dbfs"] = level
 
-    completed_audio = (
-        result.get("status") == "completed"
-        and bool(result.get("audio_emitted"))
-        and not result.get("issues")
-    )
     if completed_audio:
         quiet["last_playback_at"] = _utc_from_epoch(now_epoch)
         if _level_at_floor(level):
-            quiet["status"] = "floor_confirmed"
-            quiet["floor_audio_confirmed"] = True
+            quiet["status"] = "floor_pending_operator"
+            quiet["floor_audio_confirmed"] = False
+            quiet["pending_playback_id"] = result.get("playback_id")
+            quiet["last_operator_result"] = None
         elif not quiet.get("floor_audio_confirmed"):
             quiet["status"] = "floor_required"
     return quiet
+
+
+def record_floor_audio_operator_result(
+    *,
+    outcome: str,
+    playback_id: str | None = None,
+    state_path: str | Path | None = None,
+    now: NowFn = _now,
+) -> dict[str, Any]:
+    """Record the operator's floor-test result for the latest audible tone.
+
+    Playback completion only proves the backend emitted samples. The operator
+    must confirm that the correct physical driver was heard before raised tests
+    may use this target/session as floor-audio evidence.
+    """
+
+    outcome = str(outcome or "").strip().lower()
+    if outcome not in FLOOR_OPERATOR_OUTCOMES:
+        raise ValueError("unsupported floor audio operator outcome")
+
+    now_epoch = now()
+    prior = load_safe_playback_state(state_path=state_path, now=now)
+    state = _normalise_state(prior, now_epoch=now_epoch)
+    quiet = _normalise_quiet_start(state.get("quiet_start"))
+    pending_target = playback_target_signature(quiet.get("current_target"))
+    pending_level = _finite_float(quiet.get("last_level_dbfs"))
+    pending_playback_id = str(quiet.get("pending_playback_id") or "") or None
+    requested_playback_id = str(playback_id or "").strip() or None
+    issues: list[dict[str, str]] = []
+
+    if state.get("status") != "armed":
+        issues.append(_issue(
+            "blocker",
+            "safe_session_not_armed",
+            "floor audio confirmation requires an armed safe session",
+        ))
+    if not pending_playback_id:
+        issues.append(_issue(
+            "blocker",
+            "floor_playback_missing",
+            "no audible floor playback result is available to confirm",
+        ))
+    if requested_playback_id and requested_playback_id != pending_playback_id:
+        issues.append(_issue(
+            "blocker",
+            "playback_id_mismatch",
+            "operator result does not match the latest floor playback",
+        ))
+    if not _level_at_floor(pending_level):
+        issues.append(_issue(
+            "blocker",
+            "floor_playback_level_not_floor",
+            "latest audible playback was not at the calibration floor",
+        ))
+    if not pending_target:
+        issues.append(_issue(
+            "blocker",
+            "floor_playback_target_missing",
+            "pending floor playback target is missing",
+        ))
+    if quiet.get("status") != "floor_pending_operator":
+        issues.append(_issue(
+            "blocker",
+            "floor_confirmation_not_pending",
+            "floor audio is not waiting for operator confirmation",
+        ))
+
+    operator_result = {
+        "outcome": outcome,
+        "accepted": not issues and outcome == "heard_correct_driver",
+        "playback_id": pending_playback_id,
+        "target": pending_target,
+        "recorded_at": _utc_from_epoch(now_epoch),
+    }
+    if issues:
+        operator_result["issues"] = issues
+    quiet["last_operator_result"] = operator_result
+
+    if issues:
+        state.update({
+            "updated_at": _utc_from_epoch(now_epoch),
+            "last_action": f"floor_operator_rejected_{outcome}",
+            "quiet_start": quiet,
+            "issues": issues,
+        })
+        _atomic_write_json(_state_path(state_path), state)
+        return state
+
+    quiet["pending_playback_id"] = None
+    if outcome == "heard_correct_driver":
+        quiet["status"] = "floor_confirmed"
+        quiet["floor_audio_confirmed"] = True
+    else:
+        quiet["status"] = "floor_required"
+        quiet["floor_audio_confirmed"] = False
+
+    state.update({
+        "updated_at": _utc_from_epoch(now_epoch),
+        "last_action": f"floor_operator_{outcome}",
+        "quiet_start": quiet,
+        "issues": issues,
+    })
+    _atomic_write_json(_state_path(state_path), state)
+    return state
 
 
 def _level_at_floor(level: float | None) -> bool:

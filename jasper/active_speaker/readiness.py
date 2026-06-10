@@ -24,14 +24,19 @@ from .audible_policy import (
     audible_role_block_code,
     audible_role_block_message,
 )
+from .driver_protection import (
+    auto_level_decision,
+    driver_protection_payload,
+    driver_protection_profile,
+)
+from .safe_playback import floor_audio_confirmed_for_target
 
 SCHEMA_VERSION = 1
 PLAYBACK_READINESS_KIND = "jts_active_speaker_playback_readiness"
-HORN_FLOOR_TEST_PREVIEW_KIND = "jts_active_speaker_horn_floor_test_preview"
-HORN_FLOOR_TEST_FREQUENCY_HZ = 3000.0
-HORN_FLOOR_TEST_HIGHPASS_HZ = 2000.0
-HORN_FLOOR_TEST_DURATION_MS = 100
-HORN_FLOOR_TEST_RAMP_MS = 20
+HIGH_FREQUENCY_FLOOR_TEST_PREVIEW_KIND = (
+    "jts_active_speaker_high_frequency_floor_test_preview"
+)
+HIGH_FREQUENCY_FLOOR_TEST_RAMP_MS = 20
 
 
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
@@ -125,11 +130,11 @@ def _mic_guidance(calibration_level: dict[str, Any]) -> dict[str, Any]:
         "blocked": blocked,
         "guided_level_available": guided,
         "message": (
-            "Mic observation is usable for relative horn guidance"
+            "Mic observation is usable for relative level guidance"
             if guided
             else "Lower or stop before continuing; mic level is unsafe"
             if blocked
-            else "Record a mic observation before guided horn bring-up"
+            else "Record a mic observation before guided high-frequency bring-up"
         ),
     }
 
@@ -176,7 +181,7 @@ def _startup_load_payload(
     }
 
 
-def _compression_driver_readiness(
+def _high_frequency_driver_readiness(
     *,
     group: SpeakerGroup | None,
     channel: SpeakerChannel | None,
@@ -189,11 +194,24 @@ def _compression_driver_readiness(
     calibration_level: dict[str, Any],
     stop_control_available: bool,
 ) -> dict[str, Any] | None:
-    """Return the no-audio readiness packet for a tweeter/horn target."""
+    """Return readiness for a tweeter/high-frequency target."""
 
     if not channel or channel.role != "tweeter":
         return None
     protection_status = channel.protection_status
+    profile = driver_protection_profile(
+        channel.role,
+        driver_style=channel.driver_style,
+    )
+    driver_protection = driver_protection_payload(
+        channel.role,
+        driver_style=channel.driver_style,
+        protection_status=protection_status,
+        band_limit={
+            "type": "highpass",
+            "highpass_hz": profile.min_highpass_hz,
+        },
+    )
     protection_accepted = (
         channel.startup_muted
         and channel.protection_required
@@ -204,22 +222,22 @@ def _compression_driver_readiness(
     gates = [
         _gate(
             "target_assigned",
-            label="Horn target is assigned to one physical output",
+            label="High-frequency target is assigned to one physical output",
             passed=assigned,
             message=(
-                "Horn target has a physical output"
+                "High-frequency target has a physical output"
                 if assigned
-                else "Assign the horn target to a physical output"
+                else "Assign the high-frequency target to a physical output"
             ),
         ),
         _gate(
             "identity_verified",
-            label="Horn output identity is verified",
+            label="High-frequency output identity is verified",
             passed=identity_verified,
             message=(
-                "Horn output identity is verified"
+                "High-frequency output identity is verified"
                 if identity_verified
-                else "Verify the physical output before connecting the horn"
+                else "Verify the physical output before connecting the high-frequency driver"
             ),
         ),
         _gate(
@@ -230,15 +248,15 @@ def _compression_driver_readiness(
             message=(
                 "Single-device output clock is in use"
                 if clock.get("status") == "single_device_clock"
-                else "Use one coherent multi-output DAC for horn bring-up"
+                else "Use one coherent multi-output DAC for high-frequency bring-up"
             ),
         ),
         _gate(
             "protection_accepted",
-            label="Compression-driver protection path is accepted",
+            label="High-frequency protection path is accepted",
             passed=protection_accepted,
             message=(
-                "Software-guarded bring-up is accepted for this horn"
+                "Software-guarded bring-up is accepted for this high-frequency driver"
                 if protection_status == "software_guard_requested"
                 else "Physical protection is marked present"
                 if protection_status == "present"
@@ -258,7 +276,7 @@ def _compression_driver_readiness(
             message=(
                 "Safe session is armed"
                 if safe_session.get("status") == "armed"
-                else "Arm a safe session before horn bring-up"
+                else "Arm a safe session before high-frequency bring-up"
             ),
         ),
         _gate(
@@ -268,7 +286,7 @@ def _compression_driver_readiness(
             message=(
                 "Calibration level is at the quiet floor"
                 if level_floor
-                else "Reset calibration level to the floor before horn bring-up"
+                else "Reset calibration level to the floor before high-frequency bring-up"
             ),
         ),
         _gate(
@@ -284,7 +302,7 @@ def _compression_driver_readiness(
             message=(
                 "Stop control is available"
                 if stop_control_available
-                else "Stop control must be available before horn bring-up"
+                else "Stop control must be available before high-frequency bring-up"
             ),
         ),
         _gate(
@@ -300,9 +318,27 @@ def _compression_driver_readiness(
     ]
     manual_passed = all(gate["passed"] for gate in gates)
     guided_passed = manual_passed and bool(mic["guided_level_available"])
+    target = {
+        "speaker_group_id": group.id if group else None,
+        "role": channel.role,
+        "output_index": channel.physical_output_index,
+    }
+    floor_confirmed = floor_audio_confirmed_for_target(safe_session, target)
+    auto_level = auto_level_decision(
+        calibration_level,
+        role=channel.role,
+        driver_style=channel.driver_style,
+        protection_status=protection_status,
+        band_limit={
+            "type": "highpass",
+            "highpass_hz": profile.min_highpass_hz,
+        },
+        floor_audio_confirmed=floor_confirmed,
+        stop_control_available=stop_control_available,
+    )
     status = (
-        "guided_ready_no_audio" if guided_passed
-        else "manual_ready_no_audio" if manual_passed
+        "guided_ready" if guided_passed
+        else "manual_ready" if manual_passed
         else "blocked"
     )
     issues = [
@@ -314,7 +350,7 @@ def _compression_driver_readiness(
     preview_status = "preview_ready" if manual_passed else "blocked"
     floor_test_preview = {
         "artifact_schema_version": SCHEMA_VERSION,
-        "kind": HORN_FLOOR_TEST_PREVIEW_KIND,
+        "kind": HIGH_FREQUENCY_FLOOR_TEST_PREVIEW_KIND,
         "status": preview_status,
         "would_play": False,
         "audio_allowed": False,
@@ -326,13 +362,13 @@ def _compression_driver_readiness(
         },
         "tone": {
             "waveform": "sine",
-            "frequency_hz": HORN_FLOOR_TEST_FREQUENCY_HZ,
+            "frequency_hz": profile.floor_test_frequency_hz,
             "level_dbfs": floor_level,
-            "duration_ms": HORN_FLOOR_TEST_DURATION_MS,
-            "ramp_ms": HORN_FLOOR_TEST_RAMP_MS,
+            "duration_ms": profile.floor_test_duration_ms,
+            "ramp_ms": HIGH_FREQUENCY_FLOOR_TEST_RAMP_MS,
             "band_limit": {
                 "type": "highpass",
-                "highpass_hz": HORN_FLOOR_TEST_HIGHPASS_HZ,
+                "highpass_hz": profile.min_highpass_hz,
             },
         },
         "safety": {
@@ -344,15 +380,15 @@ def _compression_driver_readiness(
         },
         "issues": issues,
         "next_step": (
-            "This is a preview only; the future audible horn slice must explicitly enable playback."
+            "Preview only. Audible high-frequency playback still requires the normal playback endpoint gates."
             if manual_passed
-            else "Resolve horn readiness blockers before using this floor-test preview."
+            else "Resolve high-frequency readiness blockers before using this floor-test preview."
         ),
     }
     return {
         "applies": True,
         "status": status,
-        "audio_allowed": False,
+        "audio_allowed": manual_passed and bool(driver_protection["audio_allowed"]),
         "manual_floor_test_candidate": manual_passed,
         "guided_floor_test_candidate": guided_passed,
         "protection_mode": (
@@ -366,18 +402,21 @@ def _compression_driver_readiness(
             "speaker_group_id": group.id if group else None,
             "speaker_label": group.label if group else None,
             "role": channel.role,
+            "driver_style": channel.driver_style,
             "physical_output_index": channel.physical_output_index,
         },
+        "driver_protection": driver_protection,
+        "auto_level": auto_level,
         "microphone": mic,
         "floor_test_preview": floor_test_preview,
         "required_gates": gates,
         "issues": issues,
         "next_step": (
-            "Horn evidence is ready for a future floor-level guided slice; audio stays disabled here."
+            "High-frequency evidence is ready for the guarded floor-level playback path."
             if guided_passed
-            else "Manual horn guard evidence is ready; record a usable mic observation before guided horn work."
+            else "Manual high-frequency guard evidence is ready; record a usable mic observation before guided level work."
             if manual_passed
-            else "Resolve the horn readiness blockers before enabling any horn output."
+            else "Resolve the high-frequency readiness blockers before enabling this output."
         ),
     }
 
@@ -409,11 +448,29 @@ def build_playback_readiness(
         assigned and channel and channel.identity_verified
     )
     tweeter_protection_ok = True
+    driver_style = channel.driver_style if channel else None
+    protection_status = channel.protection_status if channel else None
+    driver_protection_band_limit = None
+    if channel and channel.role == "tweeter":
+        profile = driver_protection_profile(
+            channel.role,
+            driver_style=driver_style,
+        )
+        driver_protection_band_limit = {
+            "type": "highpass",
+            "highpass_hz": profile.min_highpass_hz,
+        }
+    driver_protection = driver_protection_payload(
+        channel.role if channel else role,
+        driver_style=driver_style,
+        protection_status=protection_status,
+        band_limit=driver_protection_band_limit,
+    )
     if channel and channel.role == "tweeter":
         tweeter_protection_ok = (
             channel.startup_muted
             and channel.protection_required
-            and channel.protection_status == "present"
+            and channel.protection_status in {"present", "software_guard_requested"}
         )
     topology_blockers = [
         issue for issue in evaluation.get("blockers", [])
@@ -487,15 +544,15 @@ def build_playback_readiness(
         ),
         _gate(
             "tweeter_protection",
-            label="Tweeter/compression-driver protection is satisfied",
+            label="High-frequency driver protection is satisfied",
             passed=tweeter_protection_ok,
             message=(
-                "Selected target does not need extra tweeter protection"
+                "Selected target does not need extra high-frequency protection"
                 if channel and channel.role != "tweeter"
                 else (
-                    "Tweeter protection is present"
+                    "High-frequency protection path is accepted"
                     if tweeter_protection_ok
-                    else "Confirm tweeter protection before any tweeter tone"
+                    else "Confirm high-frequency protection before any high-frequency tone"
                 )
             ),
         ),
@@ -571,7 +628,10 @@ def build_playback_readiness(
     ]
     audio_backend_enabled = bool(backend.get("audio_enabled"))
     target_role = channel.role if channel else role
-    target_role_allowed = bool(channel) and audible_role_allowed(target_role)
+    target_role_allowed = bool(channel) and audible_role_allowed(
+        target_role,
+        driver_protection=driver_protection,
+    )
     playback_allowed = (
         preconditions_passed
         and audio_backend_enabled
@@ -586,7 +646,7 @@ def build_playback_readiness(
                 audible_role_block_message(target_role),
             )
         )
-    compression_driver = _compression_driver_readiness(
+    high_frequency_driver = _high_frequency_driver_readiness(
         group=group,
         channel=channel,
         assigned=assigned,
@@ -623,6 +683,7 @@ def build_playback_readiness(
             "speaker_kind": group.kind if group else None,
             "speaker_mode": group.mode if group else None,
             "role": channel.role if channel else role,
+            "driver_style": channel.driver_style if channel else None,
             "physical_output_index": (
                 channel.physical_output_index if channel else None
             ),
@@ -675,6 +736,7 @@ def build_playback_readiness(
             "expires_at": safe_session.get("expires_at"),
         },
         "calibration_level": calibration_level,
+        "driver_protection": driver_protection,
         "tone_backend": {
             "status": backend.get("status") or "artifact_only",
             "backend": backend.get("backend"),
@@ -682,8 +744,11 @@ def build_playback_readiness(
             "test_pcm": backend.get("test_pcm"),
             "issues": backend_issues,
         },
-        "audible_test": audible_policy_payload(target_role),
-        "compression_driver": compression_driver,
+        "audible_test": audible_policy_payload(
+            target_role,
+            driver_protection=driver_protection,
+        ),
+        "high_frequency_driver": high_frequency_driver,
         "required_gates": gates,
         "issues": issues,
         "next_step": (

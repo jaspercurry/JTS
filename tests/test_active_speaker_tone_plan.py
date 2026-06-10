@@ -108,14 +108,16 @@ def test_build_safe_tone_plan_ready_still_cannot_play() -> None:
     assert plan["tone_playback_implemented"] is False
     assert plan["channel_map"] == {"layout": "mono", "output_count": 2}
     assert plan["target"]["output_index"] == 1
-    assert plan["tone"]["frequency_hz"] == 3200
+    assert plan["tone"]["frequency_hz"] == 5000.0
     assert plan["tone"]["level_dbfs"] == -45.0
     assert plan["tone"]["duration_ms"] == 500
     assert plan["calibration_level"]["test_signal"]["requested_level_dbfs"] == -45.0
     assert plan["tone"]["band_limit"] == {
         "type": "highpass",
-        "highpass_hz": 1600.0,
+        "highpass_hz": 5000.0,
     }
+    assert plan["driver_protection"]["min_highpass_hz"] == 5000.0
+    assert plan["driver_protection"]["max_auto_level_dbfs"] == -65.0
 
 
 def test_build_safe_tone_plan_defaults_to_minimum_level() -> None:

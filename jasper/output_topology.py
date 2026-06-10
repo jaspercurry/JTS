@@ -340,6 +340,7 @@ class SpeakerChannel:
     """One speaker role assigned to an optional physical output."""
 
     role: str
+    driver_style: str | None = None
     physical_output_index: int | None = None
     human_output_label: str | None = None
     identity_verified: bool = False
@@ -369,6 +370,7 @@ class SpeakerChannel:
         )
         return cls(
             role=role,
+            driver_style=_optional_id(raw.get("driver_style")),
             physical_output_index=_optional_int(
                 raw.get("physical_output_index"),
                 "speaker_groups[].channels[].physical_output_index",
@@ -388,6 +390,7 @@ class SpeakerChannel:
             return self
         return SpeakerChannel(
             role=self.role,
+            driver_style=self.driver_style,
             physical_output_index=self.physical_output_index,
             human_output_label=label,
             identity_verified=self.identity_verified,
@@ -405,6 +408,8 @@ class SpeakerChannel:
             "protection_required": self.protection_required,
             "protection_status": self.protection_status,
         }
+        if self.driver_style:
+            out["driver_style"] = self.driver_style
         if self.human_output_label:
             out["human_output_label"] = self.human_output_label
         return out
@@ -732,14 +737,14 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                         )
                     )
                 if channel.protection_status == "software_guard_requested":
-                    blockers.append(
+                    warnings.append(
                         _issue(
-                            "blocker",
+                            "warning",
                             "tweeter_software_guard_requested",
                             (
                                 f"{group.label} tweeter software guard is requested; "
-                                "stage and review a protected startup config before "
-                                "any load or playback"
+                                "protected startup DSP, floor confirmation, and "
+                                "driver-aware level caps are required before playback"
                             ),
                         )
                     )
@@ -831,11 +836,8 @@ def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
                 verified_count += 1
             protection_blocker = None
             if channel.protection_required and channel.protection_status != "present":
-                protection_blocker = (
-                    "tweeter_software_guard_requested"
-                    if channel.protection_status == "software_guard_requested"
-                    else "tweeter_protection_unverified"
-                )
+                if channel.protection_status != "software_guard_requested":
+                    protection_blocker = "tweeter_protection_unverified"
             targets.append({
                 "id": f"{group.id}:{channel.role}",
                 "speaker_group_id": group.id,
@@ -843,6 +845,7 @@ def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
                 "speaker_kind": group.kind,
                 "speaker_mode": group.mode,
                 "role": channel.role,
+                "driver_style": channel.driver_style,
                 "physical_output_index": channel.physical_output_index,
                 "human_output_label": channel.human_output_label,
                 "assigned": assigned,
@@ -1038,6 +1041,7 @@ def set_channel_identity_verified(
                 continue
             channels.append(SpeakerChannel(
                 role=channel.role,
+                driver_style=channel.driver_style,
                 physical_output_index=channel.physical_output_index,
                 human_output_label=channel.human_output_label,
                 identity_verified=bool(identity_verified),
@@ -1101,6 +1105,7 @@ def set_channel_protection_status(
             protection_required = channel.protection_required or role_id == "tweeter"
             channels.append(SpeakerChannel(
                 role=channel.role,
+                driver_style=channel.driver_style,
                 physical_output_index=channel.physical_output_index,
                 human_output_label=channel.human_output_label,
                 identity_verified=channel.identity_verified,

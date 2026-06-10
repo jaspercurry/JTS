@@ -209,7 +209,7 @@ def test_tweeter_protection_status_can_be_marked_present() -> None:
     assert targets["mono:tweeter"]["sound_test_blockers"] == ["identity_unverified"]
 
 
-def test_software_guard_request_remains_blocked_for_sound_tests() -> None:
+def test_software_guard_request_is_warning_not_topology_blocker() -> None:
     topology = _topology(
         groups=[
             {
@@ -236,11 +236,11 @@ def test_software_guard_request_remains_blocked_for_sound_tests() -> None:
     report = channel_identity_report(topology)
     tweeter = next(target for target in report["targets"] if target["role"] == "tweeter")
 
-    assert evaluation["status"] == "blocked"
+    assert evaluation["status"] == "valid"
     assert "tweeter_software_guard_requested" in {
-        issue["code"] for issue in evaluation["blockers"]
+        issue["code"] for issue in evaluation["warnings"]
     }
-    assert "tweeter_software_guard_requested" in tweeter["sound_test_blockers"]
+    assert "tweeter_software_guard_requested" not in tweeter["sound_test_blockers"]
     assert report["sound_tests_allowed"] is False
 
 
