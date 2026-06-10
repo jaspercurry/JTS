@@ -1444,6 +1444,51 @@ def test_level_sse_does_not_require_csrf(backend) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Mutating-request routing — route-check before CSRF-check (the wizard
+# convention in jasper/web/_common.py: bogus paths return 404 without
+# revealing CSRF state). Pre-fix, do_POST/do_DELETE checked CSRF first and
+# 403'd on unknown paths.
+# ---------------------------------------------------------------------------
+
+
+def _mutating_status(backend, method: str, path: str, token: str = "") -> int:
+    """Issue one POST/DELETE against a live server; return the status."""
+    import http.client
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        headers = {"Content-Length": "0"}
+        if token:
+            headers["X-CSRF-Token"] = token
+        conn.request(method, path, b"", headers)
+        try:
+            return conn.getresponse().status
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_post_unknown_path_404s_without_revealing_csrf_state(backend) -> None:
+    assert _mutating_status(backend, "POST", "/api/nope") == 404
+
+
+def test_post_known_path_without_token_403s(backend) -> None:
+    assert _mutating_status(backend, "POST", "/api/session") == 403
+
+
+def test_delete_unknown_path_404s_without_revealing_csrf_state(backend) -> None:
+    assert _mutating_status(backend, "DELETE", "/api/nope") == 404
+
+
+def test_delete_known_route_shape_without_token_403s(backend) -> None:
+    assert _mutating_status(backend, "DELETE", "/api/clip/some-id") == 403
+
+
+# ---------------------------------------------------------------------------
 # Raw mic 0 leg — 4th capture leg, opt-in per session
 # ---------------------------------------------------------------------------
 

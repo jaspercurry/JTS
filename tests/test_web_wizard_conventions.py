@@ -7,11 +7,13 @@ jasper.web._common.
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
 
 WEB_SETUP_FILES = tuple(Path("jasper/web").glob("*_setup.py"))
+WEB_PY_FILES = tuple(sorted(Path("jasper/web").glob("*.py")))
 
 
 def _matches(pattern: str) -> list[str]:
@@ -22,6 +24,94 @@ def _matches(pattern: str) -> list[str]:
         if rx.search(text):
             hits.append(str(path))
     return hits
+
+
+# --- Mutating-request chokepoint: every wizard POST/DELETE handler funnels
+# through the shared CSRF seam, and route-checks unknown paths FIRST.
+#
+# AGENTS.md "Web wizard conventions": every state-changing handler calls
+# guard_mutating_request(), and "Route-check unknown POST paths before
+# guard_mutating_request() so bogus paths return 404 without revealing CSRF
+# state" (the convention block at the top of jasper/web/_common.py says the
+# same). First run of the ordering guard caught wake_corpus_setup.py checking
+# CSRF before routing in both do_POST and do_DELETE — bogus paths 403'd.
+
+# wake_corpus_setup predates the shared double-submit seam and runs a
+# reviewed bespoke scheme (server-held token + X-CSRF-Token header compare
+# in _check_csrf). It is the only sanctioned exception to the
+# guard_mutating_request chokepoint; do not grow this set.
+_BESPOKE_CSRF_WIZARDS = {"wake_corpus_setup.py"}
+_CSRF_GUARD_CALL_RE = re.compile(
+    r"\bguard_mutating_request\s*\(|\b_check_csrf\s*\("
+)
+
+
+def _mutating_handlers():
+    """Yield (path, func_name, source_segment) for every do_POST/do_DELETE
+    defined under jasper/web (AST-walked, so docstring examples like the
+    convention block in _common.py don't count)."""
+    for path in WEB_PY_FILES:
+        text = path.read_text()
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "do_POST", "do_DELETE",
+            ):
+                yield path, node.name, ast.get_source_segment(text, node)
+
+
+def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
+    handlers = list(_mutating_handlers())
+    assert handlers, "expected wizard do_POST handlers to scan"
+    offenders = []
+    for path, name, seg in handlers:
+        if path.name == "__main__.py":
+            # The colocated-server router only delegates to the per-wizard
+            # handlers (which each guard themselves) — assert it stays a
+            # pure delegator rather than growing unguarded routes.
+            assert "_delegate" in seg, (
+                f"{path}::{name} no longer delegates — it must call "
+                "guard_mutating_request() itself"
+            )
+            continue
+        if path.name in _BESPOKE_CSRF_WIZARDS:
+            assert "_check_csrf" in seg, (
+                f"{path}::{name} lost its bespoke _check_csrf() call"
+            )
+            continue
+        if "guard_mutating_request" not in seg:
+            offenders.append(f"{path}::{name}")
+    assert offenders == [], (
+        "wizard mutating handlers that never call guard_mutating_request() "
+        "(the shared Host/Origin + CSRF chokepoint in jasper/web/_common.py):\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_mutating_handlers_route_check_before_csrf_guard():
+    """The first conditional in a do_POST/do_DELETE must be routing, never
+    the CSRF guard: 'Route-check unknown POST paths before
+    guard_mutating_request() so bogus paths return 404 without revealing
+    CSRF state' (AGENTS.md / jasper/web/_common.py). In every compliant
+    handler the first `if` tests the request path; a handler whose first
+    branch is the guard 403s on bogus paths instead."""
+    branch_re = re.compile(r"^\s*(?:if|elif)\b")
+    offenders = []
+    for path, name, seg in _mutating_handlers():
+        if path.name == "__main__.py":
+            continue  # pure delegator, asserted above
+        for line in seg.splitlines():
+            if not branch_re.match(line):
+                continue
+            if _CSRF_GUARD_CALL_RE.search(line):
+                offenders.append(
+                    f"{path}::{name} guards CSRF before route-checking: "
+                    + line.strip()
+                )
+            break  # only the first branch matters
+    assert offenders == [], (
+        "route-check unknown paths (404) BEFORE the CSRF guard so bogus "
+        "paths don't reveal CSRF state:\n" + "\n".join(offenders)
+    )
 
 
 def test_wizards_do_not_reintroduce_div_switches():
