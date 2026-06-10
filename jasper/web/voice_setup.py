@@ -1319,6 +1319,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             restart_voice_daemon()
             active = new.get("JASPER_VOICE_PROVIDER", "")
+            # The active provider (gemini/openai/grok) is the headline config
+            # change — not a secret. The API keys in `new` are never logged.
+            logger.info(
+                "event=voice.save provider=%s client=%s",
+                active, self.address_string(),
+            )
             send_see_other(
                 self, "./",
                 flash=f"Saved. Voice daemon restarting on {_provider_label(active)}.",
@@ -1361,6 +1367,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         active,
                     )
             restart_voice_daemon()
+            # Same save audit as _handle_save — the "Save & Test" button is the
+            # other save path, so "voice provider saved" is logged either way.
+            logger.info(
+                "event=voice.save provider=%s client=%s",
+                active, self.address_string(),
+            )
             if seed_error:
                 send_see_other(
                     self,
@@ -1399,6 +1411,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             restart_voice_daemon()
             pid = (form.get("provider") or "").strip()
+            logger.info(
+                "event=voice.clear provider=%s client=%s",
+                pid, self.address_string(),
+            )
             label = next(
                 (p.label for p in PROVIDERS if p.id == pid),
                 pid,
@@ -1470,6 +1486,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=f"Could not save spend cap: {e}")
                 return
             restart_voice_daemon()
+            logger.info("event=voice.spend_cap client=%s", self.address_string())
             send_see_other(
                 self,
                 "./",
