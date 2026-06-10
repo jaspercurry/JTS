@@ -1,17 +1,31 @@
 """Auto-load the systemd-equivalent env files into `os.environ` so
-CLI tools see the same vars the daemon's systemd unit sees, even
-when the user invokes them without sourcing `/etc/jasper/jasper.env`
-into their shell first.
+CLI tools see the same vars the daemons see, even when the user invokes
+them without sourcing `/etc/jasper/jasper.env` into their shell first.
 
-``ENV_FILES`` MUST mirror ``jasper-voice.service``'s ``EnvironmentFile=``
-directives, in order (later file wins on conflict — a wizard file overrides a
-stale value an operator left in ``jasper.env``). When it drifts, CLI tools
-that build ``Config.from_env()`` silently see *less* config than the running
-daemon: e.g. ``jasper-doctor`` reported transit / Home Assistant / weather as
-"not configured" even when the household had them set, because those wizard
-files (``transit.env``, ``home_assistant.env``, ``weather.env``) were sourced
-by the daemon's unit but missing here. ``tests/test_env_load_mirrors_unit.py``
-asserts this list equals the unit's directives so it can't drift again.
+``ENV_FILES`` MUST be a SUPERSET of every ``deploy/systemd/*.service``'s
+persistent ``EnvironmentFile=`` directives — NOT just one daemon's. A
+``Config.from_env()`` built by a *cross-cutting* CLI (chiefly
+``jasper-doctor``, which checks subsystems owned by many daemons) has to see
+the union, or that CLI silently sees *less* config than the running system:
+``jasper-doctor`` reported transit / Home Assistant / weather — and, before
+this list became the union, peering / grouping / usbsink — as "not configured"
+even when set, because those wizard files were sourced by some daemon's unit
+but missing here. ``tests/test_env_load_mirrors_unit.py`` asserts every unit's
+persistent ``EnvironmentFile=`` path is in this list, so a new wizard env file
+(a future DAC/mic registry's, say) can't silently reintroduce the bug.
+
+Ordering: ``jasper.env`` first (operator base), then the wizard-owned
+``/var/lib/jasper/*.env`` files (later wins on conflict — a wizard file
+overrides a stale value an operator left in ``jasper.env``). The wizard files
+own disjoint keys, so order among them doesn't matter for resolution.
+``/run/*`` runtime-IPC env files are intentionally excluded (generated at
+runtime, absent at CLI time, never config the doctor reads).
+
+CAVEAT: a few runtime-only vars are NOT in any persistent file — e.g.
+``JASPER_MIC_DEVICE`` is resolved and injected into the daemon's env by
+``jasper-aec-reconcile`` (via systemd, not a file), so a CLI can't see it
+this way. Doctor checks that need such a value read it another way (or gate on
+the daemon being active); ``ENV_FILES`` only covers persistent config.
 
 Variables already set in the calling shell (``FOO=bar jasper-cues``)
 take precedence over all of these — useful for one-off probes.
@@ -22,10 +36,12 @@ import os
 from pathlib import Path
 
 
-# Mirror of jasper-voice.service's EnvironmentFile= order. Guarded against
-# drift by tests/test_env_load_mirrors_unit.py — update BOTH together.
+# UNION of every unit's persistent EnvironmentFile= (not one daemon's).
+# Guarded by tests/test_env_load_mirrors_unit.py: add a wizard env file to ANY
+# deploy/systemd/*.service and the test fails until it's added here too.
 ENV_FILES = (
     "/etc/jasper/jasper.env",
+    # jasper-voice.service order (the most config-consuming daemon):
     "/var/lib/jasper/speaker_name.env",
     "/var/lib/jasper/spotify_credentials.env",
     "/var/lib/jasper/voice_provider.env",
@@ -34,6 +50,14 @@ ENV_FILES = (
     "/var/lib/jasper/weather.env",
     "/var/lib/jasper/transit.env",
     "/var/lib/jasper/home_assistant.env",
+    # ...plus persistent files sourced by OTHER units (control / aec / etc.):
+    "/var/lib/jasper/aec_mode.env",
+    "/var/lib/jasper/fanin.env",
+    "/var/lib/jasper/grouping.env",
+    "/var/lib/jasper/outputd.env",
+    "/var/lib/jasper/peering.env",
+    "/var/lib/jasper/usbsink.env",
+    "/var/lib/jasper/wake_corpus_bridge.env",
 )
 
 
