@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared redaction for diagnostics that may be copied off the Pi.
 #
 # Source from bash scripts before writing logs/config snapshots to disk:
