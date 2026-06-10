@@ -800,7 +800,7 @@ def _classify_mux_mode(path: Path) -> CheckResult:
     return CheckResult(name, "ok", f"manual pin: {source.value}")
 
 
-@doctor_check(order=76, group="renderers")
+@doctor_check(order=77, group="renderers")
 def check_mux_mode_state() -> CheckResult:
     """Surface the persisted source-selection mode (auto vs manual pin).
 

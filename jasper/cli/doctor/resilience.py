@@ -5,7 +5,7 @@ Re-homed verbatim from the original monolithic
 for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split.
 
-``check_supervisor_reboot_state`` (order 75) was added after the
+``check_supervisor_reboot_state`` (order 76) was added after the
 split — it surfaces the T5.2 reboot rate-limit state file the same
 way the sibling resilience state files (WiFi guardian stash,
 wifi-scan-repair) get doctor lines."""
@@ -186,7 +186,7 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
     )
 
 
-@doctor_check(order=75, group="resilience")
+@doctor_check(order=76, group="resilience")
 def check_supervisor_reboot_state() -> CheckResult:
     """Surface the T5.2 reboot rate-limit state file.
 

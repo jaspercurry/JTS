@@ -151,7 +151,7 @@ def check_loopback() -> CheckResult:
         "/etc/modules-load.d/snd-aloop.conf",
     )
 
-@doctor_check(order=76, group="audio", label="CamillaDSP websocket", needs_cfg=True, is_async=True)
+@doctor_check(order=78, group="audio", label="CamillaDSP websocket", needs_cfg=True, is_async=True)
 async def check_camilla_websocket(cfg: Config) -> CheckResult:
     try:
         from camilladsp import CamillaClient
