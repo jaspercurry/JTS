@@ -164,7 +164,7 @@ HIFIBERRY_DAC8X = DacProfile(
     clock_domain_contract="single_device",
     outputd_sink="alsa",
     supported_card_matches=(
-        "snd_rpi_hifiberry_dac8x",
+        "snd_rpi_hifiberry_dac8x(?!.*studio)",
         "hifiberry.*dac8x(?!.*studio)",
         r"\bdac8x\b(?!.*studio)",
     ),
