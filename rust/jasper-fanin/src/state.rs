@@ -81,6 +81,11 @@ pub struct StateServer {
     output_pcm: String,
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
+    /// Music-only side-output (multi-room sync tap) — shared with the
+    /// mixer. `None` pcm = solo speaker (tap disabled).
+    music_output_pcm: Option<String>,
+    music_frames_written: Arc<AtomicU64>,
+    music_output_drops: Arc<AtomicU64>,
     selected_input_index: Arc<AtomicI32>,
     /// Watchdog handle for the heartbeat metrics.
     heartbeat: Arc<Heartbeat>,
@@ -109,6 +114,7 @@ impl StateServer {
         input_buffer_frames: u32,
         output_buffer_frames: u32,
         output_pcm: String,
+        music_output_pcm: Option<String>,
         tts_metrics: Option<TtsMetrics>,
     ) -> Self {
         let inputs = mixer
@@ -128,6 +134,9 @@ impl StateServer {
             output_pcm,
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
+            music_output_pcm,
+            music_frames_written: Arc::clone(&mixer.music_frames_written),
+            music_output_drops: Arc::clone(&mixer.music_output_drops),
             selected_input_index: mixer.selected_input_index(),
             heartbeat,
             sample_rate,
@@ -381,6 +390,35 @@ impl StateServer {
         buf.push('}');
         buf.push(',');
 
+        // music_output object — the multi-room sync tap (off on a solo
+        // speaker). `enabled:false` with no further fields when unconfigured;
+        // when configured, `drops` growing => the snapserver consumer is behind.
+        buf.push_str(r#""music_output":{"#);
+        match &self.music_output_pcm {
+            Some(pcm) => {
+                push_kv_bool(&mut buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(&mut buf, "pcm", pcm);
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "frames_written",
+                    self.music_frames_written.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "drops",
+                    self.music_output_drops.load(Ordering::Relaxed),
+                );
+            }
+            None => {
+                push_kv_bool(&mut buf, "enabled", false);
+            }
+        }
+        buf.push('}');
+        buf.push(',');
+
         buf.push_str(r#""tts":{"#);
         match &self.tts_metrics {
             Some(metrics) => {
@@ -578,6 +616,9 @@ mod tests {
             output_pcm: "hw:Loopback,0,7".to_string(),
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             output_xrun_count: Arc::new(AtomicU64::new(1)),
+            music_output_pcm: Some("hw:Loopback,0,6".to_string()),
+            music_frames_written: Arc::new(AtomicU64::new(54321)),
+            music_output_drops: Arc::new(AtomicU64::new(3)),
             selected_input_index: Arc::new(AtomicI32::new(-1)),
             heartbeat: Arc::new(Heartbeat::new()),
             sample_rate: 48000,
@@ -598,6 +639,7 @@ mod tests {
             "selected_input",
             "inputs",
             "output",
+            "music_output",
             "tts",
             "watchdog",
         ] {
@@ -628,6 +670,35 @@ mod tests {
         assert!(j.contains(r#""pcm":"hw:Loopback,0,7""#));
         assert!(j.contains(r#""sample_rate":48000"#));
         assert!(j.contains(r#""frames_written":98765"#));
+    }
+
+    #[test]
+    fn snapshot_json_music_output_fields() {
+        // Enabled (make_test_server configures the tap): pcm + counters.
+        let mut server = make_test_server();
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""music_output":{"enabled":true"#),
+            "got: {}",
+            j,
+        );
+        assert!(j.contains(r#""pcm":"hw:Loopback,0,6""#));
+        // 54321 is the music tap's count, distinct from the output's 98765.
+        assert!(j.contains(r#""frames_written":54321"#));
+        assert!(j.contains(r#""drops":3"#));
+
+        // Disabled (solo speaker): just enabled:false, no pcm/counters echoed.
+        server.music_output_pcm = None;
+        let j = server.snapshot_json();
+        assert!(
+            j.contains(r#""music_output":{"enabled":false}"#),
+            "got: {}",
+            j,
+        );
+        assert!(
+            !j.contains(r#""hw:Loopback,0,6""#),
+            "a disabled tap must not echo its pcm name",
+        );
     }
 
     #[test]

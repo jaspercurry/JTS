@@ -22,6 +22,20 @@ pub struct Config {
     /// substream pair.
     pub output_pcm: String,
 
+    /// OPTIONAL second output PCM for the **music-only** (pre-TTS) stream
+    /// — the multi-room sync tap (see `docs/HANDOFF-multiroom.md` §2
+    /// "inv-2 realization"). When set, the mixer writes the post-duck,
+    /// **pre-TTS** program here every period, *in addition to* the
+    /// primary `output_pcm` (which still carries music+TTS to the local
+    /// DAC). `None` — the default, when the env is unset / empty /
+    /// `disabled` — means a solo speaker: zero extra work, byte-for-byte
+    /// today's behaviour. The write is a LOSSY side-tap (non-blocking,
+    /// drop-on-full) so it can NEVER back-pressure the primary output,
+    /// which stays the sole timing owner (inv-1). Keeping the assistant
+    /// OFF this stream is the inv-3 leak fix: followers hear the room's
+    /// music, never the leader's TTS. Env: `JASPER_FANIN_MUSIC_OUTPUT_PCM`.
+    pub music_output_pcm: Option<String>,
+
     /// Per-input PCMs — the capture side of each renderer or internal
     /// test lane's dedicated snd-aloop substream. Order matters: the STATUS
     /// endpoint reports inputs in this order, and `input_renderers`
@@ -98,6 +112,9 @@ impl Config {
     /// PCM list length != renderer label list length).
     pub fn from_env() -> Result<Self> {
         let output_pcm = env_str("JASPER_FANIN_OUTPUT_PCM", "hw:Loopback,0,7");
+        // OFF unless explicitly configured (no default device): the
+        // music-only multi-room tap only exists on a grouping leader.
+        let music_output_pcm = env_optional("JASPER_FANIN_MUSIC_OUTPUT_PCM");
         let input_pcms = env_list(
             "JASPER_FANIN_INPUT_PCMS",
             &[
@@ -164,6 +181,7 @@ impl Config {
 
         Ok(Self {
             output_pcm,
+            music_output_pcm,
             input_pcms,
             input_renderers,
             sample_rate,
@@ -231,6 +249,20 @@ fn env_optional_with_default(name: &str, default: &str) -> Option<String> {
         }
         Ok(s) => Some(s),
         Err(_) => Some(default.to_string()),
+    }
+}
+
+/// Optional string env var with NO default: `None` when unset, empty, or
+/// the literal `disabled` (case-insensitive); the trimmed value otherwise.
+/// Unlike `env_optional_with_default`, an unset var yields `None` — for a
+/// feature that is OFF unless explicitly configured (the music-only tap).
+fn env_optional(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(s) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("disabled") => {
+            None
+        }
+        Ok(s) => Some(s.trim().to_string()),
+        Err(_) => None,
     }
 }
 
@@ -401,6 +433,8 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
                 assert_eq!(cfg.output_pcm, "hw:Loopback,0,7");
+                // Music-only multi-room tap is OFF by default (solo speaker).
+                assert_eq!(cfg.music_output_pcm, None);
                 assert_eq!(cfg.input_pcms.len(), 5);
                 assert_eq!(cfg.input_renderers.len(), 5);
                 assert_eq!(cfg.input_renderers[0], "spotify");
@@ -432,6 +466,29 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("disabled TTS socket must parse");
                 assert_eq!(cfg.tts_socket_path, None);
+            },
+        );
+    }
+
+    #[test]
+    fn music_output_pcm_off_by_default_and_parses_when_set() {
+        // Unset → None (solo speaker; no extra ALSA output).
+        with_env(&[("JASPER_FANIN_MUSIC_OUTPUT_PCM", None)], || {
+            assert_eq!(Config::from_env().unwrap().music_output_pcm, None);
+        });
+        // Explicit "disabled" sentinel → None (rollback parity with the
+        // TTS socket knob).
+        with_env(&[("JASPER_FANIN_MUSIC_OUTPUT_PCM", Some("disabled"))], || {
+            assert_eq!(Config::from_env().unwrap().music_output_pcm, None);
+        });
+        // A real PCM name → Some (and trimmed).
+        with_env(
+            &[("JASPER_FANIN_MUSIC_OUTPUT_PCM", Some("  hw:Loopback,0,6 "))],
+            || {
+                assert_eq!(
+                    Config::from_env().unwrap().music_output_pcm.as_deref(),
+                    Some("hw:Loopback,0,6"),
+                );
             },
         );
     }

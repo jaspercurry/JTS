@@ -468,6 +468,7 @@ works without any wizard interaction.
 # systemd unit (deploy/systemd/jasper-fanin.service) sets the
 # production input/output buffer overrides below.
 JASPER_FANIN_OUTPUT_PCM=hw:Loopback,0,7
+JASPER_FANIN_MUSIC_OUTPUT_PCM=                                  # OPTIONAL music-only (pre-TTS) multi-room tap; unset/"disabled" = off (solo). See note below.
 JASPER_FANIN_INPUT_PCMS=hw:Loopback,1,0|hw:Loopback,1,1|hw:Loopback,1,2|hw:Loopback,1,3|hw:Loopback,1,4
 JASPER_FANIN_INPUT_RENDERERS=spotify|airplay|bluealsa|usbsink|correction   # informational, surfaces in /state
 JASPER_FANIN_SAMPLE_RATE=48000
@@ -498,6 +499,26 @@ outputd; the latest values are exposed under `tts.assistant_loudness` in
 the STATUS response. `PROGRAM_DUCK_OFF` is allowed to release a duck
 even after an audio flush advances the TTS epoch; stale
 `PROGRAM_DUCK_ON` is not allowed to relatch after a flush.
+
+**`JASPER_FANIN_MUSIC_OUTPUT_PCM` — the multi-room music-only tap (off by
+default).** When set, the mixer writes a SECOND output every period: the
+program **post-duck but pre-TTS** — the room's music as played, minus the
+assistant. This is the synced stream a grouping leader streams to followers
+([`docs/HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §2 "inv-2 realization");
+keeping the assistant off it is the inv-3 guarantee (followers never hear the
+leader's TTS). The write is a LOSSY side-tap — non-blocking, period-aligned
+(`avail_update` gate, so a partial write can't shear a period), drop-on-full —
+so it can NEVER back-pressure the primary `JASPER_FANIN_OUTPUT_PCM`, which
+stays the sole timing owner (inv-1). A misconfigured/unopenable PCM logs
+`event=fanin.music_output.open_failed` and degrades to solo with the primary
+path untouched (best-effort open, never fatal). Health is on the STATUS
+`music_output` object (`enabled` / `pcm` / `frames_written` / `drops` — a
+growing `drops` means the consumer, e.g. snapserver, is behind). Unset / empty
+/ `disabled` = no second output, byte-for-byte the pre-multiroom behaviour
+(verified by `config::tests::music_output_pcm_off_by_default_and_parses_when_set`
+and `mixer::tests::music_only_tap_is_post_duck_and_pre_tts`). **Not yet wired
+to snapserver** — that round-trip is Increment 2 of the multi-room build; this
+increment is the producer half (and the standalone inv-3 leak fix).
 
 **Period sizing**: 256 frames at 48 kHz = ~5.3 ms wakeup cadence,
 frequent enough that the heartbeat sentinel sees real forward

@@ -189,6 +189,7 @@ fn main() -> Result<()> {
         config.input_buffer_frames,
         config.output_buffer_frames,
         config.output_pcm.clone(),
+        config.music_output_pcm.clone(),
         tts_metrics,
     );
     let state_server_shutdown = Arc::clone(&shutdown);
