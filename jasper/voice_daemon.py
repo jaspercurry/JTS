@@ -3630,18 +3630,18 @@ async def run() -> None:
     )
     # Transit (subway / bus / Citi Bike today; future city packs add more).
     # One call builds every provider in the household's ENABLED city packs
-    # (JASPER_TRANSIT_CITIES; unset = all packs, non-breaking) and returns
-    # the flat tool list, a `configured` flag for the system-prompt nudge,
-    # and the built client objects so shutdown can close any that own a
-    # connection pool. Each provider self-gates on its own config, so an
-    # enabled-but-unconfigured mode produces no tool — `transit_configured`
-    # is exactly "at least one transit tool registered", the same gate as
-    # before. Adding a city needs no edit here; see
+    # (JASPER_TRANSIT_CITIES; unset = all packs, non-breaking) and returns a
+    # managed ActiveTransit: the flat tool list, a `configured` flag for the
+    # system-prompt nudge, and an `aclose()` that releases any client owning a
+    # pool (closed in shutdown below). Each provider self-gates on its own
+    # config, so an enabled-but-unconfigured mode produces no tool —
+    # `transit_configured` is exactly "at least one transit tool registered",
+    # the same gate as before. Adding a city needs no edit here; see
     # jasper.transit.active_transit_tools. os.environ carries
     # JASPER_TRANSIT_CITIES via transit.env, sourced by jasper-voice.service.
-    transit_tools, transit_configured, transit_clients = (
-        transit.active_transit_tools(os.environ, cfg)
-    )
+    transit_active = transit.active_transit_tools(os.environ, cfg)
+    transit_tools = transit_active.tools
+    transit_configured = transit_active.configured
     logger.info(
         "transit: packs=%s tools=%d",
         ",".join(transit.enabled_pack_ids(os.environ)) or "(none)",
@@ -4034,23 +4034,12 @@ async def run() -> None:
         await weather.aclose()
         if ha is not None:
             await ha.aclose()
-        # Close any transit client that owns a resource — today only
-        # BusClient, which holds a long-lived httpx.AsyncClient pool whose
-        # idle connections + FDs would otherwise leak across daemon restart
-        # cycles. Duck-typed so per-call clients (subway, Citi Bike) are
-        # skipped and a future pooled provider is closed for free. Mirrors
-        # the weather/ha pattern.
-        for client in transit_clients:
-            aclose = getattr(client, "aclose", None)
-            if aclose is None:
-                continue
-            try:
-                await aclose()
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "transit client %s aclose failed during shutdown",
-                    type(client).__name__,
-                )
+        # Release any transit client that owns a resource (today only
+        # BusClient's httpx.AsyncClient pool, whose idle connections + FDs
+        # would otherwise leak across daemon restart cycles). The managed
+        # ActiveTransit result owns that cleanup — the daemon just closes the
+        # subsystem, knowing nothing about which clients are closeable.
+        await transit_active.aclose()
 
 
 def main() -> None:

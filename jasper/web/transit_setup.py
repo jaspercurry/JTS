@@ -1,20 +1,27 @@
 """Transit configuration wizard at /transit/.
 
-UX (single page, three sections):
+UX (single page):
 
   1. Address — user types a free-form address. Server geocodes via
      OSM Nominatim (Photon fallback) and stores coordinates in
      `/var/lib/jasper/transit.env`. Only coords land on disk; the
      address itself never persists.
 
-  2. One card per provider whose bounding box covers the user's
-     coords. The subway card is keyless and renders nearest stops
-     immediately. The bus card is locked until the user pastes a
-     BusTime API key — that's a hard prerequisite (the stops-lookup
-     endpoint itself requires a key), so the locked card shows ONLY
-     a register link + key input.
+  2. Cities — one on/off toggle per `jasper.transit.CityPack` that
+     covers the user's coords (today just New York City). Writes
+     `JASPER_TRANSIT_CITIES` and is the master switch for a city's
+     transit: the provider cards below render only for enabled cities.
+     A covering-but-off city shows an "available here" nudge — the
+     geocode-driven suggestion to turn the detected city on.
 
-  3. Advanced — collapsed `<details>` with raw stop-ID / line / route
+  3. One card per provider whose pack is ENABLED and whose bounding box
+     covers the user's coords. The subway card is keyless and renders
+     nearest stops immediately. The bus card is locked until the user
+     pastes a BusTime API key — that's a hard prerequisite (the
+     stops-lookup endpoint itself requires a key), so the locked card
+     shows ONLY a register link + key input.
+
+  4. Advanced — collapsed `<details>` with raw stop-ID / line / route
      inputs for power users and recovery from a misconfigured save.
 
 Persistence: all transit env vars live in `/var/lib/jasper/transit.env`
@@ -38,6 +45,7 @@ URL surface (after nginx strips /transit/):
   GET  /             page render (geocodes once on Submit, never on render)
   POST /geocode      address → coords; redirects back
   POST /save         persist picks; restart voice; redirects back
+  POST /cities       persist city-pack on/off toggles; restart voice
   POST /clear        wipe transit config; restart voice; redirects back
 """
 from __future__ import annotations
@@ -105,7 +113,11 @@ def _owned_env_keys() -> set[str]:
     """Every env key this wizard writes. Used to filter the env file
     on save so foreign keys an operator placed in transit.env (rare)
     survive unchanged."""
-    return {LAT_ENV, LON_ENV, DISPLAY_NAME_ENV, *transit.all_env_keys()}
+    return {
+        LAT_ENV, LON_ENV, DISPLAY_NAME_ENV,
+        transit.TRANSIT_CITIES_ENV,  # city-pack on/off toggle
+        *transit.all_env_keys(),
+    }
 
 
 def _load_state(path: str = TRANSIT_FILE) -> dict[str, str]:
@@ -366,6 +378,29 @@ def _apply_clear(current: dict[str, str]) -> dict[str, str]:
         k: v for k, v in current.items()
         if k not in _owned_env_keys()
     }
+
+
+def _apply_cities(
+    form: dict[str, str], current: dict[str, str],
+) -> dict[str, str]:
+    """Apply the city-pack on/off toggles to state.
+
+    Each pack renders a checkbox named ``city_<pack.id>``; HTML form
+    semantics omit an unchecked checkbox, so a present field means "on". We
+    write the *explicit* comma-separated enabled list to
+    ``JASPER_TRANSIT_CITIES`` — always explicit (the wizard owns the value),
+    and an empty string when nothing is checked. ``enabled_pack_ids`` reads a
+    present-but-empty value as "no cities" (distinct from an absent key,
+    which is the legacy "all" default), so unchecking everything genuinely
+    turns transit off rather than silently re-enabling all packs.
+    """
+    new = dict(current)
+    enabled = [
+        pack.id for pack in transit.CITY_PACKS
+        if form.get(f"city_{pack.id}", "").strip()
+    ]
+    new[transit.TRANSIT_CITIES_ENV] = ",".join(enabled)
+    return new
 
 
 # ----------------------------------------------------------------------
@@ -1024,6 +1059,63 @@ def _advanced_section_html(state: dict[str, str], csrf_token: str) -> str:
 </details>"""
 
 
+def _cities_section_html(
+    state: dict[str, str], csrf_token: str, coords: tuple[float, float],
+) -> str:
+    """City-pack on/off toggles — the master switch for each city's transit.
+
+    Shows every pack that either COVERS the user's coordinates or is
+    currently ENABLED (so a pack enabled elsewhere can still be turned off).
+    Returns "" when there is nothing to show. A pack being on only makes its
+    providers *eligible*; the provider cards below render only for enabled
+    packs, so this is where a household turns a whole city on or off.
+
+    A covering-but-disabled pack surfaces an "available here" hint — the
+    geocode-driven nudge to turn the detected city on. With a single pack
+    (NYC today) this is one toggle; it scales to one row per future city.
+    """
+    lat, lon = coords
+    enabled_ids = set(transit.enabled_pack_ids(state))
+    rows: list[str] = []
+    for pack in transit.CITY_PACKS:
+        covers = pack.covers(lat, lon)
+        is_on = pack.id in enabled_ids
+        if not covers and not is_on:
+            continue  # irrelevant here and already off — nothing to toggle
+        if covers and is_on:
+            meta = "covers your location"
+        elif covers and not is_on:
+            meta = "available at your location — turn on to use"
+        else:  # on but not covering — surfaced so it can be turned off
+            meta = "not near your saved location"
+        checked = " checked" if is_on else ""
+        rows.append(f"""
+<div class="toggle-row">
+  <span class="toggle-row__text">
+    <span class="name">{html.escape(pack.label)}</span>
+    <span class="meta">{meta}</span>
+  </span>
+  <label class="toggle">
+    <input type="checkbox" name="city_{pack.id}" form="cities-form"{checked}>
+    <span class="track"></span>
+  </label>
+</div>""")
+    if not rows:
+        return ""
+    return f"""
+<form method="post" action="cities" id="cities-form">
+  {csrf_field_html(csrf_token) if csrf_token else ''}
+  <section class="info-card">
+    <p class="eyebrow">Transit cities</p>
+    <p class="form-hint">Turn a city's transit on or off. Only enabled cities answer voice questions and show their settings below.</p>
+    {''.join(rows)}
+    <div class="save-row">
+      <button type="submit" class="btn btn--primary">Save cities and restart voice</button>
+    </div>
+  </section>
+</form>"""
+
+
 def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str = "") -> bytes:
     coords = _coords(state)
 
@@ -1037,9 +1129,13 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 
     providers_covering = transit.covering(*coords)
     if not providers_covering:
+        # No provider covers these coords. Still render the cities section so
+        # a pack enabled elsewhere (e.g. NYC left on after a move) can be
+        # turned off; it returns "" when there's nothing to toggle.
         body = f"""
 <p class="form-hint">Configure transit settings.</p>
 {_address_section_html(state, csrf_token)}
+{_cities_section_html(state, csrf_token, coords)}
 {_no_coverage_html()}
 {_advanced_section_html(state, csrf_token)}"""
         return _wrap_transit_page("Transit", body, status_msg=status_msg)
@@ -1053,8 +1149,15 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     # fallback below keeps the page rendering while the contributor
     # wires up theirs. See jasper/transit/__init__.py for the full
     # contribution checklist.
+    enabled_ids = set(transit.enabled_pack_ids(state))
     cards: list[str] = []
     for p in providers_covering:
+        pack = transit.pack_for_provider(p.id)
+        if pack is not None and pack.id not in enabled_ids:
+            # Covering, but its city is toggled off — gate the card out so
+            # the page is honest (a visible card means its tools register).
+            # The cities section above carries the toggle to turn it back on.
+            continue
         if p.id == "nyc_subway":
             cards.append(_subway_card_html(p, state))
         elif p.id == "nyc_bus":
@@ -1071,14 +1174,13 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
   <p class="provider-card__blurb">This provider is in the registry but doesn't have a wizard card yet. Add one to <code>jasper/web/transit_setup.py</code>.</p>
 </section>""")
 
-    # The Clear form's destructive confirm lives in the page's ES module
-    # (clear-form submit listener → jtsConfirm), not an inline onsubmit —
-    # canonical pages carry no inline dialog helper.
-    body = f"""
-<p class="form-hint">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
-
-{_address_section_html(state, csrf_token)}
-
+    # The provider-pick save-form only renders when an enabled city has
+    # covering providers. If every covering city is toggled off, `cards` is
+    # empty and the cities section above already explains why there are no
+    # settings to configure.
+    save_form = ""
+    if cards:
+        save_form = f"""
 <form method="post" action="save" id="save-form">
   {csrf_field_html(csrf_token) if csrf_token else ''}
   <p class="eyebrow">Transit options near you</p>
@@ -1088,7 +1190,19 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     <button type="submit" class="btn btn--primary">Save and restart voice</button>
     <span class="form-hint">Voice picks up the new settings in about 5 seconds.</span>
   </div>
-</form>
+</form>"""
+
+    # The Clear form's destructive confirm lives in the page's ES module
+    # (clear-form submit listener → jtsConfirm), not an inline onsubmit —
+    # canonical pages carry no inline dialog helper.
+    body = f"""
+<p class="form-hint">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
+
+{_address_section_html(state, csrf_token)}
+
+{_cities_section_html(state, csrf_token, coords)}
+
+{save_form}
 
 {_advanced_section_html(state, csrf_token)}
 
@@ -1146,7 +1260,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # Route-check before CSRF-check: unknown paths return 404
             # without consuming the request body or revealing the CSRF
             # state. Matches what every test asserts.
-            if path not in ("/geocode", "/save", "/clear"):
+            if path not in ("/geocode", "/save", "/clear", "/cities"):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = read_form(self)
@@ -1158,6 +1272,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/save":
                 self._handle_save(form)
+                return
+            if path == "/cities":
+                self._handle_cities(form)
                 return
             if path == "/clear":
                 self._handle_clear()
@@ -1201,6 +1318,24 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             restart_voice_daemon()
             send_see_other(self, "./", flash="Saved. Voice daemon restarting.")
+
+        def _handle_cities(self, form: dict[str, str]) -> None:
+            current = _load_state(cfg["state_path"])
+            new = _apply_cities(form, current)
+            # `new` always carries at least the coordinate scaffolding (the
+            # cities form only renders once coords exist) plus the explicit
+            # JASPER_TRANSIT_CITIES value, so it's never empty — write, never
+            # delete.
+            try:
+                write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+            except OSError as e:
+                logger.exception("could not write transit.env after cities save")
+                send_see_other(self, "./", flash=f"Could not save: {e}")
+                return
+            restart_voice_daemon()
+            send_see_other(
+                self, "./", flash="Saved cities. Voice daemon restarting.",
+            )
 
         def _handle_clear(self) -> None:
             current = _load_state(cfg["state_path"])

@@ -81,6 +81,7 @@ cost beats the abstraction tax.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -98,6 +99,14 @@ from .providers import citibike, nyc_bus, nyc_subway
 
 if TYPE_CHECKING:
     from ..config import Config
+
+logger = logging.getLogger(__name__)
+
+
+# The household's enabled city packs, comma-separated pack ids. Wizard-owned
+# (written by /transit/); the daemon reads it via enabled_pack_ids. Lives in
+# exactly one place so the wizard, the daemon, and install.sh agree on the key.
+TRANSIT_CITIES_ENV = "JASPER_TRANSIT_CITIES"
 
 
 # A "city pack" bundles one city's transit providers behind a single
@@ -147,18 +156,39 @@ def pack_by_id(pack_id: str) -> CityPack | None:
     return None
 
 
+def pack_for_provider(provider_id: str) -> CityPack | None:
+    """The city pack a provider belongs to ("nyc_subway" -> NYC_PACK).
+
+    Reverse of the pack→providers containment. The /transit/ wizard uses it
+    to gate a provider's card on its pack being enabled — a configured
+    provider in a disabled city shouldn't render an active card, since its
+    tools won't register at runtime."""
+    for pack in CITY_PACKS:
+        if any(p.id == provider_id for p in pack.providers):
+            return pack
+    return None
+
+
 def enabled_pack_ids(env: Mapping[str, str]) -> tuple[str, ...]:
     """City packs the household has turned on, from JASPER_TRANSIT_CITIES
     (comma-separated pack ids, written by the /transit/ wizard).
 
-    Unset/empty falls back to ALL packs — an install predating the toggle
-    keeps its transit, since each provider is still independently gated by
-    its own configuration downstream (a pack being "on" only makes its
-    providers *eligible*; an unconfigured provider produces no tool). The
-    wizard and install.sh migration write the explicit list going forward.
+    Absent vs present is the load-bearing distinction:
+
+      - **Key absent** (None) → ALL packs. An install predating the toggle
+        keeps its transit untouched. This is the non-breaking default; each
+        provider is still independently gated by its own config downstream
+        (a pack being "on" only makes its providers *eligible*; an
+        unconfigured provider produces no tool).
+      - **Key present** → exactly the listed packs, even if the value is
+        empty. An empty/whitespace value therefore means "no cities" — the
+        household explicitly turned everything off in the wizard (uncheck
+        all). Without this, unchecking all cities would round-trip through
+        an empty string and silently re-enable everything.
+
     Unknown ids are ignored so a removed pack can't strand the setting."""
-    raw = (env.get("JASPER_TRANSIT_CITIES") or "").strip()
-    if not raw:
+    raw = env.get(TRANSIT_CITIES_ENV)
+    if raw is None:  # key absent entirely → legacy "all packs" default
         return tuple(pack.id for pack in CITY_PACKS)
     wanted = {tok.strip() for tok in raw.split(",") if tok.strip()}
     return tuple(pack.id for pack in CITY_PACKS if pack.id in wanted)
@@ -170,28 +200,56 @@ def enabled_packs(env: Mapping[str, str]) -> tuple[CityPack, ...]:
     return tuple(pack for pack in CITY_PACKS if pack.id in ids)
 
 
-def active_transit_tools(
-    env: Mapping[str, str], cfg: Config
-) -> tuple[list, bool, list]:
+@dataclass(frozen=True)
+class ActiveTransit:
+    """The live transit surface for the household's enabled city packs —
+    what `active_transit_tools` hands the voice daemon.
+
+    A *managed result*: it owns the built clients and closes them via
+    `aclose()`, so the daemon treats transit as one subsystem with a
+    lifecycle instead of reaching into individual clients. That keeps the
+    cleanup contract here, in the transit layer — the daemon never learns
+    which clients hold a pool.
+    """
+
+    tools: list  # flat list to register on the tool registry
+    configured: bool  # True iff ≥1 transit tool actually registered
+    clients: list  # built clients, owned for lifecycle — close via aclose()
+
+    async def aclose(self) -> None:
+        """Close every built client that owns a resource (today only
+        `BusClient`'s long-lived `httpx.AsyncClient` pool). Duck-typed on
+        `aclose`, so per-call clients (subway, Citi Bike) are skipped and a
+        future pooled provider is reclaimed for free — no daemon edit."""
+        for client in self.clients:
+            aclose = getattr(client, "aclose", None)
+            if aclose is None:
+                continue
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "transit client %s aclose failed during shutdown",
+                    type(client).__name__,
+                )
+
+
+def active_transit_tools(env: Mapping[str, str], cfg: Config) -> ActiveTransit:
     """Build clients + collect voice tools for every provider in the
     household's enabled city packs — the voice daemon's single entry point.
 
     A pack being enabled only makes its providers *eligible*; each provider
     still produces a client (and tools) only when its own config is set
-    (its `build_client` returns None otherwise). Returns
-    `(tool_functions, transit_configured, clients)`:
+    (its `build_client` returns None otherwise). Returns an `ActiveTransit`:
 
-      - `tool_functions`: flat list to register on the tool registry.
-      - `transit_configured`: True iff at least one transit TOOL actually
+      - `.tools`: flat list to register on the tool registry.
+      - `.configured`: True iff at least one transit TOOL actually
         registered. A built client that yields no tools (e.g. a bus mode
         whose stops were cleared — the tool factory short-circuits to `[]`)
         is NOT "configured", matching the old per-tool gating that drives
         the system-prompt transit nudge.
-      - `clients`: the built client objects, so the daemon can close any
-        that own a resource (e.g. `BusClient`'s long-lived
-        `httpx.AsyncClient` pool) on shutdown. Per-call clients (subway,
-        Citi Bike) have nothing to close; the daemon duck-types `aclose`,
-        so they're skipped.
+      - `.aclose()`: closes any built client that owns a resource (e.g.
+        `BusClient`'s `httpx.AsyncClient` pool) on shutdown.
 
     Adding a city needs no edit here — it flows entirely from the new
     provider's own `build_client`/`make_tools`, so the daemon never grows a
@@ -206,7 +264,7 @@ def active_transit_tools(
                 continue
             clients.append(client)
             tools.extend(provider.make_tools(client))
-    return tools, bool(tools), clients
+    return ActiveTransit(tools=tools, configured=bool(tools), clients=clients)
 
 
 def by_id(provider_id: str) -> TransitProvider | None:
@@ -241,6 +299,7 @@ def all_env_keys() -> tuple[str, ...]:
 
 
 __all__ = [
+    "ActiveTransit",
     "BoundingBox",
     "CITY_PACKS",
     "CityPack",
@@ -249,6 +308,7 @@ __all__ = [
     "ProviderKind",
     "REGISTRY",
     "Stop",
+    "TRANSIT_CITIES_ENV",
     "TransitError",
     "TransitProvider",
     "active_transit_tools",
@@ -259,4 +319,5 @@ __all__ = [
     "enabled_packs",
     "haversine_miles",
     "pack_by_id",
+    "pack_for_provider",
 ]

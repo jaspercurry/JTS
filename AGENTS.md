@@ -1099,12 +1099,17 @@ transit env var:
   `JASPER_CITIBIKE_EBIKE_ONLY` (`"1"` to suppress classic-bike
   counts in voice answers; empty / `"0"` reports both kinds)
 - `JASPER_TRANSIT_CITIES` (comma-separated `CityPack` ids, e.g. `nyc`)
-  — the household's enabled city packs. A pack being on makes its
-  providers *eligible*; each still self-gates on its own config above.
-  **Unset = all packs** (`jasper.transit.enabled_pack_ids`), so installs
-  predating the toggle keep working untouched. `install.sh` seeds `nyc`
-  for households that already use NYC transit; the toggle UI lands with
-  the `/transit/` wizard's city-pack list.
+  — the household's enabled city packs, toggled in the `/transit/`
+  wizard's **Transit cities** section. A pack being on makes its
+  providers *eligible*; each still self-gates on its own config above,
+  and the wizard only renders a city's provider cards while that city is
+  on. Absent vs present is load-bearing in
+  `jasper.transit.enabled_pack_ids`: **key absent → all packs** (the
+  non-breaking default for installs predating the toggle), but **key
+  present → exactly the listed packs, even when empty** — so unchecking
+  every city writes an explicit empty value that means "no transit," not
+  a fall-back to all. `install.sh` seeds `nyc` for households that
+  already use NYC transit.
 
 All live in **`/var/lib/jasper/transit.env`** at mode 0640 — same
 single-source-of-truth pattern as `voice_provider.env`. Never put
@@ -1213,8 +1218,9 @@ tool/client surface):
   6. A `<Slug>Client` runtime class (mirror `jasper/subway.py`,
      `jasper/bus.py`, `jasper/citibike.py`) that `build_client`
      constructs. If it owns a connection pool, give it `aclose()` — the
-     daemon closes every built transit client on shutdown (duck-typed),
-     so a pool is reclaimed with no daemon edit
+     managed `ActiveTransit` result `active_transit_tools` returns closes
+     every built transit client on shutdown (duck-typed), so a pool is
+     reclaimed with no daemon edit
   7. The `keys=(...)` bash array in `migrate_transit_config` in
      [`deploy/install.sh`](deploy/install.sh) — duplicates
      `transit.all_env_keys()` because install.sh runs before Python

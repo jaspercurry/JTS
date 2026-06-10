@@ -313,3 +313,92 @@ def test_post_clear_rejects_bad_csrf(tmp_path):
     h = _FakeHandler("/clear", body=body, cookies="jts_csrf=" + "b" * 64)
     _bound_handler(tmp_path, h).do_POST()
     assert h.status == int(http.HTTPStatus.FORBIDDEN)
+
+
+# ---- City-pack toggle (PR2) -----------------------------------------------
+
+
+def test_cities_section_renders_with_nyc_toggle_on_by_default(stub_gbfs):
+    # Unset JASPER_TRANSIT_CITIES => all packs enabled (legacy default), so
+    # the NYC toggle renders checked and the provider cards show.
+    out = _render(NYC_STATE)
+    assert 'id="cities-form"' in out
+    assert 'name="city_nyc"' in out
+    # The NYC toggle is checked when the pack is enabled.
+    assert "checked" in out.split('name="city_nyc"')[1][:40]
+    assert "covers your location" in out
+    assert 'id="save-form"' in out  # provider cards render for the enabled city
+
+
+def test_cities_toggle_off_gates_provider_cards_and_shows_nudge():
+    # NYC present but turned off (explicit empty value => no packs).
+    state = {**NYC_STATE, "JASPER_TRANSIT_CITIES": ""}
+    out = _render(state)
+    assert 'id="cities-form"' in out
+    # Toggle renders UNchecked, and the geocode-driven "available here" nudge
+    # invites turning it on.
+    assert "checked" not in out.split('name="city_nyc"')[1][:40]
+    assert "available at your location" in out
+    # With the only covering city off, no provider cards / save-form render —
+    # the page stays honest (a visible card means its tools register).
+    assert 'id="save-form"' not in out
+
+
+def test_cities_section_carries_csrf(stub_gbfs):
+    out = _render(NYC_STATE)
+    form = out.split('id="cities-form"')[1].split("</form>")[0]
+    assert "csrf_token" in form
+
+
+def test_post_cities_enables_pack_writes_env_and_restarts(tmp_path, monkeypatch):
+    restarts: list[None] = []
+    monkeypatch.setattr(
+        transit_setup, "restart_voice_daemon", lambda: restarts.append(None),
+    )
+    # Seed coords so the round-trip preserves them alongside the new toggle.
+    transit_setup.write_env_file(
+        str(tmp_path / "transit.env"), dict(NYC_STATE), mode=0o640,
+    )
+    token = "z" * 64
+    body = ("csrf_token=" + token + "&city_nyc=on").encode()
+    h = _FakeHandler("/cities", body=body, cookies="jts_csrf=" + token)
+    _bound_handler(tmp_path, h).do_POST()
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    assert restarts == [None]
+    saved = transit_setup._load_state(str(tmp_path / "transit.env"))
+    assert saved["JASPER_TRANSIT_CITIES"] == "nyc"
+    assert saved["JASPER_TRANSIT_LAT"] == NYC_STATE["JASPER_TRANSIT_LAT"]  # coords kept
+
+
+def test_post_cities_uncheck_all_writes_empty_value(tmp_path, monkeypatch):
+    # Unchecking every city must persist an EXPLICIT empty value (present, not
+    # absent) so enabled_pack_ids reads it as "no cities" rather than falling
+    # back to the absent-key "all" default. This is the toggle's whole point.
+    monkeypatch.setattr(transit_setup, "restart_voice_daemon", lambda: None)
+    transit_setup.write_env_file(
+        str(tmp_path / "transit.env"),
+        {**NYC_STATE, "JASPER_TRANSIT_CITIES": "nyc"},
+        mode=0o640,
+    )
+    token = "z" * 64
+    body = ("csrf_token=" + token).encode()  # no city_* fields => all off
+    h = _FakeHandler("/cities", body=body, cookies="jts_csrf=" + token)
+    _bound_handler(tmp_path, h).do_POST()
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    saved = transit_setup._load_state(str(tmp_path / "transit.env"))
+    assert saved["JASPER_TRANSIT_CITIES"] == ""
+    # And that empty value resolves to zero enabled packs.
+    from jasper import transit
+    assert transit.enabled_pack_ids(saved) == ()
+
+
+def test_post_cities_rejects_bad_csrf(tmp_path, monkeypatch):
+    restarts: list[None] = []
+    monkeypatch.setattr(
+        transit_setup, "restart_voice_daemon", lambda: restarts.append(None),
+    )
+    body = b"csrf_token=" + b"a" * 64 + b"&city_nyc=on"
+    h = _FakeHandler("/cities", body=body, cookies="jts_csrf=" + "b" * 64)
+    _bound_handler(tmp_path, h).do_POST()
+    assert h.status == int(http.HTTPStatus.FORBIDDEN)
+    assert restarts == []
