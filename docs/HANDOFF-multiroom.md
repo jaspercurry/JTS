@@ -1102,10 +1102,16 @@ front-run the complexity nor forget where it belongs.
 
 ## 9. Open questions for the project owner
 
-1. **Whole-house spoken announcements.** V1 = leader-local TTS only
-   (the assistant answers where addressed; room music keeps playing).
-   Time-synced whole-house announcements need TTS on the buffered
-   path — a real product call.
+1. **Whole-house spoken announcements — DECIDED 2026-06-09: leader-local
+   only.** The owner confirmed the assistant replies on the speaker it was
+   addressed from, NOT house-wide (the Sonos/Alexa default; room music keeps
+   playing elsewhere). This is now a *requirement*, not a maybe — it is the
+   entire reason inv-2 needs the `jasper-fanin` music-only output (followers
+   get music with the leader's TTS held back; see §2 "inv-2 realization"). Had
+   whole-house announcements been wanted instead, the leader would just stream
+   its full mix and the TTS-separation work would vanish — so this decision is
+   load-bearing for the inv-2 build. Time-synced whole-house announcements
+   (TTS on the buffered path) remain a future, separate feature if ever wanted.
 2. **AirPlay 2 sync expectation.** Route AirPlay through the
    Snapcast FIFO like every source (uniform, simpler), giving up
    shairport/nqptp's free PTP sample-alignment? A native PTP
