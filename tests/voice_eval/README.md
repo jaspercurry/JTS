@@ -130,6 +130,15 @@ money — see cost notice above).
 | `test_weather.py::test_sunset_today` | "what time does the sun set today?" | `get_weather` | `oracles.weather_sunset` (Open-Meteo) | none | **fails until sunset fix lands** |
 | `test_time.py::test_what_time_is_it` | "what time is it?" | `get_current_time` | `oracles.time_now_local()` | none | **fails until time tool lands** |
 | `test_spotify.py::test_play_owned_playlist_covers` | "play my Covers playlist" | `spotify_play` | shape check (resolved name contains "cover") | **starts playback on the speaker** | **fails until pagination lands** |
+| `test_volume.py::test_set_volume_absolute` | "set the volume to 20 percent" | `set_volume` | coordinator level matches applied % | **changes speaker volume** (restored in `finally`) | expected pass (on-Pi) |
+| `test_volume.py::test_get_volume_reports_current_level` | "what's the volume?" | `get_volume` | spoken % matches seeded level | **changes speaker volume** (restored in `finally`) | expected pass (on-Pi) |
+| `test_calendar.py::test_calendar_today_summary` | "what's on my calendar today?" | `calendar_today_summary` | shape check (count == len(events)) | none | skips unless Google linked |
+| `test_gmail.py::test_gmail_read_thread_uses_prior_id` | "any new emails?" → "read me the first one" | `gmail_unread_summary` → `gmail_read_thread` | thread_id came from the summary, not fabricated | none | skips unless Google linked |
+
+(The table lists representative scenarios per file, not every
+function — `test_volume.py` also covers `adjust_volume` + mute/unmute,
+`test_calendar.py` covers `calendar_upcoming`, and `test_gmail.py`
+covers `gmail_unread_summary`.)
 
 The "fails until X lands" scenarios are deliberate. They document
 the bug in test form *now*, fail *now*, and turn green when the
