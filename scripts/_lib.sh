@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared header for laptop-side scripts. Source from a script with:
 #
 #   . "$(dirname "$0")/_lib.sh"
