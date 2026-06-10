@@ -6,6 +6,7 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -13,6 +14,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 from ...config import Config
+from ...mux_mode_persistence import DEFAULT_PATH as _MUX_MODE_DEFAULT_PATH
+from ...music_sources import MUSIC_SOURCES, Source
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -750,3 +753,61 @@ def check_renderer_device_resolvable() -> CheckResult:
     if incomplete:
         detail += " (skipped: " + "; ".join(incomplete) + ")"
     return CheckResult(label, "ok", detail)
+
+
+def _classify_mux_mode(path: Path) -> CheckResult:
+    """Classify the persisted jasper-mux source-selection mode at `path`.
+
+    Split from the check so tests can point it at a tmp file. Granular
+    on purpose — the runtime reader (`mux_mode_persistence.
+    read_manual_source`) deliberately collapses missing/corrupt/unknown
+    to None (fail-open to auto), which is right for the daemon but means
+    a household's lost pin is silent. The doctor line tells the operator
+    WHICH state the file is in."""
+    name = "mux mode state"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Normal: auto mode never persisted a pin, or fresh install.
+        return CheckResult(name, "ok", "auto (no source pin persisted)")
+    except OSError as e:
+        return CheckResult(
+            name, "warn",
+            f"unreadable ({e.__class__.__name__}) — mux falls back to "
+            f"auto. Check permissions on {path}",
+        )
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return CheckResult(
+            name, "warn",
+            f"corrupt — mux falls back to auto (a manual source pin, if "
+            f"one was set, is lost). Delete to clear: {path}",
+        )
+    if not isinstance(data, dict) or data.get("mode") != "manual":
+        return CheckResult(name, "ok", "auto (latest-source-wins)")
+    label = data.get("selected_source")
+    try:
+        source = Source(label)
+    except (TypeError, ValueError):
+        source = None
+    if source is None or source not in MUSIC_SOURCES:
+        return CheckResult(
+            name, "warn",
+            f"manual pin to unknown source {label!r} — ignored, mux runs "
+            f"auto. Re-pin via the landing page or delete {path}",
+        )
+    return CheckResult(name, "ok", f"manual pin: {source.value}")
+
+
+@doctor_check(order=76, group="renderers")
+def check_mux_mode_state() -> CheckResult:
+    """Surface the persisted source-selection mode (auto vs manual pin).
+
+    A corrupt file or a pin to a source that no longer exists is
+    fail-open at runtime (mux silently runs auto), so this line is the
+    only place an operator learns the household's pin was dropped."""
+    path = Path(
+        os.environ.get("JASPER_MUX_MODE_STATE_PATH", _MUX_MODE_DEFAULT_PATH),
+    )
+    return _classify_mux_mode(path)

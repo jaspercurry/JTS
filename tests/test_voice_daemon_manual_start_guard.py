@@ -100,7 +100,9 @@ async def test_manual_start_refused_when_measurement_active(caplog):
     assert result == "MEASURING"
     _assert_no_turn_no_duck(wl)
     assert "event=session.manual_refused" in caplog.text
-    assert "reason=measurement" in caplog.text
+    # Exact reason string shared with the wake path's late-cancel log,
+    # so one query covers both refusal surfaces.
+    assert "reason=measurement_active" in caplog.text
 
 
 async def test_manual_start_begins_turn_when_unguarded():

@@ -363,6 +363,10 @@ thinks the system is healthy.
   Off via `JASPER_SYSTEM_SUPERVISOR=disabled`.
   Surfaced on `/state` under `resilience.system_supervisor` and
   via structured `event=system_supervisor.*` journal lines.
+  `jasper-doctor` surfaces the persisted state file too
+  (`supervisor reboot state`): missing → ok (never rebooted),
+  corrupt or future-dated beyond NTP skew → warn, since both are
+  silent fail-open at runtime.
 
 **Stage 1 + T5.1 + T5.2 now together cover the 2026-05-23 incident
 shape end-to-end**:
