@@ -175,6 +175,13 @@ Run for real from a Pi-local checkout:
    - Add Pi boot/config changes when needed: USB gadget dtoverlay,
      memory cgroup/PSI kernel args, MGLRU tmpfiles, sysctl values,
      and rpi-swap zram sizing.
+   - Disable WiFi power-save on the active wlan0 connection (nmcli)
+     so AirPlay's unicast UDP stream avoids radio-sleep stalls.
+   - Remove stale legacy audio-topology state (audio_topology.env,
+     dmix-era asound.conf backups); fan-in is the only topology.
+   - Remove legacy self-signed HTTPS artifacts (the old
+     /etc/nginx/ssl/jasper.* cert and previous-generation nginx
+     site files) superseded by the GitHub Pages OAuth bounce page.
 
 5. Services and live actions
    - Reload udev and systemd.
