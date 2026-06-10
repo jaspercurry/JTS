@@ -326,6 +326,66 @@ def test_spend_cap_multiplier_floored_at_one_never_disables(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# SpendCap disabled state — JASPER_DAILY_SPEND_CAP_USD=0
+# ---------------------------------------------------------------------------
+def test_spend_cap_zero_means_disabled_never_blocks(tmp_path: Path, caplog):
+    """cap_usd=0 is the documented disable value (Config validation
+    text, .env.example, the /voice wizard). It must allow every wake —
+    the pre-fix `padded < 0.0` comparison blocked all of them. The
+    disabled posture is logged once at construction, never per-wake."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    sid = store.open_session()
+    store.close_session(sid, input_tokens=0, output_tokens=50_000)  # $0.60
+
+    with caplog.at_level("WARNING", logger="jasper.usage"):
+        cap = SpendCap(store, cap_usd=0.0, safety_multiplier=1.25)
+    assert cap.disabled is True
+    assert cap.allowed() is True
+    # remaining is meaningless without a ceiling; display surfaces
+    # branch on `disabled` — the value itself stays a harmless 0.0.
+    assert cap.remaining_usd() == 0.0
+    # Logged exactly once, at construction.
+    disabled_lines = [
+        r for r in caplog.records if "event=spend_cap.disabled" in r.getMessage()
+    ]
+    assert len(disabled_lines) == 1
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="jasper.usage"):
+        for _ in range(5):  # per-wake calls must not re-log
+            assert cap.allowed() is True
+    assert not [
+        r for r in caplog.records if "event=spend_cap.disabled" in r.getMessage()
+    ]
+
+
+def test_spend_cap_negative_treated_as_disabled(tmp_path: Path):
+    """Config.from_env rejects negatives, but a directly-constructed
+    SpendCap (doctor with a hand-built Config, tests) should not turn a
+    nonsensical negative ceiling into a permanent block — it degrades to
+    the same disabled posture as 0."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    cap = SpendCap(store, cap_usd=-1.0)
+    assert cap.disabled is True
+    assert cap.allowed() is True
+
+
+def test_spend_cap_tiny_positive_still_enforces(tmp_path: Path):
+    """The disabled carve-out is exactly cap <= 0 — any positive cap,
+    however small, keeps the breaker armed."""
+    db = tmp_path / "usage.db"
+    store = UsageStore(str(db))
+    cap = SpendCap(store, cap_usd=0.0001)
+    assert cap.disabled is False
+    assert cap.allowed() is True  # nothing spent yet
+    sid = store.open_session()
+    store.close_session(sid, input_tokens=0, output_tokens=50_000)  # $0.60
+    assert cap.allowed() is False
+    assert cap.remaining_usd() == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Optional pricing.json override (model-ID keyed)
 # ---------------------------------------------------------------------------
 def test_pricing_override_missing_file_uses_defaults():
