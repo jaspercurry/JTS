@@ -37,7 +37,11 @@ no longer reads `JASPER_OUTPUTD_SNAPFIFO_PATH` and the reconciler's tap env
 is inert. The honest state is gated on the single source of truth
 [`reconcile.SNAPFIFO_PRODUCER_WIRED`](../jasper/multiroom/reconcile.py)
 (`False` today) — `/state`, `jasper-doctor`, and this doc all read it, so they
-cannot drift into a false "streaming." The **target architecture is now settled** — see
+cannot drift into a false "streaming." **That producer machinery (`SnapfifoSink` +
+the flag + the outputd-tap reconciler limb) is now superseded BY DESIGN, not merely
+unwired:** the canonical design has *CamillaDSP*, not outputd, feed the pipe, so it's
+a cleanup item — the flag will never flip `True`, it gets removed (§2 "Stranded by
+this design"). The **target architecture is now settled** — see
 **"Canonical signal flow"** (§2, decided 2026-06-10, research-grounded): the leader
 bakes per-channel correction in its ONE CamillaDSP, streams a single stereo stream,
 and DUMB receivers channel-drop; voice stays leader-local (no second CamillaDSP —
@@ -467,6 +471,43 @@ final output owner. Group-wide *announcements* (a timer ringing everywhere at on
 MAY later ride the buffered stream ducked (MA's model) — a separate feature, not
 conversational TTS. Followers never receive TTS.
 
+**Two invariants the build MUST hold (added 2026-06-10 after adversarial design
+review — these are the design, not details):**
+
+- **inv-A — the AEC reference must stay `== final DAC content`, TTS-inclusive,
+  post-round-trip.** JTS hears "Hey Jarvis" *over* music by subtracting its own
+  output from the mic, using the exact bytes outputd hands the DAC as the AEC
+  reference (`ref_outputs.publish(&content_buf)` in `run_alsa`, fed to BOTH the
+  software AEC3 UDP monitor AND the **chip-AEC** XVF USB-IN — the recommended
+  profile). The leader design delays the music (round-trip) and splits voice onto a
+  separate path, so the reference is correct only if, on a leader, the tap stays at
+  outputd's **final post-mix** buffer containing **(i)** the round-tripped,
+  snapclient-paced music AND **(ii)** the leader's TTS, summed **before** the
+  `publish()` tap. If TTS mixes *after* the tap, the speaker's own voice bleeds into
+  the mic and false-fires wake / breaks barge-in (the `tts_bleed` class).
+  **Consequence:** routing leader TTS to outputd is a **REBUILD** of the outputd TTS
+  mixer + the barge-in `audio_played_ms` ledger that 9102e13 retired (consolidated
+  into fanin) — net-new Rust in a reboot-on-fail daemon, not a flag flip.
+  **HARDWARE GATE (blocks the self-loop increment):** measure chip-AEC ERLE on a
+  *bonded leader playing music through the round-trip* — the Snapcast-stuffed clock
+  now drives the reference, and AEC3's adaptive filter + the XVF USB PLL both assume
+  a stable reference↔mic clock relationship. If ERLE collapses, the design changes:
+  either tap the reference pre-round-trip for music (accepting reference-vs-playback
+  sample skew) or accept "no wake-during-music on a bonded leader." No free lunch —
+  the build picks one and owns it. *(Highest risk surfaced by review.)*
+
+- **inv-B — the leader self-loop must NOT be a single point of failure for the
+  leader's OWN music.** The leader plays its own channel via a localhost snapclient;
+  if that client / snapserver / the pipe stalls (routine ALSA underruns on a Pi) the
+  brainy speaker would go **silent on its own music** — even "bonded but alone."
+  That breaks the no-silent-failure rule for the *leader itself*. Required: when the
+  self-loop is unhealthy for N periods, outputd **falls back to the direct fanin
+  music path** (un-synced) rather than silence — a momentarily-unsynced pair beats a
+  silent leader. This **inverts inv-1** for the leader's own playback: a starved
+  FIFO reading as silence is correct for a *follower*, NOT for the brainy leader
+  hearing itself. Surface as a cue + `/state` flag + dashboard card; §7's failure
+  table gains a "leader self-loop degraded" row.
+
 **Per-speaker correction of a dumb follower — PEQ, open-loop, fast-follow.** To
 correct the follower's seat, the leader holds the follower's measured room profile
 and bakes it into the right channel (Roon's per-zone model). Measurement is
@@ -493,21 +534,58 @@ component numbers are from research, not a measured stack.
   `fs.protected_fifos` if the FIFO lives in a world-writable dir.
 - Pin **48 kHz / S16** end-to-end (snd-aloop locks format/rate on first open).
 
-**Increment plan (each its own PR + on-pair validation):**
-- **Increment 1 — DONE** (`JASPER_FANIN_MUSIC_OUTPUT_PCM`): the music/voice split.
-  *Repurposed by this design* — its music-only signal feeds the leader's pre-stream
-  CamillaDSP (not snapserver directly); the leader's DAC is fed by the round-trip
-  and TTS re-joins at outputd. So Increment 1 is the foundation; what *consumes* it
-  is Increment 2.
-- **Increment 2a — followers play (multi-room).** Reposition the leader's CamillaDSP
-  pre-stream (correct music-only → pipe → snapserver); stand up snapserver + the
-  follower snapclient + the `ttable` channel-drop. The follower audibly plays the
-  leader's corrected channel. First acoustic-sync test lives here.
-- **Increment 2b — leader self-loops (tight pair).** Leader runs its own
-  `-h 127.0.0.1` snapclient + `ttable` drop → outputd; move the leader's TTS mix to
-  outputd. Result: a sample-locked L/R pair.
-- **Increment 3 — per-follower calibration (fast-follow).** Open-loop sweep → PEQ →
-  bake into the follower's channel.
+**Increment plan (RE-SCOPED 2026-06-10 after review — hardware-free / non-silencing
+slices FIRST; nothing that can silence the leader ships before inv-A's hardware
+gate). The earlier "2a = followers play" was NOT an honest slice: repointing the
+leader's CamillaDSP to a pipe leaves its DAC with nothing to read → a silent leader
+until the round-trip exists, so 2a secretly dragged in the outputd rework.**
+- **Increment 1 — DONE** (`JASPER_FANIN_MUSIC_OUTPUT_PCM`): the music/voice split,
+  the foundation. *Repurposed* — its music-only signal feeds the leader's pre-stream
+  CamillaDSP, not snapserver directly.
+- **Increment 2 — `target_channels` per-channel correction** (pure Python, testable
+  now, no hardware). `_emit_pipeline` (the correction + sound generators) today bakes
+  ONE mono PEQ onto both channels; add the per-side axis so the leader can bake
+  L-for-its-seat / R-for-the-follower-seat in one config. Independently useful; zero
+  audio-path activation.
+- **Increment 3 — outputd second content-input (FIFO reader), off by default**
+  (pure Rust). The DAC loop optionally reads a `dac_content` FIFO (the round-trip
+  lane), unit-tested with a temp FIFO like `snapfifo.rs`. No activation until the
+  reconciler wires it. (`OUTPUTD_DAC_CONTENT_FIFO` is already a reserved constant.)
+- **Increment 4 — acoustic-sync confirmation** on a throwaway pipe→snapserver→two
+  snapclients path. The §8 spike proved resources + the software proxy; the
+  *acoustic* L/R alignment is still unproven. Validates the engine before any daemon
+  repositioning.
+- **Increment 5 — the big slice: leader CamillaDSP→pipe + the round-trip + the
+  outputd TTS rebuild** (the part that can silence the leader). **Gated on inv-A's
+  hardware ERLE pass AND inv-B's fallback-to-direct.** Multi-daemon: CamillaDSP
+  pipe-playback config + restart-on-role-change, the round-trip FIFO + snapclient,
+  the rebuilt outputd TTS mixer + barge-in ledger, the reconciler role wiring.
+- **Increment 6 — per-follower calibration (fast-follow), SAME-ROOM pairs only.**
+  Open-loop sweep → PEQ → bake into the follower's channel. A multi-room satellite in
+  a *different* room needs its own correction for **correctness** (the leader's room
+  curve is wrong there) — ship those *flat* + a "calibrate me" nudge until this
+  lands; do NOT apply the wrong-room curve.
+
+**Stranded by this design — retire / repurpose, NOT "pending wiring":** the shipped
+`SnapfifoSink`, `SNAPFIFO_PRODUCER_WIRED`, and the outputd-tap reconciler limb all
+assume **outputd** feeds the pipe; the canonical design has **CamillaDSP** feed it,
+so that machinery is dead **by design** (not "not yet wired" — §0 corrected to say
+so). `channel_split.py` / `member_config.py` / their doctor checks were built for the
+superseded "each member self-corrects post-snapclient" model; under dumb receivers
+they are repurposed to "leader bakes both channels" (the Increment 2 `target_channels`
+work) or removed. snd-aloop substreams are **already exhausted (8/8)**, so the
+round-trip uses a raw FIFO (which is why Increment 3 adds the outputd FIFO reader),
+not a new loopback.
+
+**2.1 / sub — the channel-count call (resolve before 2.1, which §1 scopes into V1):**
+a single *stereo* stream cannot carry L+R+sub. The sync-correct answer is a **single
+3-channel stream** (L/R/LFE, each endpoint `ttable`-drops its channel) — which means
+the "pin 48 k/S16 **stereo**" line above generalises to "one rate, channels = bond
+channel count," and outputd's stereo AEC-reference contract must handle 3-ch. A
+**second stream for the sub is rejected**: separate Snapcast streams drift
+independently (hundreds of ms under WiFi jitter), and "sub sync is loose" covers
+~10 ms phase, not inter-stream drift. So the **stereo pair (2-ch) is the first
+deliverable; 2.1 is the 3-ch generalisation**, not a parallel stream.
 
 **Sources:** snapcast#747 (channel-drop is the way; separate streams don't sync) ·
 Music Assistant Snapcast provider (Left/Right/Mono toggle) · CamillaDSP docs
@@ -868,6 +946,23 @@ member." The leader calls each member's existing `POST /volume/set
 {percent}` on `:8780`. No per-speaker `trim` composition algebra in
 V1 — a bonded set shares one level.
 
+> **REVISED 2026-06-10 after review — the canonical design moves where volume
+> lives.** §5 above assumed every member is brainy (each sets its own CamillaDSP
+> `master_gain`). Under the canonical design that breaks two ways: a **dumb follower
+> has no CamillaDSP** to set, and on the leader `master_gain` is now **pre-buffer**
+> (CamillaDSP-A bakes the stream), so a "louder" lags ~1 buffer AND is baked
+> identically into the shared stream. Resolution: **(1)** the shared room/pair level
+> stays `master_gain` on the leader (pre-stream — every member inherits it; accept
+> the ~buffer lag, it's music, not voice); **(2)** any **per-member / per-room trim**
+> (and *all* follower volume) moves to **Snapcast per-client volume**
+> (`Client.SetVolume`, post-buffer, works for a DSP-less endpoint — §3 already wires
+> the RPC), NOT `master_gain`; **(3)** a dumb follower never receives a
+> `POST /volume/set` (no master_gain to set) — its level is Snapcast client volume
+> only. The asymmetric-room balance trim flagged below therefore lives in Snapcast
+> client volume, not Camilla. The dial's live gauge will lead the audible change by
+> up to a buffer on the shared level — acceptable for a knob driving music, but note
+> it.
+
 Hard constraints (from the volume subsystem; see
 [HANDOFF-volume.md](HANDOFF-volume.md)):
 
@@ -916,6 +1011,7 @@ the buffered path, defeating its purpose — and is **open question
 |---|---|---|
 | **Leader crash / power loss** | Room stops syncing. A *brainy* follower degrades to standalone local playback if it has its own source; otherwise it goes silent **with a cue + `/state` flag + dashboard card** — never silent-deaf. A *dumb* follower goes silent (correct). | No election. Boot reconciler modeled on `jasper-wifi-guardian`, incl. the stash-stale "don't stomp a manual regroup" branch. |
 | **Follower drop** (unplug, power-cycle) | That channel/sub goes silent; the leader keeps playing its own share. On return the follower **self-rejoins on boot** to its declared leader. | `snapclient` rebuffer + boot reconciler. Absence shown on `/state`, doctor, dashboard. |
+| **Leader self-loop degraded** (its localhost snapclient / snapserver / pipe stalls — routine Pi ALSA underrun) | The leader **falls back to the DIRECT fanin music path** (un-synced) rather than going silent on its OWN music — a momentarily-unsynced pair beats a silent brainy speaker. Cue + `/state` flag + dashboard card. | **inv-B** (§2 canonical): outputd detects an unhealthy round-trip for N periods and switches its DAC source to the direct fanin music lane, recovering to the synced lane when the self-loop is healthy again. The inverse of inv-1 — silence is OK for a follower, NOT for the leader hearing itself. |
 | **WiFi blip** | Buffer rides short blips; sustained loss → follower degrades + surfaces the failure. | TCP retransmit + buffer depth (the jitter lever — §2). WiFi is the supported transport; no Ethernet requirement. |
 | **Solo (N=1), grouping off** | **Zero cost, verified.** No `snapserver`, no `snapclient`, no FIFO consumer registered (outputd byte-identical to today), no advert, no thread. | Mirrors peering `mode=off`. |
 
@@ -1362,7 +1458,26 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-10 (CANONICAL ARCHITECTURE decided + recorded, after a
+Last verified: 2026-06-10 (CANONICAL ARCHITECTURE made BUILD-READY after a two-agent
+adversarial design review (codebase-fit + design). The review confirmed the
+high-level architecture but surfaced real issues the "DECIDED" doc had not
+confronted; all are now recorded. Added **inv-A** (the AEC reference must stay
+`== final DAC content`, TTS-inclusive, post-round-trip — else wake-during-music
+breaks; routing leader TTS to outputd is a REBUILD of the retired outputd TTS mixer +
+barge-in ledger, and chip-AEC ERLE on a bonded leader is a HARDWARE GATE) and
+**inv-B** (the leader self-loop must fall back to the direct fanin path, never go
+silent on its own music — added a §7 failure-table row). Re-scoped the increments:
+the old "2a = followers play" was dishonest (it silences the leader); the new order
+puts hardware-free / non-silencing slices first (`target_channels` per-channel
+correction → outputd FIFO reader → acoustic-sync spike) before the leader
+CamillaDSP→pipe + round-trip + TTS-rebuild slice, which is gated on inv-A/inv-B.
+Recorded that the shipped `SnapfifoSink`/`SNAPFIFO_PRODUCER_WIRED`/outputd-tap limb
+and `channel_split.py`/`member_config.py` are superseded BY DESIGN (CamillaDSP feeds
+the pipe, dumb receivers) — retire/repurpose, not "pending wiring" (§0 + §2 updated).
+§5 volume: per-member/follower volume moves to Snapcast per-client volume (a dumb
+follower has no master_gain; the leader's is now pre-buffer). §2 records the 2.1 call:
+a single 3-channel stream, NOT a second stream (which drifts). Doc-only; no code
+changed. Earlier 2026-06-10 (CANONICAL ARCHITECTURE decided + recorded, after a
 second prior-art research pass on implementation mechanics — Snapcast stereo-pair
 channel routing, CamillaDSP↔Snapcast chaining, open-loop satellite calibration —
 and the P0 sync spike running on hardware (jts3↔jts: ~15 MB Pss, ~0.2 % CPU, sync
