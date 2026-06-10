@@ -8,10 +8,15 @@ coordinator that records calls.
 from __future__ import annotations
 
 import json
+import re
 import threading
+import time
 import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
@@ -2188,3 +2193,85 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
     assert isinstance(router.clients, dict)
     assert "jasper" in router.clients
     assert router.statuses[0].state == ACCOUNT_OK
+
+
+# ---------------------------------------------------------------------------
+# Audit C2 — systemd watchdog plumbing: the HTTP accept loop must drive
+# the Heartbeat progress sentinel so a wedged loop stops the WATCHDOG=1
+# pats (Type=notify + WatchdogSec in the unit).
+# ---------------------------------------------------------------------------
+
+
+class _StubHeartbeat:
+    def __init__(self):
+        self.bumps = 0
+
+    def bump(self):
+        self.bumps += 1
+
+
+def _make_loopback_control_server():
+    from http.server import BaseHTTPRequestHandler
+
+    from jasper.control.server import ControlHTTPServer
+
+    return ControlHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+
+
+def test_service_actions_bumps_attached_heartbeat():
+    server = _make_loopback_control_server()
+    try:
+        hb = _StubHeartbeat()
+        server.heartbeat = hb
+        server.service_actions()
+        server.service_actions()
+        assert hb.bumps == 2
+    finally:
+        server.server_close()
+
+
+def test_service_actions_without_heartbeat_is_a_noop():
+    """Tests / dev runs construct the server without a heartbeat —
+    service_actions must not require one."""
+    server = _make_loopback_control_server()
+    try:
+        server.service_actions()  # must not raise
+    finally:
+        server.server_close()
+
+
+def test_serve_forever_loop_drives_heartbeat_bumps():
+    """End-to-end plumbing: serve_forever's poll loop (the thing
+    WatchdogSec is guarding) is what produces progress bumps — no
+    requests needed. A wedged loop therefore stops bumping by
+    construction."""
+    import threading
+
+    server = _make_loopback_control_server()
+    hb = _StubHeartbeat()
+    server.heartbeat = hb
+    t = threading.Thread(
+        target=lambda: server.serve_forever(poll_interval=0.01),
+        daemon=True,
+    )
+    t.start()
+    try:
+        deadline = time.time() + 2.0
+        while hb.bumps < 3 and time.time() < deadline:
+            time.sleep(0.01)
+        assert hb.bumps >= 3
+    finally:
+        server.shutdown()
+        t.join(timeout=2.0)
+        server.server_close()
+
+
+def test_control_unit_declares_notify_watchdog():
+    """The unit file half of C2: Type=notify + WatchdogSec must stay
+    paired with the in-process heartbeat (either one alone is broken —
+    notify without pings hangs startup; pings without notify are
+    ignored)."""
+    unit = (REPO_ROOT / "deploy" / "systemd" / "jasper-control.service").read_text()
+    assert "Type=notify" in unit
+    assert "Type=simple" not in unit
+    assert re.search(r"^WatchdogSec=\d+s?$", unit, re.M)

@@ -2848,6 +2848,32 @@ def _make_handler(
     return Handler
 
 
+class ControlHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer whose accept loop drives the systemd watchdog.
+
+    `service_actions()` runs on every `serve_forever()` poll iteration
+    (~0.5 s cadence) **in the accept-loop thread itself**, so bumping the
+    heartbeat here ties `WATCHDOG=1` to the loop actually spinning: if
+    the accept loop wedges (blocked selector, interpreter deadlock), the
+    bumps stop, `jasper.watchdog.Heartbeat`'s progress sentinel goes
+    stale, pats stop, and systemd's `WatchdogSec=` revives us with a
+    fresh process. Request handlers run on worker threads and
+    intentionally don't gate the heartbeat — a slow probe must not look
+    like a dead daemon. Same Tier 1 mechanism as jasper-voice
+    (Type=notify + sentinel-guarded `WATCHDOG=1`).
+
+    `heartbeat` stays None in tests/dev so the server runs standalone.
+    """
+
+    heartbeat: Any = None
+
+    def service_actions(self) -> None:
+        super().service_actions()
+        hb = self.heartbeat
+        if hb is not None:
+            hb.bump()
+
+
 def build_server(
     host: str,
     port: int,
@@ -2856,8 +2882,8 @@ def build_server(
     voice_socket_path: str = "/run/jasper/voice.sock",
     sampler: Any = None,
     airplay_health_sampler: Any = None,
-) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(
+) -> ControlHTTPServer:
+    return ControlHTTPServer(
         (host, port),
         _make_handler(
             camilla_host,
@@ -3017,10 +3043,22 @@ def main(argv: list[str] | None = None) -> int:
         args.dial_log_host, args.dial_log_port,
         args.voice_socket,
     )
+    # Tier 1 — systemd watchdog (Type=notify + WatchdogSec in the unit).
+    # READY=1 goes out here; serve_forever()'s poll loop bumps the
+    # progress sentinel via ControlHTTPServer.service_actions, so a
+    # wedged accept loop stops the WATCHDOG=1 pats and systemd restarts
+    # us. No-ops outside systemd (NOTIFY_SOCKET unset). Same Heartbeat
+    # helper jasper-voice uses (jasper/watchdog.py).
+    from ..watchdog import Heartbeat
+    heartbeat = Heartbeat()
+    server.heartbeat = heartbeat
+    heartbeat.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         return 0
+    finally:
+        heartbeat.stop()
     return 0
 
 
