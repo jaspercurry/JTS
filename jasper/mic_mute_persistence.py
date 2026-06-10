@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 from pathlib import Path
+
+from .atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -73,21 +74,9 @@ def write_mic_muted(path: str | os.PathLike, muted: bool) -> None:
     p = Path(path)
     body = f"{_KEY}={1 if muted else 0}\n"
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            prefix=".mic_mute.", suffix=".tmp", dir=str(p.parent),
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(body)
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, p)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        # mode 0644: jasper-doctor (and any non-root reader) inspects
+        # this file; same mode the hand-rolled writer used pre-atomic_io.
+        atomic_write_text(p, body, mode=0o644)
     except OSError as e:
         logger.warning(
             "mic mute persistence: write to %s failed (%s)", p, e,

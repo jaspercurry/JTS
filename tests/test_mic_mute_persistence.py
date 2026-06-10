@@ -138,7 +138,7 @@ def test_write_creates_parent_directory(tmp_path):
 
 
 def test_write_failure_is_logged_not_raised(tmp_path, caplog, monkeypatch):
-    # Simulate an OSError on tempfile creation. The write should
+    # Simulate an OSError from the atomic writer. The write should
     # log a warning rather than propagate — the mute toggle must
     # not crash when /var/lib/jasper is unwritable for whatever
     # reason.
@@ -147,7 +147,7 @@ def test_write_failure_is_logged_not_raised(tmp_path, caplog, monkeypatch):
     def boom(*args, **kwargs):
         raise OSError("simulated permission denied")
 
-    monkeypatch.setattr(mod.tempfile, "mkstemp", boom)
+    monkeypatch.setattr(mod, "atomic_write_text", boom)
     with caplog.at_level("WARNING"):
         write_mic_muted(_path(tmp_path), True)
     assert any(
