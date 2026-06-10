@@ -37,7 +37,15 @@ def read_state(path: str = location_state.TRANSIT_FILE) -> dict[str, Any]:
     dashboard can render the toggle state without cross-referencing two
     lists.
     """
-    enabled = set(enabled_pack_ids(parse_env_file(path)))
+    try:
+        env = parse_env_file(path)
+    except Exception:  # noqa: BLE001
+        # parse_env_file swallows OSError but not e.g. UnicodeDecodeError on a
+        # corrupt/non-UTF-8 file. transit.env is always ASCII in practice, but
+        # honour the "never raises" contract: a bad file reads as absent ->
+        # the legacy all-enabled default, never a crash.
+        env = {}
+    enabled = set(enabled_pack_ids(env))
     return {
         "packs": [
             {"id": pack.id, "label": pack.label, "enabled": pack.id in enabled}

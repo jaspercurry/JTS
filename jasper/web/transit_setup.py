@@ -1322,10 +1322,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def _handle_cities(self, form: dict[str, str]) -> None:
             current = _load_state(cfg["state_path"])
             new = _apply_cities(form, current)
-            # `new` always carries at least the coordinate scaffolding (the
-            # cities form only renders once coords exist) plus the explicit
-            # JASPER_TRANSIT_CITIES value, so it's never empty — write, never
-            # delete.
+            # _apply_cities always sets JASPER_TRANSIT_CITIES (possibly empty),
+            # so `new` is never an empty dict — write, never delete. (Coords are
+            # normally present too, since the cities form only renders with
+            # coords; a hand-crafted coords-less POST just persists the toggle,
+            # which is harmless.)
             try:
                 write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
             except OSError as e:

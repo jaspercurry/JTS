@@ -12,18 +12,21 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from jasper.transit import (
     CITY_PACKS,
     NYC_PACK,
     REGISTRY,
     TRANSIT_CITIES_ENV,
     ActiveTransit,
+    CityPack,
     active_transit_tools,
     enabled_pack_ids,
     enabled_packs,
-    pack_by_id,
     pack_for_provider,
 )
+from jasper.transit import _derive_registry
 
 
 def test_nyc_pack_bundles_the_three_providers_in_order():
@@ -36,9 +39,13 @@ def test_registry_is_derived_from_packs_single_source():
     assert {p.id for p in REGISTRY} == {"nyc_subway", "nyc_bus", "citibike"}
 
 
-def test_pack_by_id():
-    assert pack_by_id("nyc") is NYC_PACK
-    assert pack_by_id("berlin") is None
+def test_derive_registry_rejects_duplicate_provider_ids():
+    # Provider id keys by_id / wizard dispatch / install migration / gating —
+    # a duplicate across packs would silently shadow, so it must fail LOUD at
+    # derivation time, not ship a first-wins shadow.
+    dup = CityPack(id="dup", label="Dup", providers=(NYC_PACK.providers[0],))
+    with pytest.raises(ValueError, match="duplicate transit provider id"):
+        _derive_registry((NYC_PACK, dup))  # nyc_subway appears in both
 
 
 def test_pack_for_provider_reverse_lookup():
@@ -126,6 +133,61 @@ def test_active_transit_tools_gates_on_both_config_and_pack():
     # same config, NYC pack DISABLED -> the toggle gates: no tools at all
     result = active_transit_tools({"JASPER_TRANSIT_CITIES": "berlin"}, cfg)
     assert result.tools == [] and result.configured is False and result.clients == []
+
+
+def test_active_transit_tools_isolates_a_failing_provider(monkeypatch):
+    # A provider whose build_client OR make_tools raises must NOT take down the
+    # whole call. The voice daemon builds this at startup BEFORE its main
+    # try/except, and make_tools lazily imports each tool factory — so an
+    # unguarded raise (e.g. ImportError) would crash the entire daemon. It must
+    # degrade to "no tools for that provider"; sibling providers still register.
+    import jasper.transit as transit_mod
+
+    def _good_tool():
+        return None
+
+    class _Good:
+        id = "good"
+
+        def build_client(self, cfg):
+            return object()
+
+        def make_tools(self, client):
+            return [_good_tool]
+
+    class _BuildBoom:
+        id = "build_boom"
+
+        def build_client(self, cfg):
+            raise RuntimeError("build kaboom")
+
+        def make_tools(self, client):  # never reached
+            return [_good_tool]
+
+    class _ToolsBoom:
+        id = "tools_boom"
+
+        def build_client(self, cfg):
+            return object()
+
+        def make_tools(self, client):
+            raise ImportError("lazy import kaboom")  # the real-world shape
+
+    pack = CityPack(
+        id="test", label="Test",
+        providers=(_BuildBoom(), _ToolsBoom(), _Good()),
+    )
+    monkeypatch.setattr(transit_mod, "CITY_PACKS", (pack,))
+
+    # Two broken providers, yet the call must not raise.
+    result = active_transit_tools({"JASPER_TRANSIT_CITIES": "test"}, _cfg())
+    # Only the good provider's tool survived.
+    assert result.tools == [_good_tool]
+    assert result.configured is True
+    # Every provider that built a client is owned for cleanup — including
+    # _ToolsBoom, whose make_tools raised AFTER build_client succeeded (so its
+    # client is still closed on shutdown). _BuildBoom never built one.
+    assert len(result.clients) == 2
 
 
 def test_active_transit_aclose_is_duck_typed_and_failure_safe():
