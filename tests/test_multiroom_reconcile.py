@@ -605,6 +605,25 @@ def test_read_outputd_snapfifo_path_absent_file_is_empty(tmp_path):
     assert _read_outputd_snapfifo_path(str(tmp_path / "nope.env")) == ""
 
 
+def test_effective_leader_tap_path_empty_while_producer_unwired(monkeypatch, tmp_path):
+    """The single source of truth: while SNAPFIFO_PRODUCER_WIRED is False, the
+    EFFECTIVE tap is "" regardless of the reconciler-written env — so /state +
+    doctor report a leader as degraded, never a false-green "streaming". The raw
+    file reader still returns the env (the reconciler's change-detection)."""
+    p = str(tmp_path / "outputd-snapfifo.env")
+    _write_outputd_snapfifo_env(SNAPFIFO, path=p)
+    monkeypatch.setattr(reconcile_mod, "SNAPFIFO_PRODUCER_WIRED", False)
+    assert reconcile_mod.effective_leader_tap_path(p) == ""        # effective: not tapping
+    assert _read_outputd_snapfifo_path(p) == SNAPFIFO              # file: still the intent
+
+
+def test_effective_leader_tap_path_reads_env_when_producer_wired(monkeypatch, tmp_path):
+    p = str(tmp_path / "outputd-snapfifo.env")
+    _write_outputd_snapfifo_env(SNAPFIFO, path=p)
+    monkeypatch.setattr(reconcile_mod, "SNAPFIFO_PRODUCER_WIRED", True)
+    assert reconcile_mod.effective_leader_tap_path(p) == SNAPFIFO  # wired: env is live
+
+
 def test_reconcile_outputd_tap_no_touch_when_unchanged(monkeypatch):
     # Steady state (current == desired): the final-output owner is NEVER
     # touched — no write, no try-restart. This is the StartLimit-safe gate.

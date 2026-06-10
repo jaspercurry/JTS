@@ -177,7 +177,10 @@ def _grouping_cfg(**kw):
     return GroupingConfig(**defaults)
 
 
-def _patch_grouping(monkeypatch, cfg, is_active_stdout, tap_path="/run/jasper-snapserver/snapfifo"):
+def _patch_grouping(
+    monkeypatch, cfg, is_active_stdout,
+    tap_path="/run/jasper-snapserver/snapfifo", producer_wired=True,
+):
     import jasper.multiroom.config as mr_config
     import jasper.multiroom.reconcile as mr_reconcile
 
@@ -187,10 +190,13 @@ def _patch_grouping(monkeypatch, cfg, is_active_stdout, tap_path="/run/jasper-sn
         stdout = is_active_stdout
 
     monkeypatch.setattr(doctor.grouping, "_run", lambda *a, **kw: FakeRun())
-    # check_grouping reads the leader's outputd tap via the reconcile I/O
-    # edge; stub it so tests never touch a real /run file. Default to a
-    # tapping leader (non-empty path) so the unit-only tests stay green;
-    # pass tap_path="" to exercise the "outputd not tapping" degraded path.
+    # check_grouping reads the leader's EFFECTIVE outputd tap via the reconcile
+    # I/O edge (effective_leader_tap_path), which honors SNAPFIFO_PRODUCER_WIRED.
+    # Default `producer_wired=True` so the runtime-health LOGIC tests exercise a
+    # wired producer (tap_path drives the result); pass producer_wired=False to
+    # exercise today's reality (producer unwired → "" → degraded), and tap_path=""
+    # for the wired-but-dry degraded path. Stubbed so tests never touch /run.
+    monkeypatch.setattr(mr_reconcile, "SNAPFIFO_PRODUCER_WIRED", producer_wired)
     monkeypatch.setattr(
         mr_reconcile, "_read_outputd_snapfifo_path", lambda *a, **k: tap_path
     )
@@ -214,15 +220,31 @@ def test_check_grouping_invalid_config_warns(monkeypatch):
     assert "BOND_ID" in r.detail
 
 
-def test_check_grouping_leader_running_is_ok(monkeypatch):
+def test_check_grouping_leader_running_is_ok_when_producer_wired(monkeypatch):
+    # The "leader streaming" happy path — only reachable once the outputd
+    # snapfifo producer is wired (inv-2). producer_wired=True simulates that.
     cfg = _grouping_cfg(
         enabled=True, role="leader", channel="left", bond_id="living-room",
     )
     # plan units order = [snapserver, snapclient]; both active.
-    _patch_grouping(monkeypatch, cfg, "active\nactive\n")
+    _patch_grouping(monkeypatch, cfg, "active\nactive\n", producer_wired=True)
     r = doctor.check_grouping()
     assert r.status == "ok"
     assert "leader streaming" in r.detail
+
+
+def test_check_grouping_leader_degraded_while_producer_unwired(monkeypatch):
+    # TODAY's reality: the outputd snapfifo producer is UNWIRED
+    # (SNAPFIFO_PRODUCER_WIRED=False), so even with both units active the
+    # effective tap is "" — the leader is honestly degraded (not the
+    # false-green "streaming" the env intent used to imply).
+    cfg = _grouping_cfg(
+        enabled=True, role="leader", channel="left", bond_id="living-room",
+    )
+    _patch_grouping(monkeypatch, cfg, "active\nactive\n", producer_wired=False)
+    r = doctor.check_grouping()
+    assert r.status == "warn"
+    assert "not tapping" in r.detail
 
 
 def test_check_grouping_follower_unreachable_leader_warns(monkeypatch):
