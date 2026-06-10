@@ -303,6 +303,7 @@ class _BridgeStats:
     def reset(self) -> None:
         with self._lock:
             self._started_epoch_sec = time.time()
+            self._leg_engines = {}
             self._counters = {
                 "frames_processed": 0,
                 "ref_starved_frames": 0,
@@ -315,6 +316,30 @@ class _BridgeStats:
                 },
                 "udp_send_drops_by_leg": _zero_leg_counters(),
                 "packets_sent_by_leg": _zero_leg_counters(),
+            }
+
+    def set_leg_engine(
+        self,
+        leg: str,
+        *,
+        enabled: bool,
+        loaded: bool,
+        error: str | None = None,
+    ) -> None:
+        """Record an optional engine leg's init outcome in the snapshot.
+
+        Written once at bridge startup; gives /run/jasper/
+        aec_bridge_stats.json an authoritative, journal-independent
+        answer to "is the DTLN leg actually running?" — a load failure
+        otherwise degrades the bridge silently while voice keeps
+        listening on a permanently-unfed UDP port. jasper-doctor's
+        check_aec_bridge_dtln_engine reads this first and only falls
+        back to journal parsing on older bridges."""
+        with self._lock:
+            self._leg_engines[leg] = {
+                "enabled": enabled,
+                "loaded": loaded,
+                "error": error,
             }
 
     def inc(self, key: str, amount: int = 1) -> None:
@@ -331,6 +356,7 @@ class _BridgeStats:
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             counters = json.loads(json.dumps(self._counters))
+            leg_engines = json.loads(json.dumps(self._leg_engines))
             started = self._started_epoch_sec
         return {
             "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
@@ -341,6 +367,7 @@ class _BridgeStats:
             "frame_samples": FRAME_SAMPLES,
             "out_frame_samples": OUT_FRAME_SAMPLES,
             "counters": counters,
+            "leg_engines": leg_engines,
         }
 
     def write_snapshot(self, path: Path = BRIDGE_STATS_PATH) -> None:
@@ -1575,7 +1602,11 @@ def _aec_loop(  # noqa: PLR0915
     out_sock_dtln = None
     out_dest_dtln = None
     out_batch_dtln = bytearray()
-    if (not production_chip_aec_enabled) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0"):
+    dtln_wanted = (
+        not production_chip_aec_enabled
+    ) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0")
+    _bridge_stats.set_leg_engine("dtln", enabled=dtln_wanted, loaded=False)
+    if dtln_wanted:
         try:
             from jasper.aec_engines import dtln_models
             from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
@@ -1588,12 +1619,21 @@ def _aec_loop(  # noqa: PLR0915
             out_sock_dtln = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             out_sock_dtln.setblocking(False)
             out_dest_dtln = (OUT_HOST, OUT_PORT_DTLN)
+            _bridge_stats.set_leg_engine("dtln", enabled=True, loaded=True)
             logger.info(
                 "DTLN-aec engine enabled: size=%d, udp out=%s:%d",
                 dtln_size, OUT_HOST, OUT_PORT_DTLN,
             )
         except (FileNotFoundError, ImportError) as e:
+            # Degraded state lands in the stats snapshot so the doctor
+            # can flag it long after this line ages out of the journal
+            # window — voice keeps listening on the permanently-unfed
+            # :9878 leg otherwise with zero surface.
+            _bridge_stats.set_leg_engine(
+                "dtln", enabled=True, loaded=False, error=str(e),
+            )
             logger.warning(
+                "event=aec_bridge.leg_degraded leg=dtln "
                 "JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: %s. "
                 "Continuing with AEC3 only.", e,
             )
