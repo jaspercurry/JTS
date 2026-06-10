@@ -1850,6 +1850,35 @@ migrate_transit_config() {
         rm -f "${jasper_env}.bak"
     done
 
+    # Migrate an operator-set JASPER_TRANSIT_CITIES out of jasper.env. It's the
+    # pack-level toggle — NOT a provider env key, so deliberately not in the
+    # keys=() loop above (which mirrors transit.all_env_keys()). The daemon
+    # reads it via os.environ so it works in either file, but leaving it in
+    # jasper.env shadows the wizard, which reads transit.env and would render
+    # the wrong toggle. Migrate even an EMPTY value: present-empty means "no
+    # cities", which must be preserved (dropping it would read as absent -> all
+    # packs). Runs before the seed below, so a migrated value makes the seed
+    # skip. Mirrors the per-key loop's "wizard value wins" precedence.
+    if grep -qE "^JASPER_TRANSIT_CITIES=" "${jasper_env}"; then
+        local cities_value
+        cities_value=$(grep -E "^JASPER_TRANSIT_CITIES=" "${jasper_env}" | tail -n1)
+        cities_value="${cities_value#JASPER_TRANSIT_CITIES=}"
+        cities_value="${cities_value%$'\r'}"
+        cities_value="${cities_value%$'\n'}"
+        if [[ -f "${wizard_env}" ]] && grep -qE "^JASPER_TRANSIT_CITIES=" "${wizard_env}"; then
+            echo "  migrate_transit_config: removed stale JASPER_TRANSIT_CITIES" \
+                 "from ${jasper_env} (wizard value wins)"
+        else
+            touch "${wizard_env}"
+            chmod 0640 "${wizard_env}"
+            echo "JASPER_TRANSIT_CITIES=${cities_value}" >> "${wizard_env}"
+            echo "  migrate_transit_config: moved JASPER_TRANSIT_CITIES=${cities_value}"
+            echo "    from ${jasper_env} to ${wizard_env}"
+        fi
+        sed -i.bak "/^JASPER_TRANSIT_CITIES=/d" "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+    fi
+
     # Seed the city-pack toggle for existing households. JASPER_TRANSIT_CITIES
     # (comma-separated CityPack ids, wizard-owned) gates which city's transit
     # providers are eligible. It is intentionally optional — jasper.transit's

@@ -8,6 +8,8 @@ and lets us assert on exactly the header bytes that go on the wire.
 from __future__ import annotations
 
 import http
+import os
+import threading
 from email.message import Message
 from io import BytesIO
 
@@ -588,3 +590,64 @@ def test_wrap_page_emits_dialog_helper_before_body():
     that references them, so a parse-time call can't hit an undefined symbol."""
     page = _common.wrap_page("T", "<div id='dlg-marker'>jtsAlert</div>").decode()
     assert page.index("function jtsAlert") < page.index("dlg-marker")
+
+
+# --- atomic writers: unique temp (concurrent-writer safety) --------------
+
+
+def test_write_env_file_uses_unique_temp_per_write(tmp_path, monkeypatch):
+    # The ThreadingHTTPServer race: two writers of the same file must NOT
+    # share one temp path (a fixed `<path>.tmp` lets them interleave + promote
+    # a byte-mixed file). Capture what os.replace promotes; two writes -> two
+    # distinct temps, neither the old fixed name.
+    seen: list[str] = []
+    real_replace = os.replace
+
+    def capture(src, dst):
+        seen.append(src)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", capture)
+    p = str(tmp_path / "x.env")
+    _common.write_env_file(p, {"A": "1"})
+    _common.write_env_file(p, {"A": "2"})
+    assert len(seen) == 2
+    assert seen[0] != seen[1], "two writes shared a temp path -> race"
+    assert all(s != p + ".tmp" for s in seen), "still using the fixed .tmp path"
+    assert (tmp_path / "x.env").read_text() == "A=2\n"
+
+
+def test_atomic_write_concurrent_writers_never_corrupt(tmp_path):
+    # Stress: many threads writing the SAME file concurrently. The final file
+    # must always be exactly ONE complete write — never byte-mixed — and no
+    # temp files leak. This is the regression guard for the shared-.tmp race.
+    p = str(tmp_path / "race.env")
+    values = [f"value_{i}_" + "x" * 200 for i in range(8)]
+    errors: list[Exception] = []
+
+    def writer(v):
+        try:
+            for _ in range(50):
+                _common.write_env_file(p, {"V": v})
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(v,)) for v in values]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    content = (tmp_path / "race.env").read_text()
+    assert content in {f"V={v}\n" for v in values}, f"corrupted/mixed write: {content!r}"
+    assert [f for f in os.listdir(tmp_path) if f.endswith(".tmp")] == []
+
+
+def test_atomic_write_cleans_up_temp_on_write_error(tmp_path):
+    # A mid-write error (newline in a value) must leave no temp and no target.
+    p = str(tmp_path / "bad.env")
+    with pytest.raises(ValueError):
+        _common.write_env_file(p, {"A": "has\nnewline"})
+    assert not (tmp_path / "bad.env").exists()
+    assert [f for f in os.listdir(tmp_path) if f.endswith(".tmp")] == []

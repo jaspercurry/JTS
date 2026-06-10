@@ -145,3 +145,57 @@ def test_seeds_after_migrating_bus_key_from_jasper_env(tmp_path):
     transit = _read_env(state_dir / "transit.env")
     assert transit["JASPER_BUS_STOPS"] == "MTA_304213|39 ST/4 AV SE"
     assert transit["JASPER_TRANSIT_CITIES"] == "nyc"
+
+
+def test_operator_set_cities_migrated_out_of_jasper_env(tmp_path):
+    # An operator who set JASPER_TRANSIT_CITIES directly in jasper.env (the
+    # documented headless/CI override path) would otherwise shadow the wizard:
+    # the daemon sees it via os.environ, but the wizard reads transit.env. Move
+    # it to transit.env. The operator's EXPLICIT value wins over the nyc seed.
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir()
+    state_dir.mkdir()
+    (env_dir / "jasper.env").write_text("JASPER_TRANSIT_CITIES=berlin\n")
+    (state_dir / "transit.env").write_text("JASPER_SUBWAY_STATION_ID=127\n")
+
+    proc = _run_migrate(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    transit = _read_env(state_dir / "transit.env")
+    assert transit["JASPER_TRANSIT_CITIES"] == "berlin"  # operator value, not seeded nyc
+    assert "JASPER_TRANSIT_CITIES" not in (env_dir / "jasper.env").read_text()
+
+
+def test_operator_set_empty_cities_preserved_as_none(tmp_path):
+    # present-but-empty means "no cities". Migrating must PRESERVE the empty
+    # value, not drop it — dropping would read as absent -> all packs, the
+    # exact silent re-enable the toggle exists to prevent.
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir()
+    state_dir.mkdir()
+    (env_dir / "jasper.env").write_text("JASPER_TRANSIT_CITIES=\n")
+    (state_dir / "transit.env").write_text("JASPER_SUBWAY_STATION_ID=127\n")
+
+    proc = _run_migrate(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    lines = (state_dir / "transit.env").read_text().splitlines()
+    assert "JASPER_TRANSIT_CITIES=" in lines  # present, empty — preserved
+    assert "JASPER_TRANSIT_CITIES" not in (env_dir / "jasper.env").read_text()
+
+
+def test_wizard_cities_value_wins_over_jasper_env(tmp_path):
+    # Both files set it -> the wizard's value wins; the jasper.env shadow is
+    # removed. (Same precedence the per-provider-key loop uses.)
+    env_dir = tmp_path / "etc"
+    state_dir = tmp_path / "state"
+    env_dir.mkdir()
+    state_dir.mkdir()
+    (env_dir / "jasper.env").write_text("JASPER_TRANSIT_CITIES=berlin\n")
+    (state_dir / "transit.env").write_text("JASPER_TRANSIT_CITIES=nyc\n")
+
+    proc = _run_migrate(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    transit = _read_env(state_dir / "transit.env")
+    assert transit["JASPER_TRANSIT_CITIES"] == "nyc"  # wizard wins
+    assert "JASPER_TRANSIT_CITIES" not in (env_dir / "jasper.env").read_text()

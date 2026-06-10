@@ -1238,8 +1238,9 @@ tool/client surface):
      [`deploy/install.sh`](deploy/install.sh) — duplicates
      `transit.all_env_keys()` because install.sh runs before Python
      is available (`JASPER_TRANSIT_CITIES` is a pack-level toggle, not a
-     provider env key, so it is NOT in that array — the migration seeds it
-     separately for households that already use NYC transit)
+     provider env key, so it is NOT in that array — `migrate_transit_config`
+     moves an operator-set value out of `jasper.env` AND seeds `nyc` for
+     existing NYC households, both in their own dedicated step)
 
 See `nyc_subway.py` (keyless, CSV-backed) and `nyc_bus.py`
 (credentialed, REST-backed) for the two provider shapes. The
