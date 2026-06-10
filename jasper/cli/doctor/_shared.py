@@ -149,6 +149,41 @@ def _parse_env_file(path: str) -> dict[str, str]:
 
     return _shared_parse_env_file(path)
 
+
+def _camilla_block_field(text: str, block: str, key: str) -> str | None:
+    """Scan a CamillaDSP config (text) for ``key`` inside the top-level
+    ``block:`` (e.g. ``devices`` / ``mixers``), returning the raw value after
+    the colon (comment + surrounding-quote stripped), or None if the block or
+    key is absent.
+
+    The value is ``""`` for a key whose value is a nested block (a mixer name
+    like ``channel_select:``), so ``_camilla_block_field(...) is not None`` is
+    the presence test. Returns the FIRST match within the block.
+
+    This is the doctor's DELIBERATELY fail-soft way to read a CamillaDSP config
+    field — a plain line scan that never raises, unlike ``yaml.safe_load`` which
+    can raise on a malformed config (the doctor must stay total). It is the one
+    home for the idiom: ``check_camilla_volume_limit`` (``devices.volume_limit``),
+    ``check_grouping_rate_adjust`` (``devices.enable_rate_adjust``), and
+    ``check_grouping_channel_split`` (``mixers.channel_select`` presence) all go
+    through it. Block-scoped: a matching key OUTSIDE ``block:`` does not match.
+    Use only for keys that are unambiguous within their block (the value is the
+    first indented ``key:`` line, at any depth)."""
+    in_block = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not raw.startswith((" ", "\t")):
+            in_block = stripped == f"{block}:"
+            continue
+        if not in_block:
+            continue
+        match = re.match(rf"^\s+{re.escape(key)}:\s*([^#]*)", raw)
+        if match:
+            return match.group(1).strip().strip("'\"")
+    return None
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as f:

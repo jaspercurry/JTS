@@ -270,15 +270,18 @@ def _validate_woven(woven: str, split: ChannelSplit) -> None:
         raise ValueError(f"channel-split weave produced invalid YAML: {e}") from e
     doc = doc or {}
 
-    # (1) 2-channel guard.
+    # (1) 2-channel guard. Require channels == 2 on BOTH sides — a missing
+    # `channels` (None) is rejected too, not waved through: the splice routes a
+    # 2→2 mixer and appends to per-channel [0]/[1] Filters, so anything but an
+    # explicit 2-channel config could mis-apply (active-speaker / multi-driver
+    # weave is future work, not this path).
     devices = doc.get("devices") or {}
     for side in ("capture", "playback"):
         ch = (devices.get(side) or {}).get("channels")
-        if ch is not None and ch != 2:
+        if ch != 2:
             raise ValueError(
                 "channel-split weave supports 2-channel configs only; "
-                f"devices.{side}.channels={ch} (active-speaker / multi-driver "
-                "weave is future work, not this path)"
+                f"devices.{side}.channels={ch!r} (expected 2)"
             )
 
     # (2) channel_select in mixers.

@@ -233,3 +233,25 @@ def test_config_has_channel_select_is_block_scoped():
     assert _config_has_channel_select(_BASE_MIXERS) is False
     # A `channel_select:` outside the mixers block must NOT match.
     assert _config_has_channel_select("filters:\n  channel_select:\n") is False
+
+
+def test_camilla_block_field_shared_scanner():
+    """The ONE config-field scanner the doctor's three checks share. Returns the
+    raw value (scalar), "" for a nested-block key (presence), None when the
+    block or key is absent, and is block-scoped (no cross-block match)."""
+    from jasper.cli.doctor._shared import _camilla_block_field
+    cfg = (
+        "devices:\n  volume_limit: 0.0\n  enable_rate_adjust: true\n"
+        "mixers:\n  channel_select:\n    channels: { in: 2, out: 2 }\n"
+    )
+    assert _camilla_block_field(cfg, "devices", "volume_limit") == "0.0"
+    assert _camilla_block_field(cfg, "devices", "enable_rate_adjust") == "true"
+    # A nested-block key (a mixer name) scans as "" → present, not None.
+    assert _camilla_block_field(cfg, "mixers", "channel_select") == ""
+    # Absent key / absent block → None.
+    assert _camilla_block_field(cfg, "devices", "nope") is None
+    assert _camilla_block_field(cfg, "pipeline", "anything") is None
+    # Block-scoped: the devices key must not match from inside mixers.
+    assert _camilla_block_field("mixers:\n  volume_limit: 9\n", "devices", "volume_limit") is None
+    # Comments + quotes are stripped.
+    assert _camilla_block_field("devices:\n  codec: 'flac'  # x\n", "devices", "codec") == "flac"

@@ -489,3 +489,12 @@ def test_weave_validation_asserts_channel_select_runs_after_master_gain():
     )
     with pytest.raises(ValueError, match="immediately after"):
         _validate_woven(bad, build_channel_split("left"))
+
+
+def test_weave_rejects_config_missing_channels():
+    """A config that OMITS `channels` (not just one that sets it != 2) is also
+    rejected — the weave must not wave through an unverified channel count."""
+    from jasper.multiroom.channel_split import weave_channel_split
+    no_channels = BASE_CONFIG.replace("    channels: 2\n", "")
+    with pytest.raises(ValueError, match="2-channel"):
+        weave_channel_split(no_channels, build_channel_split("left"))
