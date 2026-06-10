@@ -76,11 +76,11 @@ multi-station picker + e-bike-only toggle and persists picks into
 | File | Role |
 |---|---|
 | [jasper/citibike.py](../jasper/citibike.py) | GBFS fetcher (`fetch_feed`), TTL cache, `CitiBikeClient`, `StationStatus`, parsers |
-| [jasper/transit/providers/citibike.py](../jasper/transit/providers/citibike.py) | `_CitiBike` provider for the wizard; satisfies `TransitProvider` Protocol |
+| [jasper/transit/providers/citibike.py](../jasper/transit/providers/citibike.py) | `_CitiBike` provider satisfying `TransitProvider`; owns the `JASPER_CITIBIKE_*` env keys (`env_keys` + `build_client`) and `find_stops_near` |
 | [jasper/tools/citibike.py](../jasper/tools/citibike.py) | `make_citibike_tools` factory; `get_citibike_status` async tool |
 | [jasper/web/transit_setup.py](../jasper/web/transit_setup.py) | `_citibike_card_html` wizard card + save-handler branch |
-| [jasper/config.py](../jasper/config.py) | `citibike_stations`, `citibike_ebike_only`, `citibike_enabled` fields |
-| [jasper/voice_daemon.py](../jasper/voice_daemon.py) | `CitiBikeClient` construction, registry wiring, system-prompt rules |
+| [jasper/transit/__init__.py](../jasper/transit/__init__.py) | `active_transit(env)` builds + owns the `CitiBikeClient` (via the provider), returned in `ActiveTransit` |
+| [jasper/voice_daemon.py](../jasper/voice_daemon.py) | calls `active_transit(os.environ)` + registers its tools; owns the system-prompt transit nudge |
 | [jasper/cli/doctor/](../jasper/cli/doctor/__init__.py) | `check_citibike` health probe (added in PR 4) |
 | [tests/test_citibike.py](../tests/test_citibike.py) | Unit tests for fetcher, cache, client |
 | [tests/test_tools_citibike.py](../tests/test_tools_citibike.py) | Tool-dispatch tests |
@@ -318,5 +318,7 @@ flag it on the second provider, do it on the third.
   the provider to inject context (system name in the response) so
   the LLM can disambiguate. Defer until two networks exist.
 
-Last verified: 2026-05-27 (footer/status check; transit code paths not
-changed in this PR)
+Last verified: 2026-06-10 (file map re-verified against code: `jasper/config.py`
+no longer owns the citibike fields — the provider owns its `JASPER_CITIBIKE_*`
+env keys and `active_transit`/`ActiveTransit` builds the client; the daemon only
+registers the tools)

@@ -1329,6 +1329,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 logger.exception("could not write transit.env after save")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
+            # No station/stop/dock IDs in the log — those reveal the
+            # household's home location. Record only that a save landed.
+            logger.info("event=transit.save client=%s", self.address_string())
             restart_voice_daemon()
             send_see_other(self, "./", flash="Saved. Voice daemon restarting.")
 
@@ -1346,6 +1349,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 logger.exception("could not write transit.env after cities save")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
+            logger.info(
+                "event=transit.cities cities=%s client=%s",
+                new.get(transit.TRANSIT_CITIES_ENV, ""), self.address_string(),
+            )
             restart_voice_daemon()
             send_see_other(
                 self, "./", flash="Saved cities. Voice daemon restarting.",
@@ -1354,15 +1361,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def _handle_clear(self) -> None:
             current = _load_state(cfg["state_path"])
             new = _apply_clear(current)
+            # _apply_clear always records JASPER_TRANSIT_CITIES="" (present-empty
+            # = "no cities"), so `new` is never empty — always write, never
+            # delete. Deleting would drop the key back to ABSENT, which reads as
+            # "all packs eligible" and would wrongly re-enable every city.
             try:
-                if new:
-                    write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
-                else:
-                    delete_env_file(cfg["state_path"])
+                write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
             except OSError as e:
                 logger.exception("could not write transit.env after clear")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
+            logger.info("event=transit.clear client=%s", self.address_string())
             restart_voice_daemon()
             send_see_other(
                 self, "./",
