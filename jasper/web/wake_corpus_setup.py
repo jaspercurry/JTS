@@ -510,6 +510,13 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
 
+        # Route-check before CSRF-check (the _common.py wizard
+        # convention): bogus paths return 404 without revealing
+        # CSRF state.
+        if path not in self._POST_ROUTES:
+            self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
+            return
+
         # All POSTs are mutating — require CSRF token. _check_csrf
         # sends the 403 itself; we just return on failure.
         if not self._check_csrf():
@@ -521,11 +528,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(400, str(e))
             return
 
-        handler_name = self._POST_ROUTES.get(path)
-        if handler_name is None:
-            self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
-            return
-        getattr(self, handler_name)(body)
+        getattr(self, self._POST_ROUTES[path])(body)
 
     def _post_session(self, body: dict[str, Any]) -> None:
         member = (body.get("member") or "").strip()
@@ -899,12 +902,22 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- DELETE -----------------------------------------------------
 
     def do_DELETE(self) -> None:  # noqa: N802
-        if not self._check_csrf():
-            return
         path = urlparse(self.path).path.rstrip("/") or "/"
         parts = path.split("/")
+        # Route-check before CSRF-check (the _common.py wizard
+        # convention): only /api/clip/<id> and /api/session/<id>
+        # exist; bogus paths 404 without revealing CSRF state.
+        if not (
+            len(parts) == 4
+            and parts[1] == "api"
+            and parts[2] in ("clip", "session")
+        ):
+            self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
+            return
+        if not self._check_csrf():
+            return
         # /api/clip/<id>
-        if len(parts) == 4 and parts[1] == "api" and parts[2] == "clip":
+        if parts[2] == "clip":
             clip_id = parts[3]
             ok = self.backend.delete_clip(clip_id)
             if not ok:
@@ -913,19 +926,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"deleted": clip_id})
             return
         # /api/session/<id> — hard-delete a whole session (WAVs + JSON)
-        if len(parts) == 4 and parts[1] == "api" and parts[2] == "session":
-            session_id = parts[3]
-            try:
-                result = self.backend.delete_session(session_id)
-            except ValueError as e:
-                self._send_error_json(404, str(e))
-                return
-            except StateError as e:
-                self._send_error_json(409, str(e))
-                return
-            self._send_json({"deleted_session": session_id, **result})
+        session_id = parts[3]
+        try:
+            result = self.backend.delete_session(session_id)
+        except ValueError as e:
+            self._send_error_json(404, str(e))
             return
-        self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
+        except StateError as e:
+            self._send_error_json(409, str(e))
+            return
+        self._send_json({"deleted_session": session_id, **result})
 
     # ----- route tables (exact path -> handler-method name) ----------
     # Keyed by exact path. do_GET / do_POST disambiguate by method.
