@@ -1,9 +1,12 @@
 """TTS generation + content-addressable caching for audio cues.
 
 Lifecycle:
-  - `cue_hash(cue, hostname, voice)` derives the expected filename
-    component from everything that should bust the cache (template
-    text, hostname substitution, voice, model, audio format).
+  - `cue_hash(cue, hostname, voice, model)` derives the expected
+    filename component from everything that should bust the cache
+    (template text, hostname substitution, voice, model, audio
+    format). `model` is the backend's ACTUAL synthesis model
+    (`backend_model(backend)`), not a constant — so flipping
+    `JASPER_GEMINI_TTS_MODEL` (or a provider TTS default) re-bakes.
   - `write_cue(...)` calls the generator, writes a 24 kHz WAV at
     `<sounds_dir>/<slug>-<hash>.wav`, and returns the path.
 
@@ -104,12 +107,31 @@ def cue_hash(
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 
-def cue_filename(cue: CueDef, hostname: str, voice: str) -> str:
-    return f"{cue.slug}-{cue_hash(cue, hostname, voice)}.wav"
+def cue_filename(
+    cue: CueDef, hostname: str, voice: str, model: str = TTS_MODEL,
+) -> str:
+    return f"{cue.slug}-{cue_hash(cue, hostname, voice, model)}.wav"
 
 
-def cue_path(sounds_dir: str, cue: CueDef, hostname: str, voice: str) -> str:
-    return os.path.join(sounds_dir, cue_filename(cue, hostname, voice))
+def cue_path(
+    sounds_dir: str, cue: CueDef, hostname: str, voice: str,
+    model: str = TTS_MODEL,
+) -> str:
+    return os.path.join(sounds_dir, cue_filename(cue, hostname, voice, model))
+
+
+def backend_model(backend: object | None) -> str:
+    """The cache-key model identifier for a TTS backend — its actual
+    synthesis model where exposed (all three shipped generators have a
+    `.model` property), else the legacy `TTS_MODEL` constant.
+
+    The fallback keeps two cases stable: a playback-only manager
+    (backend=None — regen disabled, plays whatever WAVs exist) and
+    minimal test fakes, both of which hash exactly as they did before
+    the model was threaded through. The single derivation point keeps
+    the manager's read-side paths and `write_cue`'s write-side path
+    agreeing on the same hash."""
+    return getattr(backend, "model", None) or TTS_MODEL
 
 
 # --- WAV write ---
@@ -425,13 +447,16 @@ def write_cue(
     """Render `cue`'s template, call the TTS backend, resample to 48k,
     write a WAV at `<sounds_dir>/<slug>-<hash>.wav`. Returns the
     absolute path. Idempotent: safe to call when the file already
-    exists (will just rewrite the same content)."""
+    exists (will just rewrite the same content). The hash is keyed
+    on the backend's actual model so a model change lands in a new
+    filename."""
     text = render_template(cue, hostname)
-    path = cue_path(sounds_dir, cue, hostname, voice)
+    model = backend_model(backend)
+    path = cue_path(sounds_dir, cue, hostname, voice, model)
     os.makedirs(sounds_dir, exist_ok=True)
     logger.info(
-        "cue: synthesising %s (text=%r, voice=%s, hash=%s)",
-        cue.slug, text, voice, cue_hash(cue, hostname, voice),
+        "cue: synthesising %s (text=%r, voice=%s, model=%s, hash=%s)",
+        cue.slug, text, voice, model, cue_hash(cue, hostname, voice, model),
     )
     result = backend.synthesise(text)
     _write_wav_atomic(path, result.pcm_24k)
@@ -452,8 +477,10 @@ def dynamic_text_hash(text: str, voice: str, model: str = TTS_MODEL) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 
-def dynamic_text_path(sounds_dir: str, text: str, voice: str) -> str:
-    h = dynamic_text_hash(text, voice)
+def dynamic_text_path(
+    sounds_dir: str, text: str, voice: str, model: str = TTS_MODEL,
+) -> str:
+    h = dynamic_text_hash(text, voice, model)
     return os.path.join(sounds_dir, f"dynamic-{h}.wav")
 
 
@@ -464,13 +491,14 @@ def write_dynamic_text(
     `<sounds_dir>/dynamic-<hash>.wav`. Mirrors `write_cue` but for
     text not tied to a static CueDef. Returns the absolute path.
     Idempotent: if the file already exists, just returns the path."""
-    path = dynamic_text_path(sounds_dir, text, voice)
+    model = backend_model(backend)
+    path = dynamic_text_path(sounds_dir, text, voice, model)
     if os.path.isfile(path):
         return path
     os.makedirs(sounds_dir, exist_ok=True)
     logger.info(
-        "cue: synthesising dynamic text=%r voice=%s hash=%s",
-        text, voice, dynamic_text_hash(text, voice),
+        "cue: synthesising dynamic text=%r voice=%s model=%s hash=%s",
+        text, voice, model, dynamic_text_hash(text, voice, model),
     )
     result = backend.synthesise(text)
     _write_wav_atomic(path, result.pcm_24k)
