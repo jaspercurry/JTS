@@ -43,13 +43,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -355,25 +355,12 @@ class VolumePersistence:
             payload["pre_mute_level"] = int(self._current_pre_mute_level)
         body = json.dumps(payload, indent=2)
         try:
-            # Atomic write: write to a tmp file in the same directory,
-            # then rename. POSIX rename is atomic, so a crash mid-write
-            # leaves either the old file or the new one — never a
-            # half-written record.
-            fd, tmp_path = tempfile.mkstemp(
-                prefix=".speaker_volume.",
-                suffix=".tmp",
-                dir=str(self._path.parent),
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(body)
-                os.replace(tmp_path, self._path)
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+            # Atomic write via the canonical helper (same-dir tempfile +
+            # os.replace). mode 0600 preserves the mode the hand-rolled
+            # mkstemp writer published (mkstemp creates 0600 and the old
+            # code never widened it); the daemons that read this file
+            # all run as root.
+            atomic_write_text(self._path, body, mode=0o600)
         except OSError as e:
             logger.warning(
                 "volume persistence: write to %s failed (%s)",
