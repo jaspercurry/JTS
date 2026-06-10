@@ -459,3 +459,33 @@ def test_emit_sound_config_weaves_channel_split():
     doc = yaml.safe_load(woven)
     assert CHANNEL_SELECT_MIXER in doc["mixers"]
     assert "sub_crossover" in doc["filters"]
+
+
+# ---------- hardened weave validation ----------
+
+
+def test_weave_rejects_non_2_channel_config():
+    """The splice appends to EACH per-channel Filter + routes a 2->2 mixer; a
+    multi-driver / active-speaker config must fail LOUD, not mis-apply (the
+    active-speaker weave is separate future work)."""
+    from jasper.multiroom.channel_split import weave_channel_split
+    four_ch = BASE_CONFIG.replace("channels: 2", "channels: 4")
+    with pytest.raises(ValueError, match="2-channel"):
+        weave_channel_split(four_ch, build_channel_split("left"))
+
+
+def test_weave_validation_asserts_channel_select_runs_after_master_gain():
+    """The validator asserts POSITION (immediately after master_gain), not just
+    presence — defends the splice landing point against a future regression."""
+    from jasper.multiroom.channel_split import _validate_woven
+    # channel_select present but mis-positioned (after a Filter, not master_gain).
+    bad = (
+        "devices:\n  capture:\n    channels: 2\n  playback:\n    channels: 2\n"
+        "mixers:\n  master_gain: {}\n  channel_select: {}\n"
+        "pipeline:\n"
+        "  - type: Mixer\n    name: master_gain\n"
+        "  - type: Filter\n    channels: [0]\n    names: [flat]\n"
+        "  - type: Mixer\n    name: channel_select\n"
+    )
+    with pytest.raises(ValueError, match="immediately after"):
+        _validate_woven(bad, build_channel_split("left"))

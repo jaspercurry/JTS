@@ -330,10 +330,12 @@ see `reconcile.py`).
 5. **Exactly one rate-adjuster per chain.** snapclient's
    sample-stuffing is the rate-tracker, so each member's local
    CamillaDSP runs `rate_adjust=false` / no resampler. **SHIPPED:**
-   the `disables_local_rate_adjust(cfg)` predicate
-   (`jasper/multiroom/config.py`) drives an `enable_rate_adjust`
-   param on the `correction` / `sound` generators (the live `/sound`
-   apply path passes it), and `jasper-doctor`'s
+   the rule is one of two transforms in the grouping **member-config
+   policy** (`jasper/multiroom/member_config.py`
+   `member_camilla_kwargs` — `is_active_member` decides; the other
+   transform is the channel-split), applied identically on EVERY
+   config path (`/sound`, `/correction`, and — when it lands — the
+   inv-2 reconciler), never threaded per call site. `jasper-doctor`'s
    `check_grouping_rate_adjust` is the universal backstop — it reads
    the ACTIVE config, so it catches every generator and a config
    generated *before* the bond formed (stale → warns to regenerate).
@@ -1075,7 +1077,27 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-09 (inv-2 leader content lane — DESIGN + inert
+Last verified: 2026-06-09 (staff-review fixes on the sample-lock work — the
+member-config LAYERING. The inv-5 + channel-split transforms were threaded into
+the `/sound` apply call sites only, leaving the `/correction` apply path
+uncovered (a bonded member correcting its OWN seat — the §4 path — got neither),
+with no observability for a missing channel-split. Fixed by collapsing the
+decision into ONE grouping-owned policy `jasper/multiroom/member_config.py`
+`member_camilla_kwargs(cfg)` (inv-5 rate_adjust off + the channel-split),
+applied identically on BOTH wizard paths via `**member_camilla_kwargs()` — the
+SAME policy the inv-2 reconciler will reuse for CamillaDSP-B (so it is the
+scalable chokepoint, not throwaway). Added `jasper-doctor`
+`check_grouping_channel_split` (order 75) — a missing channel-split is SILENT
+(plays full stereo, wrong channel) so it needs its own backstop. Hardened the
+weave validator: rejects non-2-channel configs (active-speaker weave is future
+work) and asserts `channel_select` runs IMMEDIATELY after `master_gain`
+(position, not just presence). Collapsed the redundant
+`disables_local_rate_adjust` alias into `is_active_member`. **Deliberately NOT
+done here:** auto-apply on bond-form — that belongs to the inv-2 reconciler
+(building it now would bake the channel-split into the pre-snapclient position,
+the wrong topology); until then `check_grouping_channel_split` keeps the gap
+visible. 375 affected tests green, ruff clean. Earlier 2026-06-09 (inv-2 leader
+content lane — DESIGN + inert
 scaffolding. Resolved the topology §4 deferred (the "P1.3 integration
 decision"): the leader = a shared streamer + its own follower — CamillaDSP-A
 (shared, clamped, NO channel-split) feeds the `SnapfifoSink` tap → SNAPFIFO →
