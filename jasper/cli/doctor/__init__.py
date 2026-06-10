@@ -265,6 +265,7 @@ from .grouping import (
     check_grouping,
     check_grouping_channel_split,
     check_grouping_rate_adjust,
+    check_grouping_tts_separation,
 )
 from . import satellites as satellites
 from .satellites import (
@@ -465,6 +466,7 @@ __all__ = [
     "check_grouping",
     "check_grouping_channel_split",
     "check_grouping_rate_adjust",
+    "check_grouping_tts_separation",
     "check_dial_heartbeat",
     "_PROBE_REF_PASS_THRESHOLD",
     "_PROBE_SINE_PATH",

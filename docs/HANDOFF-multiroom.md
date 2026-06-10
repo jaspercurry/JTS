@@ -116,11 +116,13 @@ has not been run on hardware. What exists:
   boot reconcile never force-starts / couples to outputd. What remains:
   the §2 inv. 2 leader content lane — now **BLOCKED on TTS separation**: TTS is
   pre-mixed into the streamed program by `jasper-fanin`, so a naive DAC-source
-  swap would drop the leader's assistant audio AND the shipped tap already
-  leaks TTS to followers (see the §2 "inv-2 realization" BLOCKER). Needs a
-  fanin music-only stream + post-round-trip TTS re-mix before the outputd
-  reader can be wired. **SHIPPED:** inv. 5 (`rate_adjust=false`) and the
-  channel-split live weave (§2/§4).
+  swap would drop the leader's assistant audio, and the (unwired, dead-code)
+  `SnapfifoSink` would leak the leader's TTS to followers IF re-wired (see the
+  §2 "inv-2 realization" BLOCKER). The corrected design: a fanin music-only
+  output (the inv-3 fix AND the music half of inv-2); the assistant stays
+  leader-local (§6), only music is synced. Guarded today by a `SnapfifoSink`
+  WARNING + `jasper-doctor check_grouping_tts_separation`. **SHIPPED:** inv. 5
+  (`rate_adjust=false`) and the channel-split live weave (§2/§4).
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -366,24 +368,55 @@ see `reconcile.py`).
 >    `content_buf`, the TTS fanin mixed into `content_buf` never reaches the
 >    speaker — the leader goes *silent on the assistant* mid-session. A serious
 >    regression for a voice speaker.
-> 2. **The shipped `SnapfifoSink` already leaks TTS to followers.** It taps
->    `content_buf` (= music + TTS), so followers hear the leader's TTS — a
->    LATENT inv-3 violation in the already-merged producer (§6 / open-question
->    #1 says V1 is leader-local TTS only).
+ 2. **`SnapfifoSink` would leak TTS to followers IF re-wired — and it is the
+>    realistic failure mode.** Investigation (2026-06-09) corrected an earlier
+>    overstatement: `SnapfifoSink` is currently **unwired DEAD CODE** (`grep
+>    SnapfifoSink rust/` hits only `snapfifo.rs`). Commit 050d334 wired it as a
+>    live `ReferenceFanout` consumer; commit 9102e13 (which moved TTS ingress
+>    into fanin) removed the `snapfifo_path` config field and the `main.rs`
+>    wiring. So the leak is **doubly latent**: the producer is unwired in
+>    outputd AND there is no follower playback to receive it (the reconciler's
+>    `JASPER_OUTPUTD_SNAPFIFO_PATH` write is inert — `Config::from_env` never
+>    reads it). The real risk is a future dev re-applying the known-good 050d334
+>    wiring against today's `main.rs` and shipping the leak. Guarded against:
+>    a WARNING doc-comment on `SnapfifoSink` + `lib.rs`, and a `jasper-doctor`
+>    `check_grouping_tts_separation` that warns a leader its streaming is behind
+>    this blocker. (Consequence to fix when this lands: the reconciler-written
+>    tap env + the `derive_grouping_runtime` leader-tap signal are now
+>    intent-only — a bonded leader can read green-tapping while outputd consumes
+>    nothing.)
 >
-> **What inv-2 actually requires (the corrected contract):** TTS must be
-> SEPARATED from the streamed music. The leader's snapfifo tap must carry
-> **music only** (so followers get no TTS — fixes the leak), and the leader's
-> DAC must play **`dac_content` (buffered music) + the leader's TTS re-mixed
-> post-round-trip** (so the leader still hears the assistant). Today fanin mixes
-> TTS into the single content stream, so this needs a `jasper-fanin` change (a
-> music-only stream for a leader's tap, with TTS held back) **plus** an outputd
-> stage that re-mixes the leader's TTS onto `dac_content` after the round-trip.
-> That is materially larger than "a DAC-content FIFO reader," and it re-opens
-> *where TTS mixes* — so PR-3b cannot be correctly built as a DAC-source swap
-> until TTS separation lands. The `DacContentSource` FIFO reader (a clean
-> mirror of `snapfifo.rs`) is still the right component for the music half; it
-> is not wired, because wiring it blind would ship the regression above.
+> **What inv-2 actually requires (the corrected contract).** TTS must be
+> SEPARATED from the streamed music — and the cleanest realization **keeps TTS
+> in fanin (its current home) and diverts only MUSIC through the round-trip**,
+> rather than resurrecting an outputd TTS path:
+> - **fanin emits a second, MUSIC-ONLY output** (the separation point). In
+>   `mixer.rs` `step()`, the program is summed and program-ducked
+>   (`apply_gain_to_sum`, ~mixer.rs:286-288) BEFORE TTS is mixed in
+>   (`tts.mix_period`, ~mixer.rs:289-291). Split there: clamp the pre-TTS,
+>   post-duck sum to a music-only buffer + write it to a 2nd output PCM, THEN
+>   mix TTS and write the existing full output. Off-by-default behind a new env
+>   (unset = today's single output). One extra clamp + ALSA write per period.
+>   This single change is BOTH the inv-3 leak fix (the tap reads music-only) AND
+>   the music half of inv-2.
+> - **the leader's DAC keeps the EXISTING full music+TTS fanin output** for its
+>   own low-latency assistant playback; only the **synced MUSIC** takes the
+>   round-trip (tap → snapserver → leader's snapclient → CamillaDSP-B → DAC).
+>   So "post-round-trip TTS re-mix" reframes to "assistant stays leader-local,
+>   music is what's synced" — which is exactly §6's V1 policy (assistant is off
+>   the synced path). This avoids re-adding the outputd TTS IPC that 9102e13
+>   deliberately retired.
+>
+> **Open questions (owner decisions, several hardware-only):** (1) the leader's
+> local assistant being ~300-500 ms out of sync with the buffered music beneath
+> it — §6 says music-only sync is the V1 promise, so likely fine, but confirm as
+> a product call; (2) should followers hear the music **ducked** under the
+> leader's local TTS (the music-only stream is post-duck) — a UX call; (3) the
+> 2nd fanin ALSA output must not perturb the mixer work-loop cadence (xruns) —
+> on-device; (4) two CamillaDSP instances on the leader (~+85 MB each) + the
+> extra fanin output staying in the 1 GB envelope. The `DacContentSource` FIFO
+> reader (a clean mirror of `snapfifo.rs`) is still the music-half outputd
+> component; it lands with this TTS-aware integration, validated on ≥2 Pis.
 
 **The tension to resolve.** Two shipped/written facts pull in opposite
 directions:
@@ -1112,7 +1145,26 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-09 (PR-3b attempt — found inv-2 is BLOCKED on TTS
+Last verified: 2026-06-09 (TTS-separation scoping + inv-3 GUARD, via a 4-agent
+investigation workflow. The investigation CORRECTED an earlier overstatement:
+the `SnapfifoSink` is not "already leaking" — it is **unwired DEAD CODE**
+(`grep SnapfifoSink rust/` hits only `snapfifo.rs`; commit 9102e13 removed the
+`config.rs` field + `main.rs` wiring that 050d334 added, when it moved TTS into
+fanin). So the leak is DOUBLY latent: the producer is unwired AND there is no
+follower playback. The proportionate inv-3 fix is therefore a GUARD against
+accidental re-wiring, not a blind audio change: a WARNING doc-comment on
+`SnapfifoSink` (`snapfifo.rs`) + `lib.rs`, and a hardware-free `jasper-doctor`
+`check_grouping_tts_separation` (order 78) that warns an active LEADER its
+streaming is behind the blocker (so a bonded leader isn't mistaken for a working
+stream — the reconciler tap env + the runtime-health leader-tap signal are now
+intent-only). Scoping deliverable: the corrected TTS-aware inv-2 design now at
+the top of §2 "inv-2 realization" — the elegant framing is to KEEP TTS in fanin
+and emit a second MUSIC-ONLY output (one change = the inv-3 fix AND inv-2's
+music half), divert only MUSIC through the round-trip, and leave the assistant
+leader-local (§6) — avoiding the outputd TTS IPC that 9102e13 retired. The real
+music-only-tap + round-trip code lands with inv-2, validated on ≥2 Pis (never as
+a blind gated reroute). 209 affected tests green, ruff clean; the guard touches
+no audio path. Earlier 2026-06-09 (PR-3b attempt — found inv-2 is BLOCKED on TTS
 separation, design corrected instead of building a known-wrong reroute. Reading
 the real `jasper-outputd` `run_alsa` loop to wire the leader DAC-content reader
 surfaced that `lib.rs` states "Assistant/TTS ingress is owned by jasper-fanin"
