@@ -38,6 +38,10 @@ from jasper.aec_sweep import (
 )
 from jasper.wake_conditions import CONDITIONS, DISTANCES
 from jasper.cli.wake_enroll import VOICE_UNIT, write_wav
+from jasper.mic_mute_persistence import (
+    DEFAULT_PATH as MIC_MUTE_STATE_PATH,
+    read_mic_muted,
+)
 from jasper.wake_ports import build_ports
 
 from .bridge_session import (
@@ -98,6 +102,15 @@ MAX_RECORDING_DURATION_SEC = 30.0
 # UI show clips from yesterday?"
 RESUME_WINDOW_SEC = 3600.0
 
+# How often a live recording re-checks the persisted mic-mute flag
+# (/var/lib/jasper/mic_mute.env). The corpus recorder runs while
+# jasper-voice is STOPPED (test mode frees the UDP ports), so the
+# daemon's own mute gate is absent — this poll is the only mid-
+# recording enforcement of the household's privacy switch. 1 s bounds
+# the post-mute capture window to ~1 s of a ≤30 s clip; the read is a
+# tiny local-file stat+parse, safe on the backend loop.
+MUTE_POLL_INTERVAL_SEC = 1.0
+
 # How long after entering corpus test mode we treat the marker as
 # abandoned and self-heal jasper-voice back on. Kept well under the
 # jasper-web 10-min idle-exit window so that whenever the socket re-
@@ -133,6 +146,11 @@ class ClipMetadata:
     files: dict[str, str]  # leg → absolute WAV path
     deleted: bool = False
     auto_stopped: bool = False
+    # True when the recording was force-stopped because the household
+    # muted the mic mid-clip (see MUTE_POLL_INTERVAL_SEC). The audio on
+    # disk predates the mute flip (±1 poll interval); the flag tells
+    # the operator why the clip ended early.
+    mute_stopped: bool = False
     notes: str = ""
     selected_legs: list[str] = field(default_factory=list)
     capture_plan: dict[str, Any] = field(default_factory=dict)
@@ -304,6 +322,17 @@ class StateError(RuntimeError):
     (e.g. starting a recording while one is in progress)."""
 
 
+class MicMutedError(StateError):
+    """Raised when the household mic-mute privacy switch is on.
+
+    Mic mute is a privacy promise (see jasper/mic_mute_persistence.py)
+    and is normally enforced inside jasper-voice — but the corpus
+    recorder records the bridge's UDP legs directly while jasper-voice
+    is stopped, so it must honor the persisted flag itself. Subclasses
+    StateError so the wizard's existing error plumbing surfaces the
+    message as an HTTP error without new handler branches."""
+
+
 class RecordingBackend:
     """Single-recording-at-a-time backend, controllable from sync HTTP
     handlers via a background asyncio event loop.
@@ -324,9 +353,14 @@ class RecordingBackend:
         output_dir: Path,
         ports: dict[str, int] | None = None,
         max_duration_sec: float = MAX_RECORDING_DURATION_SEC,
+        mic_mute_path: Path | str = MIC_MUTE_STATE_PATH,
     ) -> None:
         self._output_dir = output_dir
         self._metadata_dir = output_dir / DEFAULT_METADATA_SUBDIR
+        # Persisted household mic-mute flag — checked before any
+        # session/recording starts and polled mid-recording. See
+        # MicMutedError for why the recorder enforces this itself.
+        self._mic_mute_path = mic_mute_path
         # All known ports. The recorder subscribes to a per-session
         # subset: base production legs by default, raw0 / USB / ref
         # only when the session opted in.
@@ -370,6 +404,7 @@ class RecordingBackend:
         # racing into a UDP-bind-failed error.
         self._starting_clip_id: str | None = None
         self._auto_stop_handle: Any | None = None  # asyncio.TimerHandle
+        self._mute_poll_handle: Any | None = None  # asyncio.TimerHandle
 
         # Background asyncio loop running in a daemon thread. Lazily
         # created in start() so tests can construct a backend without
@@ -437,6 +472,30 @@ class RecordingBackend:
     def is_recording(self) -> bool:
         with self._lock:
             return self._current is not None
+
+    def mic_muted(self) -> bool:
+        """Fresh read of the persisted household mic-mute flag.
+
+        Read from disk every call (never cached) — the flag is toggled
+        by jasper-control / the /system/ dashboard in a different
+        process, so in-memory state would go stale. Fail-safe direction
+        matches the daemon's: an unreadable/missing file reads as
+        unmuted (see jasper/mic_mute_persistence.py)."""
+        return read_mic_muted(self._mic_mute_path)
+
+    def _refuse_if_muted(self, op: str) -> None:
+        if not self.mic_muted():
+            return
+        logger.warning(
+            "event=wake_corpus.mute_refused op=%s path=%s — household "
+            "mic mute is on; refusing to record",
+            op, self._mic_mute_path,
+        )
+        raise MicMutedError(
+            "mic is muted — the wake-corpus recorder will not capture "
+            "audio while the household mic mute is on. Unmute from the "
+            "/system/ dashboard, then retry.",
+        )
 
     def get_current_rms_dbfs(self) -> float | None:
         """Latest AEC-ON RMS in dBFS, or None if not recording.
@@ -812,6 +871,7 @@ class RecordingBackend:
 
         Returns the new session_id (UTC timestamp).
         """
+        self._refuse_if_muted("begin_session")
         safe_member = "".join(c for c in member.lower() if c.isalnum() or c == "_")
         if not safe_member:
             raise ValueError(f"member name has no usable chars: {member!r}")
@@ -1006,6 +1066,9 @@ class RecordingBackend:
             raise ValueError(
                 f"unknown distance {distance!r}; expected {DISTANCES}",
             )
+        # Privacy gate: a session begun while unmuted can outlive a
+        # later mute toggle, so re-check at every clip start too.
+        self._refuse_if_muted("start_recording")
 
         clip_id = str(uuid.uuid4())
         with self._lock:
@@ -1055,7 +1118,53 @@ class RecordingBackend:
             self._auto_stop_handle = self._loop.call_later(
                 self._max_duration_sec, self._auto_stop_threadsafe,
             )
+            # Mid-recording mute watch — if the household flips the mic
+            # mute while a clip is rolling, stop within one poll.
+            self._mute_poll_handle = self._loop.call_later(
+                MUTE_POLL_INTERVAL_SEC, self._mute_poll,
+            )
         return {"clip_id": clip_id, "start_ts": start_ts}
+
+    def _mute_poll(self) -> None:
+        """Runs on the backend loop every MUTE_POLL_INTERVAL_SEC while a
+        recording is in flight. Stops the recording (keeping the partial
+        clip, flagged `mute_stopped`) the first poll after the household
+        mutes the mic. The retained audio was captured while unmuted —
+        modulo at most one poll interval — so keeping it is consistent
+        with the privacy promise while telling the operator why the clip
+        ended early. Fail-soft: a poll error logs and rearms rather than
+        leaving the recording unwatched."""
+        with self._lock:
+            if self._current is None:
+                self._mute_poll_handle = None
+                return
+        try:
+            muted = self.mic_muted()
+        except Exception as e:  # noqa: BLE001 — never kill the watch
+            logger.warning("event=wake_corpus.mute_poll_failed error=%s", e)
+            muted = False
+        if muted:
+            logger.warning(
+                "event=wake_corpus.mute_stop — mic muted mid-recording; "
+                "stopping the clip",
+            )
+            # stop_recording is sync + blocks on the loop; hand it to a
+            # worker thread (same shape as the auto-stop timer).
+            threading.Thread(
+                target=self._mute_stop_safe, daemon=True,
+            ).start()
+            return
+        with self._lock:
+            if self._current is not None and self._loop is not None:
+                self._mute_poll_handle = self._loop.call_later(
+                    MUTE_POLL_INTERVAL_SEC, self._mute_poll,
+                )
+
+    def _mute_stop_safe(self) -> None:
+        try:
+            self.stop_recording(auto=True, mute_stopped=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("mute-stop failed: %s", e)
 
     def _auto_stop_threadsafe(self) -> None:
         """Fires on the backend loop when MAX_RECORDING_DURATION_SEC
@@ -1072,7 +1181,9 @@ class RecordingBackend:
         except Exception as e:
             logger.warning("auto-stop failed: %s", e)
 
-    def stop_recording(self, auto: bool = False) -> ClipMetadata:
+    def stop_recording(
+        self, auto: bool = False, mute_stopped: bool = False,
+    ) -> ClipMetadata:
         """Stop the current recording, save WAVs, return metadata."""
         with self._lock:
             if self._current is None:
@@ -1089,6 +1200,11 @@ class RecordingBackend:
             if self._auto_stop_handle is not None and not auto:
                 self._auto_stop_handle.cancel()
             self._auto_stop_handle = None
+            # The mute watch dies with the recording (cancelling an
+            # already-fired handle is a harmless no-op).
+            if self._mute_poll_handle is not None:
+                self._mute_poll_handle.cancel()
+            self._mute_poll_handle = None
             # Clear state up-front so a second Stop click during the
             # save isn't a confusing no-op.
             self._current = None
@@ -1142,6 +1258,7 @@ class RecordingBackend:
             files=files,
             deleted=False,
             auto_stopped=auto,
+            mute_stopped=mute_stopped,
             selected_legs=selected_legs,
             capture_plan=capture_plan,
             audio_context=audio_context,
@@ -1151,9 +1268,10 @@ class RecordingBackend:
             self._clips.append(clip)
         self._save_metadata()
         logger.info(
-            "clip saved: %s seq=%d condition=%s distance=%s dur=%.2fs%s",
+            "clip saved: %s seq=%d condition=%s distance=%s dur=%.2fs%s%s",
             clip_id, seq, meta["condition"], meta["distance"],
             duration_sec, " (auto-stopped)" if auto else "",
+            " (mute-stopped)" if mute_stopped else "",
         )
         return clip
 

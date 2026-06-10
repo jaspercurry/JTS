@@ -4043,3 +4043,123 @@ def test_api_session_enable_bridge_outputs_then_begins(
         server.shutdown()
         server.server_close()
         th.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# Mic mute — the recorder must honor the household privacy switch
+# (jasper/mic_mute_persistence.py) because it records the bridge's UDP
+# legs while jasper-voice (the usual mute enforcer) is stopped.
+# ---------------------------------------------------------------------------
+
+
+def _write_mute(path: Path, muted: bool) -> None:
+    path.write_text(f"JASPER_MIC_MUTED={1 if muted else 0}\n")
+
+
+@pytest.fixture
+def mute_path(tmp_path: Path) -> Path:
+    return tmp_path / "mic_mute.env"
+
+
+@pytest.fixture
+def mute_backend(monkeypatch, tmp_path: Path, mute_path: Path):
+    """Backend wired to a tmp mic_mute.env (same shape as `backend`)."""
+    monkeypatch.setattr(
+        bridge_session,
+        "BRIDGE_STATS_PATH",
+        tmp_path / "missing_aec_bridge_stats.json",
+    )
+    b = wake_corpus_setup.RecordingBackend(
+        output_dir=tmp_path / "out",
+        ports={"on": 9876, "off": 9877, "dtln": 9878},
+        max_duration_sec=10.0,
+        mic_mute_path=mute_path,
+    )
+    b.start()
+    yield b
+    b.shutdown()
+
+
+def test_begin_session_refused_while_muted(
+    mute_backend, mute_path: Path, caplog,
+) -> None:
+    _write_mute(mute_path, True)
+    with pytest.raises(wake_corpus_setup.MicMutedError, match="muted"):
+        mute_backend.begin_session("jasper")
+    assert mute_backend.session_id() is None
+    assert "event=wake_corpus.mute_refused" in caplog.text
+
+
+def test_start_recording_refused_when_mute_flips_after_session_begin(
+    mute_backend, mute_path: Path,
+) -> None:
+    mute_backend.begin_session("jasper")
+    _write_mute(mute_path, True)
+    with pytest.raises(wake_corpus_setup.MicMutedError, match="muted"):
+        mute_backend.start_recording("quiet", "near")
+    assert not mute_backend.is_recording()
+
+
+def test_unmuted_or_missing_file_records_normally(
+    mute_backend, mute_path: Path,
+) -> None:
+    # Missing file (fail-safe: unmuted) — recording works.
+    mute_backend.begin_session("jasper")
+    mute_backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    clip = mute_backend.stop_recording()
+    assert clip.mute_stopped is False
+
+
+def test_mute_mid_recording_stops_clip_and_flags_it(
+    monkeypatch, mute_backend, mute_path: Path, caplog,
+) -> None:
+    from jasper.wake_corpus import recording_backend
+
+    monkeypatch.setattr(recording_backend, "MUTE_POLL_INTERVAL_SEC", 0.05)
+    _write_mute(mute_path, False)
+    mute_backend.begin_session("jasper")
+    mute_backend.start_recording("quiet", "near")
+    _write_mute(mute_path, True)
+
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        clips = mute_backend.list_clips()
+        if clips:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail("mute did not stop the recording within 5s")
+
+    assert not mute_backend.is_recording()
+    assert clips[-1].mute_stopped is True
+    assert clips[-1].auto_stopped is True
+    assert "event=wake_corpus.mute_stop" in caplog.text
+    # The flag persists into the session metadata sidecar.
+    meta_dir = mute_backend._metadata_dir
+    data = json.loads(next(meta_dir.glob("enroll_*.json")).read_text())
+    assert data["clips"][-1]["mute_stopped"] is True
+
+
+def test_post_session_handler_refuses_while_muted(
+    tmp_path: Path, mute_path: Path,
+) -> None:
+    """The wizard surfaces the refusal as an HTTP 409 BEFORE any
+    bridge-output side effects (no backend loop needed)."""
+    _write_mute(mute_path, True)
+    backend = wake_corpus_setup.RecordingBackend(
+        output_dir=tmp_path / "out",
+        mic_mute_path=mute_path,
+    )  # intentionally not started — refusal must come first
+    handler_cls = wake_corpus_setup._make_handler_class(backend, "tok")
+    handler = handler_cls.__new__(handler_cls)
+    sent: dict[str, object] = {}
+
+    def _capture(status: int, msg: str) -> None:
+        sent["status"] = status
+        sent["msg"] = msg
+
+    handler._send_error_json = _capture  # type: ignore[method-assign]
+    handler._post_session({"member": "jasper"})
+    assert sent["status"] == 409
+    assert "muted" in str(sent["msg"])
