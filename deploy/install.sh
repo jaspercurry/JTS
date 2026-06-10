@@ -417,7 +417,7 @@ build_install_jasper_fanin() {
 
     echo "  building jasper-fanin (Rust daemon)..."
     mkdir -p "${cache_dir}"
-    chown pi:pi "${cache_dir}"
+    chown "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     # rsync the source tree into the cache dir, preserving cargo's
     # incremental compile state in target/ between runs. --delete
@@ -425,12 +425,12 @@ build_install_jasper_fanin() {
     rsync -a --delete \
         --exclude='target/' \
         "${src_dir}/" "${cache_dir}/"
-    chown -R pi:pi "${cache_dir}"
+    chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     # Build as pi so cargo's user cache (~pi/.cargo) is used and the
     # generated artifacts under target/ are pi-owned (operator can
     # clean up without sudo).
-    sudo -u pi -H bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
+    sudo -u "${BUILD_USER}" -H bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
         || { echo "  jasper-fanin build failed; see cargo output above"; return 1; }
 
     local built_bin="${cache_dir}/target/release/jasper-fanin"
@@ -465,14 +465,14 @@ build_install_jasper_outputd() {
 
     echo "  building jasper-outputd (Rust daemon)..."
     mkdir -p "${cache_dir}"
-    chown pi:pi "${cache_dir}"
+    chown "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     rsync -a --delete \
         --exclude='target/' \
         "${src_dir}/" "${cache_dir}/"
-    chown -R pi:pi "${cache_dir}"
+    chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
-    sudo -u pi -H bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
+    sudo -u "${BUILD_USER}" -H bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
         || { echo "  jasper-outputd build failed; see cargo output above"; return 1; }
 
     local built_bin="${cache_dir}/target/release/jasper-outputd"
