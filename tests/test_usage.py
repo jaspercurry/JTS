@@ -561,3 +561,32 @@ def test_token_billed_provider_has_no_intervals(tmp_path: Path):
     store = UsageStore(str(db))
     now = datetime.now(timezone.utc)
     assert store._time_billed_spend(now - timedelta(hours=24), now) == 0.0
+
+
+# --- Catalog ↔ bundled pricing completeness ---------------------------------
+#
+# pricing_for_model() deliberately never invents a rate: an unknown model
+# resolves to an all-zero Pricing labelled ``unpriced:<id>``, which means
+# the daily spend cap silently never accrues for that model. The bundled
+# table's own contract (jasper/data/model_pricing.json `_comment`) is
+# "Bundled DEFAULT voice-model rates ... keyed by exact model ID", so every
+# model the /voice wizard offers from the catalog must have an entry —
+# otherwise picking a curated model quietly disables spend accounting
+# until the runtime doctor warning is noticed.
+
+
+def test_every_catalog_model_has_bundled_pricing():
+    from jasper.voice.catalog import PROVIDERS
+
+    table, _as_of = load_default_pricing()
+    for provider in PROVIDERS:
+        for model in provider.models:
+            assert model.id in table, (
+                f"{provider.id} catalog model {model.id!r} has no entry in "
+                "jasper/data/model_pricing.json — pricing_for_model() would "
+                "return the all-zero unpriced fallback and the daily spend "
+                "cap would never accrue for it. Add the rate (and bump "
+                "as_of) in the same PR that adds the model."
+            )
+            pricing = pricing_for_model(model.id, defaults=table)
+            assert not pricing.label.startswith("unpriced:")
