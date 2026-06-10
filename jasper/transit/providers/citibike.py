@@ -11,8 +11,8 @@ Lyft also runs (Capital Bikeshare DC, BIXI Montreal, BAY Wheels SF)
 are intentionally NOT collapsed into a single mega-provider: each
 deserves its own bbox, its own provider module, its own wizard card
 so users in those cities get an integration that names their system
-specifically. Adding one means a new module here + one line in
-`jasper.transit.REGISTRY`.
+specifically. Adding one means a new module here + a `CityPack` entry in
+`jasper.transit.CITY_PACKS` (the flat `REGISTRY` derives from the packs).
 """
 from __future__ import annotations
 

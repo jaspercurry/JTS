@@ -143,17 +143,30 @@ CITY_PACKS: tuple[CityPack, ...] = (NYC_PACK,)
 # Flat provider list, DERIVED from the packs (single source of truth). The
 # discovery layer — covering(), by_id(), all_env_keys(), the wizard cards —
 # keeps working over REGISTRY unchanged.
-REGISTRY: tuple[TransitProvider, ...] = tuple(
-    p for pack in CITY_PACKS for p in pack.providers
-)
+def _derive_registry(packs: tuple[CityPack, ...]) -> tuple[TransitProvider, ...]:
+    """Flatten packs → providers, rejecting duplicate provider ids.
+
+    Provider id is the lookup key for by_id(), the wizard's card dispatch, the
+    install-migration, and the gating reverse-lookup — a duplicate would
+    silently shadow (first-wins) and misroute every one of those. Fail LOUD at
+    import time on a developer mistake, mirroring the DAC registry's
+    dedupe guard, rather than shipping a silent shadow."""
+    seen: set[str] = set()
+    out: list[TransitProvider] = []
+    for pack in packs:
+        for provider in pack.providers:
+            if provider.id in seen:
+                raise ValueError(
+                    f"duplicate transit provider id {provider.id!r}: provider "
+                    "ids must be unique across all city packs (they key by_id, "
+                    "the wizard card dispatch, install migration, and gating)."
+                )
+            seen.add(provider.id)
+            out.append(provider)
+    return tuple(out)
 
 
-def pack_by_id(pack_id: str) -> CityPack | None:
-    """Look up a city pack by its short id ("nyc")."""
-    for pack in CITY_PACKS:
-        if pack.id == pack_id:
-            return pack
-    return None
+REGISTRY: tuple[TransitProvider, ...] = _derive_registry(CITY_PACKS)
 
 
 def pack_for_provider(provider_id: str) -> CityPack | None:
@@ -259,11 +272,34 @@ def active_transit_tools(env: Mapping[str, str], cfg: Config) -> ActiveTransit:
     clients: list = []
     for pack in enabled_packs(env):
         for provider in pack.providers:
-            client = provider.build_client(cfg)
+            # Build each provider independently and behind a guard. The voice
+            # daemon calls this at startup BEFORE its main try/except, and
+            # make_tools() lazily imports each provider's tool factory — so a
+            # broken provider (ImportError in a tool module, a client
+            # constructor that raises) would otherwise propagate out of run()
+            # and crash the WHOLE daemon, taking weather/timers/smart-home down
+            # with it. Instead it degrades to "no tools for this provider",
+            # mirroring the HA/Google tool factories returning [] on failure.
+            pid = getattr(provider, "id", type(provider).__name__)
+            try:
+                client = provider.build_client(cfg)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "transit provider %s build_client failed; skipping it", pid,
+                )
+                continue
             if client is None:
                 continue
+            # Track the client for cleanup before make_tools, so a pooled
+            # client whose make_tools then raises is still closed on shutdown.
             clients.append(client)
-            tools.extend(provider.make_tools(client))
+            try:
+                tools.extend(provider.make_tools(client))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "transit provider %s make_tools failed; skipping its tools",
+                    pid,
+                )
     return ActiveTransit(tools=tools, configured=bool(tools), clients=clients)
 
 
@@ -318,6 +354,5 @@ __all__ = [
     "enabled_pack_ids",
     "enabled_packs",
     "haversine_miles",
-    "pack_by_id",
     "pack_for_provider",
 ]

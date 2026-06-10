@@ -3,7 +3,8 @@
 The wizard at `/transit/` and the provider modules under
 `jasper.transit.providers.` all agree on these shapes. New providers
 implement the `TransitProvider` Protocol (structural — no inheritance
-required) and add themselves to `jasper.transit.REGISTRY`.
+required) and are grouped into a `CityPack` in `jasper.transit.CITY_PACKS`
+(the flat `jasper.transit.REGISTRY` derives from the packs).
 
 Design intent: keep this file as small as the contract. Anything
 provider-specific (CSV parsers, MTA API quirks) belongs in the
