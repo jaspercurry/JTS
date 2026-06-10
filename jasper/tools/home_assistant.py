@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from . import tool
 
-from ..home_assistant import DEFAULT_TIMEOUT, HAClient
+from ..home_assistant import DEFAULT_READ_TIMEOUT_SEC, HAClient
 
 
 # LLM-backed HA conversation agents (OpenAI Conversation, Anthropic,
@@ -38,7 +38,7 @@ from ..home_assistant import DEFAULT_TIMEOUT, HAClient
 # answer (the bug this fixes). +5s margin lets the HTTP layer surface
 # its own timeout/error first. Derived from the client so the 90s number
 # stays single-sourced in home_assistant.py.
-_HA_TOOL_TIMEOUT_SEC = DEFAULT_TIMEOUT.read + 5.0
+_HA_TOOL_TIMEOUT_SEC = DEFAULT_READ_TIMEOUT_SEC + 5.0
 
 
 def make_home_assistant_tools(ha: HAClient | None):

@@ -329,3 +329,35 @@ def test_wake_threshold_default_matches_env_example(monkeypatch):
 
     env_value = float(_parse_env_example()["JASPER_WAKE_THRESHOLD"])
     assert Config.from_env().wake_threshold == env_value
+
+
+def test_config_import_chain_does_not_require_httpx():
+    """`import jasper.config` must not pull in httpx.
+
+    config.py imports home_assistant / bus / citibike (and, via bus,
+    the jasper.transit provider registry) purely for env-var names and
+    parse helpers. Those modules lazy-import httpx at their I/O points
+    so every config-loading process — socket-activated wizards,
+    jasper-doctor, tests in minimal envs — stays light and does not
+    hard-require httpx. Run in a subprocess with httpx poisoned in
+    sys.modules so an installed httpx can't mask a regression."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "sys.modules['httpx'] = None\n"  # makes `import httpx` raise
+        "import jasper.config\n"
+        "import jasper.home_assistant, jasper.bus, jasper.citibike\n"
+        "import jasper.transit\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(Path(__file__).parent.parent),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"

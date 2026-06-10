@@ -29,8 +29,15 @@ import threading
 import time
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import httpx
+# httpx is imported lazily inside the fetch/classify helpers that
+# perform (or categorise) I/O: jasper.config imports this module for
+# `parse_saved_stations` alone, so a top-level import made every
+# config-loading process pay httpx's import cost. Mirrors the
+# lazy-import pattern in jasper/transit/providers/.
+if TYPE_CHECKING:
+    import httpx
 
 from .transit.base import TransitError
 
@@ -77,6 +84,8 @@ _FEED_LOCK = threading.Lock()
 
 
 def _classify_error(exc: BaseException) -> str:
+    import httpx  # lazy — see import comment at top of module
+
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
     if isinstance(exc, ValueError):
@@ -92,6 +101,7 @@ def _http_get_json(url: str, client: httpx.Client | None) -> dict:
     the same shape as `nyc_bus._NycBus._client`."""
     owns = client is None
     if owns:
+        import httpx  # lazy — see import comment at top of module
         client = httpx.Client(timeout=HTTP_TIMEOUT)
     try:
         r = client.get(url, headers={"User-Agent": USER_AGENT})
@@ -120,6 +130,8 @@ def fetch_feed(
     `client` is a test-only injection seam — production callers leave
     it None so each call gets its own short-lived `httpx.Client`.
     """
+    import httpx  # lazy — see import comment at top of module
+
     with _FEED_LOCK:
         entry = _FEED_CACHE.get(url)
         if entry is not None and (time.monotonic() - entry.timestamp) < ttl_seconds:
