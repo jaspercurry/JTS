@@ -2469,10 +2469,15 @@ sudo /opt/jasper/.venv/bin/jasper-doctor
 ```
 
 Returns 0 if all critical checks pass. First thing to ask the
-user to run when something's broken. The doctor reads
-`/etc/jasper/jasper.env` and (if present)
-`/var/lib/jasper/voice_provider.env` itself — no need to source
-them into the calling shell.
+user to run when something's broken. The doctor sources the same
+env files `jasper-voice.service` does (`jasper.env` plus the
+wizard-owned `/var/lib/jasper/*.env` — transit, weather, Home
+Assistant, wake, etc.) itself via `jasper.env_load.ENV_FILES`, so
+its checks see the running config without you sourcing anything
+into the calling shell. That list mirrors the unit and is
+drift-guarded by `tests/test_env_load_mirrors_unit.py` — if it
+falls behind, the doctor silently misreports configured subsystems
+as "not configured."
 
 ### "The speaker restarted on its own" — hardware watchdog + cross-boot journal
 

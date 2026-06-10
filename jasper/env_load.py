@@ -3,18 +3,18 @@ CLI tools see the same vars the daemon's systemd unit sees, even
 when the user invokes them without sourcing `/etc/jasper/jasper.env`
 into their shell first.
 
-Mirrors the systemd unit's ``EnvironmentFile=`` directives:
-
-  1. ``/etc/jasper/jasper.env``                      — operator-managed
-  2. ``/var/lib/jasper/spotify_credentials.env``     — Spotify wizard-managed
-     (overrides 1 on conflict)
-  3. ``/var/lib/jasper/voice_provider.env``          — web-wizard-managed
-     (overrides earlier files on conflict)
-  4. ``/var/lib/jasper/google_credentials.env``      — Google wizard-managed
-     (CLIENT_ID/SECRET; overrides earlier files on conflict)
+``ENV_FILES`` MUST mirror ``jasper-voice.service``'s ``EnvironmentFile=``
+directives, in order (later file wins on conflict — a wizard file overrides a
+stale value an operator left in ``jasper.env``). When it drifts, CLI tools
+that build ``Config.from_env()`` silently see *less* config than the running
+daemon: e.g. ``jasper-doctor`` reported transit / Home Assistant / weather as
+"not configured" even when the household had them set, because those wizard
+files (``transit.env``, ``home_assistant.env``, ``weather.env``) were sourced
+by the daemon's unit but missing here. ``tests/test_env_load_mirrors_unit.py``
+asserts this list equals the unit's directives so it can't drift again.
 
 Variables already set in the calling shell (``FOO=bar jasper-cues``)
-take precedence over both — useful for one-off probes.
+take precedence over all of these — useful for one-off probes.
 """
 from __future__ import annotations
 
@@ -22,11 +22,18 @@ import os
 from pathlib import Path
 
 
+# Mirror of jasper-voice.service's EnvironmentFile= order. Guarded against
+# drift by tests/test_env_load_mirrors_unit.py — update BOTH together.
 ENV_FILES = (
     "/etc/jasper/jasper.env",
+    "/var/lib/jasper/speaker_name.env",
     "/var/lib/jasper/spotify_credentials.env",
     "/var/lib/jasper/voice_provider.env",
     "/var/lib/jasper/google_credentials.env",
+    "/var/lib/jasper/wake_model.env",
+    "/var/lib/jasper/weather.env",
+    "/var/lib/jasper/transit.env",
+    "/var/lib/jasper/home_assistant.env",
 )
 
 
