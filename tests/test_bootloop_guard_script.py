@@ -69,7 +69,7 @@ class Harness:
 
     def run(
         self, *, now: int, window: int = 3600, threshold: int = 3,
-        boot_id: str | None = None,
+        boot_id: str | None = None, reason: str = "test",
     ):
         env = {
             "PATH": "/usr/bin:/bin",
@@ -86,7 +86,7 @@ class Harness:
             "JASPER_SYSTEMCTL": str(self.fake_systemctl),
         }
         return subprocess.run(
-            ["bash", str(SCRIPT), "--reason", "test"],
+            ["bash", str(SCRIPT), "--reason", reason],
             env=env, capture_output=True, text=True, timeout=30,
         )
 
@@ -128,6 +128,11 @@ def test_threshold_boot_in_window_trips_and_writes_dropins(tmp_path):
     r = h.run(now=600)
     assert r.returncode == 0
     assert "event=bootloop_guard.tripped" in r.stderr
+    # Operator copy must carry the true StartLimitAction=none semantics:
+    # the sick unit parks failed once its burst is exhausted (it does
+    # NOT keep restart-looping), and reset-failed + start recovers it.
+    assert "parks failed" in r.stderr
+    assert "systemctl reset-failed" in r.stderr
     m = h.marker()
     assert m["tripped"] is True
     assert m["boots_in_window"] == 3
@@ -180,6 +185,24 @@ def test_future_timestamps_from_clock_jump_are_dropped(tmp_path):
     r = h.run(now=1000)
     assert "event=bootloop_guard.ok" in r.stderr
     assert h.marker()["boots_in_window"] == 1
+    # Dropping history is no longer silent — one structured line names
+    # the cause and count (clock_jump only; window pruning is the
+    # designed steady state and stays quiet).
+    assert (
+        "event=bootloop_guard.history_dropped reason=clock_jump count=2"
+        in r.stderr
+    )
+
+
+def test_window_pruning_stays_quiet(tmp_path):
+    """Aging out of the window is normal behaviour, not an anomaly —
+    no history_dropped line for it."""
+    h = Harness(tmp_path)
+    h.add_unit("jasper-camilla.service", REBOOT_UNIT)
+    h.run(now=0)
+    r = h.run(now=5000)  # boot at t=0 pruned from the 3600 s window
+    assert "event=bootloop_guard.ok" in r.stderr
+    assert "history_dropped" not in r.stderr
 
 
 def test_trip_with_no_reboot_units_is_a_noop(tmp_path):
@@ -309,6 +332,19 @@ def test_rerun_within_the_same_boot_is_idempotent(tmp_path):
     assert "event=bootloop_guard.ok" in r.stderr
     assert h.marker()["boots_in_window"] == 1
     assert not h.dropin_for("jasper-camilla.service").exists()
+
+
+def test_marker_json_survives_hostile_reason(tmp_path):
+    """--reason is interpolated into the marker JSON; quotes/backslashes
+    must not be able to break /state's parse. The script restricts the
+    value to a safe charset (hostile bytes degrade to underscores)."""
+    h = Harness(tmp_path)
+    h.add_unit("jasper-camilla.service", REBOOT_UNIT)
+    r = h.run(now=1000, reason='a"b\\c\nd')
+    assert r.returncode == 0
+    m = h.marker()  # json.loads — the actual property under test
+    assert m["reason"] == "a_b_c_d"
+    assert m["tripped"] is False
 
 
 def test_garbage_tuning_env_falls_back_to_defaults(tmp_path):

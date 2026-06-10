@@ -2758,9 +2758,10 @@ install_systemd_units() {
     # Boot-loop guard. Type=oneshot cross-boot circuit breaker for the
     # T5.1 StartLimitAction=reboot ladder: on the Nth boot inside the
     # window it writes runtime drop-ins (StartLimitAction=none) so a
-    # PERMANENT daemon failure leaves the Pi restart-looping but
-    # reachable instead of rebooting forever. Runtime drop-ins live in
-    # /run and self-clear on the next healthy boot.
+    # PERMANENT daemon failure parks the sick unit failed (visible to
+    # systemctl/doctor; systemctl reset-failed + start to recover) but
+    # leaves the Pi reachable instead of rebooting forever. Runtime
+    # drop-ins live in /run and self-clear on the next healthy boot.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-bootloop-guard.service" \
         "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
