@@ -102,6 +102,11 @@ def _run_reconcile(
             "JASPER_OUTPUT_HARDWARE_STATE_PATH": str(
                 tmp_path / "output_hardware.json"
             ),
+            # Hermetic: always source the repo's shared env-file lib, never
+            # a (possibly stale) installed copy under /usr/local/lib.
+            "JASPER_ENV_FILE_LIB": str(
+                ROOT / "deploy" / "lib" / "jasper-env-file.sh"
+            ),
         }
     )
     if extra_env:

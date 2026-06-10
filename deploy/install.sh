@@ -2650,6 +2650,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
         /usr/local/lib/jasper/jasper-asound-render.sh
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
+        /usr/local/lib/jasper/jasper-env-file.sh
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
         /usr/local/sbin/jasper-audio-hardware-reconcile
