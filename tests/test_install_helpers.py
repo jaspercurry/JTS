@@ -448,3 +448,171 @@ def test_install_asound_renderer_keeps_invalid_route_warning_out_of_config(
     assert "type hw" in rendered
     assert "card sndrpihifiberry" in rendered
     assert "type route" not in rendered
+
+
+def _sha256_of(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _make_source_archive(tmp_path: Path) -> tuple[Path, str]:
+    """Build a small tar.gz shaped like a GitHub source archive
+    (one top-level dir, stripped by --strip-components=1)."""
+    tree = tmp_path / "pkg-1.0"
+    tree.mkdir()
+    (tree / "hello.c").write_text("int main(void) { return 0; }\n")
+    archive = tmp_path / "source.tar.gz"
+    subprocess.run(
+        ["tar", "-czf", str(archive), "-C", str(tmp_path), "pkg-1.0"],
+        check=True,
+        timeout=10,
+    )
+    return archive, _sha256_of(archive)
+
+
+def _run_fetch_verified(
+    url: str, sha: str, dest: Path,
+) -> subprocess.CompletedProcess[str]:
+    script = (
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+        f"fetch_verified_source_archive {shlex.quote(url)} "
+        f"{shlex.quote(sha)} {shlex.quote(str(dest))} test-archive"
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_fetch_verified_source_archive_populates_dest(tmp_path):
+    archive, sha = _make_source_archive(tmp_path)
+    dest = tmp_path / "dest"
+
+    result = _run_fetch_verified(f"file://{archive}", sha, dest)
+
+    assert result.returncode == 0, result.stderr
+    assert (dest / "hello.c").exists()
+
+
+def test_fetch_verified_source_archive_preserves_dest_on_bad_hash(tmp_path):
+    """Fetch-to-temp-then-swap: a failed verification must NOT destroy
+    the previously-extracted source at dest (the pre-fix shape rm -rf'd
+    dest before curl, stranding the install under set -e)."""
+    archive, _ = _make_source_archive(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    sentinel = dest / "previous-source.c"
+    sentinel.write_text("previous good tree\n")
+
+    result = _run_fetch_verified(f"file://{archive}", "0" * 64, dest)
+
+    assert result.returncode != 0
+    assert sentinel.exists()
+    assert sentinel.read_text() == "previous good tree\n"
+
+
+def test_fetch_verified_source_archive_preserves_dest_on_fetch_failure(tmp_path):
+    """A download failure (here: nonexistent file:// URL) must also
+    leave the destination untouched."""
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    sentinel = dest / "previous-source.c"
+    sentinel.write_text("previous good tree\n")
+
+    result = _run_fetch_verified(
+        f"file://{tmp_path}/no-such-archive.tar.gz", "0" * 64, dest,
+    )
+
+    assert result.returncode != 0
+    assert sentinel.exists()
+
+
+def test_shairport_build_completes_before_old_binary_is_removed():
+    """install_renderers must fetch + compile the shairport-sync
+    replacement BEFORE stopping the service and apt-removing the old
+    binary. Under set -e, the old order stranded the Pi with no AirPlay
+    when the download or build failed."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+
+    idx_fetch = text.index('"${tmpdir}/sps"')
+    idx_stop = text.index("systemctl stop shairport-sync")
+    idx_remove = text.index("apt-get remove -y shairport-sync")
+    idx_make_install = text.index("make install || true")
+
+    # The compile (first `make -j4` after the sps fetch) must precede
+    # the stop/remove, which must precede `make install`.
+    idx_build = text.index("make -j4", idx_fetch)
+    assert idx_fetch < idx_build < idx_stop < idx_remove < idx_make_install
+
+
+def test_install_curl_fetches_are_bounded_and_retried():
+    """Every direct multi-MB curl in install.sh carries bounded retries
+    and a transfer cap so flaky Pi WiFi doesn't abort (or hang) the
+    install."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("curl ", "if ! curl ")) and "-o" in stripped:
+            assert "--retry 3" in stripped, stripped
+            assert "--retry-connrefused" in stripped, stripped
+            assert "--max-time" in stripped, stripped
+
+
+def test_pip_toolchain_bootstrap_is_exact_pinned():
+    """The venv's pip/wheel bootstrap must be pinned exactly — an
+    unpinned `--upgrade pip wheel` re-resolved the installer toolchain
+    on every deploy."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    assert re.search(
+        r'pip" install --upgrade pip==\d+\.\d+(\.\d+)? wheel==\d+\.\d+(\.\d+)?',
+        text,
+    )
+    assert 'install --upgrade pip wheel' not in text
+
+
+def _run_require_build_user(tmp_path: Path, getent_rc: int) -> subprocess.CompletedProcess[str]:
+    """Run require_build_user with a stub `getent` ahead of PATH so the
+    test controls whether the build user 'exists'."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "getent"
+    stub.write_text(f"#!/usr/bin/env bash\nexit {getent_rc}\n", encoding="utf-8")
+    stub.chmod(0o755)
+    script = (
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+        f"export PATH={shlex.quote(str(bindir))}:$PATH && "
+        "require_build_user"
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+
+def test_require_build_user_passes_when_user_exists(tmp_path):
+    result = _run_require_build_user(tmp_path, getent_rc=0)
+    assert result.returncode == 0, result.stderr
+
+
+def test_require_build_user_fails_fast_with_remediation(tmp_path):
+    """Missing 'pi' must fail with an actionable message — this runs
+    before any host mutation so a custom-user host stops at second zero
+    instead of 15 minutes in, mid-apt."""
+    result = _run_require_build_user(tmp_path, getent_rc=2)
+    assert result.returncode != 0
+    assert "build user 'pi' does not exist" in result.stderr
+    assert "adduser" in result.stderr
+    assert "before any packages or services were modified" in result.stderr
+
+
+def test_main_preflights_build_user_before_mutation():
+    """require_build_user must run in main() before install_deps (the
+    first host-mutating step)."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    main_body = text[text.index("\nmain() {"):]
+    assert main_body.index("require_build_user") < main_body.index("install_deps")
