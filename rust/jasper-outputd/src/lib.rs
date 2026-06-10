@@ -17,6 +17,10 @@ pub mod ledger;
 pub mod loudness;
 pub mod mixer;
 pub mod reference;
+// ⚠️ DEAD CODE: `snapfifo` is unwired (no `main.rs`/`config.rs` reference).
+// Re-wiring it without a jasper-fanin music-only stream re-introduces the inv-3
+// TTS-to-followers leak — see the module-level warning in `snapfifo.rs` and the
+// BLOCKER in HANDOFF-multiroom.md §2.
 pub mod snapfifo;
 pub mod state;
 pub mod types;

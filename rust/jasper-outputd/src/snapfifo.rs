@@ -1,5 +1,24 @@
 //! Best-effort writer to the Snapcast pipe FIFO (multi-room LEADER only).
 //!
+//! ⚠️  DEAD CODE — DO NOT RE-WIRE WITHOUT TTS SEPARATION (inv-3 landmine).
+//!
+//! This type is currently UNWIRED: `grep SnapfifoSink rust/` returns only this
+//! file. It was a live `ReferenceFanout` consumer in commit 050d334, but commit
+//! 9102e13 (which moved assistant/TTS ingress into `jasper-fanin`, see
+//! `lib.rs`) removed the `snapfifo_path` config field and the `main.rs` wiring.
+//! `Config::from_env` no longer reads `JASPER_OUTPUTD_SNAPFIFO_PATH`, so the
+//! reconciler's env write is inert and nothing here runs.
+//!
+//! Re-applying the 050d334 wiring AS-IS would ship a regression: on the live
+//! `run_alsa` path the published `content_buf` is the fanin output = **music +
+//! TTS** (TTS is mixed upstream by fanin), so this writer would stream the
+//! LEADER's TTS to followers — an inv-3 violation (V1 is leader-LOCAL TTS only;
+//! HANDOFF-multiroom.md §6). It MUST NOT be re-activated until `jasper-fanin`
+//! emits a **music-only** stream for the tap. See the BLOCKER + corrected
+//! TTS-separation design at the top of HANDOFF-multiroom.md §2 "inv-2
+//! realization". Kept (not deleted) because that design names this the
+//! music-half component to reuse once the music-only stream lands.
+//!
 //! A grouping leader's jasper-outputd taps a copy of the post-clamp stereo
 //! program into this FIFO; `snapserver` reads it as a `pipe` source and
 //! streams it to the room's followers (and the leader's own snapclient).

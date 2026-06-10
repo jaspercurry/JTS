@@ -181,3 +181,37 @@ def check_grouping_channel_split() -> CheckResult:
             "(wrong channel); regenerate the config (re-run /sound or /correction)",
         )
     return CheckResult(label, "ok", f"channel_select present for channel={cfg.channel}")
+
+
+@doctor_check(order=78, group="grouping")
+def check_grouping_tts_separation() -> CheckResult:
+    """Surface the inv-2/inv-3 TTS-separation BLOCKER for a grouping LEADER.
+
+    The multi-room snapfifo producer (``jasper-outputd`` ``SnapfifoSink``) is
+    currently UNWIRED — commit 9102e13 moved assistant/TTS ingress into
+    ``jasper-fanin`` and removed the outputd snapfifo reader, so
+    ``Config::from_env`` no longer reads ``JASPER_OUTPUTD_SNAPFIFO_PATH``. A
+    grouping leader therefore does NOT stream to followers today (the
+    reconciler's tap env is inert), and re-wiring the producer as-is would leak
+    the leader's TTS to followers — TTS is pre-mixed into the streamed program
+    by fanin, an inv-3 violation (V1 is leader-LOCAL TTS only).
+
+    This check is the honest operator signal so a configured leader is not
+    mistaken for a working stream (the per-unit runtime health can read green
+    while the tap env is intent-only). ``ok`` for solo / off / invalid / a
+    follower; ``warn`` for an active LEADER until TTS separation lands (see
+    HANDOFF-multiroom.md §2 "inv-2 realization")."""
+    from ...multiroom.config import is_active_member, load_config
+
+    label = "grouping: TTS separation"
+    cfg = load_config()
+    if not is_active_member(cfg) or cfg.role != "leader":
+        return CheckResult(label, "ok", "n/a (solo / follower / off)")
+    return CheckResult(
+        label, "warn",
+        "leader streaming is behind the TTS-separation blocker: the outputd "
+        "snapfifo producer is unwired (no fanin music-only stream yet), so this "
+        "leader does not yet stream to followers; re-wiring it without TTS "
+        "separation would leak the leader's TTS to followers (inv-3). See "
+        "HANDOFF-multiroom.md §2 'inv-2 realization'.",
+    )
