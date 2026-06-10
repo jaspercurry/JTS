@@ -40,11 +40,10 @@
 | Check udev SYSTEMD_WANTS hotplug targets are shipped units | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — udev → unit chain guard |
 | Check wizard-socket ListenStream ports match nginx upstreams (PR #118 502 class) | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — two-sided socket↔nginx parity guard |
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
-| Pin a documented invariant / convention with a test | [Guard & contract test patterns](#guard--contract-test-patterns) |
+| Pin a documented invariant / convention with a test (registry coverage, SSOT readers, env-var codification, cross-language wire shapes) | [Guard & contract test patterns](#guard--contract-test-patterns) |
 | Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
 | Capture from a non-bridge source (satellite mic, raw chip) | [Capture: alternative sources](#capture-alternative-sources) |
-| Pin a cross-language / cross-process name or shape (Rust↔Python JSON, env-var sets, dashboard payloads, doc-map globs) | [Guard & contract test patterns](#guard--contract-test-patterns) |
 
 ---
 
@@ -100,6 +99,15 @@ the closest one rather than inventing a new guard style:
 | Assert an import chain stays light (no heavy hard-deps in wizards/config) | [`tests/test_web_wizard_import_chain.py`](../tests/test_web_wizard_import_chain.py) + `tests/test_config.py::test_config_import_chain_does_not_require_httpx` — poisoned-import chain contract: import in a subprocess with the heavy module poisoned in `sys.modules`, so an installed copy can't mask a regression |
 | Keep a hand-written plan/summary covering an orchestrator's real steps | [`tests/test_install_plan_covers_main.py`](../tests/test_install_plan_covers_main.py) — orchestrator/plan coverage: parses `main()`'s calls, asserts each maps to a marker in the actual `--dry-run` output; meta-assertions fail stale mappings loudly |
 | Enforce an observability convention across every handler of a class | [`tests/test_web_wizard_event_audit.py`](../tests/test_web_wizard_event_audit.py) — behavior-coverage guard: every state-mutating/restarting wizard handler must emit an `event=` audit line; on first run it caught 3 unaudited voice-provider handlers that a manual sweep and three independent reviews had all missed |
+| Keep deploy/ artifacts and install.sh wiring in lockstep (orphan units, wizard-env precedence, udev chains, socket↔nginx parity) | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — four structural guards: two-sided orphan-artifact coverage (every shipped unit/rule/script has an install reference and vice versa), "wizard env file wins" `EnvironmentFile=` ordering, udev `SYSTEMD_WANTS` → shipped unit, wizard-socket↔nginx port parity (the PR #118 502 class) |
+| Pin a Rust↔Python JSON wire shape (fan-in / outputd `STATUS`) | `test_fanin_status_keys_match_python_consumers` + `test_outputd_status_keys_match_python_consumers` in [`tests/test_wire_contracts.py`](../tests/test_wire_contracts.py) — grep-pins the Rust emitter's keys against every Python consumer; fail-soft seams drift loudly instead of degrading to null |
+| Pin a cross-process command vocabulary or socket-path literal | `test_fanin_control_command_vocabulary_matches_mux` + `test_control_socket_paths_agree_across_processes` in [`tests/test_wire_contracts.py`](../tests/test_wire_contracts.py) — `STATUS`/`AUTO`/`NONE`/`SELECT` mux ↔ state.rs, plus Rust defaults / systemd env / Python consumers agreeing on socket paths |
+| Detect silent no-op env knobs across a language boundary | `test_outputd_fanin_env_names_are_read_by_rust_or_excepted` + `test_env_contract_exceptions_stay_accurate` in [`tests/test_wire_contracts.py`](../tests/test_wire_contracts.py) — every `JASPER_OUTPUTD_*` / `JASPER_FANIN_*` name set by bash/units/install.sh/.env.example must be read by Rust `from_env`, with a documented-exceptions list for staged vars whose companion test fails when an exception goes dead or live |
+| Keep dashboard ES-module payload keys matching the server's snapshot payload | `test_dashboard_snapshot_top_level_keys_exist_in_server_payload` + `test_dashboard_metrics_current_keys_exist_in_sampler` + `test_dashboard_airplay_card_keys_exist_in_health_sampler` in [`tests/test_wire_contracts.py`](../tests/test_wire_contracts.py) — `snap.*` / `metrics.current.*` / airplay-card nested keys read by the JS must exist in the Python payload builders |
+| Enforce a single-reader rule for a wizard-owned env var | [`tests/test_voice_provider_ssot_reader.py`](../tests/test_voice_provider_ssot_reader.py) — only `Config.from_env` reads `JASPER_VOICE_PROVIDER` from `os.environ`; every other surface must go through `jasper.voice.provider_state` (AGENTS.md "one reader, never os.environ") |
+| Enforce "Codify, don't memorise" — every env var read has a codification surface | [`tests/test_env_vars_codified.py`](../tests/test_env_vars_codified.py) — every `JASPER_*` env var read in `jasper/` must appear in `.env.example` prose, deploy/, scripts/, or a wizard writer; `_UNCODIFIED` allowlist for internal seams, grouped and commented |
+| Keep a registry and its call sites in set-equality (no orphans either way) | [`tests/test_cue_registry_coverage.py`](../tests/test_cue_registry_coverage.py) — cue registry ↔ `cues.play()` sites, both directions, no allowlist: no orphan `CueDef`, no play call naming an unregistered slug (AGENTS.md "No silent failure paths") |
+| Enforce per-tool regression-scenario coverage without running the paid suite | [`tests/test_tools_have_regression_scenarios.py`](../tests/test_tools_have_regression_scenarios.py) — static file scan only: every `@tool` in jasper/tools/ is named in a `tests/voice_eval/regression/` scenario; `_KNOWN_UNCOVERED` burn-down list must only shrink |
 
 ---
 
@@ -717,46 +725,6 @@ Non-bridge captures, for completeness:
 |---|---|---|
 | [`scripts/capture-chip-mic.sh`](../scripts/capture-chip-mic.sh) | XVF3800 processed conference channel via `arecord` | Quick single-stream mic recording for SNR comparison; does NOT use the bridge |
 | [`scripts/capture-satellite-amoled.sh`](../scripts/capture-satellite-amoled.sh) | AMOLED satellite ESP32 via USB-CDC | Validating satellite mic firmware; compares against the chip mic |
-
----
-
-## Guard & contract test patterns
-
-Static, hardware-free tests that pin the *names and shapes* crossing a
-language or process boundary, in the grep-pin style established by
-[`tests/test_outputd_wiring.py`](../tests/test_outputd_wiring.py).
-Every consumer on these seams is fail-soft (a renamed key degrades to
-null / a blank card / a silently-ignored env var), so drift never
-throws at runtime — these guards make it a loud test failure naming
-both sides. Before adding a new one, check this catalog; extend the
-matching test module rather than starting a parallel one.
-
-| Seam | Guard |
-|---|---|
-| fan-in `STATUS` JSON (Rust emitter ↔ Python consumers: doctor, airplay health, correction integrity) | `test_fanin_status_keys_match_python_consumers` in [`tests/test_wire_contracts.py`](../tests/test_wire_contracts.py) |
-| outputd `STATUS` JSON (Rust emitter ↔ audio validation + doctor) | `test_outputd_status_keys_match_python_consumers` (same module) |
-| fan-in control-UDS command vocabulary (`STATUS`/`AUTO`/`NONE`/`SELECT`, mux ↔ state.rs) | `test_fanin_control_command_vocabulary_matches_mux` (same module) |
-| control-socket path literals (Rust defaults / systemd env / every Python consumer) | `test_control_socket_paths_agree_across_processes` (same module) |
-| `JASPER_OUTPUTD_*` / `JASPER_FANIN_*` env names (bash reconcilers, units, install.sh, .env.example ↔ Rust `from_env`) — silent no-op knob detector, with a documented-exceptions list for staged vars | `test_outputd_fanin_env_names_are_read_by_rust_or_excepted` + `test_env_contract_exceptions_stay_accurate` (same module) |
-| `/system/snapshot` payload ↔ dashboard ES modules (`snap.*`, `metrics.current.*`, airplay-card nested keys) | `test_dashboard_snapshot_top_level_keys_exist_in_server_payload` + `test_dashboard_metrics_current_keys_exist_in_sampler` + `test_dashboard_airplay_card_keys_exist_in_health_sampler` (same module) |
-| `docs/doc-map.toml` code globs match ≥1 tracked file (stale-glob → silently un-routed docs; `safety = "design-only"` entries are exempt — anticipatory globs are their point) | `test_doc_map_code_globs_match_at_least_one_tracked_file` in [`tests/test_docs_impact.py`](../tests/test_docs_impact.py) |
-| env files sourced by doctor mirror `jasper-voice.service` | [`tests/test_env_load_mirrors_unit.py`](../tests/test_env_load_mirrors_unit.py) |
-| CamillaDSP config shape | [`tests/test_camilla_config_contract.py`](../tests/test_camilla_config_contract.py) |
-| PEQ math JS ↔ Python | [PEQ graph math parity](#peq-graph-math-parity-js--python) above |
-
-Pattern rules, learned the hard way:
-- Pin **names/shapes, not implementations** — a guard that asserts
-  internal call order belongs in the subsystem's own wiring test.
-- Pin **both sides**: the producer must emit the name AND the consumer
-  must still reference it, so a stale pin in the guard itself fails
-  loudly instead of rotting.
-- **Mutation-verify** a new guard before landing it: inject the drift
-  (rename the key / add the bogus env var) and confirm the failure
-  message names both files.
-- Intentional one-sided names (staged features, consumer-side-only
-  knobs) go in an **explicit exceptions table with a reason and an
-  SSOT pointer**, plus a companion test that fails when the exception
-  goes dead or goes live.
 
 ---
 
