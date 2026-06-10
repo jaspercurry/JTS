@@ -16,6 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ._registry import doctor_check
 from ._shared import (
@@ -183,6 +184,45 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
     return CheckResult(
         name, "ok",
         f"last supervisor reboot {age / 3600:.1f}h ago — 24h rate-limit armed",
+    )
+
+
+@doctor_check(order=79, group="resilience")
+def check_bootloop_guard() -> CheckResult:
+    """Surface the boot-loop guard marker (T5.1 circuit breaker).
+
+    The guard (deploy/bin/jasper-bootloop-guard, oneshot at boot) is
+    fail-open everywhere, so a tripped state — reboot escalation
+    disarmed for this boot via runtime StartLimitAction=none drop-ins
+    — is otherwise only visible in the journal and on /state. Reads
+    the /run marker through the same module jasper-control's /state
+    uses (jasper.control.bootloop_guard_state). A missing or corrupt
+    marker is normal (guard never ran this boot — dev host, fresh
+    install) and reads as armed."""
+    name = "boot-loop guard"
+    snap = _bootloop_guard_snapshot()
+    if not snap.get("ran"):
+        return CheckResult(
+            name, "ok",
+            "no marker this boot — guard armed (T5.1 reboot escalation "
+            "active)",
+        )
+    if not snap.get("tripped"):
+        return CheckResult(
+            name, "ok",
+            f"guard armed ({snap.get('boots_in_window')} boot(s) in a "
+            f"{snap.get('window_sec')}s window, threshold "
+            f"{snap.get('threshold')})",
+        )
+    units = [str(u) for u in (snap.get("units") or [])]
+    return CheckResult(
+        name, "warn",
+        "TRIPPED — boot loop detected; reboot escalation disarmed this "
+        "boot for: " + (", ".join(units) or "(no units recorded)") +
+        ". A unit exhausting its restart budget parks failed instead of "
+        "rebooting. Fix the failing daemon, then `systemctl reset-failed "
+        "<unit> && systemctl start <unit>` (drop-ins self-clear on the "
+        "next boot).",
     )
 
 
