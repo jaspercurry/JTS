@@ -210,23 +210,64 @@ require_root() {
     fi
 }
 
+# The user the Rust daemon builds run as. build_install_jasper_fanin /
+# build_install_jasper_outputd chown their cargo cache dirs to this user
+# and `sudo -u` the builds — the appliance-standard account, NOT the
+# laptop-side PI_USER deploy transport setting (custom appliance users
+# are out of scope; see "Custom user boundary" in AGENTS.md).
+BUILD_USER="pi"
+
+require_build_user() {
+    # Fail fast, BEFORE any host mutation. Without this preflight a
+    # custom-user install died ~15 minutes in, at the first
+    # `chown pi:pi` in build_install_jasper_fanin — after apt packages
+    # and the renderer stack had already been mutated.
+    if getent passwd "${BUILD_USER}" >/dev/null 2>&1; then
+        return 0
+    fi
+    cat >&2 <<EOF
+ERROR: required build user '${BUILD_USER}' does not exist on this host.
+
+install.sh builds the Rust audio daemons (jasper-fanin, jasper-outputd)
+as the appliance-standard '${BUILD_USER}' user. Custom appliance
+users are not supported (PI_USER only covers the deploy/onboarding
+transport). Create the user, then re-run the install:
+
+    sudo adduser --disabled-password --gecos "" ${BUILD_USER}
+
+Failing now, before any packages or services were modified.
+EOF
+    return 1
+}
+
 fetch_verified_source_archive() {
+    # Fetch-to-temp-then-swap: download, hash-check, and extract into a
+    # staging dir first; only replace ${dest_dir} once everything
+    # succeeded. The previous shape rm -rf'd the destination BEFORE the
+    # curl, so under `set -e` a transient network failure aborted the
+    # install with the prior source tree already destroyed. Bounded
+    # retries absorb flaky Pi WiFi; --max-time caps a stalled transfer
+    # (these archives are a few MB) so the install can't hang forever.
     local url="$1"
     local expected_sha="$2"
     local dest_dir="$3"
     local label="$4"
-    local tmpdir archive
+    local tmpdir archive staging
 
     tmpdir="$(mktemp -d)"
     archive="${tmpdir}/source.tar.gz"
+    staging="${tmpdir}/extracted"
 
-    rm -rf "${dest_dir}"
-    mkdir -p "${dest_dir}"
     echo "    fetching ${label} source archive"
     echo "    from: ${url}"
-    curl -fsSL -o "${archive}" "${url}"
+    curl -fsSL --retry 3 --retry-connrefused --max-time 300 \
+        -o "${archive}" "${url}"
     echo "${expected_sha}  ${archive}" | sha256sum -c -
-    tar -xzf "${archive}" -C "${dest_dir}" --strip-components=1
+    mkdir -p "${staging}"
+    tar -xzf "${archive}" -C "${staging}" --strip-components=1
+    rm -rf "${dest_dir}"
+    mkdir -p "$(dirname "${dest_dir}")"
+    mv "${staging}" "${dest_dir}"
     rm -rf "${tmpdir}"
 }
 
@@ -547,7 +588,10 @@ EOF
         local tmpdir
         tmpdir="$(mktemp -d)"
         echo "Fetching CamillaDSP ${CAMILLA_VERSION}..."
-        curl -fsSL -o "${tmpdir}/${CAMILLA_TARBALL}" "${CAMILLA_URL}"
+        # Bounded retries + transfer cap: same rationale as
+        # fetch_verified_source_archive (multi-MB fetch on flaky WiFi).
+        curl -fsSL --retry 3 --retry-connrefused --max-time 300 \
+            -o "${tmpdir}/${CAMILLA_TARBALL}" "${CAMILLA_URL}"
         echo "${CAMILLA_SHA256}  ${tmpdir}/${CAMILLA_TARBALL}" | sha256sum -c -
         tar -xzf "${tmpdir}/${CAMILLA_TARBALL}" -C "${CAMILLA_DIR}" camilladsp
         chmod +x "${CAMILLA_DIR}/camilladsp"
@@ -785,7 +829,10 @@ install_renderers() {
         echo "Installing librespot via raspotify ${RASPOTIFY_VERSION}..."
         local tmpdir
         tmpdir="$(mktemp -d)"
-        curl -fsSL -o "${tmpdir}/raspotify.deb" "${RASPOTIFY_URL}"
+        # Bounded retries + transfer cap: same rationale as
+        # fetch_verified_source_archive (multi-MB fetch on flaky WiFi).
+        curl -fsSL --retry 3 --retry-connrefused --max-time 300 \
+            -o "${tmpdir}/raspotify.deb" "${RASPOTIFY_URL}"
         echo "${RASPOTIFY_SHA256}  ${tmpdir}/raspotify.deb" | sha256sum -c -
         DEBIAN_FRONTEND=noninteractive apt install -y "${tmpdir}/raspotify.deb"
         rm -rf "${tmpdir}"
@@ -832,11 +879,12 @@ install_renderers() {
     fi
     if [[ "$need_build" == "1" ]]; then
         echo "Building shairport-sync ${SHAIRPORT_SYNC_VERSION} with AirPlay 2..."
-        # Remove apt-installed AP1 build if present. Keep
-        # /etc/shairport-sync.conf — apt remove preserves it; apt
-        # purge doesn't, so we use remove.
-        systemctl stop shairport-sync 2>/dev/null || true
-        apt-get remove -y shairport-sync 2>/dev/null || true
+        # Fetch + build FIRST, touch the live install only after the
+        # build succeeded. The previous order stopped shairport-sync and
+        # apt-removed the old binary before the download/compile — under
+        # `set -e` a fetch or build failure stranded the Pi with no
+        # AirPlay at all. Now a failure leaves whatever was previously
+        # installed (apt AP1 build or older source build) still serving.
         local tmpdir
         tmpdir="$(mktemp -d)"
         fetch_verified_source_archive \
@@ -854,6 +902,14 @@ install_renderers() {
                 --with-metadata --with-dbus-interface \
                 --with-mpris-interface
             make -j4
+        )
+        # Build succeeded — now remove the apt-installed AP1 build if
+        # present. Keep /etc/shairport-sync.conf — apt remove preserves
+        # it; apt purge doesn't, so we use remove.
+        systemctl stop shairport-sync 2>/dev/null || true
+        apt-get remove -y shairport-sync 2>/dev/null || true
+        (
+            cd "${tmpdir}/sps"
             # `make install` may fail at the systemd step due to an
             # `install` flag mismatch on Trixie — the binary lands fine
             # at /usr/local/bin/shairport-sync. We deploy our own unit
@@ -1202,7 +1258,20 @@ EOF
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
     fi
-    "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip wheel
+    # Pin the installer toolchain exactly. The previous unpinned
+    # `--upgrade pip wheel` made every deploy pull whatever PyPI had
+    # newest that morning — silent behavior drift (resolver changes,
+    # build-isolation changes) on the highest-blast-radius script in
+    # the repo. Bump these deliberately, with a deploy to verify.
+    #
+    # Known limitation / follow-up: this freezes only pip+wheel. The
+    # application dependency tree (pyproject.toml) is still open-ranged
+    # for several packages (openai>=, scipy>=, onnxruntime>=, ...). The
+    # right fix is a pip constraints file generated ON the Pi (arm64 +
+    # Python 3.13 resolve different wheels than a laptop, so the lock
+    # must be produced on-platform) and passed to the `pip install -e`
+    # below via `-c`. Tracked as follow-up; out of scope for this pin.
+    "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip==26.1.2 wheel==0.47.0
 
     # openwakeword 0.6.0 hard-requires tflite-runtime on Linux, but
     # tflite-runtime has no Python 3.13 wheel (and PiOS Trixie ships
@@ -3416,7 +3485,8 @@ install_camillagui() {
         local tmpdir
         tmpdir=$(mktemp -d)
         local url="https://github.com/HEnquist/camillagui-backend/releases/download/v${CAMILLAGUI_VERSION}/${bundle}"
-        if ! curl -fsSL -o "${tmpdir}/cg.tar.gz" "${url}"; then
+        if ! curl -fsSL --retry 3 --retry-connrefused --max-time 300 \
+                -o "${tmpdir}/cg.tar.gz" "${url}"; then
             echo "  WARNING: CamillaGUI download failed — skipping"
             rm -rf "${tmpdir}"
             return 0
@@ -3531,6 +3601,7 @@ main() {
 
     echo "==> install.sh starting"
     require_root
+    require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
