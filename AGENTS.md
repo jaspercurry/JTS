@@ -93,6 +93,78 @@ remaining validation gap explicitly.
 
 ---
 
+## Config ownership — which pattern for a new DAC / mic / provider / city
+
+When you add a pluggable subsystem (a DAC, a mic array, an LLM voice
+provider, a transit city/mode), the first decision is **who owns its
+config and who parses it**. JTS has three established patterns. Pick by
+the *shape* of the thing, not by habit — the wrong one is how the core
+grows a per-plugin edit it shouldn't have.
+
+| If the new thing is… | Pattern | Owns + parses config |
+|---|---|---|
+| read widely by the core / hot path, stable, small | **1. Central typed `Config`** | [`jasper/config.py`](jasper/config.py) — one `from_env` parse point |
+| one more of an open-ended set of self-similar plugins | **2. Self-contained module + registry** | the plugin module parses its own env from a plain `Mapping` |
+| a hardware variant selected at runtime (presence is dynamic) | **3. Pure-data registry + reconciler** | a reconciler is the *single* env writer; daemons read the resolved env |
+
+**1 — Central typed `Config`.** For cross-cutting, stable config the
+daemon reads on the hot path (`hostname`, AEC knobs, volume headroom).
+Typed access, one parse point ([`jasper/config.py`](jasper/config.py),
+`@dataclass(frozen=True)` + `from_env`). Cost: every field is a central
+edit. *Don't* put per-plugin config here — N plugins would mean N core
+edits and a bloated config object. (Transit config was pulled out of
+`Config` for exactly this reason.)
+
+**2 — Self-contained module + registry (the transit pattern).** For an
+open-ended set of structurally-similar plugins. Canonical example:
+[`jasper/transit/`](jasper/transit/__init__.py) — each provider satisfies
+the `TransitProvider` Protocol ([`jasper/transit/base.py`](jasper/transit/base.py)),
+declares its own `env_keys`, and parses them itself in `build_client(env)`
+from a plain `Mapping[str, str]` (the daemon passes `os.environ`). A
+registry (`CITY_PACKS` → derived `REGISTRY`) groups them; the daemon calls
+one entry point (`active_transit(env)`) and iterates with **zero
+per-provider knowledge** — adding a provider/city needs no `config.py` and
+no `voice_daemon.py` edit. The next LLM voice provider is the same shape
+(the `LiveConnection` interface in
+[`jasper/voice/session.py`](jasper/voice/session.py) — a registry of
+interchangeable implementations behind one interface). The price: the
+plugin owns ALL its surfaces (wizard card, tool factory, client,
+validation) — see the 7-item checklist in
+[`jasper/transit/__init__.py`](jasper/transit/__init__.py)'s module
+docstring.
+
+**3 — Pure-data registry + reconciler owns env I/O (the wake-model / AEC /
+future-DAC pattern).** For hardware variants chosen at runtime where the
+hardware may or may not be present. A pure-data registry *describes* the
+variants ([`jasper/wake_models.py`](jasper/wake_models.py)'s `REGISTRY` of
+`WakeModelEntry`; the `JASPER_AUDIO_INPUT_PROFILE` profiles); a
+**reconciler** owns writing the concrete device env — `jasper-aec-reconcile`
+is the *single writer* of `JASPER_MIC_DEVICE_*`, mapping "selected profile
++ hardware actually present" → resolved devices, and self-heals as hardware
+comes and goes. Daemons **read** the resolved env; they never choose. A
+future DAC registry should follow this: pure-data DAC descriptors + an
+init/reconciler that writes the ALSA / CamillaDSP device config, **not**
+typed `Config` fields per DAC. Why a reconciler and not the wizard alone:
+hardware presence is dynamic, so resolution must re-run on boot / hotplug,
+not once at save time.
+
+**Doctor checks stay flat, one `CheckResult` per function.** `jasper-doctor`
+is a static registry of `@doctor_check`-decorated functions that each
+return a single `CheckResult` ([`jasper/cli/doctor/_registry.py`](jasper/cli/doctor/_registry.py)).
+A new subsystem that needs a health probe adds one more decorated function
+in the matching domain module — that's the scaling pattern, consistent
+across every domain. **Do not** add a `health_check()` method to the
+`TransitProvider` Protocol (or any plugin Protocol) to "generically"
+iterate plugins in the doctor: today only Citi Bike has a transit health
+probe (`check_citibike`), and the registry has no fan-out — a per-provider
+iterator would either collapse providers into one result (losing the
+per-station drift detail Citi Bike reports) or need framework surgery.
+Revisit only when ≥2 plugins genuinely need runtime probes *and* you're
+ready to give the registry a list-returning shape; until then a bespoke
+`check_<plugin>` is cheaper and clearer.
+
+---
+
 ## Documentation paradigm
 
 How docs in this repo are structured, so additions land in the
