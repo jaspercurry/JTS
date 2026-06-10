@@ -4,8 +4,6 @@ import os
 from dataclasses import dataclass
 
 from . import home_assistant as _ha_env
-from .bus import parse_bus_stops
-from .citibike import parse_saved_stations as _parse_citibike_stations
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
@@ -289,27 +287,10 @@ class Config:
     weather_default_display_name: str
     weather_units: str
 
-    subway_station_id: str
-    # Configured default direction for subway queries. "uptown" /
-    # "downtown" set a specific default; "" or "both" → answer in both
-    # directions when the voice query doesn't specify one.
-    subway_default_direction: str
-
-    # MTA BusTime. `bus_stops` is a tuple of (stop_id, label) pairs
-    # parsed from the wizard's JASPER_BUS_STOPS env var.
-    mta_bustime_key: str
-    bus_stops: tuple[tuple[str, str], ...]
-
-    # Citi Bike (NYC + Jersey City + Hoboken). Tuple of (station_id, label)
-    # pairs parsed from the wizard's JASPER_CITIBIKE_STATIONS env var.
-    # `citibike_ebike_only` is a household-wide preference flag: when
-    # true, voice answers suppress classic-bike counts and only mention
-    # e-bike availability. Per-station overrides were considered (a
-    # household might only need e-bikes at the far station but accept
-    # classic at the near one) but global was explicitly requested for
-    # simplicity. See jasper.citibike for the GBFS data layer.
-    citibike_stations: tuple[tuple[str, str], ...]
-    citibike_ebike_only: bool
+    # Transit (NYC subway / bus / Citi Bike, and future city packs) is NOT
+    # a Config field: each provider under jasper.transit.providers parses its
+    # OWN env keys in build_client(env), so adding a city/mode needs no edit
+    # here. The doctor + voice-eval read the same env keys directly.
 
     # Home Assistant integration. The /ha wizard (PR 2) writes
     # /var/lib/jasper/home_assistant.env with these values; daemon picks
@@ -800,39 +781,9 @@ class Config:
             weather_default_lon=weather_default_lon,
             weather_default_display_name=weather_default_display_name,
             weather_units=_env("JASPER_WEATHER_UNITS", "celsius"),
-            # NYC MTA subway. Empty station_id disables the tool.
-            # Find your stop_id at data.ny.gov/dataset/...subway-stations
-            # (column: "GTFS Stop ID"). 9 Av on the West End line is "B12".
-            subway_station_id=_env("JASPER_SUBWAY_STATION_ID", ""),
-            # No fallback default — empty means "both directions" at
-            # query time. The wizard's "Both" radio writes empty here.
-            subway_default_direction=_env(
-                "JASPER_SUBWAY_DEFAULT_DIRECTION", "",
-            ),
-            # NYC MTA bus (BusTime SIRI API). Configured through the
-            # /transit/ wizard, which discovers nearby stops via OBA
-            # `stops-for-location` and SIRI-probes their live routes.
-            # Empty key OR empty stops disables the tool.
-            mta_bustime_key=_env("JASPER_MTA_BUSTIME_KEY", ""),
-            # JASPER_BUS_STOPS is "id|label,id|label" — labels can
-            # contain spaces (e.g. "4 Av/39 St eastbound"), so a
-            # naive `.replace(",", " ").split()` like other list-
-            # shaped vars use would shred the labels into separate
-            # entries. Hand off to the canonical parser.
-            bus_stops=tuple(parse_bus_stops(_env("JASPER_BUS_STOPS", ""))),
-            # Citi Bike (NYC + JC + Hoboken). Same pipe-list format as
-            # JASPER_BUS_STOPS — see jasper.citibike.parse_saved_stations
-            # for the canonical parser. Empty list disables the tool.
-            citibike_stations=tuple(
-                _parse_citibike_stations(_env("JASPER_CITIBIKE_STATIONS", "")),
-            ),
-            # Household-wide e-bike-only preference. "1" / "true" / "yes"
-            # (case-insensitive) → True; anything else (empty, "0",
-            # "false") → False. Default False so a fresh install reports
-            # both kinds until the household opts in via the wizard.
-            citibike_ebike_only=_env(
-                "JASPER_CITIBIKE_EBIKE_ONLY", "",
-            ).strip().lower() in {"1", "true", "yes"},
+            # (Transit — subway / bus / Citi Bike — is no longer parsed here:
+            # each jasper.transit provider reads its own JASPER_SUBWAY_* /
+            # JASPER_BUS_* / JASPER_CITIBIKE_* keys in build_client(env).)
             # Home Assistant. Empty url OR empty token disables the tool
             # (cfg.ha_enabled gates registration). The /ha
             # wizard (PR 2) writes these to /var/lib/jasper/home_assistant.env;
@@ -917,10 +868,6 @@ class Config:
         }.get(self.voice_provider, "")
 
     @property
-    def subway_enabled(self) -> bool:
-        return bool(self.subway_station_id)
-
-    @property
     def weather_prompt_location(self) -> str:
         """Human-readable default location for the system addendum."""
         if self.weather_default_display_name:
@@ -930,16 +877,6 @@ class Config:
         if self.weather_default_lat is not None and self.weather_default_lon is not None:
             return f"{self.weather_default_lat:.3f}, {self.weather_default_lon:.3f}"
         return ""
-
-    @property
-    def bus_enabled(self) -> bool:
-        return bool(self.bus_stops and self.mta_bustime_key)
-
-    @property
-    def citibike_enabled(self) -> bool:
-        # GBFS is keyless, so the only gating condition is whether
-        # the household has saved any stations.
-        return bool(self.citibike_stations)
 
     @property
     def spotify_enabled(self) -> bool:

@@ -20,6 +20,8 @@ LLM cost still applies.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from tests.voice_eval import oracles
@@ -53,7 +55,7 @@ async def test_next_train_d_uptown(harness, trial: int) -> None:
 
     The model's spoken text comes from the provider's native
     transcript stream — no STT pass needed."""
-    if not harness.cfg.subway_enabled:
+    if not os.environ.get("JASPER_SUBWAY_STATION_ID", "").strip():
         pytest.skip(
             "voice-eval: subway not configured "
             "(JASPER_SUBWAY_STATION_ID empty) — set it to run this scenario",
@@ -74,9 +76,9 @@ async def test_next_train_d_uptown(harness, trial: int) -> None:
     # ground truth within tolerance. Tolerance is ±1 min to absorb
     # the ~50ms gap between the tool's MTA fetch and the oracle's.
     truth = await oracles.subway_arrivals(
-        station=harness.cfg.subway_station_id,
-        line=(harness.cfg.subway_lines[0] if harness.cfg.subway_lines else "D"),
-        direction=("N" if harness.cfg.subway_default_direction.lower()
+        station=os.environ.get("JASPER_SUBWAY_STATION_ID", ""),
+        line="D",
+        direction=("N" if os.environ.get("JASPER_SUBWAY_DEFAULT_DIRECTION", "").lower()
                    in {"uptown", "north", "northbound", "n", "manhattan"} else "S"),
     )
     if call.error:

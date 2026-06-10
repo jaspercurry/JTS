@@ -77,7 +77,6 @@ def test_build_test_registry_constructs_with_all_backends_enabled(monkeypatch):
     for key, value in _ALL_BACKENDS_ENV.items():
         monkeypatch.setenv(key, value)
     cfg = Config.from_env()
-    assert cfg.subway_enabled and cfg.bus_enabled and cfg.citibike_enabled
 
     test_state: dict[str, object] = {}
     try:
@@ -108,7 +107,6 @@ def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
     for key in _BACKEND_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     cfg = Config.from_env()
-    assert not cfg.subway_enabled and not cfg.bus_enabled
 
     test_state: dict[str, object] = {}
     try:

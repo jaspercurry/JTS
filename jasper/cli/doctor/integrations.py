@@ -6,6 +6,8 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import os
+
 from ...config import Config
 from ._registry import doctor_check
 from ._shared import CheckResult
@@ -139,7 +141,12 @@ def check_citibike(cfg: Config) -> CheckResult:
     """
     label = "Citi Bike"
     setup_url = f"http://{cfg.hostname}/transit"
-    if not cfg.citibike_enabled:
+    # Read the provider's config from the env directly (the wizard's SSOT,
+    # sourced via env_load) with the same parser the provider uses — transit
+    # config no longer rides typed Config fields.
+    from ...citibike import parse_saved_stations
+    saved = list(parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", "")))
+    if not saved:
         return CheckResult(
             label, "ok",
             f"not configured (skipped — visit {setup_url} to enable)",
@@ -166,7 +173,6 @@ def check_citibike(cfg: Config) -> CheckResult:
         for s in (info.get("data") or {}).get("stations", [])
         if isinstance(s, dict)
     }
-    saved = list(cfg.citibike_stations)
     missing = [(sid, lab) for sid, lab in saved if sid not in known_ids]
     if missing:
         names = ", ".join(lab for _, lab in missing[:3])
@@ -177,7 +183,11 @@ def check_citibike(cfg: Config) -> CheckResult:
             f"GBFS — Lyft retired them: {names}{suffix}. "
             f"Re-pick at {setup_url}.",
         )
-    extra = " (e-bike-only mode)" if cfg.citibike_ebike_only else ""
+    ebike_only = (
+        os.environ.get("JASPER_CITIBIKE_EBIKE_ONLY", "").strip().lower()
+        in {"1", "true", "yes"}
+    )
+    extra = " (e-bike-only mode)" if ebike_only else ""
     return CheckResult(
         label, "ok",
         f"connected — {len(saved)} saved station"
