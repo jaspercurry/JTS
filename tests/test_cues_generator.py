@@ -333,3 +333,70 @@ def test_provider_tts_generators_reject_empty_credentials():
             cls(api_key="", voice="anything")  # type: ignore[arg-type]
         with pytest.raises(ValueError):
             cls(api_key="x", voice="")  # type: ignore[arg-type]
+
+
+# --- Model-keyed cache busting ---
+
+
+def test_cue_hash_changes_with_model():
+    """The synthesis model is a cache-key input: flipping
+    JASPER_GEMINI_TTS_MODEL (or a provider TTS default bump) must land
+    cues in new filenames so the manager re-bakes."""
+    cue = CUES[0]
+    a = cue_hash(cue, "jts.local", "Aoede", model="gemini-3.1-flash-tts-preview")
+    b = cue_hash(cue, "jts.local", "Aoede", model="gemini-2.5-flash-preview-tts")
+    assert a != b
+
+
+def test_cue_path_and_filename_thread_model_through():
+    cue = CUES[0]
+    a = cue_filename(cue, "jts.local", "Aoede", model="model-a")
+    b = cue_filename(cue, "jts.local", "Aoede", model="model-b")
+    assert a != b
+    assert cue_path("/sounds", cue, "jts.local", "Aoede", "model-a").endswith(a)
+
+
+def test_dynamic_text_path_includes_model_in_hash(tmp_path):
+    from jasper.cues.generator import dynamic_text_path
+    a = dynamic_text_path(str(tmp_path), "Timer's up.", "Aoede", model="model-a")
+    b = dynamic_text_path(str(tmp_path), "Timer's up.", "Aoede", model="model-b")
+    assert a != b
+
+
+def test_backend_model_reads_backend_else_legacy_default():
+    """`backend_model` is the single derivation point for the cache-key
+    model. Backends expose `.model` (all three shipped generators);
+    None / model-less fakes fall back to the legacy TTS_MODEL constant
+    so pre-existing Gemini-default hashes stay stable."""
+    from jasper.cues.generator import (
+        GeminiTTSGenerator,
+        GrokTTSGenerator,
+        OpenAITTSGenerator,
+        TTS_MODEL,
+        backend_model,
+    )
+    assert backend_model(None) == TTS_MODEL
+    assert backend_model(object()) == TTS_MODEL
+    for cls in (GeminiTTSGenerator, OpenAITTSGenerator, GrokTTSGenerator):
+        g = cls(api_key="x", voice="v", model="custom-tts-9")
+        assert backend_model(g) == "custom-tts-9"
+
+
+def test_write_cue_filename_keyed_on_backend_model(tmp_path):
+    """write_cue must land the WAV at the model-keyed path — the same
+    one the manager's expected_path computes — for a backend with a
+    non-default model."""
+    from jasper.cues.generator import write_cue
+
+    class _ModelBackend:
+        model = "custom-tts-9"
+
+        def synthesise(self, text: str) -> TTSResult:
+            return TTSResult(pcm_24k=b"\x00\x00" * 240)
+
+    cue = CUES[0]
+    path = write_cue(cue, "jts.local", "Aoede", str(tmp_path), _ModelBackend())
+    assert path == cue_path(
+        str(tmp_path), cue, "jts.local", "Aoede", "custom-tts-9",
+    )
+    assert os.path.isfile(path)

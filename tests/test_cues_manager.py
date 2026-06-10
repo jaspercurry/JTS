@@ -260,3 +260,93 @@ def test_play_swallows_tts_write_exception(tmp_path):
     mgr.regenerate()
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is False
+
+
+# --- TTS-model change invalidation ---
+
+
+class _ModelledBackend(_FakeBackend):
+    """Fake exposing the `.model` property the three shipped generators
+    (Gemini/OpenAI/Grok) have — what `backend_model()` reads."""
+
+    def __init__(self, model: str) -> None:
+        super().__init__()
+        self.model = model
+
+
+def test_regenerate_after_model_change_writes_new_file_and_prunes(tmp_path):
+    """Flipping the TTS model (JASPER_GEMINI_TTS_MODEL, or a provider
+    default bump) must invalidate baked WAVs exactly like a hostname or
+    voice change: next regenerate writes a new hash and prunes the old
+    one. Pre-fix the cache key used a constant model, so stale WAVs in
+    the old model's voice played forever."""
+    from jasper.cues.generator import cue_path
+
+    cue = find("spend_cap_reached")
+    mgr_old = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local",
+        voice="Aoede", backend=_ModelledBackend("model-old"),
+    )
+    mgr_old.regenerate(slug="spend_cap_reached")
+    old_path = cue_path(str(tmp_path), cue, "jts.local", "Aoede", "model-old")
+    assert os.path.isfile(old_path)
+
+    mgr_new = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local",
+        voice="Aoede", backend=_ModelledBackend("model-new"),
+    )
+    assert mgr_new.is_cached(cue) is False  # model change busts the cache
+    mgr_new.regenerate(slug="spend_cap_reached")
+    new_path = cue_path(str(tmp_path), cue, "jts.local", "Aoede", "model-new")
+    assert os.path.isfile(new_path)
+    assert new_path != old_path
+    assert not os.path.isfile(old_path)  # stale model's WAV pruned
+
+
+def test_model_change_invalidates_for_each_provider_backend(tmp_path):
+    """Per-backend check against the real generator classes (no
+    network at construction): for each of Gemini/OpenAI/Grok, a manager
+    built with model A does not consider model B's bake cached."""
+    from jasper.cues.generator import (
+        GeminiTTSGenerator,
+        GrokTTSGenerator,
+        OpenAITTSGenerator,
+    )
+
+    cue = find("spend_cap_reached")
+    for cls in (GeminiTTSGenerator, OpenAITTSGenerator, GrokTTSGenerator):
+        mgr_a = AudioCueManager(
+            sounds_dir=str(tmp_path), hostname="jts.local", voice="v",
+            backend=cls(api_key="k", voice="v", model="tts-model-a"),
+        )
+        mgr_b = AudioCueManager(
+            sounds_dir=str(tmp_path), hostname="jts.local", voice="v",
+            backend=cls(api_key="k", voice="v", model="tts-model-b"),
+        )
+        assert mgr_a.expected_path(cue) != mgr_b.expected_path(cue)
+
+
+def test_speak_text_cache_keyed_on_backend_model(tmp_path):
+    """Dynamic-text WAVs are model-keyed too: the same phrase under a
+    different model synthesises fresh instead of reusing the old
+    model's audio."""
+    text = "Your timer is up."
+    tts = _FakeTtsPlayout()
+    backend_a = _ModelledBackend("model-a")
+    mgr_a = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local",
+        voice="Aoede", backend=backend_a, tts_playout=tts,
+    )
+    assert asyncio.run(mgr_a.speak_text(text)) is True
+    assert backend_a.calls == [text]
+    # Same model: cache hit, no second synthesis.
+    assert asyncio.run(mgr_a.speak_text(text)) is True
+    assert backend_a.calls == [text]
+
+    backend_b = _ModelledBackend("model-b")
+    mgr_b = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local",
+        voice="Aoede", backend=backend_b, tts_playout=tts,
+    )
+    assert asyncio.run(mgr_b.speak_text(text)) is True
+    assert backend_b.calls == [text]  # re-synthesised under the new model

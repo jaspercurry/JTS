@@ -29,6 +29,7 @@ import wave
 from typing import Any
 
 from .generator import (
+    backend_model,
     cue_hash,
     cue_path,
     dynamic_text_path,
@@ -69,6 +70,13 @@ class AudioCueManager:
         self._hostname = hostname
         self._voice = voice
         self._backend = backend
+        # Cache-key model: the backend's actual synthesis model, so a
+        # JASPER_GEMINI_TTS_MODEL flip (or a provider TTS-default bump)
+        # invalidates baked WAVs the same way a voice change does.
+        # Falls back to the legacy constant when backend is None
+        # (playback-only manager) — `play()`'s any-cached-version
+        # fallback keeps cues audible either way.
+        self._model = backend_model(backend)
         self._tts = tts_playout
 
     def attach_tts(self, tts_playout: Any) -> None:
@@ -81,7 +89,9 @@ class AudioCueManager:
     # --- introspection ---
 
     def expected_path(self, cue: CueDef) -> str:
-        return cue_path(self._sounds_dir, cue, self._hostname, self._voice)
+        return cue_path(
+            self._sounds_dir, cue, self._hostname, self._voice, self._model,
+        )
 
     def is_cached(self, cue: CueDef) -> bool:
         return os.path.isfile(self.expected_path(cue))
@@ -140,7 +150,7 @@ class AudioCueManager:
             )
             prune_stale(
                 self._sounds_dir, cue,
-                cue_hash(cue, self._hostname, self._voice),
+                cue_hash(cue, self._hostname, self._voice, self._model),
             )
             written.append(cue.slug)
         return written
@@ -217,7 +227,9 @@ class AudioCueManager:
         """
         if self._backend is None:
             return False
-        path = dynamic_text_path(self._sounds_dir, text, self._voice)
+        path = dynamic_text_path(
+            self._sounds_dir, text, self._voice, self._model,
+        )
         if os.path.isfile(path):
             return True
         try:
@@ -256,7 +268,9 @@ class AudioCueManager:
             logger.warning("cue speak_text: no TTS backend configured")
             return False
 
-        path = dynamic_text_path(self._sounds_dir, text, self._voice)
+        path = dynamic_text_path(
+            self._sounds_dir, text, self._voice, self._model,
+        )
         if not os.path.isfile(path):
             try:
                 await asyncio.to_thread(
