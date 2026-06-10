@@ -108,6 +108,21 @@ if ! [[ "$NOW" =~ ^[0-9]+$ ]]; then
     emit error "reason=bad_clock now=${NOW@Q}"
     exit 0
 fi
+# Operator-tunable knobs must be sane integers, or bash arithmetic on
+# them silently misbehaves (an unset-variable name compares as 0, which
+# would bias toward TRIPPING). Fail open to the defaults instead.
+if ! [[ "$WINDOW_SEC" =~ ^[0-9]+$ ]]; then
+    emit error "reason=bad_window value=${WINDOW_SEC@Q} using=3600"
+    WINDOW_SEC=3600
+fi
+if ! [[ "$THRESHOLD" =~ ^[1-9][0-9]*$ ]]; then
+    emit error "reason=bad_threshold value=${THRESHOLD@Q} using=3"
+    THRESHOLD=3
+fi
+# Per-boot identity so re-running the script inside one boot (operator
+# diagnosing a loop, a unit retrigger) is idempotent — only the FIRST
+# run of a boot appends to the history. Test seam mirrors NOW's.
+BOOT_ID="${JASPER_BOOTLOOP_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)}"
 
 # ---- 1. Record this boot; prune the window -------------------------------
 
@@ -117,18 +132,28 @@ if ! mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null; then
 fi
 
 recent=()
+seen_this_boot=0
 if [[ -f "$STATE_FILE" ]]; then
-    while IFS= read -r line; do
-        # Tolerate a torn/corrupt file: keep only plain epoch integers
-        # inside the window; silently drop everything else (fail-open —
-        # a bad byte must reset history, never block boot).
-        [[ "$line" =~ ^[0-9]+$ ]] || continue
-        (( line > NOW )) && continue          # future timestamps: clock jumped; drop
-        (( NOW - line <= WINDOW_SEC )) || continue
-        recent+=("$line")
+    while IFS=' ' read -r ts bid; do
+        # Tolerate a torn/corrupt file: keep only `epoch boot_id` lines
+        # whose epoch is a plain integer inside the window; silently
+        # drop everything else (fail-open — a bad byte must reset
+        # history, never block boot).
+        [[ "$ts" =~ ^[0-9]+$ ]] || continue
+        (( ts > NOW )) && continue            # future timestamps: clock jumped; drop
+        (( NOW - ts <= WINDOW_SEC )) || continue
+        recent+=("$ts ${bid:-unknown}")
+        if [[ "$bid" == "$BOOT_ID" && "$BOOT_ID" != "unknown" ]]; then
+            # A line from THIS boot already exists. ("unknown" never
+            # dedupes — if boot_id is unreadable, prefer over-counting
+            # this boot once to silently never counting again.)
+            seen_this_boot=1
+        fi
     done < "$STATE_FILE"
 fi
-recent+=("$NOW")
+if (( ! seen_this_boot )); then
+    recent+=("$NOW $BOOT_ID")
+fi
 
 tmp="$(mktemp "$(dirname "$STATE_FILE")/.bootloop_guard.XXXXXX" 2>/dev/null)" || tmp=""
 if [[ -n "$tmp" ]]; then

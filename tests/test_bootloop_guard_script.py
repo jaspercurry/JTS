@@ -67,7 +67,10 @@ class Harness:
     def add_unit(self, name: str, content: str) -> None:
         (self.units_dir / name).write_text(content)
 
-    def run(self, *, now: int, window: int = 3600, threshold: int = 3):
+    def run(
+        self, *, now: int, window: int = 3600, threshold: int = 3,
+        boot_id: str | None = None,
+    ):
         env = {
             "PATH": "/usr/bin:/bin",
             "JASPER_BOOTLOOP_STATE_FILE": str(self.state_file),
@@ -75,6 +78,9 @@ class Harness:
             "JASPER_BOOTLOOP_DROPIN_DIR": str(self.dropin_dir),
             "JASPER_BOOTLOOP_UNITS_DIR": str(self.units_dir),
             "JASPER_BOOTLOOP_NOW": str(now),
+            # Each run is a distinct boot unless the test pins boot_id
+            # (the same-boot idempotency scenarios).
+            "JASPER_BOOTLOOP_BOOT_ID": boot_id or f"boot-{now}",
             "JASPER_BOOTLOOP_WINDOW_SEC": str(window),
             "JASPER_BOOTLOOP_THRESHOLD": str(threshold),
             "JASPER_SYSTEMCTL": str(self.fake_systemctl),
@@ -289,3 +295,32 @@ def test_state_snapshot_reads_marker_fresh(tmp_path, monkeypatch):
 
     marker.write_text("{torn")
     assert bootloop_guard_state.snapshot() == {"ran": False}
+
+
+def test_rerun_within_the_same_boot_is_idempotent(tmp_path):
+    """An operator re-running the guard mid-diagnosis (or a unit
+    retrigger) must not inflate the boot count toward a false trip —
+    dedupe is keyed on the kernel boot_id."""
+    h = Harness(tmp_path)
+    h.add_unit("jasper-camilla.service", REBOOT_UNIT)
+    h.run(now=0)
+    h.run(now=10, boot_id="boot-0")    # same boot, later wall-clock
+    r = h.run(now=20, boot_id="boot-0")
+    assert "event=bootloop_guard.ok" in r.stderr
+    assert h.marker()["boots_in_window"] == 1
+    assert not h.dropin_for("jasper-camilla.service").exists()
+
+
+def test_garbage_tuning_env_falls_back_to_defaults(tmp_path):
+    """Bad WINDOW/THRESHOLD values must fail open to defaults (bash
+    arithmetic on a non-integer would otherwise bias toward tripping)."""
+    h = Harness(tmp_path)
+    h.add_unit("jasper-camilla.service", REBOOT_UNIT)
+    r = h.run(now=1000, window="bogus", threshold="0")  # type: ignore[arg-type]
+    assert r.returncode == 0
+    assert "reason=bad_window" in r.stderr
+    assert "reason=bad_threshold" in r.stderr
+    assert "event=bootloop_guard.ok" in r.stderr
+    assert h.marker()["threshold"] == 3
+    assert h.marker()["window_sec"] == 3600
+    assert not h.dropin_for("jasper-camilla.service").exists()
