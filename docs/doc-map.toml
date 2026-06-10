@@ -40,6 +40,24 @@ verification = [
 ]
 
 [[subsystem]]
+id = "session-artifacts"
+title = "Session artifacts and one-time runbooks"
+safety = "safe-ci"
+code = [
+  "docs/RUNBOOK-*.md",
+]
+docs = [
+  "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md",
+]
+requires_docs_when = [
+  "A top-level one-time runbook or session artifact changes; confirm it is tagged as a session artifact or move it under docs/historical/ after use.",
+]
+verification = [
+  "python3 scripts/docs-impact.py --validate-only",
+  "python3 scripts/docs-linkcheck.py --changed-file <changed-runbook>",
+]
+
+[[subsystem]]
 id = "deploy-and-onboarding"
 title = "Deploy, install, and first-run onboarding"
 safety = "boot-risk"
@@ -676,9 +694,6 @@ docs = [
   "docs/HANDOFF-tier5-watchdog-liveness.md",
   "docs/HANDOFF-airplay.md",
   "docs/HANDOFF-management-ui.md",
-  # Session artifact: one-time hardware-validation runbook for the
-  # 2026-06-10 fix batch (boot-loop guard, watchdog, MemoryHigh).
-  "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md",
 ]
 requires_docs_when = [
   "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",
