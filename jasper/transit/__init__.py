@@ -9,16 +9,18 @@ requires:
 
   - discovery (wizard): `bbox`, `find_stops_near(lat, lon)`,
     `validate_credentials(credentials)`
-  - runtime (voice daemon): `build_client(cfg)` → a client or None when
-    its config is unset, and `make_tools(client)` → the LLM tools
+  - runtime (voice daemon): `build_client(env)` → a client or None when
+    its config is unset (the provider parses its OWN env keys, so a new
+    provider needs no `jasper/config.py` edit), and `make_tools(client)` →
+    the LLM tools
 
 Providers are grouped into `CityPack`s — one household-facing on/off per
 city (`JASPER_TRANSIT_CITIES`, wizard-owned). The flat `REGISTRY` is
 DERIVED from `CITY_PACKS`, so the two never drift. The voice daemon calls
-`active_transit_tools(env, cfg)` once: it walks the household's ENABLED
-packs, builds each provider's client, and collects tools — the daemon has
-ZERO per-provider knowledge. The wizard at `/transit/` iterates `REGISTRY`
-(or a pack) to discover which providers cover a user's geocoded coords.
+`active_transit(env)` once: it walks the household's ENABLED packs, builds
+each provider's client, and collects tools — the daemon has ZERO
+per-provider knowledge. The wizard at `/transit/` iterates `REGISTRY` (or a
+pack) to discover which providers cover a user's geocoded coords.
 
 **Adding transit — concretely.** Two shapes:
   - a new *mode in an existing city* (e.g. NYC ferry): add a provider to
@@ -84,7 +86,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from .base import (
     BoundingBox,
@@ -96,9 +97,6 @@ from .base import (
     haversine_miles,
 )
 from .providers import citibike, nyc_bus, nyc_subway
-
-if TYPE_CHECKING:
-    from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +214,7 @@ def enabled_packs(env: Mapping[str, str]) -> tuple[CityPack, ...]:
 @dataclass(frozen=True)
 class ActiveTransit:
     """The live transit surface for the household's enabled city packs —
-    what `active_transit_tools` hands the voice daemon.
+    what `active_transit` hands the voice daemon.
 
     A *managed result*: it owns the built clients and closes them via
     `aclose()`, so the daemon treats transit as one subsystem with a
@@ -247,9 +245,13 @@ class ActiveTransit:
                 )
 
 
-def active_transit_tools(env: Mapping[str, str], cfg: Config) -> ActiveTransit:
+def active_transit(env: Mapping[str, str]) -> ActiveTransit:
     """Build clients + collect voice tools for every provider in the
     household's enabled city packs — the voice daemon's single entry point.
+
+    Takes only the env MAPPING (the daemon passes `os.environ`): each provider
+    parses its OWN keys in `build_client(env)`, so this never needs the typed
+    `Config` and adding a provider/city needs no `jasper/config.py` edit.
 
     A pack being enabled only makes its providers *eligible*; each provider
     still produces a client (and tools) only when its own config is set
@@ -282,7 +284,7 @@ def active_transit_tools(env: Mapping[str, str], cfg: Config) -> ActiveTransit:
             # mirroring the HA/Google tool factories returning [] on failure.
             pid = getattr(provider, "id", type(provider).__name__)
             try:
-                client = provider.build_client(cfg)
+                client = provider.build_client(env)
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "transit provider %s build_client failed; skipping it", pid,
@@ -347,7 +349,7 @@ __all__ = [
     "TRANSIT_CITIES_ENV",
     "TransitError",
     "TransitProvider",
-    "active_transit_tools",
+    "active_transit",
     "all_env_keys",
     "by_id",
     "covering",

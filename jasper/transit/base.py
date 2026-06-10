@@ -15,12 +15,9 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from ..config import Config
+from typing import Literal, Protocol, runtime_checkable
 
 
 # Provider kind drives wizard UI grouping. Open set — add new values
@@ -175,14 +172,22 @@ class TransitProvider(Protocol):
         user-facing conditions."""
         ...
 
-    def build_client(self, cfg: Config) -> object | None:
-        """Build this provider's runtime client when its mode is configured
-        in `cfg`, else return None. Implementations LAZY-import the client
-        inside the method (e.g. `from ...subway import SubwayClient`) so
-        importing the discovery layer — which the socket-activated
-        /transit/ wizard does — never drags in the voice-runtime stack.
-        This keeps a city pack self-contained (a provider owns both its
-        discovery and its runtime) without paying the wizard's RAM for it."""
+    def build_client(self, env: Mapping[str, str]) -> object | None:
+        """Build this provider's runtime client when its mode is configured,
+        else return None.
+
+        Takes the raw env MAPPING (the daemon passes `os.environ`) and parses
+        its OWN keys — the same keys it declares in `env_keys` — rather than
+        reading a typed field off the central `Config`. That's the boundary
+        that makes a provider truly self-contained: adding a new provider (or
+        city) needs no edit to `jasper/config.py`, only this module. Parse with
+        the same canonical helpers `Config` uses (`jasper.bus.parse_bus_stops`,
+        `jasper.citibike.parse_saved_stations`) so behaviour is identical.
+
+        Implementations LAZY-import the client inside the method (e.g.
+        `from ...subway import SubwayClient`) so importing the discovery layer
+        — which the socket-activated /transit/ wizard does — never drags in the
+        voice-runtime stack."""
         ...
 
     def make_tools(self, client: object) -> Iterable[Callable[..., object]]:

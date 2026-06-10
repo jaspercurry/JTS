@@ -24,14 +24,11 @@ time so an unsaved key can be tested without disk IO.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
 
 import httpx
 
 from ..base import BoundingBox, CredentialSpec, Stop, TransitError, haversine_miles, scrub_secrets
-
-if TYPE_CHECKING:
-    from ...config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -311,17 +308,22 @@ class _NycBus:
             return {CREDENTIAL.env_key: "BusTime rejected the key"}
         return None
 
-    def build_client(self, cfg: Config) -> object | None:
-        if not cfg.bus_enabled:
-            return None
-        from ...bus import BusClient  # lazy: keep the wizard light
+    def build_client(self, env: Mapping[str, str]) -> object | None:
+        # Parse our own keys (mirrors Config.bus_*): empty key OR empty stops
+        # disables the tool. Use the canonical parser so behaviour matches
+        # Config exactly (labels can contain commas/spaces).
+        from ...bus import BusClient, parse_bus_stops  # lazy: keep wizard light
 
-        # cfg.bus_stops is (stop_id, label) pairs: ids drive the SIRI
-        # fan-out; labels name the stop in the voice answer.
+        stops = tuple(parse_bus_stops(env.get("JASPER_BUS_STOPS", "")))
+        api_key = env.get("JASPER_MTA_BUSTIME_KEY", "")
+        if not (stops and api_key):
+            return None
+        # stops is (stop_id, label) pairs: ids drive the SIRI fan-out; labels
+        # name the stop in the voice answer.
         return BusClient(
-            stop_ids=[sid for sid, _ in cfg.bus_stops],
-            api_key=cfg.mta_bustime_key,
-            stop_labels={sid: label for sid, label in cfg.bus_stops if label},
+            stop_ids=[sid for sid, _ in stops],
+            api_key=api_key,
+            stop_labels={sid: label for sid, label in stops if label},
         )
 
     def make_tools(self, client: object):

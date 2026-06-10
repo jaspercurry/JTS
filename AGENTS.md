@@ -1196,14 +1196,17 @@ the address field.
 **self-contained**: each module under
 [`jasper/transit/providers/`](jasper/transit/providers/) owns both its
 wizard surface (`bbox`, `find_stops_near`, `validate_credentials`) AND its
-voice runtime (`build_client(cfg)` → client-or-None, `make_tools(client)`
+voice runtime (`build_client(env)` → client-or-None, `make_tools(client)`
 → LLM tools, both lazy-importing heavy deps so the socket-activated wizard
-process stays light). Providers are grouped into `CityPack`s — one
-household-facing on/off per city via `JASPER_TRANSIT_CITIES` (wizard-owned;
-unset = all packs, non-breaking). The flat `REGISTRY` is **derived** from
-`CITY_PACKS`, so they never drift, and `jasper-voice` calls
-`active_transit_tools(env, cfg)` once — it walks the enabled packs and
-builds tools with **zero per-provider knowledge in the daemon**.
+process stays light). `build_client` parses the provider's OWN env keys
+(the same ones it declares in `env_keys`), so adding a provider/city needs
+**no `jasper/config.py` edit** — the boundary that keeps it self-contained.
+Providers are grouped into `CityPack`s — one household-facing on/off per
+city via `JASPER_TRANSIT_CITIES` (wizard-owned; unset = all packs,
+non-breaking). The flat `REGISTRY` is **derived** from `CITY_PACKS`, so they
+never drift, and `jasper-voice` calls `active_transit(env)` once — it walks
+the enabled packs and builds tools with **zero per-provider knowledge in the
+daemon**, each provider guarded so one broken provider can't crash startup.
 
 So adding transit is now **no `voice_daemon.py` edit**. Two shapes: a new
 *mode in an existing city* appends a provider to that `CityPack`'s
@@ -1228,9 +1231,9 @@ tool/client surface):
   6. A `<Slug>Client` runtime class (mirror `jasper/subway.py`,
      `jasper/bus.py`, `jasper/citibike.py`) that `build_client`
      constructs. If it owns a connection pool, give it `aclose()` — the
-     managed `ActiveTransit` result `active_transit_tools` returns closes
-     every built transit client on shutdown (duck-typed), so a pool is
-     reclaimed with no daemon edit
+     managed `ActiveTransit` result `active_transit` returns closes every
+     built transit client on shutdown (duck-typed), so a pool is reclaimed
+     with no daemon edit
   7. The `keys=(...)` bash array in `migrate_transit_config` in
      [`deploy/install.sh`](deploy/install.sh) — duplicates
      `transit.all_env_keys()` because install.sh runs before Python
