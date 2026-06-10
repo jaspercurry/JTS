@@ -384,6 +384,18 @@ def test_apply_clear_drops_only_owned_keys():
     assert "JASPER_CITIBIKE_EBIKE_ONLY" not in new
     assert "JASPER_TRANSIT_LAT" not in new
     assert new["FOREIGN_KEY"] == "kept"
+    # Clear records an explicit "no cities" rather than dropping the toggle —
+    # otherwise an absent key would read as "all packs eligible" and /state
+    # would show every city enabled after a "Clear all".
+    assert new["JASPER_TRANSIT_CITIES"] == ""
+
+
+def test_apply_clear_disables_cities_not_resets_to_all():
+    # The whole point: after Clear, enabled_pack_ids reads "no cities", never
+    # the absent-key all-packs default.
+    from jasper import transit
+    new = transit_setup._apply_clear({"JASPER_SUBWAY_STATION_ID": "B12"})
+    assert transit.enabled_pack_ids(new) == ()
 
 
 # ---------- HTML render ----------------------------------------------------
@@ -607,6 +619,8 @@ def test_handler_post_clear_wipes_owned_keys(wizard_server):
     assert "JASPER_SUBWAY_STATION_ID" not in state
     assert "JASPER_TRANSIT_LAT" not in state
     assert state.get("FOREIGN") == "kept"
+    # Clear persists an explicit "no cities" (not an absent key -> all packs).
+    assert state.get("JASPER_TRANSIT_CITIES") == ""
 
 
 def test_handler_clear_relocks_bus_card_on_next_render(wizard_server):

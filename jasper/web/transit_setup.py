@@ -373,11 +373,24 @@ def _apply_save(
 
 
 def _apply_clear(current: dict[str, str]) -> dict[str, str]:
-    """Drop every wizard-owned key. Foreign keys (if any) survive."""
-    return {
+    """Drop every wizard-owned key, then record JASPER_TRANSIT_CITIES="" so
+    "Clear all transit settings" means transit is OFF. Foreign keys survive.
+
+    The explicit empty value is the one owned key Clear writes rather than
+    drops. An ABSENT key reads as "all packs eligible" (the fresh-install
+    default), so after an explicit Clear every city would show "enabled" on
+    /state and the dashboard with nothing configured — misleading today, and a
+    real wrong-state once a second city ships ("Clear all" → both cities ON).
+    Present-empty reads as "no cities", so post-Clear the wizard shows each
+    covering city as "available — turn on" and /state reports them disabled,
+    matching the user's intent. (Re-enabling a city is then an explicit step
+    when reconfiguring — consistent with having cleared the toggle.)"""
+    kept = {
         k: v for k, v in current.items()
         if k not in _owned_env_keys()
     }
+    kept[transit.TRANSIT_CITIES_ENV] = ""
+    return kept
 
 
 def _apply_cities(
