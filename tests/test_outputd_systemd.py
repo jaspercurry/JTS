@@ -163,3 +163,13 @@ def test_cutover_rollback_helper_disables_persistent_outputd_unit():
     assert "JASPER_TTS_TRANSPORT=outputd" in script
     assert "pre-outputd" in script
     assert "Deploy main next" not in script
+
+
+def test_voice_unit_has_stage2_memory_high_throttle():
+    """Audit C3: the deferred Stage 2 memory bound. MemoryHigh (throttle)
+    not MemoryMax (kill) — voice is the most-protected daemon and must
+    never be cgroup-killed outright; value sized ~2.5x the ~150 MB Pss
+    steady state from README's resource table."""
+    unit = VOICE_UNIT_PATH.read_text()
+    assert _value_for(unit, "MemoryHigh") == "384M"
+    assert _value_for(unit, "MemoryMax") is None

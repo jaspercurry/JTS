@@ -162,9 +162,21 @@ ReadWritePaths=/var/lib/jasper
 # + Python deps + holds the LLM session). Conservative protection
 # of -500 — kept alive when other processes blow up, but if we
 # leak memory ourselves, the kernel should still pick us over
-# system-critical infrastructure. Stage 2 will add a MemoryMax=
-# bound via cgroups when the memory controller is enabled.
+# system-critical infrastructure.
 OOMScoreAdjust=-500
+# Stage 2 memory bound (the deferred follow-up promised above).
+# MemoryHigh (throttle + aggressive reclaim), NOT MemoryMax (kill):
+# voice is the most-protected daemon on the box and an outright cgroup
+# kill of the recovery-critical wake path is worse than throttling a
+# leak while the OOMScoreAdjust ladder + Stage 1 kernel policy decide.
+# 384M is ~2.5x the ~140-150 MB Pss steady state in README's "What's
+# installed and at what cost" resource table (cgroup memory.current
+# counts full RSS + page cache, so headroom over Pss must be generous),
+# and matches the per-process MemoryMax budget pi-run-diagnostic.sh
+# already treats as safe on a 1 GB Pi. Silent no-op until the memory
+# cgroup controller is enabled — same documented-intent posture as
+# jasper-mux / -input / -usbsink.
+MemoryHigh=384M
 
 [Install]
 WantedBy=multi-user.target
