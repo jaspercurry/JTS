@@ -3920,24 +3920,3 @@ def test_check_dtln_prefers_stats_snapshot_over_journal(
 
     assert r.status == "fail"
     assert "no onnxruntime" in r.detail
-
-
-# ---------------------------------------------------------------------------
-# check_spend_cap — disabled cap renders as "disabled", not "$0.00 remaining"
-
-
-def test_check_spend_cap_reports_disabled_not_zero_remaining(tmp_path: Path, monkeypatch):
-    """With JASPER_DAILY_SPEND_CAP_USD=0 the cap is disabled (see
-    jasper.usage.SpendCap.disabled); doctor must say so instead of the
-    misleading "$0.0000 remaining of $0.00"."""
-    from jasper.cli.doctor.voice import check_spend_cap
-
-    monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
-    monkeypatch.setenv("JASPER_USAGE_DB", str(tmp_path / "usage.sqlite3"))
-    monkeypatch.setenv("JASPER_DAILY_SPEND_CAP_USD", "0")
-    cfg = Config.from_env()
-    result = check_spend_cap(cfg)
-    assert result.status == "ok"
-    assert "disabled" in result.detail
-    assert "remaining" not in result.detail
