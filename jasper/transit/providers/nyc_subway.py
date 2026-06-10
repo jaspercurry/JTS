@@ -12,13 +12,10 @@ this module needs lat/lon, that one needs north_label/south_label.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
 
 from .._mta_stations import Station, load_stations
 from ..base import BoundingBox, Stop, haversine_miles
-
-if TYPE_CHECKING:
-    from ...config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -108,12 +105,17 @@ class _NycSubway:
         # just report each unknown key as rejected.
         return {k: "nyc_subway is keyless" for k in credentials} or None
 
-    def build_client(self, cfg: Config) -> object | None:
-        if not cfg.subway_enabled:
+    def build_client(self, env: Mapping[str, str]) -> object | None:
+        # Parse our own keys (mirrors Config.subway_*): an empty station id
+        # disables the tool. Raw (unstripped) values, matching Config._env.
+        station_id = env.get("JASPER_SUBWAY_STATION_ID", "")
+        if not station_id:
             return None
         from ...subway import SubwayClient  # lazy: keep the wizard light
 
-        return SubwayClient(cfg.subway_station_id, cfg.subway_default_direction)
+        return SubwayClient(
+            station_id, env.get("JASPER_SUBWAY_DEFAULT_DIRECTION", ""),
+        )
 
     def make_tools(self, client: object):
         from ...tools.subway import make_subway_tools  # lazy

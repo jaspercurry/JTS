@@ -2,7 +2,7 @@
 
 Covers the toggleable city-pack layer (jasper.transit.CityPack /
 enabled_packs) and the self-contained provider runtime — each provider
-carries its own build_client + make_tools, so active_transit_tools lets
+carries its own build_client + make_tools, so active_transit lets
 voice_daemon iterate enabled packs instead of hardcoding each provider. The
 load-bearing test is that the pack toggle gates tool registration — a
 configured provider in a *disabled* city produces no tools.
@@ -10,7 +10,6 @@ configured provider in a *disabled* city produces no tools.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -21,7 +20,7 @@ from jasper.transit import (
     TRANSIT_CITIES_ENV,
     ActiveTransit,
     CityPack,
-    active_transit_tools,
+    active_transit,
     enabled_pack_ids,
     enabled_packs,
     pack_for_provider,
@@ -105,37 +104,27 @@ def test_every_provider_is_self_contained_runtime():
             assert callable(getattr(p, "make_tools", None)), f"{p.id}: no make_tools"
 
 
-def _cfg(**over):
-    base = dict(
-        subway_enabled=False, subway_station_id="", subway_default_direction="",
-        bus_enabled=False, bus_stops=[], mta_bustime_key="",
-        citibike_enabled=False, citibike_stations=(), citibike_ebike_only=False,
-    )
-    base.update(over)
-    return SimpleNamespace(**base)
-
-
-def test_active_transit_tools_gates_on_both_config_and_pack():
-    nyc_on = {"JASPER_TRANSIT_CITIES": "nyc"}
-
+def test_active_transit_gates_on_both_config_and_pack():
+    # active_transit takes only the env mapping — each provider parses its own
+    # keys in build_client(env), so a configured subway is just its env key set.
     # nothing configured -> no tools, not configured, no clients to close
-    result = active_transit_tools(nyc_on, _cfg())
+    result = active_transit({"JASPER_TRANSIT_CITIES": "nyc"})
     assert result.tools == [] and result.configured is False and result.clients == []
 
     # subway configured + NYC enabled -> subway tools register, and the built
     # client is owned by the result so the daemon can close it on shutdown.
-    cfg = _cfg(subway_enabled=True, subway_station_id="127", subway_default_direction="")
-    result = active_transit_tools(nyc_on, cfg)
+    subway_on = {"JASPER_TRANSIT_CITIES": "nyc", "JASPER_SUBWAY_STATION_ID": "127"}
+    result = active_transit(subway_on)
     assert result.configured is True
     assert len(result.tools) >= 1
     assert len(result.clients) == 1
 
     # same config, NYC pack DISABLED -> the toggle gates: no tools at all
-    result = active_transit_tools({"JASPER_TRANSIT_CITIES": "berlin"}, cfg)
+    result = active_transit({"JASPER_TRANSIT_CITIES": "berlin", "JASPER_SUBWAY_STATION_ID": "127"})
     assert result.tools == [] and result.configured is False and result.clients == []
 
 
-def test_active_transit_tools_isolates_a_failing_provider(monkeypatch):
+def test_active_transit_isolates_a_failing_provider(monkeypatch):
     # A provider whose build_client OR make_tools raises must NOT take down the
     # whole call. The voice daemon builds this at startup BEFORE its main
     # try/except, and make_tools lazily imports each tool factory — so an
@@ -149,7 +138,7 @@ def test_active_transit_tools_isolates_a_failing_provider(monkeypatch):
     class _Good:
         id = "good"
 
-        def build_client(self, cfg):
+        def build_client(self, env):
             return object()
 
         def make_tools(self, client):
@@ -158,7 +147,7 @@ def test_active_transit_tools_isolates_a_failing_provider(monkeypatch):
     class _BuildBoom:
         id = "build_boom"
 
-        def build_client(self, cfg):
+        def build_client(self, env):
             raise RuntimeError("build kaboom")
 
         def make_tools(self, client):  # never reached
@@ -167,7 +156,7 @@ def test_active_transit_tools_isolates_a_failing_provider(monkeypatch):
     class _ToolsBoom:
         id = "tools_boom"
 
-        def build_client(self, cfg):
+        def build_client(self, env):
             return object()
 
         def make_tools(self, client):
@@ -180,7 +169,7 @@ def test_active_transit_tools_isolates_a_failing_provider(monkeypatch):
     monkeypatch.setattr(transit_mod, "CITY_PACKS", (pack,))
 
     # Two broken providers, yet the call must not raise.
-    result = active_transit_tools({"JASPER_TRANSIT_CITIES": "test"}, _cfg())
+    result = active_transit({"JASPER_TRANSIT_CITIES": "test"})
     # Only the good provider's tool survived.
     assert result.tools == [_good_tool]
     assert result.configured is True

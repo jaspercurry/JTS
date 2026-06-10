@@ -681,14 +681,16 @@ def _build_system_instruction(
         # Hostname is interpolated so multi-Pi households see the
         # right speaker URL ("jts2.local/transit") rather than the
         # default. cfg.hostname is the canonical source.
+        # City-agnostic copy: the available transit modes/cities are
+        # data-driven (CityPacks), so don't name NYC-specific tools here —
+        # a future city would make hardcoded "subway, bus, Citi Bike" wrong.
         addendum += (
-            " Transit tools (subway, bus, Citi Bike) aren't set up on "
-            "this speaker yet — no get_subway_arrivals, get_bus_arrivals, "
-            "or get_citibike_status tool is available. If the user asks "
-            "about the next train, the next bus, or Citi Bike, briefly "
-            f"say: 'Transit isn't set up yet — visit {hostname}/transit "
-            "to configure it.' Don't promise to check or look it up; "
-            "the data source is genuinely absent."
+            " Transit tools aren't set up on this speaker yet — no transit "
+            "tool is available. If the user asks about transit (the next "
+            "train, bus, bike share, or similar), briefly say: 'Transit "
+            f"isn't set up yet — visit {hostname}/transit to configure it.' "
+            "Don't promise to check or look it up; the data source is "
+            "genuinely absent."
         )
     if not ha_configured:
         # Same conditional pattern as transit above. Critical that the
@@ -1003,7 +1005,7 @@ def _build_registry(
         registry.register(fn)
     # Transit (subway / bus / Citi Bike, and future city packs): one flat
     # list of tools the household's ENABLED city packs produced — built by
-    # jasper.transit.active_transit_tools. Each provider self-gates (a mode
+    # jasper.transit.active_transit. Each provider self-gates (a mode
     # with no config, or a Citi Bike pack with no saved stations, yields no
     # tool), so an empty list is correct, not a bug.
     for fn in transit_tools:
@@ -3646,9 +3648,9 @@ async def run() -> None:
     # config, so an enabled-but-unconfigured mode produces no tool —
     # `transit_configured` is exactly "at least one transit tool registered",
     # the same gate as before. Adding a city needs no edit here; see
-    # jasper.transit.active_transit_tools. os.environ carries
+    # jasper.transit.active_transit. os.environ carries
     # JASPER_TRANSIT_CITIES via transit.env, sourced by jasper-voice.service.
-    transit_active = transit.active_transit_tools(os.environ, cfg)
+    transit_active = transit.active_transit(os.environ)
     transit_tools = transit_active.tools
     transit_configured = transit_active.configured
     logger.info(
