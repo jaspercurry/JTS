@@ -43,7 +43,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use alsa::pcm::{Access, Format, HwParams, State, PCM};
+use alsa::pcm::{Access, Format, Frames, HwParams, State, PCM};
 use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 use log::{info, warn};
@@ -96,6 +96,20 @@ pub struct Mixer {
     xrun_tx: Sender<XrunEvent>,
     period_frames: u32,
     tts: Option<TtsMixer>,
+    /// OPTIONAL music-only (pre-TTS) side-output — the multi-room sync
+    /// tap (`docs/HANDOFF-multiroom.md` §2 "inv-2 realization"). `None`
+    /// on a solo speaker (zero added work). `write_music_only` keeps it a
+    /// LOSSY tap so `output` stays the SOLE timing owner (inv-1).
+    music_output: Option<PCM>,
+    /// Per-period i16 scratch for the music-only output (post-duck,
+    /// pre-TTS). Same length as `output_buf`.
+    music_only_buf: Vec<i16>,
+    /// Cumulative frames written to the music-only output. STATUS.
+    pub music_frames_written: Arc<AtomicU64>,
+    /// Cumulative periods DROPPED on the music-only output — ring full
+    /// (consumer behind) or xrun. A growing value means the snapserver
+    /// consumer is behind; surfaced via STATUS, NEVER escalated (inv-1).
+    pub music_output_drops: Arc<AtomicU64>,
 }
 
 pub struct Input {
@@ -164,6 +178,36 @@ impl Mixer {
             config.output_pcm, config.period_frames, config.output_buffer_frames,
         );
 
+        // OPTIONAL music-only side-output (multi-room sync tap). Opened
+        // BEST-EFFORT: a configured-but-unopenable music PCM must NEVER
+        // take down the primary audio path, so on failure we log and run
+        // as a solo speaker (music_output = None). Non-blocking so the
+        // lossy-tap write can drop-on-full without ever blocking the work
+        // loop (inv-1: `output` stays the sole timing owner).
+        let music_output = match &config.music_output_pcm {
+            Some(pcm_name) => match open_music_output(pcm_name, config) {
+                Ok(pcm) => {
+                    info!(
+                        "event=fanin.music_output.opened pcm={} (multi-room sync tap)",
+                        pcm_name,
+                    );
+                    Some(pcm)
+                }
+                Err(e) => {
+                    warn!(
+                        "event=fanin.music_output.open_failed pcm={} detail={:#} — \
+                         continuing WITHOUT the music-only tap (primary output unaffected)",
+                        pcm_name, e,
+                    );
+                    None
+                }
+            },
+            None => {
+                info!("event=fanin.music_output.disabled (solo speaker; no sync tap)");
+                None
+            }
+        };
+
         Ok(Self {
             inputs,
             output,
@@ -176,6 +220,10 @@ impl Mixer {
             xrun_tx,
             period_frames: config.period_frames,
             tts: tts.map(TtsMixer::new),
+            music_output,
+            music_only_buf: vec![0i16; period_samples],
+            music_frames_written: Arc::new(AtomicU64::new(0)),
+            music_output_drops: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -286,6 +334,22 @@ impl Mixer {
         if program_gain != 1.0 {
             apply_gain_to_sum(&mut self.sum_buf, program_gain);
         }
+        // Music-only side-tap (multi-room sync): the program AS PLAYED
+        // minus the assistant — taken POST-duck (so a synced follower
+        // hears the music dip under the leader's local TTS, matching the
+        // room) and PRE-TTS (so the leader's assistant NEVER leaks to
+        // followers — the inv-3 guarantee). Lossy: drop-on-full, never
+        // blocks, never escalates — the primary `output` below stays the
+        // sole timing owner (inv-1). `None` on a solo speaker → no work.
+        if let Some(music_out) = self.music_output.as_ref() {
+            saturate_to_i16(&self.sum_buf, &mut self.music_only_buf);
+            write_music_only(
+                music_out,
+                &self.music_only_buf,
+                &self.music_frames_written,
+                &self.music_output_drops,
+            );
+        }
         if let Some(tts) = self.tts.as_mut() {
             tts.mix_period(&mut self.sum_buf);
         }
@@ -390,6 +454,19 @@ fn open_output(pcm_name: &str, config: &Config) -> Result<PCM> {
         .with_context(|| format!("opening playback PCM {}", pcm_name))?;
     configure_pcm(&pcm, config, config.output_buffer_frames)
         .with_context(|| format!("configuring playback PCM {}", pcm_name))?;
+    Ok(pcm)
+}
+
+/// Open the OPTIONAL music-only side-output. **Non-blocking** — unlike
+/// the primary `open_output`, this PCM must NEVER pace the work loop
+/// (`write_music_only` drops on a full ring instead of blocking), so the
+/// primary output stays the sole timing owner (inv-1). Same format / rate
+/// / period / buffer as the primary output.
+fn open_music_output(pcm_name: &str, config: &Config) -> Result<PCM> {
+    let pcm = PCM::new(pcm_name, Direction::Playback, true)
+        .with_context(|| format!("opening music-only output PCM {}", pcm_name))?;
+    configure_pcm(&pcm, config, config.output_buffer_frames)
+        .with_context(|| format!("configuring music-only output PCM {}", pcm_name))?;
     Ok(pcm)
 }
 
@@ -571,6 +648,62 @@ fn write_output(
     Ok(())
 }
 
+/// Write one period to the OPTIONAL music-only side-output. This is a
+/// LOSSY side-tap, NOT a paced output: it must never block the work loop
+/// and never escalate an error — the primary `output` is the sole timing
+/// owner (inv-1). On a full ring (`EAGAIN`/short avail: the consumer is
+/// behind) or an underrun (`EPIPE`: the consumer hasn't started reading)
+/// we DROP this whole period and count it — snapserver sees a brief gap,
+/// exactly like a starved capture, never back-pressure on the DAC loop.
+///
+/// **Period-aligned by construction:** we only write when the ring has
+/// room for a WHOLE period (checked via `avail_update`). Only this thread
+/// writes this PCM and the consumer only frees space, so room observed is
+/// room guaranteed — a partial write can't shear a period and desync the
+/// stream. A non-zero, growing `drops` is the operator's "consumer behind"
+/// signal (surfaced via STATUS).
+fn write_music_only(
+    pcm: &PCM,
+    buf: &[i16],
+    frames_written: &Arc<AtomicU64>,
+    drops: &Arc<AtomicU64>,
+) {
+    let frames_total = (buf.len() / (CHANNELS as usize)) as Frames;
+    match pcm.avail_update() {
+        // Room for a full period → write below.
+        Ok(avail) if avail >= frames_total => {}
+        // Ring too full for a whole period (consumer behind) → drop.
+        Ok(_) => {
+            drops.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        // Underrun / error → recover for next period, drop this one.
+        Err(e) => {
+            let _ = pcm.try_recover(e, true);
+            drops.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    }
+    let io = match pcm.io_i16() {
+        Ok(io) => io,
+        Err(_) => {
+            drops.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
+    match io.writei(buf) {
+        Ok(n) => {
+            frames_written.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        Err(e) => {
+            // try_recover handles EPIPE/ESTRPIPE; any error → drop, never
+            // propagate (a broken side-tap must not crash the daemon).
+            let _ = pcm.try_recover(e, true);
+            drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,6 +748,32 @@ mod tests {
         let mut sum = vec![20_000i32, -20_000, 1_500, -1_500];
         apply_gain_to_sum(&mut sum, 0.1);
         assert_eq!(sum, vec![2_000, -2_000, 150, -150]);
+    }
+
+    #[test]
+    fn music_only_tap_is_post_duck_and_pre_tts() {
+        // Mirrors step()'s tap point exactly: the music-only buffer is the
+        // summed program AFTER the program duck and BEFORE TTS is mixed.
+        // Two music lanes summed:
+        let mut sum = vec![0i32; 4];
+        mix_into(&mut sum, &[10_000, -10_000, 8_000, -8_000]);
+        mix_into(&mut sum, &[2_000, -2_000, 1_000, -1_000]);
+        // Program duck applies (TTS active): attenuate the program by 0.5.
+        apply_gain_to_sum(&mut sum, 0.5);
+        // TAP HERE — clamp to i16 for the music-only output.
+        let mut music_only = vec![0i16; 4];
+        saturate_to_i16(&sum, &mut music_only);
+        // Post-duck (×0.5), pre-TTS: (12000,-12000,9000,-9000) × 0.5.
+        assert_eq!(music_only, vec![6_000, -6_000, 4_500, -4_500]);
+
+        // Now TTS would mix into the PRIMARY sum only — the tapped buffer
+        // is already captured and is unaffected, which is the inv-3
+        // guarantee: the assistant never reaches the synced (follower)
+        // stream. Prove the tap is independent of the later TTS add:
+        for s in sum.iter_mut() {
+            *s = s.saturating_add(20_000); // stand-in for tts.mix_period
+        }
+        assert_eq!(music_only, vec![6_000, -6_000, 4_500, -4_500]);
     }
 
     #[test]

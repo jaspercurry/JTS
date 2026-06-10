@@ -148,6 +148,21 @@ gating §8 spike (network sync error, FLAC RAM/CPU) on hardware. What exists:
   leader-local (§6), only music is synced. Guarded today by a `SnapfifoSink`
   WARNING + `jasper-doctor check_grouping_tts_separation`. **SHIPPED:** inv. 5
   (`rate_adjust=false`) and the channel-split live weave (§2/§4).
+- **`jasper-fanin` music-only output (Increment 1 — the inv-2 producer half +
+  the standalone inv-3 leak fix)** — `JASPER_FANIN_MUSIC_OUTPUT_PCM` (off by
+  default). When set, `mixer.rs` `step()` writes a SECOND output per period: the
+  program post-duck, **pre-TTS** (`write_music_only` — a lossy, non-blocking,
+  period-aligned drop-on-full side-tap, so it can NEVER back-pressure the primary
+  output, inv-1). Best-effort open (a bad/unopenable PCM logs
+  `event=fanin.music_output.open_failed` and degrades to solo, primary path
+  untouched); STATUS gains a `music_output` block
+  (`enabled`/`pcm`/`frames_written`/`drops`). This is the corrected inv-2
+  design's separation point (keep TTS in fanin, tap music pre-TTS) AND the
+  standalone inv-3 fix. **Not yet consumed** — wiring it to snapserver (the
+  leader round-trip) is Increment 2, and `SNAPFIFO_PRODUCER_WIRED` stays `False`
+  until then. Verified on-device: 57 fanin unit tests green + clean warning-free
+  build on ARM/ALSA (jts3); the second-output AUDIO is exercised in Increment 2
+  on the pair.
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -421,15 +436,21 @@ see `reconcile.py`).
 > SEPARATED from the streamed music — and the cleanest realization **keeps TTS
 > in fanin (its current home) and diverts only MUSIC through the round-trip**,
 > rather than resurrecting an outputd TTS path:
-> - **fanin emits a second, MUSIC-ONLY output** (the separation point). In
->   `mixer.rs` `step()`, the program is summed and program-ducked
+> - **fanin emits a second, MUSIC-ONLY output** (the separation point) —
+>   ✅ **BUILT (Increment 1, `JASPER_FANIN_MUSIC_OUTPUT_PCM`, off by default).**
+>   In `mixer.rs` `step()`, the program is summed and program-ducked
 >   (`apply_gain_to_sum`, ~mixer.rs:286-288) BEFORE TTS is mixed in
 >   (`tts.mix_period`, ~mixer.rs:289-291). Split there: clamp the pre-TTS,
 >   post-duck sum to a music-only buffer + write it to a 2nd output PCM, THEN
 >   mix TTS and write the existing full output. Off-by-default behind a new env
 >   (unset = today's single output). One extra clamp + ALSA write per period.
 >   This single change is BOTH the inv-3 leak fix (the tap reads music-only) AND
->   the music half of inv-2.
+>   the music half of inv-2. **What landed:** the lossy non-blocking side-tap
+>   (`write_music_only` — period-aligned via `avail_update`, drop-on-full, so it
+>   can't perturb the primary output's pacing, inv-1), best-effort open (a bad
+>   PCM degrades to solo, primary path untouched), and a STATUS `music_output`
+>   block (`enabled`/`pcm`/`frames_written`/`drops`). **Not yet consumed** —
+>   wiring it to snapserver (the leader round-trip) is Increment 2.
 > - **the leader's DAC keeps the EXISTING full music+TTS fanin output** for its
 >   own low-latency assistant playback; only the **synced MUSIC** takes the
 >   round-trip (tap → snapserver → leader's snapclient → CamillaDSP-B → DAC).
