@@ -111,7 +111,7 @@ quote_env_value() {
             printf "'"
             rest="$value"
             while [[ "$rest" == *"'"* ]]; do
-                printf "%s'\\''" "${rest%%\'*}"
+                printf "%s'\\\\''" "${rest%%\'*}"
                 rest="${rest#*\'}"
             done
             printf "%s'" "$rest"
