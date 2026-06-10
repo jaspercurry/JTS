@@ -54,6 +54,7 @@ from . import debug_control, shairport_supervisor, system_supervisor, wifi_guard
 from ..multiroom.config import GROUPING_ENV_FILE, validate_grouping
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
+from ..transit.state import read_state as read_transit_state
 from ..volume_diagnostics import (
     build_volume_policy_snapshot,
     read_diagnostics as _read_volume_diagnostics,
@@ -1465,6 +1466,17 @@ async def _get_state(
     except Exception:  # noqa: BLE001
         logger.exception("grouping state read failed")
         grouping_state = None
+
+    # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
+    # os.environ — jasper-control isn't restarted on a /transit/ save, only
+    # jasper-voice is). read_transit_state is itself total, but guard the
+    # section so a future read change can't take the whole /state down: a
+    # broken read leaves transit null and the rest of /state intact.
+    try:
+        transit_state: dict | None = read_transit_state()
+    except Exception:  # noqa: BLE001
+        logger.exception("transit state read failed")
+        transit_state = None
     try:
         output_hardware = _load_output_hardware_state()
         output_hardware_state = (
@@ -1559,6 +1571,12 @@ async def _get_state(
         # leader_addr / buffer_ms / codec / error). See
         # jasper/multiroom/state.py + docs/HANDOFF-multiroom.md.
         "grouping": grouping_state,
+        # Transit city packs (which cities' transit is enabled). null only
+        # if the fresh read itself errored; otherwise {packs: [{id, label,
+        # enabled}]} read fresh from the wizard-owned transit.env. Mirrors
+        # the daemon's enabled_pack_ids on both absent (all) and
+        # present-empty (none). See jasper/transit/state.py.
+        "transit": transit_state,
         # Runtime debug-logging toggle (the /system Debug card): which
         # subsystems are at DEBUG + the shared auto-expiry countdown.
         "debug": debug_control.snapshot(),
