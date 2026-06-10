@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from jasper.wake_training import feature_bank as shared_features
+
 
 _SCRIPT = (
     Path(__file__).resolve().parent.parent
@@ -59,7 +61,7 @@ def _write_bundle(root: Path, rows: list[dict[str, object]]) -> None:
                 and all(c in "0123456789abcdefABCDEF" for c in existing_sha)
             )
             if wav_path is not None and wav_path.is_file() and not existing_is_hex_sha:
-                row = {**row, "sha256": builder._sha256(wav_path)}
+                row = {**row, "sha256": shared_features.sha256(wav_path)}
             f.write(json.dumps({"schema_version": 1, **row}, sort_keys=True) + "\n")
 
 
@@ -235,7 +237,7 @@ def test_rejects_wav_hash_mismatch(tmp_path: Path) -> None:
     )
     assert rejection["reason"] == "sha256_mismatch"
     assert rejection["expected_sha256"] == "0" * 64
-    assert rejection["actual_sha256"] == builder._sha256(wav)
+    assert rejection["actual_sha256"] == shared_features.sha256(wav)
 
 
 def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> None:
