@@ -72,8 +72,15 @@ ssh pi@jts.local sudo reboot
 
 ```sh
 bash scripts/generate-pi-constraints.sh
-git add deploy/constraints-pi.txt
-git commit -m "deps: pin Pi runtime via on-device constraints" && git push
+git diff -- deploy/constraints-pi.txt
+if git diff --quiet -- deploy/constraints-pi.txt; then
+  echo "No constraints change; nothing to commit."
+else
+  git switch -c deps/pi-constraints-2026-06-10
+  git add deploy/constraints-pi.txt
+  git commit -m "deps: pin Pi runtime via on-device constraints"
+  git push -u origin deps/pi-constraints-2026-06-10
+fi
 ```
 
 Subsequent deploys pin every transitive Python dep to the validated
@@ -88,4 +95,4 @@ bash scripts/fetch-pi-logs.sh    # then read logs/*-latest.*
 Roll back a bad deploy by checking out the prior main SHA and
 re-running `scripts/deploy-to-pi.sh`.
 
-Last verified: 2026-06-10 (written at batch merge time, pre-hardware-run)
+Prepared: 2026-06-10 (written at batch merge time, pre-hardware-run)
