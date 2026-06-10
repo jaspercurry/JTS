@@ -636,8 +636,12 @@ def _assess_dtln_engine_from_stats(
     return CheckResult(
         "DTLN-aec engine", "warn",
         "JASPER_AEC_DTLN_ENABLED=1 but the running bridge was started "
-        "without the DTLN leg — bridge not restarted since the env "
-        "changed? Try: sudo systemctl restart jasper-aec-bridge",
+        "without the DTLN leg. If the active input profile is chip-AEC "
+        "(xvf_chip_aec, or auto resolving to it), the bridge never "
+        "loads DTLN — check the profile via `curl -s "
+        "localhost:8780/aec` or http://jts.local/wake/. Otherwise the "
+        "bridge may not have restarted since the env changed — try: "
+        "sudo systemctl restart jasper-aec-bridge",
     )
 
 def _assess_dtln_engine(journal_text: str) -> CheckResult:

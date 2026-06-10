@@ -16,6 +16,7 @@ from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
     _classify_reboot_state,
+    check_bootloop_guard,
 )
 from jasper.music_sources import MUSIC_SOURCES
 
@@ -71,6 +72,70 @@ def test_reboot_state_large_future_skew_warns(tmp_path):
     res = _classify_reboot_state(p, now=now)
     assert res.status == "warn"
     assert "future-dated" in res.detail
+
+
+# ---- boot-loop guard marker ------------------------------------------
+
+def _bootloop_marker(monkeypatch, tmp_path, payload) -> None:
+    p = tmp_path / "bootloop-state.json"
+    monkeypatch.setenv("JASPER_BOOTLOOP_MARKER_FILE", str(p))
+    if payload is not None:
+        p.write_text(payload, encoding="utf-8")
+
+
+def test_bootloop_guard_missing_marker_is_ok_armed(monkeypatch, tmp_path):
+    """No marker = guard never ran this boot (dev host, fresh install).
+    Escalation is in its default armed state — not a warning."""
+    _bootloop_marker(monkeypatch, tmp_path, None)
+    res = check_bootloop_guard()
+    assert res.status == "ok"
+    assert "guard armed" in res.detail
+
+
+def test_bootloop_guard_untripped_marker_is_ok_armed(monkeypatch, tmp_path):
+    _bootloop_marker(monkeypatch, tmp_path, json.dumps({
+        "tripped": False, "boots_in_window": 1, "threshold": 3,
+        "window_sec": 3600, "checked_at": 1000, "reason": "systemd",
+        "units": ["jasper-camilla.service"],
+    }))
+    res = check_bootloop_guard()
+    assert res.status == "ok"
+    assert "guard armed" in res.detail
+    assert "1 boot(s)" in res.detail
+
+
+def test_bootloop_guard_tripped_warns_with_units_and_remediation(
+    monkeypatch, tmp_path,
+):
+    _bootloop_marker(monkeypatch, tmp_path, json.dumps({
+        "tripped": True, "boots_in_window": 3, "threshold": 3,
+        "window_sec": 3600, "checked_at": 1000, "reason": "systemd",
+        "units": ["jasper-camilla.service", "jasper-voice.service"],
+    }))
+    res = check_bootloop_guard()
+    assert res.status == "warn"
+    assert "jasper-camilla.service" in res.detail
+    assert "jasper-voice.service" in res.detail
+    # Remediation matches the true StartLimitAction=none semantics:
+    # the sick unit parks failed; reset-failed + start recovers it.
+    assert "systemctl reset-failed" in res.detail
+    assert "parks failed" in res.detail
+
+
+def test_bootloop_guard_corrupt_marker_is_ok_armed(monkeypatch, tmp_path):
+    """The reader is fail-soft ({'ran': False}); the guard itself is
+    fail-open, so a torn marker reads as 'never ran' — armed."""
+    _bootloop_marker(monkeypatch, tmp_path, "{torn")
+    res = check_bootloop_guard()
+    assert res.status == "ok"
+    assert "guard armed" in res.detail
+
+
+def test_bootloop_guard_registered_in_doctor_run():
+    from jasper.cli.doctor import registered_checks
+
+    names = {c.func.__name__ for c in registered_checks()}
+    assert "check_bootloop_guard" in names
 
 
 # ---- mux mode state --------------------------------------------------

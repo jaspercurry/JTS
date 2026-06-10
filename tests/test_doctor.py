@@ -3872,6 +3872,12 @@ def test_assess_dtln_stats_bridge_started_without_leg_warns():
     )
     assert r is not None and r.status == "warn"
     assert "systemctl restart jasper-aec-bridge" in r.detail
+    # A hand-set JASPER_AEC_DTLN_ENABLED=1 under the chip-AEC profile is
+    # NOT a stale-restart problem — the chip profile never loads DTLN.
+    # The message must point at checking the active input profile, not
+    # only at restarting the bridge.
+    assert "input profile" in r.detail
+    assert "xvf_chip_aec" in r.detail
 
 
 def test_assess_dtln_stats_stale_or_legacy_falls_back():

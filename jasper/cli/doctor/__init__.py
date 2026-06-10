@@ -189,6 +189,7 @@ from .resilience import (
     _start_limit_action_of_unit,
     check_start_limit_action,
     check_service_runtime_state,
+    check_bootloop_guard,
 )
 from . import aec as aec
 from .aec import (
@@ -411,6 +412,7 @@ __all__ = [
     "_start_limit_action_of_unit",
     "check_start_limit_action",
     "check_service_runtime_state",
+    "check_bootloop_guard",
     "_aec_mode_setting",
     "_aec_profile_setting",
     "_wake_leg_setting",
