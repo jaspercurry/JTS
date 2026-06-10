@@ -286,8 +286,14 @@ def _build_test_registry(
     # (This replaced a hand-rolled mirror that read typed `Config` fields,
     # which is exactly the drift the hardware-free
     # `tests/test_voice_eval_registry.py` exists to catch.)
-    for fn in transit.active_transit(os.environ).tools:
+    active = transit.active_transit(os.environ)
+    for fn in active.tools:
         registry.register(fn)
+    if test_state is not None:
+        # Own the lifecycle: ActiveTransit holds built clients (BusClient's
+        # httpx pool today). Stash it so aclose() reclaims them — discarding
+        # it here leaked the pool across every harness teardown.
+        test_state["active_transit"] = active
 
     # Spotify — has playback side-effects. We register the tools
     # whenever the router can be built; scenarios that exercise
@@ -616,6 +622,13 @@ class VoiceEvalHarness:
                 await sched.stop()  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 logger.warning("voice-eval: timer scheduler stop raised",
+                               exc_info=True)
+        active_transit = self.test_state.get("active_transit")
+        if active_transit is not None:
+            try:
+                await active_transit.aclose()  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                logger.warning("voice-eval: active_transit aclose raised",
                                exc_info=True)
         db_path = self.test_state.get("timer_db_path")
         if isinstance(db_path, str):
