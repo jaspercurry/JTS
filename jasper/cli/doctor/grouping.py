@@ -47,7 +47,7 @@ def check_grouping() -> CheckResult:
         surface uses, with the leader's current tap injected."""
     from ...multiroom.config import load_config as _load_grouping_config
     from ...multiroom.reconcile import (
-        _read_outputd_snapfifo_path as _read_tap,
+        effective_leader_tap_path as _read_tap,
     )
     from ...multiroom.reconcile import (
         plan as _grouping_plan,
@@ -196,17 +196,22 @@ def check_grouping_tts_separation() -> CheckResult:
     the leader's TTS to followers — TTS is pre-mixed into the streamed program
     by fanin, an inv-3 violation (V1 is leader-LOCAL TTS only).
 
-    This check is the honest operator signal so a configured leader is not
-    mistaken for a working stream (the per-unit runtime health can read green
-    while the tap env is intent-only). ``ok`` for solo / off / invalid / a
-    follower; ``warn`` for an active LEADER until TTS separation lands (see
-    HANDOFF-multiroom.md §2 "inv-2 realization")."""
+    This is the SPECIFIC operator explanation for why a leader reads
+    ``degraded`` in the runtime health (``check_grouping`` /state): not a
+    transient outage but the unbuilt producer. It is gated on the SAME single
+    source of truth — :data:`~jasper.multiroom.reconcile.SNAPFIFO_PRODUCER_WIRED`
+    — as the runtime tap signal, so the two agree (no contradiction) and this
+    warning AUTO-RESOLVES the moment inv-2 flips that flag. ``ok`` for solo /
+    off / invalid / follower, or once the producer is wired; ``warn`` for an
+    active LEADER while the producer is unwired (see HANDOFF-multiroom.md §2
+    "inv-2 realization")."""
     from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.reconcile import SNAPFIFO_PRODUCER_WIRED
 
     label = "grouping: TTS separation"
     cfg = load_config()
-    if not is_active_member(cfg) or cfg.role != "leader":
-        return CheckResult(label, "ok", "n/a (solo / follower / off)")
+    if SNAPFIFO_PRODUCER_WIRED or not is_active_member(cfg) or cfg.role != "leader":
+        return CheckResult(label, "ok", "n/a (producer wired / solo / follower / off)")
     return CheckResult(
         label, "warn",
         "leader streaming is behind the TTS-separation blocker: the outputd "

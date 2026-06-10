@@ -92,6 +92,21 @@ OUTPUTD_UNIT = "jasper-outputd.service"
 OUTPUTD_SNAPFIFO_ENV_FILE = ARGS_DIR + "/outputd-snapfifo.env"
 _OUTPUTD_SNAPFIFO_KEY = "JASPER_OUTPUTD_SNAPFIFO_PATH"
 
+# Is the jasper-outputd snapfifo PRODUCER actually wired? Currently False:
+# commit 9102e13 (TTS into jasper-fanin) removed outputd's snapfifo reader, so
+# `Config::from_env` does not read JASPER_OUTPUTD_SNAPFIFO_PATH and a leader
+# does NOT stream to followers — see rust/jasper-outputd/src/snapfifo.rs and
+# HANDOFF-multiroom.md §2 "inv-2 realization". This is the SINGLE SOURCE OF
+# TRUTH for that fact: the reconciler still writes the (inert) env for
+# change-detection, but observability (the /state + doctor leader-tap signal,
+# via :func:`effective_leader_tap_path`) and the doctor's TTS-separation check
+# read THIS flag so they report reality (a leader reads `degraded`, not a
+# false-green "streaming"). Flip to True in the SAME change that re-wires the
+# producer with a fanin music-only stream (inv-2); every surface then goes live
+# consistently and the TTS-separation warning auto-resolves. No other code
+# should encode "is the producer wired".
+SNAPFIFO_PRODUCER_WIRED = False
+
 # ---------- inv-2 leader content lane (DESIGN — see HANDOFF §2 "inv-2 ----------
 #            realization"). NOT YET ACTIVE.
 #
@@ -423,6 +438,23 @@ def _read_outputd_snapfifo_path(path: str = OUTPUTD_SNAPFIFO_ENV_FILE) -> str:
             path, e,
         )
     return ""
+
+
+def effective_leader_tap_path(path: str = OUTPUTD_SNAPFIFO_ENV_FILE) -> str:
+    """The leader's EFFECTIVE outputd tap — what outputd is ACTUALLY tapping,
+    for the /state + doctor runtime-health surfaces (NOT the reconciler's
+    change-detection, which needs the raw file via
+    :func:`_read_outputd_snapfifo_path`).
+
+    Returns "" whenever :data:`SNAPFIFO_PRODUCER_WIRED` is False, because
+    outputd does not read the reconciler-written env yet (the producer is
+    unwired). Reporting the written env as a live tap is the false-green this
+    guards against: a leader would read "streaming" while followers get
+    silence. Once the producer is wired (flip the flag), this returns the real
+    env and the surfaces go live. Total — never raises."""
+    if not SNAPFIFO_PRODUCER_WIRED:
+        return ""
+    return _read_outputd_snapfifo_path(path)
 
 
 def _write_outputd_snapfifo_env(

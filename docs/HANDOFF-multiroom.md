@@ -20,12 +20,21 @@
 
 ## 0. Implementation status (2026-06-04)
 
-Off-by-default plumbing has landed, and the producer + reconciler tap now
-make audio **FLOW** to followers once a leader is formed (the bond-forming
-UI ships — §8). What is **not** yet done: perfect sample-lock (§2 inv. 2,
-the leader's own buffered snapclient lane) so the card carries an honest
-"preview" note, and the gating §8 spike (network sync error, FLAC RAM/CPU)
-has not been run on hardware. What exists:
+Off-by-default plumbing has landed — the config / state / reconcile layer,
+the `/rooms` bond-forming UI (§8), the channel-split weave, and inv-5. But
+audio does **NOT** yet flow to followers, and an enabled leader says so
+(it reads `degraded`). The outputd snapfifo producer (`SnapfifoSink`) is
+**built but UNWIRED**: commit 9102e13 moved assistant/TTS ingress into
+`jasper-fanin` and removed outputd's snapfifo reader, so `Config::from_env`
+no longer reads `JASPER_OUTPUTD_SNAPFIFO_PATH` and the reconciler's tap env
+is inert. The honest state is gated on the single source of truth
+[`reconcile.SNAPFIFO_PRODUCER_WIRED`](../jasper/multiroom/reconcile.py)
+(`False` today) — `/state`, `jasper-doctor`, and this doc all read it, so they
+cannot drift into a false "streaming." Re-wiring the producer is **BLOCKED on
+TTS separation** (§2 "inv-2 realization"): the streamed program is post-TTS and
+would leak the leader's assistant to followers. Also not done: perfect
+sample-lock (§2 inv. 2, the leader's own buffered snapclient lane) and the
+gating §8 spike (network sync error, FLAC RAM/CPU) on hardware. What exists:
 
 - **`jasper/multiroom/config.py`** — pure, off-by-default
   `GroupingConfig` + `load_config()` (SSOT `/var/lib/jasper/grouping.env`;
@@ -93,20 +102,29 @@ has not been run on hardware. What exists:
   composes with `output_topology.SpeakerChannel`'s intra-speaker driver
   axis because channel-select is interface-preserving 2→2 (§4). Pure /
   hardware-free; live weaving into the active config is P1.3.
-- **`jasper-outputd` snapfifo producer** — `rust/jasper-outputd/src/snapfifo.rs`
-  (`SnapfifoSink`) + a writer thread in `main.rs`. A grouping LEADER adds a
+- **`jasper-outputd` snapfifo producer (BUILT BUT UNWIRED)** —
+  `rust/jasper-outputd/src/snapfifo.rs` (`SnapfifoSink`). **Its integration was
+  REMOVED by commit 9102e13** when TTS ingress moved into `jasper-fanin`: the
+  `main.rs` writer thread and the `Config::from_env` gate are gone, so nothing
+  below is live today (`SNAPFIFO_PRODUCER_WIRED = False`). The struct + its
+  `cargo test` remain; this describes how it behaves WHEN inv-2 re-wires it
+  against a fanin music-only stream. As designed, a grouping LEADER adds a
   **separate** reference-fanout consumer (`"snapfifo"`, distinct from the AEC
   `"external-aec"` consumer — §2 inv. 4) and hands each post-clamp stereo
   packet to a bounded, **drop-on-full** channel; a dedicated writer thread
   does the blocking whole-packet FIFO write, so the DAC loop is never
   back-pressured (§2 inv. 1). `SnapfifoSink` opens the FIFO lazily +
   non-blocking (a not-yet-reading snapserver is a harmless drop, not an
-  error) and reopens on a broken pipe. Gated on `JASPER_OUTPUTD_SNAPFIFO_PATH`
-  — **unset on a solo speaker / follower → no consumer, no thread, zero
-  cost**. Tested hardware-free with a real temp FIFO (`cargo test`).
-- **Producer activation (reconciler tap wiring)** — `reconcile.py` now sets
-  `JASPER_OUTPUTD_SNAPFIFO_PATH` for a valid **leader** and clears it
-  otherwise, via a reconciler-owned env file
+  error) and reopens on a broken pipe. Was gated on
+  `JASPER_OUTPUTD_SNAPFIFO_PATH` (the gate `Config::from_env` no longer reads);
+  **unset on a solo speaker / follower → no consumer, no thread, zero cost** is
+  the property to restore when it re-wires. Tested hardware-free with a real
+  temp FIFO (`cargo test`).
+- **Producer activation (reconciler tap wiring — INERT until re-wire)** —
+  `reconcile.py` still sets `JASPER_OUTPUTD_SNAPFIFO_PATH` for a valid
+  **leader** and clears it otherwise (kept for change-detection), but the value
+  is **inert**: outputd's `Config::from_env` no longer reads it (9102e13), so
+  the tap moves no audio today. It is written via a reconciler-owned env file
   (`/run/jasper-grouping/outputd-snapfifo.env`) that `jasper-outputd.service`
   layers in as an OPTIONAL `EnvironmentFile=`. Pure `desired_snapfifo_path`
   (leader → `SNAPFIFO`, else `""`) + `outputd_tap_action` (the change-gate);
@@ -162,9 +180,11 @@ has not been run on hardware. What exists:
   bond/unbond fan-out runs **concurrently** across members (one slow/absent
   peer doesn't serialize the rest). An SSRF guard limits cross-speaker
   POST/GET targets to private/loopback IPv4 and rejects bare hostnames (see
-  §7 "Grouping control plane — threat model"); the producer + reconciler tap
-  make audio FLOW once a leader is formed, so the UI carries an honest
-  "preview" note (perfect sample-lock still needs §2 inv. 2). Untrusted mDNS
+  §7 "Grouping control plane — threat model"); audio does **not** yet flow to
+  followers (the outputd producer is unwired — `SNAPFIFO_PRODUCER_WIRED` is
+  `False`, blocked on TTS separation), so a formed leader reads `degraded` and
+  the UI carries an honest "not yet streaming / preview" note (the producer
+  wiring AND perfect sample-lock are both §2 inv. 2). Untrusted mDNS
   fields never enter the server HTML (the shell is data-free; data ships as
   `application/json` and the module renders it via DOM/text APIs).
   On `jasper-control` itself the grouping HTTP surface is `POST
@@ -195,9 +215,11 @@ the multi-member channel/leader picker is the remaining UI), the
 **leader's own snapclient → outputd content lane** (§2 inv. 2 — so the
 leader plays the *buffered* stream in sync with followers, not its direct
 unsynced output), and the on-device end-to-end + acoustic sync validation.
-*(The producer AND its activation landed — `SnapfifoSink` + the reconciler
-tap wiring, §0/§2 below. Enabling a leader now makes audio FLOW to
-followers; sample-lock still needs inv. 2.)* **SHIPPED since:** inv. 5
+*(The producer `SnapfifoSink` + the reconciler tap env are WRITTEN but
+**unwired** — 9102e13 removed outputd's reader, so enabling a leader does
+**not** stream to followers yet (it reads `degraded`); re-wiring is blocked on
+TTS separation, and sample-lock additionally needs inv. 2. See the §0 intro +
+§2 "inv-2 realization.")* **SHIPPED since:** inv. 5
 (`rate_adjust=false`, §2) AND the **live weave of the channel-split
 fragment into the active config** — `weave_channel_split()`
 (`channel_split.py`) splices the `channel_select` mixer + sub crossover
@@ -310,9 +332,11 @@ samples to bounded lossy per-consumer ring queues. We add one more
 consumer that writes 48k/S16/stereo into a bounded non-blocking
 FIFO; `snapserver` reads it as a `pipe` input. Tapping *after* the
 clamp is what makes the streamed audio inherit JTS's hardware-safety
-ceiling (§7). **Built (P1.3, `SnapfifoSink` — see §0):** the
-consumer + writer thread land off-by-default behind
-`JASPER_OUTPUTD_SNAPFIFO_PATH`. The FIFO lives at
+ceiling (§7). **Built but UNWIRED (`SnapfifoSink` — see §0):** the consumer
+exists, but its `main.rs` writer thread + `JASPER_OUTPUTD_SNAPFIFO_PATH` gate
+were removed by 9102e13 (TTS moved to fanin), so it moves no audio today
+(`SNAPFIFO_PRODUCER_WIRED = False`); when re-wired it sits off-by-default behind
+that gate. The FIFO lives at
 `/run/jasper-snapserver/snapfifo` (snapserver's own `RuntimeDirectory`,
 the reconciler's canonical `SNAPFIFO` — *not* the bare `/run/jasper/`
 of an earlier draft, which would collide with `jasper-voice`'s sockets;
@@ -417,6 +441,32 @@ see `reconcile.py`).
 > extra fanin output staying in the 1 GB envelope. The `DacContentSource` FIFO
 > reader (a clean mirror of `snapfifo.rs`) is still the music-half outputd
 > component; it lands with this TTS-aware integration, validated on ≥2 Pis.
+
+> **⚠ Superseded on the tap source + leader-TTS — read the corrected contract
+> above first.** The subsections that follow ("The tension to resolve" →
+> "On-device validation plan") are the EARLIER realization. They still hold
+> EXCEPT on the two points the BLOCKER above corrects — apply these as you read:
+>
+> 1. **Tap source.** Below, the SHARED program is tapped from `jasper-outputd`'s
+>    post-CamillaDSP/post-clamp `ReferenceFanout` (`SnapfifoSink` → `SNAPFIFO`),
+>    shown in the flow diagram's top line and assumed by "The outputd contract
+>    change" (a)/(b). That source is **post-TTS**, so it would leak the leader's
+>    assistant (inv-3). The corrected contract relocates the tap to a **fanin
+>    MUSIC-ONLY output** (pre-TTS, post-duck). Wherever you read "outputd
+>    `ReferenceFanout` → `SnapfifoSink` → `SNAPFIFO`," substitute "fanin
+>    music-only → FIFO → `SNAPFIFO`."
+> 2. **Leader-local assistant.** The flow diagram routes ONLY the buffered
+>    round-trip music to the leader's DAC and omits the leader's own TTS. The
+>    corrected contract keeps the assistant on the leader's existing local
+>    low-latency fanin→DAC path (§6: the assistant is off the synced path); only
+>    MUSIC takes the round-trip.
+>
+> UNCHANGED below: the tension itself (shared-on-wire vs per-member
+> post-snapclient DSP, keeping tap-source ≠ DAC-source to dodge the audio loop),
+> the per-member bottom-half chain (snapclient → FIFO → CamillaDSP-B → DAC) and
+> its "the leader is a follower of itself" symmetry, the optional outputd
+> DAC-content lane, the reconciler/env scaffolding (shipped), the invariant
+> compliance, and the on-device validation plan.
 
 **The tension to resolve.** Two shipped/written facts pull in opposite
 directions:
@@ -936,11 +986,12 @@ bond: the server discovers membership by reading each member's `GET
 rest) over the same no-auth LAN surface the dial uses, SSRF-guarded to
 private/loopback IPv4 (bare hostnames rejected) — see §7 "Grouping control
 plane — threat model" for why that surface is unauthenticated by design.
-Configuration is fully automatic (no per-speaker tinkering); the producer +
-reconciler tap make audio FLOW once the leader is formed. What's honestly
-*not* done is perfect sample-lock (§2 inv. 2) and the >2-member / 2.1 / sub
-picker, so the card carries a "preview" note rather than pretending the
-audio half is fully validated. Sibling rows in the directory stay read-only
+Configuration is fully automatic (no per-speaker tinkering). What's honestly
+*not* done: **audio does not yet flow to followers** — the outputd snapfifo
+producer is unwired (`SNAPFIFO_PRODUCER_WIRED` is `False`, blocked on TTS
+separation, §2), so a formed leader reads `degraded`; plus perfect sample-lock
+(§2 inv. 2) and the >2-member / 2.1 / sub picker. The card carries a "not yet
+streaming / preview" note rather than pretending the audio half works. Sibling rows in the directory stay read-only
 by design beyond the pair-forming flow (configure each speaker's own knobs
 on its own UI).
 
@@ -1151,7 +1202,22 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-09 (TTS-separation scoping + inv-3 GUARD, via a 4-agent
+Last verified: 2026-06-10 (single-source-of-truth for the snapfifo producer +
+doc honesty pass. Replaced the `/state` "leader is streaming" band-aid with ONE
+flag — `reconcile.SNAPFIFO_PRODUCER_WIRED` (`False` today, because 9102e13 left
+the outputd producer unwired). `effective_leader_tap_path()` returns "" while
+the flag is `False`, so `/state`'s `derive_grouping_runtime`, `jasper-doctor`'s
+`check_grouping`, AND `check_grouping_tts_separation` all read the SAME truth: a
+formed leader reads `degraded` everywhere (no false-green), and the
+TTS-separation warning AUTO-RESOLVES the moment inv-2 flips the flag. Reconciled
+the doc with that flag — §0, the §2 "Where it taps" note, and the §8 "Shipped"
+bullet no longer claim "audio FLOWs to followers" (it does not — the producer is
+unwired), and §2 "inv-2 realization" now marks the naive dual-read design (the
+outputd-`ReferenceFanout` tap + the missing leader-local TTS) **superseded** by
+the corrected fanin-music-only contract above it, per the repo's "current state
+first, single source of truth, history below" doc rule. 397 affected tests
+green, ruff clean; no audio path touched. Earlier 2026-06-09 (TTS-separation
+scoping + inv-3 GUARD, via a 4-agent
 investigation workflow. The investigation CORRECTED an earlier overstatement:
 the `SnapfifoSink` is not "already leaking" — it is **unwired DEAD CODE**
 (`grep SnapfifoSink rust/` hits only `snapfifo.rs`; commit 9102e13 removed the

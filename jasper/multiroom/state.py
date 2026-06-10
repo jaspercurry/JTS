@@ -41,8 +41,8 @@ from typing import Any, Callable
 
 from .config import GROUPING_ENV_FILE, GroupingConfig, load_config
 from .reconcile import (
-    _read_outputd_snapfifo_path,
     desired_snapfifo_path,
+    effective_leader_tap_path,
     plan,
 )
 
@@ -203,15 +203,18 @@ def read_grouping_state(
     bond's plan starts nothing, so there is nothing to probe).
 
     For a VALID LEADER only, the outputd snapfifo tap is also read through
-    the thin I/O edge (:func:`jasper.multiroom.reconcile._read_outputd_snapfifo_path`)
+    the thin I/O edge (:func:`jasper.multiroom.reconcile.effective_leader_tap_path`)
     and injected into the pure derive, so a leader whose snapserver is
     ``active`` but whose FIFO is dry (outputd not tapping) shows
     ``degraded`` instead of a healthy-looking-but-silent bond. A
     follower / solo / invalid config does zero extra work — no tap probe.
+    The tap reader honors ``SNAPFIFO_PRODUCER_WIRED`` — while the outputd
+    producer is unwired it returns "" (a leader reads ``degraded``, never a
+    false-green "streaming"); see that flag in ``reconcile``.
 
     ``unit_state_reader`` and ``tap_path_reader`` are injectable for tests;
     production uses :func:`read_unit_active_states` and
-    :func:`jasper.multiroom.reconcile._read_outputd_snapfifo_path`.
+    :func:`jasper.multiroom.reconcile.effective_leader_tap_path`.
     """
     cfg = load_config(path)
     snapshot: dict[str, Any] = {
@@ -232,7 +235,7 @@ def read_grouping_state(
             states = reader([it.unit for it in plan(cfg).intents])
             # Only a valid leader taps — skip the I/O entirely otherwise.
             if cfg.role == "leader":
-                tap_reader = tap_path_reader or _read_outputd_snapfifo_path
+                tap_reader = tap_path_reader or effective_leader_tap_path
                 tap = tap_reader()
         snapshot["runtime"] = derive_grouping_runtime(
             cfg, states, leader_tap_path=tap
