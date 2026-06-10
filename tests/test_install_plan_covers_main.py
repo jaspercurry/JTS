@@ -5,8 +5,10 @@
 the printed plan matches what the real installer does. print_install_plan
 is hand-written prose, so a new step appended to main() silently vanishes
 from the plan unless something checks. This test is that check: it parses
-main()'s body for calls to functions defined in install.sh, then asserts
-each one is represented by a marker phrase in the actual `--dry-run`
+main()'s body for calls to functions defined in install.sh or in its
+sourced deploy/lib/install/*.sh libraries (the function-group extraction
+moved several step definitions there; main() still calls them), then
+asserts each one is represented by a marker phrase in the actual `--dry-run`
 output (run through bash, not regexed out of the source, so EOF-heredoc
 or flag-handling breakage also fails here).
 
@@ -26,6 +28,9 @@ import subprocess
 from pathlib import Path
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
+# Function-group libraries sourced by install.sh; step functions called
+# from main() may be defined here instead of in install.sh itself.
+_INSTALL_LIB_DIR = _INSTALL_SH.parent / "lib" / "install"
 
 # step function called in main() -> phrase that must appear in the
 # --dry-run plan output (after whitespace normalization).
@@ -76,15 +81,22 @@ def _main_body() -> str:
 
 
 def _defined_functions() -> set[str]:
-    text = _INSTALL_SH.read_text(encoding="utf-8")
-    return set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)\(\) \{", text, re.MULTILINE))
+    sources = [_INSTALL_SH, *sorted(_INSTALL_LIB_DIR.glob("*.sh"))]
+    functions: set[str] = set()
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        functions |= set(
+            re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)\(\) \{", text, re.MULTILINE)
+        )
+    return functions
 
 
 def _steps_called_in_main() -> list[str]:
     """Function calls in main(), in order: lines whose first token (after
-    stripping trailing comments) names a function defined in install.sh.
-    Bash keywords / builtins / helpers used inside conditions (`if
-    _is_truthy ...`) are not first tokens, so they don't register."""
+    stripping trailing comments) names a function defined in install.sh
+    or its sourced deploy/lib/install/*.sh libraries. Bash keywords /
+    builtins / helpers used inside conditions (`if _is_truthy ...`) are
+    not first tokens, so they don't register."""
     functions = _defined_functions()
     steps = []
     for line in _main_body().splitlines():
