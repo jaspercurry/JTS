@@ -2,7 +2,8 @@
 memory-resilience plan (docs/HANDOFF-resilience.md).
 
 These are drift detectors — they verify the configs installed by
-`migrate_memory_resilience` (in deploy/install.sh) are actually
+`migrate_memory_resilience` (in deploy/lib/install/memory-resilience.sh,
+sourced by deploy/install.sh) are actually
 applied at runtime. The check functions all read kernel
 interfaces (/proc, /sys, /sys/fs/cgroup), so we mock those.
 
