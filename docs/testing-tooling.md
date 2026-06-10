@@ -337,6 +337,47 @@ state.
 
 ---
 
+## Wake LiveKit smoke workdir
+
+Laptop-side or training-host-side, offline by default. Consumes the workdir from
+`scripts/prepare-wake-training-workdir.sh` and creates the smallest complete
+LiveKit-compatible model directory needed to smoke-test `train → export → eval`.
+
+```sh
+bash scripts/prepare-wake-livekit-smoke.sh logs/wake-train
+bash scripts/prepare-wake-livekit-smoke.sh logs/wake-train logs/livekit-smoke \
+  --steps 20 --model-type conv_attention --model-size tiny
+```
+
+Outputs:
+
+- `livekit_smoke_config.yaml`
+- `livekit_smoke.json`
+- `README.md`
+- `livekit-output/<model>/positive_features_train.npy`
+- `livekit-output/<model>/positive_features_test.npy`
+- `livekit-output/<model>/negative_features_train.npy`
+- `livekit-output/<model>/negative_features_test.npy`
+
+By default, the negative arrays are deterministic embedding-space placeholders.
+That is sufficient to prove LiveKit mechanics but is **not** model-quality
+evidence. To make the run meaningful, pass operator-supplied real negative
+feature files with `--negative-train-features` and `--negative-test-features`.
+
+The tool does not call LiveKit unless the operator passes `--run-livekit`.
+With that flag it runs:
+
+```sh
+livekit-wakeword train livekit_smoke_config.yaml
+livekit-wakeword export livekit_smoke_config.yaml --format onnx
+livekit-wakeword eval livekit_smoke_config.yaml
+```
+
+It does not generate synthetic positive audio, launch cloud jobs, register,
+deploy, activate, or alter Pi runtime state.
+
+---
+
 ## Wake-corpus quality analyzer
 
 Laptop-side, offline. Deterministic first-pass signal-quality analysis of a
