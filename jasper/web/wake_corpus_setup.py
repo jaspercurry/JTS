@@ -185,6 +185,7 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
     MAX_RECORDING_DURATION_SEC,
     METADATA_SCHEMA_VERSION,
     RESUME_WINDOW_SEC,
+    MIC_MUTED_MESSAGE,
     TEST_MODE_MARKER,
     TEST_MODE_STALE_SEC,
     ClipMetadata,
@@ -573,12 +574,7 @@ class _Handler(BaseHTTPRequestHandler):
             logger.warning(
                 "event=wake_corpus.mute_refused op=post_session",
             )
-            self._send_error_json(
-                409,
-                "mic is muted — the wake-corpus recorder will not "
-                "capture audio while the household mic mute is on. "
-                "Unmute from the /system/ dashboard, then retry.",
-            )
+            self._send_error_json(409, MIC_MUTED_MESSAGE)
             return
         missing_outputs = bridge_session.missing_bridge_outputs_for_session(
             corpus_profile=corpus_profile,

@@ -4133,7 +4133,9 @@ def test_mute_mid_recording_stops_clip_and_flags_it(
 
     assert not mute_backend.is_recording()
     assert clips[-1].mute_stopped is True
-    assert clips[-1].auto_stopped is True
+    # A privacy stop is NOT the duration-cap auto-stop — downstream
+    # tools must be able to tell them apart.
+    assert clips[-1].auto_stopped is False
     assert "event=wake_corpus.mute_stop" in caplog.text
     # The flag persists into the session metadata sidecar.
     meta_dir = mute_backend._metadata_dir
