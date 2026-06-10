@@ -438,6 +438,51 @@ deploy, activate, or alter Pi runtime state.
 
 ---
 
+## Wake training Phase 0 runner
+
+Laptop-side or training-host-side, offline except for optional local
+`livekit-wakeword` execution. Orchestrates the existing export, feature-bank,
+real-positive injection, and LiveKit smoke tools into one evidence directory.
+
+```sh
+bash scripts/run-wake-training-phase0.sh logs/wake-phase0 \
+  --positive-corpus-dir data/enrollment_positives \
+  --negative-corpus-dir data/wake_negatives \
+  --positive-leg chip_aec_150 \
+  --negative-label-kind hard_negative
+
+bash scripts/run-wake-training-phase0.sh logs/wake-phase0 \
+  --positive-bundle-dir logs/positive-bundle \
+  --negative-bundle-dir logs/negative-bundle \
+  --run-livekit
+```
+
+Outputs:
+
+- `phase0_run.json`
+- `command_log.jsonl`
+- `README.md`
+- `positive-bundle/`, unless `--positive-bundle-dir` was supplied
+- `positive-features/`
+- `negative-bundle/`, unless `--negative-bundle-dir` was supplied
+- `negative-features/`
+- `training-workdir/`
+- `livekit-phase0/`
+
+By default, the runner requires `--negative-corpus-dir` or
+`--negative-bundle-dir` so a Phase 0 result uses real negative/hard-negative
+features. Pass `--allow-placeholder-negatives` only for a mechanics smoke test;
+that path is not model-quality evidence.
+
+The runner does not generate synthetic positive audio, launch cloud jobs,
+register, deploy, activate, or alter Pi runtime state. It is the repeatable
+operator path for "can we train/export/eval a tiny LiveKit-compatible ONNX
+candidate from JTS corpus artifacts?" The next decision is made from the
+resulting `livekit-phase0/livekit_smoke.json` and held-out JTS evaluation, not
+from the runner itself.
+
+---
+
 ## Wake-corpus quality analyzer
 
 Laptop-side, offline. Deterministic first-pass signal-quality analysis of a
