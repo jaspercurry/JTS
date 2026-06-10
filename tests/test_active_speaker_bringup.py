@@ -131,7 +131,7 @@ def test_bringup_preflight_requires_staged_guard_for_software_only_path() -> Non
     assert report["status"] == "blocked"
     assert report["manual_bringup_available"] is False
     assert report["software_guard"]["status"] == "software_guard_needs_staged_config"
-    assert "tweeter_software_guard_requested" in {
+    assert "high_frequency_guard_not_ready" in {
         issue["code"] for issue in report["issues"]
     }
 

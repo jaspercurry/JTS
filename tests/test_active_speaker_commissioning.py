@@ -73,7 +73,7 @@ def _bringup(*, identity: bool = True, staged: bool = True) -> dict:
                     _gate("topology_has_no_unhandled_blockers", True),
                     _gate("physical_identity_verified", identity),
                     _gate("protected_startup_config_staged", staged),
-                    _gate("compression_driver_guard_accepted", staged),
+                    _gate("high_frequency_guard_accepted", staged),
                 ],
             }
         },

@@ -32,6 +32,7 @@ from .audible_policy import (
     audible_role_block_message,
 )
 from .camilla_yaml import _forbidden_playback_token
+from .driver_protection import driver_protection_payload, normalise_driver_role
 from .safe_playback import floor_audio_confirmed_for_target
 from .tone_plan import (
     DEFAULT_TONE_DURATION_MS,
@@ -404,6 +405,49 @@ def _tone_fields(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _tone_band_limit(plan: dict[str, Any]) -> dict[str, Any] | None:
+    tone = plan.get("tone") if isinstance(plan.get("tone"), dict) else {}
+    band = tone.get("band_limit")
+    return band if isinstance(band, dict) else None
+
+
+def _plan_driver_protection(plan: dict[str, Any]) -> dict[str, Any] | None:
+    safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
+    if isinstance(plan.get("driver_protection"), dict):
+        return plan["driver_protection"]
+    if isinstance(safety.get("driver_protection"), dict):
+        return safety["driver_protection"]
+    return None
+
+
+def _driver_protection_for_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
+    driver_role = str(target.get("driver_role") or target.get("role") or "")
+    plan_protection = _plan_driver_protection(plan)
+    matching_plan_protection = (
+        plan_protection
+        if (
+            isinstance(plan_protection, dict)
+            and normalise_driver_role(plan_protection.get("role"))
+            == normalise_driver_role(driver_role)
+        )
+        else None
+    )
+    driver_style = target.get("driver_style")
+    if driver_style is None and matching_plan_protection:
+        driver_style = matching_plan_protection.get("driver_style")
+    return driver_protection_payload(
+        driver_role,
+        driver_style=driver_style,
+        protection_status=(
+            matching_plan_protection.get("protection_status")
+            if matching_plan_protection
+            else None
+        ),
+        band_limit=_tone_band_limit(plan),
+    )
+
+
 def _tone_at_floor(tone: dict[str, Any]) -> bool:
     return float(tone.get("level_dbfs") or 0.0) <= MIN_TEST_LEVEL_DBFS + 1e-6
 
@@ -548,6 +592,7 @@ def _metadata_for_result(
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
     tone = _tone_fields(plan)
     safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
+    driver_protection = _driver_protection_for_plan(plan)
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": TONE_PLAYBACK_ARTIFACT_KIND,
@@ -561,7 +606,11 @@ def _metadata_for_result(
             "label": target.get("label"),
         },
         "tone": tone,
-        "audible_test": audible_policy_payload(target.get("driver_role") or target.get("role")),
+        "audible_test": audible_policy_payload(
+            target.get("driver_role") or target.get("role"),
+            driver_protection=driver_protection,
+        ),
+        "driver_protection": driver_protection,
         "safety": {
             "protected_startup_loaded": bool(safety.get("protected_startup_loaded")),
             "safe_session_id": safety.get("safe_session_id"),
@@ -813,7 +862,11 @@ def start_tone_playback(
     bounded_plan = _plan_with_bounded_tone(plan, tone)
     audio_backend = bool(getattr(selected, "audio_backend", False))
     driver_role = str(target.get("driver_role") or target.get("role") or "")
-    audible_policy = audible_policy_payload(driver_role)
+    driver_protection = _driver_protection_for_plan(plan)
+    audible_policy = audible_policy_payload(
+        driver_role,
+        driver_protection=driver_protection,
+    )
     if audio_backend and not allow_audio:
         issues.append(
             _issue(
@@ -841,7 +894,10 @@ def start_tone_playback(
                 ),
             )
         )
-    if audio_backend and not audible_role_allowed(driver_role):
+    if audio_backend and not audible_role_allowed(
+        driver_role,
+        driver_protection=driver_protection,
+    ):
         issues.append(
             _issue(
                 "blocker",
@@ -849,6 +905,23 @@ def start_tone_playback(
                 audible_role_block_message(driver_role),
             )
         )
+    if audio_backend:
+        for issue in driver_protection.get("issues", []):
+            if isinstance(issue, dict):
+                issues.append(issue)
+        max_auto_level = driver_protection.get("max_auto_level_dbfs")
+        try:
+            max_auto_level = float(max_auto_level)
+        except (TypeError, ValueError):
+            max_auto_level = MAX_TEST_LEVEL_DBFS
+        if tone["level_dbfs"] > max_auto_level + 1e-6:
+            issues.append(
+                _issue(
+                    "blocker",
+                    "driver_auto_level_cap_exceeded",
+                    "tone level exceeds the driver-specific closed-loop cap",
+                )
+            )
     if (
         audio_backend
         and not _tone_at_floor(tone)
@@ -884,6 +957,7 @@ def start_tone_playback(
             },
             "tone": tone,
             "audible_test": audible_policy,
+            "driver_protection": driver_protection,
             "artifact": None,
             "issues": issues,
         }
@@ -913,6 +987,7 @@ def start_tone_playback(
             },
             "tone": tone,
             "audible_test": audible_policy,
+            "driver_protection": driver_protection,
             "artifact": None,
             "issues": [
                 _issue(
@@ -943,6 +1018,7 @@ def start_tone_playback(
         },
         "tone": tone,
         "audible_test": audible_policy,
+        "driver_protection": driver_protection,
         "artifact": backend_result.get("artifact"),
         "issues": [
             issue for issue in backend_result.get("issues", [])

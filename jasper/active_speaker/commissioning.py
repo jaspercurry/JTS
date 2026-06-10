@@ -145,7 +145,7 @@ def build_commissioning_rehearsal(
     identity_ready = _passed(manual_gates, "physical_identity_verified")
     staged_ready = (
         _passed(manual_gates, "protected_startup_config_staged")
-        and _passed(manual_gates, "compression_driver_guard_accepted")
+        and _passed(manual_gates, "high_frequency_guard_accepted")
     )
     path_ready = (
         _passed(startup_gates, "path_safety_ready")

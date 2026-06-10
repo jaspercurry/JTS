@@ -5,6 +5,7 @@ import pytest
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.playback import tone_backend_status
 from jasper.active_speaker.readiness import (
+    HIGH_FREQUENCY_FLOOR_TEST_PREVIEW_KIND,
     PLAYBACK_READINESS_KIND,
     build_playback_readiness,
 )
@@ -278,14 +279,17 @@ def test_playback_readiness_allows_non_tweeter_when_audio_backend_enabled() -> N
     assert report["tone_playback_implemented"] is True
     assert report["tone_backend"]["test_pcm"] == "hw:Active"
     assert report["audible_test"] == {
-        "policy_version": "woofer_mid_low_level_v1",
+        "policy_version": "driver_protection_auto_level_v1",
         "allowed_roles": ["mid", "subwoofer", "woofer"],
         "target_role": "woofer",
         "target_role_allowed": True,
+        "driver_role_class": "low_frequency",
+        "driver_style": None,
+        "driver_protection_audio_allowed": True,
     }
 
 
-def test_playback_readiness_keeps_tweeter_audio_disabled_in_first_slice() -> None:
+def test_playback_readiness_allows_tweeter_floor_audio_with_protection_profile() -> None:
     report = build_playback_readiness(
         _topology(),
         speaker_group_id="left",
@@ -302,11 +306,10 @@ def test_playback_readiness_keeps_tweeter_audio_disabled_in_first_slice() -> Non
     )
 
     assert report["preconditions_passed"] is True
-    assert report["playback_allowed"] is False
-    assert report["audible_test"]["target_role_allowed"] is False
-    assert "tweeter_audio_not_enabled" in {
-        issue["code"] for issue in report["issues"]
-    }
+    assert report["playback_allowed"] is True
+    assert report["audible_test"]["target_role_allowed"] is True
+    assert report["driver_protection"]["role_class"] == "high_frequency"
+    assert report["driver_protection"]["audio_allowed"] is True
 
 
 def test_playback_readiness_fails_closed_for_unverified_identity() -> None:
@@ -346,7 +349,7 @@ def test_playback_readiness_requires_tweeter_protection_for_tweeter_target() -> 
     assert "tweeter_protection" not in codes
 
 
-def test_playback_readiness_keeps_software_guard_request_blocked() -> None:
+def test_playback_readiness_accepts_software_guard_request() -> None:
     report = build_playback_readiness(
         _topology(protection="software_guard_requested"),
         speaker_group_id="left",
@@ -357,11 +360,76 @@ def test_playback_readiness_keeps_software_guard_request_blocked() -> None:
         startup_load_state=_startup_load(),
     )
 
-    codes = {issue["code"] for issue in report["issues"]}
-
-    assert report["status"] == "blocked"
-    assert "tweeter_software_guard_requested" in codes
+    assert report["status"] == "preconditions_passed"
+    assert report["issues"] == []
+    assert report["driver_protection"]["protection_status"] == "software_guard_requested"
+    assert report["driver_protection"]["audio_allowed"] is True
     assert report["playback_allowed"] is False
+
+
+def test_playback_readiness_reports_high_frequency_guided_readiness() -> None:
+    report = build_playback_readiness(
+        _topology(protection="software_guard_requested"),
+        speaker_group_id="left",
+        role="tweeter",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(observed_mic_dbfs=-32),
+        startup_load_state=_startup_load(),
+        tone_backend=tone_backend_status({
+            "JASPER_ACTIVE_SPEAKER_TONE_BACKEND": "aplay",
+            "JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO": "1",
+            "JASPER_ACTIVE_SPEAKER_TEST_PCM": "hw:Active",
+        }),
+    )
+
+    hf = report["high_frequency_driver"]
+
+    assert report["preconditions_passed"] is True
+    assert report["playback_allowed"] is True
+    assert hf["status"] == "guided_ready"
+    assert hf["audio_allowed"] is True
+    assert hf["protection_mode"] == "software_guarded"
+    assert hf["manual_floor_test_candidate"] is True
+    assert hf["guided_floor_test_candidate"] is True
+    assert hf["microphone"]["status"] == "usable"
+    assert hf["floor_test_preview"]["kind"] == HIGH_FREQUENCY_FLOOR_TEST_PREVIEW_KIND
+    assert hf["floor_test_preview"]["would_play"] is False
+    assert hf["floor_test_preview"]["audio_allowed"] is False
+    assert hf["floor_test_preview"]["tone"]["level_dbfs"] == -80.0
+    assert hf["floor_test_preview"]["tone"]["frequency_hz"] == 5000.0
+    assert hf["floor_test_preview"]["tone"]["band_limit"] == {
+        "type": "highpass",
+        "highpass_hz": 5000.0,
+    }
+    assert hf["auto_level"]["status"] == "locked"
+
+
+def test_playback_readiness_blocks_high_frequency_guidance_on_clipping() -> None:
+    report = build_playback_readiness(
+        _topology(protection="software_guard_requested"),
+        speaker_group_id="left",
+        role="tweeter",
+        environment_report=_environment(),
+        safe_session=_safe_session(),
+        calibration_level=calibration_level_payload(
+            observed_mic_dbfs=-18,
+            mic_clipping=True,
+        ),
+        startup_load_state=_startup_load(),
+    )
+
+    hf = report["high_frequency_driver"]
+    codes = {issue["code"] for issue in hf["issues"]}
+
+    assert hf["status"] == "blocked"
+    assert hf["manual_floor_test_candidate"] is False
+    assert hf["guided_floor_test_candidate"] is False
+    assert hf["microphone"]["status"] == "clipping"
+    assert hf["floor_test_preview"]["status"] == "blocked"
+    assert hf["floor_test_preview"]["would_play"] is False
+    assert hf["auto_level"]["status"] == "reset"
+    assert "mic_not_too_loud" in codes
 
 
 def test_playback_readiness_requires_environment_and_safe_session() -> None:
