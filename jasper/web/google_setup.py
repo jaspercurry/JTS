@@ -774,6 +774,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 _restart_voice_daemon()
+                # No account name / token in the line — personal data + secret.
+                logger.info("event=google.link client=%s", self.address_string())
                 self._redirect(
                     f"./?msg=Linked+{urllib.parse.quote(state)}+successfully"
                 )
@@ -858,6 +860,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             cfg["client_id"] = client_id
             cfg["client_secret"] = client_secret
             _restart_voice_daemon()
+            # Action + requester only — never the client_id/secret.
+            logger.info("event=google.credentials client=%s", self.address_string())
             self._redirect(
                 "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+"
                 "OAuth+client."
@@ -868,6 +872,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             cfg["client_id"] = ""
             cfg["client_secret"] = ""
             _restart_voice_daemon()
+            logger.info("event=google.reset client=%s", self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
 
         def _handle_start(self, form: dict[str, str]) -> None:
@@ -926,6 +931,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     except OSError:
                         pass
                 _restart_voice_daemon()
+                logger.info("event=google.unlink client=%s", self.address_string())
                 self._redirect(f"./?msg=Removed+{urllib.parse.quote(name)}")
             else:
                 self._redirect("./?msg=Account+not+found")

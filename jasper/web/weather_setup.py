@@ -419,6 +419,8 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             restart_voice_daemon()
+            # No coords in the log — they're the household's home location.
+            logger.info("event=weather.save client=%s", self.address_string())
             send_see_other(self, "./", flash="Saved. Voice daemon restarting.")
 
         def _handle_clear(self) -> None:
@@ -434,6 +436,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             restart_voice_daemon()
+            logger.info("event=weather.clear client=%s", self.address_string())
             send_see_other(
                 self, "./",
                 flash="Cleared weather default. Voice restarting.",
