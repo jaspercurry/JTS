@@ -65,11 +65,11 @@ import logging
 import os
 import secrets
 import subprocess
-import tempfile
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from ..atomic_io import atomic_write_text
 from ..http_security import mutating_request_allowed
 from ..voice.provider_state import read_active_provider
 
@@ -806,37 +806,6 @@ def read_env_file(path: str) -> dict[str, str]:
     return out
 
 
-def _atomic_write(path: str, write_fn, *, mode: int) -> None:
-    """Write ``path`` atomically via a UNIQUE temp file in its directory +
-    ``os.replace``. ``write_fn(f)`` does the actual writing to the open file.
-
-    The unique temp name (``mkstemp``, not a fixed ``path + ".tmp"``) is
-    load-bearing, not cosmetic: the wizards run under a ``ThreadingHTTPServer``
-    with no write lock, and several routes write the SAME file (e.g. /transit's
-    ``/cities``, ``/save``, ``/clear``). Two concurrent writers sharing one
-    temp path would interleave into it under ``O_TRUNC`` and promote a
-    byte-mixed file via ``os.replace``. Per-writer temps make the writes
-    independent; ``os.replace`` stays atomic, so a reader (the voice daemon)
-    never sees a partial or mixed file. ``mode`` is applied with ``fchmod``
-    (exact, umask-independent), matching the documented intent."""
-    dirname = os.path.dirname(path) or "."
-    os.makedirs(dirname, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(
-        dir=dirname, prefix=os.path.basename(path) + ".", suffix=".tmp",
-    )
-    try:
-        os.fchmod(fd, mode)
-        with os.fdopen(fd, "w") as f:
-            write_fn(f)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
 def write_env_file(path: str, values: dict[str, str], *, mode: int = 0o600) -> None:
     """Atomically write a systemd EnvironmentFile-shaped key=value file
     with the given mode (default 0o600 — these files contain API keys
@@ -844,23 +813,21 @@ def write_env_file(path: str, values: dict[str, str], *, mode: int = 0o600) -> N
 
     Atomicity matters: a half-written env file at restart time could
     leave jasper-voice with a partial config and a real-world impact
-    (silent failure cue, lost session). See ``_atomic_write`` for the
-    unique-temp-file + rename swap (also race-safe across concurrent
-    wizard writers)."""
-    def _write(f) -> None:
-        for key, val in values.items():
-            # We write KEY=VALUE without quoting, matching systemd's
-            # EnvironmentFile parsing: leading/trailing whitespace
-            # in the value is stripped, but no escaping is applied
-            # to embedded characters. API keys are alphanumeric
-            # with `-`/`_`/`.` so this is safe; an explicit guard
-            # keeps that contract honest if someone passes a value
-            # with newlines or `=`.
-            if "\n" in val or "\r" in val:
-                raise ValueError(f"env value for {key} contains newline")
-            f.write(f"{key}={val}\n")
-
-    _atomic_write(path, _write, mode=mode)
+    (silent failure cue, lost session). Routes through the canonical
+    ``jasper.atomic_io.atomic_write_text`` (unique-temp-file + ``os.replace``),
+    which is also race-safe across concurrent wizard writers — the
+    ``ThreadingHTTPServer`` runs ``/save``/``/cities``/``/clear`` on separate
+    threads against the same file with no lock."""
+    lines: list[str] = []
+    for key, val in values.items():
+        # KEY=VALUE without quoting, matching systemd's EnvironmentFile
+        # parsing. API keys are alphanumeric with `-`/`_`/`.` so this is
+        # safe; the guard keeps the contract honest if someone passes a
+        # value with a newline (which would split into a bogus second line).
+        if "\n" in val or "\r" in val:
+            raise ValueError(f"env value for {key} contains newline")
+        lines.append(f"{key}={val}\n")
+    atomic_write_text(path, "".join(lines), mode=mode)
 
 
 def delete_env_file(path: str) -> None:
@@ -874,17 +841,14 @@ def delete_env_file(path: str) -> None:
 
 
 def write_json_file(path: str, obj, *, mode: int = 0o644) -> None:
-    """Atomically write ``obj`` as pretty JSON (temp-file + rename).
-
-    Mirrors ``write_env_file``'s all-or-nothing swap (see ``_atomic_write``)
-    so a reader (the voice daemon) never sees a half-written file. Default
-    mode 0644 — JSON config like pricing rates carries no secrets, unlike
-    env files."""
-    def _write(f) -> None:
-        _json.dump(obj, f, indent=2, sort_keys=True)
-        f.write("\n")
-
-    _atomic_write(path, _write, mode=mode)
+    """Atomically write ``obj`` as pretty JSON via the canonical
+    ``jasper.atomic_io.atomic_write_text`` (unique-temp + ``os.replace``), so a
+    reader (the voice daemon) never sees a half-written file. Default mode
+    0644 — JSON config like pricing rates carries no secrets, unlike env
+    files."""
+    atomic_write_text(
+        path, json.dumps(obj, indent=2, sort_keys=True) + "\n", mode=mode,
+    )
 
 
 def restart_systemd_units(*units: str) -> None:
