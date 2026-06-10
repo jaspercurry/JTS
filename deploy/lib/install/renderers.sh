@@ -53,7 +53,7 @@ install_renderers() {
             "${tmpdir}/nqptp" \
             "nqptp (${NQPTP_COMMIT})"
         (
-            cd "${tmpdir}/nqptp"
+            cd "${tmpdir}/nqptp" || exit 1
             autoreconf -fi
             ./configure --with-systemd-startup
             make -j4
@@ -90,7 +90,7 @@ install_renderers() {
             "${tmpdir}/sps" \
             "shairport-sync ${SHAIRPORT_SYNC_VERSION} (${SHAIRPORT_SYNC_COMMIT})"
         (
-            cd "${tmpdir}/sps"
+            cd "${tmpdir}/sps" || exit 1
             autoreconf -fi
             ./configure --sysconfdir=/etc \
                 --with-alsa --with-soxr --with-avahi \
@@ -106,7 +106,7 @@ install_renderers() {
         systemctl stop shairport-sync 2>/dev/null || true
         apt-get remove -y shairport-sync 2>/dev/null || true
         (
-            cd "${tmpdir}/sps"
+            cd "${tmpdir}/sps" || exit 1
             # `make install` may fail at the systemd step due to an
             # `install` flag mismatch on Trixie — the binary lands fine
             # at /usr/local/bin/shairport-sync. We deploy our own unit
