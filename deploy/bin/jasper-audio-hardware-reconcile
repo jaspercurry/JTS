@@ -73,6 +73,13 @@ load_asound_render_lib() {
         echo "jasper-audio-hardware-reconcile: missing asound render library: ${ASOUND_RENDER_LIB}" >&2
         exit 66
     fi
+    # The path varies at runtime (installed /usr/local/lib vs in-repo
+    # fallback above), but both resolve to the same library — the
+    # directive points at the repo copy so shellcheck can actually
+    # analyze it. Outside the repo root the directive degrades to
+    # info-level SC1091 ("not following"), below the CI gate's
+    # warning severity.
+    # shellcheck source=deploy/lib/jasper-asound-render.sh
     source "$ASOUND_RENDER_LIB"
 }
 

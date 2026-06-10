@@ -147,7 +147,7 @@ sudo rm -rf /tmp/wake-events-fetch
 
 echo "" >&2
 echo "Done. ${OUT}/ contains:" >&2
-echo "  - $(ls "$OUT/" | grep -c '\.wav$') WAVs (one file per captured wake leg; legacy events have fewer legs)" >&2
+echo "  - $(find "$OUT" -maxdepth 1 -name '*.wav' | wc -l | tr -d ' ') WAVs (one file per captured wake leg; legacy events have fewer legs)" >&2
 echo "  - index.csv (spreadsheet) + index.tsv (grep)" >&2
 echo "  - wake-events.sqlite3 (full DB snapshot)" >&2
 echo "" >&2

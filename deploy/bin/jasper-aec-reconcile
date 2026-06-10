@@ -95,8 +95,12 @@ log() {
 load_env_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        # shellcheck disable=SC1090
         set -a
+        # Runtime-only env files (/etc/jasper/jasper.env and the
+        # wizard-owned /var/lib/jasper/*.env) — they don't exist in the
+        # repo, so shellcheck can never follow them. Directives bind to
+        # the next command, so this must sit on the `source` line itself.
+        # shellcheck source=/dev/null
         source "$file"
         set +a
     fi
