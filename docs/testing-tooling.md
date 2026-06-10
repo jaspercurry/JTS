@@ -303,6 +303,44 @@ score, or alter Pi runtime state.
 
 ---
 
+## Wake negative feature-bank builder
+
+Laptop-side or training-host-side, offline. Consumes the bundle produced by
+`scripts/export-wake-corpus-bundle.sh` and extracts openWakeWord-compatible
+negative feature arrays from natural negative-hours and hard-negative clips.
+
+```sh
+bash scripts/build-wake-negative-feature-bank.sh logs/wake-corpus-export/20260609T120000Z
+bash scripts/build-wake-negative-feature-bank.sh logs/wake-corpus-export/20260609T120000Z logs/wake-negatives --label-kind hard_negative
+bash scripts/build-wake-negative-feature-bank.sh logs/negative-only-bundle --allow-unlabeled-as ambient_negative
+```
+
+Outputs:
+
+- `negative_features_train.npy`
+- `negative_features_eval.npy`
+- `negative_feature_manifest.jsonl`
+- `negative_feature_rejections.jsonl`
+- `negative_feature_bank.json`
+
+By default, manifest rows must be explicitly labeled as non-wake:
+`negative`, `hard_negative`, `ambient_negative`, or `background`.
+Use `--label-kind hard_negative` to build the adversarial near-miss bank.
+Use `--allow-unlabeled-as <kind>` only for a dedicated negative-only corpus
+that predates first-class labels; this is the escape hatch for old sessions,
+not the normal path.
+
+The negative builder reuses the same WAV format checks, SHA-256 verification,
+end-aligned 2-second window, and ONNX feature extraction contract as the
+positive feature-bank builder. Its summary includes selected duration hours by
+label kind and leg, because false-accept analysis is measured in hours, not
+clip counts.
+
+It does not generate positives, train, score, launch cloud jobs, register,
+deploy, activate, or alter Pi runtime state.
+
+---
+
 ## Wake training workdir prep
 
 Laptop-side or training-host-side, offline. Consumes the feature-bank directory
@@ -361,8 +399,9 @@ Outputs:
 
 By default, the negative arrays are deterministic embedding-space placeholders.
 That is sufficient to prove LiveKit mechanics but is **not** model-quality
-evidence. To make the run meaningful, pass operator-supplied real negative
-feature files with `--negative-train-features` and `--negative-test-features`.
+evidence. To make the run meaningful, build real negative feature files with
+`scripts/build-wake-negative-feature-bank.sh` and pass them with
+`--negative-train-features` and `--negative-test-features`.
 
 The tool does not call LiveKit unless the operator passes `--run-livekit`.
 With that flag it runs:

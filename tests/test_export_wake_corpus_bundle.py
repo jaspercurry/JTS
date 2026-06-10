@@ -51,6 +51,9 @@ def _write_session(
     files: dict[str, str] | None = None,
     capture_health: dict[str, object] | None = None,
     deleted: bool = False,
+    label_kind: str | None = None,
+    phrase: str | None = None,
+    transcript: str | None = None,
 ) -> Path:
     metadata = root / "metadata"
     metadata.mkdir(parents=True, exist_ok=True)
@@ -110,6 +113,9 @@ def _write_session(
                 "deleted": deleted,
                 "auto_stopped": False,
                 "notes": "",
+                **({"label_kind": label_kind} if label_kind is not None else {}),
+                **({"phrase": phrase} if phrase is not None else {}),
+                **({"transcript": transcript} if transcript is not None else {}),
                 **({"capture_health": capture_health} if capture_health is not None else {}),
             },
         ],
@@ -153,10 +159,43 @@ def test_export_bundle_copies_audio_and_writes_training_manifest(tmp_path: Path)
     assert chip["device_id"] == "xvf3800"
     assert chip["processing"] == "hardware_aec"
     assert chip["wake_input"] is True
+    assert chip["label_kind"] == ""
+    assert chip["phrase"] == ""
+    assert chip["transcript"] == ""
     assert chip["sha256"]
     assert (out / chip["bundle_path"]).is_file()
     assert "chip_aec_150" in (out / "manifest.csv").read_text()
     assert chip["sha256"] in (out / "SHA256SUMS").read_text()
+
+
+def test_export_preserves_label_metadata_for_negative_corpora(tmp_path: Path) -> None:
+    root = tmp_path / "enrollment_positives"
+    files = {
+        "chip_aec_150": (
+            "/var/lib/jasper/enrollment_positives/"
+            "aec_chip_aec_150_music/clip.aec-chip_aec_150.wav"
+        ),
+    }
+    for path_str in files.values():
+        _write_wav(exporter._resolve_wav_path(root, path_str))
+    _write_session(
+        root,
+        files=files,
+        label_kind="hard_negative",
+        phrase="hey harvest",
+        transcript="hey harvest",
+    )
+    out = tmp_path / "bundle"
+
+    exporter.export_bundle(root, out)
+
+    row = json.loads((out / "manifest.jsonl").read_text().splitlines()[0])
+    assert row["label_kind"] == "hard_negative"
+    assert row["phrase"] == "hey harvest"
+    assert row["transcript"] == "hey harvest"
+    csv_text = (out / "manifest.csv").read_text()
+    assert "label_kind" in csv_text
+    assert "hard_negative" in csv_text
 
 
 def test_split_is_assigned_per_utterance_across_legs(tmp_path: Path) -> None:
