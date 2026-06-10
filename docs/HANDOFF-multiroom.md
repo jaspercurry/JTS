@@ -114,9 +114,11 @@ has not been run on hardware. What exists:
   transition** (never a steady-state reconcile) — load-bearing, since
   outputd has `StartLimitAction=reboot`. `try-restart` (not `restart`) so a
   boot reconcile never force-starts / couples to outputd. What remains:
-  §2 inv. 2 (leader's own snapclient → outputd content lane), then
-  end-to-end + acoustic sync on hardware. **inv. 5 (`rate_adjust=false`)
-  is SHIPPED** — predicate + generator param + doctor backstop (§2).
+  the §2 inv. 2 **outputd DAC-content reader** (the Rust build — the topology
+  is now DESIGNED in §2 "inv-2 realization"; env contract + gated-off
+  snapclient `file`-player scaffolding landed), then end-to-end + acoustic
+  sync on hardware. **SHIPPED:** inv. 5 (`rate_adjust=false`) and the
+  channel-split live weave (§2/§4).
 - **systemd units** (`deploy/systemd/jasper-{snapserver,snapclient,
   grouping-reconcile}.service`) — disabled by default, in
   `jts-audio.slice` (`MemorySwapMax=0` inherited), no CPU caps,
@@ -337,6 +339,114 @@ see `reconcile.py`).
    generated *before* the bond formed (stale → warns to regenerate).
    (JTS already documented that `rate_adjust` + `AsyncSinc` together
    oscillate.)
+
+### inv-2 realization — the leader content lane (DESIGN; not yet built)
+
+> **Status: design, pending on-device build.** This resolves the "P1.3
+> integration decision" §4 defers. It is the LAST sample-lock piece and the
+> only one that cannot be unit-tested — it reroutes the leader's actual DAC
+> feed through the sync engine on the reboot-on-fail `jasper-outputd`. Build
+> behind an off-by-default flag and validate on ≥2 Pis + a DAC.
+
+**The tension to resolve.** Two shipped/written facts pull in opposite
+directions:
+- §2 (shipped `SnapfifoSink`): outputd taps **post-CamillaDSP, post-clamp** →
+  SNAPFIFO. The streamed bytes are already processed + safety-clamped.
+- §4: each member's channel-select + per-seat correction runs
+  **post-snapclient** (so every member picks its OWN channel and corrects its
+  OWN seat; the stream itself must stay the *shared, un-split, un-seat-corrected*
+  stereo program, or followers inherit the leader's channel/seat — wrong).
+
+Reconciling them: the program on the wire must be **shared** (clamped stereo,
+no channel-split, no per-seat PEQ), and the per-member DSP runs **after**
+snapclient. So for a leader the **tap source** (shared) and the **DAC source**
+(this leader's own post-snapclient, channel-selected stream) are DIFFERENT
+streams. A naïve `snapclient → outputd content → tap → snapserver → snapclient`
+is an **audio loop** — the resolution must keep those two streams distinct.
+
+**Resolved signal flow (leader = shared streamer + its own follower):**
+
+```
+renderers → snd-aloop fan-in
+  → CamillaDSP-A  (SHARED only: master_gain/Ducker, volume_limit:0.0;
+                   NO channel-split, NO per-seat correction)
+  → jasper-outputd  ── ReferenceFanout → SnapfifoSink → SNAPFIFO  (shipped tap;
+  │                                                       the shared clamped program)
+  │                 → snapserver
+  │                     → each FOLLOWER's snapclient → (its own follower chain)
+  │                     → this leader's OWN snapclient (--host 127.0.0.1)
+  │                            → FIFO  (snapclient --player file:<member content FIFO>;
+  │                                     raw PCM, NOT snd-aloop — inv-2)
+  │                            → CamillaDSP-B  (POST-snapclient, per-member:
+  │                                             channel_select + per-seat PEQ,
+  │                                             enable_rate_adjust:false — inv-5)
+  │                            → outputd DAC-content lane → DAC loop → DAC
+  └── (the DAC loop reads the DAC-content lane, NOT CamillaDSP-A; CamillaDSP-A
+      flows only to the tap. inv-1: the DAC loop stays the sole timing owner;
+      the FIFO/snapclient side never back-pressures it — a starved FIFO reads
+      as silence, exactly like a starved ALSA capture today.)
+```
+
+A **follower** is the bottom half only: its snapclient → FIFO → CamillaDSP-B →
+outputd → DAC. So **the leader literally is a follower of itself plus a
+streamer** — the same post-snapclient member chain runs on every member; only
+the leader additionally streams. This symmetry is the design's main payoff: one
+member-playback path, validated once.
+
+**The outputd contract change (the Rust work).** outputd gains an OPTIONAL
+**DAC-content source** decoupled from the tapped content:
+- Solo / today: DAC-content == tapped content (one stream; byte-for-byte the
+  current daemon — zero change when `JASPER_OUTPUTD_DAC_CONTENT_*` is unset).
+- Member: the DAC loop reads the DAC-content lane (fed by CamillaDSP-B from the
+  snapclient round-trip); the ReferenceFanout still taps the (separate) shared
+  content for a leader, or is idle for a pure follower.
+
+The open implementation choice to settle on-device (both honor the flow above;
+pick by measured RAM/latency): **(a)** outputd grows a second content input
+(a FIFO/PCM `dac_content`) read by the DAC loop while the existing content read
+drives only the tap; **(b)** keep outputd single-input but feed it CamillaDSP-B's
+output as its content, and move the SNAPFIFO tap OFF outputd's ReferenceFanout
+onto CamillaDSP-A's output (a small dedicated FIFO writer), retiring
+`SnapfifoSink` for the leader. (a) reuses the shipped `SnapfifoSink` and keeps
+one outputd; (b) is simpler in outputd but rebuilds the tap. Lean (a) unless
+the dual-read loop proves too costly on the Pi 5.
+
+**Two CamillaDSP instances on the leader.** CamillaDSP-A (shared, pre-stream)
+and CamillaDSP-B (per-member, post-snapclient) are distinct configs and likely
+distinct instances (~+85 MB each on the 1 GB Pi — a leader is a brainy Pi 5, so
+affordable, but measure). A follower runs only CamillaDSP-B. The
+already-shipped channel-split weave (`weave_channel_split`) + inv-5
+`rate_adjust=false` produce CamillaDSP-B's config exactly — that work is done;
+inv-2 is what *positions* CamillaDSP-B post-snapclient and feeds its output to
+the DAC.
+
+**Reconciler / env contract (the scaffolding to build first, INERT until the
+outputd reader lands + the flag is on):**
+- `JASPER_GROUPING_LEADER_CONTENT_LANE` (off by default) — the master gate; the
+  whole reroute is staged behind it so a deploy can't activate an unvalidated
+  audio path.
+- snapclient gains a `--player file:filename=<FIFO>,...` output for an ACTIVE
+  member (NOT added until the FIFO has a reader — a FIFO with no reader blocks
+  snapclient).
+- `JASPER_OUTPUTD_DAC_CONTENT_FIFO` (reconciler-owned, like the snapfifo tap
+  env) — the lane outputd's DAC loop reads in member mode; unset = today's
+  single-input behavior.
+
+**Invariant compliance:** inv-1 (DAC loop sole timing owner — the snapclient
+FIFO is a side-feed; underrun = silence, never back-pressure) ✓; inv-2
+(snapclient writes raw PCM to a FIFO via `--player file`, never snd-aloop — no
+`snd_pcm_delay`-lies trap) ✓; inv-4 (AEC's `pcm.jasper_ref` is untouched —
+still a separate reference consumer) ✓; inv-5 (CamillaDSP-B is the post-snapclient
+member DSP, `rate_adjust=false` — shipped) ✓; `volume_limit:0.0` is applied by
+CamillaDSP-A *before* the tap (followers inherit the clamp) AND by CamillaDSP-B
+before the DAC (the leader's own playback is clamped) ✓.
+
+**On-device validation plan:** form a 2-Pi pair; confirm (1) followers receive
+the SHARED stereo (not the leader's channel); (2) the leader plays its assigned
+channel from the buffered round-trip, not its direct output; (3) measured L/R
+sample alignment within the buffer target; (4) leader RAM with two CamillaDSP
+instances stays within the 1 GB envelope; (5) a snapclient/FIFO underrun
+degrades to silence + the existing `degraded` health, never a wedge.
 
 ---
 
@@ -965,7 +1075,25 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-09 (channel-split LIVE WEAVE SHIPPED — a bonded member
+Last verified: 2026-06-09 (inv-2 leader content lane — DESIGN + inert
+scaffolding. Resolved the topology §4 deferred (the "P1.3 integration
+decision"): the leader = a shared streamer + its own follower — CamillaDSP-A
+(shared, clamped, NO channel-split) feeds the `SnapfifoSink` tap → SNAPFIFO →
+snapserver; the leader's own snapclient (`--host 127.0.0.1`) writes the
+buffered round-trip to a raw-PCM FIFO via `--player file` (NEVER snd-aloop —
+inv-2's `snd_pcm_delay`-lies dodge) → CamillaDSP-B (post-snapclient
+channel-select + per-seat correction, `rate_adjust=false`) → outputd
+DAC-content lane → DAC. The tap source (shared) and DAC source (this leader's
+post-snapclient stream) are deliberately DISTINCT — that's the loop avoidance.
+Full flow + the outputd DAC-content contract + the rejected alternatives + inv
+compliance + the on-device validation plan are in §2 "inv-2 realization (DESIGN;
+not yet built)". Inert scaffolding: `LEADER_CONTENT_LANE_GATE` (off-by-default
+master gate) + `MEMBER_CONTENT_FIFO` / `OUTPUTD_DAC_CONTENT_FIFO_ENV` env
+contract + a gated `snapclient_argv(player_fifo=…)` param whose default is
+BYTE-FOR-BYTE the pre-inv-2 command (90 reconcile/state tests green, ruff
+clean). The outputd Rust DAC-content reader is the next PR, built against this
+design + validated on ≥2 Pis. Earlier 2026-06-09 (channel-split LIVE WEAVE
+SHIPPED — a bonded member
 that plays a single channel now actually filters it. `weave_channel_split(yaml,
 split)` (`jasper/multiroom/channel_split.py`) splices the P1.2 `ChannelSplit`
 fragment into a generated CamillaDSP config: the `channel_select` mixer under
