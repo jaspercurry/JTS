@@ -27,6 +27,11 @@ jasper_env_quote_value() {
     case "$value" in
         *[!A-Za-z0-9_./:@,+=-]*)
             printf "'"
+            # Pattern uses a quote-in-variable, not \' — the escaped-quote
+            # form inside ${...%%pattern} parses differently across bash
+            # 5.2/5.3 (CI's newer bash returned empty splices; the Pi's
+            # 5.2 was fine). "$q" is unambiguous on every bash.
+            local q="'"
             rest="$value"
             # Emit the '\'' idiom via %s ARGUMENTS, never via the printf
             # FORMAT string: bash printf interprets backslash escapes in
@@ -34,8 +39,8 @@ jasper_env_quote_value() {
             # backslash and emits a malformed quote run (latent bug in
             # the pre-lib PR #534 copy of this loop).
             while [[ "$rest" == *"'"* ]]; do
-                printf '%s%s' "${rest%%\'*}" "'\''"
-                rest="${rest#*\'}"
+                printf '%s%s' "${rest%%"$q"*}" "'\''"
+                rest="${rest#*"$q"}"
             done
             printf "%s'" "$rest"
             ;;
