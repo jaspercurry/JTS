@@ -75,6 +75,22 @@ def _camilla():
 
 # ---------- prior-config stash ----------
 
+def _is_pipe_config(path: str) -> bool:
+    """True when the config AT ``path`` is pipe-shaped (writes the
+    snapserver FIFO). Used by BOTH stash guards: never *write* a
+    pipe-shaped path into the stash, never *restore* one from it.
+    Unreadable resolves to False — the write guard then skips stashing
+    (defensive) and the read guard's separate ``exists()`` check already
+    rejects missing files."""
+    from .reconcile import SNAPFIFO
+
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return False
+    return playback_is_pipe(text, SNAPFIFO)
+
+
 def read_stash(path: str = PRIOR_STASH) -> str | None:
     """The stashed prior solo config path, or None (no stash / unreadable)."""
     try:
@@ -96,21 +112,33 @@ def _clear_stash(path: str = PRIOR_STASH) -> None:
 
 
 def restore_action(
-    *, stash: str | None, stash_file_exists: bool, bonded_active: bool,
+    *, stash: str | None, stash_usable: bool, bonded_active: bool,
 ) -> str:
     """The unwind-ladder decision. PURE.
+
+    ``stash_usable`` means the stashed path exists AND its content is a
+    genuinely SOLO config (``not _is_pipe_config``). The content check is
+    load-bearing: a /sound or /correction save WHILE BONDED regenerates
+    that wizard's own config file (sound_current.yml / correction_*.yml)
+    PIPE-shaped — the feature that keeps a bonded save from un-bonding
+    camilla — so a path that was solo when stashed can be pipe-shaped by
+    unwind time (or a later bonded reconcile can stash the wizard file
+    itself). Restoring a pipe config after disband would point camilla
+    at a FIFO whose creator (snapserver) is stopped and whose directory
+    is reaped — a restart-flapping core audio unit. NEVER restore a
+    pipe-shaped stash; fall through to re-emit.
 
     Returns one of:
       - ``"none"``     — nothing to restore (the common solo reconcile;
                          CamillaDSP is already on a solo config and no
                          stash is pending). MUST be a no-op upstream.
-      - ``"stash"``    — apply the stashed prior solo config.
-      - ``"re_emit"``  — stash missing/gone: re-emit a solo config from
-                         the saved profile and apply that.
+      - ``"stash"``    — apply the stashed prior config (verified solo).
+      - ``"re_emit"``  — stash missing/gone/pipe-shaped: re-emit a solo
+                         config from the saved profile and apply that.
     """
     if not stash and not bonded_active:
         return "none"
-    if stash and stash_file_exists:
+    if stash and stash_usable:
         return "stash"
     return "re_emit"
 
@@ -175,10 +203,18 @@ async def apply_bonded_leader_config(
             best_effort=True,
         ),
     )
-    # Stash the prior SOLO path for the unwind — but never the bonded
-    # path itself (a re-reconcile while bonded must not poison the
-    # stash, or disband would "restore" the bond).
-    if current and current != BONDED_CONFIG_PATH:
+    # Stash the prior path for the unwind — but ONLY a genuinely SOLO
+    # config: never the bonded path itself, and never a pipe-shaped
+    # wizard config (a /sound save while bonded regenerates
+    # sound_current.yml PIPE-shaped; stashing it would make disband
+    # "restore" a config that writes a FIFO nobody creates — see
+    # restore_action). A pipe-shaped current leaves any existing stash
+    # alone: it may still name the true pre-bond solo config.
+    if (
+        current
+        and current != BONDED_CONFIG_PATH
+        and not _is_pipe_config(current)
+    ):
         _write_stash(current)
     logger.info(
         "event=multiroom.camilla_apply result=bonded path=%s prior=%s",
@@ -207,7 +243,9 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
     current = await cam.get_config_file_path(best_effort=True)
     action = restore_action(
         stash=stash,
-        stash_file_exists=bool(stash and Path(stash).exists()),
+        stash_usable=bool(
+            stash and Path(stash).exists() and not _is_pipe_config(stash)
+        ),
         bonded_active=(current == BONDED_CONFIG_PATH),
     )
     if action == "none":
