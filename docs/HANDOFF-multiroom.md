@@ -644,7 +644,23 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   persistent VALIDATED-SOLO prior-config stash (a pipe-shaped wizard
   config — e.g. sound_current.yml regenerated while bonded — is never
   stashed NOR restored; restore falls through to re-emit-solo)); runtime health reads producer liveness
-  from the ACTIVE camilla config (daemon-adjacent truth). **Design note:**
+  from the ACTIVE camilla config (daemon-adjacent truth). **Snapcast
+  registry (current truth, post-#619/#620):** snapcast PERSISTS
+  group→stream assignments in server.json, and snapserver ALSO registers
+  the packaged `snapserver.conf` "default" pipe source — so a stale
+  binding can point at a stream that EXISTS (idle, producer-less) and
+  the client plays zeros behind green health. The reconciler therefore
+  pins bindings by an **ownership rule** on every leader reconcile:
+  a group survives iff bound to a JTS-owned stream
+  (`{SNAP_STREAM_ID} | allowed_streams` — extend the allowlist when a
+  second JTS stream, e.g. group announcements, lands); anything else is
+  re-bound, connected or not. Runtime health independently verifies the
+  LIVE picture (every connected client on our stream + audible + the
+  leader's own client present; snapserver RPC unreachable ⇒ explicit
+  degraded). /state reads the probe through a 5 s TTL cache (failures
+  cached — a hung snapserver costs one 1 s timeout per window, not one
+  per dashboard poll); the doctor deliberately probes fresh.
+  **Design note:**
   the leader's camilla keeps capturing lane 7 (`jasper_capture`) — all 8
   loopback substreams are allocated, and PR-2's TTS socket flip makes lane
   7 music-only BY CONSTRUCTION while bonded, so Increment 1's fanin music

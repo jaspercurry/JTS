@@ -192,3 +192,16 @@ def test_probe_cache_caches_failures_too():
     clock[0] += 1.0
     assert cache.read(transport=failing, now=lambda: clock[0]) is None
     assert len(calls) == 1  # the failure was served from cache
+
+
+def test_probe_cache_returns_defensive_copies():
+    """A caller mutating the returned rows must not poison the cache for
+    other callers in the same TTL window."""
+    from jasper.multiroom.snapcast_rpc import _ProbeCache
+
+    cache = _ProbeCache(ttl_sec=60.0)
+    transport = lambda *a, **k: _status([_group("g", "jts", [_client("jts")])])  # noqa: E731
+    first = cache.read(transport=transport, now=lambda: 1.0)
+    first[0]["stream_id"] = "vandalized"
+    second = cache.read(transport=transport, now=lambda: 2.0)  # same window
+    assert second[0]["stream_id"] == "jts"  # cache unpoisoned

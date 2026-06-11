@@ -135,11 +135,18 @@ class _ProbeCache:
     ) -> list[dict[str, Any]] | None:
         with self._lock:
             t = now()
-            if self._at is not None and (t - self._at) < self._ttl:
-                return self._value
-            self._value = read_stream_clients(url=url, transport=transport)
-            self._at = t
-            return self._value
+            if self._at is None or (t - self._at) >= self._ttl:
+                self._value = read_stream_clients(url=url, transport=transport)
+                self._at = t
+            # Defensive copy: the cached rows are handed to every caller
+            # in the TTL window — a caller mutating a row must never
+            # poison the cache for the others. Today's one consumer
+            # (derive_grouping_runtime) is pure, but that is a contract
+            # this copy makes unnecessary to rely on. Cheap: a bond has
+            # a handful of clients.
+            if self._value is None:
+                return None
+            return [dict(row) for row in self._value]
 
 
 _probe_cache = _ProbeCache()
