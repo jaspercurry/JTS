@@ -3448,6 +3448,76 @@ def test_web_design_assets_pin_every_repo_shared_module(
         )
 
 
+def _manifest_fixture(tmp_path: Path, entries: list[str]) -> Path:
+    """Lay down app.css + fonts plus a manifest listing `entries`."""
+    assets = tmp_path / "assets"
+    (assets / "fonts").mkdir(parents=True)
+    (assets / "app.css").write_text("/* css */")
+    (assets / ".install-manifest").write_text("\n".join(entries) + "\n")
+    return assets
+
+
+def test_web_design_assets_verifies_every_manifest_entry(
+    monkeypatch, tmp_path: Path,
+):
+    """With the installer-written manifest present, the check covers the
+    full installed tree — no hand list involved."""
+    assets = _manifest_fixture(
+        tmp_path, ["wifi/wifi.css", "wifi/js/main.js", "shared/js/escape.js"]
+    )
+    for rel in ("wifi/wifi.css", "wifi/js/main.js", "shared/js/escape.js"):
+        target = assets / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("// asset")
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+    r = doctor.check_web_design_assets()
+    assert r.status == "ok"
+    assert "install manifest" in r.detail
+    assert "4 assets verified" in r.detail  # app.css + 3 manifest entries
+
+
+def test_web_design_assets_warns_on_missing_manifest_entry(
+    monkeypatch, tmp_path: Path,
+):
+    assets = _manifest_fixture(tmp_path, ["wake/js/main.js", "wake/wake.css"])
+    (assets / "wake").mkdir(parents=True)
+    (assets / "wake" / "wake.css").write_text("/* css */")
+    # wake/js/main.js deliberately absent — the page would load blank.
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+    r = doctor.check_web_design_assets()
+    assert r.status == "warn"
+    assert "wake/js/main.js" in r.detail
+    assert "install manifest" in r.detail
+
+
+def test_web_design_assets_ignores_malformed_manifest_lines(
+    monkeypatch, tmp_path: Path,
+):
+    """One bad byte in the manifest must not distort the check."""
+    assets = _manifest_fixture(
+        tmp_path,
+        ["", "# comment", "/etc/passwd", "a/../../escape", "voice/js/main.js"],
+    )
+    (assets / "voice" / "js").mkdir(parents=True)
+    (assets / "voice" / "js" / "main.js").write_text("// module")
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+    r = doctor.check_web_design_assets()
+    assert r.status == "ok", r.detail
+    assert "2 assets verified" in r.detail  # app.css + the one sane entry
+
+
+def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
+    """A wiped asset tree warns with a bounded list, not journal spam."""
+    _manifest_fixture(
+        tmp_path, [f"page{i}/js/main.js" for i in range(20)]
+    )
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+    r = doctor.check_web_design_assets()
+    assert r.status == "warn"
+    assert "(+8 more)" in r.detail
+    assert r.detail.count("js/main.js") == 12
+
+
 def test_web_design_assets_warns_when_module_missing(monkeypatch, tmp_path: Path):
     # CSS + fonts present, but a page's JS entry module is not — the page
     # would load blank, so the check warns and names the missing module.
