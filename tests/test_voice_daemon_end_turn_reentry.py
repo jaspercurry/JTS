@@ -109,6 +109,9 @@ def _make_wakeloop():
         async def resume_content_meter(self):
             return None
 
+        async def end_segment(self):
+            return None
+
     wl = WakeLoop.__new__(WakeLoop)
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
