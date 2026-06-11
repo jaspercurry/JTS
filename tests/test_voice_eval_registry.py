@@ -98,6 +98,34 @@ def test_build_test_registry_constructs_with_all_backends_enabled(monkeypatch):
         _cleanup(test_state)
 
 
+def test_harness_populates_test_state_eagerly_at_construction(monkeypatch):
+    """Side-channel handles must exist BEFORE the first paid call.
+
+    The volume scenarios read `test_state["volume_coordinator"]` at
+    scenario start to snapshot the level they later restore — without
+    a second LLM turn. The harness used to build the registry lazily
+    inside `_ensure_connection`, so `test_state` was empty at scenario
+    start and the entire volume suite skipped as "wiring regressed"
+    (caught by the 2026-06-11 on-Pi run, $0 spent). Construction is
+    free; only the LiveConnection is paid — pin the eager contract.
+    """
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    for key in _BACKEND_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    cfg = Config.from_env()
+
+    from tests.voice_eval.harness import VoiceEvalHarness
+
+    h = VoiceEvalHarness(cfg)
+    try:
+        assert h.test_state.get("volume_coordinator") is not None
+        assert "timer_scheduler" in h.test_state
+        assert h._connection is None, "construction must not open a session"
+    finally:
+        _cleanup(h.test_state)
+
+
 def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
     """The builder must also construct with transit/HA unconfigured —
     the common laptop case — registering only the always-on tools and
