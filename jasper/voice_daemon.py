@@ -3409,6 +3409,20 @@ class WakeLoop:
                 pass
         self._bg_tasks = set()
 
+        # Finalize the assistant TTS segment after cancelling playback.
+        # _play_responses only reaches its own end_segment() when the
+        # provider closes the audio iterator at turn end — OpenAI does
+        # (response.done), Gemini's closes only on release(), which runs
+        # AFTER the cancel above. Without this call the cancelled playback
+        # task discards the passive loudness measurement, so Gemini never
+        # earned a source profile and fanin played it at the louder
+        # fallback gain. Idempotent: the meter clears on first save, so
+        # the OpenAI path's second call is a no-op.
+        try:
+            await self._tts.end_segment()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("teardown end_segment failed: %s", e)
+
         if self._turn is not None:
             try:
                 await asyncio.wait_for(self._turn.end_input(), timeout=2.0)

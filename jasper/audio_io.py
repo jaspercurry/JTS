@@ -705,6 +705,21 @@ _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC = 3.0
 _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
     _OUTPUTD_SAMPLE_RATE * _OUTPUTD_AUDIO_FRAME_BYTES // 4
 )
+# Pace sustained writes so the IPC owner's pending-audio queue never
+# overflows. The owner (jasper-fanin's TTS lane, DEFAULT_MAX_PENDING_FRAMES
+# in rust/jasper-fanin/src/tts.rs = 2 s) DROPS whole audio commands that
+# arrive while its queue is full — it cannot block the socket reader,
+# because a blocked reader would also stall FLUSH (barge-in) behind queued
+# audio. OpenAI Realtime delivers replies faster than realtime (~11 s of
+# audio in ~4 s), so an unpaced writer overflows the budget and the
+# surviving chunks play as garbled "fast-forward" audio
+# (event=fanin.tts_command_dropped, observed on JTS3 2026-06-11).
+# Keeping ≤1.2 s queued ahead of realtime leaves 0.55 s of margin against
+# event-loop jitter (2.0 s budget − 1.2 s watermark − one 0.25 s IPC
+# chunk) while staying deep enough that a stalled writer has >1 s before
+# audible underrun. tests/test_tts_ipc_pacing.py pins the watermark
+# against the Rust budget so the two cannot silently drift apart.
+_OUTPUTD_PACE_AHEAD_SEC = 1.2
 
 
 def _outputd_audio_chunks(data: bytes):
@@ -1215,7 +1230,16 @@ class OutputdTtsPlayout(TtsPlayout):
                         return
                     continue
                 raise
+        paced_sec = 0.0
+        queued_end = self._ring_end_monotonic
         for chunk in _outputd_audio_chunks(stereo_i16.tobytes()):
+            now = time.monotonic()
+            if queued_end is None or queued_end < now:
+                queued_end = now
+            pace_excess = (queued_end - now) - _OUTPUTD_PACE_AHEAD_SEC
+            if pace_excess > 0:
+                await asyncio.sleep(pace_excess)
+                paced_sec += pace_excess
             try:
                 await asyncio.to_thread(stream.write, chunk)
             except OSError:
@@ -1225,12 +1249,17 @@ class OutputdTtsPlayout(TtsPlayout):
                         "reason=closed_socket",
                     )
                 raise
+            queued_end += len(chunk) / (
+                self._output_rate * _OUTPUTD_AUDIO_FRAME_BYTES
+            )
         queued_at = time.monotonic()
         if self._ring_end_monotonic is None or queued_at > self._ring_end_monotonic:
             self._ring_end_monotonic = queued_at + chunk_duration_sec
         else:
             self._ring_end_monotonic += chunk_duration_sec
-        write_ms = (queued_at - write_start) * 1000
+        # Exclude deliberate pacing sleeps so the warning keeps meaning
+        # "the IPC itself is slow", not "the writer paced as designed".
+        write_ms = (queued_at - write_start) * 1000 - paced_sec * 1000
         chunk_ms = chunk_duration_sec * 1000
         if write_ms > chunk_ms + 100:
             logger.warning(
