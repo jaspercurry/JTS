@@ -9,6 +9,7 @@ test_install_voice_provider_migration.py.
 from __future__ import annotations
 
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -113,6 +114,31 @@ def test_manifest_name_parity_between_installer_and_doctor():
     """The installer writes and the doctor reads the same literal name."""
     assert MANIFEST_NAME in WEB_ASSETS_LIB.read_text(encoding="utf-8")
     assert MANIFEST_NAME in DOCTOR_WEB.read_text(encoding="utf-8")
+
+
+def test_manifest_lands_atomically_and_orphaned_temps_are_swept(tmp_path: Path):
+    """The manifest is temp-written next to itself and renamed into place.
+
+    A killed install must never leave a truncated manifest for the doctor
+    to trust, and a temp orphaned by that kill is swept on the next run
+    rather than accumulating.
+    """
+    repo = _fake_repo(tmp_path)
+    web_root = tmp_path / "web"
+    assets = web_root / "assets"
+    assets.mkdir(parents=True)
+    orphan = assets / f"{MANIFEST_NAME}.tmp.stale"
+    orphan.write_text("left behind by a killed install")
+
+    r = _run(repo, web_root)
+    assert r.returncode == 0, r.stderr
+
+    assert not orphan.exists()
+    assert (assets / MANIFEST_NAME).is_file()
+    leftovers = [p.name for p in assets.glob(f"{MANIFEST_NAME}.tmp.*")]
+    assert leftovers == []
+    mode = stat.S_IMODE((assets / MANIFEST_NAME).stat().st_mode)
+    assert mode == 0o644
 
 
 def test_every_repo_asset_matches_the_copy_shape():

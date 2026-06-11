@@ -42,14 +42,22 @@
 # Every copied path is recorded (relative to assets/) in
 # assets/.install-manifest, sorted, and the doctor treats a missing
 # manifest as a warn in its own right — there is no fallback asset
-# list to drift. tests/test_install_web_assets.py pins the copy
-# shape, the manifest contract, and the doctor/installer round-trip.
+# list to drift. The manifest is written atomically: the temp file
+# lives next to it (same filesystem — /tmp is tmpfs on the Pi, so a
+# rename from there couldn't be atomic) and lands via mv, so a killed
+# install can never leave a truncated manifest for the doctor to
+# trust; an orphaned temp from a killed run is swept on the next.
+# tests/test_install_web_assets.py pins the copy shape, the manifest
+# contract, the atomic-write promise, and the doctor/installer
+# round-trip.
 install_web_assets() {
     local web_root="${JASPER_WEB_SHARE_DIR:-/usr/share/jasper-web}"
     local assets_root="${web_root}/assets"
+    local manifest="${assets_root}/.install-manifest"
     local manifest_tmp asset_dir page f
-    manifest_tmp="$(mktemp)"
     install -d -m 0755 "${assets_root}"
+    rm -f "${manifest}.tmp."*
+    manifest_tmp="$(mktemp "${manifest}.tmp.XXXXXX")"
 
     install -m 0644 "${REPO_DIR}/deploy/assets/app.css" "${assets_root}/app.css"
     echo "app.css" >> "${manifest_tmp}"
@@ -85,6 +93,6 @@ install_web_assets() {
         fi
     done
     LC_ALL=C sort "${manifest_tmp}" -o "${manifest_tmp}"
-    install -m 0644 "${manifest_tmp}" "${assets_root}/.install-manifest"
-    rm -f "${manifest_tmp}"
+    chmod 0644 "${manifest_tmp}"
+    mv -f "${manifest_tmp}" "${manifest}"
 }
