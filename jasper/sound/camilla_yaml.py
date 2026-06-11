@@ -28,7 +28,12 @@ from jasper.camilla_config_contract import (
     PeqFilter,
     ensure_volume_limit_db,
 )
-from jasper.camilla_emit import emit_gain_filter, emit_peaking_biquad, fmt
+from jasper.camilla_emit import (
+    emit_gain_filter,
+    emit_master_gain_pipeline,
+    emit_peaking_biquad,
+    fmt,
+)
 
 from .profile import (
     FilterSpec,
@@ -74,10 +79,21 @@ def _emit_filter_definitions(
     profile: SoundProfile,
     room_peqs: Iterable[PeqFilter],
     *,
+    room_peqs_right: Iterable[PeqFilter] | None = None,
     output_trim_db: float = 0.0,
-) -> tuple[str, list[str], float]:
+) -> tuple[str, list[str], list[str] | None, float]:
+    """Returns ``(filters_yaml, chain_names, chain_names_right, trim_db)``.
+
+    ``chain_names_right`` is ``None`` when ``room_peqs_right`` is ``None``
+    (solo — channel 1 duplicates channel 0, byte-identical to before this
+    axis existed). When given, only the ROOM-correction segment differs
+    per channel (``room_peq_r*`` — the per-seat part); the preference
+    filters (taste, shared household EQ) and the optional preamp are the
+    SAME named filters referenced by both chains — defined once.
+    """
     lines: list[str] = []
-    chain_names: list[str] = []
+    room_names: list[str] = []
+    room_names_right: list[str] | None = None
 
     lines.extend(emit_gain_filter("flat", 0.0))
 
@@ -85,7 +101,16 @@ def _emit_filter_definitions(
     for i, peq in enumerate(room_list, start=1):
         name = f"room_peq_{i}"
         lines.extend(emit_peaking_biquad(name, freq=peq.freq, q=peq.q, gain=peq.gain))
-        chain_names.append(name)
+        room_names.append(name)
+
+    if room_peqs_right is not None:
+        room_names_right = []
+        for i, peq in enumerate(room_peqs_right, start=1):
+            name = f"room_peq_r{i}"
+            lines.extend(
+                emit_peaking_biquad(name, freq=peq.freq, q=peq.q, gain=peq.gain)
+            )
+            room_names_right.append(name)
 
     # Preference boosts apply at unity: a +N dB band raises only that band
     # and leaves the rest of the spectrum untouched, like a consumer EQ. The
@@ -97,35 +122,27 @@ def _emit_filter_definitions(
     # from EQ, so it plays at unity even if a headroom trim is configured.
     sound_filters = build_sound_filters(profile)
     trim_db = max(0.0, float(output_trim_db)) if sound_filters else 0.0
+    tail_names: list[str] = []
     if trim_db > 0.0:
         lines.extend(emit_gain_filter("sound_preamp", -trim_db))
-        chain_names.append("sound_preamp")
+        tail_names.append("sound_preamp")
     for spec in sound_filters:
         lines.extend(_emit_filter_spec(spec))
-        chain_names.append(spec.name)
+        tail_names.append(spec.name)
+    tail_names.append("flat")
 
-    chain_names.append("flat")
-    return "\n".join(lines), chain_names, round(trim_db, 3)
-
-
-def _emit_pipeline(chain_names: list[str]) -> str:
-    chain_str = "[" + ", ".join(chain_names) + "]"
-    return (
-        "  - type: Mixer\n"
-        "    name: master_gain\n"
-        "  - type: Filter\n"
-        "    channels: [0]\n"
-        f"    names: {chain_str}\n"
-        "  - type: Filter\n"
-        "    channels: [1]\n"
-        f"    names: {chain_str}"
+    chain_names = room_names + tail_names
+    chain_names_right = (
+        None if room_names_right is None else room_names_right + tail_names
     )
+    return "\n".join(lines), chain_names, chain_names_right, round(trim_db, 3)
 
 
 def emit_sound_config(
     profile: SoundProfile,
     *,
     room_peqs: list[PeqFilter] | None = None,
+    room_peqs_right: list[PeqFilter] | None = None,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     playback_device: str = DEFAULT_PLAYBACK_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
@@ -142,6 +159,19 @@ def emit_sound_config(
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
+    ``room_peqs_right`` is the multi-room leader-bake axis
+    (docs/HANDOFF-multiroom.md §2 "Canonical signal flow"): a DIFFERENT
+    room correction per channel in ONE config — channel 0 gets
+    ``room_peqs`` (the leader's seat), channel 1 gets ``room_peqs_right``
+    (the follower's seat); preference EQ stays shared (taste, not seat).
+    ``None`` (default — solo) duplicates ``room_peqs`` onto channel 1,
+    **byte-identical** to before this parameter existed (the solo-impact
+    contract). ``[]`` bakes a FLAT right room segment (an uncalibrated
+    follower ships flat, never the wrong-room curve). Deliberately a
+    2-channel axis — 2.1's 3-channel stream generalises it together with
+    the stereo-pinned config contract (HANDOFF-multiroom.md §2); do not
+    pre-generalise it alone.
+
     ``channel_split`` (a :class:`jasper.multiroom.channel_split.ChannelSplit`)
     is woven in for a bonded member that plays a single channel — the
     ``channel_select`` mixer + (for a sub) the crossover. ``None`` or a
@@ -151,12 +181,15 @@ def emit_sound_config(
     # Loud-output safety: refuse to emit a config whose master fader
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
-    filter_yaml, chain_names, trim_db = _emit_filter_definitions(
+    filter_yaml, chain_names, chain_names_right, trim_db = _emit_filter_definitions(
         profile,
         room_peqs or [],
+        room_peqs_right=room_peqs_right,
         output_trim_db=output_trim_db,
     )
-    pipeline_yaml = _emit_pipeline(chain_names)
+    # Structure is the shared primitive; this module owns only which
+    # names go in each chain (room L/R segments + the shared tail).
+    pipeline_yaml = emit_master_gain_pipeline(chain_names, chain_names_right)
     # inv-5: an active bond member runs rate_adjust off (snapclient is the sole
     # rate-tracker); default True keeps the solo path unchanged.
     rate_adjust_literal = "true" if enable_rate_adjust else "false"
@@ -220,10 +253,16 @@ pipeline:
                 f"parent directory does not exist: {out_path.parent}"
             )
         _atomic_write_text(out_path, yaml)
+        right_note = (
+            f" room_peqs_right={len(room_peqs_right)}"
+            if room_peqs_right is not None
+            else ""
+        )
         logger.info(
-            "wrote sound config: %s (room_peqs=%d sound_filters=%d output_trim=%.3f)",
+            "wrote sound config: %s (room_peqs=%d%s sound_filters=%d output_trim=%.3f)",
             out_path,
             len(room_peqs or []),
+            right_note,
             len(build_sound_filters(profile)),
             trim_db,
         )
@@ -286,6 +325,13 @@ def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
     We intentionally avoid a YAML runtime dependency here. The parser is
     scoped to the deterministic config shapes emitted by
     jasper.correction.camilla_yaml and this module.
+
+    SCOPE: extracts the SOLO/left chain only (``peq_*`` / ``room_peq_*``);
+    right-channel leader-bake filters (``peq_r*`` / ``room_peq_r*``) are
+    deliberately NOT matched — this extractor serves the solo re-emit
+    path. The multi-room leader apply path must compose from STORED
+    per-speaker profiles, never by re-extracting a woven config (see
+    docs/HANDOFF-multiroom.md §2, Increment 5).
     """
 
     try:
@@ -308,6 +354,22 @@ def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
             current_lines.append(line)
     if current_name is not None:
         blocks.append((current_name, "\n".join(current_lines)))
+
+    # No silent failure paths: if this config carries leader-bake
+    # right-channel filters, extraction alone CANNOT reproduce it — a
+    # re-emit from just this result would silently DROP the follower's
+    # correction. Warn loudly; the leader apply path must compose from
+    # stored profiles (HANDOFF-multiroom.md §2, Increment 5).
+    if any(
+        re.fullmatch(r"(?:room_)?peq_r\d+", name) for name, _ in blocks
+    ):
+        logger.warning(
+            "extract_room_peqs: leader-bake right-channel (*_r*) filters "
+            "present in config text and NOT extracted — re-emitting from "
+            "this extraction alone would drop the follower's correction; "
+            "compose from stored profiles instead "
+            "(HANDOFF-multiroom.md §2, Increment 5)"
+        )
 
     peqs: list[PeqFilter] = []
     for name, block in blocks:

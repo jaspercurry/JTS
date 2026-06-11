@@ -1133,6 +1133,92 @@ Practical path for JTS:
 See [HANDOFF-aec.md](HANDOFF-aec.md) "DAC clock-domain dependency" for
 the condensed version.
 
+## ERLE calibration — reading the 14.5 dB correctly (banked 2026-06-11)
+
+External research (two deep-research passes, cross-checked here) recalibrated
+how to judge this doc's measured **`14.5 dB` far-end reduction**:
+
+- **It is normal, not alarming.** It is a *linear-AEC-residual* figure —
+  measured BEFORE the beamformer's spatial rejection and the post-filter's
+  echo suppression (`PP_ECHOONOFF` / `PP_GAMMA_E*`), so total system echo
+  suppression is meaningfully higher. Amazon's own patent **US 10,586,534**
+  puts normal steady-state ERLE at "about 15 dB to about 25 dB, depending on
+  the particular device"; 14.5 dB sits at the low edge of that range. The
+  30–40 dB figures in the literature (Amazon ICASSP 2021) are
+  **far-field, wireless-A2DP, post-beamforming, SER −30 dB** numbers — a
+  different, harder problem; they do not transfer to a near-field
+  music-as-echo path. **Never use an absolute far-field dB threshold as a
+  gate for this rig** — it would fail a demonstrably working speaker.
+  *(To-confirm: this doc's 14.5 dB A/B did not record exactly which output
+  category it measured; re-verify linear-residual vs total when it next
+  matters.)*
+- **What likely caps it at ~15 dB when clocks agree to ~1 ppm** (ranked):
+  loudspeaker **nonlinear distortion** at realistic SPL (a linear FIR cannot
+  model harmonics/IMD — the classic ERLE ceiling; the chip's `PP_NLAEC_MODE`
+  exists for exactly this, but as *suppression*, not linear cancellation);
+  mechanical/enclosure coupling; reference-vs-emitted spectral mismatch
+  (amp/EQ between tap and driver); room tail vs the 192 ms tail (check
+  `AEC_RT60`); residual clock error last (ruled out at ~1 ppm).
+- **Diagnostics to attribute the ceiling** (cheap, if anyone wants to push
+  it): an **ERLE-vs-level curve** (65/75/85 dB SPL — a downward knee with
+  level ⇒ nonlinearity/excursion onset); **per-band ERLE** (low-band collapse
+  ⇒ driver/passive-radiator distortion; flat broadband deficit ⇒ delay/clock,
+  already excluded); **noise vs music** (noise = best-case linear ERLE);
+  **electrical loopback with drivers disconnected** (very high ERLE there
+  proves the limiter is acoustic/mechanical, not electronics).
+- **Bonded-leader (multi-room) interaction:** the synced-leader round-trip is
+  *upstream* of outputd's reference tap, so a snapclient sample-stuff edit
+  appears identically in reference and emitted audio and self-cancels; events
+  are rare (order once per tens of seconds — the rate is governed by the
+  system-vs-DAC clock pair; verify empirically). The bonded-leader gate —
+  DELTA vs the solo baseline + product-level wake FRR, not an absolute dB —
+  lives in [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2 inv-A.
+
+## Beamformed-reference (ARA) fallback — software, Pi-side (DESIGN ONLY)
+
+**Status: design banked 2026-06-11; build only on measured need** (if the
+bonded-leader inv-A gate or a future wake-FRR regression demands it). Source:
+Amazon ICASSP 2021 (Ayrapetian et al., DOI 10.1109/ICASSP39728.2021.9414288,
+"ARA"/"ARSSA") + patents US 10,937,418 / US 10,622,004 (fixed
+reference-beam selection). The idea: when the electrical reference can't be
+trusted, derive the reference **from the mic array itself** — a beam steered
+at the loudspeaker becomes the AEC reference, a beam steered at the room is
+the target, and a software MCAEC cancels one from the other. Because the
+reference is mic-derived, it shares the mic clock *by construction*, and
+**spatial nulling is indifferent to the driver nonlinearity that caps linear
+ERLE** — it helps exactly where the 14.5 dB ceiling lives.
+
+- **On-chip is impossible — this is a Pi-side construct.** The XVF3800
+  pipeline is **AEC → beamformer → post-processor**, with a dedicated mono
+  far-end reference upstream of the beamformer; there is no internal path
+  from a beam output back into the AEC reference. The chip CAN serve as the
+  beamformer: `SHF_BYPASS=1` keeps beams with AEC off, packed output muxes up
+  to 6×16 kHz channels into the 2×48 kHz USB stream (beams + raw mics +
+  reference simultaneously), and `AEC_ASROUTONOFF=1` emits one channel per
+  beam.
+- **Topology:** chip fixed beams (AEC bypassed) → export driver-facing beam
+  (= reference) + room-facing beam (= target) → WebRTC AEC3 on the Pi as the
+  MCAEC (freeze adaptation on double-talk; AEC3's delay controller handles
+  the rest). Modest CPU/RAM on a Pi 5.
+- **Our simplification — static reference-beam selection:** the speaker
+  position is fixed per *installation* (NOT per build — the XVF3800 is a
+  separate USB array, not in the speaker enclosure), so the patents'
+  dynamic power-based selection + double-talk-gated freezing collapse to a
+  one-time setup localization (pick the loudest beam during
+  playback-without-speech) and a static choice thereafter.
+- **⚠ Do not copy the research diagram's beam angles:** this doc's
+  `150°/210°` beams were chosen as the **room/speech-facing** winners; the
+  ARA *reference* beam must face the **driver** — a different azimuth, found
+  at setup.
+- **Cautionary prior art:** Home Assistant Voice PE (XMOS XU316) — the
+  flagship open-source XMOS voice project — could not get full-duplex
+  self-AEC working and ships **half-duplex** (don't listen while speaking).
+  JTS's working full-duplex USB-IN-reference chip-AEC is ahead of the
+  open-source field; budget integration time for anything in this area
+  accordingly, and treat conservative residual suppression as the ceiling —
+  aggressive suppressors distort the near-end speech the speech-to-speech
+  LLM consumes.
+
 ## Source citations
 
 References are by section header / identifier, not line number, so

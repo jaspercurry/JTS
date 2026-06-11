@@ -15,6 +15,7 @@ import pytest
 from jasper.camilla_emit import (
     emit_gain_filter,
     emit_linkwitz_riley,
+    emit_master_gain_pipeline,
     emit_mixer,
     emit_peaking_biquad,
     fmt,
@@ -166,3 +167,33 @@ def test_emitters_parse_as_valid_yaml():
     assert m["channels"] == {"in": 2, "out": 2}
     assert m["mapping"][0]["sources"][0]["channel"] == 0
     assert m["mapping"][1]["sources"][0]["channel"] == 1
+
+
+def test_master_gain_pipeline_solo_duplicates_left_byte_for_byte():
+    # Reproduces correction._emit_pipeline / sound._emit_pipeline exactly
+    # (the solo-impact contract both consumers also lock in their own
+    # byte-exact tests).
+    assert emit_master_gain_pipeline(["peq_1", "flat"]) == (
+        "  - type: Mixer\n"
+        "    name: master_gain\n"
+        "  - type: Filter\n"
+        "    channels: [0]\n"
+        "    names: [peq_1, flat]\n"
+        "  - type: Filter\n"
+        "    channels: [1]\n"
+        "    names: [peq_1, flat]"
+    )
+
+
+def test_master_gain_pipeline_right_names_differ_and_parse():
+    # The multi-room leader-bake shape: distinct per-channel chains.
+    block = emit_master_gain_pipeline(
+        ["peq_1", "flat"], ["peq_r1", "flat"]
+    )
+    assert "    channels: [0]\n    names: [peq_1, flat]" in block
+    assert "    channels: [1]\n    names: [peq_r1, flat]" in block
+    steps = yaml.safe_load("pipeline:\n" + block)["pipeline"]
+    assert [s["type"] for s in steps] == ["Mixer", "Filter", "Filter"]
+    assert steps[0]["name"] == "master_gain"
+    assert steps[1]["names"] == ["peq_1", "flat"]
+    assert steps[2]["names"] == ["peq_r1", "flat"]

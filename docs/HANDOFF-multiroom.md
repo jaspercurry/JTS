@@ -488,13 +488,39 @@ review — these are the design, not details):**
   **Consequence:** routing leader TTS to outputd is a **REBUILD** of the outputd TTS
   mixer + the barge-in `audio_played_ms` ledger that 9102e13 retired (consolidated
   into fanin) — net-new Rust in a reboot-on-fail daemon, not a flag flip.
-  **HARDWARE GATE (blocks the self-loop increment):** measure chip-AEC ERLE on a
-  *bonded leader playing music through the round-trip* — the Snapcast-stuffed clock
-  now drives the reference, and AEC3's adaptive filter + the XVF USB PLL both assume
-  a stable reference↔mic clock relationship. If ERLE collapses, the design changes:
-  either tap the reference pre-round-trip for music (accepting reference-vs-playback
-  sample skew) or accept "no wake-during-music on a bonded leader." No free lunch —
-  the build picks one and owns it. *(Highest risk surfaced by review.)*
+  **Prior (recalibrated 2026-06-11 after two external research passes + a re-read of
+  [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)): the gate SHOULD pass.** Per that
+  doc's three-clock framework, the round-trip never enters the reference path: the
+  tap is **downstream** of snapclient's sample-stuffing (an edit appears identically
+  in reference and emitted audio, so it self-cancels), outputd's push to the chip
+  stays paced by its own DAC-blocking loop, and mic + chip USB-IN + the sync-mode USB
+  DAC all ride the one USB-SOF domain (measured ~1 ppm / converged on hardware).
+  Stuff events are rare — order once per tens of seconds; the rate is set by the
+  system-vs-DAC clock pair, so verify it empirically, but each event is a single
+  smoothed 20.8 µs edit. We keep the gate anyway: the chip doc's own twice-corrected
+  history is the standing warning against trusting architecture over measurement.
+  **HARDWARE GATE (blocks the self-loop increment) — DELTA + PRODUCT criteria, NOT an
+  absolute dB bar:** (a) bonded-leader chip-AEC ERLE ≈ the solo baseline within
+  ~1–2 dB, measured over several minutes (long enough to capture ≥10 stuff events and
+  any re-convergence dips); (b) wake FRR + barge-in success during loud music on the
+  bonded leader — the real pass/fail, with ERLE only the proxy. **Do NOT gate on an
+  absolute threshold** (an earlier draft nearly banked "ERLE > 20–25 dB"): our
+  working production rig measures ~14.5 dB *linear-AEC residual*, which is normal
+  (Amazon patent US 10,586,534 puts steady-state ERLE at ~15–25 dB; the 30–40 dB
+  literature figures are far-field/post-beamforming and don't transfer) and total
+  system suppression is higher after the chip's beamformer + post-filter. A gate that
+  fails the working solo speaker is a miscalibrated gate. **Fallback ladder if the
+  gate fails** (ranked; build on measured need only): (1) partial music ducking on a
+  wake *candidate* (cheap, lifts SER/NER directly — noted, not built; today's
+  duck-on-session-open already ships); (2) the software beamformed-reference (ARA)
+  fallback — design recorded in
+  [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) "Beamformed-reference (ARA)
+  fallback" (on-chip is impossible; spatial nulling is indifferent to the driver
+  nonlinearity that caps linear ERLE); (3) conservative residual suppression only —
+  aggressive suppressors distort the near-end speech the speech-to-speech LLM
+  consumes; (4) inv-B's direct-playback bypass for the leader's own channel (zero AEC
+  risk, loses sample-lock) or accept "no wake-during-music on a bonded leader." No
+  free lunch at rung 4 — the build picks one and owns it.
 
 - **inv-B — the leader self-loop must NOT be a single point of failure for the
   leader's OWN music.** The leader plays its own channel via a localhost snapclient;
@@ -532,7 +558,33 @@ component numbers are from research, not a measured stack.
 - Prefer the **pipe** source over an `alsa://` capture source: avoids a second
   snd-aloop *and* the snapserver+loopback idle-delay bug (snapcast#1014). Mind
   `fs.protected_fifos` if the FIFO lives in a world-writable dir.
+- Codec/chunk pairing: snapserver's default `codec=flac, chunk_ms=20` is documented
+  non-optimal — FLAC wants ~26 ms chunks (and adds ~26 ms codec latency); plain PCM
+  has zero codec latency at ~1.1 Mbps stereo (trivial on home WiFi). Our spike
+  measured FLAC ≈ PCM on RAM/CPU, so pick by WiFi headroom: PCM first, Opus if
+  bandwidth-constrained, FLAC only with chunk_ms raised.
+- Two complementary alignment knobs, different jobs: snapclient `--latency` nulls
+  the fixed *electrical/DAC-path* offset per client; a **per-channel `Delay` baked in
+  the leader's CamillaDSP** aligns *acoustic arrival* at the seat (L and R are
+  different distances from the listener). Set the CamillaDSP delay from the measured
+  impulse arrivals; keep `--latency` for hardware-path differences.
 - Pin **48 kHz / S16** end-to-end (snd-aloop locks format/rate on first open).
+
+**Solo-impact contract (hard requirement for EVERY increment — owner-stated
+2026-06-11):** a speaker that is NOT in a bond must be unaffected by this feature
+existing. Concretely: **zero added latency** (solo keeps the direct
+fanin→CamillaDSP→outputd→DAC path — the playout buffer is paid ONLY by bonded
+members); **zero added resource use** (no snapserver / snapclient / FIFO / tap /
+thread / PCM open on a solo speaker — off-by-default knobs do no per-period work
+beyond a none-check); **zero behavior change** (byte-identical generated CamillaDSP
+configs and byte-identical daemon I/O when the feature is off). **Enforcement, not
+intention:** every increment ships its solo-path proof as a regression test —
+golden-YAML tests for config generators (default args reproduce today's output
+byte-for-byte), default-config tests for daemons (feature env unset → no
+construction) — and §7's "Solo (N=1), grouping off — zero cost" row is the
+acceptance criterion at deploy time. Increment 1 already follows this shape
+(`JASPER_FANIN_MUSIC_OUTPUT_PCM` unset → no second PCM, no work) — every later
+increment holds the same bar.
 
 **Increment plan (RE-SCOPED 2026-06-10 after review — hardware-free / non-silencing
 slices FIRST; nothing that can silence the leader ships before inv-A's hardware
@@ -542,11 +594,17 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
 - **Increment 1 — DONE** (`JASPER_FANIN_MUSIC_OUTPUT_PCM`): the music/voice split,
   the foundation. *Repurposed* — its music-only signal feeds the leader's pre-stream
   CamillaDSP, not snapserver directly.
-- **Increment 2 — `target_channels` per-channel correction** (pure Python, testable
-  now, no hardware). `_emit_pipeline` (the correction + sound generators) today bakes
-  ONE mono PEQ onto both channels; add the per-side axis so the leader can bake
-  L-for-its-seat / R-for-the-follower-seat in one config. Independently useful; zero
-  audio-path activation.
+- **Increment 2 — per-channel correction axis — ✅ BUILT (2026-06-11; pure Python,
+  zero audio-path activation).** `emit_correction_config(peqs_right=…)` +
+  `emit_sound_config(room_peqs_right=…)`: ONE config, channel 0 corrected for the
+  leader's seat, channel 1 for the follower's (only the ROOM segment is per-channel;
+  preference EQ stays shared taste). Solo contract held by construction: `None`
+  (default) is **byte-identical** to the pre-axis output (regression-locked,
+  including an exact pipeline-bytes test); `[]` is distinct and bakes a FLAT right
+  segment (uncalibrated followers ship flat — Increment 6's rule). The config
+  extractor stays deliberately blind to `*_r*` filters (the leader apply path
+  composes from STORED profiles — Increment 5). No callers pass the new params yet;
+  the reconciler wires them in Increment 5.
 - **Increment 3 — outputd second content-input (FIFO reader), off by default**
   (pure Rust). The DAC loop optionally reads a `dac_content` FIFO (the round-trip
   lane), unit-tested with a temp FIFO like `snapfifo.rs`. No activation until the
@@ -1125,7 +1183,12 @@ audio slice with `MemorySwapMax=0`; **no CPU caps** (surface FLAC
 CPU on `/system/` per project rule); the snapfifo consumer is a
 *separate* sender from the chip-AEC one; crash-only restartable
 units; **fail loud** if a bond is configured but its SSOT env file
-is missing (exit-78 + cue + dashboard).
+is missing (exit-78 + cue + dashboard); **WiFi power-save stays
+disabled** — `install.sh` already does this on wlan0 (for AirPlay;
+see `deploy/lib/install/renderers.sh`), and it is equally
+load-bearing for snapclient endpoints: brcmfmac power-save is a
+documented cause of streaming dropouts, so a follower image must
+keep that step.
 
 ---
 
@@ -1458,7 +1521,27 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-10 (CANONICAL ARCHITECTURE made BUILD-READY after a two-agent
+Last verified: 2026-06-11 (research banked from two external deep-research passes,
+cross-checked against CHIP-AEC-EXPERIMENT.md's measured ground truth. inv-A
+RECALIBRATED: the prior is now "gate should pass" — the round-trip never enters the
+reference path (tap is downstream of stuffing; outputd re-paces; mic + chip USB-IN +
+sync-USB DAC share one USB-SOF domain, measured ~1 ppm) — and the gate criteria were
+corrected to DELTA (bonded ≈ solo ±1–2 dB over ≥10 stuff events) + PRODUCT (wake FRR
+/ barge-in during music), explicitly NOT an absolute dB bar: the first research pass
+suggested "ERLE > 20–25 dB," which our working solo rig (~14.5 dB linear residual —
+normal per Amazon US 10,586,534's 15–25 dB steady-state range) would have failed; a
+gate that fails a working system is miscalibrated. inv-A also gained the ranked
+fallback ladder (duck-on-candidate → software ARA per CHIP-AEC-EXPERIMENT.md's new
+"Beamformed-reference (ARA) fallback" section → conservative-only suppression →
+inv-B bypass). Build mechanics gained FLAC chunk_ms ≈ 26 ms / PCM-first guidance and
+the two-knob alignment split (snapclient --latency = electrical path; CamillaDSP
+per-channel Delay = acoustic arrival). §7 records WiFi power-save-off as
+load-bearing for snapclient endpoints (install.sh already ships it). Rejected from
+the research, with reasons recorded earlier: the XVF-as-I²S-master prescription (our
+documented last resort; our USB topology is measured-coherent) and abandoning the
+localhost self-loop (rested on a post-buffer inconsistency; SPOF is inv-B's job).
+Doc-only; no code changed. Earlier 2026-06-10 (CANONICAL ARCHITECTURE made
+BUILD-READY after a two-agent
 adversarial design review (codebase-fit + design). The review confirmed the
 high-level architecture but surfaced real issues the "DECIDED" doc had not
 confronted; all are now recorded. Added **inv-A** (the AEC reference must stay

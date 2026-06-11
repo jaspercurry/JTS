@@ -128,3 +128,114 @@ def test_emit_sound_config_rejects_non_finite_volume_limit():
         emit_sound_config(
             SoundProfile(enabled=False), volume_limit_db=math.nan,
         )
+
+
+# ---------------------------------------------------------------------------
+# room_peqs_right — the multi-room leader-bake axis (HANDOFF-multiroom.md §2).
+# Only the ROOM segment is per-channel (per-seat correction); preference EQ
+# is shared household taste and stays identical on both chains.
+# ---------------------------------------------------------------------------
+
+
+def _pipeline_chains(yaml: str) -> list[str]:
+    """The two per-channel `names: [...]` pipeline lines, in channel order."""
+    return [
+        line for line in yaml.splitlines() if line.startswith("    names: [")
+    ]
+
+
+def test_solo_sound_pipeline_unchanged_without_room_peqs_right():
+    """The solo-impact contract: no room_peqs_right ⇒ both channels carry
+    the SAME chain and no right-channel room filter exists anywhere."""
+    profile = SoundProfile(
+        enabled=True,
+        curve_id="harman",
+        simple_eq=SimpleEq(bass_db=2.0),
+    )
+    yaml = emit_sound_config(
+        profile, room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)]
+    )
+    chains = _pipeline_chains(yaml)
+    assert len(chains) == 2
+    assert chains[0] == chains[1]
+    assert "room_peq_r" not in yaml
+
+
+def test_room_peqs_right_bakes_per_seat_room_segment_with_shared_tail():
+    profile = SoundProfile(
+        enabled=True,
+        curve_id="harman",
+        simple_eq=SimpleEq(bass_db=2.0),
+    )
+    yaml = emit_sound_config(
+        profile,
+        room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+        room_peqs_right=[
+            PeqFilter(freq=120.0, q=3.0, gain=-2.0),
+            PeqFilter(freq=4000.0, q=2.0, gain=1.0),
+        ],
+        output_trim_db=4.0,
+    )
+    left, right = _pipeline_chains(yaml)
+    # Per-seat ROOM segments differ…
+    assert left.startswith("    names: [room_peq_1, sound_preamp,")
+    assert right.startswith(
+        "    names: [room_peq_r1, room_peq_r2, sound_preamp,"
+    )
+    # …the preference tail (preamp + curve/EQ + flat) is IDENTICAL…
+    assert left.split("sound_preamp", 1)[1] == right.split("sound_preamp", 1)[1]
+    # …and shared filters are DEFINED once (referenced by both chains).
+    assert yaml.count("sound_preamp:") == 1
+    assert "room_peq_r1:" in yaml and "room_peq_r2:" in yaml
+
+
+def test_room_peqs_right_empty_bakes_flat_right_room_segment():
+    """[] is distinct from None: an uncalibrated follower's room segment
+    ships FLAT, never the leader's wrong-room curve (HANDOFF-multiroom.md
+    §2, Increment 6)."""
+    profile = SoundProfile(
+        enabled=False, curve_id="bk", simple_eq=SimpleEq(bass_db=6.0)
+    )
+    yaml = emit_sound_config(
+        profile,
+        room_peqs=[PeqFilter(freq=120.0, q=3.0, gain=-2.0)],
+        room_peqs_right=[],
+    )
+    assert "    names: [room_peq_1, flat]" in yaml
+    assert "    names: [flat]" in yaml
+    assert "room_peq_r" not in yaml
+
+
+def test_extract_room_peqs_skips_right_channel_filters_and_warns(caplog):
+    """The extractor serves the SOLO re-emit path: it must return the
+    left/solo chain only and stay blind to leader-bake right-channel
+    filters (the leader apply path composes from stored profiles —
+    HANDOFF-multiroom.md §2, Increment 5). Blindness must be LOUD, not
+    silent: re-emitting from this extraction alone would drop the
+    follower's correction, so seeing *_r* filters logs a WARNING (the
+    no-silent-failure rule)."""
+    import logging
+
+    yaml = emit_correction_config(
+        [PEQ(freq=80.0, q=4.0, gain=-3.0)],
+        peqs_right=[PEQ(freq=120.0, q=3.0, gain=-2.0)],
+    )
+    with caplog.at_level(logging.WARNING):
+        extracted = extract_room_peqs_from_config_text(yaml)
+    assert extracted == [PeqFilter(freq=80.0, q=4.0, gain=-3.0)]
+    assert any(
+        "NOT extracted" in record.message for record in caplog.records
+    )
+
+
+def test_extract_room_peqs_stays_quiet_on_solo_configs(caplog):
+    """No right-channel filters ⇒ no warning — the solo path must not
+    acquire log noise (solo-impact contract)."""
+    import logging
+
+    yaml = emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)])
+    with caplog.at_level(logging.WARNING):
+        extract_room_peqs_from_config_text(yaml)
+    assert not any(
+        "NOT extracted" in record.message for record in caplog.records
+    )
