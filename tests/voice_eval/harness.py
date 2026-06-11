@@ -575,11 +575,16 @@ class VoiceEvalHarness:
         self._connection = None
         self._session_id = uuid.uuid4().hex
         self._connection_lock = asyncio.Lock()
-        # Side-channel handles into the registry the harness builds —
-        # populated on first connection. Scenarios that need to assert
-        # post-turn state (timers active, etc.) read from here instead
-        # of making another paid LLM call.
+        # Side-channel handles into the registry the harness builds.
+        # Scenarios read these BEFORE the first paid call (the volume
+        # scenarios snapshot the level so they can restore it without
+        # a second LLM turn), so the registry is built eagerly here —
+        # construction is free; only the LiveConnection is paid/lazy.
+        # Building it on first connection instead left test_state empty
+        # at scenario start and the volume suite skipped as "wiring
+        # regressed" (caught by the 2026-06-11 on-Pi run).
         self.test_state: dict[str, object] = {}
+        self._registry = _build_test_registry(cfg, test_state=self.test_state)
 
     async def _ensure_connection(self):
         if self._connection is not None:
@@ -593,10 +598,7 @@ class VoiceEvalHarness:
                 _build_system_instruction,
                 _make_connection,
             )
-            registry = _build_test_registry(
-                self.cfg, test_state=self.test_state,
-            )
-            wrapped = traced_registry(registry)
+            wrapped = traced_registry(self._registry)
             connection = _make_connection(self.cfg)
             await connection.start(
                 wrapped,
