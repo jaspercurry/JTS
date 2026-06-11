@@ -112,3 +112,13 @@ def test_mutating_request_rejects_origin_host_mismatch_between_local_aliases():
         _headers(Host="192.168.1.23:8780", Origin="http://jts.local"),
     )
     assert (ok, reason) == (False, "origin_host_mismatch")
+
+
+def test_management_read_rejects_unspecified_address_host():
+    """0.0.0.0 is a bind address, never a legitimate browser Host. The
+    fix for the 2026-06-11 /system/ 403 lives in the control *client*
+    (jasper.control.client._connect_host maps unspecified → loopback
+    before connecting), NOT here: the guard keeps rejecting so a
+    poisoned client surfaces as a loud 403 instead of silently passing."""
+    ok, reason = http_security.management_read_allowed({"Host": "0.0.0.0:8780"})
+    assert (ok, reason) == (False, "host_not_allowed")

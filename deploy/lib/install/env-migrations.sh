@@ -688,3 +688,36 @@ EOF
     # output) but the PSK never appears in this echo or any other.
     echo "  migrate_wifi_guardian: seeded ${stash} from active profile (SSID=${ssid}, key-mgmt=${key_mgmt})"
 }
+
+# Drop the seeded-default `JASPER_CONTROL_HOST=0.0.0.0` line from
+# /etc/jasper/jasper.env. The var is the control server's *bind*
+# address, and 0.0.0.0 is already the server-side code default
+# (jasper/control/server.py), so the seeded line adds nothing — but
+# jasper.control.client used to misread it as its *connect* host,
+# sending `Host: 0.0.0.0:8780`, which the management-host guard
+# rejects: the 2026-06-11 regression where every /system/ dashboard
+# poll 403ed on Pis seeded with the line. The client now maps
+# unspecified → loopback, so the line is harmless going forward; prune
+# it anyway so the frozen first-install seed stops shadowing the code
+# default (the HEADROOM bug class). Any value other than exactly
+# `0.0.0.0` is an operator's deliberate bind override — left alone.
+migrate_control_host_bind_seed() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    [[ -f "${jasper_env}" ]] || return 0
+    local line value
+    line=$(grep -E '^JASPER_CONTROL_HOST=' "${jasper_env}" 2>/dev/null || true)
+    [[ -z "${line}" ]] && return 0
+    value="${line#JASPER_CONTROL_HOST=}"
+    value="${value%$'\r'}"
+    if [[ "${value}" != "0.0.0.0" ]]; then
+        return 0
+    fi
+    if ! sed -i.bak '/^JASPER_CONTROL_HOST=/d' "${jasper_env}" 2>/dev/null; then
+        rm -f "${jasper_env}.bak"
+        echo "  migrate_control_host_bind_seed: could not update ${jasper_env} (left unchanged)"
+        return 0
+    fi
+    rm -f "${jasper_env}.bak"
+    echo "  migrate_control_host_bind_seed: removed seeded JASPER_CONTROL_HOST=0.0.0.0"
+    echo "    (server bind default is already 0.0.0.0; on-Pi clients connect via loopback)"
+}

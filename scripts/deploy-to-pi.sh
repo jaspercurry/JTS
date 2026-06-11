@@ -291,6 +291,37 @@ echo "==> Reconciling mic/AEC/voice state"
 run_remote_sudo "systemctl start jasper-aec-reconcile.service" || \
     echo "  (jasper-aec-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
 
+# Post-deploy verification: the management surface must answer through
+# nginx under the speaker's real hostname. This exercises the exact
+# path a browser takes — nginx → socket-activated system wizard →
+# jasper-control behind its management-host guard — and fails the
+# deploy loudly instead of leaving a silently broken dashboard. The
+# 2026-06-11 regression (every /system/ poll 403ing with
+# host_not_allowed) shipped invisibly because nothing probed this path
+# at deploy time. Retries cover jasper-control's restart window and
+# the wizard's socket-activation cold start.
+echo "==> Verifying management surface (Host: ${HOSTNAME_FOR_INSTALL})"
+verify_cmd="code=000; for attempt in 1 2 3 4 5; do \
+code=\$(curl -s -o /dev/null -w '%{http_code}' -m 4 \
+-H $(shell_quote "Host: ${HOSTNAME_FOR_INSTALL}") \
+http://127.0.0.1/system/data.json || echo 000); \
+[ \"\$code\" = 200 ] && exit 0; sleep 3; done; \
+echo \"management-surface probe failed: last HTTP status \$code\" >&2; exit 1"
+if ssh_remote "$verify_cmd"; then
+    echo "  ✓ /system/data.json answers 200 via nginx as ${HOSTNAME_FOR_INSTALL}"
+else
+    finish_airplay_health_maintenance
+    trap - EXIT
+    echo "─────────────────────────────────────────────────────────────" >&2
+    echo " DEPLOY VERIFICATION FAILED: the management surface is not"   >&2
+    echo " answering at http://${HOSTNAME_FOR_INSTALL}/system/."        >&2
+    echo " Diagnose on the Pi:"                                          >&2
+    echo "   sudo /opt/jasper/.venv/bin/jasper-doctor"                   >&2
+    echo "   journalctl -u jasper-control | grep event=http.reject"      >&2
+    echo "─────────────────────────────────────────────────────────────" >&2
+    exit 1
+fi
+
 finish_airplay_health_maintenance
 trap - EXIT
 echo "==> Done."

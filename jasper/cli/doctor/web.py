@@ -51,3 +51,65 @@ def check_web_design_assets() -> CheckResult:
             "missing JS module blanks the page)",
         )
     return CheckResult("web design assets", "ok", str(app_css))
+
+
+# Probe target for check_management_surface. Module constants so tests can
+# point them at fixtures; the URL is loopback on purpose — the probe runs
+# on-Pi and exercises nginx → wizard → jasper-control, not LAN reachability.
+NGINX_SITE = Path("/etc/nginx/sites-enabled/jasper.conf")
+MANAGEMENT_PROBE_URL = "http://127.0.0.1/system/data.json"
+
+
+@doctor_check(order=24.5, group="web")
+def check_management_surface() -> CheckResult:
+    """The management UI must answer through nginx under the speaker's
+    real hostname.
+
+    Probes /system/data.json on loopback nginx with `Host:
+    <JASPER_HOSTNAME>` — the exact path a browser takes (nginx →
+    socket-activated system wizard → jasper-control behind its
+    management-host guard). Pins the 2026-06-11 regression class
+    closed: the wizard's control client carried `Host: 0.0.0.0:8780`
+    from a seeded bind value and every dashboard poll 403ed, with
+    nothing on the Pi noticing. Any break in the nginx → wizard →
+    control chain (guard rejection, wizard socket misbind, control
+    down) fails here with the layer named. Skips on a non-Pi checkout
+    (no installed nginx site)."""
+    import urllib.error
+    import urllib.request
+
+    label = "management surface (/system/)"
+    if not NGINX_SITE.exists():
+        return CheckResult(label, "ok", "nginx site not installed (skipped)")
+    host = (os.environ.get("JASPER_HOSTNAME") or "jts.local").strip()
+    req = urllib.request.Request(MANAGEMENT_PROBE_URL, headers={"Host": host})
+    try:
+        with urllib.request.urlopen(req, timeout=6.0) as resp:
+            status = resp.status
+            body = resp.read(512)
+    except urllib.error.HTTPError as e:
+        status = e.code
+        body = e.read(512) if e.fp else b""
+    except (urllib.error.URLError, OSError) as e:
+        return CheckResult(
+            label, "fail",
+            f"no answer from nginx on 127.0.0.1 for Host: {host} ({e}) — "
+            "is nginx running? (systemctl status nginx)",
+        )
+    if status == 200:
+        return CheckResult(label, "ok", f"200 via nginx as Host: {host}")
+    detail = body.decode("utf-8", "replace").strip()[:120]
+    if status == 403:
+        hint = (
+            " — the management-host guard rejected the request; check "
+            "`journalctl -u jasper-control | grep event=http.reject` and "
+            "JASPER_CONTROL_HOST / JASPER_MANAGEMENT_ALLOWED_HOSTS in the env"
+        )
+    elif status == 502:
+        hint = (
+            " — wizard answered but jasper-control is unreachable "
+            "(systemctl status jasper-control)"
+        )
+    else:
+        hint = ""
+    return CheckResult(label, "fail", f"HTTP {status} ({detail}){hint}")

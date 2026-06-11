@@ -478,6 +478,15 @@ This is the **only** supported deploy path. It does, in order:
    mic/AEC reconciler restart or park `jasper-voice` according to the
    hardware actually present. `jasper-camilla` is the Rust camilladsp
    binary (not restarted).
+6. Verifies the management surface: probes `/system/data.json` through
+   loopback nginx with `Host: <speaker hostname>` (bounded retries) and
+   **fails the deploy** if it doesn't answer 200. This exercises the
+   browser path — nginx → socket-activated wizard → jasper-control
+   behind its management-host guard — so a deploy can't silently ship
+   a 403ing dashboard (the 2026-06-11 `Host: 0.0.0.0` regression
+   class). `jasper-doctor`'s `check_management_surface` runs the same
+   probe on-Pi. Skipped under `SKIP_RESTART=1` (no restart, nothing
+   new to verify).
 
 **Do NOT hand-roll `rsync + sudo bash install.sh + systemctl restart`.**
 That flow exists historically but misses:

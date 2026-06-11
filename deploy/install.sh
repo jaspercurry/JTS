@@ -1490,6 +1490,7 @@ PY
     migrate_wake_legs_config
     migrate_grouping
     migrate_speaker_room
+    migrate_control_host_bind_seed
 }
 
 install_systemd_units() {
