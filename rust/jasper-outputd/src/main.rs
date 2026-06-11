@@ -34,8 +34,29 @@ use signal_hook::flag;
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
 const MAX_CONTENT_BRIDGE_DRAIN_READS: usize = 8;
 
+/// Exit code for a CONFIG-validation failure (sysexits.h EX_CONFIG).
+/// The unit pairs it with `RestartPreventExitStatus=78`: a fail-closed
+/// config rejection PARKS the unit failed (visible on /state + doctor)
+/// instead of crash-looping — restarting cannot fix bad config, and on
+/// this unit the loop escalates to StartLimitAction=reboot. Measured
+/// incident (jts3, 2026-06-11): a grouping env + lab retune layered into
+/// a guard-rejected combination; outputd crash-looped into THREE Pi
+/// reboots before the T5.1 boot-loop guard contained it.
+const EXIT_CONFIG: i32 = 78;
+
 fn main() -> Result<()> {
-    let config = Config::from_env()?;
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("event=outputd.config_invalid detail={e:#}");
+            eprintln!(
+                "Error: invalid JASPER_OUTPUTD_* configuration (exit {EXIT_CONFIG}; \
+                 the unit does not restart on config errors — fix the env and \
+                 `systemctl restart jasper-outputd`)"
+            );
+            std::process::exit(EXIT_CONFIG);
+        }
+    };
     let once = std::env::args().any(|arg| arg == "--once");
     let shutdown = Arc::new(AtomicBool::new(false));
     flag::register(SIGTERM, Arc::clone(&shutdown)).context("registering SIGTERM handler")?;

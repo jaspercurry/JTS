@@ -199,10 +199,12 @@ Run for real from a Pi-local checkout:
      release/branch must also stop/disable jasper-outputd because that
      older code does not know about the outputd unit.
    - Run the AEC/mic reconciler so voice follows attached hardware.
-   - Install the multi-room grouping units (snapserver, snapclient,
-     grouping-reconcile) DISABLED. Grouping is never auto-enabled and
-     the snapcast apt packages are NOT installed on a solo speaker;
-     the /grouping opt-in owns enabling units and fetching binaries.
+   - Install the multi-room grouping units: snapserver + snapclient
+     DISABLED (grouping is never auto-enabled; the snapcast apt
+     packages are NOT installed on a solo speaker; the wizard opt-in
+     owns turning grouping on), and the grouping RECONCILER enabled +
+     run — a boot/install no-op when grouping is off, and what lets a
+     BONDED speaker survive reboots and deploys.
    - Regenerate audio cues if jasper-cues is installed.
    - Run jasper-doctor as a final non-blocking health summary.
 
@@ -2063,6 +2065,20 @@ reconcile_aec_state() {
     systemctl enable jasper-aec-reconcile.service
     /usr/local/sbin/jasper-aec-reconcile --reason install || \
         echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
+
+    # Grouping reconciler runs at BOOT (and on every install) so a BONDED
+    # speaker survives reboots/deploys: it re-derives the snapcast args +
+    # the outputd round-trip lane env and (re)starts the snap units per
+    # the wizard intent. On a solo speaker it is a no-op oneshot
+    # (grouping off => stop both units, clear derived env) — cost-free.
+    # NOTE: this enables the RECONCILER, not grouping: snapserver/
+    # snapclient still ship disabled and only the reconciler starts them
+    # on explicit wizard opt-in. (Gap found in the 2026-06-11 jts3
+    # incident: a bonded follower rebooted and its snapclient stayed
+    # down because nothing ran the reconciler at boot.)
+    systemctl enable jasper-grouping-reconcile.service
+    systemctl restart jasper-grouping-reconcile.service || \
+        echo "  WARN: grouping reconcile failed. Check logs with: journalctl -u jasper-grouping-reconcile -e"
 }
 
 remove_legacy_https_artifacts() {
