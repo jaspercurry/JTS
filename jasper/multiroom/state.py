@@ -332,8 +332,13 @@ def read_grouping_state(
                 # (never silently skipped — an unverifiable bond is a
                 # degraded bond).
                 if stream_clients_reader is None:
-                    from .snapcast_rpc import read_stream_clients
-                    stream_clients_reader = read_stream_clients
+                    # The CACHED probe: /state is polled (dashboard ~7 s,
+                    # any LAN client) and a hung snapserver costs the RPC
+                    # timeout per probe — the TTL cache bounds that to one
+                    # real probe per window. The doctor deliberately uses
+                    # the FRESH variant (operator-run, this-instant truth).
+                    from .snapcast_rpc import read_stream_clients_cached
+                    stream_clients_reader = read_stream_clients_cached
                 stream_clients = stream_clients_reader()
                 if stream_clients is None:
                     stream_clients = "unreachable"

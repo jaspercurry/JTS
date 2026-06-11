@@ -1987,6 +1987,7 @@ install_systemd_units() {
     # clears that stale state and parks voice instead of letting it
     # watchdog-loop on an unfed UDP socket.
     reconcile_aec_state
+    reconcile_grouping_state
     # WiFi profile guardian: oneshot at boot, gated by
     # ConditionPathExists= on the wizard's stash file. Enabling is safe
     # on fresh installs because the unit silently no-ops until the
@@ -2065,17 +2066,20 @@ reconcile_aec_state() {
     systemctl enable jasper-aec-reconcile.service
     /usr/local/sbin/jasper-aec-reconcile --reason install || \
         echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
+}
 
+reconcile_grouping_state() {
     # Grouping reconciler runs at BOOT (and on every install) so a BONDED
     # speaker survives reboots/deploys: it re-derives the snapcast args +
-    # the outputd round-trip lane env and (re)starts the snap units per
-    # the wizard intent. On a solo speaker it is a no-op oneshot
-    # (grouping off => stop both units, clear derived env) — cost-free.
-    # NOTE: this enables the RECONCILER, not grouping: snapserver/
-    # snapclient still ship disabled and only the reconciler starts them
-    # on explicit wizard opt-in. (Gap found in the 2026-06-11 jts3
-    # incident: a bonded follower rebooted and its snapclient stayed
-    # down because nothing ran the reconciler at boot.)
+    # the outputd round-trip lane env, drives the CamillaDSP bonded/solo
+    # config, pins the snapcast stream bindings, and (re)starts the snap
+    # units per the wizard intent. On a solo speaker it is a no-op
+    # oneshot (grouping off => stop both units, clear derived env) —
+    # cost-free. NOTE: this enables the RECONCILER, not grouping:
+    # snapserver/snapclient still ship disabled and only the reconciler
+    # starts them on explicit wizard opt-in. (Boot gap found in the
+    # 2026-06-11 jts3 incident: a bonded follower rebooted and its
+    # snapclient stayed down because nothing ran the reconciler at boot.)
     systemctl enable jasper-grouping-reconcile.service
     systemctl restart jasper-grouping-reconcile.service || \
         echo "  WARN: grouping reconcile failed. Check logs with: journalctl -u jasper-grouping-reconcile -e"

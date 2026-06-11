@@ -117,3 +117,78 @@ def test_read_stream_clients_fail_soft():
         transport=lambda *a, **k: _status([_group("g", "jts", [_client("jts")])]),
     )
     assert rows and rows[0]["name"] == "jts"
+
+
+# ---------- ownership-rule semantics (review polish) ----------
+
+
+def test_ensure_rebinds_existing_but_foreign_streams_too():
+    """THE refined incident pin: snapserver also registers the packaged
+    snapserver.conf "default" source, so the 2026-06-11 stale groups
+    were bound to a stream that EXISTS (idle, producer-less). Ownership
+    — not existence — decides: anything outside the JTS allowlist is
+    rebound, even if the foreign stream is registered."""
+    status = _status([_group("g", "default", [_client("jts")])])
+    status["server"]["streams"] = [{"id": "default"}, {"id": "jts"}]
+    t = FakeTransport([status])
+    report = ensure_groups_on_stream("jts", transport=t, sleep=lambda s: None)
+    assert report["fixed"] == 1
+    assert ("g", "jts") in t.set_calls
+
+
+def test_ensure_allowlist_protects_a_second_jts_stream():
+    """The multi-stream future (group announcements): a group bound to
+    another JTS-OWNED stream is deliberately left alone."""
+    t = FakeTransport([_status([
+        _group("music", "jts", [_client("jts")]),
+        _group("announce", "jts-announce", [_client("jts3")]),
+        _group("stale", "default", [_client("kitchen", connected=False)]),
+    ])])
+    report = ensure_groups_on_stream(
+        "jts", allowed_streams={"jts-announce"},
+        transport=t, sleep=lambda s: None,
+    )
+    assert report["fixed"] == 1  # only the stale one
+    assert t.set_calls == [("stale", "jts")]
+
+
+# ---------- the /state probe cache ----------
+
+
+def test_probe_cache_serves_within_ttl_and_expires():
+    from jasper.multiroom.snapcast_rpc import _ProbeCache
+
+    calls = []
+
+    def transport(method, params=None, *, url=None):
+        calls.append(method)
+        return _status([_group("g", "jts", [_client("jts")])])
+
+    clock = [100.0]
+    cache = _ProbeCache(ttl_sec=5.0)
+    a = cache.read(transport=transport, now=lambda: clock[0])
+    clock[0] += 4.9
+    b = cache.read(transport=transport, now=lambda: clock[0])
+    assert len(calls) == 1 and a == b  # served from cache within TTL
+    clock[0] += 0.2
+    cache.read(transport=transport, now=lambda: clock[0])
+    assert len(calls) == 2  # expired → one real probe
+
+
+def test_probe_cache_caches_failures_too():
+    """A HUNG snapserver must cost at most one RPC timeout per TTL —
+    failure results are cached exactly like successes."""
+    from jasper.multiroom.snapcast_rpc import _ProbeCache
+
+    calls = []
+
+    def failing(method, params=None, *, url=None):
+        calls.append(method)
+        return None
+
+    clock = [50.0]
+    cache = _ProbeCache(ttl_sec=5.0)
+    assert cache.read(transport=failing, now=lambda: clock[0]) is None
+    clock[0] += 1.0
+    assert cache.read(transport=failing, now=lambda: clock[0]) is None
+    assert len(calls) == 1  # the failure was served from cache
