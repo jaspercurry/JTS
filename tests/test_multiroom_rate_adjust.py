@@ -438,3 +438,45 @@ def test_camilla_block_field_shared_scanner():
 # operator story it carried now lives in check_grouping's runtime detail,
 # covered by test_doctor.py::
 # test_check_grouping_leader_reads_degraded_until_producer_built.
+
+
+def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
+    """PR-2: a bonded member's voice plays TTS via outputd (post-round-trip
+    — solo latency); solo OMITS the key entirely — never present-but-empty
+    (a set-empty value reads as a real, invalid socket path; omission
+    falls back to the fanin default). Both roles flip: each member's OWN
+    replies mix at its OWN final output (inv-3 keeps the leader's TTS out
+    of the SHARED stream)."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_TTS_SOCKET,
+        VOICE_TTS_SOCKET_ENV,
+        voice_grouping_env,
+    )
+    for cfg in (
+        _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+        _cfg(enabled=True, role="follower", channel="right",
+             bond_id="b", leader_addr="jts.local"),
+    ):
+        env = voice_grouping_env(cfg)
+        assert env == {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+    for cfg in (
+        _cfg(),  # off
+        _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),
+    ):
+        assert voice_grouping_env(cfg) == {}
+
+
+def test_outputd_grouping_env_arms_tts_socket_with_the_lane():
+    """The TTS socket arms/clears in lockstep with the round-trip lane —
+    one file, one writer, no half-armed member."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_TTS_SOCKET,
+        OUTPUTD_TTS_SOCKET_ENV,
+        outputd_grouping_env,
+    )
+    bonded = outputd_grouping_env(
+        _cfg(enabled=True, role="follower", channel="right",
+             bond_id="b", leader_addr="jts.local"))
+    assert bonded[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
+    solo = outputd_grouping_env(_cfg())
+    assert solo[OUTPUTD_TTS_SOCKET_ENV] == ""  # empty = unset to outputd

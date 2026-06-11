@@ -57,6 +57,7 @@ ENV_FILES = (
     "/var/lib/jasper/fanin.env",
     "/var/lib/jasper/grouping.env",
     "/var/lib/jasper/grouping-outputd.env",
+    "/var/lib/jasper/grouping-voice.env",
     "/var/lib/jasper/outputd.env",
     "/var/lib/jasper/peering.env",
     "/var/lib/jasper/usbsink.env",

@@ -115,7 +115,24 @@ OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 # outputd_grouping_env): the lane fail-closes on any other bridge mode,
 # and this file is the last env layer, so the pin wins over lab retunes.
 OUTPUTD_CONTENT_BRIDGE_ENV = "JASPER_OUTPUTD_CONTENT_BRIDGE"
+# Bonded-member TTS (Increment 5 PR-2): while bonded, outputd listens
+# on its TTS socket and mixes voice at the final output stage (post-
+# round-trip, pre-reference — inv-A), and jasper-voice's playout is
+# pointed at it. Solo keeps fanin-owned TTS. The socket path is
+# outputd's RuntimeDirectory (it already hosts control.sock).
+OUTPUTD_TTS_SOCKET_ENV = "JASPER_OUTPUTD_TTS_SOCKET"
+OUTPUTD_TTS_SOCKET = "/run/jasper-outputd/tts.sock"
 OUTPUTD_UNIT = "jasper-outputd.service"
+
+# Voice-side flip: a reconciler-owned PERSISTENT env file layered LAST
+# in jasper-voice.service. Bonded => JASPER_TTS_OUTPUTD_SOCKET points
+# at outputd's socket; solo => the key is OMITTED ENTIRELY (never
+# present-but-empty: voice's env reader treats a set-empty value as a
+# real — invalid — path; omission falls back to the fanin default).
+# Same never-empty lesson as the CONTENT_BRIDGE pin.
+VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
+VOICE_TTS_SOCKET_ENV = "JASPER_TTS_OUTPUTD_SOCKET"
+VOICE_UNIT = "jasper-voice.service"
 
 # The snapserver stream id — ONE definition: the argv builder names the
 # pipe source with it, the reconciler's binding pin re-binds persisted
@@ -366,11 +383,28 @@ def outputd_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
+            OUTPUTD_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
         }
     return {
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
+        OUTPUTD_TTS_SOCKET_ENV: "",
     }
+
+
+def voice_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
+    """jasper-voice's grouping-derived env. PURE.
+
+    Bonded (either role — each member's OWN replies mix at its OWN
+    final output; inv-3 keeps the leader's TTS out of the SHARED
+    stream): voice's TTS playout socket points at outputd. Solo: an
+    EMPTY dict — the key is omitted, never present-but-empty (a
+    set-empty value would be read as a real, invalid socket path;
+    omission falls back to the fanin default in jasper.env).
+    """
+    if cfg.enabled and cfg.error is None:
+        return {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+    return {}
 
 
 def desired_snapfifo_path(cfg: GroupingConfig) -> str:
@@ -454,6 +488,12 @@ def _write_outputd_env(
         old = None
     if old == body:
         return (False, True)
+    if old is None and body == "":
+        # Nothing existed and nothing needs clearing — a fresh solo
+        # speaker's first reconcile must not count as a change (it
+        # would spuriously restart the consuming unit, e.g. a ~15 s
+        # jasper-voice restart on first boot for an empty file).
+        return (False, True)
     try:
         atomic_io.atomic_write_text(path, body, mode=0o644)
     except OSError as e:
@@ -498,26 +538,31 @@ def _ensure_member_fifo(*, path: str = MEMBER_CONTENT_FIFO) -> bool:
     return True
 
 
-def _restart_outputd() -> bool:
-    """Restart jasper-outputd so it re-reads the grouping env. Fail-soft
-    (a failure is logged + reflected in the exit code by the caller; the
-    doctor's channel-pick drift check surfaces a lane left unwired)."""
+def _restart_unit(unit: str) -> bool:
+    """Restart a unit so it re-reads its grouping env. Fail-soft (a
+    failure is logged + reflected in the exit code by the caller; the
+    doctor's drift checks surface a lane left unwired)."""
     try:
         subprocess.run(
-            ["systemctl", "restart", OUTPUTD_UNIT],
+            ["systemctl", "restart", unit],
             check=True, capture_output=True, text=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         stderr = getattr(e, "stderr", "") or ""
         logger.error(
-            "event=multiroom.reconcile.outputd_restart_failed error=%s "
-            "stderr=%s", e, stderr.strip(),
+            "event=multiroom.reconcile.unit_restart_failed unit=%s error=%s "
+            "stderr=%s", unit, e, stderr.strip(),
         )
         return False
     logger.info(
-        "event=multiroom.reconcile.outputd_restarted reason=grouping_env_changed",
+        "event=multiroom.reconcile.unit_restarted unit=%s reason=grouping_env_changed",
+        unit,
     )
     return True
+
+
+def _restart_outputd() -> bool:
+    return _restart_unit(OUTPUTD_UNIT)
 
 
 def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
@@ -664,6 +709,23 @@ def main(argv: list[str] | None = None) -> int:
 
     # 3. outputd picks up the lane env only at unit start.
     if env_changed and env_ok and not _restart_outputd():
+        rc = 1
+
+    # 3b. Voice's TTS socket flip (PR-2): written + restart-on-change
+    # only — a voice restart costs ~10-15 s and must happen only on a
+    # real bond/unbond, never on the routine no-change reconcile.
+    voice_env = voice_grouping_env(cfg)
+    voice_changed, voice_ok = _write_outputd_env(
+        voice_env, path=VOICE_GROUPING_ENV_FILE,
+    )
+    logger.info(
+        "event=multiroom.reconcile.voice_env path=%s changed=%s ok=%s socket=%s",
+        VOICE_GROUPING_ENV_FILE, voice_changed, voice_ok,
+        voice_env.get(VOICE_TTS_SOCKET_ENV, "(solo: fanin default)"),
+    )
+    if not voice_ok:
+        rc = 1
+    if voice_changed and voice_ok and not _restart_unit(VOICE_UNIT):
         rc = 1
 
     # 4. The unit plan (stops before starts).
