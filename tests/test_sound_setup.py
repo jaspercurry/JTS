@@ -170,7 +170,9 @@ def test_sound_module_preserves_editor_behaviour():
     assert "./output-topology" in js
     assert "Run safety preflight" in js
     assert "safe_playback" in js
-    assert "Setup and preflight steps do not play sound" in js
+    assert "Build the speaker layout, add driver info, map DAC outputs" in js
+    assert "function defaultOutputStep() {\n    return 'layout';\n  }" in js
+    assert "Finish the current card before opening" in js
     assert "output-step__chevron" in js
     assert "querySelectorAll('.output-step[open]')" in js
     assert "window.prompt" not in js
@@ -285,7 +287,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Arming records the safety state only; it does not play sound." in js
     assert "Artifact checks are available" in js
     assert "explicit lab enablement" in js
-    assert "reload CamillaDSP" in js
+    assert "load CamillaDSP" in js
     assert "play tones" in js
 
 
@@ -307,7 +309,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert 'data-act="mark-output-protection"' in js
     assert 'data-act="check-output-readiness"' in js
     assert "headers: jsonHeaders()" in js
-    assert "Saving this map does not play sound or reload CamillaDSP." in js
+    assert "Saved speaker layout. No sound was played." in js
     assert "Backend validation owns the final decision." in js
     assert "Physical verification is operator evidence." in js
     assert "Multi-DAC aggregate" in js
@@ -340,22 +342,26 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Verify artifact" in js
     assert "Play quiet " in js
     assert "The last readiness check failed" in js
-    assert "Save this output setup draft before recording physical verification evidence." in js
+    assert "Save this speaker layout draft before recording physical verification evidence." in js
     assert "Sound tests remain disabled for this setup surface." in js
     assert "Setup template" in js
     assert "Speaker count" in js
     assert "Speaker type" in js
+    assert "Refresh hardware to start a speaker layout." in js
+    assert "renderOutputHardwareRefresh() +" in js
     assert "Prepare safe test mode" in js
     assert "Safety preflight" in js
     assert "data-act=\"output-template-axis\"" in js
     assert "output-template-grid" not in js
+    assert "Save output map" not in js
+    assert "Output setup" not in js
     assert "Mono active 2-way" in js
     assert "Stereo active 3-way" in js
-    assert "Output setup template is a draft." in js
+    assert "Speaker layout is a draft." in js
     assert "Starter stereo" not in js
     assert "Starter 2-way" not in js
     assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
-    assert "Saved output setup. No sound was played." in js
+    assert "Saved speaker layout. No sound was played." in js
 
 
 def test_active_speaker_environment_payload_uses_configured_evidence_path(

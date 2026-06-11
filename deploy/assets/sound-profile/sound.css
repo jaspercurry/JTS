@@ -403,10 +403,6 @@
     display: flex; align-items: flex-start; justify-content: space-between;
     gap: 12px;
   }
-  .output-setup__state {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 10px; margin-top: 10px;
-  }
   .output-setup__actions {
     display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px;
   }
@@ -479,24 +475,26 @@
   }
   .output-step + .output-step { margin-top: 10px; }
   .output-step__summary {
-    display: grid; grid-template-columns: 4.2rem minmax(0, 1fr) 1rem;
+    display: grid; grid-template-columns: 1.35rem minmax(0, 1fr) 1rem;
     gap: 10px; align-items: start; padding: 12px;
     cursor: pointer; list-style: none;
   }
   .output-step__summary::-webkit-details-marker { display: none; }
   .output-step__marker {
-    align-self: start; padding: 3px 7px; border-radius: 999px;
-    font-size: 10px; font-weight: 800; text-align: center;
-    color: var(--muted-foreground);
-    background: var(--foreground-005);
+    align-self: start; display: inline-flex; align-items: center; justify-content: center;
+    width: 1.15rem; height: 1.15rem; border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 10px; font-weight: 800; line-height: 1;
+    color: transparent;
+    background: var(--surface);
   }
   .output-step--done .output-step__marker {
     color: var(--status-ok);
+    border-color: color-mix(in oklch, var(--status-ok) 45%, var(--border));
     background: color-mix(in oklch, var(--status-ok) 12%, transparent);
   }
   .output-step[open] .output-step__marker {
-    color: var(--status-warn);
-    background: color-mix(in oklch, var(--status-warn) 14%, transparent);
+    border-color: color-mix(in oklch, var(--primary) 45%, var(--border));
   }
   .output-step__text { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .output-step__text strong {
@@ -757,7 +755,6 @@
       grid-template-columns: minmax(0, 1fr);
     }
     .output-setup__head,
-    .output-setup__state,
     .output-card__head,
     .output-group__head {
       align-items: stretch; flex-direction: column;
