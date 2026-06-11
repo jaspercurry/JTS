@@ -5,6 +5,15 @@
 # scan when those areas change. Keep entries coarse; false positives are okay
 # because the PR comment is informational and non-blocking.
 
+[document_classes]
+# Intentionally present top-level docs that are not canonical subsystem
+# scan targets. They still satisfy the no-orphan-doc invariant, but a
+# code change should not route future maintainers to them as current
+# operational truth.
+session_artifacts = [
+  "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md",
+]
+
 [[subsystem]]
 id = "docs-governance"
 title = "Documentation governance and AI-agent context"
@@ -675,9 +684,6 @@ docs = [
   "docs/HANDOFF-tier5-watchdog-liveness.md",
   "docs/HANDOFF-airplay.md",
   "docs/HANDOFF-management-ui.md",
-  # Session artifact: one-time hardware-validation runbook for the
-  # 2026-06-10 fix batch (boot-loop guard, watchdog, MemoryHigh).
-  "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md",
 ]
 requires_docs_when = [
   "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",

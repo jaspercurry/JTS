@@ -31,11 +31,24 @@ def test_doc_map_valid():
 def test_root_and_top_level_docs_are_intentionally_mapped():
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
+    classified_docs = docs_impact.load_classified_docs(ROOT / "docs" / "doc-map.toml")
     mapped_docs = {doc for subsystem in subsystems for doc in subsystem.docs}
     root_docs = {str(path.relative_to(ROOT)) for path in ROOT.glob("*.md")}
     docs_top = {str(path.relative_to(ROOT)) for path in (ROOT / "docs").glob("*.md")}
 
-    assert sorted((root_docs | docs_top) - mapped_docs) == []
+    assert sorted((root_docs | docs_top) - mapped_docs - set(classified_docs)) == []
+
+
+def test_session_artifact_is_classified_without_becoming_canonical_route():
+    docs_impact = load_docs_impact()
+    runbook = "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md"
+
+    subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
+    classified_docs = docs_impact.load_classified_docs(ROOT / "docs" / "doc-map.toml")
+
+    assert runbook in classified_docs
+    assert all(runbook not in subsystem.docs for subsystem in subsystems)
+    assert docs_impact.impact_report(subsystems, (runbook,)) == []
 
 
 def test_voice_file_routes_to_voice_docs():
