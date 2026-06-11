@@ -156,6 +156,7 @@ def emit_sound_config(
     output_trim_db: float = 0.0,
     enable_rate_adjust: bool = True,
     channel_split: ChannelSplit | None = None,
+    playback_pipe_path: str | None = None,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
@@ -181,7 +182,21 @@ def emit_sound_config(
     ``room_peqs_right`` and ``channel_split`` are MUTUALLY EXCLUSIVE —
     they belong to different topology models (leader-bake pre-stream
     correction vs. the member-side channel-selection weave) and
-    combining them raises ``ValueError`` (see the guard below)."""
+    combining them raises ``ValueError`` (see the guard below).
+
+    ``playback_pipe_path`` is the BONDED-LEADER playback axis
+    (docs/HANDOFF-multiroom.md §2, Increment 5): when set, the playback
+    device becomes a CamillaDSP ``File`` sink writing the corrected
+    stereo program to that FIFO (snapserver's pipe source) instead of
+    the ALSA loopback. ``None`` (default — solo) is **byte-identical**
+    to before this parameter existed (the solo-impact contract). Two
+    fail-loud guards: a pipe sink REQUIRES ``enable_rate_adjust=False``
+    (a ``File`` backend has no output clock for rate_adjust to steer —
+    Snapcast's sample-stuffing is the one rate-tracker on the synced
+    chain, §2 invariant 5), and it never combines with
+    ``channel_split`` (the member weave selects a channel for a LOCAL
+    DAC; the pipe carries the SHARED two-channel program — members drop
+    channels downstream, in outputd's ChannelPick)."""
 
     # Loud-output safety: refuse to emit a config whose master fader
     # could boost above full scale. Mirrors the active_speaker emitter.
@@ -204,6 +219,30 @@ def emit_sound_config(
             "channel_split (member channel-selection weave) are mutually "
             "exclusive topology axes — see HANDOFF-multiroom.md §2"
         )
+    # Bonded-leader pipe-sink guards (fail LOUD at the API boundary,
+    # same pattern as above). A File sink has no output clock, so
+    # rate_adjust has nothing to steer — and the synced chain's one
+    # rate-tracker must be snapclient's sample-stuffing (§2 invariant
+    # 5); silently emitting `enable_rate_adjust: true` on a pipe config
+    # would hide a wiring bug in the caller. And the pipe carries the
+    # SHARED stereo program — a member's channel_split weave on it
+    # would strip the other speaker's channel out of the stream.
+    if playback_pipe_path is not None:
+        if enable_rate_adjust:
+            raise ValueError(
+                "playback_pipe_path (bonded-leader pipe sink) requires "
+                "enable_rate_adjust=False — snapclient is the sole "
+                "rate-tracker on the synced chain; see "
+                "HANDOFF-multiroom.md §2 invariant 5"
+            )
+        if channel_split is not None:
+            raise ValueError(
+                "playback_pipe_path (the shared-stream pipe sink) and "
+                "channel_split (member channel-selection weave) are "
+                "mutually exclusive — members drop channels downstream "
+                "of the stream, never inside it; see "
+                "HANDOFF-multiroom.md §2"
+            )
     filter_yaml, chain_names, chain_names_right, trim_db = _emit_filter_definitions(
         profile,
         room_peqs or [],
@@ -217,6 +256,21 @@ def emit_sound_config(
     # rate-tracker); default True keeps the solo path unchanged.
     rate_adjust_literal = "true" if enable_rate_adjust else "false"
     header_id = f" (id={profile_id})" if profile_id else ""
+    # Playback sink: ALSA loopback (solo — the default, byte-identical)
+    # or the bonded-leader File/pipe sink feeding snapserver. Identical
+    # indentation so the surrounding template is sink-agnostic.
+    if playback_pipe_path is not None:
+        playback_yaml = f"""  playback:
+    type: File
+    channels: 2
+    filename: "{playback_pipe_path}"
+    format: {playback_format}"""
+    else:
+        playback_yaml = f"""  playback:
+    type: Alsa
+    channels: 2
+    device: "{playback_device}"
+    format: {playback_format}"""
     yaml = f"""---
 # Auto-generated JTS DSP config{header_id}.
 # Source: jasper.sound.camilla_yaml.emit_sound_config
@@ -241,11 +295,7 @@ devices:
     channels: 2
     device: "{capture_device}"
     format: {capture_format}
-  playback:
-    type: Alsa
-    channels: 2
-    device: "{playback_device}"
-    format: {playback_format}
+{playback_yaml}
 
 filters:
 {filter_yaml}
