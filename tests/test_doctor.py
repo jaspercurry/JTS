@@ -3969,3 +3969,67 @@ def test_check_dtln_prefers_stats_snapshot_over_journal(
 
     assert r.status == "fail"
     assert "no onnxruntime" in r.detail
+
+
+# ---------------------------------------------------------------------------
+# check_fanin_tts_drops — dropped TTS audio at the pending budget means the
+# user heard garbled/"fast-forward" replies (the 2026-06-11 JTS3 incident).
+# ---------------------------------------------------------------------------
+
+
+def _fanin_payload_with_tts(tts: dict) -> bytes:
+    payload = json.loads(_fanin_status_payload().decode())
+    payload["tts"] = tts
+    return json.dumps(payload).encode()
+
+
+def test_check_fanin_tts_drops_ok_when_counters_zero(monkeypatch):
+    _patch_fanin_status_socket(monkeypatch, _fanin_payload_with_tts({
+        "enabled": True,
+        "pending_frames": 0,
+        "budget_frames": 96000,
+        "dropped_commands": 0,
+        "dropped_audio_frames": 0,
+    }))
+    r = doctor.check_fanin_tts_drops()
+    assert r.status == "ok"
+    assert "none since fan-in start" in r.detail
+
+
+def test_check_fanin_tts_drops_warns_with_seconds_and_hint(monkeypatch):
+    # 82 dropped commands / 523200 frames ≈ 10.9 s at 48 kHz — the real
+    # incident's order of magnitude.
+    _patch_fanin_status_socket(monkeypatch, _fanin_payload_with_tts({
+        "enabled": True,
+        "pending_frames": 89216,
+        "budget_frames": 96000,
+        "dropped_commands": 82,
+        "dropped_audio_frames": 523200,
+    }))
+    r = doctor.check_fanin_tts_drops()
+    assert r.status == "warn"
+    assert "82 audio command(s)" in r.detail
+    assert "~10.9s" in r.detail
+    assert "tts_command_dropped" in r.detail  # journalctl breadcrumb
+
+
+def test_check_fanin_tts_drops_ok_when_lane_disabled(monkeypatch):
+    _patch_fanin_status_socket(
+        monkeypatch, _fanin_payload_with_tts({"enabled": False}),
+    )
+    r = doctor.check_fanin_tts_drops()
+    assert r.status == "ok"
+    assert "disabled" in r.detail
+
+
+def test_check_fanin_tts_drops_ok_when_status_unreachable(monkeypatch):
+    # Reachability is the 'jasper-fanin service' check's job; this check
+    # must not double-report a down daemon.
+    monkeypatch.setattr(
+        doctor.socket,
+        "socket",
+        lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
+    )
+    r = doctor.check_fanin_tts_drops()
+    assert r.status == "ok"
+    assert "jasper-fanin service" in r.detail

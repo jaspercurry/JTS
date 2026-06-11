@@ -527,4 +527,4 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-09 (output topology clock-domain report, DAC profile registry consumer, and dual Apple graph-gated runtime activation rechecked)
+Last verified: 2026-06-11 (assistant loudness matching flow — TTS write pacing, passive profile finalization at segment end/turn teardown — re-traced against jasper/audio_io.py, jasper/voice_daemon.py, and rust/jasper-fanin on JTS3 hardware; prior 2026-06-09 pass covered output topology clock-domain report, DAC profile registry consumer, and dual Apple graph-gated runtime activation)

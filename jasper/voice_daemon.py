@@ -3494,9 +3494,18 @@ class WakeLoop:
                 f", drain wait {drain_wait_sec:.2f}s"
                 if drain_wait_sec is not None else ""
             )
+            # Writer-side pacing visibility: nonzero means TTS writes
+            # slept to stay under the IPC owner's pending budget (the
+            # burst-delivery shape). Without this the only journal
+            # evidence of pacing misbehaviour would be its absence —
+            # fanin logs drops, but over-pacing has no receiver-side
+            # signature.
+            paced_sec = self._tts.take_paced_sec()
+            paced_part = f", paced {paced_sec:.2f}s" if paced_sec > 0.05 else ""
             logger.info(
-                "turn ended: %s tokens, est $%.4f (sent=%dB, recv=%d chunks%s%s)",
+                "turn ended: %s tokens, est $%.4f (sent=%dB, recv=%d chunks%s%s%s)",
                 tokens, cost, bytes_sent, chunks_received, drain_part,
+                paced_part,
                 ", turn_lost" if self._turn.turn_lost() else "",
             )
 

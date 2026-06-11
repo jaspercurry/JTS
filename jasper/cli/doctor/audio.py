@@ -971,6 +971,79 @@ def check_fanin_service() -> CheckResult:
         f"{tts_detail}",
     )
 
+@doctor_check(order=51.5, group="audio")
+def check_fanin_tts_drops() -> CheckResult:
+    """Dropped TTS audio at fan-in's pending budget means garbled replies.
+
+    fan-in's TTS lane drops whole audio commands that arrive while its
+    bounded pending queue is full (it cannot block the socket reader
+    without stalling barge-in FLUSH behind queued audio). The Python
+    writer paces itself to stay under that budget
+    (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/audio_io.py), so a nonzero drop
+    counter means assistant/cue audio audibly skipped ("fast-forward"
+    garble) since fan-in last started — either the writer-side pacing
+    contract regressed or an unpaced client wrote to the TTS socket.
+    The 2026-06-11 JTS3 incident surfaced exactly this signature.
+
+    Returns:
+      - ok when counters are zero, the TTS lane is disabled, or STATUS
+        is unreachable (reachability is owned by 'jasper-fanin service').
+      - warn when dropped audio commands/frames > 0 since fan-in start.
+    """
+    name = "fan-in TTS drops"
+    socket_path = "/run/jasper-fanin/control.sock"
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(2.0)
+            sock.connect(socket_path)
+            sock.sendall(b"STATUS\n")
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            sock.close()
+        data = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError) as e:
+        return CheckResult(
+            name,
+            "ok",
+            f"not probed ({type(e).__name__}); fan-in reachability is "
+            "covered by the 'jasper-fanin service' check",
+        )
+
+    tts = data.get("tts")
+    if not isinstance(tts, dict) or not tts.get("enabled"):
+        return CheckResult(name, "ok", "TTS lane disabled in this topology")
+
+    dropped_frames = int(tts.get("dropped_audio_frames") or 0)
+    dropped_commands = int(tts.get("dropped_commands") or 0)
+    if dropped_frames == 0 and dropped_commands == 0:
+        return CheckResult(
+            name,
+            "ok",
+            f"none since fan-in start (pending_frames="
+            f"{tts.get('pending_frames')}, budget_frames="
+            f"{tts.get('budget_frames')})",
+        )
+
+    sample_rate = int(data.get("output", {}).get("sample_rate") or 48_000)
+    dropped_sec = dropped_frames / float(sample_rate)
+    return CheckResult(
+        name,
+        "warn",
+        f"{dropped_commands} audio command(s) / ~{dropped_sec:.1f}s of "
+        "TTS audio dropped at the pending budget since fan-in start — "
+        "assistant replies were audibly garbled/fast-forwarded. Check "
+        "`journalctl -u jasper-fanin | grep tts_command_dropped` and the "
+        "voice daemon's `paced` turn accounting; an unpaced writer or a "
+        "pacing regression is the usual cause.",
+    )
+
+
 @doctor_check(order=52, group="audio")
 def check_outputd_service() -> CheckResult:
     """Validate the outputd final-output-owner daemon.

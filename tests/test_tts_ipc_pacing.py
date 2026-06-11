@@ -74,15 +74,20 @@ def _make_playout(monkeypatch) -> tuple[OutputdTtsPlayout, _CaptureStream]:
 
 async def test_write_under_watermark_does_not_sleep(monkeypatch):
     p, stream = _make_playout(monkeypatch)
+    sleeps: list[float] = []
+
+    async def spy_sleep(sec: float) -> None:
+        sleeps.append(sec)
+
+    monkeypatch.setattr(audio_io_mod, "_pace_sleep", spy_sleep)
     # 0.1 s of audio with an empty ring — far below the watermark.
     mono = np.zeros(4800, dtype=np.int16)
 
-    start = time.monotonic()
     await p.write_segment(mono.tobytes(), segment_kind="assistant")
-    elapsed = time.monotonic() - start
 
     assert stream.writes  # audio reached the socket
-    assert elapsed < 0.5  # no pacing sleep on the fast path
+    assert sleeps == []  # no pacing sleep on the fast path
+    assert p.take_paced_sec() == 0.0
 
 
 async def test_write_beyond_watermark_paces_off_the_excess(monkeypatch):
@@ -123,6 +128,33 @@ async def test_burst_write_is_paced_to_realtime(monkeypatch):
     # pacing sleeps total 0.7 − 0.2 − 2×0.1 ≈ 0.4 s. Unpaced, this loop
     # completes in ~0.01 s — the bound proves pacing engaged.
     assert elapsed >= 0.35
+
+
+async def test_paced_time_is_accounted_and_taken(monkeypatch):
+    """Pacing sleeps accumulate into take_paced_sec() — the turn-ended
+    log's `paced` field — and the counter resets on read, so over-pacing
+    is visible in the journal rather than only inferable from latency."""
+    p, stream = _make_playout(monkeypatch)
+    sleeps: list[float] = []
+
+    async def spy_sleep(sec: float) -> None:
+        sleeps.append(sec)
+
+    monkeypatch.setattr(audio_io_mod, "_pace_sleep", spy_sleep)
+    # Ring already 0.30 s past the watermark: the single-IPC-chunk write
+    # below must sleep that excess and account for it.
+    p._ring_end_monotonic = (
+        time.monotonic() + audio_io_mod._OUTPUTD_PACE_AHEAD_SEC + 0.30
+    )
+    mono = np.zeros(4800, dtype=np.int16)  # 0.1 s — one IPC chunk
+
+    await p.write_segment(mono.tobytes(), segment_kind="assistant")
+
+    assert len(sleeps) == 1
+    taken = p.take_paced_sec()
+    assert abs(taken - sleeps[0]) < 1e-9
+    assert 0.25 <= taken <= 0.35  # ~the 0.30 s excess, minus clock grain
+    assert p.take_paced_sec() == 0.0  # read resets
 
 
 def test_pace_watermark_stays_under_fanin_budget():
