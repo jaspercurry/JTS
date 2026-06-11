@@ -1326,6 +1326,65 @@ def test_sound_output_topology_payload_is_no_audio_draft(
     assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"
 
 
+def test_output_topology_payload_serializes_with_populated_hardware_state(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """A populated output-hardware state file must not 502 the route.
+
+    Regression: ``load_state`` returns a frozen ``OutputHardwareState`` when a
+    state file exists (every real Pi), and ``_send_json`` emits the payload
+    with plain ``json.dumps`` — which can't encode the dataclass. Embedding it
+    raw produced "Object of type OutputHardwareState is not JSON serializable"
+    -> HTTP 502 on ``/sound/output-topology``. The prior payload test only
+    exercised the no-file (``None``) path, so the defect shipped untested.
+    """
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "output_hardware.json"),
+    )
+    card = OutputCardFact(
+        card_id="A",
+        pcm="hw:A,0",
+        device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        label="Apple USB-C dongle",
+        has_playback=True,
+    )
+    write_output_hardware_state(classify_output_cards([card]))
+
+    envelope = sound_setup._output_topology_payload()
+
+    # The exact serialization _send_json performs — this raised the 502.
+    json.dumps(envelope)
+    hardware = envelope["output_hardware"]
+    assert isinstance(hardware, dict)
+    assert hardware["status"] == "ready"
+
+
+def test_output_hardware_state_only_loaded_inside_conversion_boundary():
+    """Payload builders must go through ``_output_hardware_dict``.
+
+    Pins the fix shape: ``load_output_hardware_state`` returns a frozen
+    dataclass that plain ``json.dumps`` can't encode, so the only call site
+    in this module is the helper that converts it. A new payload embedding
+    the loader directly re-ships the 502.
+    """
+    source = Path(sound_setup.__file__).read_text(encoding="utf-8")
+    lines = [
+        line.strip()
+        for line in source.splitlines()
+        if "load_output_hardware_state(" in line
+    ]
+    assert lines == ["hardware = load_output_hardware_state()"], (
+        "load_output_hardware_state() called outside _output_hardware_dict(); "
+        f"route new payloads through the helper: {lines}"
+    )
+
+
 def test_active_speaker_design_draft_route_persists_saved_topology_research(
     monkeypatch,
     tmp_path: Path,

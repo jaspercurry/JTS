@@ -175,11 +175,29 @@ def _state_payload(
     return payload
 
 
+def _output_hardware_dict() -> dict[str, Any] | None:
+    """Serializable form of the live output-hardware state.
+
+    ``load_state`` returns a frozen ``OutputHardwareState`` — or ``None`` when
+    no state file exists yet. These payloads are emitted with plain
+    ``json.dumps`` (``_send_json``), which can't encode the dataclass, so
+    embedding it raw 502s ``/sound/output-topology`` on any Pi that has a
+    populated state file. ``to_dict`` is the single conversion boundary.
+
+    The page JS reads the topology's own ``hardware`` block, not this
+    envelope key — this is the observed-hardware evidence surface (added
+    with the state in #498), consumed via curl today and mirrored by
+    ``/state`` as ``audio.output_hardware``.
+    """
+    hardware = load_output_hardware_state()
+    return hardware.to_dict() if hardware is not None else None
+
+
 def _output_topology_payload() -> dict[str, Any]:
     topology = load_output_topology()
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
-        "output_hardware": load_output_hardware_state(),
+        "output_hardware": _output_hardware_dict(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
     }
@@ -203,7 +221,7 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
-        "output_hardware": load_output_hardware_state(),
+        "output_hardware": _output_hardware_dict(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
     }
@@ -256,7 +274,7 @@ def _active_speaker_channel_identity_save_payload(
     )
     return {
         "output_topology": updated.to_dict(include_evaluation=True),
-        "output_hardware": load_output_hardware_state(),
+        "output_hardware": _output_hardware_dict(),
         "channel_identity": report,
         "clock_domain": clock_domain_report(updated),
     }
@@ -304,7 +322,7 @@ def _active_speaker_channel_protection_save_payload(
     )
     return {
         "output_topology": updated.to_dict(include_evaluation=True),
-        "output_hardware": load_output_hardware_state(),
+        "output_hardware": _output_hardware_dict(),
         "channel_identity": report,
         "clock_domain": clock_domain_report(updated),
     }
