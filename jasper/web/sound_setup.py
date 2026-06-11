@@ -12,6 +12,7 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/bringup-preflight guided/manual bring-up readiness
   GET  /active-speaker/startup-load guarded startup-load/rollback state
   GET  /active-speaker/design-draft saved speaker design/research evidence
+  GET  /active-speaker/crossover-preview saved no-audio crossover preview
   GET  /active-speaker/tone-targets    preset-derived channel-test targets
   POST /preview  preview a draft profile's response without touching live audio
   POST /live-draft apply a draft to live audio without persisting
@@ -25,6 +26,7 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/load-startup-config load protected startup config, no sound
   POST /active-speaker/rollback-startup-config restore pre-load config, no sound
   POST /active-speaker/design-draft persist speaker design/research evidence
+  POST /active-speaker/crossover-preview persist no-audio crossover preview
   POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
   POST /active-speaker/play-tone run a bounded artifact/audio-gated tone test
   POST /active-speaker/floor-audio-result record operator result for floor tone
@@ -1277,6 +1279,42 @@ def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, 
     return payload
 
 
+def _active_speaker_crossover_preview_payload() -> dict[str, Any]:
+    """Return the saved no-audio crossover preview, if any."""
+
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    payload = load_crossover_preview(current_design_draft=load_design_draft())
+    logger.info(
+        "event=sound.active_speaker_crossover_preview status=%s "
+        "active_crossover_count=%s blocker_count=%s",
+        payload.get("status"),
+        (payload.get("summary") or {}).get("active_crossover_count"),
+        (payload.get("summary") or {}).get("blocker_count"),
+    )
+    return payload
+
+
+def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
+    """Persist a no-audio crossover preview from the saved design draft."""
+
+    from jasper.active_speaker.crossover_preview import save_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    draft = load_design_draft()
+    payload = save_crossover_preview(draft)
+    logger.info(
+        "event=sound.active_speaker_crossover_preview_save status=%s "
+        "topology_id=%s active_crossover_count=%s blocker_count=%s",
+        payload.get("status"),
+        (payload.get("source") or {}).get("topology_id"),
+        (payload.get("summary") or {}).get("active_crossover_count"),
+        (payload.get("summary") or {}).get("blocker_count"),
+    )
+    return payload
+
+
 async def _active_speaker_check_path_safety_payload(
     *,
     camilla_factory: Callable[[], Any],
@@ -1672,6 +1710,15 @@ def _make_handler(
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
+            if path == "/active-speaker/crossover-preview":
+                try:
+                    self._send_json(_active_speaker_crossover_preview_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_crossover_preview result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
             if path == "/active-speaker/environment":
                 try:
                     self._send_json(_active_speaker_environment_payload())
@@ -1765,6 +1812,7 @@ def _make_handler(
                 "/preview",
                 "/settings",
                 "/active-speaker/design-draft",
+                "/active-speaker/crossover-preview",
                 "/active-speaker/arm",
                 "/active-speaker/stop",
                 "/active-speaker/calibration-level",
@@ -1837,6 +1885,17 @@ def _make_handler(
                     except OSError as e:
                         logger.exception(
                             "event=sound.active_speaker_design_draft_save "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/crossover-preview":
+                    try:
+                        self._send_json(_active_speaker_crossover_preview_save_payload())
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_crossover_preview_save "
                             "result=error error=%s",
                             type(e).__name__,
                         )

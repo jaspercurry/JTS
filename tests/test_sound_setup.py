@@ -195,9 +195,12 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/play-tone'" in js
     assert "fetch('./active-speaker/floor-audio-result'" in js
     assert "fetch('./active-speaker/design-draft'" in js
+    assert "fetch('./active-speaker/crossover-preview'" in js
     assert "data-act=\"refresh-active-speaker\"" in js
     assert "data-act=\"save-driver-design\"" in js
+    assert "data-act=\"prepare-crossover-preview\"" in js
     assert "Save design draft" in js
+    assert "Prepare crossover preview" in js
     assert "savedStatus === 'ready_for_review' && !driverResearch.dirty" in js
     assert "data-act=\"arm-active-speaker\"" in js
     assert "data-act=\"stop-active-speaker\"" in js
@@ -1247,8 +1250,13 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
 ):
     topology_path = tmp_path / "output_topology.json"
     draft_path = tmp_path / "design_draft.json"
+    preview_path = tmp_path / "crossover_preview.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(preview_path),
+    )
     sound_setup._save_output_topology_payload({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -1331,6 +1339,31 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
     assert json.loads(draft_path.read_text(encoding="utf-8"))["status"] == (
         "ready_for_review"
     )
+
+    preview = sound_setup._active_speaker_crossover_preview_save_payload()
+    loaded_preview = sound_setup._active_speaker_crossover_preview_payload()
+
+    assert preview["kind"] == "jts_active_speaker_crossover_preview"
+    assert preview["status"] == "ready_for_protected_staging"
+    assert preview["safety"]["no_audio"] is True
+    assert preview["permissions"]["may_not_emit_camilla_yaml"] is True
+    assert loaded_preview["status"] == "ready_for_protected_staging"
+    assert json.loads(preview_path.read_text(encoding="utf-8"))["status"] == (
+        "ready_for_protected_staging"
+    )
+
+    stale_draft = json.loads(draft_path.read_text(encoding="utf-8"))
+    stale_draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = 3200
+    stale_draft["updated_at"] = "2026-06-10T12:45:00Z"
+    draft_path.write_text(json.dumps(stale_draft), encoding="utf-8")
+
+    stale_preview = sound_setup._active_speaker_crossover_preview_payload()
+
+    assert stale_preview["status"] == "stale"
+    assert stale_preview["permissions"]["may_prepare_protected_startup_config"] is False
+    assert "crossover_preview_stale_design_draft" in {
+        issue["code"] for issue in stale_preview["issues"]
+    }
 
 
 def _dual_apple_hardware() -> dict:
@@ -1820,6 +1853,103 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         )
         post_payload = json.loads(post_resp.read().decode("utf-8"))
         assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "design_draft.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "crossover_preview.json"),
+    )
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        topology = {
+            "artifact_schema_version": 1,
+            "kind": OUTPUT_TOPOLOGY_KIND,
+            "topology_id": "bench_mono",
+            "name": "Bench mono",
+            "status": "draft",
+            "hardware": {
+                "device_id": "hifiberry_dac8x",
+                "device_label": "HiFiBerry DAC8x",
+                "physical_output_count": 8,
+            },
+            "speaker_groups": [
+                {
+                    "id": "mono",
+                    "label": "Mono cabinet",
+                    "kind": "mono",
+                    "mode": "active_2_way",
+                    "channels": [
+                        {
+                            "role": "woofer",
+                            "physical_output_index": 0,
+                            "identity_verified": True,
+                        },
+                        {
+                            "role": "tweeter",
+                            "physical_output_index": 1,
+                            "identity_verified": True,
+                            "startup_muted": True,
+                            "protection_required": True,
+                            "protection_status": "software_guard_requested",
+                        },
+                    ],
+                }
+            ],
+            "routing": {"mono_group_id": "mono"},
+        }
+        research = {
+            "artifact_schema_version": 1,
+            "kind": "jts_active_crossover_driver_research",
+            "drivers": [
+                {"role": "woofer", "model": "Epique E150HE-44"},
+                {
+                    "role": "tweeter",
+                    "model": "F110M-8",
+                    "recommended_highpass_hz": 2500,
+                    "do_not_test_below_hz": 1200,
+                },
+            ],
+            "crossover_candidates": [
+                {
+                    "between_roles": ["woofer", "tweeter"],
+                    "frequency_hz": 2500,
+                    "filter_type": "Linkwitz-Riley",
+                    "slope_db_per_octave": 24,
+                    "confidence": "medium",
+                }
+            ],
+        }
+        json_post_with_csrf(base, "/output-topology", topology)
+        json_post_with_csrf(
+            base,
+            "/active-speaker/design-draft",
+            {"operator_inputs": {}, "driver_research": research},
+        )
+
+        resp = json_post_with_csrf(base, "/active-speaker/crossover-preview", {})
+        payload = json.loads(resp.read().decode("utf-8"))
+
+        assert payload["status"] == "ready_for_protected_staging"
+        assert payload["safety"]["no_audio"] is True
+        assert payload["permissions"]["may_not_emit_camilla_yaml"] is True
     finally:
         server.shutdown()
         server.server_close()
