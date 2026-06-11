@@ -69,11 +69,28 @@ def check_grouping() -> CheckResult:
     )
     # Leader producer feed (Increment 5): the ACTIVE CamillaDSP config is
     # scanned for the pipe sink — daemon-adjacent truth (camilla's own
-    # statefile names the config), never an env-intent mirror.
+    # statefile names the config), never an env-intent mirror. The
+    # stream-client probe adds the 2026-06-11 silent-bond classes (stale
+    # group→stream binding / muted client / leader's own client absent);
+    # RPC failure maps to an explicit unreachable verdict, same as
+    # /state — the doctor and the dashboard must tell one story.
     from ...multiroom.leader_config import active_leader_pipe_path
+    from ...multiroom.reconcile import SNAP_STREAM_ID
+    from ...multiroom.snapcast_rpc import read_stream_clients
+    from ...multiroom.state import _self_client_name
+
+    stream_clients = None
+    if cfg.role == "leader":
+        stream_clients = read_stream_clients()
+        if stream_clients is None:
+            stream_clients = "unreachable"
 
     runtime = derive_grouping_runtime(
-        cfg, states, leader_tap_path=active_leader_pipe_path(),
+        cfg, states,
+        leader_tap_path=active_leader_pipe_path(),
+        stream_clients=stream_clients,
+        self_name=_self_client_name(),
+        want_stream=SNAP_STREAM_ID,
     )
 
     base = (

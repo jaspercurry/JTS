@@ -41,6 +41,7 @@ from typing import Any, Callable
 
 from .config import GROUPING_ENV_FILE, GroupingConfig, load_config
 from .reconcile import (
+    SNAP_STREAM_ID,
     desired_snapfifo_path,
     plan,
 )
@@ -87,6 +88,9 @@ def derive_grouping_runtime(
     unit_states: dict[str, str],
     *,
     leader_tap_path: str = "",
+    stream_clients: Any = None,
+    self_name: str = "",
+    want_stream: str = "",
 ) -> dict[str, Any]:
     """Combine the declared config with actual unit states into a runtime
     health verdict. PURE and total — no I/O, no clock.
@@ -106,6 +110,20 @@ def derive_grouping_runtime(
     whose active config does not write the pipe honestly derives
     ``degraded``. Only consulted for a valid leader; a follower / solo /
     invalid config has no producer concept and the argument is ignored.
+
+    ``stream_clients`` (LEADER only — the 2026-06-11 silent-bond lesson:
+    every unit green, the pipe wired, and yet the bond mute because
+    snapcast's PERSISTED group→stream binding pointed at a stale stream
+    and the leader's client played zeros): the snapserver client-binding
+    rows from :func:`jasper.multiroom.snapcast_rpc.read_stream_clients`.
+    ``None`` = not probed (solo / follower / tests of other facets — no
+    verdict change); the literal string ``"unreachable"`` = snapserver
+    RPC down → degraded; a list → three silence classes are checked:
+    a CONNECTED client bound to a stream other than ``want_stream``, a
+    CONNECTED client muted or at volume 0 (snapclient's software mixer
+    scales samples — zeros flow, everything stays green), and
+    ``self_name``'s own client absent/disconnected (the leader must hear
+    itself). INJECTED, never read here — stays pure.
 
     ``health``:
       - ``off``      — grouping disabled (solo).
@@ -170,6 +188,56 @@ def derive_grouping_runtime(
             "units": units,
         }
 
+    # Stream-binding + client-audibility truth (leader only; see the
+    # stream_clients docstring). Unit states + the pipe config cannot
+    # see these — the 2026-06-11 silent-bond class.
+    if cfg.role == "leader" and stream_clients is not None:
+        if stream_clients == "unreachable":
+            return {
+                "health": "degraded",
+                "detail": (
+                    "snapserver RPC unreachable — client stream bindings "
+                    "cannot be verified (run jasper-grouping-reconcile, "
+                    "check jasper-snapserver)"
+                ),
+                "units": units,
+            }
+        for row in stream_clients:
+            if row.get("connected") and want_stream and row.get("stream_id") != want_stream:
+                return {
+                    "health": "degraded",
+                    "detail": (
+                        f"client {row.get('name') or '?'} is bound to stream "
+                        f"{row.get('stream_id') or '(none)'} (want {want_stream}) "
+                        "— it hears silence; run jasper-grouping-reconcile"
+                    ),
+                    "units": units,
+                }
+            if row.get("connected") and (
+                row.get("muted") or row.get("volume_percent", 100) == 0
+            ):
+                return {
+                    "health": "degraded",
+                    "detail": (
+                        f"client {row.get('name') or '?'} is muted or at "
+                        "volume 0 in snapcast — its software mixer plays "
+                        "zeros; unmute via the snapcast registry"
+                    ),
+                    "units": units,
+                }
+        if self_name and not any(
+            row.get("name") == self_name and row.get("connected")
+            for row in stream_clients
+        ):
+            return {
+                "health": "degraded",
+                "detail": (
+                    f"leader's own snapclient ({self_name}) is not connected "
+                    "to snapserver — the leader cannot hear its own bond"
+                ),
+                "units": units,
+            }
+
     detail = (
         f"leader streaming (bond {cfg.bond_id})"
         if cfg.role == "leader"
@@ -178,11 +246,24 @@ def derive_grouping_runtime(
     return {"health": "ok", "detail": detail, "units": units}
 
 
+def _self_client_name() -> str:
+    """This speaker's snapcast client name (snapclient reports the bare
+    hostname). Total: any failure resolves to "" (the own-client check
+    is then skipped rather than wrong)."""
+    try:
+        import socket
+
+        return socket.gethostname().strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def read_grouping_state(
     path: str = GROUPING_ENV_FILE,
     *,
     unit_state_reader: Callable[[list[str]], dict[str, str]] | None = None,
     tap_path_reader: Callable[[], str] | None = None,
+    stream_clients_reader: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Read the grouping config fresh from the SSOT file and return a
     JSON-able snapshot dict for ``/state`` and the dashboard.
@@ -233,6 +314,7 @@ def read_grouping_state(
     if cfg.enabled:
         states: dict[str, str] = {}
         tap = ""
+        stream_clients: Any = None
         if cfg.error is None:
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])
@@ -244,8 +326,22 @@ def read_grouping_state(
                     from .leader_config import active_leader_pipe_path
                     tap_path_reader = active_leader_pipe_path
                 tap = tap_path_reader()
+                # Client-binding truth (the 2026-06-11 silent-bond
+                # lesson): probe snapserver's registry fresh; RPC
+                # failure maps to the explicit "unreachable" verdict
+                # (never silently skipped — an unverifiable bond is a
+                # degraded bond).
+                if stream_clients_reader is None:
+                    from .snapcast_rpc import read_stream_clients
+                    stream_clients_reader = read_stream_clients
+                stream_clients = stream_clients_reader()
+                if stream_clients is None:
+                    stream_clients = "unreachable"
         snapshot["runtime"] = derive_grouping_runtime(
-            cfg, states, leader_tap_path=tap
+            cfg, states, leader_tap_path=tap,
+            stream_clients=stream_clients,
+            self_name=_self_client_name(),
+            want_stream=SNAP_STREAM_ID,
         )
     return snapshot
 

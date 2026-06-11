@@ -1620,7 +1620,23 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (INCIDENT: the jts3 boot loop + the
+Last verified: 2026-06-11 (SNAPCAST BINDING PIN + CLIENT-TRUTH HEALTH — the
+durable fixes for the silent-bond class found at bring-up. snapcast PERSISTS
+group→stream assignments (server.json); both speakers' groups predated our
+stream (bound to the distro era's "default") and played ZEROS behind fully
+green health. NEW jasper/multiroom/snapcast_rpc.py (stdlib JSON-RPC against
+the local snapserver, injectable transport): the reconciler now runs
+ensure_groups_on_stream(SNAP_STREAM_ID) on every leader reconcile — every
+persisted group (disconnected clients' groups too) is re-bound to OUR stream,
+with bounded retries for the just-started server; unreachable/failed flips
+the oneshot rc. SNAP_STREAM_ID is now ONE constant (argv builder + pin +
+health). Runtime health (/state + doctor, the same derive) gained the
+stream-client truth for leaders: a CONNECTED client bound elsewhere, a
+CONNECTED client muted/volume-0 (snapclient's software mixer plays zeros),
+or the leader's OWN client absent ⇒ degraded with the specific client named;
+snapserver RPC unreachable ⇒ an explicit degraded verdict, never a silent
+skip. Disconnected stale bindings deliberately do NOT degrade (the pin's
+job, not health's). Earlier same day (INCIDENT: the jts3 boot loop + the
 writer/validator coherence fix. At ~15:51 EDT jts3 boot-looped 3× in under a
 minute: the grouping reconciler armed the round-trip lane
 (grouping-outputd.env: FIFO+channel) while the lab's content-bridge soak
