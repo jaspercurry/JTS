@@ -1721,6 +1721,22 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
 
+    # If the snapcast apt packages ARE present (the grouping opt-in
+    # installed them), neutralise their DISTRO units: Trixie's snapserver
+    # package ships an enabled-by-default snapserver.service that squats
+    # :1704, advertises _snapcast._tcp on the LAN, and burns RAM on every
+    # boot — a rogue second server JTS never manages (observed live on a
+    # lab Pi 2026-06-11: a bare `snapclient` auto-discovered the rogue
+    # instead of the JTS leader). JTS owns jasper-snapserver /
+    # jasper-snapclient; the distro units must never run. Idempotent and
+    # safe when the packages are absent (no unit files → no-op).
+    for distro_unit in snapserver.service snapclient.service; do
+        if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
+                | grep -q "^${distro_unit}"; then
+            systemctl disable --now "${distro_unit}" >/dev/null 2>&1 || true
+        fi
+    done
+
     # Triggered by the udev rule installed below when the Apple dongle
     # re-enumerates: reset-failed, restart Camilla, then run the
     # mic/AEC reconciler so a hardware reconnect recovers without

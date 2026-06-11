@@ -243,11 +243,16 @@ def test_check_grouping_invalid_config_warns(monkeypatch):
     assert "BOND_ID" in r.detail
 
 
-def test_check_grouping_leader_reads_degraded_until_producer_built(monkeypatch):
-    # TODAY's honest state: even with both snap units active, no music
-    # producer feeds the snapfifo (the outputd-as-producer machinery was
-    # removed; the canonical producer is Increments 3–5), so a bonded
-    # leader reads degraded with the specific operator explanation.
+def test_check_grouping_leader_reads_degraded_when_config_not_piped(monkeypatch, tmp_path):
+    # Increment 5 honest state: even with both snap units active, if the
+    # leader's ACTIVE CamillaDSP config does not write the snapserver
+    # pipe (the bond apply did not land), the bond is silent — degraded,
+    # with the specific operator explanation. Pin the statefile to a
+    # missing path so a dev machine with real CamillaDSP state can't
+    # flip the result.
+    monkeypatch.setenv(
+        "JASPER_CAMILLA_STATEFILE", str(tmp_path / "no-statefile.yml"),
+    )
     cfg = _grouping_cfg(
         enabled=True, role="leader", channel="left", bond_id="living-room",
     )
@@ -255,8 +260,8 @@ def test_check_grouping_leader_reads_degraded_until_producer_built(monkeypatch):
     _patch_grouping(monkeypatch, cfg, "active\nactive\n")
     r = doctor.check_grouping()
     assert r.status == "warn"
-    assert "not built" in r.detail
-    assert "no music producer" in r.detail
+    assert "does not write the snapserver pipe" in r.detail
+    assert "jasper-grouping-reconcile" in r.detail
 
 
 def test_check_grouping_follower_unreachable_leader_warns(monkeypatch):

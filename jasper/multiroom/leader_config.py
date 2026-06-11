@@ -256,6 +256,71 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
     return candidate
 
 
+# ---------- producer liveness (for runtime health + the doctor) ----------
+
+def playback_is_pipe(text: str, fifo: str) -> bool:
+    """True when a CamillaDSP config's ``devices.playback`` block is a
+    File sink writing ``fifo`` — the bonded-leader pipe. Scans the exact
+    shape our emitters generate (a 2-space ``playback:`` line, 4-space
+    fields)."""
+    in_playback = False
+    saw_file = False
+    saw_fifo = False
+    for line in text.splitlines():
+        if line.rstrip() == "  playback:":
+            in_playback = True
+            continue
+        if in_playback:
+            if line.startswith("    "):
+                field = line.strip()
+                if field == "type: File":
+                    saw_file = True
+                elif field.startswith("filename:") and fifo in field:
+                    saw_fifo = True
+            else:
+                in_playback = False
+    return saw_file and saw_fifo
+
+
+def active_leader_pipe_path() -> str:
+    """``SNAPFIFO`` when the ACTIVE CamillaDSP config writes the
+    snapserver pipe, else ``""``. The producer-liveness signal for
+    runtime health (/state + jasper-doctor): daemon-adjacent truth —
+    CamillaDSP's own statefile names the loaded config, and the config
+    text says whether it writes the pipe — never a mirror of env
+    intent (the retired ``SNAPFIFO_PRODUCER_WIRED`` lesson). Total:
+    any read failure resolves to ``""`` (degraded — fail visible)."""
+    import re
+
+    # Statefile location mirrors jasper.cli.doctor.correction's
+    # _active_camilla_config_path (kept in sync by the shared env knob;
+    # not imported — the doctor package is the wrong layer to pull into
+    # the /state hot path).
+    statefile = Path(
+        os.environ.get(
+            "JASPER_CAMILLA_STATEFILE",
+            "/var/lib/camilladsp/outputd-statefile.yml",
+        )
+    )
+    try:
+        text = statefile.read_text()
+    except OSError:
+        return ""
+    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+    if not match:
+        return ""
+    config_path = match.group(1).strip().strip("'\"")
+    if not config_path:
+        return ""
+    try:
+        config_text = Path(config_path).read_text()
+    except OSError:
+        return ""
+    from .reconcile import SNAPFIFO
+
+    return SNAPFIFO if playback_is_pipe(config_text, SNAPFIFO) else ""
+
+
 # ---------- sync wrappers for the oneshot reconciler ----------
 
 def apply_bonded_leader_config_sync(cfg: GroupingConfig) -> str:

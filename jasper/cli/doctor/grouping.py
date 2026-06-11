@@ -67,11 +67,14 @@ def check_grouping() -> CheckResult:
         if len(out) == len(units)
         else {u: "unknown" for u in units}
     )
-    # Leader producer feed: no music producer exists yet (Increments 3–5),
-    # so "" is injected and a bonded leader honestly derives degraded. When
-    # the producer lands, this must read the producing daemon's OWN status
-    # surface (daemon truth, never an env-intent mirror).
-    runtime = derive_grouping_runtime(cfg, states, leader_tap_path="")
+    # Leader producer feed (Increment 5): the ACTIVE CamillaDSP config is
+    # scanned for the pipe sink — daemon-adjacent truth (camilla's own
+    # statefile names the config), never an env-intent mirror.
+    from ...multiroom.leader_config import active_leader_pipe_path
+
+    runtime = derive_grouping_runtime(
+        cfg, states, leader_tap_path=active_leader_pipe_path(),
+    )
 
     base = (
         f"on — role={cfg.role} channel={cfg.channel} "
@@ -130,29 +133,6 @@ def check_grouping_rate_adjust() -> CheckResult:
     return CheckResult(label, "ok", f"rate_adjust off for active leader ({config_path})")
 
 
-def _playback_is_pipe(text: str, fifo: str) -> bool:
-    """True when the config's ``devices.playback`` block is a File sink
-    writing ``fifo`` — the bonded-leader pipe. Scans the exact shape our
-    emitters generate (a 2-space ``playback:`` line, 4-space fields)."""
-    in_playback = False
-    saw_file = False
-    saw_fifo = False
-    for line in text.splitlines():
-        if line.rstrip() == "  playback:":
-            in_playback = True
-            continue
-        if in_playback:
-            if line.startswith("    "):
-                field = line.strip()
-                if field == "type: File":
-                    saw_file = True
-                elif field.startswith("filename:") and fifo in field:
-                    saw_fifo = True
-            else:
-                in_playback = False
-    return saw_file and saw_fifo
-
-
 @doctor_check(order=75, group="grouping")
 def check_grouping_leader_pipe() -> CheckResult:
     """A bonded LEADER's ACTIVE CamillaDSP config must write snapserver's
@@ -161,6 +141,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     hears silence while every unit shows green. The silent-wrong-config
     class this check exists for (HANDOFF-multiroom.md §2, Increment 5)."""
     from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
     from .correction import _active_camilla_config_path
 
@@ -176,7 +157,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     if not path.exists():
         return CheckResult(label, "warn", f"active config missing: {config_path}")
     try:
-        is_pipe = _playback_is_pipe(path.read_text(), SNAPFIFO)
+        is_pipe = playback_is_pipe(path.read_text(), SNAPFIFO)
     except OSError as e:
         return CheckResult(label, "warn", f"could not read {config_path}: {e}")
 

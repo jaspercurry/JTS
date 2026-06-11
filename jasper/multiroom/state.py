@@ -99,15 +99,13 @@ def derive_grouping_runtime(
 
     ``leader_tap_path`` is the LEADER's live music-producer feed path ("" =
     "no producer is feeding the snapfifo"). It is INJECTED, never read
-    here, so this function stays pure. TODAY production always injects ""
-    — the producer is not built (the retired outputd-as-producer machinery
-    was removed; the canonical design feeds the pipe from the leader's
-    CamillaDSP, HANDOFF-multiroom.md §2 Increments 3–5) — so a bonded
-    leader honestly derives ``degraded``. When the producer lands, the
-    injected value must come from the producing daemon's OWN status
-    surface (daemon truth, never an env-intent mirror). Only consulted for
-    a valid leader; a follower / solo / invalid config has no producer
-    concept and the argument is ignored.
+    here, so this function stays pure. Production injects
+    :func:`jasper.multiroom.leader_config.active_leader_pipe_path` — the
+    ACTIVE CamillaDSP config scanned for the pipe sink (Increment 5;
+    daemon-adjacent truth, never an env-intent mirror) — so a leader
+    whose active config does not write the pipe honestly derives
+    ``degraded``. Only consulted for a valid leader; a follower / solo /
+    invalid config has no producer concept and the argument is ignored.
 
     ``health``:
       - ``off``      — grouping disabled (solo).
@@ -164,9 +162,10 @@ def derive_grouping_runtime(
         return {
             "health": "degraded",
             "detail": (
-                "leader streaming is not built yet — no music producer "
-                "feeds the snapfifo (HANDOFF-multiroom.md §2, Increments "
-                "3–5); snapserver reads an empty FIFO"
+                "leader's active CamillaDSP config does not write the "
+                "snapserver pipe — the stream is silent; the reconciler's "
+                "bond apply did not land (check "
+                "jasper-grouping-reconcile's journal)"
             ),
             "units": units,
         }
@@ -207,16 +206,18 @@ def read_grouping_state(
     bond's plan starts nothing, so there is nothing to probe).
 
     For a VALID LEADER, ``leader_tap_path`` is injected into the pure
-    derive. TODAY production always injects "" — no music producer exists
-    (HANDOFF-multiroom.md §2, Increments 3–5) — so a bonded leader
+    derive. Production reads it from
+    :func:`jasper.multiroom.leader_config.active_leader_pipe_path` —
+    the ACTIVE CamillaDSP config scanned for the pipe sink (Increment 5;
+    daemon-adjacent truth: camilla's own statefile names the config) —
+    never an env-intent mirror (the removed ``SNAPFIFO_PRODUCER_WIRED``
+    lesson). A leader whose active config does not write the pipe
     honestly shows ``degraded`` instead of a healthy-looking-but-silent
-    bond. When the producer lands, the injected value must come from the
-    producing daemon's OWN status surface (daemon truth, never an
-    env-intent mirror — the removed ``SNAPFIFO_PRODUCER_WIRED`` lesson).
+    bond.
 
     ``unit_state_reader`` and ``tap_path_reader`` are injectable for tests;
-    production uses :func:`read_unit_active_states`, and ``tap_path_reader``
-    is unset (no producer to read).
+    production uses :func:`read_unit_active_states` and
+    :func:`active_leader_pipe_path`.
     """
     cfg = load_config(path)
     snapshot: dict[str, Any] = {
@@ -235,11 +236,13 @@ def read_grouping_state(
         if cfg.error is None:
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])
-            # Leader producer feed: no producer exists yet (Increments
-            # 3–5), so production injects "" and a bonded leader honestly
-            # derives degraded. Tests may inject a reader to exercise the
-            # future live-producer shape.
-            if cfg.role == "leader" and tap_path_reader is not None:
+            # Leader producer feed (Increment 5): the ACTIVE CamillaDSP
+            # config scanned for the pipe sink — daemon-adjacent truth,
+            # never an env-intent mirror. Only consulted for a leader.
+            if cfg.role == "leader":
+                if tap_path_reader is None:
+                    from .leader_config import active_leader_pipe_path
+                    tap_path_reader = active_leader_pipe_path
                 tap = tap_path_reader()
         snapshot["runtime"] = derive_grouping_runtime(
             cfg, states, leader_tap_path=tap
