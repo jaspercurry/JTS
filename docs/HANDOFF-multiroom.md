@@ -609,6 +609,10 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   (pure Rust). The DAC loop optionally reads a `dac_content` FIFO (the round-trip
   lane), unit-tested with a temp FIFO like `snapfifo.rs`. No activation until the
   reconciler wires it. (`OUTPUTD_DAC_CONTENT_FIFO` is already a reserved constant.)
+  **Spec note (from the SNAPFIFO_PRODUCER_WIRED lesson):** outputd's STATUS
+  surface must SELF-REPORT the lane (`dac_content: {enabled, fifo, starved…}`) so
+  `/state`/doctor read the daemon's own truth — never a Python mirror of env
+  intent (the false-green class the retired flag existed to patch).
 - **Increment 4 — acoustic-sync confirmation** on a throwaway pipe→snapserver→two
   snapclients path. The §8 spike proved resources + the software proxy; the
   *acoustic* L/R alignment is still unproven. Validates the engine before any daemon
@@ -618,6 +622,12 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   hardware ERLE pass AND inv-B's fallback-to-direct.** Multi-daemon: CamillaDSP
   pipe-playback config + restart-on-role-change, the round-trip FIFO + snapclient,
   the rebuilt outputd TTS mixer + barge-in ledger, the reconciler role wiring.
+  **Spec note (the structural backstop behind the extraction WARN):** ships with a
+  `jasper-doctor` check that a BONDED LEADER's active CamillaDSP config carries
+  right-channel correction (`peq_r*` / `room_peq_r*`) when the follower has a
+  stored profile — the `check_grouping_channel_split` pattern for this
+  silent-wrong-config class (a mis-wired apply path that dropped the follower's
+  seat correction would otherwise play wrong-EQ silently).
 - **Increment 6 — per-follower calibration (fast-follow), SAME-ROOM pairs only.**
   Open-loop sweep → PEQ → bake into the follower's channel. A multi-room satellite in
   a *different* room needs its own correction for **correctness** (the leader's room
@@ -932,10 +942,14 @@ receivers are dumb channel-droppers.**
 - **Stereo L/R:** the leader's one CamillaDSP corrects the left channel for its
   own seat and the right for the follower's seat, then streams the result; each
   speaker drops the channel it doesn't play (ALSA `ttable`). No post-snapclient
-  DSP on any receiver. **Gotcha (still live):** `_emit_pipeline` today duplicates
-  one mono PEQ onto both channels; baking a *per-side* pair needs its own per-side
-  config — a `target_channels` param on `emit_correction_config` makes this clean.
-  Every generated config keeps `volume_limit: 0.0`.
+  DSP on any receiver. **The per-side axis is BUILT** (Increment 2, PR #587):
+  `emit_correction_config(peqs_right=…)` / `emit_sound_config(room_peqs_right=…)`
+  bake a different room correction per channel in ONE config (`None` = solo
+  byte-identical mono-duplicate; `[]` = FLAT right channel — an uncalibrated
+  follower never gets the wrong-room curve). The earlier "`target_channels`"
+  phrasing referred to this axis. `room_peqs_right` and the (superseded
+  member-model) `channel_split` weave are **mutually exclusive** — the emitter
+  raises on the combination. Every generated config keeps `volume_limit: 0.0`.
 
 - **Wireless sub (dumb endpoint):** the leader computes the
   crossover, level, and delay and bakes them into the **LFE
@@ -1521,7 +1535,19 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (research banked from two external deep-research passes,
+Last verified: 2026-06-11 (post-merge cross-agent review fixes on PR #587 — a Codex
+staff review found four real issues, all fixed: (1) the new shared
+`emit_master_gain_pipeline` docstring mis-stated the Ducker mechanism (it
+attenuates CamillaDSP's `main_volume`, NOT the `master_gain` mixer — master_gain
+is the preserved identity anchor; corrected in `jasper/camilla_emit.py`); (2)
+`room_peqs_right` × `channel_split` are different topology models (leader-bake vs
+the superseded member weave) and now raise `ValueError` when combined — fail-loud
+at the API boundary before Increment 5 wires callers; (3) §4's "gotcha (still
+live)" / `target_channels` phrasing contradicted the built Increment 2 axis —
+reconciled; (4) the right-channel extraction warning is now a stable
+`event=sound.extract_room_peqs result=right_channel_ignored` line per house
+observability style. Earlier 2026-06-11 (research banked from two external
+deep-research passes,
 cross-checked against CHIP-AEC-EXPERIMENT.md's measured ground truth. inv-A
 RECALIBRATED: the prior is now "gate should pass" — the round-trip never enters the
 reference path (tap is downstream of stuffing; outputd re-paces; mic + chip USB-IN +

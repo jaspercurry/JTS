@@ -223,8 +223,11 @@ def test_extract_room_peqs_skips_right_channel_filters_and_warns(caplog):
     with caplog.at_level(logging.WARNING):
         extracted = extract_room_peqs_from_config_text(yaml)
     assert extracted == [PeqFilter(freq=80.0, q=4.0, gain=-3.0)]
+    # Stable, parseable event= line (house observability style), not prose.
     assert any(
-        "NOT extracted" in record.message for record in caplog.records
+        "event=sound.extract_room_peqs" in record.message
+        and "result=right_channel_ignored" in record.message
+        for record in caplog.records
     )
 
 
@@ -237,5 +240,27 @@ def test_extract_room_peqs_stays_quiet_on_solo_configs(caplog):
     with caplog.at_level(logging.WARNING):
         extract_room_peqs_from_config_text(yaml)
     assert not any(
-        "NOT extracted" in record.message for record in caplog.records
+        "event=sound.extract_room_peqs" in record.message
+        for record in caplog.records
     )
+
+
+def test_room_peqs_right_and_channel_split_are_mutually_exclusive():
+    """The two axes belong to different topology models (leader-bake
+    pre-stream correction vs. member-side channel-selection weave);
+    combining them would channel-select AHEAD of per-channel filters and
+    'correct' a duplicated program channel with the other seat's chain.
+    The emitter fails LOUD at the API boundary — even for a passthrough
+    split (both-present indicates a wiring bug)."""
+    import pytest
+
+    from jasper.multiroom.channel_split import build_channel_split
+
+    for channel in ("left", "stereo"):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            emit_sound_config(
+                SoundProfile(enabled=False),
+                room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+                room_peqs_right=[],
+                channel_split=build_channel_split(channel),
+            )

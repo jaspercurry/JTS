@@ -179,8 +179,15 @@ def emit_master_gain_pipeline(
     filter-name lists are policy and stay in each subsystem's emitter
     (``peq_*`` vs ``room_peq_*`` naming, chain order); this function owns
     only how the pipeline is written. The ``master_gain`` step name is
-    deliberately hard-coded — it IS the cross-subsystem contract (the
-    Ducker writes that mixer's gain for voice sessions).
+    deliberately hard-coded — it IS the cross-subsystem contract: every
+    JTS config preserves this mixer VERBATIM as an identity
+    placeholder/anchor. Precisely (do not restate this wrong): the Ducker
+    attenuates CamillaDSP's built-in ``main_volume`` fader, **not** this
+    mixer; ``master_gain`` is the stable identity anchor that downstream
+    weaves position against (multiroom's ``channel_select`` splices
+    immediately after it) and the reserved hook for future mixer ops.
+    See ``test_master_gain_mixer_unchanged_with_peqs`` in
+    tests/test_correction_camilla_yaml.py — the byte-level contract.
 
     ``right_names=None`` (solo) duplicates ``left_names`` onto channel 1 —
     reproduces `correction._emit_pipeline` and `sound._emit_pipeline`
