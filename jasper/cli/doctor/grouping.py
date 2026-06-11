@@ -86,27 +86,27 @@ def check_grouping() -> CheckResult:
 
 @doctor_check(order=74, group="grouping")
 def check_grouping_rate_adjust() -> CheckResult:
-    """inv-5 (docs/HANDOFF-multiroom.md §2): an ACTIVE bond member's local
+    """inv-5 (docs/HANDOFF-multiroom.md §2): an ACTIVE bond LEADER's local
     CamillaDSP must run ``enable_rate_adjust: false``.
 
     snapclient's sample-stuffing is the single rate-tracker for the synced
-    chain; a second rate-adjuster in the member's local CamillaDSP fights it
-    and oscillates (the documented ``rate_adjust`` + ``AsyncSinc`` trap). This
-    is the UNIVERSAL backstop for inv-5 — it reads the ACTIVE config, so it
-    catches every generator (correction / sound / active-speaker) and a config
-    generated BEFORE the bond was formed (stale → still rate_adjust on).
-
-    Skip (ok) when this speaker is solo / off / invalid (not an active member);
-    warn when it IS an active member but the active config still has
-    ``enable_rate_adjust: true`` — the fix is to regenerate the config
-    (re-run /correction or /sound) so the member emits rate_adjust off."""
+    chain; a second rate-adjuster in the leader's CamillaDSP (the one
+    daemon writing the shared stream) fights it and oscillates (the
+    documented ``rate_adjust`` + ``AsyncSinc`` trap). A FOLLOWER is
+    deliberately out of scope (canonical model, Increment 5): its local
+    CamillaDSP is not in the bonded playback path — it feeds only the
+    inv-B fallback lane, an ALSA loopback with a real clock, where
+    rate_adjust=true is CORRECT. This reads the ACTIVE config, so it
+    catches every generator and a config generated BEFORE the bond formed
+    (stale → still rate_adjust on; the reconciler regenerates on bond
+    form, so a warn here means that apply failed — check its journal)."""
     from ...multiroom.config import is_active_member, load_config
     from .correction import _active_camilla_config_path
 
     label = "grouping: rate_adjust"
     cfg = load_config()
-    if not is_active_member(cfg):
-        return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
+    if not (is_active_member(cfg) and cfg.role == "leader"):
+        return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:
@@ -123,42 +123,51 @@ def check_grouping_rate_adjust() -> CheckResult:
         return CheckResult(
             label, "warn",
             f"{config_path} has enable_rate_adjust:true but this is an active "
-            "bond member — snapclient + local rate_adjust will oscillate; "
-            "regenerate the config (re-run /correction or /sound)",
+            "bond LEADER — snapclient + local rate_adjust will oscillate; "
+            "the reconciler's bond apply did not land (check "
+            "jasper-grouping-reconcile's journal, or re-save /sound)",
         )
-    return CheckResult(label, "ok", f"rate_adjust off for active member ({config_path})")
+    return CheckResult(label, "ok", f"rate_adjust off for active leader ({config_path})")
 
 
-def _config_has_channel_select(text: str) -> bool:
-    """True if the config's top-level ``mixers:`` block defines a
-    ``channel_select:`` mixer (the channel-split). Reads via the shared
-    :func:`_camilla_block_field` scanner — presence is value-is-not-None (a
-    mixer name's value is the nested channels/mapping block, scanned as "")."""
-    return _camilla_block_field(text, "mixers", "channel_select") is not None
+def _playback_is_pipe(text: str, fifo: str) -> bool:
+    """True when the config's ``devices.playback`` block is a File sink
+    writing ``fifo`` — the bonded-leader pipe. Scans the exact shape our
+    emitters generate (a 2-space ``playback:`` line, 4-space fields)."""
+    in_playback = False
+    saw_file = False
+    saw_fifo = False
+    for line in text.splitlines():
+        if line.rstrip() == "  playback:":
+            in_playback = True
+            continue
+        if in_playback:
+            if line.startswith("    "):
+                field = line.strip()
+                if field == "type: File":
+                    saw_file = True
+                elif field.startswith("filename:") and fifo in field:
+                    saw_fifo = True
+            else:
+                in_playback = False
+    return saw_file and saw_fifo
 
 
 @doctor_check(order=75, group="grouping")
-def check_grouping_channel_split() -> CheckResult:
-    """A bonded member that plays a SINGLE channel (left/right/sub/mono) must
-    have the ``channel_select`` mixer in its ACTIVE config — else it plays the
-    full stereo program (the WRONG channel), silently.
-
-    This is the observability backstop for the channel-split: unlike
-    rate_adjust (which oscillates audibly), a missing channel-split is
-    *silent* — the speaker just plays both channels. So a wrong-channel member
-    is invisible without this check. Skip (ok) when solo / off / invalid, or
-    when the channel is ``stereo`` (passthrough — no channel_select expected).
-    Warn when a non-stereo active member's active config lacks
-    ``channel_select`` — regenerate (re-run /sound or /correction). NOTE:
-    auto-apply on bond-form is owned by the inv-2 reconciler (see §2 "inv-2
-    realization"); until it lands this check is how the gap stays visible."""
+def check_grouping_leader_pipe() -> CheckResult:
+    """A bonded LEADER's ACTIVE CamillaDSP config must write snapserver's
+    pipe (``devices.playback`` = File → SNAPFIFO) — else snapserver streams
+    an empty FIFO and every member (including the leader's own round-trip)
+    hears silence while every unit shows green. The silent-wrong-config
+    class this check exists for (HANDOFF-multiroom.md §2, Increment 5)."""
     from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.reconcile import SNAPFIFO
     from .correction import _active_camilla_config_path
 
-    label = "grouping: channel-split"
+    label = "grouping: leader pipe"
     cfg = load_config()
-    if not is_active_member(cfg) or cfg.channel == "stereo":
-        return CheckResult(label, "ok", "solo / stereo member (n/a)")
+    if not (is_active_member(cfg) and cfg.role == "leader"):
+        return CheckResult(label, "ok", "not an active bond leader (n/a)")
 
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:
@@ -167,18 +176,101 @@ def check_grouping_channel_split() -> CheckResult:
     if not path.exists():
         return CheckResult(label, "warn", f"active config missing: {config_path}")
     try:
-        has_split = _config_has_channel_select(path.read_text())
+        is_pipe = _playback_is_pipe(path.read_text(), SNAPFIFO)
     except OSError as e:
         return CheckResult(label, "warn", f"could not read {config_path}: {e}")
 
-    if not has_split:
+    if not is_pipe:
         return CheckResult(
             label, "warn",
-            f"{config_path} has no channel_select but this member plays "
-            f"channel={cfg.channel} — it will play the full stereo program "
-            "(wrong channel); regenerate the config (re-run /sound or /correction)",
+            f"{config_path} does not write the snapserver pipe ({SNAPFIFO}) "
+            "but this is an active bond leader — the stream is silent; the "
+            "reconciler's bond apply did not land (check "
+            "jasper-grouping-reconcile's journal)",
         )
-    return CheckResult(label, "ok", f"channel_select present for channel={cfg.channel}")
+    return CheckResult(label, "ok", f"leader CamillaDSP writes {SNAPFIFO}")
+
+
+def _parse_env_file(text: str) -> dict[str, str]:
+    """KEY=value lines → dict (reconciler-written file; no quoting)."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
+@doctor_check(order=75.3, group="grouping")
+def check_grouping_channel_pick() -> CheckResult:
+    """An ACTIVE member's outputd round-trip lane must be wired with THIS
+    speaker's channel — the canonical home of the channel drop (outputd
+    ``ChannelPick``, Increment 3; the local-CamillaDSP weave it replaced
+    is gone). A missing or drifted env is SILENT (the speaker plays the
+    full stereo program — the wrong channel), so this drift check is the
+    only way a wrong-channel member is visible."""
+    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.reconcile import (
+        MEMBER_CONTENT_FIFO,
+        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        OUTPUTD_GROUPING_ENV_FILE,
+    )
+
+    label = "grouping: channel pick"
+    cfg = load_config()
+    if not is_active_member(cfg):
+        return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
+
+    path = Path(OUTPUTD_GROUPING_ENV_FILE)
+    if not path.exists():
+        return CheckResult(
+            label, "warn",
+            f"{OUTPUTD_GROUPING_ENV_FILE} missing but this is an active bond "
+            "member — outputd is not wired for the round-trip lane (run "
+            "jasper-grouping-reconcile)",
+        )
+    try:
+        env = _parse_env_file(path.read_text())
+    except OSError as e:
+        return CheckResult(label, "warn", f"could not read {path}: {e}")
+
+    want_channel = cfg.channel or "stereo"
+    fifo = env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV, "")
+    channel = env.get(OUTPUTD_DAC_CONTENT_CHANNEL_ENV, "")
+    if fifo != MEMBER_CONTENT_FIFO or channel != want_channel:
+        return CheckResult(
+            label, "warn",
+            f"outputd lane env drifted (fifo={fifo or '(unset)'} "
+            f"channel={channel or '(unset)'}, want fifo={MEMBER_CONTENT_FIFO} "
+            f"channel={want_channel}) — this member would play the wrong "
+            "channel; run jasper-grouping-reconcile",
+        )
+    return CheckResult(label, "ok", f"outputd lane wired, channel={want_channel}")
+
+
+@doctor_check(order=75.6, group="grouping")
+def check_grouping_tts_interim() -> CheckResult:
+    """KNOWN GAP while bonded (Increment 5 PR-1 interim): assistant voice
+    rides the synced stream — delayed by the sync buffer and audible on
+    ALL bonded speakers — because TTS still mixes in fanin (pre-stream).
+    Increment 5 PR-2 (the outputd TTS mixer) moves every member's own TTS
+    to its own final output and removes this check. A standing warn while
+    bonded is deliberate: a known degradation must stay visible, not
+    normalized (the no-silent-failure rule)."""
+    from ...multiroom.config import is_active_member, load_config
+
+    label = "grouping: TTS interim"
+    cfg = load_config()
+    if not is_active_member(cfg):
+        return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
+    return CheckResult(
+        label, "warn",
+        f"bonded: assistant voice is delayed ~{cfg.buffer_ms} ms by the sync "
+        "buffer and plays on all bonded speakers (TTS rides the stream until "
+        "Increment 5 PR-2 lands the outputd TTS mixer)",
+    )
 
 
 # NOTE: the former ``check_grouping_tts_separation`` (order 78) was REMOVED

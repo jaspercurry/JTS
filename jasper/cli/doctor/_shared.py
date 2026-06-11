@@ -165,7 +165,7 @@ def _camilla_block_field(text: str, block: str, key: str) -> str | None:
     can raise on a malformed config (the doctor must stay total). It is the one
     home for the idiom: ``check_camilla_volume_limit`` (``devices.volume_limit``),
     ``check_grouping_rate_adjust`` (``devices.enable_rate_adjust``), and
-    ``check_grouping_channel_split`` (``mixers.channel_select`` presence) all go
+    ``check_grouping_leader_pipe`` (``devices.playback`` pipe scan) all go
     through it. Block-scoped: a matching key OUTSIDE ``block:`` does not match.
     Use only for keys that are unambiguous within their block (the value is the
     first indented ``key:`` line, at any depth)."""
