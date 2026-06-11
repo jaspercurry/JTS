@@ -192,6 +192,12 @@ class OutputHardwareState:
             if isinstance(item, Mapping)
         )
         profile_id = normalize_output_device_id(_text(raw.get("profile_id")))
+        raw_apple_dac_count = raw.get("apple_dac_count")
+        apple_dac_count = (
+            len(children)
+            if raw_apple_dac_count is None
+            else int(raw_apple_dac_count)
+        )
         return cls(
             profile_id=profile_id,
             profile_label=_text(raw.get("profile_label"))
@@ -200,7 +206,7 @@ class OutputHardwareState:
             physical_output_count=int(raw.get("physical_output_count") or 0),
             selected_card_id=_text(raw.get("selected_card_id")),
             selected_pcm=_text(raw.get("selected_pcm")),
-            apple_dac_count=int(raw.get("apple_dac_count") or len(children)),
+            apple_dac_count=apple_dac_count,
             child_devices=children,
             issues=issues,
             observed_at=_text(raw.get("observed_at")),
@@ -463,6 +469,21 @@ def _read_text(path: Path) -> str | None:
         return None
 
 
+def _proc_card_description(proc_root: Path, card_index: int) -> str | None:
+    text = _read_text(proc_root / "cards")
+    if not text:
+        return None
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not re.match(rf"^\s*{card_index}\s+\[", line):
+            continue
+        parts = [line.strip()]
+        if index + 1 < len(lines) and lines[index + 1].startswith(" "):
+            parts.append(lines[index + 1].strip())
+        return " ".join(part for part in parts if part)
+    return None
+
+
 def _find_usb_device(path: Path) -> Path | None:
     current = path.resolve()
     for item in (current, *current.parents):
@@ -522,6 +543,8 @@ def probe_system_cards(
         busnum = _read_text(usb / "busnum") if usb else None
         devpath = _read_text(usb / "devpath") if usb else None
         product = _read_text(usb / "product") if usb else None
+        proc_description = _proc_card_description(proc_root, card_index)
+        label = product or proc_description or card_id
         stream = _read_text(proc_root / f"card{card_index}" / "stream0")
         if (
             (vendor_id or "").lower() == APPLE_USB_VENDOR_ID
@@ -529,12 +552,12 @@ def probe_system_cards(
         ):
             device_id = APPLE_USB_C_DONGLE_DEVICE_ID
         else:
-            profile = _dac_profile_for_card_label(product or "")
+            profile = _dac_profile_for_card_label(label)
             device_id = profile.id if profile is not None else "unknown"
         cards.append(OutputCardFact(
             card_id=card_id,
             card_index=card_index,
-            label=product or card_id,
+            label=label,
             device_id=device_id,
             vendor_id=vendor_id,
             product_id=product_id,

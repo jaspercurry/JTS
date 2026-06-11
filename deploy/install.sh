@@ -1482,6 +1482,7 @@ PY
     fi
     migrate_voice_provider
     migrate_openai_noise_reduction_default
+    migrate_tts_outputd_socket_default
     render_voice_provider_ids_manifest
     migrate_transit_config
     migrate_weather_config
