@@ -32,11 +32,25 @@ from jasper.config import Config
 
 
 def pytest_collection_modifyitems(items) -> None:
-    """Pin every voice_eval test to the session event loop."""
+    """Pin every voice_eval test to the session event loop.
+
+    append=False is load-bearing: pytest-asyncio's auto mode has already
+    put a bare ``asyncio`` marker (no loop_scope) on each item, and the
+    plugin reads the CLOSEST marker — so an appended pin loses and the
+    test silently runs on a per-function loop. That function loop's
+    Runner.close() runs loop.shutdown_asyncgens() at test teardown,
+    which finalizes google-genai's suspended connect() asyncgen and
+    cleanly closes the live websocket between tests (the 2026-06-11
+    "goodbye" — see PR #610's investigation). Prepending makes the pin
+    the closest marker, so the whole suite genuinely shares the session
+    loop, matching how the daemon runs.
+    """
     suite_dir = os.path.dirname(os.path.abspath(__file__))
     for item in items:
         if str(item.fspath).startswith(suite_dir):
-            item.add_marker(pytest.mark.asyncio(loop_scope="session"))
+            item.add_marker(
+                pytest.mark.asyncio(loop_scope="session"), append=False,
+            )
 
 
 def _provider_key_present(cfg: Config) -> bool:
