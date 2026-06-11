@@ -194,13 +194,22 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
 
 
 def test_voice_tts_socket_is_canonical_fanin_path():
+    """SOLO contract: voice's TTS rides fanin. The bonded override is a
+    reconciler-owned env file layered AFTER the default (Increment 5
+    PR-2) — EnvironmentFile= beats Environment=, later files win."""
     unit = (REPO / "deploy" / "systemd" / "jasper-voice.service").read_text()
     assert 'Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"' in unit
     assert 'Environment="JASPER_DUCK_TRANSPORT=fanin"' in unit
     assert "EnvironmentFile=-/var/lib/jasper/tts.env" not in unit
+    assert "EnvironmentFile=-/var/lib/jasper/grouping-voice.env" in unit
 
 
 def test_fanin_exposes_outputd_compatible_tts_socket():
+    """fanin's TTS server is the SOLO production ingress. Since
+    Increment 5 PR-2 outputd serves the SAME wire protocol for bonded
+    members (`rust/jasper-outputd/src/tts.rs`) — gated on the
+    reconciler-set socket env, default OFF, so solo outputd stays
+    TTS-free. Both ends of the twin are pinned here."""
     main_rs = (REPO / "rust" / "jasper-fanin" / "src" / "main.rs").read_text()
     config_rs = (REPO / "rust" / "jasper-fanin" / "src" / "config.rs").read_text()
     tts_rs = (REPO / "rust" / "jasper-fanin" / "src" / "tts.rs").read_text()
@@ -210,9 +219,13 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     outputd_lib_rs = (REPO / "rust" / "jasper-outputd" / "src" / "lib.rs").read_text()
     assert '"/run/jasper-fanin/tts.sock"' in config_rs
     assert "spawn_tts_server(" in main_rs
-    assert "spawn_tts_server(" not in outputd_main_rs
-    assert "handle_tts_client(" not in outputd_main_rs
-    assert "JASPER_OUTPUTD_TTS_SOCKET" not in outputd_config_rs
+    # outputd's twin: present, but constructed ONLY when the grouping
+    # reconciler set the socket env (no baked-in default path).
+    assert "spawn_tts_server(" in outputd_main_rs
+    assert "if let Some(path) = &config.tts_socket_path" in outputd_main_rs
+    assert (
+        'env_optional("JASPER_OUTPUTD_TTS_SOCKET")' in outputd_config_rs
+    )  # Option, no baked-in default — unset env means solo, TTS off
     assert "pub mod protocol;" not in outputd_lib_rs
     assert "TtsCommand::FlushSync" in tts_rs
     assert "TtsCommand::ProgramDuckOn" in tts_rs
@@ -291,16 +304,34 @@ def test_install_uses_separate_outputd_statefile():
 
 
 def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
+    """inv-A ordering, both branches: the reference tap publishes what
+    the DAC was JUST given, never earlier. Solo publishes the raw
+    content period; the bonded TTS branch (Increment 5 PR-2) publishes
+    the post-mix engine period, with the duck applied to the CONTENT
+    before the mix so the reference carries the ducked program too."""
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
+    # Solo branch — unchanged pre-PR-2 ordering. The mark_period search
+    # string is the solo call's exact one-line form so it can't bind to
+    # the TTS branch's multi-line call.
     content_read = run_alsa.index("backend.read_content_period(&mut content_buf)?;")
     dac_write = run_alsa.index("backend.write_dac_period(&content_buf)?;")
     publish = run_alsa.index("ref_outputs.publish(&content_buf);")
-    state = run_alsa.index("state.mark_period(")
-
-    assert "prepare_period_with_content" not in run_alsa
-    assert "commit_prepared_period" not in run_alsa
+    state = run_alsa.index(
+        "state.mark_period(backend.counters(), reference_sequence, 0);"
+    )
     assert content_read < dac_write < publish < state
+
+    # Bonded TTS branch — duck → prepare(mix) → DAC write → DAC-true
+    # commit → post-mix reference publish → ledger-true state mark.
+    duck = run_alsa.index("bridge.content_duck_gain()")
+    prepare = run_alsa.index("core.prepare_period_with_content(&content_buf);")
+    tts_write = run_alsa.index("backend.write_dac_period(core.output_period())?;")
+    commit = run_alsa.index("core.commit_prepared_period_with_dac_delay(")
+    tts_publish = run_alsa.index("ref_outputs.publish(core.output_period());")
+    tts_state = run_alsa.index("report.clipped_samples,")
+    assert content_read < duck < prepare < tts_write < commit < tts_publish
+    assert tts_publish < tts_state
 
 
 def test_outputd_ready_is_after_alsa_output_is_primed_and_started():
@@ -358,18 +389,31 @@ def test_outputd_state_socket_is_bound_before_thread_spawn():
     assert bind < spawn
 
 
-def test_outputd_no_longer_owns_tts_ipc_runtime():
+def test_outputd_tts_runtime_is_bonded_scoped():
+    """Successor of the 9102e13 tombstone (`test_outputd_no_longer_owns_
+    tts_ipc_runtime`): Increment 5 PR-2 deliberately re-introduced an
+    outputd TTS server — but scoped to bonded members. What stays
+    pinned: (a) the RETIRED pre-9102e13 API names never come back, and
+    (b) the new runtime is construction-gated on the reconciler-set
+    socket env, so a solo speaker's outputd never binds a TTS socket."""
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     state_rs = (REPO / "rust" / "jasper-outputd" / "src" / "state.rs").read_text()
 
-    for stale in [
-        "spawn_tts_server(",
+    for retired in [
         "spawn_tts_client(",
-        "handle_tts_client(",
-        "outputd.tts_socket",
-        "outputd.tts_flush",
         "TtsQueueMetrics",
         "mark_tts_command_dropped",
     ]:
-        assert stale not in main_rs
-        assert stale not in state_rs
+        assert retired not in main_rs
+        assert retired not in state_rs
+
+    gate = main_rs.index("if let Some(path) = &config.tts_socket_path")
+    spawn = main_rs.index("spawn_tts_server(")
+    assert gate < spawn
+    # The STATUS block tells the truth on a solo speaker: the tts
+    # section's emitter writes enabled:false when no socket is set.
+    tts_block = state_rs.index('"tts":{')
+    disabled = state_rs.index(
+        'push_kv_bool(&mut buf, "enabled", false);', tts_block
+    )
+    assert disabled > tts_block

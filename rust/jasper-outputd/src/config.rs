@@ -111,6 +111,18 @@ pub struct Config {
     /// from the round-trip lane (channel-split vocabulary; default
     /// stereo = passthrough). Only meaningful with `dac_content_fifo`.
     pub dac_content_channel: ChannelPick,
+    /// OPTIONAL bonded-member TTS socket (Increment 5 PR-2,
+    /// HANDOFF-multiroom.md §2): when set, outputd listens for the
+    /// jasper-voice TTS protocol and mixes assistant audio at the final
+    /// output stage via OutputCore — downstream of the round-trip,
+    /// upstream of the reference publish (inv-A). `None` (default —
+    /// solo, where fanin owns TTS) leaves the DAC loop byte-identical.
+    pub tts_socket_path: Option<String>,
+    /// Pending-audio budget for the TTS lane (frames).
+    pub tts_max_pending_frames: u64,
+    /// Program duck applied to CONTENT while voice requests it
+    /// (PROGRAM_DUCK_ON). Negative dB; mirrors fanin's knob + fallback.
+    pub tts_program_duck_db: f32,
 }
 
 impl Config {
@@ -305,6 +317,25 @@ impl Config {
             }
         }
 
+        let tts_socket_path = env_optional("JASPER_OUTPUTD_TTS_SOCKET");
+        let tts_max_pending_frames = env_u64(
+            "JASPER_OUTPUTD_TTS_MAX_PENDING_FRAMES",
+            crate::tts::DEFAULT_MAX_PENDING_FRAMES,
+        )?;
+        // Mirrors fanin's duck knob shape: dedicated env first, the
+        // shared legacy JASPER_DUCK_DB as fallback, -25 dB default.
+        let tts_program_duck_db = match std::env::var("JASPER_OUTPUTD_TTS_PROGRAM_DUCK_DB") {
+            Ok(s) if !s.trim().is_empty() => env_f32("JASPER_OUTPUTD_TTS_PROGRAM_DUCK_DB", -25.0)?,
+            _ => env_f32("JASPER_DUCK_DB", -25.0)?,
+        };
+        if tts_program_duck_db > 0.0 {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_TTS_PROGRAM_DUCK_DB={} must be <= 0 (a duck \
+                 attenuates; positive gain on the program is never allowed)",
+                tts_program_duck_db
+            );
+        }
+
         Ok(Self {
             backend,
             sink_mode,
@@ -330,6 +361,9 @@ impl Config {
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
             dac_content_fifo,
             dac_content_channel,
+            tts_socket_path,
+            tts_max_pending_frames,
+            tts_program_duck_db,
         })
     }
 }
@@ -828,6 +862,48 @@ mod tests {
                 assert!(err
                     .to_string()
                     .contains("JASPER_OUTPUTD_CONTENT_BRIDGE_TARGET_FRAMES"));
+            },
+        );
+    }
+
+    #[test]
+    fn parses_tts_lane_and_defaults_off() {
+        with_env(&[], || {
+            let cfg = Config::from_env().unwrap();
+            assert!(cfg.tts_socket_path.is_none()); // solo: fanin owns TTS
+            assert_eq!(
+                cfg.tts_max_pending_frames,
+                crate::tts::DEFAULT_MAX_PENDING_FRAMES
+            );
+            assert_eq!(cfg.tts_program_duck_db, -25.0);
+        });
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/jasper-outputd/tts.sock")),
+                ("JASPER_OUTPUTD_TTS_MAX_PENDING_FRAMES", Some("48000")),
+                ("JASPER_OUTPUTD_TTS_PROGRAM_DUCK_DB", Some("-18.5")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(
+                    cfg.tts_socket_path.as_deref(),
+                    Some("/run/jasper-outputd/tts.sock")
+                );
+                assert_eq!(cfg.tts_max_pending_frames, 48_000);
+                assert_eq!(cfg.tts_program_duck_db, -18.5);
+            },
+        );
+    }
+
+    #[test]
+    fn rejects_positive_program_duck() {
+        // Hearing safety: a duck ATTENUATES; positive program gain is
+        // never allowed, fail loud.
+        with_env(
+            &[("JASPER_OUTPUTD_TTS_PROGRAM_DUCK_DB", Some("3.0"))],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err.to_string().contains("must be <= 0"));
             },
         );
     }

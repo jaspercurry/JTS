@@ -49,7 +49,18 @@ The production paths converge inside `jasper-fanin`, pass through
 CamillaDSP, then enter `jasper-outputd`, which is the only normal writer
 to the physical DAC. The dual Apple active-output profile keeps the same
 TTS/cue semantics, but CamillaDSP emits a four-channel active lane and
-`jasper-outputd` splits it to two Apple DACs. The legacy `pcm.jasper_out`
+`jasper-outputd` splits it to two Apple DACs.
+
+**Bonded multiroom member (Increment 5 PR-2):** the assistant path above
+is the SOLO topology. While a speaker is an active bond member, the
+grouping reconciler points voice's `JASPER_TTS_OUTPUTD_SOCKET` at
+`/run/jasper-outputd/tts.sock` instead — outputd serves fanin's exact TTS
+wire protocol (`rust/jasper-outputd/src/tts.rs`) and mixes the member's
+own TTS/cues into the post-round-trip `dac_content` lane, pre-reference
+(inv-A holds; `PROGRAM_DUCK` ducks the content lane member-locally).
+Music keeps the synced snapcast path; only assistant audio goes local.
+Canonical home: [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §0 /
+Increment 5 PR-2. The legacy `pcm.jasper_out`
 dmix remains defined in `/etc/asound.conf` for
 emergency rollback and older checkouts, but current production audio
 does not use it as the convergence point.

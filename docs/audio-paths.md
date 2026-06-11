@@ -43,6 +43,15 @@ TTS / CUE chain (CROSSED OVER on every output profile)
                                    → selected DAC(s) → amps → drivers
 ```
 
+That TTS chain is the SOLO topology. On an active multiroom bond member,
+the grouping reconciler repoints voice at `/run/jasper-outputd/tts.sock`
+— outputd serves fanin's exact TTS wire protocol and mixes assistant
+audio into the post-round-trip content lane locally, so replies don't
+ride the sync buffer to every speaker (no CamillaDSP crossover on that
+path; acceptable for speech, same trade the retired pre-fanin outputd
+TTS path made). See
+[HANDOFF-multiroom.md](HANDOFF-multiroom.md) Increment 5 PR-2.
+
 `jasper-outputd` normally reads the content capture lane directly. For
 lab validation, `JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match` inserts an
 outputd-owned bounded ring plus ppm-clamped rate matcher at this final

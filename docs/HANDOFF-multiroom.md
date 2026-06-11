@@ -38,12 +38,22 @@ program and writes the snapserver pipe; every member's snapclient writes the
 round-trip FIFO (`--player file:`), which outputd's `dac_content` lane plays
 with the member's channel pick. The grouping reconciler is the single
 applier (camilla config swap + outputd lane env + member FIFO + units, in a
-load-bearing order — see `reconcile.main`'s docstring). KNOWN GAP, marked by
-a STANDING doctor warn (`grouping: TTS interim`): assistant voice still
-mixes in fanin, so while bonded it rides the synced stream — delayed
-~buffer_ms, audible on ALL members. PR-2 (the outputd TTS mixer + per-member
-socket flip + the inv-B auto-unwind supervisor) makes bonding
-leave-it-on grade; until then bonding is supervised-validation grade.
+load-bearing order — see `reconcile.main`'s docstring).
+**Increment 5 PR-2 (member-local TTS + the grouping supervisor) is BUILT
+(2026-06-11).** While bonded, every member's assistant TTS routes to its
+OWN outputd (`rust/jasper-outputd/src/tts.rs` — the fanin wire-protocol
+twin feeding `OutputCore`), so voice answers are instant and member-local
+(inv-3) instead of riding the sync buffer to every speaker; `PROGRAM_DUCK`
+follows the same socket, ducking content on the speaking member only, and
+the barge-in `FLUSH_SYNC` ack carries DAC-true `audio_played_ms` from the
+playout ledger. The reconciler arms both ends (grouping-outputd.env +
+grouping-voice.env; drift check: `grouping: TTS lane`, which replaced the
+PR-1 standing `TTS interim` warn). Runtime liveness is owned by
+`jasper.control.grouping_supervisor` (starvation watch → rate-limited
+reconciler kick; continuous leader binding read-repair; off via
+`JASPER_GROUPING_SUPERVISOR=disabled`). Auto-unwind to solo is deliberately
+NOT built — disband stays one tap on /rooms until a real non-converging
+failure shape is observed.
 A leader whose bond apply did not land reads `degraded` with "active
 CamillaDSP config does not write the snapserver pipe".
 **The retired outputd-as-producer machinery was REMOVED on 2026-06-11** (the
@@ -63,8 +73,8 @@ and DUMB receivers channel-drop; voice stays leader-local (no second CamillaDSP 
 RAM target is a 1 GB Pi). The gating §8 spike **RAN on hardware (2026-06-10,
 jts3↔jts) and passed the resource gate** — snapserver+snapclient ≈ ~15 MB Pss,
 ~0.2 % CPU, FLAC ≈ PCM; the software sync proxy was clean across every buffer/codec
-(acoustic L/R confirmation pends — it folds into Increment 2a). Still to build: PR-2
-(outputd TTS mixer + supervisor) and Increment 6 (per-follower calibration). What exists:
+(acoustic L/R confirmation pends — it folds into Increment 2a). Still to build:
+Increment 6 (per-follower calibration). What exists:
 
 - **`jasper/multiroom/config.py`** — pure, off-by-default
   `GroupingConfig` + `load_config()` (SSOT `/var/lib/jasper/grouping.env`;
@@ -631,7 +641,7 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   supervised bring-up session, alongside the inv-A ERLE delta + inv-B
   fallback checks.
 - **Increment 5 — the big slice, staged as two PRs. PR-1 (music dataplane) ✅
-  BUILT 2026-06-11; PR-2 (TTS rebuild + supervisor) pending.**
+  BUILT 2026-06-11; PR-2 (TTS rebuild + supervisor) ✅ BUILT 2026-06-11.**
   **PR-1 (built):** leader CamillaDSP→pipe (the `playback_pipe_path` emitter
   axis + the bonded config swap in `jasper/multiroom/leader_config.py`,
   reusing the wizards' shared `apply_dsp_config` engine + the ONE member
@@ -665,9 +675,7 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   loopback substreams are allocated, and PR-2's TTS socket flip makes lane
   7 music-only BY CONSTRUCTION while bonded, so Increment 1's fanin music
   tap is NOT used by this design (it stays available for future group
-  announcements). **PR-1 interim, marked by a STANDING doctor warn:** TTS
-  rides the synced stream (delayed ~buffer_ms, on all members) because TTS
-  still mixes in fanin. **Reboot-loop chain-breaker (post-merge review,
+  announcements). **Reboot-loop chain-breaker (post-merge review,
   MEASURED):** camilladsp 4.1.3 exits CLEAN (0) when its File sink path is
   absent, and blocks un-SIGTERM-ably in open(2) when the FIFO has no
   reader — with jasper-camilla's `Restart=always` + `StartLimitBurst=5/60s`
@@ -681,15 +689,41 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   stays bonded so the next reconcile re-applies the bond when snapserver
   is healthy; `event=camilla_pipe_guard.*` + the `leader pipe` doctor
   check surface the degraded state.
-  **PR-2 (pending):** the outputd TTS mixer + `audio_played_ms` barge-in
-  ledger rebuild; EVERY bonded member's voice flips its TTS socket to its
-  own outputd (inv-3: the leader's TTS never enters the shared stream —
-  each speaker's OWN replies mix locally, post-round-trip, pre-reference,
-  which is exactly inv-A's tap requirement); the inv-B auto-unwind
-  supervisor in jasper-control (sustained leader `dac_content` starvation →
-  loud unwind to solo — until it lands, bonding stays supervised-validation
-  grade, which the TTS gap enforces anyway). **Gated on inv-A's hardware
-  ERLE pass AND inv-B's fallback-to-direct, measured during bring-up.**
+  **PR-2 (built 2026-06-11):** outputd grew a TTS server
+  (`rust/jasper-outputd/src/tts.rs`) speaking fanin's exact newline-framed
+  wire protocol (GAIN / PREPARE_ASSISTANT / SEGMENT_* / AUDIO /
+  PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC / CLOSE — the twin
+  is deliberate: Python keeps ONE playout implementation), feeding the
+  surviving `OutputCore` engine (assistant segments, loudness profiles,
+  saturating mix, `PlayoutLedger`); the `FLUSH_SYNC` barge-in ack now
+  carries DAC-true `audio_played_ms` + per-segment events from
+  `commit_prepared_period_with_dac_delay` (fanin's ack hardcodes 0 — the
+  outputd port makes it honest). EVERY bonded member's voice flips its TTS
+  socket to its own outputd (inv-3: the leader's TTS never enters the
+  shared stream — each speaker's OWN replies mix locally, post-round-trip,
+  pre-reference, which is exactly inv-A's tap requirement; `PROGRAM_DUCK`
+  rides the same socket, so ducking is member-local too). The reconciler
+  arms both ends — `JASPER_OUTPUTD_TTS_SOCKET` in grouping-outputd.env and
+  `JASPER_TTS_OUTPUTD_SOCKET` in grouping-voice.env (solo OMITS the key —
+  present-but-empty would break voice's fanin default; a fresh solo
+  reconcile skips creating the empty file so first boot doesn't restart
+  voice) — and `grouping: TTS lane` (doctor) catches drift between them,
+  including the worst shape: voice targeting a socket outputd never armed
+  (silent assistant). Solo speakers are byte-identical to pre-PR-2 (no
+  socket env → outputd runs the exact prior period loop).
+  **The supervisor (jasper.control.grouping_supervisor, built with PR-2):**
+  every bonded member polls outputd's `dac_content.serving_fifo` every 30 s
+  (cold start 60 s); 3 consecutive starved polls → `reset-failed` +
+  `restart --no-block jasper-grouping-reconcile` (rate-limited 1/10 min);
+  the leader additionally re-runs the `ensure_groups_on_stream` ownership
+  pin every poll, making binding read-repair continuous (a runtime rebind
+  from any snapcast app self-heals in ≤30 s). Surfaced at
+  `/state.resilience.grouping_supervisor`; off-switch
+  `JASPER_GROUPING_SUPERVISOR=disabled` (exact match, mirrors the
+  shairport/system supervisors). Auto-unwind to solo is deliberately NOT
+  built: tearing down a user-created bond is not a 30 s-poll decision;
+  disband stays one tap on /rooms until a real non-converging failure
+  shape is observed (the kick converges every silence class seen to date).
   **Spec note (Increment 6's backstop, updated):** when per-follower
   profiles exist, a doctor check asserts a bonded leader's active config
   carries right-channel correction (`room_peq_r*`) when the follower has a
@@ -1636,7 +1670,33 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (SNAPCAST BINDING PIN + CLIENT-TRUTH HEALTH — the
+Last verified: 2026-06-11 (INCREMENT 5 PR-2 BUILT — member-local TTS + the
+grouping supervisor. outputd grew `tts.rs`: a server speaking fanin's exact
+newline-framed TTS wire protocol (the twin is deliberate — Python keeps ONE
+playout implementation; shared-crate extraction is a named follow-up),
+feeding the surviving OutputCore engine; the FLUSH_SYNC barge-in ack now
+carries DAC-true audio_played_ms + segment events from the playout ledger
+(fanin's ack hardcodes 0). The reconciler arms both ends while bonded —
+JASPER_OUTPUTD_TTS_SOCKET in grouping-outputd.env, JASPER_TTS_OUTPUTD_SOCKET
+in grouping-voice.env (solo OMITS the key; a fresh solo reconcile skips
+creating an empty file so first boot doesn't restart voice) — and restarts
+voice on change. Bonded TTS is therefore member-local + instant (inv-3;
+PROGRAM_DUCK rides the same socket, so ducking is member-local too; inv-A
+holds because TTS mixes pre-reference-publish). Solo is byte-identical to
+pre-PR-2. Doctor: `TTS lane` (replaces the PR-1 standing `TTS interim`
+warn) verifies the two env files agree, catching the silent-assistant
+drift (voice targeting a socket outputd never armed) and the stale-solo
+override. NEW jasper/control/grouping_supervisor.py (mirrors the shairport
+supervisor shape): every bonded member polls outputd's
+dac_content.serving_fifo each 30 s; 3 consecutive starved polls →
+reset-failed + restart --no-block jasper-grouping-reconcile, rate-limited
+1/10 min; the leader re-runs the ensure_groups_on_stream ownership pin
+every poll (continuous binding read-repair, ≤30 s self-heal for runtime
+rebinds); /state.resilience.grouping_supervisor;
+JASPER_GROUPING_SUPERVISOR=disabled off-switch. Auto-unwind to solo
+deliberately NOT built — disband stays one tap on /rooms until a real
+non-converging failure is observed.) Earlier same day (SNAPCAST BINDING
+PIN + CLIENT-TRUTH HEALTH — the
 durable fixes for the silent-bond class found at bring-up. snapcast PERSISTS
 group→stream assignments (server.json); both speakers' groups predated our
 stream (bound to the distro era's "default") and played ZEROS behind fully

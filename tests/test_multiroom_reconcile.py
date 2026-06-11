@@ -501,6 +501,10 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         str(tmp_path / "grouping-outputd.env"),
     )
     monkeypatch.setattr(
+        reconcile_mod, "VOICE_GROUPING_ENV_FILE",
+        str(tmp_path / "grouping-voice.env"),
+    )
+    monkeypatch.setattr(
         reconcile_mod, "MEMBER_CONTENT_FIFO",
         str(tmp_path / "member-content.fifo"),
     )
@@ -524,6 +528,10 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     monkeypatch.setattr(
         reconcile_mod, "_restart_outputd",
         lambda: order.append("outputd_restart") or True,
+    )
+    monkeypatch.setattr(
+        reconcile_mod, "_restart_unit",
+        lambda unit: order.append(f"restart:{unit}") or True,
     )
     monkeypatch.setattr(
         leader_config_mod, "apply_bonded_leader_config_sync",
@@ -605,7 +613,8 @@ def test_main_leader_order_env_restart_units_then_camilla(tmp_path, monkeypatch)
     rc = main([])
     assert rc == 0
     assert order == [
-        "write", "outputd_restart", "apply", "camilla_bonded", "stream_binding",
+        "write", "outputd_restart", "restart:jasper-voice.service",
+        "apply", "camilla_bonded", "stream_binding",
     ]
 
 
@@ -616,7 +625,7 @@ def test_main_leader_second_run_skips_outputd_restart(tmp_path, monkeypatch):
     assert main([]) == 0
     order.clear()
     assert main([]) == 0
-    # no outputd_restart on the unchanged second run
+    # no outputd/voice restart on the unchanged second run
     assert order == ["write", "apply", "camilla_bonded", "stream_binding"]
 
 

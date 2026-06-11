@@ -500,6 +500,15 @@ the STATUS response. `PROGRAM_DUCK_OFF` is allowed to release a duck
 even after an audio flush advances the TTS epoch; stale
 `PROGRAM_DUCK_ON` is not allowed to relatch after a flush.
 
+On an active multiroom bond member, voice bypasses this socket
+entirely: the grouping reconciler points it at outputd's twin
+(`rust/jasper-outputd/src/tts.rs`, same wire protocol) so assistant
+audio mixes post-round-trip instead of riding the synced stream. One
+contract delta to know when comparing acks: fan-in's `FLUSH_SYNC`
+summary hardcodes `max_audio_played_ms: 0` / `events: []` (no DAC
+ledger here), while outputd's reports DAC-true played milliseconds
+from its playout ledger. See HANDOFF-multiroom.md Increment 5 PR-2.
+
 **`JASPER_FANIN_MUSIC_OUTPUT_PCM` — the multi-room music-only tap (off by
 default).** When set, the mixer writes a SECOND output every period: the
 program **post-duck but pre-TTS** — the room's music as played, minus the

@@ -18,6 +18,8 @@ use crate::alsa_backend::{DualAppleStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
 use crate::dac_content::DacContentMetrics;
+use crate::tts::TtsMetrics;
+use std::sync::OnceLock;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -89,6 +91,10 @@ pub struct OutputdState {
     reference_sequence: AtomicU64,
     last_progress_ms: AtomicU64,
     watchdog_pings_sent: AtomicU64,
+    // Bonded-member TTS lane (PR-2). Set once at startup when the
+    // socket env is configured; the state server may briefly read
+    // enabled:false before run_alsa sets it — harmless.
+    tts: OnceLock<(String, TtsMetrics)>,
 }
 
 impl OutputdState {
@@ -161,7 +167,12 @@ impl OutputdState {
             reference_sequence: AtomicU64::new(0),
             last_progress_ms: AtomicU64::new(0),
             watchdog_pings_sent: AtomicU64::new(0),
+            tts: OnceLock::new(),
         }
+    }
+
+    pub fn set_tts(&self, socket: String, metrics: TtsMetrics) {
+        let _ = self.tts.set((socket, metrics));
     }
 
     pub fn set_negotiated(&self, content: NegotiatedPcm, dac: NegotiatedPcm) {
@@ -550,6 +561,61 @@ impl OutputdState {
                     &mut buf,
                     "read_failures",
                     self.dac_content_read_failures.load(Ordering::Relaxed),
+                );
+            }
+            None => {
+                push_kv_bool(&mut buf, "enabled", false);
+            }
+        }
+        buf.push('}');
+        buf.push(',');
+
+        // Bonded-member TTS lane (PR-2) — daemon truth for /state +
+        // doctor. enabled:false when the lane is off (solo: fanin owns
+        // TTS) — zero noise, mirroring dac_content.
+        buf.push_str(r#""tts":{"#);
+        match self.tts.get() {
+            Some((socket, m)) => {
+                push_kv_bool(&mut buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(&mut buf, "socket", socket);
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "pending_frames",
+                    m.pending_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(&mut buf, "budget_frames", m.max_pending_frames);
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "requests",
+                    m.requests.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "dropped_audio_frames",
+                    m.dropped_audio_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "dropped_commands",
+                    m.dropped_commands.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "flush_requests",
+                    m.flush_requests.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "flushed_frames",
+                    m.flushed_frames.load(Ordering::Relaxed),
                 );
             }
             None => {
@@ -970,6 +1036,9 @@ mod tests {
             control_socket_path: None,
             dac_content_fifo: None,
             dac_content_channel: crate::dac_content::ChannelPick::Stereo,
+            tts_socket_path: None,
+            tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
+            tts_program_duck_db: -25.0,
         }
     }
 
@@ -1025,7 +1094,13 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
-        assert!(!j.contains(r#""tts":"#), "retired outputd TTS state present in {j}");
+        // PR-2 (Increment 5) UN-RETIRED the outputd TTS lane that 9102e13
+        // removed — this assertion used to pin its absence; it now pins
+        // the solo shape: present but disabled (fanin owns solo TTS).
+        assert!(
+            j.contains(r#""tts":{"enabled":false}"#),
+            "solo tts block must be present-but-disabled in {j}"
+        );
         assert!(
             !j.contains(r#""assistant_loudness":"#),
             "duplicate outputd loudness state present in {j}"
@@ -1102,6 +1177,32 @@ mod tests {
             r#""overflow_dropped_periods":1"#,
             r#""open_failures":4"#,
             r#""read_failures":5"#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+    }
+
+    #[test]
+    fn snapshot_json_tts_disabled_is_quiet_and_enabled_is_full() {
+        let state = OutputdState::new(&test_config());
+        let j = state.snapshot_json();
+        assert!(
+            j.contains(r#""tts":{"enabled":false}"#),
+            "missing quiet disabled tts block in {j}"
+        );
+
+        let state = OutputdState::new(&test_config());
+        let metrics = TtsMetrics::new(96_000);
+        metrics.pending_frames.store(123, Ordering::Relaxed);
+        metrics.flushed_frames.store(7, Ordering::Relaxed);
+        state.set_tts("/run/jasper-outputd/tts.sock".to_string(), metrics);
+        let j = state.snapshot_json();
+        for needle in [
+            r#""tts":{"enabled":true"#,
+            r#""socket":"/run/jasper-outputd/tts.sock""#,
+            r#""pending_frames":123"#,
+            r#""budget_frames":96000"#,
+            r#""flushed_frames":7"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }

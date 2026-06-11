@@ -394,20 +394,87 @@ def test_outputd_config_exit_code_contract():
     assert "RestartPreventExitStatus=78" in unit
 
 
-def test_tts_interim_check_warns_while_bonded(monkeypatch):
-    """The PR-1 known gap stays VISIBLE while bonded (no-silent-failure):
-    TTS rides the synced stream until PR-2's outputd TTS mixer."""
+def _tts_lane_check(
+    monkeypatch, *, cfg, voice_text=None, outputd_text=None, tmp_path=None,
+):
+    import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
-    from jasper.cli.doctor.grouping import check_grouping_tts_interim
-    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: _cfg())
-    assert check_grouping_tts_interim().status == "ok"
-    monkeypatch.setattr(
-        cfgmod, "load_config",
-        lambda *a, **k: _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+    import jasper.multiroom.reconcile as recmod
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
+    voice_path = "/nonexistent/grouping-voice.env"
+    outputd_path = "/nonexistent/grouping-outputd.env"
+    if voice_text is not None:
+        f = tmp_path / "grouping-voice.env"
+        f.write_text(voice_text)
+        voice_path = str(f)
+    if outputd_text is not None:
+        f = tmp_path / "grouping-outputd.env"
+        f.write_text(outputd_text)
+        outputd_path = str(f)
+    monkeypatch.setattr(recmod, "VOICE_GROUPING_ENV_FILE", voice_path)
+    monkeypatch.setattr(recmod, "OUTPUTD_GROUPING_ENV_FILE", outputd_path)
+    return groupmod.check_grouping_tts_lane()
+
+
+def test_tts_lane_check_solo_clean_is_ok(monkeypatch):
+    assert _tts_lane_check(monkeypatch, cfg=_cfg()).status == "ok"
+
+
+def test_tts_lane_check_solo_with_stale_override_warns(monkeypatch, tmp_path):
+    """A solo speaker carrying a leftover outputd pointer has voice
+    writing to a socket nobody serves — silent assistant, must warn."""
+    from jasper.multiroom.reconcile import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
+    r = _tts_lane_check(
+        monkeypatch, cfg=_cfg(),
+        voice_text=f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n",
+        tmp_path=tmp_path,
     )
-    r = check_grouping_tts_interim()
     assert r.status == "warn"
-    assert "PR-2" in r.detail
+    assert "un-armed" in r.detail
+
+
+def test_tts_lane_check_bonded_without_voice_override_warns(monkeypatch):
+    """Bonded but voice still on the fanin path → TTS rides the synced
+    stream (the retired PR-1 interim shape): degraded, visible."""
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+    )
+    assert r.status == "warn"
+    assert "rides the synced stream" in r.detail
+
+
+def test_tts_lane_check_bonded_unarmed_lane_warns_broken(monkeypatch, tmp_path):
+    """The worst drift: voice targets outputd's socket but the lane was
+    never armed — assistant voice writes into the void."""
+    from jasper.multiroom.reconcile import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+        voice_text=f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n",
+        outputd_text="# lane keys absent\n",
+        tmp_path=tmp_path,
+    )
+    assert r.status == "warn"
+    assert "BROKEN" in r.detail
+
+
+def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path):
+    """The reconciler's own pure derives write both files → the check
+    passes: the two ends of the contract are the same functions."""
+    from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
+    cfg = _cfg(enabled=True, role="follower", channel="right",
+               bond_id="b", leader_addr="jts.local")
+    r = _tts_lane_check(
+        monkeypatch, cfg=cfg,
+        voice_text="".join(
+            f"{k}={v}\n" for k, v in voice_grouping_env(cfg).items()),
+        outputd_text="".join(
+            f"{k}={v}\n" for k, v in outputd_grouping_env(cfg).items()),
+        tmp_path=tmp_path,
+    )
+    assert r.status == "ok"
+    assert "member-local TTS wired" in r.detail
 
 
 def test_camilla_block_field_shared_scanner():
@@ -438,3 +505,45 @@ def test_camilla_block_field_shared_scanner():
 # operator story it carried now lives in check_grouping's runtime detail,
 # covered by test_doctor.py::
 # test_check_grouping_leader_reads_degraded_until_producer_built.
+
+
+def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
+    """PR-2: a bonded member's voice plays TTS via outputd (post-round-trip
+    — solo latency); solo OMITS the key entirely — never present-but-empty
+    (a set-empty value reads as a real, invalid socket path; omission
+    falls back to the fanin default). Both roles flip: each member's OWN
+    replies mix at its OWN final output (inv-3 keeps the leader's TTS out
+    of the SHARED stream)."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_TTS_SOCKET,
+        VOICE_TTS_SOCKET_ENV,
+        voice_grouping_env,
+    )
+    for cfg in (
+        _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+        _cfg(enabled=True, role="follower", channel="right",
+             bond_id="b", leader_addr="jts.local"),
+    ):
+        env = voice_grouping_env(cfg)
+        assert env == {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+    for cfg in (
+        _cfg(),  # off
+        _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),
+    ):
+        assert voice_grouping_env(cfg) == {}
+
+
+def test_outputd_grouping_env_arms_tts_socket_with_the_lane():
+    """The TTS socket arms/clears in lockstep with the round-trip lane —
+    one file, one writer, no half-armed member."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_TTS_SOCKET,
+        OUTPUTD_TTS_SOCKET_ENV,
+        outputd_grouping_env,
+    )
+    bonded = outputd_grouping_env(
+        _cfg(enabled=True, role="follower", channel="right",
+             bond_id="b", leader_addr="jts.local"))
+    assert bonded[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
+    solo = outputd_grouping_env(_cfg())
+    assert solo[OUTPUTD_TTS_SOCKET_ENV] == ""  # empty = unset to outputd
