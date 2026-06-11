@@ -170,19 +170,26 @@ rather than exposing raw filesystem paths.
 ### Advanced speaker setup entry point
 
 As of 2026-06-02, `/sound/` also shows a collapsed **Advanced speaker
-setup** card for active crossover commissioning. A user can click
-**Check environment** to fetch
-`/sound/active-speaker/environment`, which runs the read-only
-`jasper.active_speaker.environment` probe and reports ALSA playback-device
-count, current CamillaDSP config classification, validation status,
-load-gate status, and why safe playback is still blocked. It does not play
-tones, start sweeps, reload CamillaDSP, load active crossover configs, or
-touch live audio. The same card can **Arm safe session** and **Stop** a
-no-audio safety session through `/sound/active-speaker/arm` and
+setup** entry point for active crossover commissioning. Opening it shows one
+primary **Active crossover setup** walkthrough, not a separate environment
+card. The walkthrough keeps one task card open at a time: choose speaker
+layout, research drivers, map and verify outputs, then prepare safe test
+mode. Layout and research steps do not play sound, load CamillaDSP, or touch
+live audio; detected hardware is supporting context and the hardware refresh
+control is a small utility inside the layout step.
+
+The **Prepare safe test mode** card owns the read-only preflight and safety
+session controls. Its preflight fetches `/sound/active-speaker/environment`,
+which runs the read-only `jasper.active_speaker.environment` probe and reports
+ALSA playback-device count, current CamillaDSP config classification,
+validation status, load-gate status, and why safe playback is still blocked.
+It does not play tones, start sweeps, reload CamillaDSP, load active crossover
+configs, or touch live audio. The same safety step can **Arm safe session**
+and **Stop** a no-audio safety session through `/sound/active-speaker/arm` and
 `/sound/active-speaker/stop`; arming only persists the current safety state
 when the environment load gate passes, and Stop is a normal-sized,
-idempotent control that records the session as stopped. It still does not
-emit tones or authorize playback. When armed, the card can also prepare a
+idempotent control that records the session as stopped. It still does not emit
+tones or authorize playback. When armed, the safety step can also prepare a
 bounded no-audio channel-test plan through `/sound/active-speaker/tone-plan`.
 That plan shows the target output, frequency, test-signal level, and duration,
 but it still returns `would_play: false` and does not authorize playback. The
@@ -198,7 +205,7 @@ an `action=observe` mic observation from the operator; it records coarse
 capture-level guidance without changing the requested test level unless
 clipping is reported. The same endpoint accepts `action=auto_step` only for a
 selected saved-channel readiness target; the backend resolves the target from
-the saved output map, reuses the current mic observation when the browser does
+the saved speaker layout, reuses the current mic observation when the browser does
 not provide a new one, recomputes driver protection and same-target
 floor-audio evidence, and persists at most one bounded raise/lower/reset/hold
 transition. Every upward auto-level step requires same-target floor-audio
@@ -221,18 +228,21 @@ passive speakers, and subwoofer outputs now have a no-audio backend contract:
 `/var/lib/jasper/output_topology.json`. That model evaluates identity and
 tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
 tones, or authorizes playback; the audible safe-session path remains separate.
-The same `/sound/` card renders a lightweight **Output setup** surface over
+The same `/sound/` card renders a lightweight **Active crossover setup** surface over
 that endpoint as collapsible task cards: **Choose speaker layout**, **Research
-drivers**, **Map and verify outputs**, and **Stage, load, and start quiet**.
-The open card is derived from existing output/topology/startup state plus
-transient browser intent; no persisted wizard-progress state exists, and users
-can reopen earlier cards to edit them. The layout card shows detected hardware,
+drivers**, **Map and verify outputs**, and **Prepare safe test mode**.
+The layout card opens by default on page load. Explicit Next/manual-open
+actions use transient browser intent only; no persisted wizard-progress state
+exists. The UI keeps one card open at a time, prevents opening future
+prerequisite-gated cards, and lets users reopen earlier cards to edit them. The
+layout card starts with
 no-audio setup templates for mono/stereo passive, mono/stereo active 2-way, and
-mono/stereo active 3-way wiring, plus the subwoofer add-on. Subwoofer is not a
+mono/stereo active 3-way wiring, plus the subwoofer add-on; detected hardware is
+shown as supporting context rather than the primary call to action. Subwoofer is not a
 duplicated template family: the UI offers it as an optional add-on that composes
 with the current mono/stereo draft when an unused physical output is available,
 adds a `subwoofer` group, and records it in `routing.subwoofer_group_ids`.
-Saving a setup template or subwoofer add-on is a complete topology JSON
+Saving a speaker-layout draft is a complete topology JSON
 replacement and only runs backend validation; it does not play sound or change
 the live DSP graph. The same payload carries a clock-domain report that records
 the current single final-output device assumption; aggregating multiple USB DACs
@@ -348,7 +358,7 @@ graph, and it still does not emit audio or authorize playback.
 - `jasper/output_topology.py` — import-cheap physical-output topology
   contract for DAC lanes, speaker groups, passive/active modes, subwoofers,
   identity verification, and tweeter-protection evidence. Current scope is
-  JSON load/save/evaluate plus the `/sound/` Output setup UI; it has no audio
+  JSON load/save/evaluate plus the `/sound/` Active crossover setup UI; it has no audio
   side effects, hardware loading, or sound-emitting playback.
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
@@ -656,4 +666,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-09
+Last verified: 2026-06-11

@@ -529,12 +529,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return '<section class="active-speaker-setup">' +
       '<details class="advanced"' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
-        '<div class="setting-row setting-row--stack active-speaker-intro">' +
-          '<div class="setting-row__text">' +
-            '<p class="setting-row__title">Active crossover setup</p>' +
-            '<p class="setting-row__hint">Use these cards in order. Setup and preflight steps do not play sound; test mode starts at the quiet floor.</p>' +
-          '</div>' +
-        '</div>' +
         renderOutputTopologySetup() +
       '</details>' +
     '</section>';
@@ -844,37 +838,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return '<div class="setting-row setting-row--stack output-setup">' +
       '<div class="output-setup__head">' +
         '<div class="setting-row__text">' +
-          '<p class="setting-row__title">Output setup</p>' +
-          '<p class="setting-row__hint">Map DAC outputs to speakers and driver roles before any active crossover work. ' +
-            'Saving this map does not play sound or reload CamillaDSP.</p>' +
+          '<p class="setting-row__title">Active crossover setup</p>' +
+          '<p class="setting-row__hint">Build the speaker layout, add driver info, map DAC outputs, then prepare safe test mode.</p>' +
         '</div></div>' +
-      renderOutputSetupState() +
       renderOutputTopologyBody() +
     '</div>';
   }
-  function outputSetupStatusLabel() {
+  function renderOutputHardwareRefresh() {
     var topology = currentOutputTopology();
-    if (outputTopology.loading && !topology) return 'Loading';
-    if (!topology) return 'Not loaded';
-    if (outputTopology.dirty) return 'Unsaved draft';
-    var evaluation = outputEvaluation(topology);
-    return (evaluation.status || topology.status || 'Saved').replace(/_/g, ' ');
-  }
-  function renderOutputSetupState() {
-    return '<div class="output-setup__state">' +
-      '<span class="status-pill">' + escapeHtml(outputSetupStatusLabel()) + '</span>' +
-      renderOutputTopologyActions() +
-    '</div>';
-  }
-  function renderOutputTopologyActions() {
-    var topology = currentOutputTopology();
-    var saveDisabled = !outputTopology.draft || !outputTopology.dirty ||
-      outputTopology.saving || outputTopology.loading;
     return '<div class="output-setup__actions">' +
       '<button type="button" class="btn btn--ghost" data-act="refresh-output-topology"' +
-        (outputTopology.loading ? ' disabled' : '') + '>' + (topology ? 'Reload hardware' : 'Load hardware') + '</button>' +
-      '<button type="button" class="btn btn--primary" data-act="save-output-topology"' +
-        (saveDisabled ? ' disabled' : '') + '>' + (outputTopology.saving ? 'Saving' : 'Save output map') + '</button>' +
+        (outputTopology.loading ? ' disabled' : '') + '>' + (topology ? 'Refresh hardware' : 'Find hardware') + '</button>' +
     '</div>';
   }
   function outputIdentityComplete() {
@@ -901,14 +875,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (outputIdentityComplete() ? 'active' : 'todo');
     return 'todo';
   }
-  function defaultOutputStep(topology) {
-    if (!topology || !outputGroups(topology).length || outputTopology.dirty) return 'layout';
-    if (!driverResearchDraftSaved() && !driverResearch.parsed) return 'research';
-    if (!outputIdentityComplete()) return 'map';
-    return 'safety';
+  function defaultOutputStep() {
+    return 'layout';
   }
   function outputStepIsOpen(step, topology) {
-    return (outputStepOverride || defaultOutputStep(topology)) === step;
+    return (outputStepOverride || defaultOutputStep()) === step;
+  }
+  function outputStepTitle(step) {
+    return {
+      layout: 'Choose speaker layout',
+      research: 'Research drivers',
+      map: 'Map and verify outputs',
+      safety: 'Prepare safe test mode'
+    }[step] || 'this card';
+  }
+  function outputStepCanOpen(step, topology) {
+    return outputStepState(step, topology) !== 'todo';
   }
   function openOutputStep(step) {
     outputStepOverride = step;
@@ -917,12 +899,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderOutputStepCard(step, title, hint, topology, bodyHtml, footerHtml) {
     var state = outputStepState(step, topology);
     var open = outputStepIsOpen(step, topology);
-    var stateLabel = open ? 'Now' : (state === 'done' ? 'Done' : 'Next');
+    var done = state === 'done';
     return '<details class="output-step output-step--' + escapeHtml(state) + '"' +
       ' data-output-step="' + escapeHtml(step) + '"' +
       (open ? ' open' : '') + '>' +
       '<summary class="output-step__summary">' +
-        '<span class="output-step__marker">' + escapeHtml(stateLabel) + '</span>' +
+        '<span class="output-step__marker" aria-hidden="true">' + (done ? '&#10003;' : '') + '</span>' +
         '<span class="output-step__text"><strong>' + escapeHtml(title) + '</strong>' +
           '<span>' + escapeHtml(hint) + '</span></span>' +
         '<span class="output-step__chevron" aria-hidden="true"></span>' +
@@ -996,7 +978,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ];
     return '<div class="output-card output-card--templates">' +
       '<div class="output-card__head"><div><p class="output-card__title">Setup template</p>' +
-        '<p class="setting-row__hint">Choose the speaker map you are wiring. This only edits the saved draft map.</p></div></div>' +
+        '<p class="setting-row__hint">Choose the speaker layout you are wiring. This only edits the saved draft.</p></div></div>' +
       '<div class="output-template-axes">' +
         '<div class="output-template-axis">' +
           '<p class="output-template-axis__label">Speaker count</p>' +
@@ -1204,7 +1186,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var disabled = crossoverPreview.preparing || !canPrepare;
     var hint = canPrepare ?
       'Builds bounded filter intent from the saved draft. No YAML, no Camilla load, no sound.' :
-      'Save the output map and design draft before preparing a crossover preview.';
+      'Save the speaker layout and design draft before preparing a crossover preview.';
     if (crossoverPreview.error) hint = crossoverPreview.error;
     return '<div class="output-card output-card--crossover-preview">' +
       '<div class="output-card__head"><div><p class="output-card__title">Crossover preview</p>' +
@@ -1230,14 +1212,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (outputTopology.error) {
       return '<div class="output-error">' +
-        '<span class="status-pill status-pill--blocked">Output setup unavailable</span>' +
+        '<span class="status-pill status-pill--blocked">Active crossover setup unavailable</span>' +
         '<p class="setting-row__hint">' + escapeHtml(outputTopology.error) + '</p>' +
+        renderOutputHardwareRefresh() +
       '</div>';
     }
     var topology = currentOutputTopology();
     if (!topology) {
       return '<div class="output-empty">' +
-        '<p class="setting-row__hint">Load detected hardware to start a speaker output map.</p>' +
+        '<p class="setting-row__hint">Refresh hardware to start a speaker layout.</p>' +
+        renderOutputHardwareRefresh() +
       '</div>';
     }
     var evaluation = outputEvaluation(topology);
@@ -1251,7 +1235,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         renderOutputSetupTemplates(topology) +
           renderOutputSubwooferCard(topology) +
           renderOutputHardwareCard(topology, statusValue),
-        renderOutputStepButton('layout',
+        renderOutputHardwareRefresh() +
+          renderOutputStepButton('layout',
           outputTopology.dirty ? 'Save and continue' : 'Next: research drivers',
           true)
       ) +
@@ -1465,7 +1450,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (outputTopology.dirty) {
       return '<div class="output-card output-card--identity">' +
         '<div class="output-card__head"><div><p class="output-card__title">Channel identity</p>' +
-        '<p class="setting-row__hint">Save this output setup draft before recording physical verification evidence.</p></div>' +
+        '<p class="setting-row__hint">Save this speaker layout draft before recording physical verification evidence.</p></div>' +
         '<span class="status-pill">draft</span></div>' +
         '<p class="setting-row__hint">JTS will re-run backend validation after save, then you can mark assigned channels as physically verified.</p>' +
       '</div>';
@@ -1474,7 +1459,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!report) {
       return '<div class="output-card output-card--identity">' +
         '<div class="output-card__head"><div><p class="output-card__title">Channel identity</p>' +
-        '<p class="setting-row__hint">Load or save the output setup to see verification progress.</p></div></div>' +
+        '<p class="setting-row__hint">Load or save the speaker layout to see verification progress.</p></div></div>' +
       '</div>';
     }
     var assigned = Number(report.assigned_channel_count || 0);
@@ -1841,7 +1826,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (outputTopology.dirty) {
       return '<div class="output-card output-card--readiness">' +
         '<div class="output-card__head"><div><p class="output-card__title">Playback readiness</p>' +
-        '<p class="setting-row__hint">Save the output setup before checking a channel.</p></div>' +
+        '<p class="setting-row__hint">Save the speaker layout before checking a channel.</p></div>' +
         '<span class="status-pill">draft</span></div>' +
       '</div>';
     }
@@ -1855,7 +1840,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (outputTopology.readinessError) {
       return '<div class="output-card output-card--readiness">' +
         '<div class="output-card__head"><div><p class="output-card__title">Playback readiness</p>' +
-        '<p class="setting-row__hint">The last readiness check failed. The saved output setup is still available.</p></div>' +
+        '<p class="setting-row__hint">The last readiness check failed. The saved speaker layout is still available.</p></div>' +
         '<span class="status-pill status-pill--blocked">check failed</span></div>' +
         '<p class="setting-row__hint">' + escapeHtml(outputTopology.readinessError) + '</p>' +
       '</div>';
@@ -2962,7 +2947,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   el('view-body').addEventListener('toggle', function(ev) {
     if (ev.target && ev.target.classList && ev.target.classList.contains('output-step') &&
         ev.target.open) {
-      outputStepOverride = ev.target.getAttribute('data-output-step') || outputStepOverride;
+      var step = ev.target.getAttribute('data-output-step') || outputStepOverride;
+      var topology = currentOutputTopology();
+      if (!outputStepCanOpen(step, topology)) {
+        ev.target.open = false;
+        outputStepOverride = defaultOutputStep();
+        status('Finish the current card before opening ' + outputStepTitle(step) + '.', true);
+        render();
+        return;
+      }
+      outputStepOverride = step;
       el('view-body').querySelectorAll('.output-step[open]').forEach(function(stepEl) {
         if (stepEl !== ev.target) stepEl.open = false;
       });
@@ -3100,7 +3094,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function refreshOutputTopology(options) {
     options = options || {};
     if (!options.silent && outputTopology.dirty &&
-        !await jtsConfirm('Reload output setup and lose the unsaved draft?')) {
+        !await jtsConfirm('Refresh hardware and lose the unsaved speaker layout draft?')) {
       return;
     }
     if (!options.silent) outputTopology.touched = true;
@@ -3110,7 +3104,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     try {
       var resp = await fetch('./output-topology', {cache: 'no-store'});
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'output setup failed');
+      if (!resp.ok) throw new Error(payload.error || 'speaker layout load failed');
       ingestOutputTopology(payload);
       try {
         await fetchDesignDraft();
@@ -3296,19 +3290,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function setOutputTemplate(kind, options) {
     options = options || {};
     if (outputTopology.dirty && !options.skipDirtyConfirm &&
-        !await jtsConfirm('Replace the unsaved output setup draft?')) {
+        !await jtsConfirm('Replace the unsaved speaker layout draft?')) {
       return;
     }
     var next = baseOutputDraft();
     if (!next || !next.hardware) {
-      status('Load output hardware before creating a speaker map.', true);
+      status('Load output hardware before creating a speaker layout.', true);
       return;
     }
     var keepSubwoofer = outputHasSubwoofer(next);
     var count = Number(next.hardware.physical_output_count) || 0;
     var template = outputTemplateDefinition(kind);
     if (!template) {
-      status('Choose a supported output setup template.', true);
+      status('Choose a supported speaker layout template.', true);
       return;
     }
     if (count < template.minOutputs) {
@@ -3330,14 +3324,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     setOutputDraft(next);
     status(
       keepSubwoofer && !outputHasSubwoofer(next)
-        ? 'Output setup draft updated. Subwoofer was removed because no spare output remains.'
-        : 'Output setup template is a draft. Save to validate; no sound will play.'
+        ? 'Speaker layout draft updated. Subwoofer was removed because no spare output remains.'
+        : 'Speaker layout is a draft. Save to validate; no sound will play.'
     );
   }
   async function setOutputTemplateAxis(axis, value) {
     var topology = currentOutputTopology();
     if (!topology) {
-      status('Load output hardware before creating a speaker map.', true);
+      status('Load output hardware before creating a speaker layout.', true);
       return;
     }
     var axes = outputTemplateAxesForTopology(topology);
@@ -3345,7 +3339,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var speakerMode = axis === 'speaker-mode' ? value : axes.speakerMode;
     var kind = outputTemplateKindFromAxes(layout, speakerMode);
     if (!kind) {
-      status('Choose a supported output setup option.', true);
+      status('Choose a supported speaker layout option.', true);
       return;
     }
     await setOutputTemplate(kind, {skipDirtyConfirm: true});
@@ -3353,7 +3347,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function toggleOutputSubwoofer(modeValue) {
     var topology = currentOutputTopology();
     if (!topology) {
-      status('Load output hardware before editing the speaker map.', true);
+      status('Load output hardware before editing the speaker layout.', true);
       return;
     }
     var next = modeValue === 'remove'
@@ -3369,8 +3363,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     setOutputDraft(next);
     status(modeValue === 'remove' ?
-      'Removed subwoofer from the output setup draft.' :
-      'Added subwoofer to the output setup draft. Save before verification.');
+      'Removed subwoofer from the speaker layout draft.' :
+      'Added subwoofer to the speaker layout draft. Save before verification.');
   }
   function updateDriverResearchPromptPreview() {
     var prompt = el('driver-research-prompt');
@@ -3415,7 +3409,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function saveDriverResearchDraft(options) {
     options = options || {};
     if (outputTopology.dirty) {
-      status('Save the output map before saving driver research.', true);
+      status('Save the speaker layout before saving driver research.', true);
       return false;
     }
     if (!currentOutputTopology()) {
@@ -3507,7 +3501,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         return;
       }
       openOutputStep('research');
-      status('Output map is already saved. Continue with driver research or skip ahead.');
+      status('Speaker layout is already saved. Continue with driver research or skip ahead.');
       return;
     }
     if (step === 'research') {
@@ -3517,7 +3511,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (step === 'map') {
       if (outputTopology.dirty) {
         outputStepOverride = 'map';
-        status('Save the output map before recording or relying on physical verification.', true);
+        status('Save the speaker layout before recording or relying on physical verification.', true);
         render();
         return;
       }
@@ -3527,7 +3521,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         outputStepOverride = 'map';
         status(assigned > 0 ?
           'Verify every assigned physical output before continuing to safety checks.' :
-          'Save a speaker map with assigned physical outputs before continuing to safety checks.', true);
+          'Save a speaker layout with assigned physical outputs before continuing to safety checks.', true);
         render();
         return;
       }
@@ -3556,20 +3550,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         body: JSON.stringify({output_topology: outputTopology.draft})
       });
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'output setup save failed');
+      if (!resp.ok) throw new Error(payload.error || 'speaker layout save failed');
       ingestOutputTopology(payload);
       if (options.nextStep) outputStepOverride = options.nextStep;
-      status('Saved output setup. No sound was played.');
+      status('Saved speaker layout. No sound was played.');
     } catch (e) {
       outputTopology.saving = false;
       outputTopology.error = e.message;
-      status('Could not save output setup: ' + e.message, true);
+      status('Could not save speaker layout: ' + e.message, true);
     }
     render();
   }
   async function updateOutputChannelIdentity(button) {
     if (outputTopology.dirty) {
-      status('Save the output setup before changing channel identity evidence.', true);
+      status('Save the speaker layout before changing channel identity evidence.', true);
       return;
     }
     var groupId = button.getAttribute('data-group-id') || '';
@@ -3611,7 +3605,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   async function updateOutputChannelProtection(button) {
     if (outputTopology.dirty) {
-      status('Save the output setup before changing protection evidence.', true);
+      status('Save the speaker layout before changing protection evidence.', true);
       return;
     }
     var groupId = button.getAttribute('data-group-id') || '';
@@ -3673,7 +3667,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   async function checkOutputPlaybackReadiness(button) {
     if (outputTopology.dirty) {
-      status('Save the output setup before checking playback readiness.', true);
+      status('Save the speaker layout before checking playback readiness.', true);
       return;
     }
     var groupId = button.getAttribute('data-group-id') || '';
@@ -3840,11 +3834,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   async function stageActiveSpeakerConfig() {
     if (outputTopology.dirty) {
-      status('Save the output setup before staging protected config.', true);
+      status('Save the speaker layout before staging protected config.', true);
       return;
     }
     if (!await jtsConfirm(
-      'Stage a muted protected startup config from the saved output setup? This writes a candidate file only; it will not load CamillaDSP or play sound.',
+      'Stage a muted protected startup config from the saved speaker layout? This writes a candidate file only; it will not load CamillaDSP or play sound.',
       {danger: false}
     )) {
       return;
