@@ -150,8 +150,15 @@ DAC registry already follows this —
 [`jasper/audio_hardware/dac.py`](jasper/audio_hardware/dac.py)'s pure-data
 `DacProfile` `REGISTRY`, with `jasper-audio-hardware-reconcile` /
 `jasper-dac-init` writing the ALSA / CamillaDSP device config (**not** typed
-`Config` fields per DAC); a new DAC is one more `DacProfile` entry. Why a
-reconciler and not the wizard alone:
+`Config` fields per DAC). An ordinary single-device DAC should be one new
+`DacProfile` plus detection/contract tests; `jasper.output_hardware` classifies
+registered single-device profiles through the registry and should not grow
+per-DAC branches. Composite/aggregate output is different:
+`kind="composite"` is profile vocabulary, not permission to play. A new
+composite shape needs explicit design for child identity/order, clock-domain
+contract, runtime activation gates, fail-closed partial states, and `/state` /
+doctor observability before reconcile/outputd can route it. Why a reconciler
+and not the wizard alone:
 hardware presence is dynamic, so resolution must re-run on boot / hotplug,
 not once at save time.
 
