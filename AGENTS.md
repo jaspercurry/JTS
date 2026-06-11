@@ -335,7 +335,11 @@ modules.
 
 Treat device names, SSIDs, USB descriptors, Bluetooth MAC-adjacent
 metadata, and browser-provided labels as untrusted. Escape before
-assigning to `innerHTML`, or use DOM/text APIs where practical. Do not
+assigning to `innerHTML`, or use DOM/text APIs where practical — on the
+ES-module pages that means `escapeHtml` from
+[`/assets/shared/js/escape.js`](deploy/assets/shared/js/escape.js), the
+shared module promoted from per-page copies; the conventions test fails
+any page module that re-declares its own escaper. Do not
 put untrusted strings into generated inline JavaScript such as
 `onclick="handler('...')"`. Prefer escaped `data-*` attributes with a
 delegated click handler.
