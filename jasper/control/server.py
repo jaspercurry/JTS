@@ -53,6 +53,7 @@ from ..audio_quality import (
 from . import (
     bootloop_guard_state,
     debug_control,
+    grouping_supervisor,
     mpris,
     shairport_supervisor,
     system_supervisor,
@@ -1548,6 +1549,11 @@ async def _get_state(
         },
         "resilience": {
             "shairport": shairport_supervisor.snapshot(),
+            # Bonded-member runtime liveness: dac_content starvation
+            # watch (kicks the grouping reconciler, rate-limited) +
+            # continuous snapcast binding read-repair on the leader.
+            # Off via JASPER_GROUPING_SUPERVISOR=disabled.
+            "grouping_supervisor": grouping_supervisor.snapshot(),
             # T5.2 — userspace-liveness supervisor. Probes sshd / our
             # own HTTP / /proc/loadavg every 30 s; clean-reboots after
             # 3 consecutive failures (rate-limited 1/24h). Off via
@@ -3050,6 +3056,13 @@ def main(argv: list[str] | None = None) -> int:
     # to 1 reboot per 24 hours. docs/HANDOFF-tier5-watchdog-liveness.md.
     # Off via JASPER_SYSTEM_SUPERVISOR=disabled.
     system_supervisor.start_supervisor()
+    # Bonded-member runtime liveness: closes the gap between grouping
+    # reconciles — sustained dac_content starvation kicks the
+    # reconciler (rate-limited), and the leader's snapcast group→stream
+    # bindings are read-repaired every poll (the 2026-06-11 silent-bond
+    # class). Costs one grouping.env read per 30 s when solo. Off via
+    # JASPER_GROUPING_SUPERVISOR=disabled.
+    grouping_supervisor.start_supervisor()
     # Runtime debug toggle: clear an expired session left on disk, or
     # re-arm the auto-quiet timer if a debug session is still active
     # across this control restart. See jasper/control/debug_control.py.
