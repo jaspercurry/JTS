@@ -104,7 +104,7 @@ impl ChannelPick {
     /// Parse the channel-split vocabulary. Unknown values are a
     /// configuration error — fail loud at startup, never guess a
     /// channel (playing the WRONG channel is the silent failure class
-    /// `check_grouping_channel_split` exists for).
+    /// `check_grouping_channel_pick` exists for).
     pub fn parse(raw: &str) -> Result<Self, String> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "" | "stereo" => Ok(Self::Stereo),
