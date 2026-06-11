@@ -34,20 +34,25 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     ensure_volume_limit_db,
 )
-from jasper.camilla_emit import emit_peaking_biquad
+from jasper.camilla_emit import emit_master_gain_pipeline, emit_peaking_biquad
 
 from .peq import PEQ
 
 logger = logging.getLogger(__name__)
 
 
-def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:
+def _emit_filter_definitions(
+    peqs: Iterable[PEQ], peqs_right: Iterable[PEQ] | None = None
+) -> str:
     """Indented YAML for the `filters:` block.
 
     Always includes the `flat` Gain filter so the pipeline always
     has a terminator that matches the outputd base config. The PEQs are named
     `peq_1` through `peq_N` in the order returned by the designer
-    (largest impact first).
+    (largest impact first). When ``peqs_right`` is given (the multi-room
+    leader-bake — a DIFFERENT correction per channel), its filters are
+    additionally emitted as ``peq_r1`` … ``peq_rM``; ``None`` (solo)
+    emits byte-identical output to before this axis existed.
     """
     lines = []
     # Preserve the existing `flat` identity filter so base ↔
@@ -67,41 +72,42 @@ def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:
         lines.extend(
             emit_peaking_biquad(f"peq_{i}", freq=peq.freq, q=peq.q, gain=peq.gain)
         )
+    for i, peq in enumerate(peqs_right or [], start=1):
+        lines.extend(
+            emit_peaking_biquad(f"peq_r{i}", freq=peq.freq, q=peq.q, gain=peq.gain)
+        )
     return "\n".join(lines)
 
 
-def _emit_pipeline(peqs: list[PEQ]) -> str:
+def _emit_pipeline(peqs: list[PEQ], peqs_right: list[PEQ] | None = None) -> str:
     """Indented YAML for the `pipeline:` block.
 
-    Pipeline order:
-      1. Mixer master_gain   (identity; placeholder for future mixer ops)
-      2. Per-channel Filter   (PEQs → flat)
+    This function owns the NAME POLICY only (``peq_1…N`` for channel 0,
+    ``peq_r1…rM`` for channel 1, each terminated by ``flat``); the
+    pipeline STRUCTURE is the shared
+    :func:`jasper.camilla_emit.emit_master_gain_pipeline` primitive.
 
-    The two per-channel Filter entries are duplicated because v1
-    correction is mono — the same PEQ chain on both channels. Phase 2
-    multi-position MMM might want per-channel correction; until then,
-    the single-mic measurement only justifies a mono filter set.
+    ``peqs_right=None`` (solo — the default): the same PEQ chain on both
+    channels, byte-identical to before this axis existed. ``peqs_right``
+    given (multi-room leader-bake, docs/HANDOFF-multiroom.md §2):
+    channel 0 = the leader's own seat, channel 1 = the follower's. An
+    EMPTY ``peqs_right`` list is meaningful and distinct from ``None``:
+    it bakes a FLAT right channel (the "ship uncalibrated followers
+    flat, never the wrong-room curve" rule).
     """
-    chain_names = [f"peq_{i}" for i in range(1, len(peqs) + 1)] + ["flat"]
-    # YAML flow-style list of bare identifiers — valid because the
-    # names are simple alphanumeric+underscore.
-    chain_str = "[" + ", ".join(chain_names) + "]"
-
-    return (
-        "  - type: Mixer\n"
-        "    name: master_gain\n"
-        "  - type: Filter\n"
-        "    channels: [0]\n"
-        f"    names: {chain_str}\n"
-        "  - type: Filter\n"
-        "    channels: [1]\n"
-        f"    names: {chain_str}"
+    left = [f"peq_{i}" for i in range(1, len(peqs) + 1)] + ["flat"]
+    right = (
+        None
+        if peqs_right is None
+        else [f"peq_r{i}" for i in range(1, len(peqs_right) + 1)] + ["flat"]
     )
+    return emit_master_gain_pipeline(left, right)
 
 
 def emit_correction_config(
     peqs: list[PEQ],
     *,
+    peqs_right: list[PEQ] | None = None,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     playback_device: str = DEFAULT_PLAYBACK_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
@@ -118,7 +124,21 @@ def emit_correction_config(
 
     Args:
       peqs: list of PEQ filters from jasper.correction.peq.design_peq.
-        Empty list ⇒ identity config for the outputd path.
+        Empty list ⇒ identity config for the outputd path. Corrects BOTH
+        channels when ``peqs_right`` is None; channel 0 only otherwise.
+      peqs_right: OPTIONAL second PEQ set for channel 1 — the multi-room
+        leader-bake axis (docs/HANDOFF-multiroom.md §2 "Canonical signal
+        flow": L corrected for the leader's seat, R for the follower's).
+        ``None`` (default — solo): channel 1 duplicates ``peqs``,
+        **byte-identical** output to before this parameter existed (the
+        solo-impact contract). ``[]`` (explicitly empty): channel 1 is
+        FLAT — the "ship an uncalibrated follower flat, never the
+        wrong-room curve" rule. Filters are named ``peq_r1`` … ``peq_rM``.
+        Deliberately a 2-channel axis: the whole config contract is
+        stereo-pinned today (``channels: 2``, the weave validator); 2.1's
+        3-channel stream generalises this parameter WITH that contract
+        (HANDOFF-multiroom.md §2, the 2.1 channel-count call) — do not
+        pre-generalise it alone.
       capture_device, playback_device, capture_format, playback_format,
         sample_rate, chunksize, target_level, volume_limit_db: device,
         sample-rate, and safety config. Defaults match the outputd base
@@ -135,8 +155,8 @@ def emit_correction_config(
     # Loud-output safety: refuse to emit a config whose master fader
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
-    filters_yaml = _emit_filter_definitions(peqs)
-    pipeline_yaml = _emit_pipeline(peqs)
+    filters_yaml = _emit_filter_definitions(peqs, peqs_right)
+    pipeline_yaml = _emit_pipeline(peqs, peqs_right)
 
     # inv-5: a grouped member runs rate_adjust off (snapclient is the sole
     # rate-tracker). Caller passes enable_rate_adjust=False for an active
@@ -196,6 +216,11 @@ pipeline:
                 f"parent directory does not exist: {out_path.parent}"
             )
         out_path.write_text(yaml)
-        logger.info("wrote correction config: %s (peqs=%d)", out_path, len(peqs))
+        right_note = (
+            f" peqs_right={len(peqs_right)}" if peqs_right is not None else ""
+        )
+        logger.info(
+            "wrote correction config: %s (peqs=%d%s)", out_path, len(peqs), right_note
+        )
 
     return yaml

@@ -166,3 +166,41 @@ def emit_mixer(
                 f"inverted: {_bool(inverted)} }}"
             )
     return "\n".join(lines)
+
+
+def emit_master_gain_pipeline(
+    left_names: Sequence[str],
+    right_names: Sequence[str] | None = None,
+) -> str:
+    """The standard JTS 2-channel ``pipeline:`` block — ``master_gain``
+    Mixer step, then one ``Filter`` step per channel.
+
+    Like :func:`emit_mixer`, this spells STRUCTURE with caller data: the
+    filter-name lists are policy and stay in each subsystem's emitter
+    (``peq_*`` vs ``room_peq_*`` naming, chain order); this function owns
+    only how the pipeline is written. The ``master_gain`` step name is
+    deliberately hard-coded — it IS the cross-subsystem contract (the
+    Ducker writes that mixer's gain for voice sessions).
+
+    ``right_names=None`` (solo) duplicates ``left_names`` onto channel 1 —
+    reproduces `correction._emit_pipeline` and `sound._emit_pipeline`
+    byte-for-byte (the solo-impact contract; both consumers carry exact
+    pipeline-bytes regression tests). A distinct ``right_names`` is the
+    multi-room leader-bake (per-seat correction per channel,
+    docs/HANDOFF-multiroom.md §2). Deliberately a 2-channel shape: the
+    config contract is stereo-pinned today; 2.1's 3-channel stream
+    generalises this WITH that contract, not alone. Returns a joined
+    block (callers splice it under a top-level ``pipeline:`` map).
+    """
+    left = "[" + ", ".join(left_names) + "]"
+    right = left if right_names is None else "[" + ", ".join(right_names) + "]"
+    return (
+        "  - type: Mixer\n"
+        "    name: master_gain\n"
+        "  - type: Filter\n"
+        "    channels: [0]\n"
+        f"    names: {left}\n"
+        "  - type: Filter\n"
+        "    channels: [1]\n"
+        f"    names: {right}"
+    )

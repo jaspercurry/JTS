@@ -158,3 +158,66 @@ def test_emit_correction_config_rejects_non_finite_volume_limit():
 
     with pytest.raises(ValueError, match="must be finite"):
         emit_correction_config([], volume_limit_db=math.inf)
+
+
+# ---------------------------------------------------------------------------
+# peqs_right — the multi-room leader-bake axis (HANDOFF-multiroom.md §2:
+# one config, L corrected for the leader's seat, R for the follower's).
+# ---------------------------------------------------------------------------
+
+
+def test_solo_pipeline_is_byte_identical_without_peqs_right():
+    """The solo-impact contract: with peqs_right unset, the emitted
+    pipeline is EXACTLY the pre-axis shape — the same chain duplicated
+    on both channels — and no right-channel filter exists anywhere."""
+    yaml = emit_correction_config([PEQ(freq=80.0, q=4.0, gain=-3.0)])
+    assert (
+        "pipeline:\n"
+        "  - type: Mixer\n"
+        "    name: master_gain\n"
+        "  - type: Filter\n"
+        "    channels: [0]\n"
+        "    names: [peq_1, flat]\n"
+        "  - type: Filter\n"
+        "    channels: [1]\n"
+        "    names: [peq_1, flat]\n"
+    ) in yaml
+    assert "peq_r" not in yaml
+
+
+def test_peqs_right_bakes_distinct_chain_per_channel():
+    yaml = emit_correction_config(
+        [PEQ(freq=80.0, q=4.0, gain=-3.0), PEQ(freq=2000.0, q=2.0, gain=2.0)],
+        peqs_right=[PEQ(freq=120.0, q=3.0, gain=-4.5)],
+    )
+    # Channel 0 = the leader's seat; channel 1 = the follower's seat.
+    assert "    channels: [0]\n    names: [peq_1, peq_2, flat]" in yaml
+    assert "    channels: [1]\n    names: [peq_r1, flat]" in yaml
+    # The right-channel filter is defined with its own values.
+    assert "peq_r1:" in yaml
+    assert "freq: 120.0000" in yaml
+    assert "gain: -4.5000" in yaml
+    # All seats' biquads coexist: 2 left + 1 right.
+    assert yaml.count("type: Peaking") == 3
+
+
+def test_peqs_right_empty_bakes_flat_right_channel():
+    """[] is distinct from None: an uncalibrated follower ships FLAT,
+    never the leader's wrong-room curve (HANDOFF-multiroom.md §2,
+    Increment 6)."""
+    yaml = emit_correction_config(
+        [PEQ(freq=80.0, q=4.0, gain=-3.0)], peqs_right=[]
+    )
+    assert "    channels: [0]\n    names: [peq_1, flat]" in yaml
+    assert "    channels: [1]\n    names: [flat]" in yaml
+    assert "peq_r" not in yaml
+
+
+def test_empty_left_with_calibrated_right_is_supported():
+    """The asymmetric inverse is legal too: a leader with no own
+    correction baking a calibrated follower channel."""
+    yaml = emit_correction_config(
+        [], peqs_right=[PEQ(freq=120.0, q=3.0, gain=-2.0)]
+    )
+    assert "    channels: [0]\n    names: [flat]" in yaml
+    assert "    channels: [1]\n    names: [peq_r1, flat]" in yaml
