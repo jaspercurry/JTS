@@ -1621,6 +1621,23 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
 
+    # Identity reconciler. Type=oneshot snapshot of the speaker's
+    # effective mDNS identity (OS hostname vs Avahi's post-collision
+    # name vs JASPER_HOSTNAME) into /var/lib/jasper/identity.env, on a
+    # 5-min timer because a collision rename lands when the OTHER
+    # device joins the LAN. jasper.http_security reads the file so a
+    # renamed speaker's management UI stays reachable instead of
+    # 403ing. See docs/HANDOFF-identity.md.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.timer" \
+        "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-identity-reconcile" \
+        /usr/local/sbin/jasper-identity-reconcile
+
     # Boot-loop guard. Type=oneshot cross-boot circuit breaker for the
     # T5.1 StartLimitAction=reboot ladder: on the Nth boot inside the
     # window it writes runtime drop-ins (StartLimitAction=none) so a
@@ -1950,6 +1967,12 @@ install_systemd_units() {
     # disarms StartLimitAction=reboot via runtime drop-ins only when
     # boots are looping. Safe on fresh installs (first boots never trip).
     systemctl enable jasper-bootloop-guard.service
+    # Identity reconciler: boot + 5-min timer; pure observer (writes
+    # only /var/lib/jasper/identity.env). `start` immediately so the
+    # allowlist/doctor see fresh identity without waiting for a boot.
+    systemctl enable jasper-identity-reconcile.timer
+    systemctl start jasper-identity-reconcile.service || \
+        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
     echo
     echo "Units enabled. Start with: systemctl start jasper-fanin jasper-camilla jasper-outputd jasper-voice"
 }

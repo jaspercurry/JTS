@@ -122,3 +122,57 @@ def test_management_read_rejects_unspecified_address_host():
     poisoned client surfaces as a loud 403 instead of silently passing."""
     ok, reason = http_security.management_read_allowed({"Host": "0.0.0.0:8780"})
     assert (ok, reason) == (False, "host_not_allowed")
+
+
+def test_avahi_suffix_rename_of_local_hostname_is_allowed(monkeypatch):
+    """RFC 6762 collision rename: when another device claims our
+    hostname, Avahi silently renames us to <name>-2.local — the only
+    name the speaker is still reachable as. Rejecting it would lock
+    the household out of the management UI with no self-heal."""
+    monkeypatch.setattr(http_security.socket, "gethostname", lambda: "jts")
+    for host in ("jts-2.local", "jts-2", "jts-3.local", "jts-12.local:8780"):
+        ok, reason = http_security.management_read_allowed({"Host": host})
+        assert (ok, reason) == (True, "ok"), host
+
+
+def test_avahi_suffix_only_matches_our_own_hostname(monkeypatch):
+    """The suffix family is scoped to THIS machine's hostname with a
+    purely numeric suffix — a foreign base or non-numeric tail stays a
+    rebinding-shaped reject."""
+    monkeypatch.setattr(http_security.socket, "gethostname", lambda: "jts")
+    for host in (
+        "other-2.local",        # someone else's name family
+        "jts-evil.local",       # non-numeric suffix
+        "jts-2.evil.example",   # public-DNS shape
+        "jts-.local",           # empty suffix
+        "jts2.local",           # sibling speaker, no hyphen — not ours
+    ):
+        ok, reason = http_security.management_read_allowed({"Host": host})
+        assert (ok, reason) == (False, "host_not_allowed"), host
+
+
+def test_identity_file_names_extend_the_allowlist(monkeypatch, tmp_path):
+    """Names the identity reconciler observed (identity.env) are
+    accepted — covers shapes the static rules can't derive, e.g. a
+    stale-but-still-advertised configured name after an operator
+    rename."""
+    identity = tmp_path / "identity.env"
+    identity.write_text(
+        "JASPER_IDENTITY_OS_HOSTNAME=kitchen\n"
+        "JASPER_IDENTITY_AVAHI_HOSTNAME=kitchen-2.local\n"
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts-kitchen.local\n"
+    )
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity))
+    monkeypatch.setattr(http_security.socket, "gethostname", lambda: "unrelated")
+    for host in ("kitchen.local", "kitchen-2.local", "jts-kitchen.local"):
+        ok, reason = http_security.management_read_allowed({"Host": host})
+        assert (ok, reason) == (True, "ok"), host
+    # Still not a free-for-all.
+    ok, reason = http_security.management_read_allowed({"Host": "evil.example"})
+    assert (ok, reason) == (False, "host_not_allowed")
+
+
+def test_missing_identity_file_changes_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(tmp_path / "absent.env"))
+    ok, reason = http_security.management_read_allowed({"Host": "evil.example"})
+    assert (ok, reason) == (False, "host_not_allowed")

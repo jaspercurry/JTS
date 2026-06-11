@@ -1,0 +1,17 @@
+[Unit]
+Description=Re-check effective mDNS identity periodically (collisions happen when the OTHER device boots)
+Documentation=file:/opt/jasper/docs/HANDOFF-identity.md
+
+[Timer]
+# Boot pass shortly after avahi settles, then every 5 minutes. An mDNS
+# collision rename can land at ANY moment — it happens when the
+# conflicting device joins the LAN, not when we boot — so a boot-only
+# oneshot would miss the exact case this exists for. Each run is a few
+# subprocesses (~10 ms); a generous AccuracySec lets systemd batch
+# wakeups instead of waking the Pi on an exact tick.
+OnBootSec=45s
+OnUnitActiveSec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

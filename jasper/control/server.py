@@ -58,6 +58,7 @@ from . import (
     system_supervisor,
     wifi_guardian_state,
 )
+from .. import identity_state
 from ..multiroom.config import GROUPING_ENV_FILE, validate_grouping
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
@@ -1565,6 +1566,14 @@ async def _get_state(
             # for this boot via runtime drop-ins — fix the failing
             # daemon, then reboot to re-arm.
             "bootloop_guard": bootloop_guard_state.snapshot(),
+            # Effective mDNS identity (jasper-identity-reconcile, boot
+            # + 5-min timer). status=collision means Avahi renamed us —
+            # another device owns our hostname; the management
+            # allowlist self-heals from the same file, but the
+            # household should pick a unique name. Fresh file read per
+            # call (reconciler-owned, this daemon is never restarted on
+            # identity changes); {"status": "absent"} pre-first-run.
+            "identity": identity_state.snapshot(),
         },
         "home_assistant": ha_status,
         # Multiroom grouping (off by default). null only if the fresh

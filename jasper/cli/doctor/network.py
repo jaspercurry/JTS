@@ -351,3 +351,72 @@ def check_avahi_jasper_control() -> CheckResult:
         label, "ok",
         "advertised — dials can auto-discover via mDNS-SD",
     )
+
+
+@doctor_check(order=67.5, group="network")
+def check_identity_coherence() -> CheckResult:
+    """The speaker's three names must agree: OS hostname, Avahi's
+    effective mDNS name, and the configured JASPER_HOSTNAME.
+
+    jasper-identity-reconcile (boot + 5-min timer) snapshots them into
+    /var/lib/jasper/identity.env; this check reads that snapshot. A
+    `collision` means Avahi suffix-renamed us (another LAN device owns
+    our hostname) — the management allowlist self-heals from the same
+    file so the UI stays reachable at the renamed address, but the
+    household should pick a unique name. A `drift` means
+    JASPER_HOSTNAME no longer matches what the LAN resolves (stale env
+    after a manual hostnamectl rename). Complements
+    check_hostname_avahi_consistency, which probes live avahi-resolve:
+    this one also covers the configured-identity layer and flags a
+    stopped reconciler timer via snapshot staleness."""
+    from datetime import datetime, timedelta, timezone
+
+    from ... import identity_state
+
+    label = "identity coherence"
+    snap = identity_state.snapshot()
+    if snap["status"] == "absent":
+        # Fresh checkout / pre-first-run. On a Pi the installer starts
+        # the reconciler, so absent there means the unit never ran.
+        if not os.path.exists("/usr/local/sbin/jasper-identity-reconcile"):
+            return CheckResult(label, "ok", "reconciler not installed (skipped)")
+        return CheckResult(
+            label, "warn",
+            "identity.env missing — run: "
+            "sudo systemctl start jasper-identity-reconcile",
+        )
+    stale_note = ""
+    raw_ts = snap.get("checked_at", "")
+    try:
+        checked = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+        age = datetime.now(timezone.utc) - checked
+        if age > timedelta(minutes=15):
+            stale_note = (
+                f" (snapshot {int(age.total_seconds() // 60)} min old — "
+                "is jasper-identity-reconcile.timer running?)"
+            )
+    except ValueError:
+        stale_note = f" (unparseable checked_at: {raw_ts!r})"
+    names = (
+        f"os={snap['os_hostname']} avahi={snap['avahi_hostname']} "
+        f"configured={snap['configured_hostname']}"
+    )
+    if snap["status"] == "collision":
+        return CheckResult(
+            label, "warn",
+            f"Avahi renamed this speaker: {names}. Another device on the "
+            "LAN is using your hostname. The management UI stays "
+            f"reachable at http://{snap['avahi_hostname']}/ ; pick a "
+            "unique name with scripts/rename-speaker.sh." + stale_note,
+        )
+    if snap["status"] == "drift":
+        return CheckResult(
+            label, "warn",
+            f"JASPER_HOSTNAME disagrees with the advertised name: {names}. "
+            "Spoken URLs, OAuth bounce, and the TLS cert derive from "
+            "JASPER_HOSTNAME — converge with scripts/rename-speaker.sh "
+            "or update /etc/jasper/jasper.env." + stale_note,
+        )
+    if stale_note:
+        return CheckResult(label, "warn", names + stale_note)
+    return CheckResult(label, "ok", names)

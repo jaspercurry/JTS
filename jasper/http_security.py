@@ -103,6 +103,32 @@ def _is_private_or_loopback_ip(
     return ip in _ULA_IPV6_NETWORK
 
 
+def _is_avahi_suffix_of_local_hostname(host: str) -> bool:
+    """True when ``host`` is Avahi's RFC 6762 collision rename of THIS
+    machine's hostname: ``jts`` → ``jts-2`` / ``jts-3`` / …, with or
+    without ``.local``.
+
+    When two devices claim the same name, Avahi silently renames the
+    loser; the OS hostname doesn't change, so the static allowlist
+    would reject the only name the speaker is still reachable as — a
+    full management-UI lockout with no self-heal. Accepting the
+    numeric-suffix family of *our own* hostname closes that window with
+    zero subprocess/file I/O: ``.local`` names can't be attacker
+    public-DNS names (RFC 6762 reserves them for mDNS), and a
+    non-numeric or foreign-base suffix still fails."""
+    base = host[: -len(".local")] if host.endswith(".local") else host
+    local = normalize_host(socket.gethostname())
+    if local.endswith(".local"):
+        local = local[: -len(".local")]
+    # `hostname` may be an FQDN on some images; Avahi renames track the
+    # short form.
+    local = local.split(".", 1)[0]
+    if not local or not base.startswith(f"{local}-"):
+        return False
+    suffix = base[len(local) + 1:]
+    return bool(suffix) and suffix.isdigit()
+
+
 def is_allowed_management_host(
     host: str | None,
     *,
@@ -115,6 +141,19 @@ def is_allowed_management_host(
         # That is not a browser DNS-rebinding shape, so keep it working.
         return True
     if normalized in _configured_hostnames(configured_hostname):
+        return True
+    if _is_avahi_suffix_of_local_hostname(normalized):
+        return True
+    # Names the identity reconciler observed this speaker actually
+    # answering to (/var/lib/jasper/identity.env) — covers shapes the
+    # static rules can't derive, e.g. a stale JASPER_HOSTNAME after an
+    # operator rename. Lazy import: identity_state imports
+    # normalize_host from this module at load time, so importing it
+    # here at module level would be a cycle. Missing file → empty set
+    # (fresh install / dev checkout) → exactly the static behavior.
+    from . import identity_state
+
+    if normalized in identity_state.effective_hostnames():
         return True
     ip = _parse_ip(normalized)
     return bool(ip and _is_private_or_loopback_ip(ip))

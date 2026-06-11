@@ -607,6 +607,21 @@ What does NOT derive (intentionally):
   `JASPER_HOSTNAME` here Just Works against the same hosted page —
   no fork-and-redeploy.
 
+**Identity drift is reconciled, renames are scripted.** The OS
+hostname, Avahi's *effective* mDNS name (which silently changes to
+`<name>-2.local` when another device claims the same hostname), and
+`JASPER_HOSTNAME` can disagree. `jasper-identity-reconcile` (boot +
+5-min timer, pure observer) snapshots all three into
+`/var/lib/jasper/identity.env`; `jasper.http_security` reads that file
+plus an avahi-suffix rule so a collision-renamed speaker's management
+UI stays reachable instead of 403ing; `/state.resilience.identity` and
+`jasper-doctor` surface collision/drift with remediation. **To rename
+a speaker, use `bash scripts/rename-speaker.sh <new-name>`** — it
+converges hostnamectl, `jasper.env`, avahi, the laptop state, and the
+TLS cert (via a full deploy) in one operation; a bare `hostnamectl` by
+hand leaves the derived surfaces drifted. Canonical doc:
+[docs/HANDOFF-identity.md](docs/HANDOFF-identity.md).
+
 ---
 
 ## Laptop-side state — `.env.local` and `CLAUDE.local.md`
