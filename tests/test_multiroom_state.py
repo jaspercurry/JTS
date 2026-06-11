@@ -255,8 +255,8 @@ def test_runtime_leader_ok_when_both_active_and_tapping(tmp_path):
 
 def test_runtime_leader_degraded_when_units_up_but_no_producer(tmp_path):
     """The staff-review gap, generalized: snap units active but nothing
-    feeds the snapfifo (empty leader_tap_path — TODAY's production state,
-    no music producer is built) => degraded, snapserver reads an empty
+    feeds the snapfifo (empty leader_tap_path —
+    the bond apply did not land) => degraded, snapserver reads an empty
     FIFO and followers get silence while /state would otherwise look ok."""
     rt = derive_grouping_runtime(
         _cfg(tmp_path, _leader_env()),
@@ -264,9 +264,8 @@ def test_runtime_leader_degraded_when_units_up_but_no_producer(tmp_path):
         leader_tap_path="",
     )
     assert rt["health"] == "degraded"
-    assert "not built" in rt["detail"]
-    assert "no music producer" in rt["detail"]
-    assert "empty FIFO" in rt["detail"]
+    assert "does not write the snapserver pipe" in rt["detail"]
+    assert "jasper-grouping-reconcile" in rt["detail"]
     # Units themselves are still reported active — the failure is the dry
     # stream source, not a down unit.
     assert rt["units"][SNAPSERVER] == {"expected": "start", "actual": "active"}
@@ -280,7 +279,7 @@ def test_runtime_leader_default_tap_is_empty_so_degraded(tmp_path):
         {SNAPSERVER: "active", SNAPCLIENT: "active"},
     )
     assert rt["health"] == "degraded"
-    assert "no music producer" in rt["detail"]
+    assert "does not write the snapserver pipe" in rt["detail"]
 
 
 def test_runtime_leader_down_unit_wins_over_tap_check(tmp_path):
@@ -399,26 +398,59 @@ def test_leader_tap_set_is_ok(tmp_path):
 
 def test_leader_tap_empty_is_degraded(tmp_path):
     """Valid leader, units active, nothing feeding the FIFO => degraded
-    with the no-producer reason — the staff-review gap, generalized."""
+    with the un-piped-config reason — the staff-review gap, generalized."""
     state = read_grouping_state(
         _write_env(tmp_path, _leader_env()),
         unit_state_reader=_stub,
         tap_path_reader=lambda: "",
     )
     assert state["runtime"]["health"] == "degraded"
-    assert "no music producer" in state["runtime"]["detail"]
+    assert "does not write the snapserver pipe" in state["runtime"]["detail"]
 
 
-def test_leader_without_injected_reader_is_degraded(tmp_path):
-    """PRODUCTION default: no tap_path_reader is wired (no producer is
-    built — HANDOFF-multiroom.md §2, Increments 3–5), so a bonded leader
-    honestly reads degraded, never a false-green "streaming"."""
+def test_leader_without_injected_reader_is_degraded(tmp_path, monkeypatch):
+    """PRODUCTION default: tap_path_reader falls back to
+    active_leader_pipe_path (Increment 5 — the ACTIVE CamillaDSP config
+    scanned for the pipe sink). With no pipe-wired config on this
+    machine the leader honestly reads degraded, never a false-green
+    "streaming". Pin the statefile to a missing path so a dev machine
+    with real CamillaDSP state can't flip the result."""
+    monkeypatch.setenv(
+        "JASPER_CAMILLA_STATEFILE", str(tmp_path / "no-statefile.yml"),
+    )
     state = read_grouping_state(
         _write_env(tmp_path, _leader_env()),
         unit_state_reader=_stub,
     )
     assert state["runtime"]["health"] == "degraded"
-    assert "no music producer" in state["runtime"]["detail"]
+    assert "does not write the snapserver pipe" in state["runtime"]["detail"]
+
+
+def test_leader_with_pipe_wired_config_is_ok(tmp_path, monkeypatch):
+    """The Increment 5 happy path end-to-end through PRODUCTION wiring:
+    statefile -> active config -> pipe scan -> ok. The active config is a
+    REAL emit_sound_config artifact (emitter/scanner drift fails here)."""
+    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    config = tmp_path / "grouping_leader.yml"
+    config.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            playback_pipe_path=SNAPFIFO,
+        )
+    )
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    state = read_grouping_state(
+        _write_env(tmp_path, _leader_env()),
+        unit_state_reader=_stub,
+    )
+    assert state["runtime"]["health"] == "ok"
+    assert "leader streaming" in state["runtime"]["detail"]
 
 
 def test_follower_does_not_probe_the_tap(tmp_path):

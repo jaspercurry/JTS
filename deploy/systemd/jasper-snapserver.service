@@ -50,14 +50,12 @@ EnvironmentFile=-/var/lib/jasper/grouping.env
 # when a sibling unit stops); it writes it before starting this unit, so
 # ExecStart reads fresh args.
 EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
-# NOTE (P1.3, pending on-hardware): the reconciler now assembles +
-# persists JASPER_SNAPSERVER_ARGS (snapserver_argv → this file), so a
-# started snapserver reads the FIFO with the configured codec/buffer.
-# What is still pending is the snapfifo PRODUCER (the jasper-outputd
-# reference consumer that feeds the mixed program into the FIFO). Until
-# that lands snapserver reads an EMPTY FIFO — fully configured, no audio
-# flowing yet. Harmless today: off-by-default means nothing starts this
-# unit until a bond is configured AND the producer ships.
+# The FIFO's PRODUCER is the leader's CamillaDSP (Increment 5): the
+# reconciler switches it to a File sink writing the snapfifo (the
+# bonded config swap in jasper.multiroom.leader_config), AFTER this
+# unit starts — snapserver's pipe source (mode=create) owns the FIFO
+# and opens the read end first, so CamillaDSP's write-open never
+# blocks. See HANDOFF-multiroom.md §2 "Canonical signal flow".
 ExecStart=/usr/bin/snapserver $JASPER_SNAPSERVER_ARGS
 Restart=on-failure
 RestartSec=2s

@@ -43,13 +43,12 @@ EnvironmentFile=-/var/lib/jasper/grouping.env
 # ExecStart reads fresh args. Set for BOTH roles — a leader's client
 # targets 127.0.0.1, a follower's targets cfg.leader_addr.
 EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
-# NOTE (P1.3, pending on-hardware): the reconciler now assembles +
-# persists JASPER_SNAPCLIENT_ARGS (snapclient_argv → this file), so a
-# started snapclient targets the configured host with the configured
-# latency. Audio only FLOWS once the leader's snapserver has a producer
-# feeding its FIFO (the pending jasper-outputd reference consumer).
-# Harmless today: off-by-default means nothing starts this unit until a
-# bond is configured AND the producer ships.
+# The client plays via the `file` player into the member round-trip
+# FIFO (Increment 5) — NEVER an ALSA sink, which would fight outputd
+# for the DAC (the observed `Device or resource busy` failure of the
+# pre-Increment-5 bond). outputd reads the FIFO through its
+# dac_content lane (Increment 3) and picks this member's channel
+# there. The reconciler mkfifos the path before starting this unit.
 ExecStart=/usr/bin/snapclient $JASPER_SNAPCLIENT_ARGS
 Restart=on-failure
 RestartSec=2s
