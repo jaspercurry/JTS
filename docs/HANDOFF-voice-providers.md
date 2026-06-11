@@ -68,7 +68,11 @@ active provider through
 (`read_active_provider*`), which re-reads the file fresh — never
 `os.environ`, which is frozen at daemon start and only refreshed when
 `jasper-voice` restarts on a switch. Returns `""` (unconfigured) for an
-unset/invalid value, never a guessed default.
+unset/invalid value, never a guessed default. As of 2026-06-11,
+diagnostics that need to explain why no usable provider was read use
+`read_active_provider_state()`, which distinguishes configured, unset,
+missing, unreadable, and invalid states so a permission-denied probe is
+not reported as first-time setup.
 
 The abstraction lives in [`jasper/voice/session.py`](../jasper/voice/session.py)
 as the `LiveConnection` and `LiveTurn` Protocols. Daemon code at

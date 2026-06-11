@@ -68,6 +68,40 @@ def test_parse_env_file_missing_returns_empty(tmp_path: Path):
     assert out == {}
 
 
+def test_read_env_file_state_reports_loaded_and_missing(tmp_path: Path):
+    from jasper.env_load import read_env_file_state
+
+    p = tmp_path / "jasper.env"
+    p.write_text("JASPER_HOSTNAME=jts.local\n")
+
+    loaded = read_env_file_state(str(p))
+    assert loaded.status == "loaded"
+    assert loaded.loaded
+    assert loaded.values["JASPER_HOSTNAME"] == "jts.local"
+
+    missing = read_env_file_state(str(tmp_path / "missing.env"))
+    assert missing.status == "missing"
+    assert missing.values == {}
+
+
+def test_read_env_file_state_reports_unreadable(monkeypatch, tmp_path: Path):
+    import jasper.env_load as env_load
+    from jasper.env_load import read_env_file_state
+
+    p = tmp_path / "jasper.env"
+    p.write_text("JASPER_HOSTNAME=jts.local\n")
+
+    def boom(self):
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(env_load.Path, "read_text", boom)
+
+    state = read_env_file_state(str(p))
+    assert state.status == "unreadable"
+    assert state.values == {}
+    assert "PermissionError" in state.error
+
+
 def test_load_env_files_wizard_overrides_operator(monkeypatch, tmp_path: Path):
     """`/var/lib/jasper/voice_provider.env` (wizard) must override
     `/etc/jasper/jasper.env` (operator) — same precedence as the

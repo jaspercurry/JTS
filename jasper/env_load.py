@@ -33,7 +33,9 @@ take precedence over all of these — useful for one-off probes.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 # UNION of every unit's persistent EnvironmentFile= (not one daemon's).
@@ -60,17 +62,36 @@ ENV_FILES = (
     "/var/lib/jasper/wake_corpus_bridge.env",
 )
 
+EnvFileReadStatus = Literal["loaded", "missing", "unreadable"]
 
-def parse_env_file(path: str) -> dict[str, str]:
-    """Parse a shell-style KEY=VALUE env file. Strips surrounding
-    single or double quotes; ignores blanks and lines starting with
-    ``#``. Returns ``{}`` for missing or unreadable files —
-    best-effort, never raises."""
+
+@dataclass(frozen=True)
+class EnvFileState:
+    """Status-bearing read of a shell-style env file.
+
+    ``parse_env_file`` stays fail-soft for legacy callers that only need
+    the values. Consumers that render diagnostics should use this shape
+    so missing and unreadable files do not collapse into the same empty
+    mapping.
+    """
+
+    path: str
+    values: dict[str, str]
+    status: EnvFileReadStatus
+    error: str = ""
+
+    @property
+    def loaded(self) -> bool:
+        return self.status == "loaded"
+
+
+def parse_env_text(text: str) -> dict[str, str]:
+    """Parse shell-style KEY=VALUE env file text.
+
+    Strips surrounding single or double quotes; ignores blanks and
+    lines starting with ``#``.
+    """
     out: dict[str, str] = {}
-    try:
-        text = Path(path).read_text()
-    except OSError:
-        return out
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -85,6 +106,30 @@ def parse_env_file(path: str) -> dict[str, str]:
             value = value[1:-1]
         out[key] = value
     return out
+
+
+def read_env_file_state(path: str) -> EnvFileState:
+    """Read and parse an env file while preserving read status."""
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        return EnvFileState(path, {}, "missing")
+    except (OSError, UnicodeError) as e:
+        return EnvFileState(
+            path,
+            {},
+            "unreadable",
+            error=f"{type(e).__name__}: {e}",
+        )
+    return EnvFileState(path, parse_env_text(text), "loaded")
+
+
+def parse_env_file(path: str) -> dict[str, str]:
+    """Parse a shell-style KEY=VALUE env file. Strips surrounding
+    single or double quotes; ignores blanks and lines starting with
+    ``#``. Returns ``{}`` for missing or unreadable files —
+    best-effort, never raises."""
+    return read_env_file_state(path).values
 
 
 def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
