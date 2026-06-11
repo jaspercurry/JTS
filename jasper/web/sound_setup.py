@@ -11,6 +11,7 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/calibration-level backend-owned level guard
   GET  /active-speaker/bringup-preflight guided/manual bring-up readiness
   GET  /active-speaker/startup-load guarded startup-load/rollback state
+  GET  /active-speaker/design-draft saved speaker design/research evidence
   GET  /active-speaker/tone-targets    preset-derived channel-test targets
   POST /preview  preview a draft profile's response without touching live audio
   POST /live-draft apply a draft to live audio without persisting
@@ -23,6 +24,7 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/check-path-safety inspect and persist no-audio path evidence
   POST /active-speaker/load-startup-config load protected startup config, no sound
   POST /active-speaker/rollback-startup-config restore pre-load config, no sound
+  POST /active-speaker/design-draft persist speaker design/research evidence
   POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
   POST /active-speaker/play-tone run a bounded artifact/audio-gated tone test
   POST /active-speaker/floor-audio-result record operator result for floor tone
@@ -1234,6 +1236,47 @@ def _active_speaker_commissioning_rehearsal_payload() -> dict[str, Any]:
     return payload
 
 
+def _active_speaker_design_draft_payload() -> dict[str, Any]:
+    """Return the saved active-speaker design draft, if any."""
+
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    payload = load_design_draft()
+    logger.info(
+        "event=sound.active_speaker_design_draft status=%s driver_count=%s "
+        "candidate_count=%s",
+        payload.get("status"),
+        (payload.get("summary") or {}).get("driver_count"),
+        (payload.get("summary") or {}).get("crossover_candidate_count"),
+    )
+    return payload
+
+
+def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Persist a design draft from current topology plus bounded research JSON."""
+
+    from jasper.active_speaker.design_draft import save_design_draft
+
+    if not isinstance(raw, dict):
+        raise ValueError("design draft request must be an object")
+    topology = load_output_topology()
+    payload = save_design_draft(
+        topology,
+        driver_research=raw.get("driver_research"),
+        operator_inputs=raw.get("operator_inputs"),
+    )
+    logger.info(
+        "event=sound.active_speaker_design_draft_save status=%s "
+        "topology_id=%s driver_count=%s candidate_count=%s issues=%d",
+        payload.get("status"),
+        topology.topology_id,
+        (payload.get("summary") or {}).get("driver_count"),
+        (payload.get("summary") or {}).get("crossover_candidate_count"),
+        len(payload.get("issues") or []),
+    )
+    return payload
+
+
 async def _active_speaker_check_path_safety_payload(
     *,
     camilla_factory: Callable[[], Any],
@@ -1620,6 +1663,15 @@ def _make_handler(
                     logger.exception("event=sound.output_topology result=error")
                     self._send_json({"error": str(e)}, status=502)
                 return
+            if path == "/active-speaker/design-draft":
+                try:
+                    self._send_json(_active_speaker_design_draft_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_design_draft result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
             if path == "/active-speaker/environment":
                 try:
                     self._send_json(_active_speaker_environment_payload())
@@ -1712,6 +1764,7 @@ def _make_handler(
                 "/live-draft",
                 "/preview",
                 "/settings",
+                "/active-speaker/design-draft",
                 "/active-speaker/arm",
                 "/active-speaker/stop",
                 "/active-speaker/calibration-level",
@@ -1777,6 +1830,17 @@ def _make_handler(
                     return
                 if path == "/active-speaker/stage-config":
                     self._send_json(_active_speaker_stage_config_payload(raw))
+                    return
+                if path == "/active-speaker/design-draft":
+                    try:
+                        self._send_json(_active_speaker_design_draft_save_payload(raw))
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_design_draft_save "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/check-path-safety":
                     self._send_json(

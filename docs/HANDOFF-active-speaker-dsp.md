@@ -114,9 +114,16 @@
 > `/sound/` also includes a driver-research helper for active-crossover
 > planning. It generates a prompt from the current output roles and accepts a
 > pasted JSON object with kind `jts_active_crossover_driver_research`.
-> That JSON is only shape-checked and summarized client-side in this slice;
-> it is not persisted, trusted as measurement evidence, translated into
-> CamillaDSP filters, or applied.
+> `/sound/active-speaker/design-draft` persists those operator-entered driver
+> names, notes, the bounded research JSON, and a snapshot of the saved output
+> topology as `/var/lib/jasper/active_speaker_design_draft.json` with kind
+> `jts_active_speaker_design_draft`. The draft is intentionally
+> non-authoritative: it does not emit sound, load CamillaDSP, authorize
+> playback, trust the research as measurement evidence, translate it into
+> filters, or apply anything. Its purpose is to carry the user's intended
+> build and externally researched starting points into the future crossover
+> compiler/review step without making the LLM or browser rummage through
+> topology internals.
 > The clock-domain gate now distinguishes the normal single-device
 > path from the dual-Apple USB-C DAC 4-channel pair. The latter is the
 > `dual_apple_usb_c_dac_4ch` hardware profile: exactly two Apple child
@@ -1004,4 +1011,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-09
+Last verified: 2026-06-10
