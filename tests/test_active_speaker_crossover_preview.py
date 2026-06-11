@@ -143,6 +143,7 @@ def test_crossover_preview_builds_no_audio_filter_intent() -> None:
     assert payload["safety"]["no_audio"] is True
     assert payload["safety"]["loads_camilla"] is False
     assert payload["safety"]["applies_filters"] is False
+    assert payload["drivers"]["tweeter"]["model"] == "F110M-8"
     assert crossover["proposed_frequency_hz"] == 2500
     assert [item["filter"] for item in crossover["filters"]] == ["lowpass", "highpass"]
     assert crossover["filters"][1]["channel"]["startup_muted"] is True

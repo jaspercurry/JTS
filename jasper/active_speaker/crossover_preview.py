@@ -462,6 +462,7 @@ def build_crossover_preview(
             "design_draft_updated_at": design_draft.get("updated_at"),
             "design_draft_fingerprint": _design_draft_fingerprint(design_draft),
         },
+        "drivers": {role: dict(driver) for role, driver in drivers.items()},
         "summary": {
             "speaker_group_count": len(groups),
             "active_crossover_count": active_crossover_count,

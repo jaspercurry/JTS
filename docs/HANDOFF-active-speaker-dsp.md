@@ -132,7 +132,9 @@
 > low-pass/high-pass filter intent for active 2-way and 3-way speaker groups,
 > raises candidate frequencies to driver high-pass / do-not-test-below floors,
 > surfaces missing research and low-confidence candidates as evidence, and
-> records whether a later protected-staging step may consume it. The preview
+> records whether a later protected-staging step may consume it. It now also
+> carries the curated driver facts needed to compile a protected staging preset
+> without re-parsing the design draft or trusting browser internals. The preview
 > source carries a design-draft fingerprint; loading the saved preview against
 > the current draft marks it `stale` and clears
 > `may_prepare_protected_startup_config` if the operator changes topology,
@@ -150,11 +152,20 @@
 > or partial live hardware observation blocks. This does not authorize sound
 > by itself and does not permit generic ALSA/CamillaDSP multi-device
 > aggregation.
-> `jasper.active_speaker.staging` now provides the first build-specific
-> protected startup staging slice. The default preset is
-> `jasper/active_speaker/presets/epique_e150he44_eminence_f110m8_safe_v1.json`
-> for a mono Dayton Epique E150HE-44 woofer plus Eminence F110M-8
-> compression-driver cabinet. `/sound/active-speaker/channel-protection`
+> `jasper.active_speaker.staging` now provides protected startup staging for
+> saved active-speaker designs. The product route
+> `/sound/active-speaker/stage-config` consumes the current saved design draft
+> plus a fresh `jts_active_speaker_crossover_preview`; stale, missing, blocked,
+> or topology-mismatched previews block staging. Preview-derived staging can
+> compile mono or stereo active 2-way and 3-way main speaker groups from the
+> saved topology, including saved role/output mapping, while still requiring the
+> active outputs to occupy a contiguous block starting at DAC output 1. Optional
+> subwoofer groups remain outside this main-speaker startup graph; if present,
+> staging fails closed with `subwoofer_staging_not_supported` until a later
+> slice can include sub outputs in the protected startup graph. The packaged
+> Epique/F110M preset remains the no-audio fallback substrate for lower-level
+> tests/CLI/default-preset work, not the product route's implicit answer once a
+> design draft exists. `/sound/active-speaker/channel-protection`
 > records either physical compression-driver protection evidence or a
 > software-guarded bring-up request. The software-guard state is deliberately
 > still a topology/playback blocker; it only lets
@@ -324,8 +335,10 @@ still must satisfy the safety gates before sound-emitting active use:
 - The topology substrate also records tweeter/compression-driver
   protection evidence via `/sound/active-speaker/channel-protection`.
   Marking protection present is a human/operator fact about the physical
-  build; it is required before staging the Epique/F110M protected startup
-  candidate, but it still does not load DSP or authorize playback.
+  build. A software-guarded bring-up request is also an explicit operator
+  fact: it may let JTS stage a muted no-load startup candidate, but it remains a
+  playback blocker until later guard/load/level evidence passes. Neither state
+  loads DSP or authorizes playback by itself.
 - Before tweeter hardware is connected, all audible paths must be
   proven to pass through the same protected crossover path. A TTS
   bypass into a raw active amp channel is a driver-damage hazard.
@@ -868,6 +881,10 @@ Updated execution plan:
    which binds the saved output topology to the Epique/F110M safe
    bring-up preset and writes a protected startup candidate plus
    evidence metadata without loading CamillaDSP or emitting sound.
+   Expanded 2026-06-11 so the product `/sound/active-speaker/stage-config`
+   route stages from the fresh crossover-preview artifact instead of silently
+   falling back to the packaged preset, with mono/stereo active 2-way and 3-way
+   support for contiguous low output blocks.
    Expanded 2026-06-04 with `jasper.active_speaker.startup_load`, which
    can load that staged startup graph through the shared DSP apply
    lifecycle only after deterministic gates pass, persists the prior
