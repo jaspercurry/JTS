@@ -183,6 +183,11 @@ def _output_hardware_dict() -> dict[str, Any] | None:
     ``json.dumps`` (``_send_json``), which can't encode the dataclass, so
     embedding it raw 502s ``/sound/output-topology`` on any Pi that has a
     populated state file. ``to_dict`` is the single conversion boundary.
+
+    The page JS reads the topology's own ``hardware`` block, not this
+    envelope key — this is the observed-hardware evidence surface (added
+    with the state in #498), consumed via curl today and mirrored by
+    ``/state`` as ``audio.output_hardware``.
     """
     hardware = load_output_hardware_state()
     return hardware.to_dict() if hardware is not None else None
