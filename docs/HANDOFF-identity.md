@@ -182,8 +182,12 @@ Consumers today:
   can resolve to a different speaker than the checkout means.
   Deliberate re-image: `JTS_ACCEPT_NEW_IDENTITY=1 bash
   scripts/deploy-to-pi.sh`. `scripts/use` resets the recorded
-  identity (switching targets = new TOFU). Helper + outcome tokens:
-  `verify_or_record_peer_id` in [scripts/_lib.sh](../scripts/_lib.sh).
+  identity (switching targets = new TOFU). Requires passwordless
+  sudo: under the interactive-sudo fallback the guard skips with a
+  printed notice — `ssh -tt` merges the password prompt into the
+  captured peer_id, so verifying there would record garbage. Helper +
+  outcome tokens: `verify_or_record_peer_id` in
+  [scripts/_lib.sh](../scripts/_lib.sh).
 
 Planned consumers (sequenced in their own subsystems): multiroom
 leader pinning (the bond-forming UI stores `leader` as peer_id and
