@@ -169,6 +169,88 @@ EOF
     SUDO_INTERACTIVE=1
 }
 
+# Direction guard: never move the Pi's code BACKWARDS silently.
+# Multiple checkouts/worktrees (and multiple agent sessions) deploy to
+# the same Pi. On 2026-06-11 a stale parallel checkout deployed four
+# minutes after a bugfix build and silently reverted it; the operator's
+# hardware retest then ran the old code and the fix looked broken.
+# Compare the local commit against the Pi's installed build manifest
+# BEFORE rsync: a downgrade aborts unless JASPER_DEPLOY_ALLOW_DOWNGRADE=1
+# (deliberate rollback/bisect); diverged sibling branches warn and
+# proceed (routine lab flow, but the replaced work is named).
+preflight_deploy_direction() {
+    local remote_manifest installed_sha installed_branch installed_at
+    local direction installed_short local_date installed_date
+    remote_manifest="$(run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null' 2>/dev/null || true)"
+    installed_sha="$(build_manifest_value "$remote_manifest" JASPER_GIT_SHA_FULL)"
+    installed_branch="$(build_manifest_value "$remote_manifest" JASPER_GIT_BRANCH)"
+    installed_at="$(build_manifest_value "$remote_manifest" JASPER_INSTALL_AT)"
+    if [[ -z "$installed_sha" ]]; then
+        echo "    deploy direction: no build manifest on the Pi (first deploy?) — proceeding"
+        return 0
+    fi
+
+    direction="$(classify_deploy_direction "$SHA_FULL" "$installed_sha")"
+    if [[ "$direction" == "unknown_installed" ]]; then
+        # The installed commit may simply be newer than our last fetch.
+        git fetch --quiet origin >/dev/null 2>&1 || true
+        direction="$(classify_deploy_direction "$SHA_FULL" "$installed_sha")"
+    fi
+    installed_short="${installed_sha:0:8}"
+
+    case "$direction" in
+        same)
+            echo "    deploy direction: redeploying installed ${installed_short}${DIRTY:+ (plus local uncommitted changes)}"
+            ;;
+        forward)
+            echo "    deploy direction: forward (${installed_short} → ${SHA}${DIRTY})"
+            ;;
+        downgrade)
+            if [[ "${JASPER_DEPLOY_ALLOW_DOWNGRADE:-}" == "1" ]]; then
+                echo "    deploy direction: DOWNGRADE ${installed_short} → ${SHA}${DIRTY} (allowed by JASPER_DEPLOY_ALLOW_DOWNGRADE=1)"
+                return 0
+            fi
+            local_date="$(git show -s --format=%ci "${SHA_FULL}" 2>/dev/null || true)"
+            installed_date="$(git show -s --format=%ci "${installed_sha%-dirty}" 2>/dev/null || true)"
+            cat <<EOF >&2
+─────────────────────────────────────────────────────────────
+ DEPLOY ABORTED: this would move ${PI_HOST}'s code BACKWARDS.
+   installed: ${installed_short}  branch: ${installed_branch:-?}
+              committed: ${installed_date:-unknown}
+              installed: ${installed_at:-unknown}
+   deploying: ${SHA}${DIRTY}  branch: ${BRANCH}
+              committed: ${local_date:-unknown}
+ The installed build contains commits this checkout lacks, so
+ deploying would silently revert them. The Pi was not modified.
+ If the downgrade is deliberate (rollback, bisect):
+   JASPER_DEPLOY_ALLOW_DOWNGRADE=1 bash scripts/deploy-to-pi.sh
+ Otherwise update this checkout first:
+   git fetch origin && git rebase origin/main
+─────────────────────────────────────────────────────────────
+EOF
+            exit 1
+            ;;
+        diverged)
+            cat <<EOF >&2
+    deploy direction: WARNING — diverged histories (proceeding)
+      installed: ${installed_short} (branch: ${installed_branch:-?}, installed: ${installed_at:-unknown})
+      deploying: ${SHA}${DIRTY} (branch: ${BRANCH})
+      Neither commit contains the other: this deploy replaces a sibling
+      checkout's build. If that other session's work matters, coordinate
+      before redeploying.
+EOF
+            ;;
+        unknown_installed)
+            cat <<EOF >&2
+    deploy direction: WARNING — installed ${installed_short} (branch: ${installed_branch:-?})
+      is not in this checkout's history even after fetch; cannot compare
+      (deployed from an un-pushed or foreign checkout?). Proceeding.
+EOF
+            ;;
+    esac
+    return 0
+}
+
 mark_airplay_health_maintenance() {
     local ttl_sec="$1"
     local marker_command
@@ -244,6 +326,8 @@ if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
         match)      echo "    speaker identity: verified" ;;
         *)          : ;;  # unavailable / no_state_file — nothing to verify against
     esac
+
+    preflight_deploy_direction
 fi
 
 # Rsync — same exclude set documented in CLAUDE.md.

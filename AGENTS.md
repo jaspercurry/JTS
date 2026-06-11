@@ -511,9 +511,27 @@ different Pi. After a deliberate re-image, accept the new identity
 with `JTS_ACCEPT_NEW_IDENTITY=1`. Details:
 [docs/HANDOFF-identity.md](docs/HANDOFF-identity.md).
 
+**Deploy direction guard:** the preflight also compares the local
+commit against the Pi's installed build manifest
+(`/var/lib/jasper/build.txt`) and refuses to move the Pi's code
+**backwards**. Multiple checkouts/worktrees (Claude *and* Codex
+sessions) deploy to the same Pi; on 2026-06-11 a stale parallel
+checkout deployed four minutes after a bugfix build and silently
+reverted it — the hardware retest then ran the old code and the fix
+looked broken. When the local commit is an ancestor of the installed
+one, the deploy aborts before rsync; a deliberate rollback/bisect uses
+`JASPER_DEPLOY_ALLOW_DOWNGRADE=1`. Diverged sibling branches warn and
+proceed, naming the branch being replaced — if the other session's
+work matters, coordinate before redeploying. Helpers
+(`classify_deploy_direction`, `build_manifest_value`) live in
+[`scripts/_lib.sh`](scripts/_lib.sh) and are pinned by
+`tests/test_lib_deploy_direction.py`. `SKIP_INSTALL=1` (rsync-only)
+deploys skip the guard: they never touch the `/opt/jasper` runtime.
+
 **Skip / opt-in flags:** `SKIP_INSTALL=1` (rsync only),
 `SKIP_RESTART=1` (install but don't restart/reconcile),
 `JTS_ACCEPT_NEW_IDENTITY=1` (accept a changed deploy-target peer_id),
+`JASPER_DEPLOY_ALLOW_DOWNGRADE=1` (deploy an older commit deliberately),
 `JASPER_BUILD_OPTIONAL_FIRMWARE=1` (explicitly rebuild optional
 ESP32 dial/satellite firmware during install), `PI_HOST=...`,
 `PI_USER=...`, `JASPER_HOSTNAME=...` (speaker identity/cert hostname

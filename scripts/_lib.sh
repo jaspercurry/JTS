@@ -187,3 +187,64 @@ verify_or_record_peer_id() {
     echo "mismatch recorded=${recorded} remote=${remote_id}"
     return 1
 }
+
+# build_manifest_value <manifest_text> <key>
+#
+# Extract the value of a KEY=value line from a /var/lib/jasper/build.txt
+# manifest read over ssh. Tolerates CRLF (interactive-sudo deploys read
+# through `ssh -tt`, which rewrites line endings) and surrounding
+# whitespace; last occurrence wins. Echoes "" when the key is absent.
+# pipefail-safe: every stage exits 0 on no-match.
+build_manifest_value() {
+    local manifest="$1" key="$2"
+    printf '%s\n' "$manifest" | tr -d '\r' \
+        | sed -n "s/^${key}=//p" | tail -n1 | tr -d '[:space:]'
+    return 0
+}
+
+# classify_deploy_direction <local_sha> <installed_sha>
+#
+# Compare the commit about to be deployed against the commit recorded in
+# the Pi's build manifest, using the current checkout's git history.
+# `-dirty` suffixes (build.txt records them for uncommitted-tree deploys)
+# are stripped before comparison. Echoes one outcome token (consumed by
+# deploy-to-pi.sh's direction preflight):
+#
+#   same               redeploying the installed commit
+#   forward            installed is an ancestor of local — normal upgrade
+#   downgrade          local is an ancestor of installed — this deploy
+#                      would REVERT commits the Pi already runs (the
+#                      2026-06-11 JTS3 incident: a stale parallel
+#                      checkout silently reverted same-day fixes)
+#   diverged           histories split — neither contains the other
+#                      (two branches deploying to one Pi)
+#   unknown_installed  installed SHA not in this checkout's history
+#                      (caller should fetch and retry once)
+#
+# Always returns 0: the abort decision depends on an operator override
+# that the caller owns, not this helper.
+classify_deploy_direction() {
+    local local_sha="${1%-dirty}" installed_sha="${2%-dirty}"
+    if [[ -z "$local_sha" || -z "$installed_sha" ]]; then
+        echo "unknown_installed"
+        return 0
+    fi
+    if [[ "$local_sha" == "$installed_sha" ]]; then
+        echo "same"
+        return 0
+    fi
+    if ! git cat-file -e "${installed_sha}^{commit}" 2>/dev/null; then
+        echo "unknown_installed"
+        return 0
+    fi
+    if git merge-base --is-ancestor "$installed_sha" "$local_sha" 2>/dev/null; then
+        echo "forward"
+        return 0
+    fi
+    if git merge-base --is-ancestor "$local_sha" "$installed_sha" 2>/dev/null; then
+        echo "downgrade"
+        return 0
+    fi
+    echo "diverged"
+    return 0
+}
