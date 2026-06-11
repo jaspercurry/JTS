@@ -1,18 +1,23 @@
 # Handoff: multi-room / multi-speaker audio (stereo pair, 2.1, wireless sub)
 
-> **Status: in progress — off-by-default scaffolding shipped; the audio path
-> does NOT work end-to-end yet.** This is the canonical design home for
-> grouped/synchronized playback across multiple JTS speakers (stereo pairs, 2.1
-> with a wireless sub, and multi-room). What has shipped is the
-> control/observability scaffolding — config/state/reconcile, the `/rooms`
-> bond-forming UI, the channel-split weave, inv-5 — all OFF by default. What is
-> NOT done: **no audio flows to followers yet** (the `jasper-outputd` snapfifo
-> producer is unwired, blocked on TTS separation —
-> `reconcile.SNAPFIFO_PRODUCER_WIRED` is `False`, §2), perfect sample-lock
-> (inv-2), and the gating **P0 measurement spike** (network sync error, FLAC
-> RAM/CPU) has **not** been run on hardware — those numbers still gate the
-> feature, and the scaffolding landed ahead of them on purpose (all inert until
-> measured). **§0 "Implementation status" is the live single source of truth**
+> **Status: in progress — architecture settled and producer/consumer halves
+> built; the audio path does NOT work end-to-end yet.** This is the canonical
+> design home for grouped/synchronized playback across multiple JTS speakers
+> (stereo pairs, 2.1 with a wireless sub, and multi-room). SHIPPED, all off by
+> default: the control/observability scaffolding (config/state/reconcile, the
+> `/rooms` bond-forming UI, the channel-split weave, inv-5), **Increment 1**
+> (fanin's music-only output — the voice/music split), **Increment 2** (the
+> per-channel correction axis — one CamillaDSP bakes L-for-leader-seat /
+> R-for-follower-seat), and the 2026-06-11 cleanup that removed the retired
+> outputd-as-producer machinery. The **P0 spike RAN on hardware** (2026-06-10,
+> jts3↔jts): resource gate passed (snapcast ≈ ~15 MB Pss / ~0.2 % CPU) and the
+> software sync proxy was clean; the **acoustic** L/R confirmation is still
+> pending (Increment 4). What is NOT done: **no audio flows to followers yet** —
+> the leader's music producer (CamillaDSP → snapserver pipe) and the round-trip
+> are **Increments 3–5** (§2 increment plan, with sequencing + owner gates at
+> its end), gated on inv-A (the AEC-reference/wake-during-music hardware gate)
+> and inv-B (the self-loop fallback). A bonded leader honestly reads `degraded`
+> until then. **§0 "Implementation status" is the live single source of truth**
 > for what exists; treat the design sections below as *intended* operational
 > truth, promoted to live prose as each phase ships. The existing
 > `jasper/peering/` subsystem ([HANDOFF-peering.md](HANDOFF-peering.md)) is
@@ -21,11 +26,11 @@
 > substrate.
 >
 > Design dialogue + prior-art research: 2026-06-04. Status last reconciled with
-> code: 2026-06-10 (see §0 + the footer changelog).
+> code: 2026-06-11 (see §0 + the footer changelog).
 
 ---
 
-## 0. Implementation status (2026-06-04)
+## 0. Implementation status (2026-06-11)
 
 Off-by-default plumbing has landed — the config / state / reconcile layer,
 the `/rooms` bond-forming UI (§8), the channel-split weave, inv-5, and the
@@ -613,6 +618,31 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   a *different* room needs its own correction for **correctness** (the leader's room
   curve is wrong there) — ship those *flat* + a "calibrate me" nudge until this
   lands; do NOT apply the wrong-room curve.
+
+**Sequencing + owner gates (2026-06-11 — where the remaining work runs and what
+each step needs from the owner):**
+- **Status:** Increments 1–2 SHIPPED (PRs #575, #587/#588 + the #591 cleanup);
+  the P0 spike's resource + software-sync gates PASSED on hardware (2026-06-10,
+  jts3↔jts). Remaining: 3 → 4 → 5 → 6.
+- **Increment 3 (next; no owner time):** pure Rust, built + `cargo test`ed on the
+  lab Pi over SSH without touching live audio; off-by-default, byte-identical solo
+  (the solo-impact contract). Does not depend on Increment 4.
+- **Increment 4 (~20 min WITH the owner at the speakers; before Increment 5's
+  ship decision):** the acoustic half of the P0 gate — chirp at moderate volume,
+  one mic between the pair, cross-correlate (`multiroom-spike-measure.py
+  acoustic`). Working target p99 < 1 ms L/R, but the OWNER's ear in the OWNER's
+  room is the real acceptance — the number is a working figure, not gospel.
+- **Increment 5 (the integration; owner validation sessions):** every contract
+  above gets cashed in on the jts3↔jts pair. Two hardware gates — inv-A
+  (bonded-leader ERLE delta + wake-FRR/barge-in DURING music; needs the owner
+  saying "Hey Jarvis" over playback) and inv-B (kill the loopback mid-song →
+  leader falls back to direct, never silent). Two OWNER decision points: the
+  acoustic-quality call from Increment 4, and the buffer-size trade-off (deeper
+  = more WiFi resilience, more pause/resume lag on the bonded pair — choose with
+  measured numbers). Deliverable: bond on `/rooms` → sample-locked music on both
+  speakers, leader still answers instantly.
+- **Increment 6 (fast-follow):** needs Increment 5 + one owner measurement
+  session at the follower's seat.
 
 **Stranded by this design — cleanup EXECUTED 2026-06-11 for the dead half:**
 `SnapfifoSink` (deleted), `SNAPFIFO_PRODUCER_WIRED` + `effective_leader_tap_path`
@@ -1522,7 +1552,20 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (STRANDED-MACHINERY CLEANUP executed + the master_gain
+Last verified: 2026-06-11 (status + roadmap reconciliation after the #591 cleanup
+merge. The TOP BANNER was stale on three counts and is rewritten to current
+truth: Increments 1–2 are SHIPPED (it predated them), the P0 spike RAN on
+hardware and passed its resource/software-sync gates (it said "not run"), and
+the removed `SNAPFIFO_PRODUCER_WIRED` flag is no longer cited (it was deleted in
+#591). §0's heading date bumped. NEW "Sequencing + owner gates" note at the end
+of the §2 increment plan records the build order (3 → 4 → 5 → 6), what each step
+needs from the owner (Inc 3: nothing; Inc 4: ~20 min at the speakers, before Inc
+5's ship decision; Inc 5: the inv-A wake-during-music + inv-B kill-the-loopback
+validation sessions, plus two owner decision points — the acoustic-quality call
+and the buffer-size trade-off; Inc 6: one measurement session after Inc 5), and
+the deliverable (bond on /rooms → sample-locked music on both speakers, leader
+still answers instantly). Doc-only; no code changed. Earlier 2026-06-11
+(STRANDED-MACHINERY CLEANUP executed + the master_gain
 docstring precision fix. Removed the retired outputd-as-producer machinery the
 canonical design left dead: `SnapfifoSink` (`snapfifo.rs` deleted),
 `SNAPFIFO_PRODUCER_WIRED` + `effective_leader_tap_path`, the reconciler's
