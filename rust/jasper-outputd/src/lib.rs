@@ -24,6 +24,7 @@ pub mod loudness;
 pub mod mixer;
 pub mod reference;
 pub mod state;
+pub mod tts;
 pub mod types;
 
 pub use types::{CHANNELS, SAMPLE_RATE};
