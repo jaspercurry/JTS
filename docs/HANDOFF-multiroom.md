@@ -32,11 +32,20 @@
 
 ## 0. Implementation status (2026-06-11)
 
-Off-by-default plumbing has landed — the config / state / reconcile layer,
-the `/rooms` bond-forming UI (§8), the channel-split weave, inv-5, and the
-Increment 2 per-channel correction axis. But audio does **NOT** yet flow to
-followers, and an enabled leader says so (it reads `degraded` with "leader
-streaming is not built yet — no music producer feeds the snapfifo").
+**Increment 5 PR-1 (the bonded MUSIC dataplane) is BUILT (2026-06-11).**
+A bond now moves audio end-to-end: the leader's CamillaDSP bakes the shared
+program and writes the snapserver pipe; every member's snapclient writes the
+round-trip FIFO (`--player file:`), which outputd's `dac_content` lane plays
+with the member's channel pick. The grouping reconciler is the single
+applier (camilla config swap + outputd lane env + member FIFO + units, in a
+load-bearing order — see `reconcile.main`'s docstring). KNOWN GAP, marked by
+a STANDING doctor warn (`grouping: TTS interim`): assistant voice still
+mixes in fanin, so while bonded it rides the synced stream — delayed
+~buffer_ms, audible on ALL members. PR-2 (the outputd TTS mixer + per-member
+socket flip + the inv-B auto-unwind supervisor) makes bonding
+leave-it-on grade; until then bonding is supervised-validation grade.
+A leader whose bond apply did not land reads `degraded` with "active
+CamillaDSP config does not write the snapserver pipe".
 **The retired outputd-as-producer machinery was REMOVED on 2026-06-11** (the
 "Stranded by this design" cleanup, §2): `SnapfifoSink` (`snapfifo.rs`)
 deleted, the `SNAPFIFO_PRODUCER_WIRED` mirror flag + `effective_leader_tap_path`
@@ -54,9 +63,8 @@ and DUMB receivers channel-drop; voice stays leader-local (no second CamillaDSP 
 RAM target is a 1 GB Pi). The gating §8 spike **RAN on hardware (2026-06-10,
 jts3↔jts) and passed the resource gate** — snapserver+snapclient ≈ ~15 MB Pss,
 ~0.2 % CPU, FLAC ≈ PCM; the software sync proxy was clean across every buffer/codec
-(acoustic L/R confirmation pends — it folds into Increment 2a). Still to build: the
-canonical chain itself (Increments 2a/2b), so `SNAPFIFO_PRODUCER_WIRED` stays
-`False` until it lands. What exists:
+(acoustic L/R confirmation pends — it folds into Increment 2a). Still to build: PR-2
+(outputd TTS mixer + supervisor) and Increment 6 (per-follower calibration). What exists:
 
 - **`jasper/multiroom/config.py`** — pure, off-by-default
   `GroupingConfig` + `load_config()` (SSOT `/var/lib/jasper/grouping.env`;
@@ -616,21 +624,48 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   SNAPFIFO_PRODUCER_WIRED lesson). Fail-loud config guards: rejects combination
   with the rate-match content bridge and with the dual-Apple sink. No reconciler
   wiring yet — the lane activates in Increment 5.
-- **Increment 4 — acoustic-sync confirmation** on a throwaway pipe→snapserver→two
-  snapclients path. The §8 spike proved resources + the software proxy; the
-  *acoustic* L/R alignment is still unproven. Validates the engine before any daemon
-  repositioning.
-- **Increment 5 — the big slice: leader CamillaDSP→pipe + the round-trip + the
-  outputd TTS rebuild** (the part that can silence the leader). **Gated on inv-A's
-  hardware ERLE pass AND inv-B's fallback-to-direct.** Multi-daemon: CamillaDSP
-  pipe-playback config + restart-on-role-change, the round-trip FIFO + snapclient,
-  the rebuilt outputd TTS mixer + barge-in ledger, the reconciler role wiring.
-  **Spec note (the structural backstop behind the extraction WARN):** ships with a
-  `jasper-doctor` check that a BONDED LEADER's active CamillaDSP config carries
-  right-channel correction (`peq_r*` / `room_peq_r*`) when the follower has a
-  stored profile — the `check_grouping_channel_split` pattern for this
-  silent-wrong-config class (a mis-wired apply path that dropped the follower's
-  seat correction would otherwise play wrong-EQ silently).
+- **Increment 4 — acoustic-sync confirmation — FOLDED into the Increment 5
+  bring-up (2026-06-11).** The owner exercised the product bond flow directly
+  (the /rooms UI), so the throwaway bench rig is moot: the acoustic L/R
+  validation happens on the REAL path (PR-1's dataplane) during the
+  supervised bring-up session, alongside the inv-A ERLE delta + inv-B
+  fallback checks.
+- **Increment 5 — the big slice, staged as two PRs. PR-1 (music dataplane) ✅
+  BUILT 2026-06-11; PR-2 (TTS rebuild + supervisor) pending.**
+  **PR-1 (built):** leader CamillaDSP→pipe (the `playback_pipe_path` emitter
+  axis + the bonded config swap in `jasper/multiroom/leader_config.py`,
+  reusing the wizards' shared `apply_dsp_config` engine + the ONE member
+  policy `member_camilla_kwargs` — a /sound save while bonded REGENERATES
+  the pipe config instead of silently un-bonding camilla); the round-trip
+  FIFO + every member's snapclient on the `file` player (never an ALSA
+  sink — the raw-DAC fight was the observed pre-Inc-5 failure); the
+  reconciler role wiring (outputd lane env + restart-on-change, member
+  FIFO, load-bearing apply order, solo-restore unwind ladder with a
+  persistent prior-config stash); runtime health reads producer liveness
+  from the ACTIVE camilla config (daemon-adjacent truth). **Design note:**
+  the leader's camilla keeps capturing lane 7 (`jasper_capture`) — all 8
+  loopback substreams are allocated, and PR-2's TTS socket flip makes lane
+  7 music-only BY CONSTRUCTION while bonded, so Increment 1's fanin music
+  tap is NOT used by this design (it stays available for future group
+  announcements). **PR-1 interim, marked by a STANDING doctor warn:** TTS
+  rides the synced stream (delayed ~buffer_ms, on all members) because TTS
+  still mixes in fanin.
+  **PR-2 (pending):** the outputd TTS mixer + `audio_played_ms` barge-in
+  ledger rebuild; EVERY bonded member's voice flips its TTS socket to its
+  own outputd (inv-3: the leader's TTS never enters the shared stream —
+  each speaker's OWN replies mix locally, post-round-trip, pre-reference,
+  which is exactly inv-A's tap requirement); the inv-B auto-unwind
+  supervisor in jasper-control (sustained leader `dac_content` starvation →
+  loud unwind to solo — until it lands, bonding stays supervised-validation
+  grade, which the TTS gap enforces anyway). **Gated on inv-A's hardware
+  ERLE pass AND inv-B's fallback-to-direct, measured during bring-up.**
+  **Spec note (Increment 6's backstop, updated):** when per-follower
+  profiles exist, a doctor check asserts a bonded leader's active config
+  carries right-channel correction (`room_peq_r*`) when the follower has a
+  stored profile — the silent-wrong-config class now covered for PR-1's
+  surfaces by `check_grouping_leader_pipe` (un-piped leader = silent
+  stream) and `check_grouping_channel_pick` (outputd lane env drift =
+  wrong channel).
 - **Increment 6 — per-follower calibration (fast-follow), SAME-ROOM pairs only.**
   Open-loop sweep → PEQ → bake into the follower's channel. A multi-room satellite in
   a *different* room needs its own correction for **correctness** (the leader's room
@@ -1570,7 +1605,41 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (INCREMENT 3 BUILT — the outputd `dac_content` FIFO
+Last verified: 2026-06-11 (INCREMENT 5 PR-1 BUILT — the bonded MUSIC dataplane,
+end-to-end. The emitter gained the `playback_pipe_path` axis (File→snapfifo
+sink; pipe requires rate_adjust=false; never combines with the member weave);
+`member_camilla_kwargs` moved to the canonical leader-bake policy (leader →
+pipe; follower → solo defaults — its camilla feeds only the inv-B fallback
+lane), so a /sound save while bonded regenerates the pipe config instead of
+silently un-bonding camilla; NEW `jasper/multiroom/leader_config.py` owns the
+bonded apply + solo-restore unwind ladder (persistent prior-config stash →
+re-emit-solo fallback → no-op on the common solo reconcile), reusing the
+shared validated `apply_dsp_config` engine + camilla's glitch-free config
+swap; the reconciler orchestrates everything in a load-bearing, test-pinned
+order (derived files+FIFO → solo-restore → outputd restart only on lane-env
+change → units → bonded apply LAST so the pipe's reader exists before
+camilla's write-open); every member's snapclient is on the `file` player
+(the raw-DAC fight was the observed pre-Inc-5 failure: snapclient
+`Device or resource busy` × 10/s against outputd); outputd boots
+bonded-ready via the persistent `/var/lib/jasper/grouping-outputd.env`
+(registered in env_load's ENV_FILES + the voice-sourcing registry — both
+drift guards fired in test and were satisfied); runtime health (/state +
+doctor) reads producer liveness from the ACTIVE camilla config
+(`active_leader_pipe_path`, daemon-adjacent truth) with the happy path
+pinned end-to-end against a REAL emitted config; doctor checks reworked to
+the canonical model (`rate_adjust` leader-scoped; `channel_split` →
+`channel_pick` env-drift; NEW `leader_pipe`; NEW STANDING `TTS interim`
+warn while bonded); install.sh disables the DISTRO snapserver/snapclient
+units (Trixie's package ships an enabled-by-default rogue server on :1704 —
+observed live on jts3, where a bare snapclient auto-discovered the rogue
+instead of the leader; killed + codified). Design note: the leader's camilla
+keeps capturing lane 7 — all 8 loopback substreams are allocated, and PR-2's
+TTS socket flip makes lane 7 music-only by construction, so Increment 1's
+fanin music tap is NOT used by this design. KNOWN GAP (standing doctor
+warn): TTS rides the synced stream until PR-2 (outputd TTS mixer + per-member
+socket flip + the inv-B auto-unwind supervisor). Increment 4 folded into the
+Increment 5 bring-up: acoustic L/R validation happens on the real path.
+Earlier 2026-06-11 (INCREMENT 3 BUILT — the outputd `dac_content` FIFO
 reader, `rust/jasper-outputd/src/dac_content.rs`. The round-trip lane's receiving
 end: lazy non-blocking FIFO source gated on `JASPER_OUTPUTD_DAC_CONTENT_FIFO` +
 `…_CHANNEL` (channel-split vocabulary; snapclient's `--player file` has no ALSA

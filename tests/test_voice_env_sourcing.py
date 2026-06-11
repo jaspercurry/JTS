@@ -42,6 +42,9 @@ VOICE_DOES_NOT_READ: dict[str, str] = {
         "JASPER_FANIN_* read by jasper-mux and the Rust jasper-fanin",
     "/var/lib/jasper/grouping.env":
         "JASPER_GROUPING_* read by snapserver / snapclient / grouping-reconcile",
+    "/var/lib/jasper/grouping-outputd.env":
+        "JASPER_OUTPUTD_DAC_CONTENT_* (the multi-room round-trip lane) read "
+        "by jasper-outputd; written only by jasper-grouping-reconcile",
     "/var/lib/jasper/outputd.env":
         "JASPER_OUTPUTD_* read by jasper-outputd and the AEC bridge; voice "
         "gets its TTS socket from an inline Environment= line, not this file",
