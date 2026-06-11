@@ -137,3 +137,70 @@ async def test_async_client_raises_control_error_when_down():
     c = client.AsyncControlClient("http://127.0.0.1:1", timeout=0.2)
     with pytest.raises(client.ControlError):
         await c.get("/state")
+
+
+# ----------------------------------------------------------------------
+# _connect_host — bind-address vs connect-address mapping
+# ----------------------------------------------------------------------
+#
+# JASPER_CONTROL_HOST is primarily the *server bind* address (seeded
+# 0.0.0.0 on installs so the dial can reach 8780 from the LAN). The
+# client must connect via loopback instead: connecting to 0.0.0.0
+# "works" on Linux but carries `Host: 0.0.0.0:8780`, which the
+# management-host guard rejects — the 2026-06-11 regression where every
+# /system/ dashboard poll 403ed.
+
+
+def test_connect_host_maps_unspecified_bind_to_loopback():
+    assert client._connect_host("0.0.0.0") == "127.0.0.1"
+    assert client._connect_host("::") == "127.0.0.1"
+    assert client._connect_host("[::]") == "127.0.0.1"
+    assert client._connect_host("") == "127.0.0.1"
+    assert client._connect_host(" 0.0.0.0 ") == "127.0.0.1"
+
+
+def test_connect_host_preserves_explicit_overrides():
+    assert client._connect_host("127.0.0.1") == "127.0.0.1"
+    assert client._connect_host("192.168.1.40") == "192.168.1.40"
+    assert client._connect_host("jts.local") == "jts.local"
+
+
+def test_default_base_url_passes_management_host_guard():
+    """Compose-guard for the 2026-06-11 regression: the Host header a
+    request to DEFAULT_BASE_URL carries must be accepted by the
+    management-read guard. Fails if the client ever again derives an
+    unspecified connect host, or if the guard stops allowing loopback."""
+    from urllib.parse import urlsplit
+
+    from jasper.http_security import management_read_allowed
+
+    host = urlsplit(client.DEFAULT_BASE_URL).netloc
+    ok, reason = management_read_allowed({"Host": host})
+    assert ok, f"guard rejected the client's own Host {host!r}: {reason}"
+
+
+def test_guarded_server_accepts_client_built_from_bind_address():
+    """End-to-end shape of the fixed bug: a server enforcing the
+    management-read guard (as jasper-control does on every GET) must
+    answer 200 to a client whose base URL was derived from the seeded
+    bind value 0.0.0.0."""
+    from jasper.http_security import management_read_allowed
+
+    class _Guarded(_Echo):
+        def do_GET(self):  # noqa: N802
+            ok, reason = management_read_allowed(self.headers)
+            if not ok:
+                self._send({"error": reason}, status=403)
+                return
+            super().do_GET()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Guarded)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        port = srv.server_address[1]
+        base = f"http://{client._connect_host('0.0.0.0')}:{port}"
+        resp = client.get("/healthz", base_url=base)
+        assert resp.status == 200, resp.body
+    finally:
+        srv.shutdown()
+        srv.server_close()

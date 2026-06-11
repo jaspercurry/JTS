@@ -38,7 +38,27 @@ from urllib.parse import urlsplit
 # own context (event=knob.adjust.failed, event=usbsink.volume_post_failed, …).
 # A client-side log would just duplicate that without the caller's context.
 
-DEFAULT_HOST = os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1")
+def _connect_host(bind_host: str) -> str:
+    """Map ``JASPER_CONTROL_HOST`` to a host a *client* can connect to.
+
+    That var is primarily the **server's bind address** — installs seeded
+    it as ``0.0.0.0`` so the rotary dial can reach port 8780 from the
+    LAN. A client must never target the unspecified address: connecting
+    to ``0.0.0.0`` happens to land on loopback on Linux, but the request
+    goes out with ``Host: 0.0.0.0:8780``, which jasper-control's
+    management-host guard rightly rejects (``host_not_allowed``) — that
+    was the 2026-06-11 regression where every /system/ dashboard poll
+    403ed on Pis whose jasper.env carried the seeded bind value.
+    Unspecified or empty maps to loopback; any other value is an
+    explicit operator override and is used verbatim.
+    """
+    host = (bind_host or "").strip()
+    if host in ("", "0.0.0.0", "::", "[::]"):
+        return "127.0.0.1"
+    return host
+
+
+DEFAULT_HOST = _connect_host(os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1"))
 DEFAULT_PORT = int(os.environ.get("JASPER_CONTROL_PORT") or "8780")
 DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 DEFAULT_TIMEOUT = 2.0
