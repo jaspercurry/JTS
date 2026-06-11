@@ -65,7 +65,10 @@ from jasper.voice.catalog import (
     default_voice_id,
     provider_by_id,
 )
-from jasper.voice.provider_state import resolve_active_provider
+from jasper.voice.provider_state import (
+    PROVIDER_FILE,
+    resolve_active_provider,
+)
 from jasper.voice.model_discovery import (
     DEFAULT_CACHE_PATH,
     DiscoverySnapshot,
@@ -107,10 +110,6 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
-# Persisted at /var/lib/jasper/voice_provider.env. Operator-managed
-# defaults still live in /etc/jasper/jasper.env; the systemd unit
-# layers this file ON TOP so wizard-written values win.
-PROVIDER_FILE = "/var/lib/jasper/voice_provider.env"
 DISCOVERY_CACHE_FILE = DEFAULT_CACHE_PATH
 
 # Page-specific stylesheet served static from /assets/ (the same path as

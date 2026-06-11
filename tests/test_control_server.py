@@ -1311,6 +1311,8 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert "ts" in body
     assert body["voice"]["provider"] == "openai"
     assert body["voice"]["model"] == "gpt-realtime-2"
+    assert body["voice"]["provider_status"] == "configured"
+    assert body["voice"]["provider_error"] is None
     assert body["voice"]["reachable"] is False
     assert body["voice"]["session_active"] is False
     assert "music_dbfs" in body["voice"]

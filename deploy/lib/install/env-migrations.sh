@@ -573,7 +573,7 @@ migrate_voice_provider() {
     # operator's pre-cleanup choice so voice keeps working.
     if [[ -n "${stale_value}" ]]; then
         touch "${wizard_env}"
-        chmod 0640 "${wizard_env}"
+        chmod 0600 "${wizard_env}"
         echo "JASPER_VOICE_PROVIDER=${stale_value}" >> "${wizard_env}"
         echo "  migrate_voice_provider: moved JASPER_VOICE_PROVIDER=${stale_value}"
         echo "    from ${jasper_env} to ${wizard_env}"

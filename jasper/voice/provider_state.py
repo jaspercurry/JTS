@@ -32,22 +32,65 @@ processes that are **not** restarted.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from typing import Literal
 
-from ..env_load import parse_env_file
+from ..env_load import read_env_file_state
 from .catalog import (
     VALID_PROVIDER_IDS,
     default_model_id,
     provider_by_id,
 )
 
-# The wizard-owned single source of truth. Same constant as
-# jasper.web.voice_setup.PROVIDER_FILE — kept here so non-web consumers
-# don't import the web layer just to learn the path. The path (not the
-# provider value) may be overridden with JASPER_VOICE_PROVIDER_FILE,
-# mirroring the wizard's own --state default. That env var is a static
-# deploy constant, so reading it once is fine — only the file's
-# *contents* are read fresh on every call.
+# The wizard-owned single source of truth for active-provider state. The
+# path (not the provider value) may be overridden with
+# JASPER_VOICE_PROVIDER_FILE, mirroring the wizard's own --state default.
+# That env var is a static deploy constant, so reading it once is fine —
+# only the file's *contents* are read fresh on every call.
 PROVIDER_FILE = "/var/lib/jasper/voice_provider.env"
+
+ProviderStateStatus = Literal[
+    "configured",
+    "unset",
+    "missing",
+    "unreadable",
+    "invalid",
+]
+
+
+@dataclass(frozen=True)
+class ActiveProviderState:
+    """Status-bearing read of the active-provider SSOT file.
+
+    ``provider`` / ``model`` keep the old display contract: empty and
+    ``None`` mean no usable provider. ``status`` preserves why, so
+    diagnostics can distinguish first-time setup from a permission
+    problem or bad value instead of collapsing every failure into
+    "unset".
+    """
+
+    provider: str
+    model: str | None
+    status: ProviderStateStatus
+    path: str
+    raw_provider: str = ""
+    error: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return self.status == "configured"
+
+    @property
+    def detail(self) -> str:
+        if self.status == "configured":
+            return ""
+        if self.status == "missing":
+            return f"{self.path} missing"
+        if self.status == "unreadable":
+            return self.error or f"{self.path} unreadable"
+        if self.status == "invalid":
+            return f"unsupported JASPER_VOICE_PROVIDER={self.raw_provider!r}"
+        return "JASPER_VOICE_PROVIDER unset"
 
 
 def _resolve_path(path: str | None) -> str:
@@ -70,18 +113,67 @@ def read_active_provider(path: str | None = None) -> str:
     """Read the active provider id fresh from the SSOT file. ``""`` when
     unconfigured. Best-effort: a missing or unreadable file reads as
     unconfigured rather than raising."""
-    return resolve_active_provider(parse_env_file(_resolve_path(path)))
+    return read_active_provider_state(path).provider
+
+
+def read_active_provider_state(path: str | None = None) -> ActiveProviderState:
+    """Read the active provider id and its diagnostic status.
+
+    This is still fail-soft, but unlike :func:`read_active_provider` it
+    does not erase the difference between a legitimate first-time setup
+    state and a bad diagnostic context such as a non-root process being
+    unable to traverse ``/var/lib/jasper``.
+    """
+    resolved = _resolve_path(path)
+    file_state = read_env_file_state(resolved)
+    if file_state.status == "missing":
+        return ActiveProviderState("", None, "missing", resolved)
+    if file_state.status == "unreadable":
+        return ActiveProviderState(
+            "",
+            None,
+            "unreadable",
+            resolved,
+            error=file_state.error,
+        )
+
+    env = file_state.values
+    raw = (env.get("JASPER_VOICE_PROVIDER") or "").strip()
+    provider = resolve_active_provider(env)
+    if not provider:
+        return ActiveProviderState(
+            "",
+            None,
+            "invalid" if raw else "unset",
+            resolved,
+            raw_provider=raw,
+        )
+
+    entry = provider_by_id(provider)
+    assert entry is not None
+    model = (env.get(entry.model_env) or "").strip()
+    return ActiveProviderState(
+        provider,
+        model or default_model_id(provider),
+        "configured",
+        resolved,
+        raw_provider=raw,
+    )
 
 
 def read_active_model(provider: str, path: str | None = None) -> str | None:
     """The model string configured for ``provider`` per the SSOT file,
     falling back to the catalog default for that provider when the file
-    doesn't pin one (which matches what ``jasper-voice`` itself uses).
-    ``None`` when ``provider`` is not a known provider id."""
+    is readable but doesn't pin one (which matches what ``jasper-voice``
+    itself uses). ``None`` when ``provider`` is not a known provider id
+    or the SSOT file cannot be read."""
     entry = provider_by_id(provider)
     if entry is None:
         return None
-    model = (parse_env_file(_resolve_path(path)).get(entry.model_env) or "").strip()
+    file_state = read_env_file_state(_resolve_path(path))
+    if not file_state.loaded:
+        return None
+    model = (file_state.values.get(entry.model_env) or "").strip()
     return model or default_model_id(provider)
 
 
@@ -92,11 +184,5 @@ def read_active_provider_and_model(
     ``("", None)`` when no provider is configured. Otherwise
     ``(provider_id, model_string)`` where the model is the file's value
     or the catalog default for that provider."""
-    env = parse_env_file(_resolve_path(path))
-    provider = resolve_active_provider(env)
-    if not provider:
-        return "", None
-    entry = provider_by_id(provider)  # not None: provider is validated
-    assert entry is not None  # for type-checkers; guaranteed by resolve
-    model = (env.get(entry.model_env) or "").strip()
-    return provider, (model or default_model_id(provider))
+    state = read_active_provider_state(path)
+    return state.provider, state.model

@@ -1144,7 +1144,7 @@ async def _get_state(
     from ..camilla import CamillaController
     from ..output_hardware import load_state as _load_output_hardware_state
     from ..speaker_name import read_state as _read_speaker_name_state
-    from ..voice.provider_state import read_active_provider_and_model
+    from ..voice.provider_state import read_active_provider_state
 
     # Provider + model: re-read the wizard-owned SSOT file fresh on every
     # call. jasper-control is NOT restarted on a provider switch (only
@@ -1153,7 +1153,7 @@ async def _get_state(
     # after every switch — the /system/ bug this fixes. Same fresh-read
     # rationale as the home_assistant block in /system/snapshot below.
     # ("", None) when unconfigured; never a guessed default.
-    voice_provider, voice_model = read_active_provider_and_model()
+    active_provider = read_active_provider_state()
 
     listening_level: int | None = None
     persisted_main_volume_db: float | None = None
@@ -1484,8 +1484,10 @@ async def _get_state(
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
-            "provider": voice_provider,
-            "model": voice_model,
+            "provider": active_provider.provider,
+            "model": active_provider.model,
+            "provider_status": active_provider.status,
+            "provider_error": active_provider.detail or None,
             "session_active": voice_session,
             "spend_allowed": (voice_st or {}).get("spend_allowed"),
             "connection_paused": (voice_st or {}).get("connection_paused"),
