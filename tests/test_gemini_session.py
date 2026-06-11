@@ -430,3 +430,32 @@ async def test_dispatch_completes_fast_tool_under_default_timeout():
 
     assert len(cap.sent) == 1
     assert cap.sent[0].response == {"temperature": 62}
+
+
+@pytest.mark.asyncio
+async def test_acquire_turn_rolls_back_active_turn_when_activity_start_fails():
+    """A failed activity_start must not leave the turn slot occupied.
+
+    `acquire_turn` assigns `_active_turn` before sending activity_start;
+    if that send raises (WS dropped in the gap), the slot must roll back
+    — otherwise every later acquire gets "a turn is already active"
+    until a reconnect clears it. Observed wedging the 2026-06-11 eval
+    runs; on the daemon it self-heals only because the supervisor's
+    reconnect detaches the turn.
+    """
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    conn._connected_event.set()
+
+    async def _raise():
+        raise RuntimeError("ws closed mid-send")
+
+    conn._send_activity_start = _raise
+
+    with pytest.raises(RuntimeError, match="ws closed mid-send"):
+        await conn.acquire_turn()
+    assert conn._active_turn is None
+
+    # The next acquire surfaces the real failure again — not the
+    # "a turn is already active" wedge.
+    with pytest.raises(RuntimeError, match="ws closed mid-send"):
+        await conn.acquire_turn()

@@ -767,7 +767,16 @@ class GeminiLiveConnection(LiveConnection):
             # Used by GeminiLiveTurn for elapsed-ms logging.
             turn._started_at_monotonic = _time.monotonic()
             self._active_turn = turn
-            await self._send_activity_start()
+            try:
+                await self._send_activity_start()
+            except BaseException:
+                # The turn never started — roll the slot back, or every
+                # later acquire_turn() gets "a turn is already active"
+                # until a reconnect happens to clear it (observed on the
+                # 2026-06-11 eval runs: one ConnectionClosed here wedged
+                # the whole suite).
+                self._active_turn = None
+                raise
             async with self._state_lock:
                 if self._state is ConnectionState.CONNECTED:
                     self._set_state(ConnectionState.IN_TURN)
