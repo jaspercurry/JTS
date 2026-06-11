@@ -533,6 +533,14 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         leader_config_mod, "restore_solo_config_sync",
         lambda: order.append("camilla_restore_check") and None,
     )
+    import jasper.multiroom.snapcast_rpc as snapcast_rpc_mod
+
+    monkeypatch.setattr(
+        snapcast_rpc_mod, "ensure_groups_on_stream",
+        lambda want, **kw: order.append("stream_binding") or {
+            "reachable": True, "groups": 1, "fixed": 0, "failed": 0,
+        },
+    )
     return target, order
 
 
@@ -596,7 +604,9 @@ def test_main_leader_order_env_restart_units_then_camilla(tmp_path, monkeypatch)
     _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     rc = main([])
     assert rc == 0
-    assert order == ["write", "outputd_restart", "apply", "camilla_bonded"]
+    assert order == [
+        "write", "outputd_restart", "apply", "camilla_bonded", "stream_binding",
+    ]
 
 
 def test_main_leader_second_run_skips_outputd_restart(tmp_path, monkeypatch):
@@ -606,7 +616,8 @@ def test_main_leader_second_run_skips_outputd_restart(tmp_path, monkeypatch):
     assert main([]) == 0
     order.clear()
     assert main([]) == 0
-    assert order == ["write", "apply", "camilla_bonded"]  # no outputd_restart
+    # no outputd_restart on the unchanged second run
+    assert order == ["write", "apply", "camilla_bonded", "stream_binding"]
 
 
 def test_main_nonleader_runs_solo_restore_not_bonded_apply(tmp_path, monkeypatch):
@@ -646,6 +657,28 @@ def test_main_writes_outputd_env_for_member_and_clears_for_solo(tmp_path, monkey
     assert "JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n" in env
     assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=\n" in env
     assert "outputd_restart" in order  # env changed bonded→cleared ⇒ restart
+
+
+def test_main_nonleader_skips_stream_binding(tmp_path, monkeypatch):
+    """The binding pin is leader-only (the follower has no snapserver)."""
+    for cfg in (_follower(leader_addr="192.168.1.50"), _disabled()):
+        _target, order = _patch_main_io(monkeypatch, tmp_path, cfg)
+        assert main([]) == 0
+        assert "stream_binding" not in order
+
+
+def test_main_unreachable_snapserver_flips_rc(tmp_path, monkeypatch):
+    """A bond whose bindings cannot be verified is a degraded bond: the
+    oneshot exits nonzero (units keep running; health shows it)."""
+    import jasper.multiroom.snapcast_rpc as snapcast_rpc_mod
+
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(
+        snapcast_rpc_mod, "ensure_groups_on_stream",
+        lambda want, **kw: {"reachable": False, "groups": 0, "fixed": 0, "failed": 0},
+    )
+    assert main([]) == 1
+    assert "apply" in order  # units still managed
 
 
 def test_main_camilla_failure_is_fail_soft_but_flips_rc(tmp_path, monkeypatch):

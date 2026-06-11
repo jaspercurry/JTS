@@ -116,6 +116,14 @@ OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 # and this file is the last env layer, so the pin wins over lab retunes.
 OUTPUTD_CONTENT_BRIDGE_ENV = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_UNIT = "jasper-outputd.service"
+
+# The snapserver stream id — ONE definition: the argv builder names the
+# pipe source with it, the reconciler's binding pin re-binds persisted
+# groups to it, and the leader's runtime health checks clients against
+# it. snapcast PERSISTS group->stream assignments in server.json, so a
+# stale binding (e.g. the distro-snapserver era's "default") silently
+# mutes a bond behind green health — the 2026-06-11 bring-up incident.
+SNAP_STREAM_ID = "jts"
 # (The former LEADER_CONTENT_LANE_GATE staging env was retired when this
 # lane went live: the reconciler's role wiring IS the gate now — the
 # lane activates exactly when a valid bond is configured, and the
@@ -221,7 +229,7 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
     # reason: snapserver owning FIFO creation is load-bearing (it opens
     # the read end first, so CamillaDSP's write-open cannot block).
     source = (
-        f"pipe://{SNAPFIFO}?name=jts"
+        f"pipe://{SNAPFIFO}?name={SNAP_STREAM_ID}"
         f"&mode=create"
         f"&sampleformat=48000:16:2"
         f"&codec={cfg.codec}"
@@ -674,6 +682,26 @@ def main(argv: list[str] | None = None) -> int:
             logger.error(
                 "event=multiroom.reconcile.camilla_failed action=bonded_apply error=%s", e,
             )
+            rc = 1
+
+        # 6. The stream-binding pin (after camilla apply so snapserver
+        # has had its longest warm-up): re-bind every PERSISTED snapcast
+        # group to our stream. A stale server.json binding (the distro-
+        # snapserver era's "default") silently mutes the whole bond
+        # behind green health — the 2026-06-11 bring-up incident. The
+        # ensure retries internally; an unreachable snapserver flips the
+        # exit code (a bond whose bindings cannot be verified is a
+        # degraded bond) and the runtime health shows it.
+        from .snapcast_rpc import ensure_groups_on_stream
+
+        report = ensure_groups_on_stream(SNAP_STREAM_ID)
+        logger.info(
+            "event=multiroom.reconcile.stream_binding reachable=%s groups=%d "
+            "fixed=%d failed=%d want=%s",
+            report["reachable"], report["groups"], report["fixed"],
+            report["failed"], SNAP_STREAM_ID,
+        )
+        if not report["reachable"] or report["failed"]:
             rc = 1
 
     logger.info("event=multiroom.reconcile.done rc=%d", rc)

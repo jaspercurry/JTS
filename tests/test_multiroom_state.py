@@ -377,6 +377,20 @@ def test_enabled_valid_probes_the_planned_units(tmp_path):
     assert SNAPCLIENT in probed[0]
 
 
+def _healthy_stream(name=None):
+    """A snapserver registry where this leader's client is connected,
+    bound to our stream, audible — the all-clear stream probe. The
+    client name defaults to THIS machine's hostname because the derive's
+    own-client check compares against socket.gethostname()."""
+    import socket
+
+    name = name or socket.gethostname().strip()
+    return lambda: [{
+        "group_id": "g1", "stream_id": "jts", "name": name,
+        "connected": True, "muted": False, "volume_percent": 100,
+    }]
+
+
 def test_leader_tap_set_is_ok(tmp_path):
     """Valid leader, units active, a LIVE producer feed (the future
     Increment 3–5 shape, exercised via the injected reader) => ok."""
@@ -390,6 +404,7 @@ def test_leader_tap_set_is_ok(tmp_path):
         _write_env(tmp_path, _leader_env()),
         unit_state_reader=_stub,
         tap_path_reader=tap_spy,
+        stream_clients_reader=_healthy_stream(),
     )
     assert state["runtime"]["health"] == "ok"
     assert "leader streaming" in state["runtime"]["detail"]
@@ -448,6 +463,7 @@ def test_leader_with_pipe_wired_config_is_ok(tmp_path, monkeypatch):
     state = read_grouping_state(
         _write_env(tmp_path, _leader_env()),
         unit_state_reader=_stub,
+        stream_clients_reader=_healthy_stream(),
     )
     assert state["runtime"]["health"] == "ok"
     assert "leader streaming" in state["runtime"]["detail"]
@@ -557,3 +573,91 @@ def test_parse_grouping_response_unknown_cases_are_none():
     assert parse_grouping_response({GROUPING_RESPONSE_KEY: "x"}) is None    # not a dict
     assert parse_grouping_response("not a dict") is None             # body not a dict
     assert parse_grouping_response(None) is None
+
+
+# ---------- stream-client truthing (the 2026-06-11 silent-bond classes) ----
+
+
+def _stream_rows(**overrides):
+    import socket
+
+    row = {
+        "group_id": "g1", "stream_id": "jts",
+        "name": socket.gethostname().strip(),
+        "connected": True, "muted": False, "volume_percent": 100,
+    }
+    row.update(overrides)
+    return [row]
+
+
+def _leader_runtime_with_stream(tmp_path, stream_clients):
+    return read_grouping_state(
+        _write_env(tmp_path, _leader_env()),
+        unit_state_reader=_stub,
+        tap_path_reader=lambda: _SNAPFIFO,
+        stream_clients_reader=lambda: stream_clients,
+    )["runtime"]
+
+
+def test_stream_truth_wrong_binding_is_degraded(tmp_path):
+    """THE incident class: a connected client bound to a stale stream
+    hears silence while every unit is green."""
+    rt = _leader_runtime_with_stream(
+        tmp_path, _stream_rows(stream_id="default"),
+    )
+    assert rt["health"] == "degraded"
+    assert "bound to stream default" in rt["detail"]
+    assert "jasper-grouping-reconcile" in rt["detail"]
+
+
+def test_stream_truth_muted_or_zero_volume_is_degraded(tmp_path):
+    """snapclient's software mixer scales samples by the registry
+    volume — muted/0% plays zeros behind green health."""
+    rt = _leader_runtime_with_stream(tmp_path, _stream_rows(muted=True))
+    assert rt["health"] == "degraded"
+    assert "muted or at volume 0" in rt["detail"]
+    rt = _leader_runtime_with_stream(
+        tmp_path, _stream_rows(volume_percent=0),
+    )
+    assert rt["health"] == "degraded"
+
+
+def test_stream_truth_own_client_missing_is_degraded(tmp_path):
+    """The leader must hear itself: its own snapclient absent from the
+    registry (or disconnected) means a silent leader."""
+    rt = _leader_runtime_with_stream(
+        tmp_path, _stream_rows(name="someone-else"),
+    )
+    assert rt["health"] == "degraded"
+    assert "own snapclient" in rt["detail"]
+    rt = _leader_runtime_with_stream(
+        tmp_path, _stream_rows(connected=False),
+    )
+    assert rt["health"] == "degraded"
+
+
+def test_stream_truth_unreachable_rpc_is_degraded_not_skipped(tmp_path):
+    """An unverifiable bond is a degraded bond — RPC failure maps to an
+    explicit verdict, never a silent skip."""
+    rt = read_grouping_state(
+        _write_env(tmp_path, _leader_env()),
+        unit_state_reader=_stub,
+        tap_path_reader=lambda: _SNAPFIFO,
+        stream_clients_reader=lambda: None,  # reader fail-soft → None
+    )["runtime"]
+    assert rt["health"] == "degraded"
+    assert "snapserver RPC unreachable" in rt["detail"]
+
+
+def test_stream_truth_disconnected_wrong_binding_does_not_degrade(tmp_path):
+    """A DISCONNECTED client's stale binding is the reconciler pin's job
+    (it re-binds persisted groups); health only judges what is live."""
+    import socket
+
+    rows = _stream_rows() + [{
+        "group_id": "g2", "stream_id": "default", "name": "jts3",
+        "connected": False, "muted": False, "volume_percent": 100,
+    }]
+    rt = _leader_runtime_with_stream(tmp_path, rows)
+    assert rt["health"] == "ok"
+    assert socket.gethostname  # keep import used
