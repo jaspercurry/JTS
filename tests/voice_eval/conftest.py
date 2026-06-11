@@ -5,6 +5,16 @@ and reused across every scenario in the run. Cost matters; isolation
 is fine today because the currently-tested tools are stateless. Add
 a function-scoped variant when a stateful tool gets a scenario.
 
+Every test in this suite runs on the SESSION event loop (the
+collection hook below applies `loop_scope="session"`; the harness
+fixture declares the same). Without it, pytest-asyncio gives each
+test its own loop while the connection, its receive task, and the
+turn queues live on the loop of whichever test opened them — which
+pytest closes when that test ends. The 2026-06-11 on-Pi run showed
+the result: every test after the first died with "a turn is already
+active" against a connection whose loop no longer existed. One
+session-long loop is also exactly how the daemon runs.
+
 If the necessary env vars aren't set (no provider key, no
 OPENAI_API_KEY for TTS, no subway/weather config), the whole suite
 is skipped with a clear message. That way `pytest tests/voice_eval/`
@@ -19,6 +29,14 @@ import pytest
 import pytest_asyncio
 
 from jasper.config import Config
+
+
+def pytest_collection_modifyitems(items) -> None:
+    """Pin every voice_eval test to the session event loop."""
+    suite_dir = os.path.dirname(os.path.abspath(__file__))
+    for item in items:
+        if str(item.fspath).startswith(suite_dir):
+            item.add_marker(pytest.mark.asyncio(loop_scope="session"))
 
 
 def _provider_key_present(cfg: Config) -> bool:
@@ -62,10 +80,11 @@ def voice_eval_config() -> Config:
     return cfg
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def harness(voice_eval_config: Config):
     """The session-scoped harness. Opens the `LiveConnection` lazily
-    on first `ask()` and tears down at session end."""
+    on first `ask()` and tears down at session end — all on the
+    session loop, so the connection's tasks outlive any one test."""
     # Local import so import-time of conftest stays light when the
     # suite is skipped.
     from .harness import VoiceEvalHarness
