@@ -165,12 +165,14 @@ def test_sound_module_preserves_editor_behaviour():
     assert "function cancelLiveDrafts()" in js
     assert "jsonHeaders()" in js
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
-    assert "Active crossover commissioning" in js
+    assert "Active crossover setup" in js
     assert "./active-speaker/environment" in js
     assert "./output-topology" in js
-    assert "Check environment" in js
+    assert "Run safety preflight" in js
     assert "safe_playback" in js
-    assert "Environment checks and staging will not play tones" in js
+    assert "Setup and preflight steps do not play sound" in js
+    assert "output-step__chevron" in js
+    assert "querySelectorAll('.output-step[open]')" in js
     assert "window.prompt" not in js
 
 
@@ -341,6 +343,12 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Save this output setup draft before recording physical verification evidence." in js
     assert "Sound tests remain disabled for this setup surface." in js
     assert "Setup template" in js
+    assert "Speaker count" in js
+    assert "Speaker type" in js
+    assert "Prepare safe test mode" in js
+    assert "Safety preflight" in js
+    assert "data-act=\"output-template-axis\"" in js
+    assert "output-template-grid" not in js
     assert "Mono active 2-way" in js
     assert "Stereo active 3-way" in js
     assert "Output setup template is a draft." in js

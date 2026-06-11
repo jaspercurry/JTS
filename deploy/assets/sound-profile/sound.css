@@ -429,29 +429,48 @@
     font-size: 13px; font-weight: 700; color: var(--foreground);
   }
   .output-facts { margin-top: 10px; }
-  .output-template-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-    gap: 8px;
+  .output-template-axes {
+    display: grid; gap: 12px;
   }
-  .output-template {
-    display: grid; gap: 4px; min-height: 84px; width: 100%;
-    padding: 10px; text-align: left; border: 1px solid var(--border);
+  .output-template-axis {
+    display: grid; gap: 6px;
+  }
+  .output-template-axis__label {
+    margin: 0; font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0; color: var(--muted-foreground);
+  }
+  .output-template-options {
+    display: grid; gap: 6px;
+  }
+  .output-template-options--layout {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .output-template-options--mode {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .output-template-option {
+    display: grid; gap: 3px; min-height: 58px; width: 100%;
+    padding: 9px 10px; text-align: left; border: 1px solid var(--border);
     border-radius: var(--radius-sm); background: var(--surface);
     color: var(--foreground); cursor: pointer; font: inherit;
     appearance: none;
   }
-  .output-template:hover:not(:disabled) {
+  .output-template-option:hover:not(:disabled) {
     background: color-mix(in oklch, var(--primary) 7%, var(--surface));
     border-color: color-mix(in oklch, var(--primary) 30%, var(--border));
   }
-  .output-template:disabled { opacity: 0.45; cursor: not-allowed; }
-  .output-template strong {
+  .output-template-option[aria-pressed="true"] {
+    background: color-mix(in oklch, var(--primary) 11%, var(--surface));
+    border-color: color-mix(in oklch, var(--primary) 52%, var(--border));
+  }
+  .output-template-option:disabled { opacity: 0.45; cursor: not-allowed; }
+  .output-template-option strong {
     font-size: 12px; font-weight: 700; line-height: 1.2;
   }
-  .output-template span,
-  .output-template small {
+  .output-template-option span {
     font-size: 11px; color: var(--muted-foreground); line-height: 1.25;
   }
+  .output-template-summary { margin-top: 12px; }
   .output-step {
     border-radius: var(--radius-md);
     background: var(--background);
@@ -460,7 +479,7 @@
   }
   .output-step + .output-step { margin-top: 10px; }
   .output-step__summary {
-    display: grid; grid-template-columns: 4.2rem minmax(0, 1fr);
+    display: grid; grid-template-columns: 4.2rem minmax(0, 1fr) 1rem;
     gap: 10px; align-items: start; padding: 12px;
     cursor: pointer; list-style: none;
   }
@@ -485,6 +504,17 @@
   }
   .output-step__text span {
     font-size: 12px; color: var(--muted-foreground); line-height: 1.35;
+  }
+  .output-step__chevron {
+    align-self: center; justify-self: end;
+    width: 8px; height: 8px;
+    border-right: 2px solid var(--muted-foreground);
+    border-bottom: 2px solid var(--muted-foreground);
+    transform: rotate(45deg);
+    transition: transform 160ms ease;
+  }
+  .output-step[open] .output-step__chevron {
+    transform: rotate(225deg);
   }
   .output-step__body {
     display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
@@ -722,6 +752,9 @@
     .active-speaker-mic-observation__fields {
       grid-template-columns: minmax(0, 1fr);
       align-items: stretch;
+    }
+    .output-template-options--mode {
+      grid-template-columns: minmax(0, 1fr);
     }
     .output-setup__head,
     .output-setup__state,
