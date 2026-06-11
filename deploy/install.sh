@@ -1969,9 +1969,15 @@ install_systemd_units() {
     # boots are looping. Safe on fresh installs (first boots never trip).
     systemctl enable jasper-bootloop-guard.service
     # Identity reconciler: boot + 5-min timer; pure observer (writes
-    # only /var/lib/jasper/identity.env). `start` immediately so the
-    # allowlist/doctor see fresh identity without waiting for a boot.
-    systemctl enable jasper-identity-reconcile.timer
+    # only /var/lib/jasper/identity.env). `enable --now`, NOT bare
+    # `enable`: enable alone arms the timer for the NEXT boot but
+    # leaves it inactive until then — the same enable-vs-start trap as
+    # the wizard-socket lesson above. Caught on hardware 2026-06-11
+    # (timer inactive after first deploy; doctor's snapshot-staleness
+    # warn was the backstop). --now is idempotent on redeploys. The
+    # one-shot service `start` keeps identity fresh immediately so the
+    # allowlist/doctor don't wait for the first timer tick.
+    systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
     echo
