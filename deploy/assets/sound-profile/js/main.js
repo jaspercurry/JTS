@@ -72,10 +72,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   };
   var outputStepOverride = '';
   var driverResearch = {
-    inputs: {woofer: '', mid: '', tweeter: '', subwoofer: '', notes: ''},
+    inputs: {full_range: '', woofer: '', mid: '', tweeter: '', subwoofer: '', notes: ''},
     importText: '',
     parsed: null,
-    error: ''
+    designDraft: null,
+    error: '',
+    dirty: false,
+    saving: false
   };
   var ZERO_DETENT_DB = 0.1;
 
@@ -769,6 +772,44 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }, []).slice(0, 4)
     };
   }
+  function driverResearchDraftSaved() {
+    var draftPayload = driverResearch.designDraft || {};
+    var savedStatus = draftPayload.status || '';
+    return savedStatus === 'ready_for_review' && !driverResearch.dirty;
+  }
+  function ingestDesignDraft(payload, options) {
+    options = options || {};
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+    driverResearch.designDraft = payload;
+    driverResearch.saving = false;
+    if (!options.force && driverResearch.dirty) return;
+    var inputs = payload.operator_inputs || {};
+    ['full_range', 'woofer', 'mid', 'tweeter', 'subwoofer', 'notes'].forEach(function(key) {
+      driverResearch.inputs[key] = inputs[key] || '';
+    });
+    if (payload.driver_research) {
+      driverResearch.importText = JSON.stringify(payload.driver_research, null, 2);
+      try {
+        driverResearch.parsed = summarizeDriverResearchPayload(payload.driver_research);
+        driverResearch.error = '';
+      } catch (e) {
+        driverResearch.parsed = null;
+        driverResearch.error = e.message;
+      }
+    } else {
+      driverResearch.importText = '';
+      driverResearch.parsed = null;
+      driverResearch.error = '';
+    }
+    driverResearch.dirty = false;
+  }
+  async function fetchDesignDraft() {
+    var resp = await fetch('./active-speaker/design-draft', {cache: 'no-store'});
+    var payload = await resp.json();
+    if (!resp.ok) throw new Error(payload.error || 'speaker design draft failed');
+    ingestDesignDraft(payload);
+    return payload;
+  }
   function toneSummary(tone) {
     var frequency = Number(tone.frequency_hz);
     var level = Number(tone.level_dbfs);
@@ -842,7 +883,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var hasLayout = groups.length > 0;
     if (step === 'layout') return hasLayout && !outputTopology.dirty ? 'done' : 'active';
     if (step === 'research') return hasLayout && !outputTopology.dirty ?
-      (driverResearch.parsed ? 'done' : 'active') : 'todo';
+      (driverResearchDraftSaved() || driverResearch.parsed ? 'done' : 'active') : 'todo';
     if (step === 'map') return outputIdentityComplete() ? 'done' :
       (hasLayout && !outputTopology.dirty ? 'active' : 'todo');
     if (step === 'safety') return outputStartupLoaded() ? 'done' :
@@ -851,7 +892,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function defaultOutputStep(topology) {
     if (!topology || !outputGroups(topology).length || outputTopology.dirty) return 'layout';
-    if (!driverResearch.parsed) return 'research';
+    if (!driverResearchDraftSaved() && !driverResearch.parsed) return 'research';
     if (!outputIdentityComplete()) return 'map';
     return 'safety';
   }
@@ -944,14 +985,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     '</div>';
   }
   function renderDriverResearchSummary() {
+    var saved = driverResearch.designDraft || {};
+    var savedStatus = saved.status || '';
+    var savedSummary = saved.summary || {};
+    var savedHtml = savedStatus && savedStatus !== 'not_saved' ? (
+      '<div class="driver-research__summary driver-research__summary--saved">' +
+        '<span class="status-pill' + (savedStatus === 'ready_for_review' ? ' status-pill--ready' : '') + '">' +
+          escapeHtml('saved draft: ' + savedStatus.replace(/_/g, ' ')) + '</span>' +
+        '<p class="setting-row__hint">' + escapeHtml(
+          String(savedSummary.driver_count || 0) + ' saved driver' +
+          (Number(savedSummary.driver_count || 0) === 1 ? '' : 's') +
+          ', ' + String(savedSummary.crossover_candidate_count || 0) +
+          ' crossover candidate' +
+          (Number(savedSummary.crossover_candidate_count || 0) === 1 ? '' : 's') +
+          '. No filters are applied.'
+        ) + '</p>' +
+      '</div>'
+    ) : '';
     if (driverResearch.error) {
-      return '<p class="setting-row__hint driver-research__error">' + escapeHtml(driverResearch.error) + '</p>';
+      return savedHtml +
+        '<p class="setting-row__hint driver-research__error">' +
+        escapeHtml(driverResearch.error) + '</p>';
     }
     if (!driverResearch.parsed) {
-      return '<p class="setting-row__hint">Paste JSON from the assistant to sanity-check the shape. JTS will not apply it automatically.</p>';
+      return savedHtml +
+        '<p class="setting-row__hint">Paste JSON from the assistant to sanity-check the shape. JTS will not apply it automatically.</p>';
     }
     var summary = driverResearch.parsed;
-    return '<div class="driver-research__summary">' +
+    return savedHtml + '<div class="driver-research__summary">' +
       '<span class="status-pill status-pill--ready">import parsed</span>' +
       '<p class="setting-row__hint">' + escapeHtml(
         summary.driverCount + ' driver' + (summary.driverCount === 1 ? '' : 's') +
@@ -965,6 +1026,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderDriverResearchCard(topology) {
     var roles = outputRoleSummary(topology);
+    var saveDisabled = driverResearch.saving || outputTopology.dirty ||
+      !currentOutputTopology();
     var fields = roles.map(function(role) {
       return '<label class="driver-research__field">' +
         '<span>' + escapeHtml(driverResearchRoleLabel(role)) + '</span>' +
@@ -996,7 +1059,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<div class="driver-research__panel">' +
           '<div class="row-between active-speaker-level__head">' +
             '<p class="setting-row__title">Paste JSON result</p>' +
-            '<button type="button" class="btn btn--ghost" data-act="parse-driver-research">Check JSON</button>' +
+            '<div class="driver-research__actions">' +
+              '<button type="button" class="btn btn--ghost" data-act="parse-driver-research">Check JSON</button>' +
+              '<button type="button" class="btn btn--primary" data-act="save-driver-design"' +
+                (saveDisabled ? ' disabled' : '') + '>' +
+                escapeHtml(driverResearch.saving ? 'Saving' : 'Save design draft') +
+              '</button>' +
+            '</div>' +
           '</div>' +
           '<textarea id="driver-research-import" class="driver-research__textarea" data-driver-import ' +
             'rows="7" placeholder="{...}" aria-label="Driver research JSON result">' +
@@ -2587,6 +2656,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'save-output-topology') { saveOutputTopology(); }
     else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(); }
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
+    else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
     else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
     else if (act === 'mark-output-protection') { updateOutputChannelProtection(t); }
     else if (act === 'check-output-readiness') { checkOutputPlaybackReadiness(t); }
@@ -2650,6 +2720,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var driverField = ev.target.getAttribute('data-driver-field');
       driverResearch.inputs[driverField] = ev.target.value;
       driverResearch.error = '';
+      driverResearch.dirty = true;
       updateDriverResearchPromptPreview();
       return;
     }
@@ -2657,6 +2728,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.importText = ev.target.value;
       driverResearch.error = '';
       driverResearch.parsed = null;
+      driverResearch.dirty = true;
       updateDriverResearchImportSummary();
       return;
     }
@@ -2881,6 +2953,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'output setup failed');
       ingestOutputTopology(payload);
+      try {
+        await fetchDesignDraft();
+      } catch (draftError) {
+        driverResearch.designDraft = {
+          status: 'unreadable',
+          summary: {},
+          issues: [{message: draftError.message}]
+        };
+      }
     } catch (e) {
       outputTopology.loading = false;
       outputTopology.error = e.message;
@@ -2897,6 +2978,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.readinessError = '';
     outputTopology.readinessPlayback = null;
     outputTopology.readinessPlaybackChecking = '';
+    driverResearch.dirty = true;
     activeSpeaker.stagedConfig = null;
     render();
   }
@@ -3129,6 +3211,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = JSON.parse(driverResearch.importText || '');
       driverResearch.parsed = summarizeDriverResearchPayload(payload);
       driverResearch.error = '';
+      driverResearch.dirty = true;
       status('Driver research JSON parsed. Review it before using any values.');
     } catch (e) {
       driverResearch.parsed = null;
@@ -3136,6 +3219,57 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Driver research JSON needs review: ' + e.message, true);
     }
     render();
+  }
+  async function saveDriverResearchDraft(options) {
+    options = options || {};
+    if (outputTopology.dirty) {
+      status('Save the output map before saving driver research.', true);
+      return false;
+    }
+    if (!currentOutputTopology()) {
+      status('Load output hardware before saving a speaker design draft.', true);
+      return false;
+    }
+    var researchPayload = null;
+    if ((driverResearch.importText || '').trim()) {
+      try {
+        researchPayload = JSON.parse(driverResearch.importText);
+        driverResearch.parsed = summarizeDriverResearchPayload(researchPayload);
+        driverResearch.error = '';
+      } catch (e) {
+        driverResearch.parsed = null;
+        driverResearch.error = e.message;
+        status('Driver research JSON needs review: ' + e.message, true);
+        render();
+        return false;
+      }
+    }
+    driverResearch.saving = true;
+    driverResearch.error = '';
+    render();
+    try {
+      var resp = await fetch('./active-speaker/design-draft', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          operator_inputs: driverResearch.inputs,
+          driver_research: researchPayload
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'speaker design draft save failed');
+      ingestDesignDraft(payload, {force: true});
+      if (options.nextStep) outputStepOverride = options.nextStep;
+      status('Saved speaker design draft. No filters were applied and no sound was played.');
+      render();
+      return true;
+    } catch (e) {
+      driverResearch.saving = false;
+      driverResearch.error = e.message;
+      status('Could not save speaker design draft: ' + e.message, true);
+      render();
+      return false;
+    }
   }
   async function advanceOutputStep(step) {
     var topology = currentOutputTopology();
@@ -3155,14 +3289,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (step === 'research') {
-      if (driverResearch.importText.trim() && !driverResearch.parsed) {
-        parseDriverResearchImport();
-        if (!driverResearch.parsed) return;
-      }
-      openOutputStep('map');
-      status(driverResearch.parsed ?
-        'Driver research JSON parsed. Review values before using them.' :
-        'Driver research is optional in this slice; continuing without applying values.');
+      if (!await saveDriverResearchDraft({nextStep: 'map'})) return;
       return;
     }
     if (step === 'map') {
