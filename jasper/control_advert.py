@@ -102,19 +102,46 @@ def _resolve_name(name: str | None) -> str:
     return resolved
 
 
+def _resolve_peer_id() -> str:
+    """The stable peer identity for the `peer_id=` TXT record.
+
+    Sourced from the ONE identity reader (``read_identity().peer_id`` —
+    /var/lib/jasper/peer_id, UUID, survives renames/IP churn/Avahi
+    collision renames) so consumers can address a *specific* speaker
+    and treat the advertised hostname as transport, never identity.
+    ``read_identity`` is TOTAL (falls back to an ephemeral UUID when
+    the file is unwritable); the except is defense-in-depth so a read
+    can never break advertising — same posture as ``_resolve_name``.
+    """
+    try:
+        from .identity import read_identity
+
+        return (read_identity().peer_id or "").strip()
+    except Exception as e:  # noqa: BLE001 — never let a read break advertising
+        logger.warning(
+            "event=control_advert.peer_id_read result=failed error=%s", e,
+        )
+        return ""
+
+
 def render_control_advert(
     name: str | None = None,
     *,
+    peer_id: str | None = None,
     template: str = CONTROL_AVAHI_TEMPLATE,
     out: str = CONTROL_AVAHI_SERVICE,
     reload: bool = True,
 ) -> bool:
     """Render the always-on `_jasper-control._tcp` advert with the
-    speaker's friendly name and atomic-write it into /etc/avahi/services/.
+    speaker's friendly name + stable peer identity and atomic-write it
+    into /etc/avahi/services/.
 
     ``name`` defaults to the canonical speaker name; an empty/unset name
     falls back to the hostname so the advert is never name-less. The name
-    is XML-escaped before substitution.
+    is XML-escaped before substitution. ``peer_id`` defaults to the
+    stable identity from ``jasper.identity`` (``/var/lib/jasper/peer_id``)
+    and rides a second TXT record so consumers can address a *specific*
+    speaker across renames / IP churn / Avahi collision renames.
 
     Returns True if the file was written (or was already up-to-date),
     False on any handled failure (missing/unreadable template, stray
@@ -136,7 +163,10 @@ def render_control_advert(
     file before/after to detect whether a write happened.
     """
     resolved = _resolve_name(name)
-    substitutions = {"__SPEAKER_NAME__": resolved}
+    substitutions = {
+        "__SPEAKER_NAME__": resolved,
+        "__PEER_ID__": peer_id if peer_id is not None else _resolve_peer_id(),
+    }
 
     r = avahi_service.render_service(
         template,

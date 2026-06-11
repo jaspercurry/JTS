@@ -502,8 +502,18 @@ That flow exists historically but misses:
   only conditionally restarts `jasper-voice` when the AEC default
   flips — a one-time event)
 
+**Deploy-target identity guard:** the preflight also verifies WHICH
+speaker `PI_HOST` resolves to. The first deploy records the target's
+stable peer_id (`/var/lib/jasper/peer_id`) as `PI_PEER_ID=` in
+`.env.local`; later deploys abort before rsync on a mismatch — an mDNS
+collision rename or a re-image can silently repoint a hostname at a
+different Pi. After a deliberate re-image, accept the new identity
+with `JTS_ACCEPT_NEW_IDENTITY=1`. Details:
+[docs/HANDOFF-identity.md](docs/HANDOFF-identity.md).
+
 **Skip / opt-in flags:** `SKIP_INSTALL=1` (rsync only),
 `SKIP_RESTART=1` (install but don't restart/reconcile),
+`JTS_ACCEPT_NEW_IDENTITY=1` (accept a changed deploy-target peer_id),
 `JASPER_BUILD_OPTIONAL_FIRMWARE=1` (explicitly rebuild optional
 ESP32 dial/satellite firmware during install), `PI_HOST=...`,
 `PI_USER=...`, `JASPER_HOSTNAME=...` (speaker identity/cert hostname

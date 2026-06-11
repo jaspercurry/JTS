@@ -16,6 +16,15 @@ not this change.)
 ``read_identity()`` is TOTAL: every field has a safe fallback and the
 function never raises, so an unreadable file or missing env degrades to a
 sensible default rather than breaking a caller's render path.
+
+Scope split with :mod:`jasper.identity_state`: this module reads the
+*intended* identity (display name, room, configured hostname, stable
+peer_id). ``identity_state`` reads the *observed* network identity —
+what Avahi actually advertises after RFC 6762 collision renames, as
+snapshotted by ``jasper-identity-reconcile`` into
+``/var/lib/jasper/identity.env``. Intended vs observed disagreeing is
+exactly the drift the reconciler surfaces; consumers pick the side
+they mean.
 """
 from __future__ import annotations
 

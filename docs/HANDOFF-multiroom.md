@@ -212,8 +212,15 @@ canonical chain itself (Increments 2a/2b), so `SNAPFIFO_PRODUCER_WIRED` stays
   advertises its `/speaker` display name as a `name=` TXT on
   `_jasper-control._tcp`, rendered by `jasper/control_advert.py` from
   `deploy/avahi/jasper-control.service.template` (purely additive vs. the
-  static service; XML-escaped; fail-soft). The directory renders peers and
-  self by that name. The self block now resolves name/room/hostname through
+  static service; XML-escaped; fail-soft). The advert also carries a
+  `peer_id=` TXT (the stable `/var/lib/jasper/peer_id` identity, via
+  `read_identity()`) — the handle the bond-forming UI should PIN leaders
+  by when it lands, resolving peer_id → current address at use time
+  instead of storing a hostname that an Avahi collision rename can
+  silently repoint at a different speaker (mDNS is unauthenticated:
+  treat peer_id as a stable handle, confirm trust-sensitive operations
+  over HTTP — see docs/HANDOFF-identity.md). The directory renders
+  peers and self by the friendly name. The self block now resolves name/room/hostname through
   the single identity reader `jasper/identity.py` (`read_identity()`); the
   shared one-shot browse is `jasper/mdns.py` (`browse_once`) and the one
   Avahi `*.service` renderer is `jasper/avahi_service.py` (`render_service`,

@@ -212,6 +212,38 @@ fi
 
 if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
     preflight_sudo
+
+    # Identity guard: never deploy to the WRONG Pi. mDNS names are
+    # transport, not identity — after an Avahi collision rename or a
+    # re-image, PI_HOST can resolve to a different speaker than this
+    # checkout means. TOFU: the first deploy records the target's
+    # stable peer_id (/var/lib/jasper/peer_id) into .env.local; later
+    # deploys abort BEFORE rsync on a mismatch. After a deliberate
+    # re-image, accept the new identity with JTS_ACCEPT_NEW_IDENTITY=1.
+    remote_peer_id="$(run_remote_sudo 'cat /var/lib/jasper/peer_id 2>/dev/null' 2>/dev/null || true)"
+    identity_outcome="$(verify_or_record_peer_id \
+        "$remote_peer_id" "${REPO_ROOT}/.env.local" \
+        "${JTS_ACCEPT_NEW_IDENTITY:-}")" || {
+        echo "─────────────────────────────────────────────────────────────" >&2
+        echo " DEPLOY ABORTED: ${PI_HOST} is not the speaker this checkout" >&2
+        echo " last deployed to (${identity_outcome})."                      >&2
+        echo " Likely causes:"                                               >&2
+        echo "   - an mDNS collision rename made this name resolve to a"     >&2
+        echo "     DIFFERENT speaker (check both Pis' /system/ pages)"       >&2
+        echo "   - the Pi was re-imaged (new peer_id)"                       >&2
+        echo " If this target is intentional:"                               >&2
+        echo "   JTS_ACCEPT_NEW_IDENTITY=1 bash scripts/deploy-to-pi.sh"     >&2
+        echo " If you meant a different speaker:"                            >&2
+        echo "   bash scripts/use <correct-hostname>"                        >&2
+        echo "─────────────────────────────────────────────────────────────" >&2
+        exit 1
+    }
+    case "$identity_outcome" in
+        recorded)   echo "    speaker identity: recorded peer_id (first contact)" ;;
+        rerecorded) echo "    speaker identity: re-recorded peer_id (accepted new)" ;;
+        match)      echo "    speaker identity: verified" ;;
+        *)          : ;;  # unavailable / no_state_file — nothing to verify against
+    esac
 fi
 
 # Rsync — same exclude set documented in CLAUDE.md.
