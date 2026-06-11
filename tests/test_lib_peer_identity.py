@@ -96,3 +96,29 @@ def test_accept_new_rerecords(tmp_path):
     assert "PI_PEER_ID=uuid-NEW\n" in content
     assert "uuid-1" not in content
     assert "PI_HOST=jts.local\n" in content
+
+
+def test_append_survives_missing_trailing_newline(tmp_path):
+    """A hand-edited .env.local without a trailing newline must not get
+    PI_PEER_ID glued onto its last line (silently corrupting it)."""
+    env = tmp_path / ".env.local"
+    env.write_text("PI_HOST=jts.local\nPI_USER=pi")  # no trailing \n
+    proc = _run("uuid-1", env)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "recorded"
+    content = env.read_text()
+    assert "PI_USER=pi\n" in content
+    assert "PI_PEER_ID=uuid-1\n" in content
+    assert "piPI_PEER_ID" not in content
+
+
+def test_deploy_gates_identity_and_direction_captures_on_passwordless_sudo():
+    """Under the interactive-sudo fallback, `ssh -tt` merges the
+    password prompt into captured stdout — an identity or build
+    manifest "read" there is prompt text glued to the value. Both
+    deploy preflights must skip explicitly instead of mis-parsing
+    (recording garbage would spuriously abort every later passwordless
+    deploy). Pins the skip branches' presence in deploy-to-pi.sh."""
+    deploy = (ROOT / "scripts" / "deploy-to-pi.sh").read_text()
+    assert "speaker identity: skipped (interactive sudo" in deploy
+    assert "deploy direction: skipped (interactive sudo" in deploy

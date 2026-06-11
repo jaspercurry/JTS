@@ -102,8 +102,13 @@ fi
 echo "==> [Pi] hostnamectl set-hostname ${NEW_BASE} (+ /etc/hosts)"
 remote_sudo "hostnamectl set-hostname $(shell_quote "$NEW_BASE")"
 # Raspberry Pi OS resolves its own name via the 127.0.1.1 line; a stale
-# entry makes every sudo print 'unable to resolve host'.
-remote_sudo "sed -i 's/^127\.0\.1\.1.*/127.0.1.1\t${NEW_BASE}/' /etc/hosts"
+# entry makes every sudo print 'unable to resolve host'. Replace it when
+# present, append it when an image ships without one — a silent sed
+# no-op would leave that sudo noise behind. NEW_BASE is regex-validated
+# above (lowercase mDNS label), so embedding it is injection-safe.
+remote_sudo "bash -c 'if grep -qE \"^127\.0\.1\.1\" /etc/hosts; then \
+sed -i \"s/^127\.0\.1\.1.*/127.0.1.1\t${NEW_BASE}/\" /etc/hosts; \
+else printf \"127.0.1.1\t%s\n\" \"${NEW_BASE}\" >> /etc/hosts; fi'"
 
 echo "==> [Pi] JASPER_HOSTNAME=${NEW_FQDN} in /etc/jasper/jasper.env"
 remote_sudo "bash -c 'if grep -qE \"^JASPER_HOSTNAME=\" /etc/jasper/jasper.env; then \

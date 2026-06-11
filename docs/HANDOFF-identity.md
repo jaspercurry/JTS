@@ -104,9 +104,19 @@ journalctl -u jasper-identity-reconcile | grep event=identity_reconcile
 # Doctor (identity coherence + cert SAN vs advertised name):
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "identity|cert"
 
-# Manual run:
-sudo systemctl start jasper-identity-reconcile
+# Manual run (always logs the full answer, even when unchanged):
+sudo /usr/local/sbin/jasper-identity-reconcile --reason manual
 ```
+
+**Journal discipline:** the timer ticks every 5 minutes forever, so
+`event=identity_reconcile.*` lines record **transitions only** — a
+steady, unchanged identity logs nothing (the file is still rewritten
+each tick so the doctor's snapshot-staleness probe stays honest).
+Persistent conditions live on the surfaces built for them:
+`/state.resilience.identity` and the doctor warnings repeat for as
+long as a collision or drift exists; the journal shows when it
+*started*. A manual run (`--reason manual`) always prints the full
+answer.
 
 Doctor checks:
 - `check_identity_coherence`

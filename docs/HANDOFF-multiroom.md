@@ -1586,7 +1586,14 @@ combinations. The now-Rust-read `JASPER_OUTPUTD_DAC_CONTENT_FIFO` wire-contract
 exception was dropped per the bidirectional guard. Pure split inside (assembler +
 policy unit-tested; 4 real-temp-FIFO end-to-end tests incl. a clocked
 never-blocks assertion). Zero solo cost (None ⇒ the loop is byte-identical); no
-reconciler wiring — the lane activates in Increment 5. Earlier 2026-06-11
+reconciler wiring — the lane activates in Increment 5. Earlier 2026-06-11:
+the always-on `_jasper-control._tcp` advert gained a `peer_id=` TXT record
+(#603 — the stable `/var/lib/jasper/peer_id` identity, rendered next to the
+friendly `name=`). Recorded in the §8-adjacent "Friendly names + identity"
+prose as the handle the bond-forming UI should pin leaders by when it lands:
+store peer_id, resolve to an address at use time, treat mDNS as
+unauthenticated (confirm trust-sensitive operations over HTTP) — see
+docs/HANDOFF-identity.md. Earlier 2026-06-11
 (status + roadmap reconciliation after the #591 cleanup
 merge. The TOP BANNER was stale on three counts and is rewritten to current
 truth: Increments 1–2 are SHIPPED (it predated them), the P0 spike RAN on

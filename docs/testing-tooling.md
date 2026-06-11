@@ -33,6 +33,7 @@
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
+| Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | [`HANDOFF-identity.md`](HANDOFF-identity.md) — `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Preview what install.sh would mutate | [Install dry-run plan](#install-dry-run-plan) |
 | Check every shipped deploy unit/rule/script has an install step (and every install reference resolves) | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — two-sided orphan-artifact guard |
