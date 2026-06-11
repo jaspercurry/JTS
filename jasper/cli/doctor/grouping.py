@@ -38,17 +38,14 @@ def check_grouping() -> CheckResult:
       - **runtime degraded** — configured-valid but a snap unit the
         reconciler's plan wants running is not `active` (e.g. a follower
         whose snapclient can't reach its leader, a leader whose snapserver
-        is down), OR a leader whose snap units are up but whose outputd is
-        not tapping the snapfifo — snapserver reads green `active` while the
-        FIFO is empty and followers get silence. This is §7's "make it
-        visible, not invisible": a green config with silent breakage
-        underneath is exactly what we refuse to show. Runtime health is
-        derived by the same pure `derive_grouping_runtime` the /state
-        surface uses, with the leader's current tap injected."""
+        is down), OR a bonded LEADER, always, today: no music producer
+        feeds the snapfifo yet (HANDOFF-multiroom.md §2, Increments 3–5),
+        so snapserver reads green `active` while the FIFO is empty and
+        followers get silence. This is §7's "make it visible, not
+        invisible": a green config with silent breakage underneath is
+        exactly what we refuse to show. Runtime health is derived by the
+        same pure `derive_grouping_runtime` the /state surface uses."""
     from ...multiroom.config import load_config as _load_grouping_config
-    from ...multiroom.reconcile import (
-        effective_leader_tap_path as _read_tap,
-    )
     from ...multiroom.reconcile import (
         plan as _grouping_plan,
     )
@@ -70,10 +67,11 @@ def check_grouping() -> CheckResult:
         if len(out) == len(units)
         else {u: "unknown" for u in units}
     )
-    # Only a valid leader taps outputd into the snapfifo; read its current
-    # tap so a dry stream surfaces as degraded. Followers/solo skip this.
-    tap = _read_tap() if cfg.role == "leader" else ""
-    runtime = derive_grouping_runtime(cfg, states, leader_tap_path=tap)
+    # Leader producer feed: no music producer exists yet (Increments 3–5),
+    # so "" is injected and a bonded leader honestly derives degraded. When
+    # the producer lands, this must read the producing daemon's OWN status
+    # surface (daemon truth, never an env-intent mirror).
+    runtime = derive_grouping_runtime(cfg, states, leader_tap_path="")
 
     base = (
         f"on — role={cfg.role} channel={cfg.channel} "
@@ -183,40 +181,12 @@ def check_grouping_channel_split() -> CheckResult:
     return CheckResult(label, "ok", f"channel_select present for channel={cfg.channel}")
 
 
-@doctor_check(order=78, group="grouping")
-def check_grouping_tts_separation() -> CheckResult:
-    """Surface the inv-2/inv-3 TTS-separation BLOCKER for a grouping LEADER.
-
-    The multi-room snapfifo producer (``jasper-outputd`` ``SnapfifoSink``) is
-    currently UNWIRED — commit 9102e13 moved assistant/TTS ingress into
-    ``jasper-fanin`` and removed the outputd snapfifo reader, so
-    ``Config::from_env`` no longer reads ``JASPER_OUTPUTD_SNAPFIFO_PATH``. A
-    grouping leader therefore does NOT stream to followers today (the
-    reconciler's tap env is inert), and re-wiring the producer as-is would leak
-    the leader's TTS to followers — TTS is pre-mixed into the streamed program
-    by fanin, an inv-3 violation (V1 is leader-LOCAL TTS only).
-
-    This is the SPECIFIC operator explanation for why a leader reads
-    ``degraded`` in the runtime health (``check_grouping`` /state): not a
-    transient outage but the unbuilt producer. It is gated on the SAME single
-    source of truth — :data:`~jasper.multiroom.reconcile.SNAPFIFO_PRODUCER_WIRED`
-    — as the runtime tap signal, so the two agree (no contradiction) and this
-    warning AUTO-RESOLVES the moment inv-2 flips that flag. ``ok`` for solo /
-    off / invalid / follower, or once the producer is wired; ``warn`` for an
-    active LEADER while the producer is unwired (see HANDOFF-multiroom.md §2
-    "inv-2 realization")."""
-    from ...multiroom.config import is_active_member, load_config
-    from ...multiroom.reconcile import SNAPFIFO_PRODUCER_WIRED
-
-    label = "grouping: TTS separation"
-    cfg = load_config()
-    if SNAPFIFO_PRODUCER_WIRED or not is_active_member(cfg) or cfg.role != "leader":
-        return CheckResult(label, "ok", "n/a (producer wired / solo / follower / off)")
-    return CheckResult(
-        label, "warn",
-        "leader streaming is behind the TTS-separation blocker: the outputd "
-        "snapfifo producer is unwired (no fanin music-only stream yet), so this "
-        "leader does not yet stream to followers; re-wiring it without TTS "
-        "separation would leak the leader's TTS to followers (inv-3). See "
-        "HANDOFF-multiroom.md §2 'inv-2 realization'.",
-    )
+# NOTE: the former ``check_grouping_tts_separation`` (order 78) was REMOVED
+# 2026-06-11 with the rest of the retired outputd-as-producer machinery
+# (`SnapfifoSink` / `SNAPFIFO_PRODUCER_WIRED` / the reconciler tap limb): the
+# canonical design feeds the snapserver pipe from the leader's CamillaDSP, so
+# the check's premise was dead. Its operator story now lives in
+# ``check_grouping``'s runtime detail — a bonded leader reads degraded with
+# "leader streaming is not built yet — no music producer feeds the snapfifo".
+# See HANDOFF-multiroom.md §2 "Canonical signal flow" + "Stranded by this
+# design".

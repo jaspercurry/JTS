@@ -152,6 +152,10 @@ def check_loopback() -> CheckResult:
         "/etc/modules-load.d/snd-aloop.conf",
     )
 
+# order=79 stays AFTER resilience's fractional 78.5 insert — the registry
+# contract is "the single async check sorts last", not contiguous integers
+# (test_doctor_registry). The former order=78 (grouping TTS-separation
+# check) was removed 2026-06-11; the gap is intentional.
 @doctor_check(order=79, group="audio", label="CamillaDSP websocket", needs_cfg=True, is_async=True)
 async def check_camilla_websocket(cfg: Config) -> CheckResult:
     try:

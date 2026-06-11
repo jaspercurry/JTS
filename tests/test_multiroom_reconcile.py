@@ -20,19 +20,15 @@ import os
 from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, GroupingConfig
 from jasper.multiroom import reconcile as reconcile_mod
 from jasper.multiroom.reconcile import (
-    OUTPUTD_UNIT,
     SNAPCLIENT_UNIT,
     SNAPFIFO,
     SNAPSERVER_UNIT,
     ReconcilePlan,
     UnitIntent,
     _assemble_args,
-    _read_outputd_snapfifo_path,
     _write_args_file,
-    _write_outputd_snapfifo_env,
     desired_snapfifo_path,
     main,
-    outputd_tap_action,
     plan,
     snapclient_argv,
     snapserver_argv,
@@ -502,9 +498,6 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
 
     monkeypatch.setattr(reconcile_mod, "_write_args_file", _spy_write)
     monkeypatch.setattr(reconcile_mod, "_apply", _fake_apply)
-    # The outputd-tap reconcile is its own concern (tested separately);
-    # stub it out so these args/apply tests never touch /run or systemctl.
-    monkeypatch.setattr(reconcile_mod, "_reconcile_outputd_tap", lambda *a, **k: 0)
     return target, order
 
 
@@ -551,7 +544,6 @@ def test_main_survives_args_write_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(reconcile_mod, "ARGS_FILE", str(tmp_path / "x.env"))
     monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: _leader())
     monkeypatch.setattr(reconcile_mod, "_write_args_file", lambda *a, **k: False)
-    monkeypatch.setattr(reconcile_mod, "_reconcile_outputd_tap", lambda *a, **k: 0)
 
     applied = []
     monkeypatch.setattr(
@@ -562,130 +554,27 @@ def test_main_survives_args_write_failure(tmp_path, monkeypatch):
     assert applied == [True]  # plan still applied despite the write failure
 
 
-# ---------- outputd snapfifo tap (leader only) ----------
+# ---------- the leader's music-producer predicate ----------
+# (The outputd-as-producer tap machinery — env write/read, change-gate,
+# try-restart, SNAPFIFO_PRODUCER_WIRED — was REMOVED 2026-06-11 with the
+# canonical design; see HANDOFF-multiroom.md §2 "Stranded by this design".
+# desired_snapfifo_path survives as the pure "this role needs a producer"
+# predicate driving the runtime-health derive.)
 
 
-def test_desired_snapfifo_path_leader_taps():
+def test_desired_snapfifo_path_leader_needs_producer():
     assert desired_snapfifo_path(_leader()) == SNAPFIFO
 
 
-def test_desired_snapfifo_path_follower_does_not_tap():
+def test_desired_snapfifo_path_follower_does_not():
     assert desired_snapfifo_path(_follower()) == ""
 
 
-def test_desired_snapfifo_path_disabled_does_not_tap():
+def test_desired_snapfifo_path_disabled_does_not():
     assert desired_snapfifo_path(_disabled()) == ""
 
 
-def test_desired_snapfifo_path_invalid_leader_does_not_tap():
-    # enabled + role=leader BUT carrying an error => never tap a broken bond.
+def test_desired_snapfifo_path_invalid_leader_does_not():
+    # enabled + role=leader BUT carrying an error => a broken bond never
+    # claims to need (or get) a producer.
     assert desired_snapfifo_path(_invalid()) == ""
-
-
-def test_outputd_tap_action_no_change_is_false():
-    assert outputd_tap_action(SNAPFIFO, SNAPFIFO) is False
-    assert outputd_tap_action("", "") is False
-
-
-def test_outputd_tap_action_change_is_true():
-    assert outputd_tap_action(SNAPFIFO, "") is True   # became a leader
-    assert outputd_tap_action("", SNAPFIFO) is True   # stopped being a leader
-
-
-def test_outputd_tap_env_write_read_round_trip(tmp_path):
-    p = str(tmp_path / "outputd-snapfifo.env")
-    assert _write_outputd_snapfifo_env(SNAPFIFO, path=p) is True
-    assert _read_outputd_snapfifo_path(p) == SNAPFIFO
-    # clearing writes an EMPTY file => no tap key on the next outputd start.
-    assert _write_outputd_snapfifo_env("", path=p) is True
-    assert _read_outputd_snapfifo_path(p) == ""
-
-
-def test_read_outputd_snapfifo_path_absent_file_is_empty(tmp_path):
-    assert _read_outputd_snapfifo_path(str(tmp_path / "nope.env")) == ""
-
-
-def test_effective_leader_tap_path_empty_while_producer_unwired(monkeypatch, tmp_path):
-    """The single source of truth: while SNAPFIFO_PRODUCER_WIRED is False, the
-    EFFECTIVE tap is "" regardless of the reconciler-written env — so /state +
-    doctor report a leader as degraded, never a false-green "streaming". The raw
-    file reader still returns the env (the reconciler's change-detection)."""
-    p = str(tmp_path / "outputd-snapfifo.env")
-    _write_outputd_snapfifo_env(SNAPFIFO, path=p)
-    monkeypatch.setattr(reconcile_mod, "SNAPFIFO_PRODUCER_WIRED", False)
-    assert reconcile_mod.effective_leader_tap_path(p) == ""        # effective: not tapping
-    assert _read_outputd_snapfifo_path(p) == SNAPFIFO              # file: still the intent
-
-
-def test_effective_leader_tap_path_reads_env_when_producer_wired(monkeypatch, tmp_path):
-    p = str(tmp_path / "outputd-snapfifo.env")
-    _write_outputd_snapfifo_env(SNAPFIFO, path=p)
-    monkeypatch.setattr(reconcile_mod, "SNAPFIFO_PRODUCER_WIRED", True)
-    assert reconcile_mod.effective_leader_tap_path(p) == SNAPFIFO  # wired: env is live
-
-
-def test_reconcile_outputd_tap_no_touch_when_unchanged(monkeypatch):
-    # Steady state (current == desired): the final-output owner is NEVER
-    # touched — no write, no try-restart. This is the StartLimit-safe gate.
-    writes, restarts = [], []
-    monkeypatch.setattr(
-        reconcile_mod, "_read_outputd_snapfifo_path", lambda *a, **k: SNAPFIFO
-    )
-
-    def _fake_write(desired, **k):
-        writes.append(desired)
-        return True
-
-    def _fake_restart(unit, **k):
-        restarts.append(unit)
-        return 0
-
-    monkeypatch.setattr(reconcile_mod, "_write_outputd_snapfifo_env", _fake_write)
-    monkeypatch.setattr(reconcile_mod, "_try_restart", _fake_restart)
-
-    rc = reconcile_mod._reconcile_outputd_tap(_leader())  # desired == current
-    assert rc == 0
-    assert writes == []
-    assert restarts == []
-
-
-def test_reconcile_outputd_tap_writes_and_restarts_on_transition(monkeypatch):
-    # current="" (not tapping) -> desired=SNAPFIFO (became leader).
-    writes, restarts = [], []
-    monkeypatch.setattr(
-        reconcile_mod, "_read_outputd_snapfifo_path", lambda *a, **k: ""
-    )
-
-    def _fake_write(desired, **k):
-        writes.append(desired)
-        return True
-
-    def _fake_restart(unit, **k):
-        restarts.append(unit)
-        return 0
-
-    monkeypatch.setattr(reconcile_mod, "_write_outputd_snapfifo_env", _fake_write)
-    monkeypatch.setattr(reconcile_mod, "_try_restart", _fake_restart)
-
-    rc = reconcile_mod._reconcile_outputd_tap(_leader())
-    assert rc == 0
-    assert writes == [SNAPFIFO]
-    assert restarts == [OUTPUTD_UNIT]
-
-
-def test_reconcile_outputd_tap_no_restart_when_write_fails(monkeypatch):
-    # A failed env write must NOT restart outputd — that would blip the
-    # final-output owner for nothing (it'd re-read the same stale env).
-    restarts = []
-    monkeypatch.setattr(
-        reconcile_mod, "_read_outputd_snapfifo_path", lambda *a, **k: ""
-    )
-    monkeypatch.setattr(
-        reconcile_mod, "_write_outputd_snapfifo_env", lambda *a, **k: False
-    )
-    monkeypatch.setattr(
-        reconcile_mod, "_try_restart", lambda unit, **k: restarts.append(unit) or 0
-    )
-    rc = reconcile_mod._reconcile_outputd_tap(_leader())
-    assert rc == 1          # surfaced
-    assert restarts == []   # outputd NOT touched on a failed write

@@ -177,12 +177,8 @@ def _grouping_cfg(**kw):
     return GroupingConfig(**defaults)
 
 
-def _patch_grouping(
-    monkeypatch, cfg, is_active_stdout,
-    tap_path="/run/jasper-snapserver/snapfifo", producer_wired=True,
-):
+def _patch_grouping(monkeypatch, cfg, is_active_stdout):
     import jasper.multiroom.config as mr_config
-    import jasper.multiroom.reconcile as mr_reconcile
 
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
 
@@ -190,16 +186,9 @@ def _patch_grouping(
         stdout = is_active_stdout
 
     monkeypatch.setattr(doctor.grouping, "_run", lambda *a, **kw: FakeRun())
-    # check_grouping reads the leader's EFFECTIVE outputd tap via the reconcile
-    # I/O edge (effective_leader_tap_path), which honors SNAPFIFO_PRODUCER_WIRED.
-    # Default `producer_wired=True` so the runtime-health LOGIC tests exercise a
-    # wired producer (tap_path drives the result); pass producer_wired=False to
-    # exercise today's reality (producer unwired → "" → degraded), and tap_path=""
-    # for the wired-but-dry degraded path. Stubbed so tests never touch /run.
-    monkeypatch.setattr(mr_reconcile, "SNAPFIFO_PRODUCER_WIRED", producer_wired)
-    monkeypatch.setattr(
-        mr_reconcile, "_read_outputd_snapfifo_path", lambda *a, **k: tap_path
-    )
+    # No producer-feed stubbing: check_grouping injects leader_tap_path=""
+    # unconditionally (no music producer exists yet — HANDOFF-multiroom.md
+    # §2, Increments 3–5), so a bonded leader honestly derives degraded.
 
 
 def test_check_grouping_off_is_ok(monkeypatch):
@@ -220,31 +209,20 @@ def test_check_grouping_invalid_config_warns(monkeypatch):
     assert "BOND_ID" in r.detail
 
 
-def test_check_grouping_leader_running_is_ok_when_producer_wired(monkeypatch):
-    # The "leader streaming" happy path — only reachable once the outputd
-    # snapfifo producer is wired (inv-2). producer_wired=True simulates that.
+def test_check_grouping_leader_reads_degraded_until_producer_built(monkeypatch):
+    # TODAY's honest state: even with both snap units active, no music
+    # producer feeds the snapfifo (the outputd-as-producer machinery was
+    # removed; the canonical producer is Increments 3–5), so a bonded
+    # leader reads degraded with the specific operator explanation.
     cfg = _grouping_cfg(
         enabled=True, role="leader", channel="left", bond_id="living-room",
     )
     # plan units order = [snapserver, snapclient]; both active.
-    _patch_grouping(monkeypatch, cfg, "active\nactive\n", producer_wired=True)
-    r = doctor.check_grouping()
-    assert r.status == "ok"
-    assert "leader streaming" in r.detail
-
-
-def test_check_grouping_leader_degraded_while_producer_unwired(monkeypatch):
-    # TODAY's reality: the outputd snapfifo producer is UNWIRED
-    # (SNAPFIFO_PRODUCER_WIRED=False), so even with both units active the
-    # effective tap is "" — the leader is honestly degraded (not the
-    # false-green "streaming" the env intent used to imply).
-    cfg = _grouping_cfg(
-        enabled=True, role="leader", channel="left", bond_id="living-room",
-    )
-    _patch_grouping(monkeypatch, cfg, "active\nactive\n", producer_wired=False)
+    _patch_grouping(monkeypatch, cfg, "active\nactive\n")
     r = doctor.check_grouping()
     assert r.status == "warn"
-    assert "not tapping" in r.detail
+    assert "not built" in r.detail
+    assert "no music producer" in r.detail
 
 
 def test_check_grouping_follower_unreachable_leader_warns(monkeypatch):
@@ -261,35 +239,16 @@ def test_check_grouping_follower_unreachable_leader_warns(monkeypatch):
     assert "192.168.1.50" in r.detail
 
 
-def test_check_grouping_leader_not_tapping_warns(monkeypatch):
-    """Leader with both snap units active but outputd NOT tapping the
-    snapfifo => degraded (snapserver reads an empty FIFO). The staff-review
-    gap: a green-looking bond that silently delivers no audio."""
-    cfg = _grouping_cfg(
-        enabled=True, role="leader", channel="left", bond_id="living-room",
-    )
-    # Units up, but the tap path is empty => outputd is not tapping.
-    _patch_grouping(monkeypatch, cfg, "active\nactive\n", tap_path="")
-    r = doctor.check_grouping()
-    assert r.status == "warn"
-    assert "not tapping" in r.detail
-
-
-def test_check_grouping_follower_does_not_probe_the_tap(monkeypatch):
-    """A follower has no tap concept: check_grouping must NOT consult the
-    outputd tap reader, and a missing tap can never push it to degraded."""
+def test_check_grouping_connected_follower_is_ok(monkeypatch):
+    """A follower has no producer concept: with its snapclient active it
+    reads ok — the missing leader-side producer can never push a FOLLOWER
+    to degraded."""
     cfg = _grouping_cfg(
         enabled=True, role="follower", channel="right",
         bond_id="living-room", leader_addr="192.168.1.50",
     )
-    import jasper.multiroom.reconcile as mr_reconcile
-
-    def boom(*a, **k):
-        raise AssertionError("tap reader must not be called for a follower")
-
-    # Connected follower (snapclient active) => ok; tap reader untouched.
+    # Connected follower (snapclient active) => ok.
     _patch_grouping(monkeypatch, cfg, "inactive\nactive\n")
-    monkeypatch.setattr(mr_reconcile, "_read_outputd_snapfifo_path", boom)
     r = doctor.check_grouping()
     assert r.status == "ok"
     assert "follower connected" in r.detail

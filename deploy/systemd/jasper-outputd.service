@@ -50,13 +50,12 @@ EnvironmentFile=-/var/lib/jasper/outputd.env
 # reference fanout and outputd's UDP reference tap. Keep this after
 # operator retunes so entering/leaving corpus mode is reversible.
 EnvironmentFile=-/var/lib/jasper/wake_corpus_bridge.env
-# Multi-room: a grouping LEADER taps the post-clamp program into the
-# snapserver FIFO. jasper-grouping-reconcile is the single writer of this
-# file — it sets JASPER_OUTPUTD_SNAPFIFO_PATH on a leader (and try-restarts
-# this unit) and clears it otherwise. Optional (`-`): absent on a solo
-# speaker / every follower, so there is no tap and zero cost. Layered last
-# so the reconciler's derived value wins. See HANDOFF-multiroom.md §2.
-EnvironmentFile=-/run/jasper-grouping/outputd-snapfifo.env
+# Multi-room note: the former outputd-as-producer snapfifo tap env
+# (/run/jasper-grouping/outputd-snapfifo.env) was REMOVED 2026-06-11 — the
+# canonical design feeds the snapserver pipe from the leader's CamillaDSP,
+# not outputd (HANDOFF-multiroom.md §2). outputd's multi-room role is the
+# Increment 3 dac_content reader, which will arrive with its own env +
+# self-reported STATUS when built.
 ExecStart=/opt/jasper/bin/jasper-outputd
 
 [Install]
