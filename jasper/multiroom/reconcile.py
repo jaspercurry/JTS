@@ -28,9 +28,12 @@ from __future__ import annotations
 
 import logging
 import argparse
+import os
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from .. import atomic_io
 from .config import GroupingConfig, load_config
@@ -75,19 +78,19 @@ ARGS_FILE = ARGS_DIR + "/snapcast-args.env"
 _SERVER_ARGS_KEY = "JASPER_SNAPSERVER_ARGS"
 _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 
-# ---------- the leader's music producer (NOT BUILT — Increments 3–5) ----------
+# ---------- the leader's music producer (Increment 5: CamillaDSP) ----------
 #
-# The retired outputd-as-producer machinery (`SnapfifoSink`, the
-# reconciler-written outputd tap env + try-restart limb, and the
-# `SNAPFIFO_PRODUCER_WIRED` mirror flag) was REMOVED 2026-06-11: the canonical
-# design has the leader's CamillaDSP feed the snapserver pipe (music-only,
-# post-correction), not outputd — see HANDOFF-multiroom.md §2 "Canonical
-# signal flow" + "Stranded by this design". Until Increment 5 lands that
-# producer, a bonded leader's runtime health honestly reads `degraded`
-# (derive_grouping_runtime receives leader_tap_path="" — there is nothing to
-# tap). When the producer lands, the liveness signal must come from the
-# producing daemon's OWN status surface (daemon truth), never a Python mirror
-# of env intent — the lesson the removed flag existed to patch.
+# The leader's CamillaDSP feeds the snapserver pipe (post-correction,
+# post-master_gain — the stream inherits the volume + safety ceiling),
+# applied by this reconciler via jasper.multiroom.leader_config (the
+# bonded emit + glitch-free config swap, reusing the wizards' shared
+# apply engine). The earlier outputd-as-producer machinery was removed
+# 2026-06-11 — see HANDOFF-multiroom.md §2 "Canonical signal flow" +
+# "Stranded by this design". Producer liveness for runtime health reads
+# the ACTIVE CamillaDSP config (the daemon-adjacent truth: camilla's own
+# statefile names it, and the doctor's `leader pipe` check scans it) —
+# never a Python mirror of env intent, the lesson the removed
+# SNAPFIFO_PRODUCER_WIRED flag existed to patch.
 
 # ---------- the member round-trip content lane (Increment 5) ----------
 #
@@ -207,8 +210,16 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
     program from the SNAPFIFO pipe source and streams it with the
     configured codec and a buffer derived from cfg.buffer_ms.
     """
+    # sampleformat is PINNED (codify, don't rely on snapserver defaults):
+    # the whole chain is 48 kHz / S16 / stereo — CamillaDSP's File sink
+    # writes it, and outputd's dac_content reader assumes it. mode=create
+    # is snapcast's default for a pipe source but is pinned for the same
+    # reason: snapserver owning FIFO creation is load-bearing (it opens
+    # the read end first, so CamillaDSP's write-open cannot block).
     source = (
         f"pipe://{SNAPFIFO}?name=jts"
+        f"&mode=create"
+        f"&sampleformat=48000:16:2"
         f"&codec={cfg.codec}"
         f"&buffer_ms={cfg.buffer_ms}"
     )
@@ -290,8 +301,13 @@ def _assemble_args(cfg: GroupingConfig) -> dict[str, str]:
 
     # argv[0] is the binary name (already in the unit's ExecStart); the
     # units invoke `/usr/bin/snap* $ARGS`, so persist only argv[1:].
+    # Every active member's snapclient writes the round-trip FIFO (the
+    # `file` player) — never an ALSA sink, which would fight outputd for
+    # the DAC (the observed `Device or resource busy` failure of the
+    # pre-Increment-5 bond). outputd reads the FIFO via its dac_content
+    # lane (Increment 3) and picks this member's channel there.
     server = "" if cfg.role != "leader" else _join_args(snapserver_argv(cfg))
-    client = _join_args(snapclient_argv(cfg))
+    client = _join_args(snapclient_argv(cfg, player_fifo=MEMBER_CONTENT_FIFO))
     return {_SERVER_ARGS_KEY: server, _CLIENT_ARGS_KEY: client}
 
 
@@ -337,10 +353,10 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
     needs a producer feeding the snapserver FIFO. A follower *consumes*
     the stream; a solo / off / invalid config does not stream at all. The
     path is the reconciler's canonical ``SNAPFIFO`` (in snapserver's
-    RuntimeDirectory). The producer itself is NOT BUILT yet (the canonical
-    design feeds it from the leader's CamillaDSP — HANDOFF-multiroom.md §2,
-    Increments 3–5); today this predicate drives only the runtime-health
-    derive ("a leader without a producer is degraded").
+    RuntimeDirectory). The producer is the leader's CamillaDSP (Increment
+    5 — applied by this reconciler via jasper.multiroom.leader_config);
+    this predicate drives the runtime-health derive ("a leader whose
+    active config does not write the pipe is degraded").
     """
     if cfg.enabled and cfg.error is None and cfg.role == "leader":
         return SNAPFIFO
@@ -392,6 +408,90 @@ def _apply(plan_: ReconcilePlan) -> int:
     return rc
 
 
+def _write_outputd_env(
+    keys: dict[str, str], *, path: str = OUTPUTD_GROUPING_ENV_FILE,
+) -> tuple[bool, bool]:
+    """Write the outputd round-trip lane env iff it changed.
+
+    Returns ``(changed, ok)``. Compare-before-write keeps the common
+    no-change reconcile from restarting outputd (the caller restarts the
+    unit only on ``changed and ok`` — EnvironmentFile= is read at unit
+    start, so a content change without a restart would silently not
+    apply). Fail-soft like ``_write_args_file``; carries no secrets
+    (mode 0644)."""
+    body = "".join(f"{k}={v}\n" for k, v in keys.items())
+    try:
+        old = Path(path).read_text()
+    except OSError:
+        old = None
+    if old == body:
+        return (False, True)
+    try:
+        atomic_io.atomic_write_text(path, body, mode=0o644)
+    except OSError as e:
+        logger.warning(
+            "event=multiroom.reconcile.outputd_env_failed path=%s error=%s",
+            path, e,
+        )
+        return (True, False)
+    return (True, True)
+
+
+def _ensure_member_fifo(*, path: str = MEMBER_CONTENT_FIFO) -> bool:
+    """Make sure the member round-trip FIFO exists at ``path``. Fail-soft.
+
+    tmpfs-backed (ARGS_DIR), so it must be recreated each boot — the
+    reconciler runs at boot and before starting snapclient, which writes
+    it via the `file` player. A non-FIFO squatter (a stray regular file)
+    is replaced: snapclient's file player would happily write a growing
+    regular file (a disk-filling silent failure), and outputd's
+    dac_content open would still succeed, masking it."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        st = None
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            pass
+        if st is not None and not stat.S_ISFIFO(st.st_mode):
+            logger.warning(
+                "event=multiroom.reconcile.fifo_replaced path=%s "
+                "detail=non-FIFO squatter removed", path,
+            )
+            os.unlink(path)
+            st = None
+        if st is None:
+            os.mkfifo(path, 0o600)
+    except OSError as e:
+        logger.warning(
+            "event=multiroom.reconcile.fifo_failed path=%s error=%s", path, e,
+        )
+        return False
+    return True
+
+
+def _restart_outputd() -> bool:
+    """Restart jasper-outputd so it re-reads the grouping env. Fail-soft
+    (a failure is logged + reflected in the exit code by the caller; the
+    doctor's channel-pick drift check surfaces a lane left unwired)."""
+    try:
+        subprocess.run(
+            ["systemctl", "restart", OUTPUTD_UNIT],
+            check=True, capture_output=True, text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        stderr = getattr(e, "stderr", "") or ""
+        logger.error(
+            "event=multiroom.reconcile.outputd_restart_failed error=%s "
+            "stderr=%s", e, stderr.strip(),
+        )
+        return False
+    logger.info(
+        "event=multiroom.reconcile.outputd_restarted reason=grouping_env_changed",
+    )
+    return True
+
+
 def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
     """Atomically write the derived snapcast args to ``path``. Fail-soft.
 
@@ -436,20 +536,41 @@ def main(argv: list[str] | None = None) -> int:
     when a producer should not run — so a started unit can never pick up
     stale args.
 
-    SCOPE: arg-application is DONE. What is still pending is the leader's
-    MUSIC PRODUCER (the canonical design feeds ``SNAPFIFO`` from the
-    leader's CamillaDSP — HANDOFF-multiroom.md §2, Increments 3–5; the
-    earlier outputd-as-producer machinery was removed 2026-06-11). Until
-    it lands, snapserver reads an EMPTY fifo: this reconciler fully
-    CONFIGURES a bond (a started snapserver reads the fifo with the right
-    codec/buffer, a started snapclient targets the right host/latency)
-    but audio does NOT yet flow, and the runtime health honestly reports
-    a bonded leader as degraded.
+    SCOPE (Increment 5): the FULL bonded music dataplane. Beyond the
+    snapcast args this also (a) writes the outputd round-trip lane env
+    (FIFO + channel pick) and restarts outputd only on change, (b)
+    creates the member content FIFO, and (c) drives the CamillaDSP
+    config swap through jasper.multiroom.leader_config — the bonded
+    pipe config on an active leader, the solo restore otherwise. What
+    does NOT flow through here is per-member TTS (the PR-2 outputd TTS
+    mixer — until then TTS rides the synced stream, surfaced by the
+    doctor's standing `TTS interim` warn).
 
     `--reason` is a free-text trigger source (systemd / wizard / manual)
     echoed into the structured log for correlation, mirroring
     jasper-aec-reconcile. Unknown args are ignored so a future caller
     adding a flag can't crash the reconcile path.
+
+    ORDER (load-bearing — see HANDOFF-multiroom.md §2):
+
+      1. Derived files (snapcast args + outputd lane env) + the member
+         FIFO — before any unit work, so everything a started unit
+         reads is fresh.
+      2. CamillaDSP solo RESTORE when this speaker is not an active
+         leader (a no-op on the common solo reconcile) — BEFORE units
+         stop, so the pipe's writer leaves before its reader.
+      3. outputd restart, only when the lane env CHANGED.
+      4. The unit plan (stops before starts, as always).
+      5. CamillaDSP bonded APPLY when this speaker is an active leader —
+         LAST, after snapserver started, so the pipe's reader exists
+         before CamillaDSP's File sink opens it for write (a FIFO
+         write-open blocks until a reader exists).
+
+    Camilla apply/restore failures are caught and logged
+    (event=multiroom.reconcile.camilla_failed) — the reconcile still
+    manages units, and the doctor's `leader pipe` / runtime-health
+    surfaces carry the unapplied state. They flip the exit code, so the
+    oneshot unit shows failed.
     """
     parser = argparse.ArgumentParser(prog="jasper.multiroom.reconcile")
     parser.add_argument("--reason", default="manual")
@@ -461,15 +582,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     cfg = load_config()
     decision = plan(cfg)
+    active = cfg.enabled and cfg.error is None
+    active_leader = active and cfg.role == "leader"
     logger.info(
         "event=multiroom.reconcile.start reason=%s enabled=%s role=%s error=%s summary=%r",
         args.reason, cfg.enabled, cfg.role or "(none)", cfg.error or "(none)", decision.summary,
     )
+    rc = 0
 
-    # Derive + persist the snapcast args BEFORE applying the plan, so any
-    # unit `_apply` starts reads fresh args from its EnvironmentFile=. The
-    # write is fail-soft: a failure here is logged and the reconcile still
-    # start/stops units (the units fall back to their own defaults).
+    # 1. Derived files + FIFO — before any unit work.
     derived = _assemble_args(cfg)
     wrote = _write_args_file(derived)
     set_keys = [k for k, v in derived.items() if v]
@@ -477,8 +598,64 @@ def main(argv: list[str] | None = None) -> int:
         "event=multiroom.reconcile.args path=%s ok=%s set=%s",
         ARGS_FILE, wrote, ",".join(set_keys) or "(none)",
     )
+    # Paths passed explicitly (module globals read at CALL time) so the
+    # test harness can redirect them; a def-time default would pin the
+    # production path.
+    outputd_env = outputd_grouping_env(cfg)
+    env_changed, env_ok = _write_outputd_env(
+        outputd_env, path=OUTPUTD_GROUPING_ENV_FILE,
+    )
+    logger.info(
+        "event=multiroom.reconcile.outputd_env path=%s changed=%s ok=%s "
+        "fifo=%s channel=%s",
+        OUTPUTD_GROUPING_ENV_FILE, env_changed, env_ok,
+        outputd_env[OUTPUTD_DAC_CONTENT_FIFO_ENV] or "(cleared)",
+        outputd_env[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] or "(cleared)",
+    )
+    if not env_ok:
+        rc = 1
+    if active and not _ensure_member_fifo(path=MEMBER_CONTENT_FIFO):
+        rc = 1
 
-    rc = _apply(decision)
+    # 2. Solo restore when not an active leader (no-op when already solo).
+    if not active_leader:
+        try:
+            from .leader_config import restore_solo_config_sync
+
+            restored = restore_solo_config_sync()
+            if restored:
+                logger.info(
+                    "event=multiroom.reconcile.camilla result=solo_restored path=%s",
+                    restored,
+                )
+        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+            logger.error(
+                "event=multiroom.reconcile.camilla_failed action=restore error=%s", e,
+            )
+            rc = 1
+
+    # 3. outputd picks up the lane env only at unit start.
+    if env_changed and env_ok and not _restart_outputd():
+        rc = 1
+
+    # 4. The unit plan (stops before starts).
+    rc = max(rc, _apply(decision))
+
+    # 5. Bonded apply LAST (snapserver is up → the pipe has its reader).
+    if active_leader:
+        try:
+            from .leader_config import apply_bonded_leader_config_sync
+
+            applied = apply_bonded_leader_config_sync(cfg)
+            logger.info(
+                "event=multiroom.reconcile.camilla result=bonded path=%s", applied,
+            )
+        except Exception as e:  # noqa: BLE001 — fail-soft, surfaced via rc+doctor
+            logger.error(
+                "event=multiroom.reconcile.camilla_failed action=bonded_apply error=%s", e,
+            )
+            rc = 1
+
     logger.info("event=multiroom.reconcile.done rc=%d", rc)
     return rc
 

@@ -357,9 +357,16 @@ def test_assemble_args_leader_strips_binary_name_from_server():
 
 
 def test_assemble_args_leader_strips_binary_name_from_client():
+    from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
     d = _assemble_args(_leader())
     assert not d[CLIENT_KEY].split()[0] == "snapclient"
-    assert d[CLIENT_KEY] == " ".join(snapclient_argv(_leader())[1:])
+    # An active member's client ALWAYS carries the round-trip file player
+    # (Increment 5): never an ALSA sink, which would fight outputd for
+    # the DAC.
+    assert d[CLIENT_KEY] == " ".join(
+        snapclient_argv(_leader(), player_fifo=MEMBER_CONTENT_FIFO)[1:]
+    )
+    assert f"--player file:filename={MEMBER_CONTENT_FIFO}" in d[CLIENT_KEY]
 
 
 def test_assemble_args_leader_server_carries_the_fifo_source():
@@ -477,10 +484,26 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
 
 
 def _patch_main_io(monkeypatch, tmp_path, cfg):
-    """Redirect main()'s side effects to a tmp dir + record _apply order."""
+    """Redirect ALL of main()'s side effects to a tmp dir + record order.
+
+    Patches: the args + outputd-env files and the member FIFO into
+    tmp_path; load_config to the synthetic cfg; _apply + _restart_outputd
+    to order-recording fakes; and the leader_config sync entrypoints to
+    spies (main from-imports them at call time, so patching the
+    leader_config MODULE attributes intercepts them)."""
+    import jasper.multiroom.leader_config as leader_config_mod
+
     target = tmp_path / "snapcast-args.env"
     monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
     monkeypatch.setattr(reconcile_mod, "ARGS_FILE", str(target))
+    monkeypatch.setattr(
+        reconcile_mod, "OUTPUTD_GROUPING_ENV_FILE",
+        str(tmp_path / "grouping-outputd.env"),
+    )
+    monkeypatch.setattr(
+        reconcile_mod, "MEMBER_CONTENT_FIFO",
+        str(tmp_path / "member-content.fifo"),
+    )
     monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: cfg)
 
     order: list[str] = []
@@ -498,6 +521,18 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
 
     monkeypatch.setattr(reconcile_mod, "_write_args_file", _spy_write)
     monkeypatch.setattr(reconcile_mod, "_apply", _fake_apply)
+    monkeypatch.setattr(
+        reconcile_mod, "_restart_outputd",
+        lambda: order.append("outputd_restart") or True,
+    )
+    monkeypatch.setattr(
+        leader_config_mod, "apply_bonded_leader_config_sync",
+        lambda cfg_: order.append("camilla_bonded") or "bonded.yml",
+    )
+    monkeypatch.setattr(
+        leader_config_mod, "restore_solo_config_sync",
+        lambda: order.append("camilla_restore_check") and None,
+    )
     return target, order
 
 
@@ -505,7 +540,9 @@ def test_main_leader_writes_both_keys_then_applies(tmp_path, monkeypatch):
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     rc = main([])
     assert rc == 0
-    assert order == ["write", "apply"]  # args persisted before units start
+    # Args persisted before units start (the full order is pinned by
+    # test_main_leader_order_env_restart_units_then_camilla).
+    assert order.index("write") < order.index("apply")
     text = target.read_text()
     assert text.startswith(f"{SERVER_KEY}=")
     assert SNAPFIFO in text                       # server reads the fifo
@@ -538,20 +575,94 @@ def test_main_invalid_writes_empty_args(tmp_path, monkeypatch):
 
 
 def test_main_survives_args_write_failure(tmp_path, monkeypatch):
-    """A failed args write is fail-soft: main() still applies the plan and
-    returns its rc, never crashes."""
-    monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
-    monkeypatch.setattr(reconcile_mod, "ARGS_FILE", str(tmp_path / "x.env"))
-    monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: _leader())
+    """A failed args write is fail-soft: main() still applies the plan,
+    never crashes."""
+    _target, _order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(reconcile_mod, "_write_args_file", lambda *a, **k: False)
 
     applied = []
     monkeypatch.setattr(
         reconcile_mod, "_apply", lambda plan_: applied.append(True) or 0
     )
+    main([])
+    assert applied == [True]  # plan still applied despite the write failure
+
+
+def test_main_leader_order_env_restart_units_then_camilla(tmp_path, monkeypatch):
+    """The load-bearing ORDER: derived files → outputd restart (env
+    changed on first run) → unit plan → camilla bonded apply LAST (the
+    pipe's reader, snapserver, must exist before CamillaDSP's File sink
+    opens it for write)."""
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     rc = main([])
     assert rc == 0
-    assert applied == [True]  # plan still applied despite the write failure
+    assert order == ["write", "outputd_restart", "apply", "camilla_bonded"]
+
+
+def test_main_leader_second_run_skips_outputd_restart(tmp_path, monkeypatch):
+    """Compare-before-write: an unchanged outputd lane env must NOT
+    restart outputd on the next reconcile (no churn on no-change runs)."""
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    assert main([]) == 0
+    order.clear()
+    assert main([]) == 0
+    assert order == ["write", "apply", "camilla_bonded"]  # no outputd_restart
+
+
+def test_main_nonleader_runs_solo_restore_not_bonded_apply(tmp_path, monkeypatch):
+    """A follower / solo reconcile goes through the restore path (a no-op
+    when already solo) and never the bonded apply."""
+    for cfg in (_follower(leader_addr="192.168.1.50"), _disabled()):
+        _target, order = _patch_main_io(monkeypatch, tmp_path, cfg)
+        assert main([]) == 0
+        assert "camilla_bonded" not in order
+        assert "camilla_restore_check" in order
+
+
+def test_main_leader_writes_member_fifo(tmp_path, monkeypatch):
+    """An active member's round-trip FIFO exists after reconcile (created
+    before snapclient would start writing it)."""
+    import stat as stat_mod
+    _target, _order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    assert main([]) == 0
+    fifo = tmp_path / "member-content.fifo"
+    assert fifo.exists()
+    assert stat_mod.S_ISFIFO(fifo.stat().st_mode)
+
+
+def test_main_writes_outputd_env_for_member_and_clears_for_solo(tmp_path, monkeypatch):
+    """The outputd lane env carries FIFO+channel while bonded and explicit
+    empty strings after disband (disable-clears-stale)."""
+    _target, _order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    assert main([]) == 0
+    env = (tmp_path / "grouping-outputd.env").read_text()
+    assert "JASPER_OUTPUTD_DAC_CONTENT_FIFO=" + str(
+        tmp_path / "member-content.fifo") in env
+    assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=left" in env
+
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
+    assert main([]) == 0
+    env = (tmp_path / "grouping-outputd.env").read_text()
+    assert "JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n" in env
+    assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=\n" in env
+    assert "outputd_restart" in order  # env changed bonded→cleared ⇒ restart
+
+
+def test_main_camilla_failure_is_fail_soft_but_flips_rc(tmp_path, monkeypatch):
+    """A camilla apply failure never aborts unit management — but the
+    oneshot exits nonzero so the failure is visible on the unit."""
+    import jasper.multiroom.leader_config as leader_config_mod
+    _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+
+    def _boom(cfg_):
+        raise RuntimeError("camilla unavailable")
+
+    monkeypatch.setattr(
+        leader_config_mod, "apply_bonded_leader_config_sync", _boom,
+    )
+    rc = main([])
+    assert rc == 1
+    assert "apply" in order  # units still managed
 
 
 # ---------- the leader's music-producer predicate ----------
