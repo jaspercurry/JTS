@@ -5,10 +5,12 @@ from pathlib import Path
 import jasper.active_speaker.staging as staging_mod
 from jasper.active_speaker import (
     STAGED_STARTUP_CONFIG_KIND,
+    build_crossover_preview,
     load_active_speaker_preset,
     load_staged_startup_config,
     stage_protected_startup_config,
 )
+from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
@@ -79,6 +81,138 @@ def _dual_apple_topology(*, protection_status: str = "present") -> OutputTopolog
     return OutputTopology.from_mapping(raw)
 
 
+def _three_way_topology(*, protection_status: str = "present") -> OutputTopology:
+    raw = _topology(protection_status=protection_status).to_dict()
+    raw["topology_id"] = "bench_mono_3way"
+    raw["speaker_groups"][0]["mode"] = "active_3_way"
+    raw["speaker_groups"][0]["channels"] = [
+        {
+            "role": "woofer",
+            "physical_output_index": 0,
+            "identity_verified": True,
+        },
+        {
+            "role": "mid",
+            "physical_output_index": 1,
+            "identity_verified": True,
+        },
+        {
+            "role": "tweeter",
+            "physical_output_index": 2,
+            "identity_verified": True,
+            "startup_muted": True,
+            "protection_required": True,
+            "protection_status": protection_status,
+        },
+    ]
+    return OutputTopology.from_mapping(raw)
+
+
+def _topology_with_subwoofer() -> OutputTopology:
+    raw = _topology().to_dict()
+    raw["topology_id"] = "bench_mono_with_sub"
+    raw["speaker_groups"].append({
+        "id": "sub",
+        "label": "Bench subwoofer",
+        "kind": "subwoofer",
+        "mode": "subwoofer",
+        "channels": [
+            {
+                "role": "subwoofer",
+                "physical_output_index": 2,
+                "identity_verified": True,
+            }
+        ],
+    })
+    raw["routing"]["subwoofer_group_ids"] = ["sub"]
+    return OutputTopology.from_mapping(raw)
+
+
+def _driver_research(
+    *,
+    frequency_hz: float = 2500,
+    way_count: int = 2,
+) -> dict:
+    drivers = [
+        {
+            "role": "woofer",
+            "manufacturer": "Dayton Audio",
+            "model": "Epique E150HE-44",
+            "usable_frequency_range_hz": [45, 5000],
+            "recommended_lowpass_hz": frequency_hz,
+            "sources": ["https://example.test/woofer"],
+        },
+        {
+            "role": "tweeter",
+            "manufacturer": "Eminence",
+            "model": "F110M-8",
+            "recommended_highpass_hz": frequency_hz,
+            "do_not_test_below_hz": 1200,
+            "sources": ["https://example.test/tweeter"],
+        },
+    ]
+    candidates = [
+        {
+            "between_roles": ["woofer", "tweeter"],
+            "frequency_hz": frequency_hz,
+            "filter_type": "Linkwitz-Riley",
+            "slope_db_per_octave": 24,
+            "confidence": "medium",
+        }
+    ]
+    if way_count == 3:
+        drivers.insert(1, {
+            "role": "mid",
+            "manufacturer": "Example",
+            "model": "Mid driver",
+            "usable_frequency_range_hz": [250, 5000],
+            "recommended_highpass_hz": 450,
+            "recommended_lowpass_hz": frequency_hz,
+            "sources": ["https://example.test/mid"],
+        })
+        candidates = [
+            {
+                "between_roles": ["woofer", "mid"],
+                "frequency_hz": 450,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+            },
+            {
+                "between_roles": ["mid", "tweeter"],
+                "frequency_hz": frequency_hz,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+            },
+        ]
+    return {
+        "artifact_schema_version": 1,
+        "kind": DRIVER_RESEARCH_KIND,
+        "drivers": drivers,
+        "crossover_candidates": candidates,
+    }
+
+
+def _crossover_preview(
+    topology: OutputTopology,
+    *,
+    frequency_hz: float = 2500,
+    way_count: int = 2,
+) -> dict:
+    return build_crossover_preview(
+        build_design_draft(
+            topology,
+            driver_research=_driver_research(
+                frequency_hz=frequency_hz,
+                way_count=way_count,
+            ),
+            created_at="2026-06-10T12:00:00Z",
+        ),
+        created_at="2026-06-10T12:30:00Z",
+    )
+
+
 def _valid_config(path: str | Path) -> CamillaConfigValidationResult:
     return CamillaConfigValidationResult(
         status=ValidationStatus.VALID,
@@ -127,6 +261,136 @@ def test_stage_protected_startup_config_writes_muted_candidate(
     assert "freq: 5000.0000" in text
     assert "mute: true" in text
     assert loaded["status"] == "staged"
+
+
+def test_stage_protected_startup_config_uses_crossover_preview_frequency(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "active_staged.yml"
+    preview = _crossover_preview(_topology(), frequency_hz=3200)
+
+    payload = stage_protected_startup_config(
+        _topology(),
+        crossover_preview=preview,
+        config_path=out,
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+    text = out.read_text(encoding="utf-8")
+
+    assert payload["status"] == "staged"
+    assert payload["preset"]["source"]["mode"] == "crossover_preview"
+    assert payload["preset"]["preset_id"] == "preview-bench_mono-2way"
+    assert payload["config"]["tweeter_protective_highpass_hz"] == 6400
+    assert "freq: 3200.0000" in text
+    assert "freq: 6400.0000" in text
+
+
+def test_stage_protected_startup_config_blocks_unready_crossover_preview(
+    tmp_path: Path,
+) -> None:
+    preview = _crossover_preview(_topology())
+    preview["status"] = "stale"
+    preview["permissions"]["may_prepare_protected_startup_config"] = False
+
+    payload = stage_protected_startup_config(
+        _topology(),
+        crossover_preview=preview,
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+
+    assert payload["status"] == "blocked"
+    assert "crossover_preview_not_ready" in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
+def test_stage_protected_startup_config_blocks_subwoofer_topology_until_supported(
+    tmp_path: Path,
+) -> None:
+    topology = _topology_with_subwoofer()
+    preview = _crossover_preview(topology)
+    out = tmp_path / "active_staged.yml"
+
+    payload = stage_protected_startup_config(
+        topology,
+        crossover_preview=preview,
+        config_path=out,
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+    subwoofer_gate = next(
+        gate for gate in payload["required_gates"]
+        if gate["id"] == "subwoofer_startup_staging_scope"
+    )
+
+    assert payload["status"] == "blocked"
+    assert out.exists() is False
+    assert subwoofer_gate["passed"] is False
+    assert "subwoofer_staging_not_supported" in {
+        issue["code"] for issue in payload["issues"]
+    }
+
+
+def test_stage_protected_startup_config_supports_active_three_way_preview(
+    tmp_path: Path,
+) -> None:
+    topology = _three_way_topology()
+    preview = _crossover_preview(topology, frequency_hz=2800, way_count=3)
+    out = tmp_path / "active_staged.yml"
+
+    payload = stage_protected_startup_config(
+        topology,
+        crossover_preview=preview,
+        config_path=out,
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+    text = out.read_text(encoding="utf-8")
+
+    assert payload["status"] == "staged"
+    assert payload["preset"]["way_count"] == 3
+    assert payload["config"]["playback_channels"] == 3
+    assert payload["config"]["tweeter_protective_highpass_hz"] == 5600
+    assert "split_active_3way" in text
+    assert "freq: 450.0000" in text
+    assert "freq: 2800.0000" in text
+    assert "freq: 5600.0000" in text
+
+
+def test_stage_protected_startup_config_preview_honors_saved_role_mapping(
+    tmp_path: Path,
+) -> None:
+    raw = _topology().to_dict()
+    raw["speaker_groups"][0]["channels"][0]["physical_output_index"] = 1
+    raw["speaker_groups"][0]["channels"][1]["physical_output_index"] = 0
+    topology = OutputTopology.from_mapping(raw)
+    preview = _crossover_preview(topology)
+
+    payload = stage_protected_startup_config(
+        topology,
+        crossover_preview=preview,
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-03T12:00:00Z",
+    )
+    role_order_gate = next(
+        gate for gate in payload["required_gates"]
+        if gate["id"] == "active_output_role_order"
+    )
+
+    assert payload["status"] == "staged"
+    assert role_order_gate["passed"] is True
+    assert role_order_gate["message"] == (
+        "Preview-derived DSP will follow the saved output role mapping"
+    )
 
 
 def test_stage_protected_startup_config_uses_outputd_active_lane_for_dual_apple(

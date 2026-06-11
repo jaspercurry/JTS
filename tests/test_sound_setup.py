@@ -1060,24 +1060,8 @@ def test_active_speaker_commissioning_rehearsal_payload_is_no_audio(
     assert payload["steps"][7]["status"] == "next"
 
 
-def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
-        str(tmp_path / "active_staged.yml"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
-    saved = sound_setup._save_output_topology_payload({
+def _active_speaker_mono_topology_payload(*, protection_status: str) -> dict:
+    return {
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
         "topology_id": "bench_mono",
@@ -1107,30 +1091,109 @@ def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
                         "identity_verified": True,
                         "startup_muted": True,
                         "protection_required": True,
-                        "protection_status": "required_missing",
+                        "protection_status": protection_status,
                     },
                 ],
             }
         ],
         "routing": {"mono_group_id": "mono"},
-    })
+    }
 
+
+def _active_speaker_driver_research_payload(*, frequency_hz: float = 2500) -> dict:
+    return {
+        "artifact_schema_version": 1,
+        "kind": "jts_active_crossover_driver_research",
+        "drivers": [
+            {
+                "role": "woofer",
+                "model": "Epique E150HE-44",
+                "recommended_lowpass_hz": frequency_hz,
+                "sources": ["https://example.test/woofer"],
+            },
+            {
+                "role": "tweeter",
+                "model": "F110M-8",
+                "recommended_highpass_hz": frequency_hz,
+                "do_not_test_below_hz": 1200,
+                "sources": ["https://example.test/tweeter"],
+            },
+        ],
+        "crossover_candidates": [
+            {
+                "between_roles": ["woofer", "tweeter"],
+                "frequency_hz": frequency_hz,
+                "filter_type": "Linkwitz-Riley",
+                "slope_db_per_octave": 24,
+                "confidence": "medium",
+            }
+        ],
+    }
+
+
+def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> dict:
+    sound_setup._active_speaker_design_draft_save_payload({
+        "operator_inputs": {
+            "woofer": "Dayton Epique E150HE-44",
+            "tweeter": "Eminence F110M-8",
+        },
+        "driver_research": _active_speaker_driver_research_payload(
+            frequency_hz=frequency_hz,
+        ),
+    })
+    return sound_setup._active_speaker_crossover_preview_save_payload()
+
+
+def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
+        str(tmp_path / "active_staged.yml"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "design_draft.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "crossover_preview.json"),
+    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
+    saved = sound_setup._save_output_topology_payload(
+        _active_speaker_mono_topology_payload(protection_status="required_missing")
+    )
+
+    preview_blocked = _save_active_speaker_design_and_preview()
     blocked = sound_setup._active_speaker_stage_config_payload({})
     protected = sound_setup._active_speaker_channel_protection_save_payload({
         "speaker_group_id": "mono",
         "role": "tweeter",
         "protection_present": True,
     })
+    preview_ready = _save_active_speaker_design_and_preview()
     staged = sound_setup._active_speaker_stage_config_payload({})
     loaded = sound_setup._active_speaker_staged_config_payload()
 
     assert saved["output_topology"]["status"] == "blocked"
+    assert preview_blocked["status"] == "blocked"
     assert blocked["status"] == "blocked"
-    assert "tweeter_protection_required" in {
+    assert "crossover_preview_not_ready" in {
         issue["code"] for issue in blocked["issues"]
     }
     assert protected["output_topology"]["status"] == "verified"
+    assert preview_ready["status"] == "ready_for_protected_staging"
     assert staged["status"] == "staged"
+    assert staged["preset"]["source"]["mode"] == "crossover_preview"
     assert staged["config"]["basename"] == "active_staged.yml"
     assert staged["config"]["playback_device"] == "hw:DAC8,0"
     assert staged["config"]["tweeter_protective_highpass_hz"] == 5000
@@ -1159,47 +1222,27 @@ def test_active_speaker_path_safety_payload_writes_no_audio_evidence(
         "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
         str(tmp_path / "path_safety.json"),
     )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "design_draft.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "crossover_preview.json"),
+    )
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "DAC8",
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
+    sound_setup._save_output_topology_payload(
+        _active_speaker_mono_topology_payload(
+            protection_status="software_guard_requested",
+        )
+    )
+    preview = _save_active_speaker_design_and_preview()
     staged = sound_setup._active_speaker_stage_config_payload({})
     fake = FakeCamilla(staged["config"]["path"])
 
+    assert preview["status"] == "ready_for_protected_staging"
+    assert staged["status"] == "staged"
+    assert staged["preset"]["source"]["mode"] == "crossover_preview"
     payload = asyncio.run(
         sound_setup._active_speaker_check_path_safety_payload(
             camilla_factory=lambda: fake,
@@ -1219,6 +1262,45 @@ def test_active_speaker_stage_config_rejects_non_string_playback_device() -> Non
         sound_setup._active_speaker_stage_config_payload({
             "playback_device": {"device": "hw:DAC8,0"},
         })
+
+
+def test_active_speaker_stage_config_route_requires_current_preview(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
+        str(tmp_path / "active_staged.yml"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "design_draft.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "crossover_preview.json"),
+    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
+    sound_setup._save_output_topology_payload(
+        _active_speaker_mono_topology_payload(protection_status="present")
+    )
+
+    payload = sound_setup._active_speaker_stage_config_payload({})
+
+    assert payload["status"] == "blocked"
+    assert payload["config"]["exists"] is False
+    assert payload["preset"]["source"]["mode"] == "crossover_preview"
+    assert "crossover_preview_not_ready" in {
+        issue["code"] for issue in payload["issues"]
+    }
 
 
 def test_sound_output_topology_payload_is_no_audio_draft(

@@ -848,6 +848,8 @@ def _active_speaker_staged_config_payload() -> dict[str, Any]:
 def _active_speaker_stage_config_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Stage a protected startup config from the saved topology."""
 
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.staging import stage_protected_startup_config
 
     if not isinstance(raw, dict):
@@ -856,18 +858,26 @@ def _active_speaker_stage_config_payload(raw: dict[str, Any]) -> dict[str, Any]:
     if playback_device is not None and not isinstance(playback_device, str):
         raise ValueError("playback_device must be a string")
     topology = load_output_topology()
+    design_draft = load_design_draft()
+    crossover_preview = load_crossover_preview(current_design_draft=design_draft)
     payload = stage_protected_startup_config(
         topology,
+        crossover_preview=crossover_preview,
         playback_device=playback_device,
+    )
+    blocker_count = sum(
+        1 for issue in payload.get("issues") or []
+        if isinstance(issue, dict) and issue.get("severity") == "blocker"
     )
     logger.info(
         "event=sound.active_speaker_stage_config status=%s topology_id=%s "
-        "preset_id=%s config=%s blockers=%d",
+        "preset_id=%s preview_status=%s config=%s blockers=%d",
         payload.get("status"),
         payload.get("topology", {}).get("topology_id"),
         payload.get("preset", {}).get("preset_id"),
+        crossover_preview.get("status"),
         payload.get("config", {}).get("basename"),
-        len(payload.get("issues") or []),
+        blocker_count,
     )
     return payload
 
