@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# jasper-camilla-pipe-guard — break the bonded reboot-loop chain.
+#
+# Runs as ExecStartPre= on jasper-camilla.service (the CORE music
+# daemon, whose unit carries StartLimitAction=reboot). When the
+# statefile points camilla at a BONDED pipe config
+# (docs/HANDOFF-multiroom.md §2 — playback File -> the snapserver FIFO)
+# but the pipe is DEAD, repair the statefile to the packaged base
+# config BEFORE camilla launches, so the failing starts never happen.
+#
+# Why ExecStartPre and not OnFailure=: StartLimitAction=reboot and
+# OnFailure= both fire when the unit fails — a rescue would RACE the
+# reboot. Prevention beats reaction.
+#
+# The measured failure modes (camilladsp 4.1.3 on jts3, 2026-06-11):
+#   - File sink path ABSENT (snapserver stopped; its RuntimeDirectory
+#     reaped) -> "Playback error: No such file or directory" + CLEAN
+#     exit 0. With Restart=always + RestartSec=2 + StartLimitBurst=5/60s
+#     that is a clean-exit loop -> StartLimitAction=reboot fires in
+#     under a minute; if snapserver stays broken the boot reconcile
+#     cannot fix it -> REBOOT LOOP on the household speaker.
+#   - FIFO present, NO reader -> camilladsp blocks in open(2) and the
+#     blocked open is not interrupted by SIGTERM (alive-but-silent).
+#
+# Repair target: the packaged base config (always installed,
+# volume_limit-safe, identity EQ). Camilla then starts SOLO-SAFE —
+# degraded (no room correction) but PLAYING and recoverable:
+# grouping.env stays bonded, so the next jasper-grouping-reconcile run
+# re-applies the bond when snapserver is healthy again, and the
+# doctor's `grouping: leader pipe` check + /state runtime health show
+# the degraded state in the meantime. Self-healing in both directions.
+#
+# FAIL-OPEN EVERYWHERE: this runs in the start path of the speaker's
+# entire music chain. Any unexpected condition (unreadable statefile,
+# missing base config, write failure) logs and exits 0 so camilla
+# starts unmodified. The unit invokes it with `ExecStartPre=-` as a
+# second belt: even a missing script cannot block camilla.
+#
+# Pure bash, no Python import cost (<5 ms in the solo steady state:
+# one statefile read + one grep). Mirrors jasper-wifi-guardian's
+# shape and test seams (env-overridable paths, structured
+# `event=camilla_pipe_guard.<outcome>` lines on stderr).
+
+set -uo pipefail
+
+STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
+BASE_CONFIG="${JASPER_CAMILLA_BASE_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
+SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
+# Seconds the reader-presence probe waits before declaring "no reader".
+PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
+
+log() {
+    # log <outcome> [detail...]
+    local outcome="$1"
+    shift || true
+    echo "event=camilla_pipe_guard.${outcome} ${*}" >&2
+}
+
+[ -r "$STATEFILE" ] || { log skip reason=no_statefile; exit 0; }
+
+config_path=$(
+    sed -n 's/^[[:space:]]*config_path:[[:space:]]*//p' "$STATEFILE" \
+        | head -1 | tr -d '"' | tr -d "'"
+)
+[ -n "$config_path" ] || { log skip reason=no_config_path; exit 0; }
+[ -r "$config_path" ] || { log skip reason=config_unreadable "path=$config_path"; exit 0; }
+
+# Pipe-shaped = the config's playback filename names the snapserver
+# FIFO (the emitter writes it as a quoted literal; match either form).
+if ! grep -q "filename:.*${SNAPFIFO}" "$config_path"; then
+    log ok reason=solo_config
+    exit 0
+fi
+
+# Bonded pipe config. Healthy only if the FIFO exists AND has a reader.
+if [ -p "$SNAPFIFO" ]; then
+    # Reader-presence probe: opening a FIFO for write returns instantly
+    # iff a reader exists; with no reader it blocks (-> timeout). The
+    # momentary write-open is harmless to snapserver (a pipe source is
+    # designed for writers that come and go). FAIL-OPEN: if the timeout
+    # tool itself is unavailable, treat exists-as-FIFO as healthy — a
+    # repair needs positive evidence of a dead pipe, never a missing
+    # probe (the Pi always ships coreutils; this guards dev machines).
+    if ! command -v timeout >/dev/null 2>&1; then
+        log ok reason=pipe_exists_probe_unavailable
+        exit 0
+    fi
+    if timeout "$PROBE_TIMEOUT" bash -c "exec 3> '$SNAPFIFO'" 2>/dev/null; then
+        log ok reason=pipe_healthy
+        exit 0
+    fi
+    why=no_reader
+else
+    why=fifo_absent
+fi
+
+if [ ! -r "$BASE_CONFIG" ]; then
+    log skip reason=base_config_missing "detail=$why"
+    exit 0
+fi
+
+# REPAIR: point the statefile's config_path at the base config,
+# atomically (tmp + mv in the same directory).
+tmp="${STATEFILE}.guard.$$"
+if sed "s|^\([[:space:]]*config_path:\).*|\1 \"${BASE_CONFIG}\"|" \
+        "$STATEFILE" > "$tmp" 2>/dev/null \
+        && mv "$tmp" "$STATEFILE" 2>/dev/null; then
+    log repaired "reason=$why from=$config_path to=$BASE_CONFIG" \
+        "detail=camilla starts solo-safe; next grouping reconcile re-applies the bond"
+else
+    rm -f "$tmp" 2>/dev/null || true
+    log skip reason=statefile_write_failed "detail=$why"
+fi
+exit 0

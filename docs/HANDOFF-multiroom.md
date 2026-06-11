@@ -651,7 +651,20 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   tap is NOT used by this design (it stays available for future group
   announcements). **PR-1 interim, marked by a STANDING doctor warn:** TTS
   rides the synced stream (delayed ~buffer_ms, on all members) because TTS
-  still mixes in fanin.
+  still mixes in fanin. **Reboot-loop chain-breaker (post-merge review,
+  MEASURED):** camilladsp 4.1.3 exits CLEAN (0) when its File sink path is
+  absent, and blocks un-SIGTERM-ably in open(2) when the FIFO has no
+  reader — with jasper-camilla's `Restart=always` + `StartLimitBurst=5/60s`
+  + `StartLimitAction=reboot`, a snapserver hard-death while bonded was a
+  Pi REBOOT LOOP in under a minute. `jasper-camilla-pipe-guard`
+  (`ExecStartPre=-`, pure bash, fail-open) repairs the statefile to the
+  base config BEFORE camilla launches when the bonded pipe is dead
+  (absent FIFO, or no reader via a write-open probe) — prevention, not
+  reaction, because an `OnFailure=` rescue would RACE the reboot. Camilla
+  then runs solo-safe (identity EQ, volume_limit intact); grouping.env
+  stays bonded so the next reconcile re-applies the bond when snapserver
+  is healthy; `event=camilla_pipe_guard.*` + the `leader pipe` doctor
+  check surface the degraded state.
   **PR-2 (pending):** the outputd TTS mixer + `audio_played_ms` barge-in
   ledger rebuild; EVERY bonded member's voice flips its TTS socket to its
   own outputd (inv-3: the leader's TTS never enters the shared stream —
@@ -1607,7 +1620,22 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (INCREMENT 5 PR-1 BUILT — the bonded MUSIC dataplane,
+Last verified: 2026-06-11 (CAMILLA PIPE-GUARD — the post-merge review of PR-1
+measured camilladsp 4.1.3's dead-File-sink behavior on jts3 (absent path →
+clean exit 0; readerless FIFO → blocked open(2) that ignores SIGTERM) and
+found the reboot-loop chain: clean-exit loop × Restart=always ×
+StartLimitBurst=5/60s × StartLimitAction=reboot ⇒ a snapserver hard-death
+while bonded reboots the Pi in <60 s, and reboot-loops if snapserver stays
+broken. Chain broken by deploy/bin/jasper-camilla-pipe-guard — ExecStartPre=-
+on jasper-camilla, pure bash, FAIL-OPEN (missing statefile/base/probe-tool ⇒
+no-op; a repair needs positive evidence of a dead pipe): bonded statefile +
+dead pipe ⇒ statefile repaired to the base config before launch, camilla
+starts solo-safe, grouping.env stays bonded for self-healing re-apply, loud
+event=camilla_pipe_guard.repaired. The same review also shipped the
+validated-solo stash guard (#612: a /sound save while bonded regenerates the
+wizard's file pipe-shaped; the stash must never write nor restore one — both
+ends guarded, pinned against real emitted configs). Earlier same day
+(INCREMENT 5 PR-1 BUILT — the bonded MUSIC dataplane,
 end-to-end. The emitter gained the `playback_pipe_path` axis (File→snapfifo
 sink; pipe requires rate_adjust=false; never combines with the member weave);
 `member_camilla_kwargs` moved to the canonical leader-bake policy (leader →

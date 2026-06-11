@@ -59,6 +59,16 @@ Type=simple
 # the statefile's config and start with no config loaded), restart,
 # fix the underlying YAML or apply a new measurement, then remove
 # --no_config.
+#
+# Pipe guard (multi-room, HANDOFF-multiroom.md §2): if the statefile
+# points at a BONDED pipe config but the snapserver FIFO is dead,
+# camilladsp 4.1.3 exits CLEAN (measured) — which Restart=always +
+# StartLimitAction=reboot below would turn into a reboot loop. The
+# guard repairs the statefile to the base config BEFORE launch so the
+# failing starts never happen (an OnFailure rescue would RACE the
+# reboot). `-` prefix: the guard is fail-open by design, and even a
+# missing script must never block the music chain.
+ExecStartPre=-/usr/local/sbin/jasper-camilla-pipe-guard
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \
     --statefile /var/lib/camilladsp/outputd-statefile.yml

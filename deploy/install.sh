@@ -1622,6 +1622,17 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
         /usr/local/sbin/jasper-wifi-guardian
 
+    # Camilla pipe guard. ExecStartPre= on jasper-camilla: when the
+    # statefile points at a bonded multi-room pipe config but the
+    # snapserver FIFO is dead, repair to the base config BEFORE camilla
+    # launches — camilladsp exits clean on a dead File sink (measured),
+    # and Restart=always + StartLimitAction=reboot would otherwise turn
+    # that into a reboot loop. Fail-open by design. See
+    # docs/HANDOFF-multiroom.md §2.
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
+        /usr/local/sbin/jasper-camilla-pipe-guard
+
     # Identity reconciler. Type=oneshot snapshot of the speaker's
     # effective mDNS identity (OS hostname vs Avahi's post-collision
     # name vs JASPER_HOSTNAME) into /var/lib/jasper/identity.env, on a
