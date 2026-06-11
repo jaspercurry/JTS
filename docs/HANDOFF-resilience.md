@@ -362,6 +362,15 @@ thinks the system is healthy.
   `StartLimitAction=reboot`; fail-open on every error path.
   Observability: `event=bootloop_guard.ok|tripped|error` +
   `/state.resilience.bootloop_guard`.
+  **Hardware-validated 2026-06-11** on the jts3 lab Pi: synthetic
+  2-boot history tripped the guard on the next boot (6/6 runtime
+  drop-ins, `event=bootloop_guard.tripped`, doctor WARN, control
+  plane stayed up), and a clean history re-armed it on the boot
+  after (0 drop-ins, `event=bootloop_guard.ok`, doctor green) —
+  evidence in the
+  [PR #573 execution comment](https://github.com/jaspercurry/JTS/pull/573#issuecomment-4683638459);
+  runbook archived at
+  [historical/RUNBOOK-2026-06-10-batch-hardware-validation.md](historical/RUNBOOK-2026-06-10-batch-hardware-validation.md).
 - **T5.2** ✅ **shipped**: new `SystemSupervisor` in
   [`jasper/control/system_supervisor.py`](../jasper/control/system_supervisor.py)
   mirroring the proven `ShairportSupervisor` Tier 3 shape. Probes
