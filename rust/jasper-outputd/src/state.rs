@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use crate::alsa_backend::{DualAppleStatus, IoCounters, NegotiatedPcm};
 use crate::config::Config;
 use crate::content_bridge::ContentBridgeMetrics;
+use crate::dac_content::DacContentMetrics;
 
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -60,6 +61,17 @@ pub struct OutputdState {
     content_bridge_ratio_clamp_count: AtomicU64,
     content_bridge_lock_count: AtomicU64,
     content_bridge_unlock_count: AtomicU64,
+    dac_content_fifo: Option<String>,
+    dac_content_channel: String,
+    dac_content_serving_fifo: AtomicBool,
+    dac_content_fifo_periods: AtomicU64,
+    dac_content_fallback_periods: AtomicU64,
+    dac_content_fallback_transitions: AtomicU64,
+    dac_content_recoveries: AtomicU64,
+    dac_content_staged_periods: AtomicU64,
+    dac_content_overflow_dropped_periods: AtomicU64,
+    dac_content_open_failures: AtomicU64,
+    dac_content_read_failures: AtomicU64,
     chip_ref_sample_rate: AtomicU64,
     chip_ref_period_frames: AtomicU64,
     chip_ref_buffer_frames: AtomicU64,
@@ -121,6 +133,17 @@ impl OutputdState {
             content_bridge_ratio_clamp_count: AtomicU64::new(0),
             content_bridge_lock_count: AtomicU64::new(0),
             content_bridge_unlock_count: AtomicU64::new(0),
+            dac_content_fifo: config.dac_content_fifo.clone(),
+            dac_content_channel: config.dac_content_channel.as_str().to_string(),
+            dac_content_serving_fifo: AtomicBool::new(false),
+            dac_content_fifo_periods: AtomicU64::new(0),
+            dac_content_fallback_periods: AtomicU64::new(0),
+            dac_content_fallback_transitions: AtomicU64::new(0),
+            dac_content_recoveries: AtomicU64::new(0),
+            dac_content_staged_periods: AtomicU64::new(0),
+            dac_content_overflow_dropped_periods: AtomicU64::new(0),
+            dac_content_open_failures: AtomicU64::new(0),
+            dac_content_read_failures: AtomicU64::new(0),
             chip_ref_sample_rate: AtomicU64::new(config.chip_ref_sample_rate as u64),
             chip_ref_period_frames: AtomicU64::new(config.chip_ref_period_frames as u64),
             chip_ref_buffer_frames: AtomicU64::new(config.chip_ref_buffer_frames as u64),
@@ -213,6 +236,27 @@ impl OutputdState {
         );
         self.dual_max_delay_delta_frames
             .store(status.max_delay_delta_frames, Ordering::Relaxed);
+    }
+
+    pub fn mark_dac_content(&self, metrics: DacContentMetrics) {
+        self.dac_content_serving_fifo
+            .store(metrics.serving_fifo, Ordering::Relaxed);
+        self.dac_content_fifo_periods
+            .store(metrics.fifo_periods, Ordering::Relaxed);
+        self.dac_content_fallback_periods
+            .store(metrics.fallback_periods, Ordering::Relaxed);
+        self.dac_content_fallback_transitions
+            .store(metrics.fallback_transitions, Ordering::Relaxed);
+        self.dac_content_recoveries
+            .store(metrics.recoveries, Ordering::Relaxed);
+        self.dac_content_staged_periods
+            .store(metrics.staged_periods, Ordering::Relaxed);
+        self.dac_content_overflow_dropped_periods
+            .store(metrics.overflow_dropped_periods, Ordering::Relaxed);
+        self.dac_content_open_failures
+            .store(metrics.open_failures, Ordering::Relaxed);
+        self.dac_content_read_failures
+            .store(metrics.read_failures, Ordering::Relaxed);
     }
 
     pub fn mark_content_bridge(&self, metrics: ContentBridgeMetrics) {
@@ -436,6 +480,82 @@ impl OutputdState {
             "unlock_count",
             self.content_bridge_unlock_count.load(Ordering::Relaxed),
         );
+        buf.push('}');
+        buf.push(',');
+
+        // Multi-room round-trip lane (Increment 3) — DAEMON-TRUTH health
+        // for /state + jasper-doctor (never a Python mirror of env
+        // intent). enabled:false with no further fields when the lane is
+        // not configured (solo — zero cost, zero noise).
+        buf.push_str(r#""dac_content":{"#);
+        match self.dac_content_fifo.as_deref() {
+            Some(fifo) => {
+                push_kv_bool(&mut buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(&mut buf, "fifo", fifo);
+                buf.push(',');
+                push_kv_str(&mut buf, "channel", &self.dac_content_channel);
+                buf.push(',');
+                push_kv_bool(
+                    &mut buf,
+                    "serving_fifo",
+                    self.dac_content_serving_fifo.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "fifo_periods",
+                    self.dac_content_fifo_periods.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "fallback_periods",
+                    self.dac_content_fallback_periods.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "fallback_transitions",
+                    self.dac_content_fallback_transitions
+                        .load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "recoveries",
+                    self.dac_content_recoveries.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "staged_periods",
+                    self.dac_content_staged_periods.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "overflow_dropped_periods",
+                    self.dac_content_overflow_dropped_periods
+                        .load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "open_failures",
+                    self.dac_content_open_failures.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "read_failures",
+                    self.dac_content_read_failures.load(Ordering::Relaxed),
+                );
+            }
+            None => {
+                push_kv_bool(&mut buf, "enabled", false);
+            }
+        }
         buf.push('}');
         buf.push(',');
 
@@ -848,6 +968,8 @@ mod tests {
             reference_udp_target: None,
             stream_id: 1,
             control_socket_path: None,
+            dac_content_fifo: None,
+            dac_content_channel: crate::dac_content::ChannelPick::Stereo,
         }
     }
 
@@ -933,6 +1055,53 @@ mod tests {
             r#""delay_delta_baseline_frames":5"#,
             r#""delay_delta_error_frames":2"#,
             r#""max_delay_delta_frames":2"#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+    }
+
+    #[test]
+    fn snapshot_json_dac_content_disabled_is_quiet_and_enabled_is_full() {
+        // Solo (lane unconfigured): just enabled:false — zero noise.
+        let state = OutputdState::new(&test_config());
+        let j = state.snapshot_json();
+        assert!(
+            j.contains(r#""dac_content":{"enabled":false}"#),
+            "missing quiet disabled block in {j}"
+        );
+
+        // Member (lane configured): full daemon-truth health block.
+        let cfg = Config {
+            dac_content_fifo: Some("/run/jasper-grouping/member-content.fifo".to_string()),
+            dac_content_channel: crate::dac_content::ChannelPick::Left,
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        state.mark_dac_content(DacContentMetrics {
+            serving_fifo: true,
+            fifo_periods: 100,
+            fallback_periods: 7,
+            fallback_transitions: 2,
+            recoveries: 2,
+            staged_periods: 3,
+            overflow_dropped_periods: 1,
+            open_failures: 4,
+            read_failures: 5,
+        });
+        let j = state.snapshot_json();
+        for needle in [
+            r#""dac_content":{"enabled":true"#,
+            r#""fifo":"/run/jasper-grouping/member-content.fifo""#,
+            r#""channel":"left""#,
+            r#""serving_fifo":true"#,
+            r#""fifo_periods":100"#,
+            r#""fallback_periods":7"#,
+            r#""fallback_transitions":2"#,
+            r#""recoveries":2"#,
+            r#""staged_periods":3"#,
+            r#""overflow_dropped_periods":1"#,
+            r#""open_failures":4"#,
+            r#""read_failures":5"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }

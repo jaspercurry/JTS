@@ -204,12 +204,11 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # (The former JASPER_OUTPUTD_SNAPFIFO_PATH exception was dropped
     # 2026-06-11: the outputd-as-producer machinery was REMOVED — the
     # canonical design feeds the snapserver pipe from the leader's
-    # CamillaDSP, so the env is no longer written anywhere. See
-    # HANDOFF-multiroom.md §2 "Stranded by this design".)
-    # Staged inv-2 leader content lane (LEADER_CONTENT_LANE_GATE in
-    # jasper/multiroom/reconcile.py); the outputd reader is a future
-    # Rust PR (Increment 3).
-    "JASPER_OUTPUTD_DAC_CONTENT_FIFO": "staged inv-2 member DAC lane",
+    # CamillaDSP, so the env is no longer written anywhere. The former
+    # JASPER_OUTPUTD_DAC_CONTENT_FIFO exception was dropped the same day
+    # in the opposite direction: Increment 3 landed the outputd reader,
+    # so the name is now LIVE Rust-read config, exactly as this guard's
+    # bidirectional contract demands. See HANDOFF-multiroom.md §2.)
     # Python-consumer-side override of where mux CONNECTS; fanin's own
     # bind path is a hardcoded Rust constant (see
     # test_control_socket_paths_agree_across_processes). Setting this

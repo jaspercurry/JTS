@@ -12,16 +12,17 @@ pub mod alsa_backend;
 pub mod config;
 pub mod content_bridge;
 pub mod core;
+// outputd's multi-room role: the `dac_content` reader (Increment 3) — the
+// round-trip lane a grouping member's snapclient feeds. (The former
+// `snapfifo` module — outputd-as-PRODUCER — was removed 2026-06-11: the
+// canonical design has CamillaDSP feed the snapserver pipe, not outputd.
+// See HANDOFF-multiroom.md §2 "Canonical signal flow".)
+pub mod dac_content;
 pub mod fake;
 pub mod ledger;
 pub mod loudness;
 pub mod mixer;
 pub mod reference;
-// NOTE: the former `snapfifo` module (`SnapfifoSink`, the outputd-as-producer
-// tap) was REMOVED 2026-06-11: the canonical multi-room design has CamillaDSP
-// feed the snapserver pipe, not outputd — see HANDOFF-multiroom.md §2
-// "Canonical signal flow" + "Stranded by this design". outputd's multi-room
-// role is the Increment 3 `dac_content` reader (self-reported on STATUS).
 pub mod state;
 pub mod types;
 
