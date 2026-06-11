@@ -38,7 +38,11 @@ logger = logging.getLogger(__name__)
 # and health probes run on the leader itself.
 SNAPSERVER_RPC_URL = "http://127.0.0.1:1780/jsonrpc"
 
-_RPC_TIMEOUT_SEC = 2.0
+# Loopback-only RPC: a healthy snapserver answers in ~1 ms; the timeout
+# exists for the pathological hung-accept case, and it bounds how long a
+# /state caller can stall (see read_stream_clients_cached). 1 s is
+# generous for localhost.
+_RPC_TIMEOUT_SEC = 1.0
 
 
 def rpc_call(
@@ -100,16 +104,84 @@ def read_stream_clients(
     return summarize_groups(status)
 
 
+class _ProbeCache:
+    """Thread-safe TTL cache for the stream-clients probe.
+
+    Why: ``/state`` is polled by the dashboard (~7 s) and any LAN
+    client; on a bonded leader each call probes snapserver. A healthy
+    probe is ~1 ms — but a HUNG-accepting snapserver costs the full RPC
+    timeout per call, turning a snapserver failure into a sluggish
+    dashboard. The cache bounds that: at most one real probe per TTL,
+    and FAILURES are cached too (a hung server must not be re-probed by
+    every poller). The doctor deliberately bypasses this (operator-run,
+    wants this-instant truth); the reconciler's pin uses its own
+    GetStatus. Monotonic clock; injectable for tests.
+    """
+
+    def __init__(self, ttl_sec: float = 5.0) -> None:
+        import threading
+
+        self._ttl = ttl_sec
+        self._lock = threading.Lock()
+        self._at: float | None = None
+        self._value: list[dict[str, Any]] | None = None
+
+    def read(
+        self,
+        *,
+        url: str = SNAPSERVER_RPC_URL,
+        transport: Transport = rpc_call,
+        now: Callable[[], float] = time.monotonic,
+    ) -> list[dict[str, Any]] | None:
+        with self._lock:
+            t = now()
+            if self._at is not None and (t - self._at) < self._ttl:
+                return self._value
+            self._value = read_stream_clients(url=url, transport=transport)
+            self._at = t
+            return self._value
+
+
+_probe_cache = _ProbeCache()
+
+
+def read_stream_clients_cached(
+    *,
+    url: str = SNAPSERVER_RPC_URL,
+    transport: Transport = rpc_call,
+    now: Callable[[], float] = time.monotonic,
+) -> list[dict[str, Any]] | None:
+    """The /state-facing probe: same contract as
+    :func:`read_stream_clients`, served through the module TTL cache so
+    a hung snapserver costs at most one RPC timeout per TTL window
+    instead of one per dashboard poll."""
+    return _probe_cache.read(url=url, transport=transport, now=now)
+
+
 def ensure_groups_on_stream(
     want_stream: str,
     *,
+    allowed_streams: "set[str] | None" = None,
     url: str = SNAPSERVER_RPC_URL,
     transport: Transport = rpc_call,
     attempts: int = 6,
     delay_sec: float = 0.5,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """Re-bind every persisted snapcast group to ``want_stream``.
+    """Re-bind persisted snapcast groups to ``want_stream`` — OWNERSHIP
+    rule, not existence rule.
+
+    A group is left alone iff its binding is in the JTS-owned allowlist
+    (``{want_stream} | allowed_streams``); ANY other binding is rebound
+    to ``want_stream`` — whether the foreign stream exists or not.
+    Existence deliberately does not protect a binding: snapserver also
+    registers the packaged /etc/snapserver.conf "default" pipe source,
+    so the 2026-06-11 incident's stale groups were bound to a stream
+    that EXISTS (idle, producer-less) — an existence rule would have
+    left the bond silent. When a future feature adds a second JTS
+    stream (e.g. group announcements), its caller extends
+    ``allowed_streams``; until then the allowlist is just our one
+    stream and this is the single-stream-era behavior.
 
     Runs on the leader after snapserver starts (bounded retries cover
     the just-started window). Fixes DISCONNECTED clients' groups too —
@@ -120,6 +192,7 @@ def ensure_groups_on_stream(
     ``reachable=False`` (the caller logs + flips its exit code — a bond
     whose bindings cannot be verified is a degraded bond).
     """
+    allowed = {want_stream} | (allowed_streams or set())
     status: dict | None = None
     for attempt in range(attempts):
         status = transport("Server.GetStatus", url=url)
@@ -136,7 +209,7 @@ def ensure_groups_on_stream(
     for group in groups:
         group_id = group.get("id", "")
         stream_id = group.get("stream_id", "")
-        if not group_id or stream_id == want_stream:
+        if not group_id or stream_id in allowed:
             continue
         result = transport(
             "Group.SetStream",
