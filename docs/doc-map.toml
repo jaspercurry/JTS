@@ -319,6 +319,29 @@ verification = [
 ]
 
 [[subsystem]]
+id = "speaker-identity"
+title = "Speaker identity, mDNS collision handling, and the management-host allowlist"
+safety = "connectivity-risk"
+code = [
+  "jasper/http_security.py",
+  "jasper/identity_state.py",
+  "deploy/bin/jasper-identity-reconcile",
+  "deploy/systemd/jasper-identity-reconcile.service",
+  "deploy/systemd/jasper-identity-reconcile.timer",
+  "scripts/rename-speaker.sh",
+]
+docs = [
+  "AGENTS.md",
+  "docs/HANDOFF-identity.md",
+]
+requires_docs_when = [
+  "The host allowlist semantics, identity.env schema, collision/rename behavior, or the supported rename flow change.",
+]
+verification = [
+  "pytest tests/test_http_security.py tests/test_identity_state.py tests/test_identity_reconcile_script.py tests/test_doctor_identity.py",
+]
+
+[[subsystem]]
 id = "volume-and-sound"
 title = "Volume coordination and sound preferences"
 safety = "audio-output-risk"

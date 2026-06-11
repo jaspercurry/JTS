@@ -1,0 +1,20 @@
+[Unit]
+Description=Snapshot the speaker's effective mDNS identity to /var/lib/jasper/identity.env
+Documentation=file:/opt/jasper/docs/HANDOFF-identity.md
+# Avahi must be up for GetHostNameFqdn to answer; the script degrades
+# gracefully (falls back to the OS hostname + logs avahi_unavailable)
+# if it isn't, so this is an ordering hint, not a hard requirement.
+After=avahi-daemon.service
+Wants=avahi-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jasper-identity-reconcile --reason systemd
+# A handful of subprocesses (hostname, busctl, grep) — anything slower
+# means D-Bus is wedged; give up rather than pile onto a sick boot.
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# Observe and publish the speaker's *effective* network identity.
+#
+# A speaker's name is really three loosely-coupled names:
+#
+#   1. The OS hostname (`hostname`) — what Avahi *tries* to advertise.
+#   2. Avahi's effective hostname — what the LAN can actually resolve.
+#      When two devices claim the same name, Avahi silently renames the
+#      loser to `<name>-2.local` (RFC 6762 conflict resolution); the OS
+#      hostname does NOT change, and nothing on the Pi notices.
+#   3. JASPER_HOSTNAME in /etc/jasper/jasper.env — the *intended*
+#      identity that the management allowlist, TLS cert, OAuth bounce,
+#      and spoken URLs derive from.
+#
+# Before this reconciler, a collision rename produced a locked-out
+# speaker: the renamed Pi answers at jts-2.local, but the management
+# host-allowlist only knew the OS hostname and JASPER_HOSTNAME, so every
+# page 403ed — the exact user-visible shape of the 2026-06-11
+# `Host: 0.0.0.0` regression, with no self-heal and no surface saying
+# why.
+#
+# This script is the single writer of /var/lib/jasper/identity.env: a
+# small, always-fresh snapshot of the three names plus a collision flag.
+# Consumers:
+#   - jasper.http_security extends the management-host allowlist with
+#     the effective names (so a renamed speaker's UI keeps working),
+#   - /state.resilience.identity and jasper-doctor surface drift so the
+#     household is TOLD to pick a unique name instead of silently
+#     losing a speaker.
+#
+# Deliberately an observer: it never rewrites jasper.env, never renames
+# the host, never restarts daemons (mirrors jasper-wifi-guardian's
+# stash_stale no-op philosophy — a wrong write here could fight the
+# operator mid-rename). Convergence is the operator's deliberate act
+# via scripts/rename-speaker.sh; this script makes the drift visible
+# and keeps the UI reachable meanwhile.
+#
+# Run by systemd at boot and every 5 min (jasper-identity-reconcile
+# .service + .timer — a collision happens whenever the *other* device
+# boots, not when we do). Pure bash, a handful of subprocesses, zero
+# resident RAM. Mirrors jasper-wifi-guardian's shape and test seams.
+
+set -uo pipefail
+
+IDENTITY_FILE="${JASPER_IDENTITY_FILE:-/var/lib/jasper/identity.env}"
+JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
+BUSCTL="${JASPER_BUSCTL:-busctl}"
+HOSTNAME_BIN="${JASPER_HOSTNAME_BIN:-hostname}"
+REASON="manual"
+
+usage() {
+    cat <<'EOF'
+Usage: jasper-identity-reconcile [--reason TEXT]
+
+Snapshot the speaker's effective network identity into
+/var/lib/jasper/identity.env (override via JASPER_IDENTITY_FILE):
+
+  - OS hostname (`hostname`)
+  - Avahi's effective mDNS hostname (post-collision-rename), via
+    `busctl call org.freedesktop.Avahi ... GetHostNameFqdn`
+  - JASPER_HOSTNAME from /etc/jasper/jasper.env (the intended identity)
+  - a collision flag (Avahi renamed us away from the OS hostname)
+
+Emits structured `event=identity_reconcile.<outcome>` lines on stderr.
+Read-only apart from the identity file; never mutates jasper.env or
+restarts anything.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason)
+            REASON="${2:-manual}"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+log() {
+    echo "jasper-identity-reconcile[$REASON]: $*" >&2
+}
+
+emit() {
+    # Single-line structured event for journal grep, same shape as
+    # `event=wifi_guardian.*`. `$1` is the outcome suffix; `$2` the
+    # kv-tail.
+    if [[ -n "${2:-}" ]]; then
+        printf 'event=identity_reconcile.%s %s\n' "$1" "$2" >&2
+    else
+        printf 'event=identity_reconcile.%s\n' "$1" >&2
+    fi
+}
+
+# Lowercase + strip one trailing dot — mirrors
+# jasper.http_security.normalize_host for the bash side. tr, not
+# ${v,,}: the test harness runs this under macOS bash 3.2.
+normalize() {
+    local v="${1:-}"
+    v="${v%.}"
+    printf '%s' "$v" | tr '[:upper:]' '[:lower:]'
+}
+
+OS_HOSTNAME="$(normalize "$("$HOSTNAME_BIN" 2>/dev/null || true)")"
+if [[ -z "$OS_HOSTNAME" ]]; then
+    emit error "reason=no_os_hostname"
+    exit 0
+fi
+# `hostname` may return an FQDN on some images; the short form is what
+# Avahi bases its advertisement on.
+OS_HOSTNAME="${OS_HOSTNAME%%.*}"
+
+# Avahi's effective FQDN. Reply shape: `s "jts3.local"`. If avahi or
+# busctl is unavailable (degraded boot, dev container), fall back to
+# assuming the OS hostname is advertised verbatim — the allowlist then
+# carries no *extra* names, which is exactly the pre-reconciler
+# behavior, and the doctor reports the degradation separately.
+AVAHI_FQDN_RAW="$("$BUSCTL" --timeout=3 call org.freedesktop.Avahi / \
+    org.freedesktop.Avahi.Server GetHostNameFqdn 2>/dev/null || true)"
+AVAHI_HOSTNAME=""
+# Reply shape: `s "jts3.local"`. Glob match + parameter stripping
+# instead of =~ — quoted regexes behave differently under bash 3.2
+# (the macOS test harness) vs 5.x (the Pi).
+if [[ "$AVAHI_FQDN_RAW" == 's "'*'"' ]]; then
+    _fqdn="${AVAHI_FQDN_RAW#s \"}"
+    _fqdn="${_fqdn%\"}"
+    AVAHI_HOSTNAME="$(normalize "$_fqdn")"
+fi
+AVAHI_AVAILABLE=1
+if [[ -z "$AVAHI_HOSTNAME" ]]; then
+    AVAHI_AVAILABLE=0
+    AVAHI_HOSTNAME="${OS_HOSTNAME}.local"
+    emit avahi_unavailable "fallback=${AVAHI_HOSTNAME}"
+fi
+
+# The *intended* identity. grep, don't source: jasper.env is large,
+# operator-owned, and executing it from a root timer would be a new
+# failure surface. Last assignment wins, mirroring how systemd's
+# EnvironmentFile layering resolves duplicates.
+CONFIGURED_HOSTNAME=""
+if [[ -f "$JASPER_ENV_FILE" ]]; then
+    CONFIGURED_HOSTNAME="$(grep -E '^JASPER_HOSTNAME=' "$JASPER_ENV_FILE" \
+        2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+    CONFIGURED_HOSTNAME="$(normalize "${CONFIGURED_HOSTNAME%$'\r'}")"
+fi
+# Unset means "code default": jts.local. Record the resolved value so
+# consumers never re-derive the default.
+[[ -z "$CONFIGURED_HOSTNAME" ]] && CONFIGURED_HOSTNAME="jts.local"
+
+# Collision: Avahi is advertising something other than `<os>.local`.
+AVAHI_BASE="${AVAHI_HOSTNAME%.local}"
+COLLISION=0
+if [[ "$AVAHI_BASE" != "$OS_HOSTNAME" ]]; then
+    COLLISION=1
+fi
+
+# Drift: the intended identity doesn't match what the LAN resolves.
+# Covers both a stale JASPER_HOSTNAME after a manual hostnamectl rename
+# and the collision case above.
+DRIFT=0
+if [[ "$CONFIGURED_HOSTNAME" != "$AVAHI_HOSTNAME" ]]; then
+    DRIFT=1
+fi
+
+CHECKED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Atomic write: tmp + mv in the same directory, mode 0644 (no secrets —
+# hostnames are broadcast on the LAN by definition).
+IDENTITY_DIR="$(dirname "$IDENTITY_FILE")"
+if ! mkdir -p "$IDENTITY_DIR" 2>/dev/null; then
+    emit error "reason=mkdir_failed dir=${IDENTITY_DIR}"
+    exit 0
+fi
+TMP_FILE="$(mktemp "${IDENTITY_FILE}.XXXXXX" 2>/dev/null)" || {
+    emit error "reason=mktemp_failed file=${IDENTITY_FILE}"
+    exit 0
+}
+cat > "$TMP_FILE" <<EOF
+# Written by jasper-identity-reconcile — do not edit (rewritten every run).
+# Effective network identity; consumed by jasper.http_security (management
+# allowlist), /state.resilience.identity, and jasper-doctor.
+JASPER_IDENTITY_OS_HOSTNAME=${OS_HOSTNAME}
+JASPER_IDENTITY_AVAHI_HOSTNAME=${AVAHI_HOSTNAME}
+JASPER_IDENTITY_CONFIGURED_HOSTNAME=${CONFIGURED_HOSTNAME}
+JASPER_IDENTITY_AVAHI_AVAILABLE=${AVAHI_AVAILABLE}
+JASPER_IDENTITY_COLLISION=${COLLISION}
+JASPER_IDENTITY_DRIFT=${DRIFT}
+JASPER_IDENTITY_CHECKED_AT=${CHECKED_AT}
+EOF
+chmod 0644 "$TMP_FILE"
+if ! mv -f "$TMP_FILE" "$IDENTITY_FILE"; then
+    rm -f "$TMP_FILE"
+    emit error "reason=rename_failed file=${IDENTITY_FILE}"
+    exit 0
+fi
+
+log "os=${OS_HOSTNAME} avahi=${AVAHI_HOSTNAME} configured=${CONFIGURED_HOSTNAME} collision=${COLLISION} drift=${DRIFT}"
+
+if [[ "$COLLISION" == "1" ]]; then
+    # Loud: another device on the LAN owns our name. The allowlist
+    # keeps the renamed UI reachable (it reads the file we just
+    # wrote); the household still needs to pick a unique name.
+    emit collision "os=${OS_HOSTNAME} avahi=${AVAHI_HOSTNAME}"
+elif [[ "$DRIFT" == "1" ]]; then
+    emit drift "configured=${CONFIGURED_HOSTNAME} avahi=${AVAHI_HOSTNAME}"
+else
+    emit steady "hostname=${AVAHI_HOSTNAME}"
+fi
+exit 0

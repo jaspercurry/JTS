@@ -289,3 +289,55 @@ def check_correction_latest_bundle() -> CheckResult:
             summary + "; last completed measurement used no calibrated mic",
         )
     return CheckResult("latest correction bundle", "ok", summary)
+
+
+@doctor_check(order=29.5, group="correction")
+def check_correction_cert_hostname() -> CheckResult:
+    """The /correction/ TLS cert's SAN must cover the name the LAN
+    actually resolves for this speaker.
+
+    install.sh issues the leaf cert for JASPER_HOSTNAME at deploy time;
+    a later hostname change (operator rename, Avahi collision rename)
+    leaves the SAN stale, and the one HTTPS wizard greets the household
+    with a browser warning. The reconciler-observed effective name
+    comes from /var/lib/jasper/identity.env; the fix is a redeploy
+    (which regenerates the leaf cert) after converging the name. Skips
+    when the cert or identity snapshot isn't present (dev checkout,
+    pre-first-run)."""
+    import subprocess
+
+    from ... import identity_state
+
+    label = "correction cert ↔ hostname"
+    cert_path = Path("/etc/nginx/ssl/jts.local.crt")
+    if not cert_path.is_file():
+        return CheckResult(label, "ok", "cert not installed (skipped)")
+    snap = identity_state.snapshot()
+    if snap.get("status") == "absent":
+        return CheckResult(label, "ok", "identity snapshot absent (skipped)")
+    effective = snap.get("avahi_hostname", "")
+    if not effective:
+        return CheckResult(label, "ok", "no effective hostname recorded (skipped)")
+    try:
+        proc = subprocess.run(
+            ["openssl", "x509", "-in", str(cert_path), "-noout",
+             "-ext", "subjectAltName"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return CheckResult(label, "warn", f"could not read cert SAN: {e}")
+    if proc.returncode != 0:
+        return CheckResult(
+            label, "warn",
+            f"openssl exited {proc.returncode} reading {cert_path}",
+        )
+    san = proc.stdout.lower()
+    if effective.lower() in san:
+        return CheckResult(label, "ok", f"SAN covers {effective}")
+    return CheckResult(
+        label, "warn",
+        f"cert SAN does not include the advertised name {effective} — "
+        "https://" + effective + "/correction/ will show a browser "
+        "warning. Redeploy (bash scripts/deploy-to-pi.sh) to regenerate "
+        "the leaf cert after converging the hostname.",
+    )

@@ -636,6 +636,15 @@ reference. Currently:
   flow, documented failure modes (notably the post-firmware-flash
   ALSA mute trap), diagnostic cookbook. Start here for any
   mic-side investigation.
+- [`HANDOFF-identity.md`](docs/HANDOFF-identity.md) — Speaker
+  identity: the three loosely-coupled names (OS hostname, Avahi's
+  effective post-collision name, `JASPER_HOSTNAME`), the identity
+  reconciler + `/var/lib/jasper/identity.env`, how the management
+  allowlist survives an mDNS collision rename without locking the
+  household out, the doctor/`/state` surfaces, and the supported
+  rename flow (`scripts/rename-speaker.sh`). Read before touching
+  `jasper/http_security.py`, hostname handling, or multi-speaker
+  setups.
 - [`HANDOFF-resilience.md`](docs/HANDOFF-resilience.md) — The
   resilience ladder: Tiers 1–3 (sd_notify per-daemon watchdog +
   shairport supervisor), Stage 1 memory-pressure prevention
