@@ -267,7 +267,7 @@ from .grouping import (
     check_grouping,
     check_grouping_channel_pick,
     check_grouping_leader_pipe,
-    check_grouping_tts_interim,
+    check_grouping_tts_lane,
     check_grouping_rate_adjust,
 )
 from . import satellites as satellites
@@ -471,7 +471,7 @@ __all__ = [
     "check_grouping",
     "check_grouping_channel_pick",
     "check_grouping_leader_pipe",
-    "check_grouping_tts_interim",
+    "check_grouping_tts_lane",
     "check_grouping_rate_adjust",
     "check_dial_heartbeat",
     "_PROBE_REF_PASS_THRESHOLD",

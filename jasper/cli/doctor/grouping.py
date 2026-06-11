@@ -264,25 +264,83 @@ def check_grouping_channel_pick() -> CheckResult:
 
 
 @doctor_check(order=75.6, group="grouping")
-def check_grouping_tts_interim() -> CheckResult:
-    """KNOWN GAP while bonded (Increment 5 PR-1 interim): assistant voice
-    rides the synced stream — delayed by the sync buffer and audible on
-    ALL bonded speakers — because TTS still mixes in fanin (pre-stream).
-    Increment 5 PR-2 (the outputd TTS mixer) moves every member's own TTS
-    to its own final output and removes this check. A standing warn while
-    bonded is deliberate: a known degradation must stay visible, not
-    normalized (the no-silent-failure rule)."""
-    from ...multiroom.config import is_active_member, load_config
+def check_grouping_tts_lane() -> CheckResult:
+    """A bonded member's assistant TTS must route to its OWN outputd
+    (member-local, instant), not ride the synced stream (delayed by the
+    sync buffer + audible on every bonded speaker — the retired
+    Increment 5 PR-1 interim behavior). The reconciler wires this with
+    TWO env files that must agree: grouping-voice.env points jasper-voice
+    at outputd's TTS socket, and grouping-outputd.env arms outputd's TTS
+    server on that socket. Drift between them is the worst shape — voice
+    writing to a socket nobody serves makes the assistant SILENT, which
+    the no-silent-failure rule says must be visible here.
 
-    label = "grouping: TTS interim"
+    (Replaces ``check_grouping_tts_interim``, the standing bonded warn
+    that existed while TTS still mixed in fanin pre-stream — Increment 5
+    PR-2 closed that gap.)"""
+    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.reconcile import (
+        OUTPUTD_GROUPING_ENV_FILE,
+        OUTPUTD_TTS_SOCKET,
+        OUTPUTD_TTS_SOCKET_ENV,
+        VOICE_GROUPING_ENV_FILE,
+        VOICE_TTS_SOCKET_ENV,
+    )
+
+    label = "grouping: TTS lane"
     cfg = load_config()
+
+    voice_path = Path(VOICE_GROUPING_ENV_FILE)
+    voice_env: dict[str, str] = {}
+    if voice_path.exists():
+        try:
+            voice_env = _parse_env_file(voice_path.read_text())
+        except OSError as e:
+            return CheckResult(label, "warn", f"could not read {voice_path}: {e}")
+    voice_socket = voice_env.get(VOICE_TTS_SOCKET_ENV, "")
+
     if not is_active_member(cfg):
+        # Solo must NOT carry a stale outputd override: outputd's TTS
+        # server is only armed while bonded, so a leftover pointer would
+        # have voice writing to a socket nobody serves — silent assistant.
+        if voice_socket:
+            return CheckResult(
+                label, "warn",
+                f"solo but {VOICE_GROUPING_ENV_FILE} still points "
+                f"{VOICE_TTS_SOCKET_ENV} at {voice_socket} — assistant "
+                "voice targets an un-armed socket; run "
+                "jasper-grouping-reconcile",
+            )
         return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
+
+    outputd_env: dict[str, str] = {}
+    outputd_path = Path(OUTPUTD_GROUPING_ENV_FILE)
+    if outputd_path.exists():
+        try:
+            outputd_env = _parse_env_file(outputd_path.read_text())
+        except OSError as e:
+            return CheckResult(label, "warn", f"could not read {outputd_path}: {e}")
+    lane_armed = bool(outputd_env.get(OUTPUTD_TTS_SOCKET_ENV))
+
+    if voice_socket == OUTPUTD_TTS_SOCKET and not lane_armed:
+        return CheckResult(
+            label, "warn",
+            f"bonded: voice targets {OUTPUTD_TTS_SOCKET} but "
+            f"{OUTPUTD_GROUPING_ENV_FILE} does not arm "
+            f"{OUTPUTD_TTS_SOCKET_ENV} — assistant voice is BROKEN "
+            "(writing to a socket nobody serves); run "
+            "jasper-grouping-reconcile",
+        )
+    if voice_socket != OUTPUTD_TTS_SOCKET:
+        return CheckResult(
+            label, "warn",
+            f"bonded but {VOICE_GROUPING_ENV_FILE} does not point "
+            f"{VOICE_TTS_SOCKET_ENV} at {OUTPUTD_TTS_SOCKET} — assistant "
+            f"voice rides the synced stream (delayed ~{cfg.buffer_ms} ms, "
+            "plays on all bonded speakers); run jasper-grouping-reconcile",
+        )
     return CheckResult(
-        label, "warn",
-        f"bonded: assistant voice is delayed ~{cfg.buffer_ms} ms by the sync "
-        "buffer and plays on all bonded speakers (TTS rides the stream until "
-        "Increment 5 PR-2 lands the outputd TTS mixer)",
+        label, "ok", f"member-local TTS wired ({OUTPUTD_TTS_SOCKET})",
     )
 
 

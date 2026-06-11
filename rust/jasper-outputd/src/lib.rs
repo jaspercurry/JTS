@@ -4,9 +4,12 @@
 //! `docs/HANDOFF-speaker-output-reference.md`: production audio is already
 //! mixed and processed before outputd, then outputd writes the final
 //! electrical samples to the selected sink and publishes bounded monitor/
-//! reference taps. Assistant/TTS ingress is owned by `jasper-fanin`; the
-//! older outputd TTS IPC path has been retired. The outputd systemd unit
-//! enables the ALSA transport.
+//! reference taps. SOLO assistant/TTS ingress is owned by `jasper-fanin`
+//! (pre-CamillaDSP). On a BONDED multiroom member, outputd itself serves
+//! the TTS socket (`tts` module — fanin's wire-protocol twin) so the
+//! member's own assistant voice mixes locally, post-round-trip, instead of
+//! riding the synced stream; see HANDOFF-multiroom.md Increment 5 PR-2.
+//! The outputd systemd unit enables the ALSA transport.
 
 pub mod alsa_backend;
 pub mod config;
