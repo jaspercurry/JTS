@@ -368,6 +368,50 @@ def test_migrate_openai_noise_reduction_preserves_non_default_override(tmp_path)
     )
 
 
+def test_migrate_tts_outputd_socket_old_default_to_fanin(tmp_path):
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir()
+    jasper_env = env_dir / "jasper.env"
+    jasper_env.write_text(
+        "BEFORE=1\n"
+        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
+        "AFTER=1\n",
+        encoding="utf-8",
+    )
+
+    result = _run_install_helper(
+        "migrate_tts_outputd_socket_default",
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert jasper_env.read_text(encoding="utf-8") == (
+        "BEFORE=1\n"
+        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock\n"
+        "AFTER=1\n"
+    )
+
+
+def test_migrate_tts_outputd_socket_preserves_custom_override(tmp_path):
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir()
+    jasper_env = env_dir / "jasper.env"
+    jasper_env.write_text(
+        "JASPER_TTS_OUTPUTD_SOCKET=/tmp/custom-tts.sock\n",
+        encoding="utf-8",
+    )
+
+    result = _run_install_helper(
+        "migrate_tts_outputd_socket_default",
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert jasper_env.read_text(encoding="utf-8") == (
+        "JASPER_TTS_OUTPUTD_SOCKET=/tmp/custom-tts.sock\n"
+    )
+
+
 def test_model_downloads_are_bounded_and_split_by_runtime_need():
     """Model fetches should use the shared bounded helper. Required
     openWakeWord runtime assets and the active stock fallback fail the

@@ -174,6 +174,24 @@ migrate_openai_noise_reduction_default() {
     fi
 }
 
+# Migrate the first outputd-cutover TTS socket default to the current
+# fan-in-owned TTS socket. Existing installs that still carry the old
+# /run/jasper-outputd/tts.sock value shadow jasper-voice.service's
+# packaged Environment= line and make voice restart-loop, because
+# outputd no longer owns a TTS IPC socket.
+migrate_tts_outputd_socket_default() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    [[ -f "${jasper_env}" ]] || return 0
+    if grep -qE '^JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts\.sock$' "${jasper_env}"; then
+        sed -i.bak \
+            's|^JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts\.sock$|JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock|' \
+            "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+        chmod 0640 "${jasper_env}"
+        echo "  migrate_tts_outputd_socket_default: set JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"
+    fi
+}
+
 # Migrate stale transit env vars from /etc/jasper/jasper.env into the
 # wizard-owned /var/lib/jasper/transit.env. The wizard at /transit
 # owns every transit env variable; operators who paste those into

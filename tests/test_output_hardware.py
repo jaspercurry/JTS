@@ -8,8 +8,10 @@ import jasper.output_hardware as output_hardware
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    HIFIBERRY_DAC8X_DEVICE_ID,
     HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
     OutputCardFact,
+    OutputHardwareState,
     classify_output_cards,
     dual_apple_runtime_mapping,
     parse_aplay_listing,
@@ -92,6 +94,65 @@ def test_probe_system_cards_uses_usb_device_path_as_stable_path(
     assert card.stable_path == str(usb_device.resolve())
     assert "card5" not in card.stable_path
     assert card.usb_path == "1-2"
+
+
+def test_probe_system_cards_classifies_non_usb_hifiberry_from_proc_cards(
+    tmp_path: Path,
+) -> None:
+    sys_class = tmp_path / "sys" / "class" / "sound"
+    proc_asound = tmp_path / "proc" / "asound"
+    card_dir = tmp_path / "sys" / "devices" / "platform" / "soc" / "sound" / "card2"
+    sys_class.mkdir(parents=True)
+    proc_asound.mkdir(parents=True)
+    card_dir.mkdir(parents=True)
+    (sys_class / "card2").symlink_to(card_dir)
+    proc_card = proc_asound / "card2"
+    proc_card.mkdir()
+    (proc_card / "id").write_text("sndrpihifiberry", encoding="utf-8")
+    (proc_card / "pcm0p").mkdir()
+    (proc_asound / "cards").write_text(
+        " 2 [sndrpihifiberry]: RPi-simple - snd_rpi_hifiberry_dac8x\n"
+        "                      snd_rpi_hifiberry_dac8x\n",
+        encoding="utf-8",
+    )
+
+    (card,) = probe_system_cards(
+        sys_class_sound=sys_class,
+        proc_asound=proc_asound,
+    )
+    state = classify_output_cards([card])
+
+    assert card.device_id == HIFIBERRY_DAC8X_DEVICE_ID
+    assert state.profile_id == HIFIBERRY_DAC8X_DEVICE_ID
+    assert state.status == "ready"
+    assert state.physical_output_count == 8
+
+
+def test_output_hardware_state_from_mapping_preserves_zero_apple_dac_count() -> None:
+    state = OutputHardwareState.from_mapping(
+        {
+            "artifact_schema_version": 1,
+            "kind": "jts_output_hardware_state",
+            "profile_id": HIFIBERRY_DAC8X_DEVICE_ID,
+            "profile_label": "HiFiBerry DAC8x",
+            "status": "ready",
+            "physical_output_count": 8,
+            "apple_dac_count": 0,
+            "child_devices": [
+                {
+                    "card_id": "sndrpihifiberry",
+                    "device_id": HIFIBERRY_DAC8X_DEVICE_ID,
+                    "label": "snd_rpi_hifiberry_dac8x",
+                    "has_playback": True,
+                    "pcm": "hw:CARD=sndrpihifiberry,DEV=0",
+                },
+            ],
+            "issues": [],
+        }
+    )
+
+    assert state.apple_dac_count == 0
+    assert len(state.child_devices) == 1
 
 
 def test_classify_single_apple_as_valid_two_channel_profile() -> None:
