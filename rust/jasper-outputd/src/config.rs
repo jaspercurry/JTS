@@ -274,10 +274,13 @@ impl Config {
         }
 
         // Multi-room round-trip lane (Increment 3). Fail-loud contract
-        // guards: the lane is a SECOND content-source policy, so it never
-        // combines with the rate-match bridge (two policies would fight
-        // over what the DAC plays), and it is a single-DAC member path —
-        // the dual-Apple lab sink has no member role.
+        // guards, written as ALLOWLISTS (not denylists): DacContentSource
+        // is structurally stereo (2-channel periods — see period_bytes),
+        // and it IS the content source, so the lane is valid ONLY on the
+        // single-ALSA Direct content path. Rejecting "anything that is not
+        // the supported mode" — rather than "the one unsupported mode that
+        // exists today" — makes a future sink / bridge mode fail CLOSED
+        // (loud at startup) instead of silently mis-sizing content_buf.
         let dac_content_fifo = env_optional("JASPER_OUTPUTD_DAC_CONTENT_FIFO");
         let dac_content_channel = ChannelPick::parse(&env_str(
             "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL",
@@ -285,18 +288,19 @@ impl Config {
         ))
         .map_err(anyhow::Error::msg)?;
         if dac_content_fifo.is_some() {
-            if content_bridge_mode == ContentBridgeMode::RateMatch {
+            if content_bridge_mode != ContentBridgeMode::Direct {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO and \
-                     JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match are mutually \
-                     exclusive content-source policies"
+                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires \
+                     JASPER_OUTPUTD_CONTENT_BRIDGE=direct (the round-trip lane \
+                     is itself the content source; it cannot share the DAC \
+                     with another content-source policy)"
                 );
             }
-            if sink_mode == SinkMode::DualApple {
+            if sink_mode != SinkMode::SingleAlsa {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires the single-ALSA \
-                     sink (JASPER_OUTPUTD_SINK=dual_apple is not a grouping \
-                     member path)"
+                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires \
+                     JASPER_OUTPUTD_SINK=single_alsa (the round-trip lane is a \
+                     stereo single-DAC grouping-member path)"
                 );
             }
         }
@@ -576,8 +580,11 @@ mod tests {
         );
     }
 
+    // The next two tests pin the ALLOWLIST intent: the guard rejects any
+    // non-supported mode by NAMING the one required mode, so the contract
+    // fails closed when a future sink / bridge variant lands.
     #[test]
-    fn dac_content_lane_rejects_rate_match_bridge_combination() {
+    fn dac_content_lane_rejects_non_direct_bridge() {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
@@ -585,13 +592,17 @@ mod tests {
             ],
             || {
                 let err = Config::from_env().unwrap_err();
-                assert!(err.to_string().contains("mutually exclusive"));
+                // Allowlist phrasing: names the REQUIRED mode, not the rejected one.
+                assert!(
+                    err.to_string().contains("CONTENT_BRIDGE=direct"),
+                    "guard should name the required mode, got: {err}"
+                );
             },
         );
     }
 
     #[test]
-    fn dac_content_lane_rejects_dual_apple_sink() {
+    fn dac_content_lane_rejects_non_single_alsa_sink() {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
@@ -601,7 +612,10 @@ mod tests {
             ],
             || {
                 let err = Config::from_env().unwrap_err();
-                assert!(err.to_string().contains("not a grouping member path"));
+                assert!(
+                    err.to_string().contains("SINK=single_alsa"),
+                    "guard should name the required mode, got: {err}"
+                );
             },
         );
     }
