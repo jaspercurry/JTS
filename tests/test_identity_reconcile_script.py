@@ -160,3 +160,14 @@ def test_last_jasper_hostname_assignment_wins(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert identity["JASPER_IDENTITY_CONFIGURED_HOSTNAME"] == "jts3.local"
     assert identity["JASPER_IDENTITY_DRIFT"] == "0"
+
+
+def test_install_enables_timer_with_now():
+    """`systemctl enable` alone arms a timer for the NEXT boot but
+    leaves it inactive until then — the enable-vs-start trap that
+    shipped 2026-06-11 (timer dead until reboot; caught by hardware
+    validation, with the doctor's snapshot-staleness warn as backstop).
+    The installer must use `enable --now` so the 5-min re-check loop is
+    live from the first deploy."""
+    install_sh = (ROOT / "deploy" / "install.sh").read_text()
+    assert "systemctl enable --now jasper-identity-reconcile.timer" in install_sh
