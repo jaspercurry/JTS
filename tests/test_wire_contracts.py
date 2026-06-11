@@ -201,15 +201,14 @@ def test_control_socket_paths_agree_across_processes():
 # guard fails if an exception becomes dead (no longer mentioned) or
 # becomes live (Rust starts reading it) — remove the entry then.
 ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
-    # Staged multi-room producer: commit 9102e13 removed outputd's
-    # snapfifo reader; the reconciler still writes the (inert) env for
-    # change detection. SSOT: jasper/multiroom/reconcile.py
-    # SNAPFIFO_PRODUCER_WIRED — drop this exception in the same change
-    # that re-wires the producer.
-    "JASPER_OUTPUTD_SNAPFIFO_PATH": "staged inv-2 producer (unwired)",
+    # (The former JASPER_OUTPUTD_SNAPFIFO_PATH exception was dropped
+    # 2026-06-11: the outputd-as-producer machinery was REMOVED — the
+    # canonical design feeds the snapserver pipe from the leader's
+    # CamillaDSP, so the env is no longer written anywhere. See
+    # HANDOFF-multiroom.md §2 "Stranded by this design".)
     # Staged inv-2 leader content lane (LEADER_CONTENT_LANE_GATE in
     # jasper/multiroom/reconcile.py); the outputd reader is a future
-    # Rust PR.
+    # Rust PR (Increment 3).
     "JASPER_OUTPUTD_DAC_CONTENT_FIFO": "staged inv-2 member DAC lane",
     # Python-consumer-side override of where mux CONNECTS; fanin's own
     # bind path is a hardcoded Rust constant (see

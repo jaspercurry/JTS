@@ -28,20 +28,21 @@
 ## 0. Implementation status (2026-06-04)
 
 Off-by-default plumbing has landed — the config / state / reconcile layer,
-the `/rooms` bond-forming UI (§8), the channel-split weave, and inv-5. But
-audio does **NOT** yet flow to followers, and an enabled leader says so
-(it reads `degraded`). The outputd snapfifo producer (`SnapfifoSink`) is
-**built but UNWIRED**: commit 9102e13 moved assistant/TTS ingress into
-`jasper-fanin` and removed outputd's snapfifo reader, so `Config::from_env`
-no longer reads `JASPER_OUTPUTD_SNAPFIFO_PATH` and the reconciler's tap env
-is inert. The honest state is gated on the single source of truth
-[`reconcile.SNAPFIFO_PRODUCER_WIRED`](../jasper/multiroom/reconcile.py)
-(`False` today) — `/state`, `jasper-doctor`, and this doc all read it, so they
-cannot drift into a false "streaming." **That producer machinery (`SnapfifoSink` +
-the flag + the outputd-tap reconciler limb) is now superseded BY DESIGN, not merely
-unwired:** the canonical design has *CamillaDSP*, not outputd, feed the pipe, so it's
-a cleanup item — the flag will never flip `True`, it gets removed (§2 "Stranded by
-this design"). The **target architecture is now settled** — see
+the `/rooms` bond-forming UI (§8), the channel-split weave, inv-5, and the
+Increment 2 per-channel correction axis. But audio does **NOT** yet flow to
+followers, and an enabled leader says so (it reads `degraded` with "leader
+streaming is not built yet — no music producer feeds the snapfifo").
+**The retired outputd-as-producer machinery was REMOVED on 2026-06-11** (the
+"Stranded by this design" cleanup, §2): `SnapfifoSink` (`snapfifo.rs`)
+deleted, the `SNAPFIFO_PRODUCER_WIRED` mirror flag + `effective_leader_tap_path`
+removed, the reconciler's outputd tap-env write + try-restart limb removed
+(the reconciler no longer touches outputd at all), the unit's optional
+tap `EnvironmentFile=` dropped, and the doctor's `check_grouping_tts_separation`
+folded into `check_grouping`'s runtime detail. The canonical producer is the
+leader's *CamillaDSP* feeding the pipe (Increments 3–5); when it lands, its
+liveness signal comes from the producing daemon's OWN status surface (daemon
+truth, never a Python mirror of env intent — the removed flag's lesson). The
+**target architecture is settled** — see
 **"Canonical signal flow"** (§2, decided 2026-06-10, research-grounded): the leader
 bakes per-channel correction in its ONE CamillaDSP, streams a single stereo stream,
 and DUMB receivers channel-drop; voice stays leader-local (no second CamillaDSP —
@@ -118,44 +119,23 @@ canonical chain itself (Increments 2a/2b), so `SNAPFIFO_PRODUCER_WIRED` stays
   composes with `output_topology.SpeakerChannel`'s intra-speaker driver
   axis because channel-select is interface-preserving 2→2 (§4). Pure /
   hardware-free; live weaving into the active config is P1.3.
-- **`jasper-outputd` snapfifo producer (BUILT BUT UNWIRED)** —
-  `rust/jasper-outputd/src/snapfifo.rs` (`SnapfifoSink`). **Its integration was
-  REMOVED by commit 9102e13** when TTS ingress moved into `jasper-fanin`: the
-  `main.rs` writer thread and the `Config::from_env` gate are gone, so nothing
-  below is live today (`SNAPFIFO_PRODUCER_WIRED = False`). The struct + its
-  `cargo test` remain; this describes how it behaves WHEN inv-2 re-wires it
-  against a fanin music-only stream. As designed, a grouping LEADER adds a
-  **separate** reference-fanout consumer (`"snapfifo"`, distinct from the AEC
-  `"external-aec"` consumer — §2 inv. 4) and hands each post-clamp stereo
-  packet to a bounded, **drop-on-full** channel; a dedicated writer thread
-  does the blocking whole-packet FIFO write, so the DAC loop is never
-  back-pressured (§2 inv. 1). `SnapfifoSink` opens the FIFO lazily +
-  non-blocking (a not-yet-reading snapserver is a harmless drop, not an
-  error) and reopens on a broken pipe. Was gated on
-  `JASPER_OUTPUTD_SNAPFIFO_PATH` (the gate `Config::from_env` no longer reads);
-  **unset on a solo speaker / follower → no consumer, no thread, zero cost** is
-  the property to restore when it re-wires. Tested hardware-free with a real
-  temp FIFO (`cargo test`).
-- **Producer activation (reconciler tap wiring — INERT until re-wire)** —
-  `reconcile.py` still sets `JASPER_OUTPUTD_SNAPFIFO_PATH` for a valid
-  **leader** and clears it otherwise (kept for change-detection), but the value
-  is **inert**: outputd's `Config::from_env` no longer reads it (9102e13), so
-  the tap moves no audio today. It is written via a reconciler-owned env file
-  (`/run/jasper-grouping/outputd-snapfifo.env`) that `jasper-outputd.service`
-  layers in as an OPTIONAL `EnvironmentFile=`. Pure `desired_snapfifo_path`
-  (leader → `SNAPFIFO`, else `""`) + `outputd_tap_action` (the change-gate);
-  the I/O **`systemctl try-restart`s outputd ONLY on an actual leader
-  transition** (never a steady-state reconcile) — load-bearing, since
-  outputd has `StartLimitAction=reboot`. `try-restart` (not `restart`) so a
-  boot reconcile never force-starts / couples to outputd. What remains:
-  the §2 inv. 2 leader content lane — now **BLOCKED on TTS separation**: TTS is
-  pre-mixed into the streamed program by `jasper-fanin`, so a naive DAC-source
-  swap would drop the leader's assistant audio, and the (unwired, dead-code)
-  `SnapfifoSink` would leak the leader's TTS to followers IF re-wired (see the
-  §2 "inv-2 realization" BLOCKER). The corrected design: a fanin music-only
-  output (the inv-3 fix AND the music half of inv-2); the assistant stays
-  leader-local (§6), only music is synced. Guarded today by a `SnapfifoSink`
-  WARNING + `jasper-doctor check_grouping_tts_separation`. **SHIPPED:** inv. 5
+- **`jasper-outputd` snapfifo producer — REMOVED (2026-06-11 cleanup).**
+  History: `SnapfifoSink` (`snapfifo.rs`) shipped as the outputd-as-producer
+  tap, commit 9102e13 unwired it when TTS ingress moved into `jasper-fanin`
+  (re-wiring would have leaked the leader's TTS to followers, inv-3), and the
+  canonical design then moved the producer to the leader's *CamillaDSP*
+  feeding the pipe — so the struct, its tests, the reconciler's inert tap-env
+  write + `outputd_tap_action` change-gate + try-restart limb, the unit's
+  optional tap `EnvironmentFile=`, the `SNAPFIFO_PRODUCER_WIRED` mirror flag,
+  and `jasper-doctor check_grouping_tts_separation` were all deleted together
+  ("Stranded by this design", §2). Two design properties to CARRY FORWARD into
+  the Increment 3–5 producer: **off = zero cost** (no consumer / thread / open
+  on a solo speaker) and **never back-pressure the DAC loop** (bounded,
+  drop-on-full). The reconciler now manages ONLY the snap units — it never
+  touches outputd (which has `StartLimitAction=reboot`; not restarting it on
+  bond changes is a resilience win the cleanup banked). A bonded leader's
+  runtime health honestly reads `degraded` ("no music producer feeds the
+  snapfifo") until the real producer lands. **SHIPPED:** inv. 5
   (`rate_adjust=false`) and the channel-split live weave (§2/§4).
 - **`jasper-fanin` music-only output (Increment 1 — the inv-2 producer half +
   the standalone inv-3 leak fix)** — `JASPER_FANIN_MUSIC_OUTPUT_PCM` (off by
@@ -634,16 +614,23 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   curve is wrong there) — ship those *flat* + a "calibrate me" nudge until this
   lands; do NOT apply the wrong-room curve.
 
-**Stranded by this design — retire / repurpose, NOT "pending wiring":** the shipped
-`SnapfifoSink`, `SNAPFIFO_PRODUCER_WIRED`, and the outputd-tap reconciler limb all
-assume **outputd** feeds the pipe; the canonical design has **CamillaDSP** feed it,
-so that machinery is dead **by design** (not "not yet wired" — §0 corrected to say
-so). `channel_split.py` / `member_config.py` / their doctor checks were built for the
-superseded "each member self-corrects post-snapclient" model; under dumb receivers
-they are repurposed to "leader bakes both channels" (the Increment 2 `target_channels`
-work) or removed. snd-aloop substreams are **already exhausted (8/8)**, so the
-round-trip uses a raw FIFO (which is why Increment 3 adds the outputd FIFO reader),
-not a new loopback.
+**Stranded by this design — cleanup EXECUTED 2026-06-11 for the dead half:**
+`SnapfifoSink` (deleted), `SNAPFIFO_PRODUCER_WIRED` + `effective_leader_tap_path`
+(removed), the outputd-tap reconciler limb + the unit's optional tap
+`EnvironmentFile=` (removed — the reconciler no longer touches outputd at all),
+and the doctor's `check_grouping_tts_separation` (folded into `check_grouping`'s
+runtime detail) all assumed **outputd** feeds the pipe; the canonical design has
+**CamillaDSP** feed it, so that machinery was dead **by design** and is now gone.
+**Deliberately KEPT (live until Increment 5):** `channel_split.py` /
+`member_config.py` / their doctor checks — they serve the currently-SHIPPED
+member model (the live `/sound` apply path weaves the split for an active
+member); Increment 5 replaces that wiring with the leader-bake axis (the
+`room_peqs_right` × `channel_split` mutual-exclusion guard polices the
+migration). Also kept: `desired_snapfifo_path` (the pure "this role needs a
+producer" predicate driving the runtime-health derive) and snapserver's pipe
+source (the consumer side is unchanged; only the producer moves). snd-aloop
+substreams are **already exhausted (8/8)**, so the round-trip uses a raw FIFO
+(which is why Increment 3 adds the outputd FIFO reader), not a new loopback.
 
 **2.1 / sub — the channel-count call (resolve before 2.1, which §1 scopes into V1):**
 a single *stereo* stream cannot carry L+R+sub. The sync-correct answer is a **single
@@ -1535,7 +1522,27 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (post-merge cross-agent review fixes on PR #587 — a Codex
+Last verified: 2026-06-11 (STRANDED-MACHINERY CLEANUP executed + the master_gain
+docstring precision fix. Removed the retired outputd-as-producer machinery the
+canonical design left dead: `SnapfifoSink` (`snapfifo.rs` deleted),
+`SNAPFIFO_PRODUCER_WIRED` + `effective_leader_tap_path`, the reconciler's
+outputd tap-env write / change-gate / try-restart limb (the reconciler now
+manages ONLY the snap units — it never touches the reboot-on-fail outputd), the
+unit's optional tap `EnvironmentFile=`, the now-dead
+`JASPER_OUTPUTD_SNAPFIFO_PATH` wire-contract exception, and
+`check_grouping_tts_separation` (its operator story folded into
+`check_grouping`'s runtime detail: a bonded leader reads degraded with "leader
+streaming is not built yet — no music producer feeds the snapfifo"; the async
+check keeps order=79 — the registry contract is async-sorts-LAST, not
+contiguous integers (resilience's fractional 78.5 insert proves it), so the
+gap at 78 is intentional). Deliberately KEPT:
+`channel_split.py` / `member_config.py` / their doctor checks (live in the
+shipped member model until Increment 5 — the mutual-exclusion guard polices
+that migration), `desired_snapfifo_path` (the pure needs-a-producer predicate),
+and snapserver's pipe source (the consumer side is unchanged). §0 + §2 updated
+to past-tense; tests updated (tap-machinery tests removed, leader-degraded +
+production-default coverage added). Earlier 2026-06-11 (post-merge cross-agent
+review fixes on PR #587 — a Codex
 staff review found four real issues, all fixed: (1) the new shared
 `emit_master_gain_pipeline` docstring mis-stated the Ducker mechanism (it
 attenuates CamillaDSP's `main_volume`, NOT the `master_gain` mixer — master_gain

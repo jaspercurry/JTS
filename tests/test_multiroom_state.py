@@ -253,9 +253,10 @@ def test_runtime_leader_ok_when_both_active_and_tapping(tmp_path):
     assert rt["units"][SNAPCLIENT] == {"expected": "start", "actual": "active"}
 
 
-def test_runtime_leader_degraded_when_units_up_but_not_tapping(tmp_path):
-    """The staff-review gap: snap units active but outputd not tapping the
-    snapfifo (empty leader_tap_path) => degraded, snapserver reads an empty
+def test_runtime_leader_degraded_when_units_up_but_no_producer(tmp_path):
+    """The staff-review gap, generalized: snap units active but nothing
+    feeds the snapfifo (empty leader_tap_path — TODAY's production state,
+    no music producer is built) => degraded, snapserver reads an empty
     FIFO and followers get silence while /state would otherwise look ok."""
     rt = derive_grouping_runtime(
         _cfg(tmp_path, _leader_env()),
@@ -263,7 +264,8 @@ def test_runtime_leader_degraded_when_units_up_but_not_tapping(tmp_path):
         leader_tap_path="",
     )
     assert rt["health"] == "degraded"
-    assert "not tapping" in rt["detail"]
+    assert "not built" in rt["detail"]
+    assert "no music producer" in rt["detail"]
     assert "empty FIFO" in rt["detail"]
     # Units themselves are still reported active — the failure is the dry
     # stream source, not a down unit.
@@ -278,12 +280,12 @@ def test_runtime_leader_default_tap_is_empty_so_degraded(tmp_path):
         {SNAPSERVER: "active", SNAPCLIENT: "active"},
     )
     assert rt["health"] == "degraded"
-    assert "not tapping" in rt["detail"]
+    assert "no music producer" in rt["detail"]
 
 
 def test_runtime_leader_down_unit_wins_over_tap_check(tmp_path):
     """A down snap unit is the more fundamental failure; its detail wins
-    over the tap check even when the tap is also empty."""
+    over the producer-feed check even when the feed is also empty."""
     rt = derive_grouping_runtime(
         _cfg(tmp_path, _leader_env()),
         {SNAPSERVER: "failed", SNAPCLIENT: "active"},
@@ -291,7 +293,7 @@ def test_runtime_leader_down_unit_wins_over_tap_check(tmp_path):
     )
     assert rt["health"] == "degraded"
     assert "leader degraded" in rt["detail"]
-    assert "not tapping" not in rt["detail"]
+    assert "no music producer" not in rt["detail"]
 
 
 def test_runtime_leader_degraded_when_server_down(tmp_path):
@@ -316,15 +318,15 @@ def test_runtime_follower_ok_when_client_active(tmp_path):
 
 
 def test_runtime_follower_tap_argument_is_ignored(tmp_path):
-    """A follower has no tap concept: an empty leader_tap_path must NOT
-    push it to degraded (the tap check is leader-only)."""
+    """A follower has no producer concept: an empty leader_tap_path must
+    NOT push it to degraded (the producer-feed check is leader-only)."""
     rt = derive_grouping_runtime(
         _cfg(tmp_path, _follower_env()),
         {SNAPSERVER: "inactive", SNAPCLIENT: "active"},
         leader_tap_path="",
     )
     assert rt["health"] == "ok"
-    assert "not tapping" not in rt["detail"]
+    assert "no music producer" not in rt["detail"]
 
 
 def test_runtime_follower_degraded_surfaces_unreachable_leader(tmp_path):
@@ -377,8 +379,8 @@ def test_enabled_valid_probes_the_planned_units(tmp_path):
 
 
 def test_leader_tap_set_is_ok(tmp_path):
-    """Valid leader, units active, outputd tapping => ok. The tap is read
-    through the injected reader, never a real file."""
+    """Valid leader, units active, a LIVE producer feed (the future
+    Increment 3–5 shape, exercised via the injected reader) => ok."""
     tapped = []
 
     def tap_spy():
@@ -392,19 +394,31 @@ def test_leader_tap_set_is_ok(tmp_path):
     )
     assert state["runtime"]["health"] == "ok"
     assert "leader streaming" in state["runtime"]["detail"]
-    assert tapped == [True]  # leader DOES probe the tap
+    assert tapped == [True]  # leader DOES consult the injected feed reader
 
 
 def test_leader_tap_empty_is_degraded(tmp_path):
-    """Valid leader, units active, outputd NOT tapping (empty tap) =>
-    degraded with the "not tapping" reason — the staff-review gap."""
+    """Valid leader, units active, nothing feeding the FIFO => degraded
+    with the no-producer reason — the staff-review gap, generalized."""
     state = read_grouping_state(
         _write_env(tmp_path, _leader_env()),
         unit_state_reader=_stub,
         tap_path_reader=lambda: "",
     )
     assert state["runtime"]["health"] == "degraded"
-    assert "not tapping" in state["runtime"]["detail"]
+    assert "no music producer" in state["runtime"]["detail"]
+
+
+def test_leader_without_injected_reader_is_degraded(tmp_path):
+    """PRODUCTION default: no tap_path_reader is wired (no producer is
+    built — HANDOFF-multiroom.md §2, Increments 3–5), so a bonded leader
+    honestly reads degraded, never a false-green "streaming"."""
+    state = read_grouping_state(
+        _write_env(tmp_path, _leader_env()),
+        unit_state_reader=_stub,
+    )
+    assert state["runtime"]["health"] == "degraded"
+    assert "no music producer" in state["runtime"]["detail"]
 
 
 def test_follower_does_not_probe_the_tap(tmp_path):

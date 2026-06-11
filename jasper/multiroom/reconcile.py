@@ -75,37 +75,19 @@ ARGS_FILE = ARGS_DIR + "/snapcast-args.env"
 _SERVER_ARGS_KEY = "JASPER_SNAPSERVER_ARGS"
 _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 
-# ---------- outputd snapfifo tap (leader only) ----------
-
-# The final-output owner. A grouping LEADER's outputd taps the post-clamp
-# program into SNAPFIFO; we activate that tap by writing its env file and
-# try-restarting outputd. This is the ONE non-grouping unit the reconciler
-# touches (mirrors jasper-aec-reconcile restarting jasper-voice on a mic
-# change) — and outputd has StartLimitAction=reboot, so touching it only on
-# an actual change (never a steady-state reconcile) is load-bearing.
-OUTPUTD_UNIT = "jasper-outputd.service"
-
-# Reconciler-owned env file that the jasper-outputd unit layers in via an
-# OPTIONAL EnvironmentFile=. Carries just the tap path. Absent / empty =>
-# outputd does not tap (a solo speaker / every follower). Lives in the
-# reconciler's /run dir (tmpfs, recreated each boot), like the snap args.
-OUTPUTD_SNAPFIFO_ENV_FILE = ARGS_DIR + "/outputd-snapfifo.env"
-_OUTPUTD_SNAPFIFO_KEY = "JASPER_OUTPUTD_SNAPFIFO_PATH"
-
-# Is the jasper-outputd snapfifo PRODUCER actually wired? Currently False:
-# commit 9102e13 (TTS into jasper-fanin) removed outputd's snapfifo reader, so
-# `Config::from_env` does not read JASPER_OUTPUTD_SNAPFIFO_PATH and a leader
-# does NOT stream to followers — see rust/jasper-outputd/src/snapfifo.rs and
-# HANDOFF-multiroom.md §2 "inv-2 realization". This is the SINGLE SOURCE OF
-# TRUTH for that fact: the reconciler still writes the (inert) env for
-# change-detection, but observability (the /state + doctor leader-tap signal,
-# via :func:`effective_leader_tap_path`) and the doctor's TTS-separation check
-# read THIS flag so they report reality (a leader reads `degraded`, not a
-# false-green "streaming"). Flip to True in the SAME change that re-wires the
-# producer with a fanin music-only stream (inv-2); every surface then goes live
-# consistently and the TTS-separation warning auto-resolves. No other code
-# should encode "is the producer wired".
-SNAPFIFO_PRODUCER_WIRED = False
+# ---------- the leader's music producer (NOT BUILT — Increments 3–5) ----------
+#
+# The retired outputd-as-producer machinery (`SnapfifoSink`, the
+# reconciler-written outputd tap env + try-restart limb, and the
+# `SNAPFIFO_PRODUCER_WIRED` mirror flag) was REMOVED 2026-06-11: the canonical
+# design has the leader's CamillaDSP feed the snapserver pipe (music-only,
+# post-correction), not outputd — see HANDOFF-multiroom.md §2 "Canonical
+# signal flow" + "Stranded by this design". Until Increment 5 lands that
+# producer, a bonded leader's runtime health honestly reads `degraded`
+# (derive_grouping_runtime receives leader_tap_path="" — there is nothing to
+# tap). When the producer lands, the liveness signal must come from the
+# producing daemon's OWN status surface (daemon truth), never a Python mirror
+# of env intent — the lesson the removed flag existed to patch.
 
 # ---------- inv-2 leader content lane (DESIGN — see HANDOFF §2 "inv-2 ----------
 #            realization"). NOT YET ACTIVE.
@@ -319,30 +301,21 @@ def _join_args(argv: list[str]) -> str:
 
 
 def desired_snapfifo_path(cfg: GroupingConfig) -> str:
-    """The FIFO path jasper-outputd should tap into, or "" when it must NOT
-    tap. PURE.
+    """The FIFO path the leader's MUSIC PRODUCER must feed, or "" when this
+    role needs no producer. PURE.
 
-    Only a VALID LEADER taps: it hosts the synchronised stream, so its
-    outputd copies the post-clamp program into the snapserver FIFO. A
-    follower *consumes* the stream (no tap); a solo / off / invalid config
-    does not stream at all. The path is the reconciler's canonical
-    ``SNAPFIFO`` (in snapserver's RuntimeDirectory).
+    Only a VALID LEADER hosts the synchronised stream, so only a leader
+    needs a producer feeding the snapserver FIFO. A follower *consumes*
+    the stream; a solo / off / invalid config does not stream at all. The
+    path is the reconciler's canonical ``SNAPFIFO`` (in snapserver's
+    RuntimeDirectory). The producer itself is NOT BUILT yet (the canonical
+    design feeds it from the leader's CamillaDSP — HANDOFF-multiroom.md §2,
+    Increments 3–5); today this predicate drives only the runtime-health
+    derive ("a leader without a producer is degraded").
     """
     if cfg.enabled and cfg.error is None and cfg.role == "leader":
         return SNAPFIFO
     return ""
-
-
-def outputd_tap_action(desired: str, current: str) -> bool:
-    """PURE: does outputd's tap env need (re)writing + a try-restart?
-
-    True ONLY when the desired tap differs from what outputd currently has.
-    The final-output owner is touched solely on an actual leader transition
-    — never on a steady-state reconcile, which would blip audio and, on
-    repeat, trip outputd's ``StartLimitAction=reboot``. This change-gate is
-    the safety property; ``_reconcile_outputd_tap`` is a thin wrapper.
-    """
-    return desired != current
 
 
 # ============================================================
@@ -416,123 +389,6 @@ def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
     return True
 
 
-def _read_outputd_snapfifo_path(path: str = OUTPUTD_SNAPFIFO_ENV_FILE) -> str:
-    """Read outputd's CURRENT tap path from its reconciler-owned env file.
-
-    Total: a missing / unreadable / empty file (or one without the key)
-    resolves to "" — "outputd is not tapping". Used by
-    ``_reconcile_outputd_tap`` for change-detection so the final-output
-    owner is touched only on an actual transition.
-    """
-    try:
-        with open(path) as f:
-            for raw in f:
-                line = raw.strip()
-                if line.startswith(_OUTPUTD_SNAPFIFO_KEY + "="):
-                    return line.split("=", 1)[1].strip()
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.warning(
-            "event=multiroom.reconcile.outputd_tap_read_failed path=%s error=%s",
-            path, e,
-        )
-    return ""
-
-
-def effective_leader_tap_path(path: str = OUTPUTD_SNAPFIFO_ENV_FILE) -> str:
-    """The leader's EFFECTIVE outputd tap — what outputd is ACTUALLY tapping,
-    for the /state + doctor runtime-health surfaces (NOT the reconciler's
-    change-detection, which needs the raw file via
-    :func:`_read_outputd_snapfifo_path`).
-
-    Returns "" whenever :data:`SNAPFIFO_PRODUCER_WIRED` is False, because
-    outputd does not read the reconciler-written env yet (the producer is
-    unwired). Reporting the written env as a live tap is the false-green this
-    guards against: a leader would read "streaming" while followers get
-    silence. Once the producer is wired (flip the flag), this returns the real
-    env and the surfaces go live. Total — never raises."""
-    if not SNAPFIFO_PRODUCER_WIRED:
-        return ""
-    return _read_outputd_snapfifo_path(path)
-
-
-def _write_outputd_snapfifo_env(
-    desired: str, *, path: str = OUTPUTD_SNAPFIFO_ENV_FILE,
-) -> bool:
-    """Atomically write outputd's tap env file. Fail-soft (never raises).
-
-    ``desired`` non-empty => one ``JASPER_OUTPUTD_SNAPFIFO_PATH=<path>``
-    line. ``desired`` empty (not a leader) => an EMPTY file, so a restarted
-    outputd has NO tap key set. Same atomic tempfile+rename + 0644 mode as
-    ``_write_args_file`` (delegated to ``atomic_io.atomic_write_text``);
-    carries no secrets.
-    """
-    body = f"{_OUTPUTD_SNAPFIFO_KEY}={desired}\n" if desired else ""
-    try:
-        atomic_io.atomic_write_text(path, body, mode=0o644)
-    except OSError as e:
-        logger.warning(
-            "event=multiroom.reconcile.outputd_tap_write_failed path=%s error=%s",
-            path, e,
-        )
-        return False
-    return True
-
-
-def _try_restart(unit: str) -> int:
-    """``systemctl try-restart <unit>`` — restart ONLY if already active.
-
-    ``try-restart`` (not ``restart``) is deliberate: at boot the unit reads
-    the freshly-written env on its own start, so we must NOT force-start it
-    from here (which would also couple outputd's boot to this optional
-    reconciler). Returns 0 on success, 1 on failure.
-    """
-    try:
-        subprocess.run(
-            ["systemctl", "try-restart", unit],
-            check=True, capture_output=True, text=True,
-        )
-        return 0
-    except FileNotFoundError:
-        logger.error(
-            "event=multiroom.reconcile.outputd_tap_restart_failed unit=%s "
-            "error=systemctl_not_found", unit,
-        )
-        return 1
-    except subprocess.CalledProcessError as e:
-        logger.error(
-            "event=multiroom.reconcile.outputd_tap_restart_failed unit=%s "
-            "rc=%d stderr=%s", unit, e.returncode, (e.stderr or "").strip(),
-        )
-        return 1
-
-
-def _reconcile_outputd_tap(cfg: GroupingConfig) -> int:
-    """Reconcile jasper-outputd's snapfifo tap to the grouping role.
-
-    Writes the tap env + try-restarts outputd ONLY on an actual change
-    (``outputd_tap_action``). Separate from the snap-unit plan: outputd is
-    always running, so it must not be touched on a steady-state reconcile.
-    Returns 0 ok, 1 on a write/restart failure.
-    """
-    desired = desired_snapfifo_path(cfg)
-    current = _read_outputd_snapfifo_path()
-    if not outputd_tap_action(desired, current):
-        return 0  # steady state — never touch the final-output owner
-    wrote = _write_outputd_snapfifo_env(desired)
-    logger.info(
-        "event=multiroom.reconcile.outputd_tap from=%r to=%r wrote=%s",
-        current, desired, wrote,
-    )
-    if not wrote:
-        # The env write failed (already logged). Restarting outputd now
-        # would blip the final-output owner for nothing — it would re-read
-        # the same stale env. Surface the failure (rc=1) instead of acting.
-        return 1
-    return _try_restart(OUTPUTD_UNIT)
-
-
 def main(argv: list[str] | None = None) -> int:
     """systemd ExecStart entrypoint for jasper-grouping-reconcile.service.
 
@@ -551,14 +407,15 @@ def main(argv: list[str] | None = None) -> int:
     when a producer should not run — so a started unit can never pick up
     stale args.
 
-    SCOPE: arg-application is now DONE. What is still pending is the
-    snapfifo PRODUCER (the P1.3 jasper-outputd reference consumer that
-    feeds the mixed program into ``SNAPFIFO``). Until that lands,
-    snapserver reads an EMPTY fifo: this increment fully CONFIGURES a
-    bond (a started snapserver reads the fifo with the right codec/buffer,
-    a started snapclient targets the right host/latency) but does NOT yet
-    make audio FLOW. Off-by-default means nothing starts these units until
-    a bond is configured via the wizard AND the P1.3 producer ships.
+    SCOPE: arg-application is DONE. What is still pending is the leader's
+    MUSIC PRODUCER (the canonical design feeds ``SNAPFIFO`` from the
+    leader's CamillaDSP — HANDOFF-multiroom.md §2, Increments 3–5; the
+    earlier outputd-as-producer machinery was removed 2026-06-11). Until
+    it lands, snapserver reads an EMPTY fifo: this reconciler fully
+    CONFIGURES a bond (a started snapserver reads the fifo with the right
+    codec/buffer, a started snapclient targets the right host/latency)
+    but audio does NOT yet flow, and the runtime health honestly reports
+    a bonded leader as degraded.
 
     `--reason` is a free-text trigger source (systemd / wizard / manual)
     echoed into the structured log for correlation, mirroring
@@ -593,11 +450,6 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     rc = _apply(decision)
-    # Reconcile outputd's snapfifo tap to the role (a valid leader taps;
-    # everyone else does not). Separate from the snap-unit plan above:
-    # outputd is always running, so this touches it ONLY on an actual leader
-    # transition (change-detected) — never a steady-state reconcile.
-    rc |= _reconcile_outputd_tap(cfg)
     logger.info("event=multiroom.reconcile.done rc=%d", rc)
     return rc
 

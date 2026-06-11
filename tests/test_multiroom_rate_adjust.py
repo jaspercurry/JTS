@@ -257,36 +257,9 @@ def test_camilla_block_field_shared_scanner():
     assert _camilla_block_field("devices:\n  codec: 'flac'  # x\n", "devices", "codec") == "flac"
 
 
-# ---------- jasper-doctor: TTS-separation blocker (inv-3) ----------
-#
-# The snapfifo producer is unwired (dead code) and would leak the leader's TTS
-# to followers if re-wired without a fanin music-only stream. This check is the
-# honest operator signal that a leader isn't actually streaming.
-
-
-def test_tts_separation_check_warns_for_active_leader(monkeypatch):
-    import jasper.multiroom.config as cfgmod
-    monkeypatch.setattr(
-        cfgmod, "load_config",
-        lambda *a, **k: _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
-    )
-    from jasper.cli.doctor.grouping import check_grouping_tts_separation
-    result = check_grouping_tts_separation()
-    assert result.status == "warn"
-    assert "TTS separation" in result.detail
-    assert "leak" in result.detail
-
-
-def test_tts_separation_check_skips_follower_solo_and_off(monkeypatch):
-    import jasper.multiroom.config as cfgmod
-    from jasper.cli.doctor.grouping import check_grouping_tts_separation
-    # solo
-    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: _cfg())
-    assert check_grouping_tts_separation().status == "ok"
-    # follower — the leak path is the LEADER's tap, not this speaker
-    monkeypatch.setattr(
-        cfgmod, "load_config",
-        lambda *a, **k: _cfg(enabled=True, role="follower", channel="right",
-                             bond_id="b", leader_addr="jts.local"),
-    )
-    assert check_grouping_tts_separation().status == "ok"
+# NOTE: the former check_grouping_tts_separation tests were REMOVED
+# 2026-06-11 with the check itself (the retired outputd-as-producer
+# machinery — see HANDOFF-multiroom.md §2 "Stranded by this design"). The
+# operator story it carried now lives in check_grouping's runtime detail,
+# covered by test_doctor.py::
+# test_check_grouping_leader_reads_degraded_until_producer_built.

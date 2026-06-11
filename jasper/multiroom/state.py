@@ -42,7 +42,6 @@ from typing import Any, Callable
 from .config import GROUPING_ENV_FILE, GroupingConfig, load_config
 from .reconcile import (
     desired_snapfifo_path,
-    effective_leader_tap_path,
     plan,
 )
 
@@ -98,13 +97,17 @@ def derive_grouping_runtime(
     :func:`jasper.multiroom.reconcile.plan`, so this never re-derives the
     leader/follower→units mapping — there is one definition of it.
 
-    ``leader_tap_path`` is the LEADER's CURRENT outputd snapfifo tap (the
-    value the reconciler wrote to ``OUTPUTD_SNAPFIFO_ENV_FILE``; "" means
-    "outputd is not tapping the stream"). It is INJECTED, never read here,
-    so this function stays pure — the I/O edge lives in
-    :func:`read_grouping_state` (and the doctor). It is only consulted for
-    a valid leader, the one role that taps; a follower / solo / invalid
-    config has no tap concept and the argument is ignored.
+    ``leader_tap_path`` is the LEADER's live music-producer feed path ("" =
+    "no producer is feeding the snapfifo"). It is INJECTED, never read
+    here, so this function stays pure. TODAY production always injects ""
+    — the producer is not built (the retired outputd-as-producer machinery
+    was removed; the canonical design feeds the pipe from the leader's
+    CamillaDSP, HANDOFF-multiroom.md §2 Increments 3–5) — so a bonded
+    leader honestly derives ``degraded``. When the producer lands, the
+    injected value must come from the producing daemon's OWN status
+    surface (daemon truth, never an env-intent mirror). Only consulted for
+    a valid leader; a follower / solo / invalid config has no producer
+    concept and the argument is ignored.
 
     ``health``:
       - ``off``      — grouping disabled (solo).
@@ -153,16 +156,17 @@ def derive_grouping_runtime(
         return {"health": "degraded", "detail": detail, "units": units}
 
     # Snap units are up. For a leader, the stream source must ALSO be live:
-    # if the role wants a tap (``desired_snapfifo_path``) but outputd is not
-    # tapping (``leader_tap_path`` empty), snapserver streams an empty FIFO
-    # and followers get silence while every unit reads "active". Surface
-    # that as degraded rather than a green-looking-but-dry bond.
+    # if the role needs a producer (``desired_snapfifo_path``) but nothing
+    # is feeding the FIFO (``leader_tap_path`` empty), snapserver streams an
+    # empty FIFO and followers get silence while every unit reads "active".
+    # Surface that as degraded rather than a green-looking-but-dry bond.
     if cfg.role == "leader" and desired_snapfifo_path(cfg) and not leader_tap_path:
         return {
             "health": "degraded",
             "detail": (
-                "leader configured but outputd is not tapping the stream "
-                "(snapserver will read an empty FIFO)"
+                "leader streaming is not built yet — no music producer "
+                "feeds the snapfifo (HANDOFF-multiroom.md §2, Increments "
+                "3–5); snapserver reads an empty FIFO"
             ),
             "units": units,
         }
@@ -202,19 +206,17 @@ def read_grouping_state(
     contract. The units are only probed for a valid bond (an INVALID
     bond's plan starts nothing, so there is nothing to probe).
 
-    For a VALID LEADER only, the outputd snapfifo tap is also read through
-    the thin I/O edge (:func:`jasper.multiroom.reconcile.effective_leader_tap_path`)
-    and injected into the pure derive, so a leader whose snapserver is
-    ``active`` but whose FIFO is dry (outputd not tapping) shows
-    ``degraded`` instead of a healthy-looking-but-silent bond. A
-    follower / solo / invalid config does zero extra work — no tap probe.
-    The tap reader honors ``SNAPFIFO_PRODUCER_WIRED`` — while the outputd
-    producer is unwired it returns "" (a leader reads ``degraded``, never a
-    false-green "streaming"); see that flag in ``reconcile``.
+    For a VALID LEADER, ``leader_tap_path`` is injected into the pure
+    derive. TODAY production always injects "" — no music producer exists
+    (HANDOFF-multiroom.md §2, Increments 3–5) — so a bonded leader
+    honestly shows ``degraded`` instead of a healthy-looking-but-silent
+    bond. When the producer lands, the injected value must come from the
+    producing daemon's OWN status surface (daemon truth, never an
+    env-intent mirror — the removed ``SNAPFIFO_PRODUCER_WIRED`` lesson).
 
     ``unit_state_reader`` and ``tap_path_reader`` are injectable for tests;
-    production uses :func:`read_unit_active_states` and
-    :func:`jasper.multiroom.reconcile.effective_leader_tap_path`.
+    production uses :func:`read_unit_active_states`, and ``tap_path_reader``
+    is unset (no producer to read).
     """
     cfg = load_config(path)
     snapshot: dict[str, Any] = {
@@ -233,10 +235,12 @@ def read_grouping_state(
         if cfg.error is None:
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])
-            # Only a valid leader taps — skip the I/O entirely otherwise.
-            if cfg.role == "leader":
-                tap_reader = tap_path_reader or effective_leader_tap_path
-                tap = tap_reader()
+            # Leader producer feed: no producer exists yet (Increments
+            # 3–5), so production injects "" and a bonded leader honestly
+            # derives degraded. Tests may inject a reader to exercise the
+            # future live-producer shape.
+            if cfg.role == "leader" and tap_path_reader is not None:
+                tap = tap_path_reader()
         snapshot["runtime"] = derive_grouping_runtime(
             cfg, states, leader_tap_path=tap
         )

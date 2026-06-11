@@ -17,11 +17,11 @@ pub mod ledger;
 pub mod loudness;
 pub mod mixer;
 pub mod reference;
-// ⚠️ DEAD CODE: `snapfifo` is unwired (no `main.rs`/`config.rs` reference).
-// Re-wiring it without a jasper-fanin music-only stream re-introduces the inv-3
-// TTS-to-followers leak — see the module-level warning in `snapfifo.rs` and the
-// BLOCKER in HANDOFF-multiroom.md §2.
-pub mod snapfifo;
+// NOTE: the former `snapfifo` module (`SnapfifoSink`, the outputd-as-producer
+// tap) was REMOVED 2026-06-11: the canonical multi-room design has CamillaDSP
+// feed the snapserver pipe, not outputd — see HANDOFF-multiroom.md §2
+// "Canonical signal flow" + "Stranded by this design". outputd's multi-room
+// role is the Increment 3 `dac_content` reader (self-reported on STATUS).
 pub mod state;
 pub mod types;
 
