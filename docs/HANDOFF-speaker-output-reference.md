@@ -220,6 +220,20 @@ What exists:
   path. The sinc table is precomputed at startup; steady state should
   be multiply/add work only, but Pi 5 CPU and xrun behavior still need
   hardware soak before enabling it outside the lab.
+- Multi-room round-trip content lane (OFF by default, inert until a
+  grouping bond activates it in Increment 5): when
+  `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is set, a grouping leader feeds its
+  DAC from that raw-PCM FIFO (the member round-trip written by a
+  localhost snapclient) instead of `outputd_content_capture`, picking
+  one channel of the shared stereo program via
+  `JASPER_OUTPUTD_DAC_CONTENT_CHANNEL` (`stereo`/`left`/`right`/`mono`).
+  It falls back to the direct `outputd_content_capture` read whenever
+  the FIFO starves, so the leader is never silenced (inv-B). Unset =
+  byte-identical to the direct path above. The reference still equals
+  what the DAC plays, so AEC is unaffected. Design + invariants live in
+  [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2; this doc owns only
+  the outputd knobs. Mutually exclusive with `rate_match` and the
+  dual-Apple sink (both fail loud at startup).
 - DAC output: `outputd_dac`, normally a direct hardware alias for the
   selected final-output card. Public/default installs use the Apple
   USB-C dongle; DAC8x-family lab installs use the enumerated

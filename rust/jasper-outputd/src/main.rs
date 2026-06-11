@@ -25,6 +25,7 @@ use jasper_outputd::alsa_backend::{
 use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
+use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::state::{OutputdState, StateServer};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -128,6 +129,18 @@ fn run_alsa(
             )?)
         }
     };
+    // Multi-room round-trip lane (Increment 3, HANDOFF-multiroom.md §2):
+    // when configured, the DAC is fed from the member-content FIFO with
+    // an inv-B fallback to the direct content read below. Lazy + non-
+    // blocking; None (solo) leaves this loop byte-identical to before.
+    let mut dac_content = config.dac_content_fifo.as_deref().map(|path| {
+        eprintln!(
+            "event=outputd.dac_content.enabled fifo={} channel={}",
+            path,
+            config.dac_content_channel.as_str(),
+        );
+        DacContentSource::new(path, config.dac_content_channel, config.period_frames)
+    });
     let zero_period = vec![0i16; period_samples];
     let prime_periods = prime_periods(
         backend.dac_negotiated.buffer_frames,
@@ -148,19 +161,57 @@ fn run_alsa(
     let watchdog_interval = watchdog_interval();
     let mut last_watchdog = Instant::now();
     let mut dac_delay_warning_logged = false;
+    let mut content_drain_warning_logged = false;
     let mut reference_sequence = 0u64;
 
     while !shutdown.load(Ordering::Relaxed) {
-        if let Some(bridge) = content_bridge.as_mut() {
-            read_content_bridge_period(
-                &mut backend,
-                bridge,
-                &mut content_read_buf,
-                &mut content_buf,
-            )?;
-            state.mark_content_bridge(bridge.metrics());
-        } else {
-            let _frames_read = backend.read_content_period(&mut content_buf)?;
+        let mut served_from_fifo = false;
+        if let Some(src) = dac_content.as_mut() {
+            served_from_fifo = src.try_fill_period(&mut content_buf);
+            state.mark_dac_content(src.metrics());
+            if served_from_fifo {
+                // The FIFO served this period — still DRAIN the direct
+                // content lane (bounded, non-blocking, discard) so an
+                // upstream writer to the loopback can never stall on a
+                // full ring while the round-trip is active. The drained
+                // data is intentionally discarded; an inv-B fallback
+                // period reads fresh direct content below.
+                //
+                // Best-effort: a hard error on this DISCARDED lane must
+                // NOT crash the daemon while the FIFO audio is healthy
+                // (inv-B — never silence the leader). Swallow it; if the
+                // lane is genuinely broken, the inv-B fallback read below
+                // surfaces it when we actually need the lane. Xruns are
+                // already recovered inside read_content_available.
+                for _ in 0..MAX_CONTENT_BRIDGE_DRAIN_READS {
+                    match backend.read_content_available(&mut content_read_buf) {
+                        Ok(ContentRead::Frames(frames)) if frames > 0 => {}
+                        Ok(_) => break,
+                        Err(e) => {
+                            if !content_drain_warning_logged {
+                                eprintln!(
+                                    "event=outputd.dac_content.drain_failed detail={e:#}"
+                                );
+                                content_drain_warning_logged = true;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if !served_from_fifo {
+            if let Some(bridge) = content_bridge.as_mut() {
+                read_content_bridge_period(
+                    &mut backend,
+                    bridge,
+                    &mut content_read_buf,
+                    &mut content_buf,
+                )?;
+                state.mark_content_bridge(bridge.metrics());
+            } else {
+                let _frames_read = backend.read_content_period(&mut content_buf)?;
+            }
         }
         backend.write_dac_period(&content_buf)?;
         let _dac_delay_frames = match backend.dac_delay_frames() {

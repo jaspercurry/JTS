@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 
+use crate::dac_content::ChannelPick;
 use crate::types::SAMPLE_RATE;
 
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
@@ -99,6 +100,17 @@ pub struct Config {
     pub reference_udp_target: Option<String>,
     pub stream_id: u64,
     pub control_socket_path: Option<String>,
+    /// OPTIONAL multi-room round-trip lane (Increment 3,
+    /// HANDOFF-multiroom.md §2): a raw-PCM FIFO a grouping member's
+    /// snapclient writes (`--player file:`). When set, the DAC loop is
+    /// fed from it via `dac_content::DacContentSource`, falling back to
+    /// the direct content PCM whenever the FIFO starves (inv-B — never
+    /// silence). `None` (default — solo) is byte-identical to today.
+    pub dac_content_fifo: Option<String>,
+    /// Which channel of the shared stereo program this speaker plays
+    /// from the round-trip lane (channel-split vocabulary; default
+    /// stereo = passthrough). Only meaningful with `dac_content_fifo`.
+    pub dac_content_channel: ChannelPick,
 }
 
 impl Config {
@@ -261,6 +273,34 @@ impl Config {
             );
         }
 
+        // Multi-room round-trip lane (Increment 3). Fail-loud contract
+        // guards: the lane is a SECOND content-source policy, so it never
+        // combines with the rate-match bridge (two policies would fight
+        // over what the DAC plays), and it is a single-DAC member path —
+        // the dual-Apple lab sink has no member role.
+        let dac_content_fifo = env_optional("JASPER_OUTPUTD_DAC_CONTENT_FIFO");
+        let dac_content_channel = ChannelPick::parse(&env_str(
+            "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL",
+            "stereo",
+        ))
+        .map_err(anyhow::Error::msg)?;
+        if dac_content_fifo.is_some() {
+            if content_bridge_mode == ContentBridgeMode::RateMatch {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO and \
+                     JASPER_OUTPUTD_CONTENT_BRIDGE=rate_match are mutually \
+                     exclusive content-source policies"
+                );
+            }
+            if sink_mode == SinkMode::DualApple {
+                anyhow::bail!(
+                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires the single-ALSA \
+                     sink (JASPER_OUTPUTD_SINK=dual_apple is not a grouping \
+                     member path)"
+                );
+            }
+        }
+
         Ok(Self {
             backend,
             sink_mode,
@@ -284,6 +324,8 @@ impl Config {
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
             stream_id: env_u64("JASPER_OUTPUTD_STREAM_ID", DEFAULT_STREAM_ID)?,
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
+            dac_content_fifo,
+            dac_content_channel,
         })
     }
 }
@@ -494,7 +536,74 @@ mod tests {
             assert!(cfg.chip_ref_pcm.is_none());
             assert!(cfg.reference_udp_target.is_none());
             assert!(cfg.control_socket_path.is_none());
+            // Multi-room round-trip lane is OFF by default (solo contract).
+            assert!(cfg.dac_content_fifo.is_none());
+            assert_eq!(cfg.dac_content_channel, ChannelPick::Stereo);
         });
+    }
+
+    #[test]
+    fn parses_dac_content_lane_with_channel_pick() {
+        with_env(
+            &[
+                (
+                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO",
+                    Some("/run/jasper-grouping/member-content.fifo"),
+                ),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(
+                    cfg.dac_content_fifo.as_deref(),
+                    Some("/run/jasper-grouping/member-content.fifo")
+                );
+                assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
+            },
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_dac_content_channel() {
+        with_env(
+            &[("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("both"))],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err
+                    .to_string()
+                    .contains("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"));
+            },
+        );
+    }
+
+    #[test]
+    fn dac_content_lane_rejects_rate_match_bridge_combination() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err.to_string().contains("mutually exclusive"));
+            },
+        );
+    }
+
+    #[test]
+    fn dac_content_lane_rejects_dual_apple_sink() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+            ],
+            || {
+                let err = Config::from_env().unwrap_err();
+                assert!(err.to_string().contains("not a grouping member path"));
+            },
+        );
     }
 
     #[test]

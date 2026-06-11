@@ -590,14 +590,25 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   extractor stays deliberately blind to `*_r*` filters (the leader apply path
   composes from STORED profiles — Increment 5). No callers pass the new params yet;
   the reconciler wires them in Increment 5.
-- **Increment 3 — outputd second content-input (FIFO reader), off by default**
-  (pure Rust). The DAC loop optionally reads a `dac_content` FIFO (the round-trip
-  lane), unit-tested with a temp FIFO like `snapfifo.rs`. No activation until the
-  reconciler wires it. (`OUTPUTD_DAC_CONTENT_FIFO` is already a reserved constant.)
-  **Spec note (from the SNAPFIFO_PRODUCER_WIRED lesson):** outputd's STATUS
-  surface must SELF-REPORT the lane (`dac_content: {enabled, fifo, starved…}`) so
-  `/state`/doctor read the daemon's own truth — never a Python mirror of env
-  intent (the false-green class the retired flag existed to patch).
+- **Increment 3 — outputd second content-input (FIFO reader) — ✅ BUILT
+  (2026-06-11; off by default, zero solo cost).**
+  `rust/jasper-outputd/src/dac_content.rs` (`DacContentSource`), gated on
+  `JASPER_OUTPUTD_DAC_CONTENT_FIFO` (+ `…_CHANNEL`, the channel-split vocabulary —
+  needed because snapclient's `--player file` has no ALSA hop for the member's
+  `ttable` drop; left/right duplicate, mono = clip-safe average, unknown values
+  fail loud). What shipped: lazy non-blocking FIFO reader (inv-1 — the DAC write
+  stays the sole pacer; a missing FIFO is one cheap retry per period), the
+  **inv-B fallback mechanics** (starts in fallback; the FIFO must demonstrate
+  health for ~210 ms before serving; starvation falls back the SAME period —
+  zero silence; damped recovery so the DAC never flaps between two time-offset
+  copies), bounded staging (~170 ms cap, oldest-period overflow drops), a
+  bounded drain of the direct lane while the FIFO serves (an upstream loopback
+  writer can never stall on a full ring), and the **self-reported STATUS
+  `dac_content` block** (enabled/fifo/channel/serving_fifo/periods/transitions/
+  recoveries/staged/overflow/failures — daemon truth per the
+  SNAPFIFO_PRODUCER_WIRED lesson). Fail-loud config guards: rejects combination
+  with the rate-match content bridge and with the dual-Apple sink. No reconciler
+  wiring yet — the lane activates in Increment 5.
 - **Increment 4 — acoustic-sync confirmation** on a throwaway pipe→snapserver→two
   snapclients path. The §8 spike proved resources + the software proxy; the
   *acoustic* L/R alignment is still unproven. Validates the engine before any daemon
@@ -1552,7 +1563,24 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (status + roadmap reconciliation after the #591 cleanup
+Last verified: 2026-06-11 (INCREMENT 3 BUILT — the outputd `dac_content` FIFO
+reader, `rust/jasper-outputd/src/dac_content.rs`. The round-trip lane's receiving
+end: lazy non-blocking FIFO source gated on `JASPER_OUTPUTD_DAC_CONTENT_FIFO` +
+`…_CHANNEL` (channel-split vocabulary; snapclient's `--player file` has no ALSA
+hop for the member's ttable drop, so the source does the pick — left/right
+duplicate, mono clip-safe average, fail-loud on unknown). inv-B mechanics:
+starts-in-fallback until the FIFO demonstrates ~210 ms of health, same-period
+fallback on starvation (zero silence), damped recovery (no flapping between
+time-offset copies); bounded staging (~170 ms, oldest-drop overflow); the direct
+lane is drained (bounded, discard) while the FIFO serves so an upstream loopback
+writer can never stall. STATUS gains the self-reported `dac_content` block
+(daemon truth). Config fail-louds: rejects rate-match-bridge and dual-Apple
+combinations. The now-Rust-read `JASPER_OUTPUTD_DAC_CONTENT_FIFO` wire-contract
+exception was dropped per the bidirectional guard. Pure split inside (assembler +
+policy unit-tested; 4 real-temp-FIFO end-to-end tests incl. a clocked
+never-blocks assertion). Zero solo cost (None ⇒ the loop is byte-identical); no
+reconciler wiring — the lane activates in Increment 5. Earlier 2026-06-11
+(status + roadmap reconciliation after the #591 cleanup
 merge. The TOP BANNER was stale on three counts and is rewritten to current
 truth: Increments 1–2 are SHIPPED (it predated them), the P0 spike RAN on
 hardware and passed its resource/software-sync gates (it said "not run"), and
