@@ -176,11 +176,34 @@ def emit_sound_config(
     is woven in for a bonded member that plays a single channel — the
     ``channel_select`` mixer + (for a sub) the crossover. ``None`` or a
     passthrough (``stereo``) split leaves the config untouched, so a solo
-    speaker is byte-for-byte unchanged."""
+    speaker is byte-for-byte unchanged.
+
+    ``room_peqs_right`` and ``channel_split`` are MUTUALLY EXCLUSIVE —
+    they belong to different topology models (leader-bake pre-stream
+    correction vs. the member-side channel-selection weave) and
+    combining them raises ``ValueError`` (see the guard below)."""
 
     # Loud-output safety: refuse to emit a config whose master fader
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
+
+    # Contract guard (fail LOUD at the API boundary, before Increment 5
+    # wires real callers): room_peqs_right is the multi-room LEADER-BAKE
+    # axis — a pre-stream config carrying a different per-seat correction
+    # per channel — while channel_split is the member-side
+    # channel-selection weave from the superseded self-correct model.
+    # Combined, channel_select would run AHEAD of the per-channel filters,
+    # duplicating one program channel onto both outputs and then
+    # "correcting" the duplicate with the other seat's chain — nonsense
+    # audio. No topology ever combines them (even a passthrough split:
+    # the axes come from different call paths, so both-present indicates
+    # a wiring bug). See HANDOFF-multiroom.md §2.
+    if room_peqs_right is not None and channel_split is not None:
+        raise ValueError(
+            "room_peqs_right (leader-bake per-channel correction) and "
+            "channel_split (member channel-selection weave) are mutually "
+            "exclusive topology axes — see HANDOFF-multiroom.md §2"
+        )
     filter_yaml, chain_names, chain_names_right, trim_db = _emit_filter_definitions(
         profile,
         room_peqs or [],
@@ -364,11 +387,11 @@ def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
         re.fullmatch(r"(?:room_)?peq_r\d+", name) for name, _ in blocks
     ):
         logger.warning(
-            "extract_room_peqs: leader-bake right-channel (*_r*) filters "
-            "present in config text and NOT extracted — re-emitting from "
-            "this extraction alone would drop the follower's correction; "
-            "compose from stored profiles instead "
-            "(HANDOFF-multiroom.md §2, Increment 5)"
+            "event=sound.extract_room_peqs result=right_channel_ignored "
+            "detail=leader-bake right-channel (*_r*) filters present and "
+            "NOT extracted; re-emitting from this extraction alone would "
+            "drop the follower's correction — compose from stored "
+            "profiles (HANDOFF-multiroom.md §2, Increment 5)"
         )
 
     peqs: list[PeqFilter] = []
