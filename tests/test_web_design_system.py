@@ -30,6 +30,11 @@ def _focus_ring_css_sources() -> list[Path]:
     ]
     paths.extend(sorted((ROOT / "deploy" / "assets").rglob("*.css")))
     paths.extend(sorted((ROOT / "deploy").glob("*.html")))
+    # Wizard modules carry per-page CSS (the `page_css` argument to
+    # canonical_page()) as inline strings — AGENTS.md's "do not add
+    # page-level focus outlines" promise covers those too, not just the
+    # shared sheet and the static per-page .css files.
+    paths.extend(sorted((ROOT / "jasper" / "web").glob("*.py")))
     return list(dict.fromkeys(paths))
 
 
