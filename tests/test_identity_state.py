@@ -94,3 +94,17 @@ def test_identity_path_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_IDENTITY_FILE", str(f))
     assert identity_state.identity_path() == str(f)
     assert identity_state.snapshot()["status"] == "ok"
+
+
+def test_state_resilience_wires_identity_snapshot():
+    """Pin the /state wiring: jasper-control's resilience block must
+    surface identity_state.snapshot() (the dashboard/doctor consumers
+    key off /state.resilience.identity). Static source pin, same style
+    as the control-client route-table guard."""
+    from pathlib import Path
+
+    server_src = (
+        Path(__file__).resolve().parents[1]
+        / "jasper" / "control" / "server.py"
+    ).read_text()
+    assert '"identity": identity_state.snapshot()' in server_src

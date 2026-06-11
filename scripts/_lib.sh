@@ -166,6 +166,13 @@ verify_or_record_peer_id() {
     recorded="$(grep -E '^PI_PEER_ID=' "$env_file" 2>/dev/null \
         | tail -n1 | cut -d= -f2- | tr -d '[:space:]')"
     if [[ -z "$recorded" ]]; then
+        # A hand-edited .env.local may lack a trailing newline; a bare
+        # append would glue PI_PEER_ID onto the last line and silently
+        # corrupt it (e.g. `PI_USER=piPI_PEER_ID=…`). `tail -c 1` via
+        # $() is empty exactly when the last byte is a newline.
+        if [[ -s "$env_file" && -n "$(tail -c 1 "$env_file")" ]]; then
+            printf '\n' >> "$env_file"
+        fi
         printf 'PI_PEER_ID=%s\n' "$remote_id" >> "$env_file"
         echo "recorded"
         return 0

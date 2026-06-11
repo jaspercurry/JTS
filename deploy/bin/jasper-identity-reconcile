@@ -61,9 +61,11 @@ Snapshot the speaker's effective network identity into
   - JASPER_HOSTNAME from /etc/jasper/jasper.env (the intended identity)
   - a collision flag (Avahi renamed us away from the OS hostname)
 
-Emits structured `event=identity_reconcile.<outcome>` lines on stderr.
-Read-only apart from the identity file; never mutates jasper.env or
-restarts anything.
+Emits structured `event=identity_reconcile.<outcome>` lines on stderr
+ON TRANSITIONS (the recorded identity changed since the last run) and
+always under `--reason manual` — steady-state timer ticks are silent
+so the journal records changes, not heartbeats. Read-only apart from
+the identity file; never mutates jasper.env or restarts anything.
 EOF
 }
 
@@ -138,7 +140,8 @@ AVAHI_AVAILABLE=1
 if [[ -z "$AVAHI_HOSTNAME" ]]; then
     AVAHI_AVAILABLE=0
     AVAHI_HOSTNAME="${OS_HOSTNAME}.local"
-    emit avahi_unavailable "fallback=${AVAHI_HOSTNAME}"
+    # Emission happens below, gated on change — a dev box with no
+    # avahi must not write this line to the journal every 5 minutes.
 fi
 
 # The *intended* identity. grep, don't source: jasper.env is large,
@@ -149,7 +152,18 @@ CONFIGURED_HOSTNAME=""
 if [[ -f "$JASPER_ENV_FILE" ]]; then
     CONFIGURED_HOSTNAME="$(grep -E '^JASPER_HOSTNAME=' "$JASPER_ENV_FILE" \
         2>/dev/null | tail -n1 | cut -d= -f2- || true)"
-    CONFIGURED_HOSTNAME="$(normalize "${CONFIGURED_HOSTNAME%$'\r'}")"
+    CONFIGURED_HOSTNAME="${CONFIGURED_HOSTNAME%$'\r'}"
+    # Strip one matched pair of surrounding quotes, mirroring
+    # jasper.env_load.parse_env_text — a hand-edited
+    # JASPER_HOSTNAME="x.local" must not read as a different hostname
+    # than the Python side sees (it would flag drift forever).
+    case "$CONFIGURED_HOSTNAME" in
+        \"*\") CONFIGURED_HOSTNAME="${CONFIGURED_HOSTNAME#\"}"
+               CONFIGURED_HOSTNAME="${CONFIGURED_HOSTNAME%\"}" ;;
+        \'*\') CONFIGURED_HOSTNAME="${CONFIGURED_HOSTNAME#\'}"
+               CONFIGURED_HOSTNAME="${CONFIGURED_HOSTNAME%\'}" ;;
+    esac
+    CONFIGURED_HOSTNAME="$(normalize "$CONFIGURED_HOSTNAME")"
 fi
 # Unset means "code default": jts.local. Record the resolved value so
 # consumers never re-derive the default.
@@ -172,29 +186,52 @@ fi
 
 CHECKED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# Atomic write: tmp + mv in the same directory, mode 0644 (no secrets —
-# hostnames are broadcast on the LAN by definition).
+# The durable identity lines, WITHOUT the timestamp — built once so the
+# change detection below compares exactly what gets persisted.
+IDENTITY_BODY="JASPER_IDENTITY_OS_HOSTNAME=${OS_HOSTNAME}
+JASPER_IDENTITY_AVAHI_HOSTNAME=${AVAHI_HOSTNAME}
+JASPER_IDENTITY_CONFIGURED_HOSTNAME=${CONFIGURED_HOSTNAME}
+JASPER_IDENTITY_AVAHI_AVAILABLE=${AVAHI_AVAILABLE}
+JASPER_IDENTITY_COLLISION=${COLLISION}
+JASPER_IDENTITY_DRIFT=${DRIFT}"
+
+# Journal discipline: this runs every 5 minutes forever, so in steady
+# state it must be SILENT — events record transitions; the persistent
+# state lives in the file, /state.resilience.identity, and the doctor.
+# CHANGED also covers the first run (no previous file). Manual runs
+# (`--reason manual`) always log: an operator invoking the script by
+# hand is asking for the answer.
+CHANGED=1
+if [[ -f "$IDENTITY_FILE" ]]; then
+    PREV_BODY="$(grep -E '^JASPER_IDENTITY_' "$IDENTITY_FILE" 2>/dev/null \
+        | grep -v '^JASPER_IDENTITY_CHECKED_AT=' || true)"
+    [[ "$PREV_BODY" == "$IDENTITY_BODY" ]] && CHANGED=0
+fi
+VERBOSE=$CHANGED
+[[ "$REASON" == "manual" ]] && VERBOSE=1
+
+# Atomic write: fixed-name tmp + mv in the same directory, mode 0644
+# (no secrets — hostnames are broadcast on the LAN by definition). The
+# fixed `.tmp` name self-overwrites, so a run killed mid-write can
+# never accumulate litter the way unique mktemp names would; the timer
+# serializes runs, so there is no concurrent writer to race.
 IDENTITY_DIR="$(dirname "$IDENTITY_FILE")"
 if ! mkdir -p "$IDENTITY_DIR" 2>/dev/null; then
     emit error "reason=mkdir_failed dir=${IDENTITY_DIR}"
     exit 0
 fi
-TMP_FILE="$(mktemp "${IDENTITY_FILE}.XXXXXX" 2>/dev/null)" || {
-    emit error "reason=mktemp_failed file=${IDENTITY_FILE}"
-    exit 0
-}
-cat > "$TMP_FILE" <<EOF
+TMP_FILE="${IDENTITY_FILE}.tmp"
+if ! cat > "$TMP_FILE" 2>/dev/null <<EOF
 # Written by jasper-identity-reconcile — do not edit (rewritten every run).
 # Effective network identity; consumed by jasper.http_security (management
 # allowlist), /state.resilience.identity, and jasper-doctor.
-JASPER_IDENTITY_OS_HOSTNAME=${OS_HOSTNAME}
-JASPER_IDENTITY_AVAHI_HOSTNAME=${AVAHI_HOSTNAME}
-JASPER_IDENTITY_CONFIGURED_HOSTNAME=${CONFIGURED_HOSTNAME}
-JASPER_IDENTITY_AVAHI_AVAILABLE=${AVAHI_AVAILABLE}
-JASPER_IDENTITY_COLLISION=${COLLISION}
-JASPER_IDENTITY_DRIFT=${DRIFT}
+${IDENTITY_BODY}
 JASPER_IDENTITY_CHECKED_AT=${CHECKED_AT}
 EOF
+then
+    emit error "reason=tmp_write_failed file=${TMP_FILE}"
+    exit 0
+fi
 chmod 0644 "$TMP_FILE"
 if ! mv -f "$TMP_FILE" "$IDENTITY_FILE"; then
     rm -f "$TMP_FILE"
@@ -202,8 +239,14 @@ if ! mv -f "$TMP_FILE" "$IDENTITY_FILE"; then
     exit 0
 fi
 
-log "os=${OS_HOSTNAME} avahi=${AVAHI_HOSTNAME} configured=${CONFIGURED_HOSTNAME} collision=${COLLISION} drift=${DRIFT}"
+if [[ "$VERBOSE" != "1" ]]; then
+    exit 0
+fi
 
+log "os=${OS_HOSTNAME} avahi=${AVAHI_HOSTNAME} configured=${CONFIGURED_HOSTNAME} collision=${COLLISION} drift=${DRIFT}"
+if [[ "$AVAHI_AVAILABLE" == "0" ]]; then
+    emit avahi_unavailable "fallback=${AVAHI_HOSTNAME}"
+fi
 if [[ "$COLLISION" == "1" ]]; then
     # Loud: another device on the LAN owns our name. The allowlist
     # keeps the renamed UI reachable (it reads the file we just

@@ -181,6 +181,14 @@ EOF
 preflight_deploy_direction() {
     local remote_manifest installed_sha installed_branch installed_at
     local direction installed_short local_date installed_date
+    # Same interactive-sudo capture hazard as the identity guard above:
+    # `ssh -tt` merges the password prompt into captured stdout, so the
+    # manifest would parse as garbage (and report a misleading "no
+    # build manifest — first deploy?"). Skip explicitly instead.
+    if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
+        echo "    deploy direction: skipped (interactive sudo cannot capture the build manifest cleanly)"
+        return 0
+    fi
     remote_manifest="$(run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null' 2>/dev/null || true)"
     installed_sha="$(build_manifest_value "$remote_manifest" JASPER_GIT_SHA_FULL)"
     installed_branch="$(build_manifest_value "$remote_manifest" JASPER_GIT_BRANCH)"
@@ -302,30 +310,44 @@ if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
     # stable peer_id (/var/lib/jasper/peer_id) into .env.local; later
     # deploys abort BEFORE rsync on a mismatch. After a deliberate
     # re-image, accept the new identity with JTS_ACCEPT_NEW_IDENTITY=1.
-    remote_peer_id="$(run_remote_sudo 'cat /var/lib/jasper/peer_id 2>/dev/null' 2>/dev/null || true)"
-    identity_outcome="$(verify_or_record_peer_id \
-        "$remote_peer_id" "${REPO_ROOT}/.env.local" \
-        "${JTS_ACCEPT_NEW_IDENTITY:-}")" || {
-        echo "─────────────────────────────────────────────────────────────" >&2
-        echo " DEPLOY ABORTED: ${PI_HOST} is not the speaker this checkout" >&2
-        echo " last deployed to (${identity_outcome})."                      >&2
-        echo " Likely causes:"                                               >&2
-        echo "   - an mDNS collision rename made this name resolve to a"     >&2
-        echo "     DIFFERENT speaker (check both Pis' /system/ pages)"       >&2
-        echo "   - the Pi was re-imaged (new peer_id)"                       >&2
-        echo " If this target is intentional:"                               >&2
-        echo "   JTS_ACCEPT_NEW_IDENTITY=1 bash scripts/deploy-to-pi.sh"     >&2
-        echo " If you meant a different speaker:"                            >&2
-        echo "   bash scripts/use <correct-hostname>"                        >&2
-        echo "─────────────────────────────────────────────────────────────" >&2
-        exit 1
-    }
-    case "$identity_outcome" in
-        recorded)   echo "    speaker identity: recorded peer_id (first contact)" ;;
-        rerecorded) echo "    speaker identity: re-recorded peer_id (accepted new)" ;;
-        match)      echo "    speaker identity: verified" ;;
-        *)          : ;;  # unavailable / no_state_file — nothing to verify against
-    esac
+    #
+    # Gated on passwordless sudo: under the interactive fallback,
+    # `ssh -tt` merges sudo's password prompt into the captured stdout,
+    # so the "identity" read here would be prompt text glued to the
+    # UUID — recording garbage on first contact and then spuriously
+    # aborting every later passwordless deploy. Attended deploys skip
+    # verification rather than mis-verify; passwordless sudo (BRINGUP
+    # Phase 2.5) is the posture that gets identity-verified deploys.
+    if [[ "$SUDO_INTERACTIVE" == "1" ]]; then
+        echo "    speaker identity: skipped (interactive sudo cannot capture"
+        echo "      the peer_id cleanly — enable passwordless sudo for"
+        echo "      identity-verified deploys, see BRINGUP Phase 2.5)"
+    else
+        remote_peer_id="$(run_remote_sudo 'cat /var/lib/jasper/peer_id 2>/dev/null' 2>/dev/null || true)"
+        identity_outcome="$(verify_or_record_peer_id \
+            "$remote_peer_id" "${REPO_ROOT}/.env.local" \
+            "${JTS_ACCEPT_NEW_IDENTITY:-}")" || {
+            echo "─────────────────────────────────────────────────────────────" >&2
+            echo " DEPLOY ABORTED: ${PI_HOST} is not the speaker this checkout" >&2
+            echo " last deployed to (${identity_outcome})."                      >&2
+            echo " Likely causes:"                                               >&2
+            echo "   - an mDNS collision rename made this name resolve to a"     >&2
+            echo "     DIFFERENT speaker (check both Pis' /system/ pages)"       >&2
+            echo "   - the Pi was re-imaged (new peer_id)"                       >&2
+            echo " If this target is intentional:"                               >&2
+            echo "   JTS_ACCEPT_NEW_IDENTITY=1 bash scripts/deploy-to-pi.sh"     >&2
+            echo " If you meant a different speaker:"                            >&2
+            echo "   bash scripts/use <correct-hostname>"                        >&2
+            echo "─────────────────────────────────────────────────────────────" >&2
+            exit 1
+        }
+        case "$identity_outcome" in
+            recorded)   echo "    speaker identity: recorded peer_id (first contact)" ;;
+            rerecorded) echo "    speaker identity: re-recorded peer_id (accepted new)" ;;
+            match)      echo "    speaker identity: verified" ;;
+            *)          : ;;  # unavailable / no_state_file — nothing to verify against
+        esac
+    fi
 
     preflight_deploy_direction
 fi
