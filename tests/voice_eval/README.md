@@ -83,18 +83,36 @@ questions. Slower iteration; not the default.
 rsync -av jasper/voice/trace.py pi@jts.local:/home/pi/jts/jasper/voice/
 rsync -av tests/voice_eval/ pi@jts.local:/home/pi/jts/tests/voice_eval/
 
-# Run as root so /etc/jasper/jasper.env + /var/lib/jasper/voice_provider.env
-# are readable. PYTHONPATH points at the source tree, not the
-# installed copy under /opt/jasper.
+# Run as root and source the SAME env set the daemon gets: jasper.env
+# plus every wizard-owned /var/lib/jasper/*.env (google_credentials.env,
+# transit.env, …). Sourcing only jasper.env + voice_provider.env makes
+# the Google-gated scenarios skip with "not configured" even on a Pi
+# where the wizard has linked an account (observed 2026-06-11).
+# PYTHONPATH points at the source tree, not the installed copy.
 ssh pi@jts.local 'sudo bash -c "
   cd /home/pi/jts
   set -a
   source /etc/jasper/jasper.env
-  [ -f /var/lib/jasper/voice_provider.env ] && source /var/lib/jasper/voice_provider.env
+  for f in /var/lib/jasper/*.env; do source \"\$f\"; done
   set +a
   PYTHONPATH=/home/pi/jts /opt/jasper/.venv/bin/python -m pytest \
     tests/voice_eval/regression/ -v
 "'
+```
+
+The production venv has no pytest. Make a throwaway venv that shares
+the runtime's packages — note a venv created *from* a venv resolves
+`--system-site-packages` to the **system** python, so link the runtime
+site-packages explicitly:
+
+```sh
+ssh pi@jts.local 'sudo bash -c "
+  /opt/jasper/.venv/bin/python -m venv /tmp/jts-eval-venv
+  /tmp/jts-eval-venv/bin/pip install -q pytest pytest-asyncio pytest-mock
+  echo /opt/jasper/.venv/lib/python3.13/site-packages \
+    > /tmp/jts-eval-venv/lib/python3.13/site-packages/jts-runtime.pth
+"'
+# then use /tmp/jts-eval-venv/bin/python -m pytest above
 ```
 
 ---
