@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Per-page web asset install for deploy/install.sh: copies each
-# canonical wizard's static assets and writes the install manifest
-# that jasper-doctor's check_web_design_assets verifies file-by-file.
+# Web asset install for deploy/install.sh: copies everything under
+# /usr/share/jasper-web/assets/ and writes the install manifest that
+# jasper-doctor's check_web_design_assets verifies file-by-file.
 #
 # Extracted from install_nginx_site() in install.sh (the installer
 # remains the only caller; it sources this file REPO_DIR-relative
@@ -10,39 +10,58 @@
 # root honors JASPER_WEB_SHARE_DIR so the hardware-free tests in
 # tests/test_install_web_assets.py can run it against a tmp dir —
 # same seam check_web_design_assets uses.
-
-# Page-specific static assets for the redesigned wizards (/system/,
-# /sound/, /wifi/, ...): the page stylesheet (<page>.css — served
-# immutable + cache-busted like app.css) and the ES module graph
-# (js/*.js — served by the `location ~ \.js$` block with ETag
-# revalidation, since relative imports can't be URL-busted).
-# compgen -G guards each glob (files-exist, not just the dir), so an
-# empty dir can't leave a literal *.css/*.js to fail `install` and
-# abort the deploy under `set -euo pipefail`.
-# `shared` carries the cross-page ES modules (the <dialog>
-# confirm/alert helper at shared/js/dialog.js, the HTML escaper at
-# shared/js/escape.js, the CSRF fetch helpers at shared/js/http.js)
-# — same copy shape as a page, no .css.
 #
-# Discovered dynamically: every directory under deploy/assets/ (each
-# canonical page's slug, plus `shared`) is copied with the same
-# per-dir shape — root *.css, then js/*.js if present. `fonts` is
-# excluded; install_nginx_site copies it (and app.css) directly.
-# Migrating a new wizard therefore needs NO edit here — adding
-# deploy/assets/<page>/ is enough, which closes the silent-404
-# failure mode where a new page's CSS/JS never reached the Pi.
+# What ships, all manifested:
+# - app.css — the canonical design-system stylesheet shared by the
+#   landing page and the redesigned wizards
+#   (jasper.web._common.canonical_page links it, cache-busted by
+#   build SHA). Served by the `location /assets/` block.
+# - fonts/* — Figtree/Outfit .woff2 plus their OFL license texts
+#   (the license files must accompany the fonts).
+# - Per-page static assets for the redesigned wizards (/system/,
+#   /sound/, /wifi/, ...): the page stylesheet (<page>.css — served
+#   immutable + cache-busted like app.css) and the ES module graph
+#   (js/*.js — served by the `location ~ \.js$` block with ETag
+#   revalidation, since relative imports can't be URL-busted).
+#   compgen -G guards each glob (files-exist, not just the dir), so
+#   an empty dir can't leave a literal *.css/*.js to fail `install`
+#   and abort the deploy under `set -euo pipefail`.
+#   `shared` carries the cross-page ES modules (the <dialog>
+#   confirm/alert helper at shared/js/dialog.js, the HTML escaper at
+#   shared/js/escape.js, the CSRF fetch helpers at shared/js/http.js)
+#   — same copy shape as a page, no .css.
 #
-# Every copied path is also recorded (relative to assets/) in
-# assets/.install-manifest, sorted, so the doctor can verify the
-# installed tree without a hand-maintained list that drifts as pages
-# migrate. tests/test_install_web_assets.py pins the copy shape, the
-# manifest contract, and the doctor/installer manifest-name parity.
-install_web_page_assets() {
+# Page dirs are discovered dynamically: every directory under
+# deploy/assets/ (each canonical page's slug, plus `shared`) is
+# copied with the same per-dir shape — root *.css, then js/*.js if
+# present. Migrating a new wizard therefore needs NO edit here —
+# adding deploy/assets/<page>/ is enough, which closes the
+# silent-404 failure mode where a new page's CSS/JS never reached
+# the Pi.
+#
+# Every copied path is recorded (relative to assets/) in
+# assets/.install-manifest, sorted, and the doctor treats a missing
+# manifest as a warn in its own right — there is no fallback asset
+# list to drift. tests/test_install_web_assets.py pins the copy
+# shape, the manifest contract, and the doctor/installer round-trip.
+install_web_assets() {
     local web_root="${JASPER_WEB_SHARE_DIR:-/usr/share/jasper-web}"
     local assets_root="${web_root}/assets"
     local manifest_tmp asset_dir page f
     manifest_tmp="$(mktemp)"
     install -d -m 0755 "${assets_root}"
+
+    install -m 0644 "${REPO_DIR}/deploy/assets/app.css" "${assets_root}/app.css"
+    echo "app.css" >> "${manifest_tmp}"
+
+    install -d -m 0755 "${assets_root}/fonts"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/assets/fonts/"* \
+        "${assets_root}/fonts/"
+    for f in "${REPO_DIR}/deploy/assets/fonts/"*; do
+        echo "fonts/$(basename "${f}")" >> "${manifest_tmp}"
+    done
+
     for asset_dir in "${REPO_DIR}/deploy/assets/"*/; do
         page="$(basename "${asset_dir}")"
         [[ "${page}" == "fonts" ]] && continue

@@ -1,9 +1,10 @@
-"""install_web_page_assets (deploy/lib/install/web-assets.sh).
+"""install_web_assets (deploy/lib/install/web-assets.sh).
 
-The per-page asset copy + the .install-manifest contract that
-jasper-doctor's check_web_design_assets verifies file-by-file. Run the
-real bash function against a sandbox repo/web root — same extraction
-pattern as test_install_voice_provider_migration.py.
+The /assets/ copy (app.css, fonts, per-page CSS + ES modules) + the
+.install-manifest contract that jasper-doctor's check_web_design_assets
+verifies file-by-file. Run the real bash function against a sandbox
+repo/web root — same extraction pattern as
+test_install_voice_provider_migration.py.
 """
 from __future__ import annotations
 
@@ -24,13 +25,13 @@ def _extract_function() -> str:
         [
             "bash",
             "-c",
-            rf"sed -n '/^install_web_page_assets()/,/^}}/p' '{WEB_ASSETS_LIB}'",
+            rf"sed -n '/^install_web_assets()/,/^}}/p' '{WEB_ASSETS_LIB}'",
         ],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert "install_web_page_assets()" in helper
+    assert "install_web_assets()" in helper
     return helper
 
 
@@ -44,7 +45,7 @@ def _run(repo_dir: Path, web_root: Path) -> subprocess.CompletedProcess[str]:
         [
             "/bin/bash",
             "-c",
-            f"set -euo pipefail\n{_extract_function()}\ninstall_web_page_assets",
+            f"set -euo pipefail\n{_extract_function()}\ninstall_web_assets",
         ],
         env=env,
         capture_output=True,
@@ -56,6 +57,7 @@ def _fake_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     assets = repo / "deploy" / "assets"
     (assets / "alpha" / "js").mkdir(parents=True)
+    (assets / "app.css").write_text("/* design system */")
     (assets / "alpha" / "alpha.css").write_text("/* css */")
     (assets / "alpha" / "js" / "main.js").write_text("// module")
     (assets / "alpha" / "js" / "extra.js").write_text("// secondary module")
@@ -65,6 +67,7 @@ def _fake_repo(tmp_path: Path) -> Path:
     (assets / "shared" / "js" / "escape.js").write_text("// shared")
     (assets / "fonts").mkdir(parents=True)
     (assets / "fonts" / "font.woff2").write_text("not really a font")
+    (assets / "fonts" / "OFL.txt").write_text("license rides with the font")
     return repo
 
 
@@ -74,28 +77,22 @@ def test_copies_assets_and_writes_exact_sorted_manifest(tmp_path: Path):
     r = _run(repo, web_root)
     assert r.returncode == 0, r.stderr
 
-    assets = web_root / "assets"
-    for rel in (
+    expected = [
         "alpha/alpha.css",
-        "alpha/js/main.js",
         "alpha/js/extra.js",
+        "alpha/js/main.js",
+        "app.css",
         "beta/beta.css",
+        "fonts/OFL.txt",
+        "fonts/font.woff2",
         "shared/js/escape.js",
-    ):
+    ]
+    assets = web_root / "assets"
+    for rel in expected:
         assert (assets / rel).is_file(), f"{rel} not installed"
-    # fonts is copied by install_nginx_site directly, never by this loop.
-    assert not (assets / "fonts").exists()
 
     manifest = (assets / MANIFEST_NAME).read_text().splitlines()
-    assert manifest == sorted(
-        [
-            "alpha/alpha.css",
-            "alpha/js/extra.js",
-            "alpha/js/main.js",
-            "beta/beta.css",
-            "shared/js/escape.js",
-        ]
-    )
+    assert manifest == sorted(expected)
 
 
 def test_empty_page_dir_is_tolerated_under_strict_mode(tmp_path: Path):
@@ -119,14 +116,13 @@ def test_manifest_name_parity_between_installer_and_doctor():
 
 
 def test_every_repo_asset_matches_the_copy_shape():
-    """Every file under deploy/assets/ must be copyable by the loop.
+    """Every file under deploy/assets/ must be copyable by the function.
 
-    The loop's contract is root app.css, fonts/ (both copied by
-    install_nginx_site), and per-page root *.css + js/*.js. A file
-    outside that shape (a nested module, a stray .svg) would be
-    silently skipped — never installed, never manifested — which is
-    exactly the silent-404 class the manifest exists to kill, so fail
-    in CI instead.
+    The contract is root app.css, fonts/*, and per-page root *.css +
+    js/*.js. A file outside that shape (a nested module, a stray .svg)
+    would be silently skipped — never installed, never manifested —
+    which is exactly the silent-404 class the manifest exists to kill,
+    so fail in CI instead.
     """
     offenders: list[str] = []
     for path in sorted(ASSETS_DIR.rglob("*")):
@@ -136,7 +132,7 @@ def test_every_repo_asset_matches_the_copy_shape():
         parts = rel.parts
         if parts == ("app.css",):
             continue
-        if parts[0] == "fonts":
+        if parts[0] == "fonts" and len(parts) == 2:
             continue
         if len(parts) == 2 and parts[1].endswith(".css"):
             continue
@@ -144,16 +140,17 @@ def test_every_repo_asset_matches_the_copy_shape():
             continue
         offenders.append(str(rel))
     assert not offenders, (
-        "asset(s) outside the installer's copy shape (root *.css or "
-        f"js/*.js per page) would never reach the Pi: {offenders}; "
-        "extend deploy/lib/install/web-assets.sh if the shape must grow"
+        "asset(s) outside the installer's copy shape (root app.css, "
+        f"fonts/*, per-page *.css or js/*.js) would never reach the Pi: "
+        f"{offenders}; extend deploy/lib/install/web-assets.sh if the "
+        "shape must grow"
     )
 
 
 def test_install_sh_sources_and_calls_the_helper():
     install_sh = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
     assert "deploy/lib/install/web-assets.sh" in install_sh
-    assert re.search(r"^\s*install_web_page_assets\b", install_sh, re.M)
+    assert re.search(r"^\s*install_web_assets\b", install_sh, re.M)
 
 
 def test_real_repo_assets_round_trip_through_doctor(monkeypatch, tmp_path: Path):
@@ -169,17 +166,20 @@ def test_real_repo_assets_round_trip_through_doctor(monkeypatch, tmp_path: Path)
     web_root = tmp_path / "web"
     r = _run(ROOT, web_root)
     assert r.returncode == 0, r.stderr
-    # install_nginx_site copies these two outside the per-page loop.
-    (web_root / "assets" / "fonts").mkdir()
-    (web_root / "assets" / "app.css").write_text("/* css */")
 
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(web_root))
     result = doctor_web.check_web_design_assets()
     assert result.status == "ok", result.detail
-    assert "install manifest" in result.detail
+    assert MANIFEST_NAME in result.detail
 
     manifest = (web_root / "assets" / MANIFEST_NAME).read_text().splitlines()
-    # Spot-pin the highest-blast-radius entries: the shared modules.
+    # Spot-pin the load-bearing entries: the design system, the fonts it
+    # @font-faces, and the shared modules every page hard-imports.
+    assert "app.css" in manifest
+    for woff in sorted(
+        p.name for p in (ASSETS_DIR / "fonts").glob("*.woff2")
+    ):
+        assert f"fonts/{woff}" in manifest
     for shared in sorted(
         p.name for p in (ASSETS_DIR / "shared" / "js").glob("*.js")
     ):

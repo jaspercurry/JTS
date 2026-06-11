@@ -3376,82 +3376,25 @@ def test_correction_doctor_checks_registered():
     assert "check_correction_latest_bundle" in names
 
 
-def test_web_design_assets_ok_when_installed(monkeypatch, tmp_path: Path):
-    assets = tmp_path / "assets"
-    (assets / "fonts").mkdir(parents=True)
-    (assets / "app.css").write_text("/* css */")
-    # /correction/ migrated onto the canonical design system, so the check's
-    # required set now also pins its per-page CSS + ES module entry — lay it
-    # down alongside the original two migrated pages.
-    for page, css in (
-        ("system-status", "system.css"),
-        ("sound-profile", "sound.css"),
-        ("correction", "correction.css"),
-    ):
-        (assets / page / "js").mkdir(parents=True)
-        (assets / page / css).write_text("/* page css */")
-        (assets / page / "js" / "main.js").write_text("// module")
-    (assets / "shared" / "js").mkdir(parents=True)
-    for shared in ("dialog.js", "escape.js", "http.js"):
-        (assets / "shared" / "js" / shared).write_text("// shared module")
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-    r = doctor.check_web_design_assets()
-    assert r.status == "ok"
-    assert "app.css" in r.detail
-
-
-def test_web_design_assets_pin_every_repo_shared_module(
+def test_web_design_assets_warns_when_manifest_missing(
     monkeypatch, tmp_path: Path,
 ):
-    """Each shipped shared/js module must be in the check's required set.
-
-    Pages hard-import /assets/shared/js/* by absolute path, so one missing
-    shared module blanks every importing page at once — exactly what this
-    doctor check exists to catch. Derive the expected set from the repo
-    tree so adding a shared module without extending the check fails here
-    (escape.js shipped unpinned this way).
-    """
-    repo_shared = sorted(
-        p.name
-        for p in (
-            Path(__file__).resolve().parent.parent
-            / "deploy" / "assets" / "shared" / "js"
-        ).glob("*.js")
-    )
-    assert repo_shared, "no shared modules found — repo layout moved?"
-
+    """No manifest = unverifiable tree — warn, never guess from a stale
+    built-in list (which could pass a partially-deployed tree as green)."""
     assets = tmp_path / "assets"
-    (assets / "fonts").mkdir(parents=True)
+    assets.mkdir(parents=True)
     (assets / "app.css").write_text("/* css */")
-    for page, css in (
-        ("system-status", "system.css"),
-        ("sound-profile", "sound.css"),
-        ("correction", "correction.css"),
-    ):
-        (assets / page / "js").mkdir(parents=True)
-        (assets / page / css).write_text("/* page css */")
-        (assets / page / "js" / "main.js").write_text("// module")
-    (assets / "shared" / "js").mkdir(parents=True)
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-
-    for module in repo_shared:
-        for present in repo_shared:
-            target = assets / "shared" / "js" / present
-            if present == module:
-                target.unlink(missing_ok=True)
-            else:
-                target.write_text("// shared module")
-        r = doctor.check_web_design_assets()
-        assert r.status == "warn" and module in r.detail, (
-            f"shared module {module} ships to every page but "
-            "check_web_design_assets does not require it"
-        )
+    r = doctor.check_web_design_assets()
+    assert r.status == "warn"
+    assert ".install-manifest" in r.detail
+    assert "redeploy" in r.detail
 
 
 def _manifest_fixture(tmp_path: Path, entries: list[str]) -> Path:
-    """Lay down app.css + fonts plus a manifest listing `entries`."""
+    """Lay down app.css plus a manifest listing `entries`."""
     assets = tmp_path / "assets"
-    (assets / "fonts").mkdir(parents=True)
+    assets.mkdir(parents=True)
     (assets / "app.css").write_text("/* css */")
     (assets / ".install-manifest").write_text("\n".join(entries) + "\n")
     return assets
@@ -3472,8 +3415,8 @@ def test_web_design_assets_verifies_every_manifest_entry(
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
     r = doctor.check_web_design_assets()
     assert r.status == "ok"
-    assert "install manifest" in r.detail
     assert "4 assets verified" in r.detail  # app.css + 3 manifest entries
+    assert ".install-manifest" in r.detail
 
 
 def test_web_design_assets_warns_on_missing_manifest_entry(
@@ -3487,7 +3430,6 @@ def test_web_design_assets_warns_on_missing_manifest_entry(
     r = doctor.check_web_design_assets()
     assert r.status == "warn"
     assert "wake/js/main.js" in r.detail
-    assert "install manifest" in r.detail
 
 
 def test_web_design_assets_ignores_malformed_manifest_lines(
@@ -3518,21 +3460,16 @@ def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
     assert r.detail.count("js/main.js") == 12
 
 
-def test_web_design_assets_warns_when_module_missing(monkeypatch, tmp_path: Path):
-    # CSS + fonts present, but a page's JS entry module is not — the page
-    # would load blank, so the check warns and names the missing module.
-    (tmp_path / "assets" / "fonts").mkdir(parents=True)
-    (tmp_path / "assets" / "app.css").write_text("/* css */")
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-    r = doctor.check_web_design_assets()
-    assert r.status == "warn"
-    assert "main.js" in r.detail
-
-
 def test_web_design_assets_warns_when_stylesheet_missing(
     monkeypatch, tmp_path: Path,
 ):
-    (tmp_path / "assets" / "fonts").mkdir(parents=True)
+    """app.css is pinned explicitly even if a manifest omits it — it is
+    the design system itself."""
+    assets = tmp_path / "assets"
+    assets.mkdir(parents=True)
+    (assets / ".install-manifest").write_text("voice/js/main.js\n")
+    (assets / "voice" / "js").mkdir(parents=True)
+    (assets / "voice" / "js" / "main.js").write_text("// module")
     # No app.css written — the design system can't load.
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
     r = doctor.check_web_design_assets()

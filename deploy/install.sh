@@ -2124,20 +2124,11 @@ install_nginx_site() {
     app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
     [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
     sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
-    install -d -m 0755 /usr/share/jasper-web/assets/fonts
-    install -m 0644 \
-        "${REPO_DIR}/deploy/assets/fonts/"* \
-        /usr/share/jasper-web/assets/fonts/
-    # Canonical design-system stylesheet shared by the landing page and
-    # the redesigned wizards (jasper.web._common.canonical_page links it,
-    # cache-busted by build SHA). Served by the `location /assets/` block.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/assets/app.css" \
-        /usr/share/jasper-web/assets/app.css
-    # Page-specific static assets + the .install-manifest the doctor
-    # verifies — see deploy/lib/install/web-assets.sh for the copy
-    # shape and the manifest contract.
-    install_web_page_assets
+    # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
+    # the .install-manifest the doctor verifies — see
+    # deploy/lib/install/web-assets.sh for the copy shape and the
+    # manifest contract.
+    install_web_assets
     # Plain-HTTP preflight before the HTTPS-only room-correction UI.
     # This gives the user context before the browser's self-signed-cert
     # interstitial while keeping the entry point on the normal HTTP
