@@ -1283,6 +1283,26 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
     assert hardware["status"] == "ready"
 
 
+def test_output_hardware_state_only_loaded_inside_conversion_boundary():
+    """Payload builders must go through ``_output_hardware_dict``.
+
+    Pins the fix shape: ``load_output_hardware_state`` returns a frozen
+    dataclass that plain ``json.dumps`` can't encode, so the only call site
+    in this module is the helper that converts it. A new payload embedding
+    the loader directly re-ships the 502.
+    """
+    source = Path(sound_setup.__file__).read_text(encoding="utf-8")
+    lines = [
+        line.strip()
+        for line in source.splitlines()
+        if "load_output_hardware_state(" in line
+    ]
+    assert lines == ["hardware = load_output_hardware_state()"], (
+        "load_output_hardware_state() called outside _output_hardware_dict(); "
+        f"route new payloads through the helper: {lines}"
+    )
+
+
 def test_active_speaker_design_draft_route_persists_saved_topology_research(
     monkeypatch,
     tmp_path: Path,
