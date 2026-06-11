@@ -61,6 +61,7 @@ remote_out="$(ssh -o ConnectTimeout=10 "${PI_USER}@${PI_HOST}" \
 py_version="$(sed -n 's/^PY: //p' <<<"${remote_out}" | head -1)"
 pip_version="$(sed -n 's/^PIP: //p' <<<"${remote_out}" | head -1)"
 build_info="$(sed -n 's/^BUILD: //p' <<<"${remote_out}" | head -1)"
+build_info="$(sed 's/[[:space:]]*$//' <<<"${build_info}")"
 freeze="$(sed -n '/^FREEZE-BEGIN$/,$p' <<<"${remote_out}" | tail -n +2)"
 
 # Keep only plain `name==version` pins. Editable installs (`-e ...`)
