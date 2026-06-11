@@ -26,6 +26,7 @@ use jasper_outputd::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
 use jasper_outputd::content_bridge::ContentBridge;
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
+use jasper_outputd::tts::{spawn_tts_server, tts_channels, TtsBridge};
 use jasper_outputd::state::{OutputdState, StateServer};
 use jasper_outputd::{CHANNELS, SAMPLE_RATE};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -162,6 +163,36 @@ fn run_alsa(
         );
         DacContentSource::new(path, config.dac_content_channel, config.period_frames)
     });
+    // Bonded-member TTS (Increment 5 PR-2): constructed ONLY when the
+    // reconciler set the socket env — solo keeps fanin-owned TTS and
+    // this loop stays byte-identical. The OutputCore engine (assistant
+    // segments, loudness, saturating mix, the DAC-true PlayoutLedger)
+    // mixes voice at the FINAL output stage: downstream of the
+    // round-trip, upstream of the reference publish (inv-A).
+    let mut tts: Option<(OutputCore, TtsBridge)> =
+        if let Some(path) = &config.tts_socket_path {
+            let (tx, rx, flush_tx, flush_rx, metrics, epoch) =
+                tts_channels(config.tts_max_pending_frames);
+            spawn_tts_server(
+                PathBuf::from(path),
+                tx,
+                flush_tx,
+                epoch,
+                metrics.clone(),
+            )?;
+            state.set_tts(path.clone(), metrics.clone());
+            eprintln!(
+                "event=outputd.tts.enabled socket={} budget_frames={} program_duck_db={}",
+                path, config.tts_max_pending_frames, config.tts_program_duck_db,
+            );
+            let core =
+                OutputCore::new_for_daemon(config.period_frames, config.stream_id);
+            let bridge =
+                TtsBridge::new(rx, flush_rx, metrics, config.tts_program_duck_db);
+            Some((core, bridge))
+        } else {
+            None
+        };
     let zero_period = vec![0i16; period_samples];
     let prime_periods = prime_periods(
         backend.dac_negotiated.buffer_frames,
@@ -234,20 +265,52 @@ fn run_alsa(
                 let _frames_read = backend.read_content_period(&mut content_buf)?;
             }
         }
-        backend.write_dac_period(&content_buf)?;
-        let _dac_delay_frames = match backend.dac_delay_frames() {
-            Ok(frames) => frames,
-            Err(e) => {
-                if !dac_delay_warning_logged {
-                    eprintln!("event=outputd.dac_delay_unavailable detail={e:#}");
-                    dac_delay_warning_logged = true;
-                }
-                backend.dac_negotiated.buffer_frames as u64
+        if let Some((core, bridge)) = tts.as_mut() {
+            // The TTS-enabled path: voice mixes via the engine. Duck is
+            // applied to the CONTENT before the mix so the reference
+            // carries the ducked program too (inv-A).
+            bridge.drain(core);
+            if let Some(gain) = bridge.content_duck_gain() {
+                apply_linear_gain(&mut content_buf, gain);
             }
-        };
-        ref_outputs.publish(&content_buf);
-        reference_sequence = reference_sequence.saturating_add(1);
-        state.mark_period(backend.counters(), reference_sequence, 0);
+            core.prepare_period_with_content(&content_buf);
+            backend.write_dac_period(core.output_period())?;
+            let dac_delay_frames = match backend.dac_delay_frames() {
+                Ok(frames) => frames,
+                Err(e) => {
+                    if !dac_delay_warning_logged {
+                        eprintln!("event=outputd.dac_delay_unavailable detail={e:#}");
+                        dac_delay_warning_logged = true;
+                    }
+                    backend.dac_negotiated.buffer_frames as u64
+                }
+            };
+            // The ledger drains against ACTUAL DAC progress — the honest
+            // max_audio_played_ms barge-in has never had from fanin.
+            let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
+            ref_outputs.publish(core.output_period());
+            reference_sequence = report.reference_sequence;
+            state.mark_period(
+                backend.counters(),
+                reference_sequence,
+                report.clipped_samples,
+            );
+        } else {
+            backend.write_dac_period(&content_buf)?;
+            let _dac_delay_frames = match backend.dac_delay_frames() {
+                Ok(frames) => frames,
+                Err(e) => {
+                    if !dac_delay_warning_logged {
+                        eprintln!("event=outputd.dac_delay_unavailable detail={e:#}");
+                        dac_delay_warning_logged = true;
+                    }
+                    backend.dac_negotiated.buffer_frames as u64
+                }
+            };
+            ref_outputs.publish(&content_buf);
+            reference_sequence = reference_sequence.saturating_add(1);
+            state.mark_period(backend.counters(), reference_sequence, 0);
+        }
         if once {
             eprintln!(
                 "event=outputd.once frames_written={} reference_sequence={} clipped_samples=0",
@@ -346,6 +409,15 @@ fn downmix_dual_active_reference(samples_4ch: &[i16], out_stereo: &mut [i16]) {
 
 fn average_i16(a: i16, b: i16) -> i16 {
     (((a as i32) + (b as i32)) / 2) as i16
+}
+
+/// In-place linear attenuation for the program duck (gain <= 1.0, so
+/// no clipping is possible; the cast truncation is inaudible at duck
+/// depths).
+fn apply_linear_gain(samples: &mut [i16], gain: f32) {
+    for s in samples.iter_mut() {
+        *s = (*s as f32 * gain) as i16;
+    }
 }
 
 fn prime_periods(buffer_frames: u32, period_frames: u32) -> u32 {
