@@ -255,6 +255,19 @@ boundary: `jasper-fanin`.
    measurement window is active.
 4. For each assistant/cue segment, `OutputdTtsPlayout` sends un-gained
    48 kHz stereo PCM plus optional source-loudness profile metadata.
+   Sustained writes are paced (`_OUTPUTD_PACE_AHEAD_SEC`, 1.2 s) so at
+   most ~1.2 s of audio is queued ahead of realtime: the mix owner's
+   TTS lane keeps a bounded pending queue (2 s,
+   `DEFAULT_MAX_PENDING_FRAMES` in `rust/jasper-fanin/src/tts.rs`) and
+   drops audio commands that arrive while it is full
+   (`event=fanin.tts_command_dropped`) rather than blocking the socket
+   reader — a blocked reader would stall barge-in FLUSH behind queued
+   audio. Without writer-side pacing, faster-than-realtime provider
+   bursts (OpenAI Realtime delivers ~11 s of reply audio in ~4 s)
+   overflow the budget and the surviving chunks play as garbled
+   "fast-forward" audio. A contract test
+   (`tests/test_tts_ipc_pacing.py`) pins the watermark against the
+   Rust budget.
 5. The mix owner chooses final gain at the mix boundary:
    `target_lufs = content_baseline_lufs + assistant_offset_lu`.
    The default offset is `+1.5 LU`.
@@ -276,7 +289,11 @@ Python owns only provider source profiles:
   (`JASPER_ASSISTANT_LOUDNESS_AUTO_SEED=1`) so ordinary restarts do not
   spend provider calls implicitly.
 - Live assistant PCM is measured passively after real replies and
-  merged back into the same provider/model/voice profile. Cues and
+  merged back into the same provider/model/voice profile. The
+  measurement is finalized by `end_segment()` — called by the playout
+  loop when the provider closes its audio iterator, and again
+  (idempotently) by turn teardown, so providers whose iterator only
+  closes on release (Gemini) still train the profile. Cues and
   chirps never train the profile.
 - Profiles are advisory. If a profile is missing or malformed, the mix owner
   uses conservative built-in fallback source loudness/peak values and
