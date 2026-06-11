@@ -264,3 +264,77 @@ def test_room_peqs_right_and_channel_split_are_mutually_exclusive():
                 room_peqs_right=[],
                 channel_split=build_channel_split(channel),
             )
+
+
+def test_playback_pipe_path_emits_file_sink_for_the_bonded_leader():
+    """The bonded-leader playback axis (HANDOFF-multiroom.md §2,
+    Increment 5): playback becomes a File sink writing the shared stereo
+    program to snapserver's FIFO; capture and the rest of the config are
+    untouched. Pairs with room_peqs_right (the leader-bake combo)."""
+    yaml = emit_sound_config(
+        SoundProfile(enabled=True, curve_id="harman", simple_eq=SimpleEq()),
+        room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+        room_peqs_right=[PeqFilter(freq=120.0, q=2.0, gain=-2.0)],
+        enable_rate_adjust=False,
+        playback_pipe_path="/run/jasper-snapserver/snapfifo",
+    )
+    assert "type: File" in yaml
+    assert 'filename: "/run/jasper-snapserver/snapfifo"' in yaml
+    assert "enable_rate_adjust: false" in yaml
+    # The ALSA loopback sink is fully replaced…
+    assert 'device: "outputd_content_playback"' not in yaml
+    # …but the capture side stays the normal ALSA lane.
+    assert 'device: "plug:jasper_capture"' in yaml
+    # Loud-output safety survives the sink swap.
+    assert "volume_limit: 0.0" in yaml
+
+
+def test_playback_pipe_path_none_is_byte_identical_solo():
+    """The solo-impact contract for the new axis: omitting it and passing
+    the explicit default produce the SAME BYTES as each other (and the
+    emitted config still carries the ALSA loopback sink)."""
+    profile = SoundProfile(
+        enabled=True, curve_id="harman", simple_eq=SimpleEq(bass_db=2.0)
+    )
+    kwargs = dict(
+        room_peqs=[PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+        profile_id="solo-bytes",
+    )
+    without_axis = emit_sound_config(profile, **kwargs)
+    with_default = emit_sound_config(profile, playback_pipe_path=None, **kwargs)
+    assert without_axis == with_default
+    assert 'device: "outputd_content_playback"' in without_axis
+    assert "type: File" not in without_axis
+
+
+def test_playback_pipe_path_requires_rate_adjust_off():
+    """A File sink has no output clock — rate_adjust has nothing to steer,
+    and the synced chain's ONE rate-tracker is snapclient (§2 invariant 5).
+    The emitter fails loud instead of silently emitting a config whose
+    rate_adjust flag is a lie."""
+    import pytest
+
+    with pytest.raises(ValueError, match="enable_rate_adjust=False"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=True,
+            playback_pipe_path="/run/jasper-snapserver/snapfifo",
+        )
+
+
+def test_playback_pipe_path_and_channel_split_are_mutually_exclusive():
+    """The pipe carries the SHARED stereo program; a member's
+    channel-selection weave on it would strip the other speaker's channel
+    out of the stream. Members drop channels downstream (outputd
+    ChannelPick), never inside the stream."""
+    import pytest
+
+    from jasper.multiroom.channel_split import build_channel_split
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            channel_split=build_channel_split("left"),
+            playback_pipe_path="/run/jasper-snapserver/snapfifo",
+        )
