@@ -508,8 +508,11 @@ stable peer_id (`/var/lib/jasper/peer_id`) as `PI_PEER_ID=` in
 `.env.local`; later deploys abort before rsync on a mismatch — an mDNS
 collision rename or a re-image can silently repoint a hostname at a
 different Pi. After a deliberate re-image, accept the new identity
-with `JTS_ACCEPT_NEW_IDENTITY=1`. Details:
-[docs/HANDOFF-identity.md](docs/HANDOFF-identity.md).
+with `JTS_ACCEPT_NEW_IDENTITY=1`. Both this guard and the direction
+guard below require **passwordless sudo**: under the interactive-sudo
+fallback, `ssh -tt` merges the password prompt into captured output,
+so each guard skips with a printed notice rather than mis-verifying.
+Details: [docs/HANDOFF-identity.md](docs/HANDOFF-identity.md).
 
 **Deploy direction guard:** the preflight also compares the local
 commit against the Pi's installed build manifest
