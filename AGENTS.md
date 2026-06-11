@@ -2942,12 +2942,19 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    install — those still need a deploy + `jasper-doctor` / on-device check.
    "Green CI" means "safe to merge," not "validated on hardware."
 
-6. **Workflow-file merges need the `workflow` token scope.** A `gh` OAuth
-   token without `workflow` scope **cannot merge a PR that touches
-   `.github/workflows/*`** (you'll get "refusing to allow an OAuth App to
-   create or update workflow … without `workflow` scope"). Open the PR
-   normally; a human merges it from the web UI. Don't burn time retrying the
-   `gh` merge.
+6. **Workflow-file PRs: try the `gh` merge before assuming you can't.**
+   An earlier version of this rule said a `gh` OAuth token can never
+   merge a PR touching `.github/workflows/*`; that's empirically false —
+   `gh pr merge --squash` of a workflow-touching dependabot PR succeeded
+   on 2026-06-11 (#523). The `workflow`-scope refusal ("refusing to allow
+   an OAuth App to create or update workflow … without `workflow` scope")
+   applies to *pushing* workflow-file changes from your token, not to
+   server-side merging of someone else's. If the merge does fail with
+   that scope error, hand it to a human via the web UI — and note a
+   stale-required-checks failure ("base branch policy prohibits the
+   merge") looks similar but just means the PR predates a newer required
+   check: `@dependabot rebase` (or re-push) to get a fresh check set,
+   then merge.
 
 7. **Don't re-run the default ruff cleanup — it's done.** `main` is clean
    under the committed `[tool.ruff]` config (default `E`/`F` rules; `E701`/
