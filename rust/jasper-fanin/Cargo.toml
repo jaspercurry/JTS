@@ -16,7 +16,7 @@ rust-version = "1.75"
 # surface. Mature crate, used by most Rust ALSA projects (paplay,
 # pulse-pipewire-bridge, etc.). Compiles against Trixie's
 # libasound2-dev.
-alsa = "0.9"
+alsa = "0.11"
 
 # systemd notification socket: READY=1 on startup, WATCHDOG=1 keepalives,
 # STOPPING=1 on shutdown. The Type=notify + WatchdogSec=30s contract
