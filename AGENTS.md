@@ -2969,3 +2969,13 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    repo, two sessions can independently make the same change (it has already
    caused conflicts). Always `git fetch` before starting *and* before
    pushing, and assume `main` moved while you were working.
+
+9. **Check the weekly `hygiene` issue before doing repo-hygiene work.** A
+   report-only scheduled sweep files a "Hygiene sweep YYYY-MM-DD" GitHub
+   issue (label `hygiene`, Mondays) covering open-PR staleness + supersede
+   triage, merged/stale branch candidates, doc freshness
+   (`doc-freshness.sh 90 --all`), README-atlas orphans/broken links, and
+   PLAN.md urgent-section age. Use the latest one as the starting map
+   instead of re-deriving that state. The sweep never closes PRs, deletes
+   branches, or pushes — acting on its recommendations is a
+   human-supervised session's job.
