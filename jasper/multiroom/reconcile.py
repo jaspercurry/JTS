@@ -609,15 +609,15 @@ def main(argv: list[str] | None = None) -> int:
     when a producer should not run — so a started unit can never pick up
     stale args.
 
-    SCOPE (Increment 5): the FULL bonded music dataplane. Beyond the
+    SCOPE (Increment 5): the FULL bonded dataplane. Beyond the
     snapcast args this also (a) writes the outputd round-trip lane env
-    (FIFO + channel pick) and restarts outputd only on change, (b)
-    creates the member content FIFO, and (c) drives the CamillaDSP
-    config swap through jasper.multiroom.leader_config — the bonded
-    pipe config on an active leader, the solo restore otherwise. What
-    does NOT flow through here is per-member TTS (the PR-2 outputd TTS
-    mixer — until then TTS rides the synced stream, surfaced by the
-    doctor's standing `TTS interim` warn).
+    (FIFO + channel pick + the PR-2 TTS socket) and restarts outputd
+    only on change, (b) creates the member content FIFO, (c) flips
+    voice's TTS socket to outputd while bonded (grouping-voice.env,
+    restart-on-change; the doctor's `TTS lane` check guards the two
+    files' agreement), and (d) drives the CamillaDSP config swap
+    through jasper.multiroom.leader_config — the bonded pipe config on
+    an active leader, the solo restore otherwise.
 
     `--reason` is a free-text trigger source (systemd / wizard / manual)
     echoed into the structured log for correlation, mirroring
