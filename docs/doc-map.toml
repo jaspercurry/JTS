@@ -5,6 +5,15 @@
 # scan when those areas change. Keep entries coarse; false positives are okay
 # because the PR comment is informational and non-blocking.
 
+[document_classes]
+# Intentionally present top-level docs that are not canonical subsystem
+# scan targets. They still satisfy the no-orphan-doc invariant, but a
+# code change should not route future maintainers to them as current
+# operational truth.
+session_artifacts = [
+  "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md",
+]
+
 [[subsystem]]
 id = "docs-governance"
 title = "Documentation governance and AI-agent context"
@@ -37,24 +46,6 @@ verification = [
   "python3 scripts/docs-impact.py --validate-only",
   "python3 scripts/docs-linkcheck.py --changed-file README.md",
   "bash scripts/doc-freshness.sh 90 --all",
-]
-
-[[subsystem]]
-id = "session-artifacts"
-title = "Session artifacts and one-time runbooks"
-safety = "safe-ci"
-code = [
-  "docs/RUNBOOK-*.md",
-]
-docs = [
-  "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md",
-]
-requires_docs_when = [
-  "A top-level one-time runbook or session artifact changes; confirm it is tagged as a session artifact or move it under docs/historical/ after use.",
-]
-verification = [
-  "python3 scripts/docs-impact.py --validate-only",
-  "python3 scripts/docs-linkcheck.py --changed-file <changed-runbook>",
 ]
 
 [[subsystem]]
