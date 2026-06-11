@@ -111,6 +111,10 @@ MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
 OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
+# Pinned to "direct" while bonded (writer/validator coherence — see
+# outputd_grouping_env): the lane fail-closes on any other bridge mode,
+# and this file is the last env layer, so the pin wins over lab retunes.
+OUTPUTD_CONTENT_BRIDGE_ENV = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_UNIT = "jasper-outputd.service"
 # (The former LEADER_CONTENT_LANE_GATE staging env was retired when this
 # lane went live: the reconciler's role wiring IS the gate now — the
@@ -333,11 +337,27 @@ def outputd_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     outputd's ``env_optional`` reads as unset, i.e. the byte-identical
     solo loop — so a stale file can never half-configure the lane
     (mirrors ``_assemble_args``'s disable-clears-stale idiom).
+
+    WRITER/VALIDATOR COHERENCE (the jts3 2026-06-11 boot-loop incident):
+    outputd FAIL-CLOSES on ``DAC_CONTENT_FIFO`` + ``CONTENT_BRIDGE=
+    rate_match`` — and systemd composes outputd's env from LAYERS, so a
+    lab retune in ``/var/lib/jasper/outputd.env`` (the rate_match soak)
+    plus this file's FIFO crashed outputd into StartLimitAction=reboot
+    (contained by the T5.1 boot-loop guard). The writer must never emit
+    a combination the validator rejects ACROSS ALL LAYERS, so while
+    bonded this file — deliberately the LAST EnvironmentFile= layer —
+    also pins ``CONTENT_BRIDGE=direct``, the lane's hard requirement.
+    Solo OMITS the key entirely (never an empty value: outputd's
+    ``env_str`` treats a SET-but-empty bridge mode as invalid and bails),
+    so a solo speaker falls back to the underlying layers and the lab's
+    rate_match soak resumes. Bonding and the soak coexist; neither can
+    crash outputd.
     """
     if cfg.enabled and cfg.error is None:
         return {
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
+            OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
         }
     return {
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",

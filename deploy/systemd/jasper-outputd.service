@@ -16,6 +16,15 @@ WatchdogSec=30s
 TimeoutStopSec=5s
 Restart=on-failure
 RestartSec=5
+# CONFIG-validation failures exit 78 (EX_CONFIG) and must PARK the unit
+# failed (visible on /state + doctor) instead of restart-looping:
+# restarting cannot fix bad config, and on this unit the loop escalates
+# to StartLimitAction=reboot. Measured incident (jts3, 2026-06-11): a
+# grouping lane env + a lab content-bridge retune layered into a
+# guard-rejected combination; outputd crash-looped into THREE Pi reboots
+# before the T5.1 boot-loop guard contained it. Recovery after a park:
+# fix the env, then `systemctl restart jasper-outputd`.
+RestartPreventExitStatus=78
 
 # Final-output owner. This is more important than Camilla for speaker
 # silence because it owns the DAC write loop.

@@ -1620,7 +1620,35 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (CAMILLA PIPE-GUARD — the post-merge review of PR-1
+Last verified: 2026-06-11 (INCIDENT: the jts3 boot loop + the
+writer/validator coherence fix. At ~15:51 EDT jts3 boot-looped 3× in under a
+minute: the grouping reconciler armed the round-trip lane
+(grouping-outputd.env: FIFO+channel) while the lab's content-bridge soak
+(/var/lib/jasper/outputd.env: CONTENT_BRIDGE=rate_match) sat in a LOWER env
+layer — systemd composed the exact combination outputd's fail-closed guard
+(eed2e5cf) rejects, outputd crash-looped, StartLimitAction=reboot fired, and
+the T5.1 boot-loop guard (PR #573) contained it on boot 3 — its first
+production save, the same day it was hardware-validated. The reconciler's
+rc=1 at 15:50:36 was by-design surfacing (outputd_restart_failed), not a
+separate bug. FIXES: (1) writer/validator coherence — outputd_grouping_env
+pins CONTENT_BRIDGE=direct while bonded (grouping-outputd.env is the LAST
+env layer, so the lane's hard requirement wins over lab retunes) and OMITS
+the key when solo (never present-but-empty — outputd bails on an empty
+bridge mode — and solo falls back to the lower layers, so the rate_match
+soak and bonding now COEXIST); pinned by a writer-side parity test, and the
+doctor's channel-pick check warns on a stale un-pinned file. (2)
+Park-not-reboot — outputd exits EX_CONFIG (78) on config-validation failure
+and the unit sets RestartPreventExitStatus=78: a fail-closed config
+rejection now PARKS outputd failed (visible) instead of crash-looping into
+reboot, killing the escalation class regardless of which combination goes
+bad next; pinned by a unit↔code contract test. (3) install.sh enables +
+runs jasper-grouping-reconcile (boot/install no-op when solo) so a bonded
+speaker survives reboots — the gap that left jts3's snapclient down after
+its recovery reboot. Also from the same bring-up: snapcast's persisted
+group→stream registry bound both clients to a stale "default" stream
+(silent bond behind green health — fixed live via Group.SetStream RPC;
+the durable registry pin + client-connected runtime-health truthing are the
+NEXT fixes). Earlier same day (CAMILLA PIPE-GUARD — the post-merge review of PR-1
 measured camilladsp 4.1.3's dead-File-sink behavior on jts3 (absent path →
 clean exit 0; readerless FIFO → blocked open(2) that ignores SIGTERM) and
 found the reboot-loop chain: clean-exit loop × Restart=always ×
