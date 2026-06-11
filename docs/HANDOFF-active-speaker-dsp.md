@@ -124,6 +124,21 @@
 > build and externally researched starting points into the future crossover
 > compiler/review step without making the LLM or browser rummage through
 > topology internals.
+> `jasper.active_speaker.crossover_preview` and
+> `/sound/active-speaker/crossover-preview` now turn that saved design draft
+> into a persisted, versioned, no-audio crossover preview at
+> `/var/lib/jasper/active_speaker_crossover_preview.json` with kind
+> `jts_active_speaker_crossover_preview`. The preview proposes bounded
+> low-pass/high-pass filter intent for active 2-way and 3-way speaker groups,
+> raises candidate frequencies to driver high-pass / do-not-test-below floors,
+> surfaces missing research and low-confidence candidates as evidence, and
+> records whether a later protected-staging step may consume it. The preview
+> source carries a design-draft fingerprint; loading the saved preview against
+> the current draft marks it `stale` and clears
+> `may_prepare_protected_startup_config` if the operator changes topology,
+> driver research, or operator inputs after preparation. It still does not emit
+> CamillaDSP YAML, load CamillaDSP, apply filters, authorize playback, or treat
+> external research as measurement truth.
 > The clock-domain gate now distinguishes the normal single-device
 > path from the dual-Apple USB-C DAC 4-channel pair. The latter is the
 > `dual_apple_usb_c_dac_4ch` hardware profile: exactly two Apple child
@@ -864,7 +879,11 @@ Updated execution plan:
    E150HE-44 worked-example preset; added the Epique E150HE-44 +
    Eminence F110M-8 safe bring-up preset on 2026-06-03 for Jasper's
    immediate mono cabinet build. Real engineering artifacts, expected
-   envelopes, and limiter thresholds are still future work.
+   envelopes, and limiter thresholds are still future work. Expanded
+   2026-06-11 with a no-audio design-draft and crossover-preview layer
+   that captures operator driver intent, bounded external research JSON,
+   and deterministic starting filter intent before any CamillaDSP YAML is
+   generated.
 4. **Channel and path safety slice**: prove every audible source
    path, including TTS/cues and test tones, flows through the active
    baseline and cannot bypass tweeter protection. Started 2026-06-01
@@ -1011,4 +1030,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-10
+Last verified: 2026-06-11

@@ -80,6 +80,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     dirty: false,
     saving: false
   };
+  var crossoverPreview = {payload: null, preparing: false, error: ''};
   var ZERO_DETENT_DB = 0.1;
 
   function el(id) { return document.getElementById(id); }
@@ -810,6 +811,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ingestDesignDraft(payload);
     return payload;
   }
+  function ingestCrossoverPreview(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+    crossoverPreview.payload = payload;
+    crossoverPreview.preparing = false;
+    crossoverPreview.error = '';
+  }
+  async function fetchCrossoverPreview() {
+    var resp = await fetch('./active-speaker/crossover-preview', {cache: 'no-store'});
+    var payload = await resp.json();
+    if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
+    ingestCrossoverPreview(payload);
+    return payload;
+  }
   function toneSummary(tone) {
     var frequency = Number(tone.frequency_hz);
     var level = Number(tone.level_dbfs);
@@ -1075,6 +1089,68 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>' +
     '</div>';
   }
+  function previewStatusClass(value) {
+    if (value === 'ready_for_protected_staging') return ' status-pill--ready';
+    if (value === 'blocked' || value === 'stale' || value === 'unreadable') return ' status-pill--blocked';
+    return '';
+  }
+  function renderPreviewIssues(issues) {
+    issues = Array.isArray(issues) ? issues : [];
+    if (!issues.length) return '';
+    return '<ul class="active-speaker-issues">' + issues.slice(0, 5).map(function(issue) {
+      return '<li>' + escapeHtml(issue.message || issue.code || 'review required') + '</li>';
+    }).join('') + '</ul>';
+  }
+  function renderCrossoverPreviewRows(payload) {
+    var groups = Array.isArray(payload.groups) ? payload.groups : [];
+    var rows = [];
+    groups.forEach(function(group) {
+      (Array.isArray(group.crossovers) ? group.crossovers : []).forEach(function(crossover) {
+        var roles = Array.isArray(crossover.between_roles) ? crossover.between_roles : [];
+        var filter = (Array.isArray(crossover.filters) && crossover.filters[0]) || {};
+        var label = (group.label || group.group_id || 'Speaker') + ': ' + roles.join(' / ');
+        var detail = crossover.proposed_frequency_hz ?
+          fmtFreq(crossover.proposed_frequency_hz) + ', ' +
+          (filter.filter_type || 'filter') + ', ' +
+          String(filter.slope_db_per_octave || 24) + ' dB/oct' :
+          'needs research';
+        rows.push('<div><dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(detail) + '</dd></div>');
+      });
+    });
+    if (!rows.length) {
+      rows.push('<div><dt>Preview</dt><dd>No active crossover candidate prepared yet.</dd></div>');
+    }
+    return '<dl class="active-speaker-facts output-facts">' + rows.join('') + '</dl>';
+  }
+  function renderCrossoverPreviewCard() {
+    var payload = crossoverPreview.payload || {};
+    var value = payload.status || 'not_prepared';
+    var label = value.replace(/_/g, ' ');
+    var summary = payload.summary || {};
+    var canPrepare = driverResearchDraftSaved() && !outputTopology.dirty;
+    var disabled = crossoverPreview.preparing || !canPrepare;
+    var hint = canPrepare ?
+      'Builds bounded filter intent from the saved draft. No YAML, no Camilla load, no sound.' :
+      'Save the output map and design draft before preparing a crossover preview.';
+    if (crossoverPreview.error) hint = crossoverPreview.error;
+    return '<div class="output-card output-card--crossover-preview">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Crossover preview</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(hint) + '</p></div>' +
+        '<span class="status-pill' + previewStatusClass(value) + '">' + escapeHtml(label) + '</span></div>' +
+      renderCrossoverPreviewRows(payload) +
+      '<p class="setting-row__hint">' + escapeHtml(
+        String(summary.ready_crossover_count || 0) + ' ready, ' +
+        String(summary.blocker_count || 0) + ' blocker' +
+        (Number(summary.blocker_count || 0) === 1 ? '' : 's') +
+        '. Measurement is still required before final tuning.'
+      ) + '</p>' +
+      renderPreviewIssues(payload.issues) +
+      '<button type="button" class="btn btn--primary" data-act="prepare-crossover-preview"' +
+        (disabled ? ' disabled' : '') + '>' +
+        escapeHtml(crossoverPreview.preparing ? 'Preparing' : 'Prepare crossover preview') +
+      '</button>' +
+    '</div>';
+  }
   function renderOutputTopologyBody() {
     if (outputTopology.loading && !currentOutputTopology()) {
       return '<p class="setting-row__hint">Loading output topology…</p>';
@@ -1111,7 +1187,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Research drivers',
         'Generate a precise external-assistant prompt, then paste bounded JSON back for review.',
         topology,
-        renderDriverResearchCard(topology),
+        renderDriverResearchCard(topology) +
+          renderCrossoverPreviewCard(),
         renderOutputStepButton('research', 'Next: map outputs', true)
       ) +
       renderOutputStepCard(
@@ -2657,6 +2734,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(); }
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
+    else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
     else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
     else if (act === 'mark-output-protection') { updateOutputChannelProtection(t); }
     else if (act === 'check-output-readiness') { checkOutputPlaybackReadiness(t); }
@@ -2962,6 +3040,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           issues: [{message: draftError.message}]
         };
       }
+      try {
+        await fetchCrossoverPreview();
+      } catch (previewError) {
+        crossoverPreview.payload = null;
+        crossoverPreview.error = previewError.message;
+      }
     } catch (e) {
       outputTopology.loading = false;
       outputTopology.error = e.message;
@@ -2979,6 +3063,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.readinessPlayback = null;
     outputTopology.readinessPlaybackChecking = '';
     driverResearch.dirty = true;
+    crossoverPreview.payload = null;
+    crossoverPreview.error = '';
     activeSpeaker.stagedConfig = null;
     render();
   }
@@ -3259,6 +3345,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'speaker design draft save failed');
       ingestDesignDraft(payload, {force: true});
+      crossoverPreview.payload = null;
+      crossoverPreview.error = '';
       if (options.nextStep) outputStepOverride = options.nextStep;
       status('Saved speaker design draft. No filters were applied and no sound was played.');
       render();
@@ -3267,6 +3355,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.saving = false;
       driverResearch.error = e.message;
       status('Could not save speaker design draft: ' + e.message, true);
+      render();
+      return false;
+    }
+  }
+  async function prepareCrossoverPreview() {
+    if (!driverResearchDraftSaved()) {
+      status('Save a ready speaker design draft before preparing the crossover preview.', true);
+      return false;
+    }
+    crossoverPreview.preparing = true;
+    crossoverPreview.error = '';
+    render();
+    try {
+      var resp = await fetch('./active-speaker/crossover-preview', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({})
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
+      ingestCrossoverPreview(payload);
+      status('Prepared crossover preview. No YAML was emitted, no filters were applied, and no sound was played.');
+      render();
+      return true;
+    } catch (e) {
+      crossoverPreview.preparing = false;
+      crossoverPreview.error = e.message;
+      status('Could not prepare crossover preview: ' + e.message, true);
       render();
       return false;
     }
