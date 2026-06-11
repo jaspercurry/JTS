@@ -155,6 +155,30 @@ def test_output_hardware_state_from_mapping_preserves_zero_apple_dac_count() -> 
     assert len(state.child_devices) == 1
 
 
+def test_output_hardware_state_from_mapping_tolerates_bad_numeric_fields() -> None:
+    state = OutputHardwareState.from_mapping(
+        {
+            "profile_id": HIFIBERRY_DAC8X_DEVICE_ID,
+            "status": "ready",
+            "physical_output_count": "not-an-int",
+            "apple_dac_count": "not-an-int",
+            "child_devices": [
+                {
+                    "card_id": "sndrpihifiberry",
+                    "device_id": HIFIBERRY_DAC8X_DEVICE_ID,
+                },
+                {
+                    "card_id": "A",
+                    "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                },
+            ],
+        }
+    )
+
+    assert state.physical_output_count == 0
+    assert state.apple_dac_count == 1
+
+
 def test_classify_single_apple_as_valid_two_channel_profile() -> None:
     state = classify_output_cards([
         OutputCardFact(
@@ -170,6 +194,50 @@ def test_classify_single_apple_as_valid_two_channel_profile() -> None:
     assert state.status == "ready"
     assert state.physical_output_count == 2
     assert state.selected_card_id == "A"
+
+
+def test_classify_registered_single_dac_uses_profile_contract(monkeypatch) -> None:
+    future = dac.DacProfile(
+        id="future_balanced_dac",
+        label="Future Balanced DAC",
+        kind="single",
+        physical_output_count=6,
+        coherent_clock_domain=True,
+        clock_domain_label="Single future DAC device clock",
+        clock_domain_contract="single_device",
+        outputd_sink="alsa",
+        supported_card_matches=("future balanced",),
+    )
+    base_lookup = output_hardware._dac_profile_by_id
+
+    def lookup(profile_id: str) -> dac.DacProfile | None:
+        if profile_id == future.id:
+            return future
+        return base_lookup(profile_id)
+
+    monkeypatch.setattr(output_hardware, "_dac_profile_by_id", lookup)
+
+    state = classify_output_cards([
+        OutputCardFact(
+            card_id="FUTURE",
+            label="Future Balanced DAC",
+            device_id=future.id,
+            pcm="hw:CARD=FUTURE,DEV=0",
+        ),
+        OutputCardFact(
+            card_id="A",
+            device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        ),
+    ])
+
+    assert state.profile_id == future.id
+    assert state.profile_label == future.label
+    assert state.status == "ready"
+    assert state.physical_output_count == future.physical_output_count
+    assert state.selected_card_id == "FUTURE"
+    assert state.selected_pcm == "hw:CARD=FUTURE,DEV=0"
+    assert state.apple_dac_count == 1
+    assert [child.card_id for child in state.child_devices] == ["FUTURE"]
 
 
 def test_classify_dual_apple_as_exact_four_channel_profile_on_same_bus() -> None:

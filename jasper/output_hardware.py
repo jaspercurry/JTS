@@ -23,9 +23,11 @@ from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID,
+    DacProfile,
     HIFIBERRY_DAC8X_ID,
     HIFIBERRY_DAC8X_STUDIO_ID,
     all_profiles as _all_dac_profiles,
+    by_id as _dac_profile_by_id,
     profile_for_card_label as _dac_profile_for_card_label,
 )
 
@@ -164,6 +166,17 @@ class OutputCardFact:
         return out
 
 
+def _is_apple_output_card(card: OutputCardFact) -> bool:
+    return card.device_id == APPLE_USB_C_DONGLE_DEVICE_ID or (
+        (card.vendor_id or "").lower() == APPLE_USB_VENDOR_ID
+        and (card.product_id or "").lower() == APPLE_USB_PRODUCT_ID
+    )
+
+
+def _apple_card_count(cards: Iterable[OutputCardFact]) -> int:
+    return sum(1 for card in cards if _is_apple_output_card(card))
+
+
 @dataclass(frozen=True)
 class OutputHardwareState:
     """Normalized observed final-output hardware profile."""
@@ -194,19 +207,21 @@ class OutputHardwareState:
         profile_id = normalize_output_device_id(_text(raw.get("profile_id")))
         raw_apple_dac_count = raw.get("apple_dac_count")
         apple_dac_count = (
-            len(children)
+            _apple_card_count(children)
             if raw_apple_dac_count is None
-            else int(raw_apple_dac_count)
+            else _int(raw_apple_dac_count)
         )
         return cls(
             profile_id=profile_id,
             profile_label=_text(raw.get("profile_label"))
             or SUPPORTED_DEVICE_LABELS.get(profile_id, profile_id),
             status=_text(raw.get("status")) or "unknown",
-            physical_output_count=int(raw.get("physical_output_count") or 0),
+            physical_output_count=_int(raw.get("physical_output_count")) or 0,
             selected_card_id=_text(raw.get("selected_card_id")),
             selected_pcm=_text(raw.get("selected_pcm")),
-            apple_dac_count=apple_dac_count,
+            apple_dac_count=apple_dac_count
+            if apple_dac_count is not None
+            else _apple_card_count(children),
             child_devices=children,
             issues=issues,
             observed_at=_text(raw.get("observed_at")),
@@ -271,6 +286,39 @@ def _same_usb_bus(cards: tuple[OutputCardFact, ...]) -> bool | None:
     return len(set(buses)) == 1
 
 
+def _registered_single_dac_cards(
+    cards: tuple[OutputCardFact, ...],
+) -> tuple[tuple[OutputCardFact, DacProfile], ...]:
+    out: list[tuple[OutputCardFact, DacProfile]] = []
+    for card in cards:
+        if _is_apple_output_card(card):
+            continue
+        profile = _dac_profile_by_id(card.device_id)
+        if profile is not None and profile.kind == "single":
+            out.append((card, profile))
+    return tuple(out)
+
+
+def _single_dac_state(
+    card: OutputCardFact,
+    profile: DacProfile,
+    *,
+    apple_dac_count: int,
+    observed_at: str,
+) -> OutputHardwareState:
+    return OutputHardwareState(
+        profile_id=profile.id,
+        profile_label=profile.label,
+        status="ready",
+        physical_output_count=profile.physical_output_count,
+        selected_card_id=card.card_id,
+        selected_pcm=card.pcm,
+        apple_dac_count=apple_dac_count,
+        child_devices=(card,),
+        observed_at=observed_at,
+    )
+
+
 def classify_output_cards(
     cards: Iterable[OutputCardFact],
     *,
@@ -280,45 +328,39 @@ def classify_output_cards(
 
     facts = tuple(card for card in cards if card.has_playback)
     apple = tuple(
-        card for card in facts
-        if card.device_id == APPLE_USB_C_DONGLE_DEVICE_ID
-        or (
-            (card.vendor_id or "").lower() == APPLE_USB_VENDOR_ID
-            and (card.product_id or "").lower() == APPLE_USB_PRODUCT_ID
-        )
-    )
-    dac8x_studio = next(
-        (card for card in facts if card.device_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID),
-        None,
-    )
-    dac8x = next(
-        (card for card in facts if card.device_id == HIFIBERRY_DAC8X_DEVICE_ID),
-        None,
+        card for card in facts if _is_apple_output_card(card)
     )
     observed_at = observed_at or _utc_now()
+    registered_single_dacs = _registered_single_dac_cards(facts)
 
-    if dac8x_studio:
-        return OutputHardwareState(
-            profile_id=HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,
-            profile_label=SUPPORTED_DEVICE_LABELS[HIFIBERRY_DAC8X_STUDIO_DEVICE_ID],
-            status="ready",
-            physical_output_count=8,
-            selected_card_id=dac8x_studio.card_id,
-            selected_pcm=dac8x_studio.pcm,
+    if len(registered_single_dacs) == 1:
+        card, profile = registered_single_dacs[0]
+        return _single_dac_state(
+            card,
+            profile,
             apple_dac_count=len(apple),
-            child_devices=(dac8x_studio,),
             observed_at=observed_at,
         )
-    if dac8x:
+    if len(registered_single_dacs) > 1:
+        labels = ", ".join(
+            f"{card.card_id}:{profile.id}"
+            for card, profile in registered_single_dacs
+        )
         return OutputHardwareState(
-            profile_id=HIFIBERRY_DAC8X_DEVICE_ID,
-            profile_label=SUPPORTED_DEVICE_LABELS[HIFIBERRY_DAC8X_DEVICE_ID],
-            status="ready",
-            physical_output_count=8,
-            selected_card_id=dac8x.card_id,
-            selected_pcm=dac8x.pcm,
+            profile_id="unknown",
+            profile_label="Multiple supported output DACs",
+            status="partial",
+            physical_output_count=0,
             apple_dac_count=len(apple),
-            child_devices=(dac8x,),
+            child_devices=tuple(card for card, _profile in registered_single_dacs),
+            issues=(
+                _issue(
+                    "blocker",
+                    "multiple_registered_output_dacs",
+                    "multiple supported output DACs are present "
+                    f"({labels}); leave only the intended final-output DAC attached",
+                ),
+            ),
             observed_at=observed_at,
         )
 
