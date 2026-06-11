@@ -438,6 +438,11 @@ class TtsPlayout:
         # gain. Until then we'd rather have inaudible TTS than blast.
         self._gain_linear = float(10 ** (self.MIN_TTS_GAIN_DB / 20.0))
         self._gain_db = self.MIN_TTS_GAIN_DB
+        # Cumulative pacing-sleep time since the last take_paced_sec().
+        # Only the outputd/fan-in transport paces (the PortAudio path is
+        # device-paced), but the field lives here so every transport
+        # answers take_paced_sec() and callers stay transport-agnostic.
+        self._paced_total_sec = 0.0
         self._stream: sd.RawOutputStream | None = None
         # One-shot warning latch: if a caller invokes write() before
         # entering the async context (so _stream is still None), log
@@ -695,13 +700,26 @@ class TtsPlayout:
         if remaining > 0.0:
             await asyncio.sleep(remaining)
 
+    def take_paced_sec(self) -> float:
+        """Pacing-sleep seconds accumulated since the last call; resets.
+
+        The voice daemon reads this once per turn for the turn-ended
+        accounting line. Zero means no write waited on the IPC owner's
+        pending budget (always true for the device-paced PortAudio
+        transport, which never sleeps deliberately).
+        """
+        v = self._paced_total_sec
+        self._paced_total_sec = 0.0
+        return v
+
 
 _OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE
 _OUTPUTD_SAMPLE_RATE = 48_000
 _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC = 3.0
 # Keep individual IPC messages well below the daemon's 2 MiB hard cap.
-# 250 ms chunks make barge-in/flush sharper and apply backpressure more
-# gradually than sending a whole cached WAV in one command.
+# 250 ms chunks make barge-in/flush sharper and set the granularity at
+# which the writer's pacing (below) applies backpressure. Chunking alone
+# applies none — the owner drops on overflow rather than blocking.
 _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
     _OUTPUTD_SAMPLE_RATE * _OUTPUTD_AUDIO_FRAME_BYTES // 4
 )
@@ -714,12 +732,19 @@ _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
 # audio in ~4 s), so an unpaced writer overflows the budget and the
 # surviving chunks play as garbled "fast-forward" audio
 # (event=fanin.tts_command_dropped, observed on JTS3 2026-06-11).
-# Keeping ≤1.2 s queued ahead of realtime leaves 0.55 s of margin against
-# event-loop jitter (2.0 s budget − 1.2 s watermark − one 0.25 s IPC
-# chunk) while staying deep enough that a stalled writer has >1 s before
-# audible underrun. tests/test_tts_ipc_pacing.py pins the watermark
-# against the Rust budget so the two cannot silently drift apart.
+# Keeping ≤1.2 s queued ahead of realtime leaves 0.55 s of margin
+# (2.0 s budget − 1.2 s watermark − one 0.25 s IPC chunk) against
+# event-loop jitter AND the bounded drift from a concurrent same-object
+# writer (the fire-and-forget listening chirp, ~0.3 s, whose ring update
+# can race another write's local pacing mirror), while staying deep
+# enough that a stalled writer has >1 s before audible underrun.
+# tests/test_tts_ipc_pacing.py pins the watermark against the Rust
+# budget so the two cannot silently drift apart.
 _OUTPUTD_PACE_AHEAD_SEC = 1.2
+
+# Pacing sleeps go through this alias so tests can substitute a spy
+# without patching the global asyncio module.
+_pace_sleep = asyncio.sleep
 
 
 def _outputd_audio_chunks(data: bytes):
@@ -1238,8 +1263,9 @@ class OutputdTtsPlayout(TtsPlayout):
                 queued_end = now
             pace_excess = (queued_end - now) - _OUTPUTD_PACE_AHEAD_SEC
             if pace_excess > 0:
-                await asyncio.sleep(pace_excess)
+                await _pace_sleep(pace_excess)
                 paced_sec += pace_excess
+                self._paced_total_sec += pace_excess
             try:
                 await asyncio.to_thread(stream.write, chunk)
             except OSError:

@@ -112,6 +112,9 @@ def _make_wakeloop():
         async def end_segment(self):
             return None
 
+        def take_paced_sec(self):
+            return 0.0
+
     wl = WakeLoop.__new__(WakeLoop)
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
