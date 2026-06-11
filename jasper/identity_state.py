@@ -28,6 +28,12 @@ different needs:
 A missing file (fresh install before the first reconciler run, dev
 checkout) degrades to "no extra names / status=absent" — exactly the
 pre-reconciler behavior.
+
+Scope split with :mod:`jasper.identity`: that module reads the
+*intended* identity (display name, room, configured hostname, stable
+peer_id — who the speaker is supposed to be). This one reads the
+*observed* network identity (what the LAN currently resolves). The
+reconciler exists precisely because the two can disagree.
 """
 from __future__ import annotations
 

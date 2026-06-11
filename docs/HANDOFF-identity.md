@@ -152,6 +152,34 @@ Fix: pick a unique name for one of them —
 `bash scripts/rename-speaker.sh <unique-name>` against the renamed
 speaker (its `.env.local` checkout or `PI_HOST=jts-2.local`).
 
+## Addressing a *specific* speaker — peer_id
+
+Names are transport; `peer_id` is identity. Every speaker advertises
+its stable UUID (`/var/lib/jasper/peer_id`, written once by the
+peering layer, survives renames / IP churn / collision renames) as a
+`peer_id=` TXT record on the always-on `_jasper-control._tcp` advert
+([control_advert.py](../jasper/control_advert.py)). mDNS is
+unauthenticated, so treat peer_id as a stable handle, not a security
+boundary — confirm trust-sensitive operations over HTTP against the
+speaker itself.
+
+Consumers today:
+
+- **Laptop deploy guard** — `deploy-to-pi.sh` records the target's
+  peer_id into `.env.local` on first contact (`PI_PEER_ID=…`, TOFU)
+  and **aborts before rsync** when a later deploy's target identity
+  doesn't match: after a collision rename or a re-image, `PI_HOST`
+  can resolve to a different speaker than the checkout means.
+  Deliberate re-image: `JTS_ACCEPT_NEW_IDENTITY=1 bash
+  scripts/deploy-to-pi.sh`. `scripts/use` resets the recorded
+  identity (switching targets = new TOFU). Helper + outcome tokens:
+  `verify_or_record_peer_id` in [scripts/_lib.sh](../scripts/_lib.sh).
+
+Planned consumers (sequenced in their own subsystems): multiroom
+leader pinning (the bond-forming UI stores `leader` as peer_id and
+resolves to an address at use time — see `docs/HANDOFF-multiroom.md`),
+accessory pinning for dial/satellites.
+
 ## Boundaries / non-goals
 
 - The reconciler does not auto-rename or auto-rewrite `jasper.env` —
@@ -159,8 +187,5 @@ speaker (its `.env.local` checkout or `PI_HOST=jts-2.local`).
   visibility + reachability are the automated part, convergence is
   deliberate.
 - Display-name plumbing stays with the `/speaker/` wizard.
-- Peer addressing by stable `peer_id` (multiroom leader pinning,
-  laptop deploy-target verification) is the next layer up — see the
-  multiroom docs once landed.
 
 Last verified: 2026-06-11

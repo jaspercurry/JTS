@@ -133,3 +133,57 @@ Switch this checkout to a different speaker without re-onboarding:
 [AGENTS.md](AGENTS.md) "Laptop-side state" for the full convention.
 EOF
 }
+
+# Deploy-target identity guard (TOFU). mDNS names are transport, not
+# identity: after an Avahi collision rename or a re-image, PI_HOST can
+# resolve to a DIFFERENT speaker than this checkout means. The first
+# verified deploy records the target's stable peer_id
+# (/var/lib/jasper/peer_id, advertised as the peer_id= TXT record on
+# _jasper-control._tcp) into .env.local; later deploys compare.
+#
+#   verify_or_record_peer_id <remote_id> <env_file> [accept_new]
+#
+# Echoes one outcome token (consumed by deploy-to-pi.sh's messaging):
+#   unavailable    remote has no peer_id yet (pre-identity build) — skip
+#   no_state_file  no .env.local to record into (env-var-driven deploy) — skip
+#   recorded       first contact: appended PI_PEER_ID=<id>
+#   match          recorded identity matches the remote
+#   rerecorded     mismatch + accept_new=1: recorded id replaced
+#   mismatch       recorded identity does NOT match — caller must abort
+# Returns 1 only on mismatch.
+verify_or_record_peer_id() {
+    local remote_id="$1" env_file="$2" accept_new="${3:-}"
+    remote_id="$(printf '%s' "$remote_id" | tr -d '[:space:]')"
+    if [[ -z "$remote_id" ]]; then
+        echo "unavailable"
+        return 0
+    fi
+    if [[ ! -f "$env_file" ]]; then
+        echo "no_state_file"
+        return 0
+    fi
+    local recorded
+    recorded="$(grep -E '^PI_PEER_ID=' "$env_file" 2>/dev/null \
+        | tail -n1 | cut -d= -f2- | tr -d '[:space:]')"
+    if [[ -z "$recorded" ]]; then
+        printf 'PI_PEER_ID=%s\n' "$remote_id" >> "$env_file"
+        echo "recorded"
+        return 0
+    fi
+    if [[ "$recorded" == "$remote_id" ]]; then
+        echo "match"
+        return 0
+    fi
+    if [[ "$accept_new" == "1" ]]; then
+        if sed -i.bak "s/^PI_PEER_ID=.*/PI_PEER_ID=${remote_id}/" "$env_file" 2>/dev/null; then
+            rm -f "${env_file}.bak"
+            echo "rerecorded"
+            return 0
+        fi
+        rm -f "${env_file}.bak"
+        # Could not rewrite — fall through to mismatch so the caller
+        # aborts rather than silently deploying unverified.
+    fi
+    echo "mismatch recorded=${recorded} remote=${remote_id}"
+    return 1
+}

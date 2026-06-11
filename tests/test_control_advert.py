@@ -130,18 +130,21 @@ def test_module_path_constants_are_pinned():
 
 def test_render_fills_name_into_valid_xml(template, tmp_path, _mock_avahi_reload):
     out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert("Kitchen", template=str(template), out=str(out), reload=True)
+    ok = ca.render_control_advert(
+        "Kitchen", peer_id="pid-1", template=str(template), out=str(out), reload=True,
+    )
     assert ok is True
     text = out.read_text()
 
     # Parses as well-formed XML (minidom + ElementTree, two independent
     # parsers) — this is what proves Avahi will accept the service-group.
-    assert _txt_records(text) == ["name=Kitchen"]
+    assert _txt_records(text) == ["name=Kitchen", "peer_id=pid-1"]
     et = ET.fromstring(text)
     assert et.find("./service/txt-record").text == "name=Kitchen"
 
-    # The placeholder is fully consumed.
+    # Both placeholders are fully consumed.
     assert "__SPEAKER_NAME__" not in text
+    assert "__PEER_ID__" not in text
     # Reload was attempted (reload=True).
     assert len(_mock_avahi_reload.calls) == 1
 
@@ -158,7 +161,9 @@ def test_hostile_name_yields_valid_xml_and_round_trips(template, tmp_path):
     escape would drop the whole <service-group> and take the dial offline.
     """
     out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert(HOSTILE_NAME, template=str(template), out=str(out), reload=False)
+    ok = ca.render_control_advert(
+        HOSTILE_NAME, peer_id="pid-1", template=str(template), out=str(out), reload=False,
+    )
     assert ok is True
     text = out.read_text()
 
@@ -173,7 +178,7 @@ def test_hostile_name_yields_valid_xml_and_round_trips(template, tmp_path):
     et_txt = ET.fromstring(text).find("./service/txt-record").text  # ElementTree
 
     # And the hostile name round-trips out of the (now-unescaped) TXT value.
-    assert txts == ["name=" + HOSTILE_NAME]
+    assert txts == ["name=" + HOSTILE_NAME, "peer_id=pid-1"]
     assert et_txt == "name=" + HOSTILE_NAME
 
 
@@ -183,11 +188,13 @@ def test_hostile_name_does_not_break_out_of_service_group(template, tmp_path):
     and the document root is still <service-group> — the hostile string
     didn't inject a sibling element."""
     out = tmp_path / "rendered.service"
-    ca.render_control_advert(HOSTILE_NAME, template=str(template), out=str(out), reload=False)
+    ca.render_control_advert(
+        HOSTILE_NAME, peer_id="pid-1", template=str(template), out=str(out), reload=False,
+    )
     root = ET.fromstring(out.read_text())
     assert root.tag == "service-group"
     assert len(root.findall("./service")) == 1
-    assert len(root.findall("./service/txt-record")) == 1
+    assert len(root.findall("./service/txt-record")) == 2
 
 
 # ----------------------------------------------------------------------
@@ -200,10 +207,12 @@ def test_empty_name_falls_back_to_hostname(template, tmp_path, monkeypatch):
     hostname so the service always advertises something addressable."""
     monkeypatch.setenv("JASPER_HOSTNAME", "myhost.local")
     out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert("", template=str(template), out=str(out), reload=False)
+    ok = ca.render_control_advert(
+        "", peer_id="pid-1", template=str(template), out=str(out), reload=False,
+    )
     assert ok is True
     txts = _txt_records(out.read_text())
-    assert txts == ["name=myhost.local"]
+    assert txts == ["name=myhost.local", "peer_id=pid-1"]
     # The value after `name=` is non-empty.
     assert txts[0].split("name=", 1)[1] != ""
 
@@ -213,9 +222,11 @@ def test_blank_whitespace_name_falls_back_to_hostname(template, tmp_path, monkey
     falls back to the hostname — never a blank TXT."""
     monkeypatch.setenv("JASPER_HOSTNAME", "ws.local")
     out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert("   ", template=str(template), out=str(out), reload=False)
+    ok = ca.render_control_advert(
+        "   ", peer_id="pid-1", template=str(template), out=str(out), reload=False,
+    )
     assert ok is True
-    assert _txt_records(out.read_text()) == ["name=ws.local"]
+    assert _txt_records(out.read_text()) == ["name=ws.local", "peer_id=pid-1"]
 
 
 def test_unset_hostname_uses_default_jts_local(template, tmp_path, monkeypatch):
@@ -223,9 +234,11 @@ def test_unset_hostname_uses_default_jts_local(template, tmp_path, monkeypatch):
     to a non-empty default (jts.local) rather than an empty value."""
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
     out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert("", template=str(template), out=str(out), reload=False)
+    ok = ca.render_control_advert(
+        "", peer_id="pid-1", template=str(template), out=str(out), reload=False,
+    )
     assert ok is True
-    assert _txt_records(out.read_text()) == ["name=jts.local"]
+    assert _txt_records(out.read_text()) == ["name=jts.local", "peer_id=pid-1"]
 
 
 # ----------------------------------------------------------------------
@@ -242,9 +255,11 @@ def test_none_name_reads_speaker_name_module(template, tmp_path, monkeypatch):
     identity consumer."""
     monkeypatch.setattr("jasper.speaker_name.runtime_name", lambda: "Living Room")
     out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert(None, template=str(template), out=str(out), reload=False)
+    ok = ca.render_control_advert(
+        None, peer_id="pid-1", template=str(template), out=str(out), reload=False,
+    )
     assert ok is True
-    assert _txt_records(out.read_text()) == ["name=Living Room"]
+    assert _txt_records(out.read_text()) == ["name=Living Room", "peer_id=pid-1"]
 
 
 def test_none_name_reader_failure_still_advertises_identity_default(template, tmp_path, monkeypatch):
@@ -264,10 +279,12 @@ def test_none_name_reader_failure_still_advertises_identity_default(template, tm
     monkeypatch.setattr("jasper.speaker_name.runtime_name", _boom)
     monkeypatch.setenv("JASPER_HOSTNAME", "fallback.local")
     out = tmp_path / "rendered.service"
-    ok = ca.render_control_advert(None, template=str(template), out=str(out), reload=False)
+    ok = ca.render_control_advert(
+        None, peer_id="pid-1", template=str(template), out=str(out), reload=False,
+    )
     assert ok is True
     txts = _txt_records(out.read_text())
-    assert txts == ["name=JTS"]
+    assert txts == ["name=JTS", "peer_id=pid-1"]
     # The load-bearing invariant: never an empty TXT, never a raise.
     assert txts[0].split("name=", 1)[1] != ""
 
@@ -284,22 +301,26 @@ def test_rendered_service_block_byte_equivalent_to_static(template, tmp_path):
     drift in this block could rename/move the service and break discovery.
     """
     out = tmp_path / "rendered.service"
-    ca.render_control_advert("Whatever", template=str(template), out=str(out), reload=False)
+    ca.render_control_advert(
+        "Whatever", peer_id="pid-1", template=str(template), out=str(out), reload=False,
+    )
 
     rendered_block = _service_block(out.read_text())
     static_block = _service_block(_STATIC_SRC.read_text())
 
-    # Strip exactly the one added txt-record line (and the leading newline +
-    # indentation it owns). What remains must equal the static block byte-
-    # for-byte: same <type>, same <port>, same whitespace.
-    stripped = re.sub(r"\n[ \t]*<txt-record>name=.*?</txt-record>", "", rendered_block)
+    # Strip exactly the two added txt-record lines (and the leading newline
+    # + indentation each owns). What remains must equal the static block
+    # byte-for-byte: same <type>, same <port>, same whitespace.
+    stripped = re.sub(
+        r"\n[ \t]*<txt-record>(?:name|peer_id)=.*?</txt-record>", "", rendered_block,
+    )
     assert stripped == static_block
 
     # And, positively, the rendered block carries the type + port verbatim
-    # and exactly one txt-record more than the static block.
+    # and exactly two txt-records more than the static block.
     assert "<type>_jasper-control._tcp</type>" in rendered_block
     assert "<port>8780</port>" in rendered_block
-    assert rendered_block.count("<txt-record>") == static_block.count("<txt-record>") + 1
+    assert rendered_block.count("<txt-record>") == static_block.count("<txt-record>") + 2
 
 
 def test_template_service_block_only_adds_txt_record():
@@ -310,7 +331,8 @@ def test_template_service_block_only_adds_txt_record():
     tmpl_block = _service_block(_TEMPLATE_SRC.read_text())
     static_block = _service_block(_STATIC_SRC.read_text())
     stripped = re.sub(
-        r"\n[ \t]*<txt-record>name=__SPEAKER_NAME__</txt-record>", "", tmpl_block
+        r"\n[ \t]*<txt-record>(?:name=__SPEAKER_NAME__|peer_id=__PEER_ID__)</txt-record>",
+        "", tmpl_block,
     )
     assert stripped == static_block
 
@@ -446,3 +468,58 @@ def test_public_surface_is_stable():
     assert callable(ca.render_control_advert)
     assert isinstance(ca.CONTROL_AVAHI_TEMPLATE, str)
     assert isinstance(ca.CONTROL_AVAHI_SERVICE, str)
+
+
+# ----------------------------------------------------------------------
+# peer_id TXT — stable identity rides the always-on advert.
+# ----------------------------------------------------------------------
+
+
+def test_default_peer_id_reads_identity(template, tmp_path, monkeypatch):
+    """`render_control_advert()` with no peer_id reads the stable identity
+    through the single identity reader, so consumers (laptop deploy guard,
+    /rooms bond UI, accessory pinning) can address a SPECIFIC speaker and
+    treat the advertised hostname as transport, never identity."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "jasper.identity.read_identity",
+        lambda: SimpleNamespace(peer_id="uuid-abc-123"),
+    )
+    out = tmp_path / "rendered.service"
+    ok = ca.render_control_advert(
+        "Kitchen", template=str(template), out=str(out), reload=False,
+    )
+    assert ok is True
+    assert _txt_records(out.read_text()) == ["name=Kitchen", "peer_id=uuid-abc-123"]
+
+
+def test_peer_id_reader_failure_never_breaks_advertising(template, tmp_path, monkeypatch):
+    """A raising identity read must not take the advert down — the dial
+    depends on _jasper-control._tcp always existing. The peer_id TXT
+    degrades to an empty value; the service still renders + parses."""
+    def _boom():
+        raise RuntimeError("peer_id unreadable")
+
+    monkeypatch.setattr("jasper.identity.read_identity", _boom)
+    out = tmp_path / "rendered.service"
+    ok = ca.render_control_advert(
+        "Kitchen", template=str(template), out=str(out), reload=False,
+    )
+    assert ok is True
+    assert _txt_records(out.read_text()) == ["name=Kitchen", "peer_id="]
+
+
+def test_hostile_peer_id_is_escaped_and_round_trips(template, tmp_path):
+    """peer_id is a UUID in practice, but the renderer must not TRUST that:
+    a hostile value goes through the same XML escape as the name (one
+    unescaped metacharacter would drop the whole service-group)."""
+    hostile = 'p & <q> "r"'
+    out = tmp_path / "rendered.service"
+    ok = ca.render_control_advert(
+        "Kitchen", peer_id=hostile, template=str(template), out=str(out), reload=False,
+    )
+    assert ok is True
+    text = out.read_text()
+    assert "<q>" not in text
+    assert _txt_records(text) == ["name=Kitchen", "peer_id=" + hostile]

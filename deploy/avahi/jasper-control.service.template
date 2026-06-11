@@ -24,6 +24,15 @@
   friendly name peers see on Spotify / AirPlay / Bluetooth. The
   rendered value is XML-escaped before substitution (a stray `&` or
   `<` would drop the whole service-group and break dial discovery).
+  The `peer_id=` TXT record carries the speaker's stable identity
+  (/var/lib/jasper/peer_id — a UUID that survives renames, IP churn,
+  and Avahi collision renames). Consumers that must address a
+  SPECIFIC speaker — the laptop deploy guard, the /rooms bond-forming
+  UI, future accessory pinning — match on peer_id and treat the
+  advertised hostname as transport, never as identity. mDNS is
+  unauthenticated, so peer_id is a stable handle, not a security
+  boundary: anything trust-sensitive confirms it over HTTP against
+  the speaker itself.
   Unlike _jasper-peer, this service is ALWAYS advertised — it is the
   always-on control-plane advert the dial depends on — so the
   rendered file always exists (never removed).
@@ -37,5 +46,6 @@
     <type>_jasper-control._tcp</type>
     <port>8780</port>
     <txt-record>name=__SPEAKER_NAME__</txt-record>
+    <txt-record>peer_id=__PEER_ID__</txt-record>
   </service>
 </service-group>
