@@ -18,25 +18,25 @@
 > emits muted/protected CamillaDSP startup templates with explicit
 > active-hardware playback device input, `volume_limit: 0.0`, startup
 > headroom, tweeter protective HP, per-driver mute, and per-driver
-> limiter chains. `/sound/` has an Advanced speaker setup entry point;
-> its **Check environment** action is read-only: it calls
-> `/sound/active-speaker/environment` and displays the read-only
-> environment report without touching live audio.
-> The same card now includes a lightweight Output setup UI over
-> `/sound/output-topology`; it can render detected physical outputs,
-> speaker groups, assigned/unassigned lanes, safety evidence, and
-> no-audio setup templates for mono/stereo passive, mono/stereo active
-> 2-way, and mono/stereo active 3-way wiring. Subwoofer is an optional
-> add-on to the current draft rather than a duplicated template matrix:
-> when an unused physical output exists, the UI adds one `subwoofer`
-> group and records it in `routing.subwoofer_group_ids`. Saving that map
-> only persists the output topology JSON and runs backend validation; it
-> does not load CamillaDSP or emit sound. The UI organizes this work as
-> collapsible task cards — choose layout, research drivers, map and verify
-> outputs, then stage/load/start quiet. The open card is derived from existing
-> output/topology/startup state plus transient browser intent; it does not
-> create a separate persisted wizard-progress source of truth, and earlier
-> cards remain editable.
+> limiter chains. `/sound/` has an Advanced speaker setup entry point
+> with one primary **Active crossover setup** walkthrough over
+> `/sound/output-topology`. The UI renders detected physical outputs,
+> speaker groups, assigned/unassigned lanes, safety evidence, and no-audio
+> setup templates for mono/stereo passive, mono/stereo active 2-way, and
+> mono/stereo active 3-way wiring. Subwoofer is an optional add-on to the
+> current draft rather than a duplicated template matrix: when an unused
+> physical output exists, the UI adds one `subwoofer` group and records it
+> in `routing.subwoofer_group_ids`. Saving that speaker layout only persists
+> the output topology JSON and runs backend validation; it does not load
+> CamillaDSP or emit sound. The UI organizes this work as collapsible task
+> cards — choose layout, research drivers, map and verify outputs, then
+> prepare safe test mode. It defaults to the first task card on page load,
+> keeps one task card open at a time, prevents opening future prerequisite-gated
+> cards, and uses only transient browser intent when the operator advances or
+> reopens a card; it does not create a separate persisted wizard-progress source
+> of truth, and earlier cards remain editable. The safety preflight still calls
+> `/sound/active-speaker/environment` and displays the read-only environment
+> report without touching live audio.
 > `/sound/active-speaker/channel-identity` now exposes and updates
 > operator-confirmed physical channel identity evidence for the saved
 > topology. The UI can mark or clear an assigned channel as physically
@@ -107,7 +107,7 @@
 > includes a read-only **Commissioning rehearsal** packet from
 > `jasper.active_speaker.commissioning` and
 > `/sound/active-speaker/commissioning-rehearsal`. It rehearses the durable
-> sequence from saved output map through safe-session/floor readiness without
+> sequence from saved speaker layout through safe-session/floor readiness without
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > readiness, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
@@ -297,20 +297,20 @@ still must satisfy the safety gates before sound-emitting active use:
   sends the complete signal through CamillaDSP crossover/protection.
   The dual Apple active-output profile then has `jasper-outputd` split
   the resulting four-channel lane to two pinned Apple DAC PCMs.
-- Active crossover output needs a stable multi-output map. For a
+- Active crossover output needs a stable multi-output speaker layout. For a
   mono active cabinet this is at least two physical outputs
   (`woofer`, `tweeter`). For a stereo active pair this is four
   physical outputs (`left_woofer`, `left_tweeter`,
   `right_woofer`, `right_tweeter`).
-- The current active-speaker preset `channel_map` is a **logical
-  CamillaDSP output map**, not a complete physical-DAC setup UI. A
-  future DAC/speaker setup surface must discover or accept the
-  physical device lanes, let users group lanes into speakers, swap
-  left/right, mark passive speakers, assign active driver roles up to
-  3-way, and identify subwoofer outputs. Do not bake HiFiBerry DAC-X8,
-  Apple dongle, or any other DAC-specific physical assumption into
-  `tone_plan` or the dry playback artifact backend.
-- That future setup surface now has a backend substrate:
+- The active-speaker preset `channel_map` remains a **logical CamillaDSP
+  output contract**, not the user-facing source of physical speaker wiring.
+  The `/sound/` Active crossover setup surface owns the physical layout draft:
+  it accepts detected device lanes, lets users group lanes into speakers, swap
+  left/right through role assignment, mark passive speakers, assign active
+  driver roles up to 3-way, and identify subwoofer outputs. Do not bake
+  HiFiBerry DAC-X8, Apple dongle, or any other DAC-specific physical
+  assumption into `tone_plan` or the dry playback artifact backend.
+- That product surface uses the backend substrate:
   `jasper.output_topology` and `/sound/output-topology` persist a
   versioned, complete-replacement topology draft at
   `/var/lib/jasper/output_topology.json`. It can describe physical DAC
@@ -725,7 +725,7 @@ probe still does not perform physical channel verification or generate
 hardware-probe-backed path-safety evidence by itself. For a tweeter/
 high-frequency target, the report includes a `high_frequency_driver` section
 that distinguishes blocked evidence, manual floor-test candidate evidence, and
-guided floor-test candidate evidence from the saved output map, protection
+guided floor-test candidate evidence from the saved speaker layout, protection
 mode, loaded protected DSP, Stop/session state, calibration floor, and
 operator-observed mic status. That section also includes a `floor_test_preview`
 object and deterministic `auto_level` decision. Unknown high-frequency style
@@ -797,7 +797,7 @@ records the coarse mic-meter status (`unmeasured`, `too_quiet`, `low`,
 `usable`, `too_loud`, `clipping`) without changing the requested test level
 unless clipping forces a floor reset. The same route also accepts
 `action=auto_step` for one saved topology target (`speaker_group_id`, role):
-the backend resolves the target from the saved output map, recomputes driver
+the backend resolves the target from the saved speaker layout, recomputes driver
 protection, checks same-target floor-audio evidence from the armed safe
 session, consumes the latest mic observation, then persists at most one
 deterministic raise/lower/reset/hold transition. Every upward auto-level step
