@@ -22,6 +22,7 @@ _INDEX_PATH = _REPO / "deploy" / "index.html"
 _PREFLIGHT_PATH = _REPO / "deploy" / "correction-preflight.html"
 _NGINX_PATH = _REPO / "deploy" / "nginx-jasper.conf"
 _INSTALL_PATH = _REPO / "deploy" / "install.sh"
+_WEB_ASSETS_LIB_PATH = _REPO / "deploy" / "lib" / "install" / "web-assets.sh"
 _FONT_DIR = _REPO / "deploy" / "assets" / "fonts"
 _APP_CSS_PATH = _REPO / "deploy" / "assets" / "app.css"
 
@@ -444,17 +445,25 @@ def test_install_prunes_retired_integrations_page() -> None:
 
 
 def test_install_copies_landing_page_font_assets() -> None:
-    install = _INSTALL_PATH.read_text(encoding="utf-8")
+    # The copy lives in the web-assets lib (manifested, doctor-verified);
+    # install.sh sources the lib and runs it.
+    web_assets = _WEB_ASSETS_LIB_PATH.read_text(encoding="utf-8")
 
-    assert "/usr/share/jasper-web/assets/fonts" in install
-    assert 'deploy/assets/fonts/"*' in install
+    assert 'deploy/assets/fonts/"*' in web_assets
+    assert '${assets_root}/fonts/' in web_assets
+    assert "deploy/lib/install/web-assets.sh" in _INSTALL_PATH.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_install_copies_and_stamps_app_css() -> None:
+    # The copy lives in the web-assets lib; the cache-bust stamping stays
+    # in install.sh (it rewrites index.html, not an asset).
+    web_assets = _WEB_ASSETS_LIB_PATH.read_text(encoding="utf-8")
     install = _INSTALL_PATH.read_text(encoding="utf-8")
 
-    assert "deploy/assets/app.css" in install
-    assert "/usr/share/jasper-web/assets/app.css" in install
+    assert "deploy/assets/app.css" in web_assets
+    assert "${assets_root}/app.css" in web_assets
     # The static landing page's app.css link is cache-busted at install
     # time by substituting the build SHA into the version placeholder.
     assert "__APP_CSS_VERSION__" in _index_html()

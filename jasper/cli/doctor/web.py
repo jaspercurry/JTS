@@ -11,46 +11,73 @@ from pathlib import Path
 from ._registry import doctor_check
 from ._shared import CheckResult
 
+def _manifest_entries(manifest: Path) -> list[str]:
+    """Relative asset paths from the installer-written manifest.
+
+    install_web_assets (deploy/lib/install/web-assets.sh) writes one
+    assets/-relative path per line. Tolerate anything else — a blank,
+    comment, absolute, or path-traversing line is dropped rather than
+    letting one bad byte distort the check."""
+    entries: list[str] = []
+    for raw in manifest.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", "/")) or ".." in line:
+            continue
+        entries.append(line)
+    return entries
+
+
 @doctor_check(order=24, group="web")
 def check_web_design_assets() -> CheckResult:
-    """The shared management-UI stylesheet must be installed.
+    """Every installed management-UI static asset must be present.
 
-    The redesigned wizards and the landing page link /assets/app.css for
-    the canonical design system; nginx serves it from
-    /usr/share/jasper-web/assets/. If it's missing, pages render
-    unstyled — visible but not fatal, so warn (redeploy). On a non-Pi
-    checkout (no /usr/share/jasper-web) there's nothing to verify."""
+    install_web_assets records each copied asset (app.css, fonts,
+    per-page CSS + ES modules, the shared cross-page modules) in
+    assets/.install-manifest, and this check verifies the installed
+    tree against it — no hand list to drift as pages migrate. A
+    missing stylesheet renders unstyled-but-visible; a missing JS
+    module blanks the page — and a missing shared module blanks every
+    importing page at once. A missing *manifest* means the asset tree
+    predates the manifest-writing installer (or an install died before
+    reaching it), so the tree can't be verified at all — warn rather
+    than guess from a stale built-in list, which could pass a partial
+    tree as green. All admin-only and non-fatal: redeploy fixes each
+    case. On a non-Pi checkout (no /usr/share/jasper-web) there's
+    nothing to verify."""
     web_root = Path(os.environ.get("JASPER_WEB_SHARE_DIR", "/usr/share/jasper-web"))
     if not web_root.is_dir():
         return CheckResult("web design assets", "ok", "not installed (skipped)")
-    # Static assets for the redesigned pages (/system/, /sound/): the shared
-    # stylesheet, each page's own stylesheet, each page's ES module entry, and
-    # the shared cross-page <dialog> helper module. A missing stylesheet renders
-    # unstyled-but-visible; a missing JS module blanks the page — both admin-only
-    # and non-fatal, so warn (redeploy).
-    app_css = web_root / "assets" / "app.css"
-    fonts = web_root / "assets" / "fonts"
-    required = (
-        app_css,
-        web_root / "assets" / "system-status" / "system.css",
-        web_root / "assets" / "system-status" / "js" / "main.js",
-        web_root / "assets" / "sound-profile" / "sound.css",
-        web_root / "assets" / "sound-profile" / "js" / "main.js",
-        web_root / "assets" / "correction" / "correction.css",
-        web_root / "assets" / "correction" / "js" / "main.js",
-        web_root / "assets" / "shared" / "js" / "dialog.js",
-    )
-    missing = [str(p.relative_to(web_root)) for p in required if not p.is_file()]
-    if not fonts.is_dir():
-        missing.append("assets/fonts/")
-    if missing:
+    assets_root = web_root / "assets"
+    manifest = assets_root / ".install-manifest"
+    if not manifest.is_file():
         return CheckResult(
             "web design assets", "warn",
-            "missing: " + ", ".join(sorted(missing))
+            f"{manifest} missing — the installed assets predate the "
+            "manifest-writing installer (or the install was interrupted); "
+            "redeploy to write it and verify the asset tree",
+        )
+    # app.css is in the manifest, but pin it explicitly too: it is the
+    # design system itself, and one hardcoded path can't drift.
+    seen: dict[Path, None] = {assets_root / "app.css": None}
+    for entry in _manifest_entries(manifest):
+        seen.setdefault(assets_root / entry, None)
+    required = tuple(seen)
+    missing = [str(p.relative_to(web_root)) for p in required if not p.is_file()]
+    if missing:
+        shown = sorted(missing)[:12]
+        overflow = len(missing) - len(shown)
+        if overflow:
+            shown.append(f"(+{overflow} more)")
+        return CheckResult(
+            "web design assets", "warn",
+            "missing: " + ", ".join(shown)
             + " — redeploy to install (missing CSS renders unstyled; a "
             "missing JS module blanks the page)",
         )
-    return CheckResult("web design assets", "ok", str(app_css))
+    return CheckResult(
+        "web design assets", "ok",
+        f"{len(required)} assets verified against {manifest.name}",
+    )
 
 
 # Probe target for check_management_surface. Module constants so tests can

@@ -335,7 +335,11 @@ modules.
 
 Treat device names, SSIDs, USB descriptors, Bluetooth MAC-adjacent
 metadata, and browser-provided labels as untrusted. Escape before
-assigning to `innerHTML`, or use DOM/text APIs where practical. Do not
+assigning to `innerHTML`, or use DOM/text APIs where practical — on the
+ES-module pages that means `escapeHtml` from
+[`/assets/shared/js/escape.js`](deploy/assets/shared/js/escape.js), the
+shared module promoted from per-page copies; the conventions test fails
+any page module that re-declares its own escaper. Do not
 put untrusted strings into generated inline JavaScript such as
 `onclick="handler('...')"`. Prefer escaped `data-*` attributes with a
 delegated click handler.
@@ -431,8 +435,10 @@ migrated page imports it by absolute path (`/assets/shared/js/dialog.js`) and
 `/system/`'s restart/reboot guards — the click did nothing, with no feedback.
 `<dialog>.showModal()` can't be suppressed and brings a focus trap,
 ESC-to-cancel, and a backdrop for free; `danger:true` reddens the confirm
-button and autofocuses Cancel. `install.sh` copies `shared/` like a page dir;
-`jasper-doctor`'s `check_web_design_assets` lists `shared/js/dialog.js`; a
+button and autofocuses Cancel. `install.sh` copies `shared/` like a page dir
+and records every copied asset in `assets/.install-manifest`
+([`deploy/lib/install/web-assets.sh`](deploy/lib/install/web-assets.sh)), which
+`jasper-doctor`'s `check_web_design_assets` verifies file-by-file; a
 regression test in
 [`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
 keeps native `confirm()`/`alert()`/`prompt()` out of the canonical ES modules.

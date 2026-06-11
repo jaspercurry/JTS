@@ -87,7 +87,6 @@ _UNCODIFIED = {
     "JASPER_VOLUME_DIAGNOSTICS_PATH",
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
     "JASPER_WAKE_EVENTS_DIR",
-    "JASPER_WEB_SHARE_DIR",
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",

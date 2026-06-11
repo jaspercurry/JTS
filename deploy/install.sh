@@ -30,6 +30,7 @@ source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
 source "${REPO_DIR}/deploy/lib/install/renderers.sh"
+source "${REPO_DIR}/deploy/lib/install/web-assets.sh"
 
 CAMILLA_VERSION="v4.1.3"
 CAMILLA_TARBALL="camilladsp-linux-aarch64.tar.gz"
@@ -2146,49 +2147,11 @@ install_nginx_site() {
     app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
     [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
     sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
-    install -d -m 0755 /usr/share/jasper-web/assets/fonts
-    install -m 0644 \
-        "${REPO_DIR}/deploy/assets/fonts/"* \
-        /usr/share/jasper-web/assets/fonts/
-    # Canonical design-system stylesheet shared by the landing page and
-    # the redesigned wizards (jasper.web._common.canonical_page links it,
-    # cache-busted by build SHA). Served by the `location /assets/` block.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/assets/app.css" \
-        /usr/share/jasper-web/assets/app.css
-    # Page-specific static assets for the redesigned wizards (/system/,
-    # /sound/): the page stylesheet (<page>.css — served immutable + cache-
-    # busted like app.css) and the ES module graph (js/*.js — served by the
-    # `location ~ \.js$` block with ETag revalidation, since relative imports
-    # can't be URL-busted). compgen -G guards each glob (files-exist, not just
-    # the dir), so an empty dir can't leave a literal *.css/*.js to fail
-    # `install` and abort the deploy under `set -euo pipefail`.
-    # `shared` carries cross-page ES modules (the <dialog> confirm/alert
-    # helper at shared/js/dialog.js, the CSRF fetch helpers at
-    # shared/js/http.js) — same copy shape as a page, no .css.
-    #
-    # Discovered dynamically: every directory under deploy/assets/ (each
-    # canonical page's slug, plus `shared`) is copied with the same per-dir
-    # shape — root *.css, then js/*.js if present. `fonts` is excluded; it's
-    # copied above. Migrating a new wizard therefore needs NO edit here —
-    # adding deploy/assets/<page>/ is enough, which closes the silent-404
-    # failure mode where a new page's CSS/JS never reached the Pi.
-    for _asset_dir in "${REPO_DIR}/deploy/assets/"*/; do
-        _page="$(basename "${_asset_dir}")"
-        [[ "${_page}" == "fonts" ]] && continue
-        install -d -m 0755 "/usr/share/jasper-web/assets/${_page}"
-        if compgen -G "${_asset_dir}"*.css > /dev/null; then
-            install -m 0644 \
-                "${_asset_dir}"*.css \
-                "/usr/share/jasper-web/assets/${_page}/"
-        fi
-        if compgen -G "${_asset_dir}js/"*.js > /dev/null; then
-            install -d -m 0755 "/usr/share/jasper-web/assets/${_page}/js"
-            install -m 0644 \
-                "${_asset_dir}js/"*.js \
-                "/usr/share/jasper-web/assets/${_page}/js/"
-        fi
-    done
+    # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
+    # the .install-manifest the doctor verifies — see
+    # deploy/lib/install/web-assets.sh for the copy shape and the
+    # manifest contract.
+    install_web_assets
     # Plain-HTTP preflight before the HTTPS-only room-correction UI.
     # This gives the user context before the browser's self-signed-cert
     # interstitial while keeping the entry point on the normal HTTP
