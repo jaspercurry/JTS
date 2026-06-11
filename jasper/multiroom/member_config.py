@@ -1,33 +1,47 @@
 """Grouping member-config policy — the ONE place that decides what a bonded
 member's local CamillaDSP config needs.
 
-A speaker that is an ACTIVE member of a bond (enabled + valid) needs two
-transforms applied to its local CamillaDSP config, and BOTH are grouping
-concerns, not EQ concerns:
+CANONICAL MODEL (docs/HANDOFF-multiroom.md §2 "Canonical signal flow",
+wired by Increment 5): the LEADER's one CamillaDSP bakes the shared
+stereo program and writes it to snapserver's pipe; every member —
+including the leader itself — plays the round-tripped stream through
+outputd's ``dac_content`` lane, picking its channel THERE (outputd
+``ChannelPick``), never in a local CamillaDSP weave. So the policy is:
 
-  - inv-5: ``enable_rate_adjust: false`` — snapclient is the sole rate-tracker
-    for the synced chain (a second rate-adjuster oscillates).
-  - the channel-split — the ``channel_select`` mixer (+ sub crossover) so the
-    member plays only its assigned channel of the stereo program.
+  - ACTIVE LEADER: ``enable_rate_adjust=False`` (a File/pipe sink has no
+    output clock; snapclient's sample-stuffing is the synced chain's ONE
+    rate-tracker — §2 invariant 5) + ``playback_pipe_path`` pointed at
+    snapserver's FIFO. No channel_split: the pipe carries BOTH channels.
+  - ACTIVE FOLLOWER: solo defaults. Its local CamillaDSP is OUT of the
+    bonded playback path (the round-trip feeds outputd directly); it
+    keeps producing the normal direct lane — which is exactly the inv-B
+    fallback feed — so its config stays byte-for-byte the solo config,
+    rate_adjust=True and all (its sink is the ALSA loopback, which HAS
+    a clock to track).
+  - Solo / off / invalid: solo defaults (byte-for-byte unchanged).
 
-This module owns that decision so every config-apply path applies the SAME
-transform instead of threading it per call site. Today two paths call it — the
-``/sound`` apply and the ``/correction`` session — and a third will: the inv-2
-reconciler, which (re)builds the post-snapclient member config (CamillaDSP-B)
-and should reuse this exact policy rather than re-deriving it. Centralising it
-here is what keeps "what a member's config needs" in ONE place as those callers
-grow (the layering the EQ wizards must NOT own).
+MIGRATION NOTE: before Increment 5 this policy applied the
+``channel_split`` weave to every active member's local config — the
+superseded self-correct model where each member's own CamillaDSP
+selected its channel. The canonical round-trip made that weave
+obsolete (members drop channels in outputd, downstream of the stream);
+``emit_sound_config``'s mutual-exclusion guards police the boundary.
+``build_channel_split`` itself remains for the channel vocabulary and
+lab paths.
 
-The transforms themselves live in :mod:`jasper.multiroom.channel_split`
-(``build_channel_split`` / ``weave_channel_split``, consumed by
-``emit_sound_config``); this module only decides WHICH to apply, from grouping
-state. Pure except for the optional fresh read of ``grouping.env``.
+This module owns the decision so every config-apply path — ``/sound``,
+``/correction``, and the grouping reconciler's bond apply
+(:mod:`jasper.multiroom.leader_config`) — applies the SAME transform
+instead of threading it per call site. Centralising it here is what
+keeps "what a member's config needs" in ONE place as callers grow (and
+is what stops a ``/sound`` save while bonded from silently yanking the
+leader's CamillaDSP off the pipe). Pure except for the optional fresh
+read of ``grouping.env``.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from .channel_split import build_channel_split
 from .config import GROUPING_ENV_FILE, GroupingConfig, is_active_member, load_config
 
 
@@ -37,20 +51,32 @@ def member_camilla_kwargs(
     """The ``emit_sound_config(**kwargs)`` a member's config needs, derived from
     grouping state.
 
-    For an ACTIVE bond member: ``enable_rate_adjust=False`` (inv-5) plus a
-    ``channel_split`` built for its channel. Solo / off / invalid: the
-    solo-speaker defaults (``enable_rate_adjust=True``, ``channel_split=None``),
-    so a non-member's config is byte-for-byte unchanged.
+    ACTIVE LEADER: ``enable_rate_adjust=False`` + ``playback_pipe_path``
+    (the bonded-leader pipe sink). ACTIVE FOLLOWER and solo / off /
+    invalid: the solo-speaker defaults (``enable_rate_adjust=True``,
+    ``playback_pipe_path=None``), so those configs are byte-for-byte
+    unchanged — the follower's local chain is the inv-B fallback feed,
+    not part of the synced stream.
 
-    ``cfg`` defaults to a fresh read of ``grouping.env`` (the wizard apply
-    paths); the inv-2 reconciler passes its already-resolved ``cfg`` so it does
-    not re-read. ``stereo`` is a passthrough split (``build_channel_split`` weaves
-    nothing), so an active member with no channel assignment is also unchanged.
+    ``channel_split`` is always ``None`` here (canonical members drop
+    channels in outputd's ChannelPick, never in a local CamillaDSP
+    weave — see the migration note in the module docstring).
+
+    ``cfg`` defaults to a fresh read of ``grouping.env`` (the wizard
+    apply paths); the reconciler passes its already-resolved ``cfg``.
     """
     if cfg is None:
         cfg = load_config(path)
-    active = is_active_member(cfg)
+    if is_active_member(cfg) and cfg.role == "leader":
+        from .reconcile import SNAPFIFO
+
+        return {
+            "enable_rate_adjust": False,
+            "channel_split": None,
+            "playback_pipe_path": SNAPFIFO,
+        }
     return {
-        "enable_rate_adjust": not active,
-        "channel_split": build_channel_split(cfg.channel) if active else None,
+        "enable_rate_adjust": True,
+        "channel_split": None,
+        "playback_pipe_path": None,
     }

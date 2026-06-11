@@ -89,23 +89,30 @@ _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 # producing daemon's OWN status surface (daemon truth), never a Python mirror
 # of env intent — the lesson the removed flag existed to patch.
 
-# ---------- inv-2 leader content lane (DESIGN — see HANDOFF §2 "inv-2 ----------
-#            realization"). NOT YET ACTIVE.
+# ---------- the member round-trip content lane (Increment 5) ----------
 #
-# The whole DAC reroute (leader/member plays the BUFFERED post-snapclient
-# stream, sample-locked) is STAGED behind this off-by-default gate so a deploy
-# can never activate an unvalidated audio path on the reboot-on-fail outputd.
-# The snapclient `file` output (below) and the outputd DAC-content reader (the
-# Rust PR) land together behind it; until then this is inert scaffolding +
-# the codified env contract the design references.
-LEADER_CONTENT_LANE_GATE = "JASPER_GROUPING_LEADER_CONTENT_LANE"
-# Raw-PCM FIFO snapclient writes the buffered round-trip into, for the member's
-# post-snapclient CamillaDSP (channel-select + correction) to read — never
-# snd-aloop, so snapclient's snd_pcm_delay can't lie (inv-2).
+# Raw-PCM FIFO snapclient writes the buffered round-trip into
+# (`--player file:filename=...`, option string verified on snapclient
+# 0.31.0), read by outputd's `dac_content` lane (Increment 3) — never
+# snd-aloop, so snapclient's snd_pcm_delay can't lie (inv-2). Lives in
+# the reconciler-owned ARGS_DIR (tmpfs; the reconciler mkfifos it before
+# starting snapclient on every reconcile/boot).
 MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
-# Reconciler-owned env the outputd DAC loop reads in member mode. Unset =
-# today's single-input behavior (DAC plays the tapped content directly).
+# Reconciler-owned PERSISTENT env file the jasper-outputd unit layers
+# after jasper.env (EnvironmentFile=-). Persistent (NOT /run) so a
+# bonded speaker boots with the lane already configured — no extra
+# outputd restart at boot; mirrors the aec_mode.env pattern. The two
+# derived keys mirror Increment 3's config contract; both are written
+# as empty strings when this speaker is not an active member, so a
+# stale file can never leave the lane half-configured.
+OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
+OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
+OUTPUTD_UNIT = "jasper-outputd.service"
+# (The former LEADER_CONTENT_LANE_GATE staging env was retired when this
+# lane went live: the reconciler's role wiring IS the gate now — the
+# lane activates exactly when a valid bond is configured, and the
+# off/solo path writes empty env = byte-identical outputd behavior.)
 
 
 # ---------- Plan types ----------
@@ -228,12 +235,12 @@ def snapclient_argv(
     ``player_fifo`` (inv-2 leader content lane — STAGED, see HANDOFF §2 "inv-2
     realization"): when set, snapclient writes raw PCM to that FIFO via its
     ``file`` player instead of a default ALSA sink, so the buffered round-trip
-    feeds the member's post-snapclient CamillaDSP (channel-select + correction)
-    rather than snd-aloop (which would trip the ``snd_pcm_delay``-lies trap —
-    inv-2). ``None`` (the default) leaves the command BYTE-FOR-BYTE unchanged:
-    the reroute is gated off (``LEADER_CONTENT_LANE_GATE``) until the outputd
-    DAC-content reader lands. The exact snapclient ``file``-player option string
-    is confirmed on-device.
+    feeds outputd's ``dac_content`` lane (Increment 3) rather than snd-aloop
+    (which would trip the ``snd_pcm_delay``-lies trap — inv-2) — and rather
+    than fighting outputd for the raw DAC (the observed ``Device or resource
+    busy`` failure of the pre-Increment-5 bond). ``None`` leaves the command
+    BYTE-FOR-BYTE unchanged. The ``file:filename=`` option string was verified
+    against snapclient 0.31.0 on jts3 (``--player file:?``).
     """
     # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond
     # wizard now mints it as a STABLE mDNS .local handle (the leader's
@@ -298,6 +305,28 @@ def _join_args(argv: list[str]) -> str:
             "$JASPER_SNAP*_ARGS word-splitting would mangle it"
         )
     return " ".join(tail)
+
+
+def outputd_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
+    """The outputd round-trip lane env derived from a GroupingConfig. PURE.
+
+    An ACTIVE member (enabled + valid, either role) plays the
+    round-tripped stream: outputd reads ``MEMBER_CONTENT_FIFO`` and
+    picks this speaker's channel (Increment 3's ``ChannelPick``; the
+    channel-split vocabulary). Everyone else gets EMPTY strings — which
+    outputd's ``env_optional`` reads as unset, i.e. the byte-identical
+    solo loop — so a stale file can never half-configure the lane
+    (mirrors ``_assemble_args``'s disable-clears-stale idiom).
+    """
+    if cfg.enabled and cfg.error is None:
+        return {
+            OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
+            OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
+        }
+    return {
+        OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
+        OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
+    }
 
 
 def desired_snapfifo_path(cfg: GroupingConfig) -> str:

@@ -265,7 +265,9 @@ from .peering import (
 from . import grouping as grouping
 from .grouping import (
     check_grouping,
-    check_grouping_channel_split,
+    check_grouping_channel_pick,
+    check_grouping_leader_pipe,
+    check_grouping_tts_interim,
     check_grouping_rate_adjust,
 )
 from . import satellites as satellites
@@ -467,7 +469,9 @@ __all__ = [
     "check_peering_discovery",
     "_local_peer_id",
     "check_grouping",
-    "check_grouping_channel_split",
+    "check_grouping_channel_pick",
+    "check_grouping_leader_pipe",
+    "check_grouping_tts_interim",
     "check_grouping_rate_adjust",
     "check_dial_heartbeat",
     "_PROBE_REF_PASS_THRESHOLD",

@@ -1,9 +1,10 @@
-"""inv-5 (docs/HANDOFF-multiroom.md §2) — a grouped member's local CamillaDSP
+"""inv-5 (docs/HANDOFF-multiroom.md §2) — the bonded LEADER's local CamillaDSP
 runs rate_adjust OFF, because snapclient's sample-stuffing is the single
-rate-tracker for the synced chain (two rate-adjusters oscillate). Covers the
-shared predicate, the generator param on the live generators, and the
-jasper-doctor backstop that reads the ACTIVE config (so it catches any
-generator + a config generated before the bond formed)."""
+rate-tracker for the synced chain (two rate-adjusters oscillate). A follower's
+local CamillaDSP is out of the bonded path (canonical model, Increment 5) and
+keeps solo defaults. Covers the shared predicate, the member-config policy,
+the generator param on the live generators, and the jasper-doctor backstops
+(active-config rate_adjust + leader pipe + outputd channel-pick env drift)."""
 from __future__ import annotations
 
 from jasper.multiroom.config import (
@@ -48,14 +49,33 @@ def test_solo_off_invalid_are_not_active():
 # ---------- member-config policy: the ONE decision, applied path-independently --
 
 
-def test_member_camilla_kwargs_active_member():
-    """An active member's config needs rate_adjust off + a channel-split."""
+def test_member_camilla_kwargs_active_leader_gets_the_pipe_sink():
+    """CANONICAL (Increment 5): an active LEADER's local CamillaDSP bakes the
+    shared program and writes snapserver's pipe — rate_adjust off (a File
+    sink has no output clock; snapclient is the one rate-tracker), no
+    channel weave (the pipe carries BOTH channels; members pick channels
+    downstream in outputd's ChannelPick)."""
+    from jasper.multiroom.member_config import member_camilla_kwargs
+    from jasper.multiroom.reconcile import SNAPFIFO
+    kw = member_camilla_kwargs(
+        _cfg(enabled=True, role="leader", channel="left", bond_id="b"))
+    assert kw["enable_rate_adjust"] is False
+    assert kw["channel_split"] is None
+    assert kw["playback_pipe_path"] == SNAPFIFO
+
+
+def test_member_camilla_kwargs_active_follower_is_solo_defaults():
+    """CANONICAL (Increment 5): an active FOLLOWER's local CamillaDSP is OUT
+    of the bonded playback path (the round-trip feeds outputd directly);
+    it keeps producing the normal direct lane — the inv-B fallback feed —
+    so its config stays byte-for-byte the solo config (rate_adjust=True is
+    CORRECT: its sink is the ALSA loopback, which has a clock)."""
     from jasper.multiroom.member_config import member_camilla_kwargs
     kw = member_camilla_kwargs(_cfg(enabled=True, role="follower", channel="right",
                                     bond_id="b", leader_addr="jts.local"))
-    assert kw["enable_rate_adjust"] is False
-    assert kw["channel_split"] is not None
-    assert kw["channel_split"].channel == "right"
+    assert kw["enable_rate_adjust"] is True
+    assert kw["channel_split"] is None
+    assert kw["playback_pipe_path"] is None
 
 
 def test_member_camilla_kwargs_solo_is_unchanged_defaults():
@@ -64,14 +84,18 @@ def test_member_camilla_kwargs_solo_is_unchanged_defaults():
     kw = member_camilla_kwargs(_cfg())  # grouping off
     assert kw["enable_rate_adjust"] is True
     assert kw["channel_split"] is None
+    assert kw["playback_pipe_path"] is None
 
 
-def test_member_camilla_kwargs_stereo_member_no_split():
-    """An active member with channel=stereo gets a passthrough split (no weave)."""
+def test_member_camilla_kwargs_stereo_leader_still_bakes_the_pipe():
+    """A leader bakes the pipe regardless of its OWN channel assignment —
+    the pipe always carries the full shared program."""
     from jasper.multiroom.member_config import member_camilla_kwargs
+    from jasper.multiroom.reconcile import SNAPFIFO
     kw = member_camilla_kwargs(_cfg(enabled=True, role="leader", channel="stereo", bond_id="b"))
     assert kw["enable_rate_adjust"] is False
-    assert kw["channel_split"].is_passthrough  # stereo = no-op weave
+    assert kw["channel_split"] is None
+    assert kw["playback_pipe_path"] == SNAPFIFO
 
 
 def test_member_camilla_kwargs_invalid_member_unchanged():
@@ -81,6 +105,7 @@ def test_member_camilla_kwargs_invalid_member_unchanged():
                                     bond_id="", error="bond_id empty"))
     assert kw["enable_rate_adjust"] is True
     assert kw["channel_split"] is None
+    assert kw["playback_pipe_path"] is None
 
 
 # ---------- the generators emit the param ----------
@@ -120,16 +145,27 @@ def test_doctor_parser_reads_devices_enable_rate_adjust():
         "filters:\n  enable_rate_adjust: true\n") is None
 
 
-def test_doctor_check_skips_when_not_active_member(monkeypatch):
+def test_doctor_check_skips_when_not_active_leader(monkeypatch):
     import jasper.multiroom.config as cfgmod
-    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: _cfg())  # solo
     from jasper.cli.doctor.grouping import check_grouping_rate_adjust
+    # solo
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: _cfg())
     result = check_grouping_rate_adjust()
     assert result.status == "ok"
-    assert "not an active bond member" in result.detail
+    assert "not an active bond leader" in result.detail
+    # active FOLLOWER: out of scope by design — its local CamillaDSP feeds
+    # only the inv-B fallback lane, where rate_adjust=true is correct.
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: _cfg(enabled=True, role="follower", channel="right",
+                             bond_id="b", leader_addr="jts.local"),
+    )
+    result = check_grouping_rate_adjust()
+    assert result.status == "ok"
+    assert "not an active bond leader" in result.detail
 
 
-def test_doctor_check_warns_active_member_with_rate_adjust_on(monkeypatch, tmp_path):
+def test_doctor_check_warns_active_leader_with_rate_adjust_on(monkeypatch, tmp_path):
     import jasper.cli.doctor.correction as corrmod
     import jasper.multiroom.config as cfgmod
     monkeypatch.setattr(
@@ -148,13 +184,12 @@ def test_doctor_check_warns_active_member_with_rate_adjust_on(monkeypatch, tmp_p
     assert "oscillate" in result.detail
 
 
-def test_doctor_check_ok_active_member_rate_adjust_off(monkeypatch, tmp_path):
+def test_doctor_check_ok_active_leader_rate_adjust_off(monkeypatch, tmp_path):
     import jasper.cli.doctor.correction as corrmod
     import jasper.multiroom.config as cfgmod
     monkeypatch.setattr(
         cfgmod, "load_config",
-        lambda *a, **k: _cfg(enabled=True, role="follower", channel="right",
-                             bond_id="b", leader_addr="jts.local"),
+        lambda *a, **k: _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
     )
     config_file = tmp_path / "active.yml"
     config_file.write_text("devices:\n  enable_rate_adjust: false\n")
@@ -167,72 +202,161 @@ def test_doctor_check_ok_active_member_rate_adjust_off(monkeypatch, tmp_path):
     assert result.status == "ok"
 
 
-# ---------- jasper-doctor: channel-split observability backstop ----------
+# ---------- jasper-doctor: leader-pipe + channel-pick backstops ----------
 #
-# A missing channel-split is SILENT (the speaker plays full stereo) — unlike
-# rate_adjust, which oscillates audibly. This check is the only way a
-# wrong-channel member is visible.
+# Both failure classes are SILENT (an un-piped leader streams an empty FIFO
+# behind green units; a wrong channel pick plays the full stereo program) —
+# unlike rate_adjust, which oscillates audibly. These checks are the only
+# way each is visible.
 
-_BASE_MIXERS = "mixers:\n  master_gain:\n    channels: { in: 2, out: 2 }\n"
 
-
-def _channel_split_check(monkeypatch, tmp_path, *, cfg, config_text):
+def test_leader_pipe_check_warns_on_solo_config_and_passes_on_emitted_pipe(
+    monkeypatch, tmp_path,
+):
+    """Contract coupling on purpose: the ok-case scans a REAL config emitted
+    by emit_sound_config with the policy kwargs — if the emitter's playback
+    shape ever drifts from the doctor's scanner, this fails."""
     import jasper.cli.doctor.correction as corrmod
     import jasper.multiroom.config as cfgmod
-    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
+    from jasper.cli.doctor.grouping import check_grouping_leader_pipe
+    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    leader = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: leader)
     config_file = tmp_path / "active.yml"
-    config_file.write_text(config_text)
     monkeypatch.setattr(
         corrmod, "_active_camilla_config_path",
         lambda: ("statefile", str(config_file)),
     )
-    from jasper.cli.doctor.grouping import check_grouping_channel_split
-    return check_grouping_channel_split()
 
+    # Solo-shaped active config on an active leader → warn (stream silent).
+    config_file.write_text(emit_sound_config(SoundProfile(enabled=False)))
+    r = check_grouping_leader_pipe()
+    assert r.status == "warn"
+    assert "silent" in r.detail
 
-def test_channel_split_check_skips_solo_and_stereo(monkeypatch, tmp_path):
-    # solo
-    r = _channel_split_check(monkeypatch, tmp_path, cfg=_cfg(), config_text=_BASE_MIXERS)
-    assert r.status == "ok"
-    # active member but channel=stereo (passthrough — no channel_select expected)
-    r = _channel_split_check(
-        monkeypatch, tmp_path,
-        cfg=_cfg(enabled=True, role="leader", channel="stereo", bond_id="b"),
-        config_text=_BASE_MIXERS,
+    # The reconciler's bonded emit → ok.
+    config_file.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            playback_pipe_path=SNAPFIFO,
+        )
     )
+    r = check_grouping_leader_pipe()
     assert r.status == "ok"
 
 
-def test_channel_split_check_warns_when_missing_for_nonstereo_member(monkeypatch, tmp_path):
-    r = _channel_split_check(
-        monkeypatch, tmp_path,
+def test_leader_pipe_check_skips_non_leaders(monkeypatch):
+    import jasper.multiroom.config as cfgmod
+    from jasper.cli.doctor.grouping import check_grouping_leader_pipe
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: _cfg(enabled=True, role="follower", channel="right",
+                             bond_id="b", leader_addr="jts.local"),
+    )
+    assert check_grouping_leader_pipe().status == "ok"
+
+
+def _channel_pick_check(monkeypatch, *, cfg, env_text=None, env_path=None):
+    import jasper.cli.doctor.grouping as groupmod
+    import jasper.multiroom.config as cfgmod
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
+    if env_text is not None:
+        env_path.write_text(env_text)
+    import jasper.multiroom.reconcile as recmod
+    monkeypatch.setattr(
+        recmod, "OUTPUTD_GROUPING_ENV_FILE",
+        str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
+    )
+    return groupmod.check_grouping_channel_pick()
+
+
+def test_channel_pick_check_warns_when_env_missing(monkeypatch):
+    r = _channel_pick_check(
+        monkeypatch,
         cfg=_cfg(enabled=True, role="follower", channel="right",
                  bond_id="b", leader_addr="jts.local"),
-        config_text=_BASE_MIXERS,  # no channel_select
     )
     assert r.status == "warn"
-    assert "channel=right" in r.detail
+    assert "not wired" in r.detail
+
+
+def test_channel_pick_check_warns_on_channel_drift(monkeypatch, tmp_path):
+    from jasper.multiroom.reconcile import (
+        MEMBER_CONTENT_FIFO,
+        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+    )
+    env = tmp_path / "grouping-outputd.env"
+    r = _channel_pick_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+        env_text=(
+            f"{OUTPUTD_DAC_CONTENT_FIFO_ENV}={MEMBER_CONTENT_FIFO}\n"
+            f"{OUTPUTD_DAC_CONTENT_CHANNEL_ENV}=left\n"  # drifted
+        ),
+        env_path=env,
+    )
+    assert r.status == "warn"
     assert "wrong channel" in r.detail
 
 
-def test_channel_split_check_ok_when_present(monkeypatch, tmp_path):
-    text = _BASE_MIXERS + "  channel_select:\n    channels: { in: 2, out: 2 }\n"
-    r = _channel_split_check(
-        monkeypatch, tmp_path,
-        cfg=_cfg(enabled=True, role="follower", channel="left",
-                 bond_id="b", leader_addr="jts.local"),
-        config_text=text,
+def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
+    from jasper.multiroom.reconcile import (
+        MEMBER_CONTENT_FIFO,
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        outputd_grouping_env,
+    )
+    cfg = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
+    # The reconciler's own pure derive writes the file → the check passes:
+    # the two ends of the contract are the same function.
+    derived = outputd_grouping_env(cfg)
+    assert derived[OUTPUTD_DAC_CONTENT_FIFO_ENV] == MEMBER_CONTENT_FIFO
+    env = tmp_path / "grouping-outputd.env"
+    r = _channel_pick_check(
+        monkeypatch, cfg=cfg,
+        env_text="".join(f"{k}={v}\n" for k, v in derived.items()),
+        env_path=env,
     )
     assert r.status == "ok"
+    assert "channel=left" in r.detail
 
 
-def test_config_has_channel_select_is_block_scoped():
-    """channel_select must be a top-level mixer, not a stray match elsewhere."""
-    from jasper.cli.doctor.grouping import _config_has_channel_select
-    assert _config_has_channel_select(_BASE_MIXERS + "  channel_select:\n") is True
-    assert _config_has_channel_select(_BASE_MIXERS) is False
-    # A `channel_select:` outside the mixers block must NOT match.
-    assert _config_has_channel_select("filters:\n  channel_select:\n") is False
+def test_outputd_grouping_env_clears_when_not_active():
+    """Disable-clears-stale: solo / invalid → BOTH keys present as empty
+    strings (outputd reads empty as unset → byte-identical solo loop)."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
+        OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        outputd_grouping_env,
+    )
+    for cfg in (
+        _cfg(),  # off
+        _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),
+    ):
+        env = outputd_grouping_env(cfg)
+        assert env[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
+        assert env[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] == ""
+
+
+def test_tts_interim_check_warns_while_bonded(monkeypatch):
+    """The PR-1 known gap stays VISIBLE while bonded (no-silent-failure):
+    TTS rides the synced stream until PR-2's outputd TTS mixer."""
+    import jasper.multiroom.config as cfgmod
+    from jasper.cli.doctor.grouping import check_grouping_tts_interim
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: _cfg())
+    assert check_grouping_tts_interim().status == "ok"
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+    )
+    r = check_grouping_tts_interim()
+    assert r.status == "warn"
+    assert "PR-2" in r.detail
 
 
 def test_camilla_block_field_shared_scanner():
