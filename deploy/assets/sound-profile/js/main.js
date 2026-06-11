@@ -519,7 +519,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     '</section>';
   }
   function renderActiveSpeakerSetup() {
-    var body = renderActiveSpeakerStatus();
     var open = activeSpeaker.loading || activeSpeaker.payload ||
       activeSpeaker.session || activeSpeaker.stagedConfig ||
       activeSpeaker.plan || activeSpeaker.playback ||
@@ -530,13 +529,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return '<section class="active-speaker-setup">' +
       '<details class="advanced"' + (open ? ' open' : '') + '>' +
         '<summary>Advanced speaker setup</summary>' +
-        '<div class="setting-row setting-row--stack">' +
+        '<div class="setting-row setting-row--stack active-speaker-intro">' +
           '<div class="setting-row__text">' +
-            '<p class="setting-row__title">Active crossover commissioning</p>' +
-            '<p class="setting-row__hint">For speakers with separate woofer, mid, or tweeter amplifier channels. ' +
-              'Environment checks and staging will not play tones, reload CamillaDSP, or load active crossover configs.</p>' +
+            '<p class="setting-row__title">Active crossover setup</p>' +
+            '<p class="setting-row__hint">Use these cards in order. Setup and preflight steps do not play sound; test mode starts at the quiet floor.</p>' +
           '</div>' +
-          '<div class="active-speaker-status">' + body + '</div>' +
         '</div>' +
         renderOutputTopologySetup() +
       '</details>' +
@@ -928,6 +925,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<span class="output-step__marker">' + escapeHtml(stateLabel) + '</span>' +
         '<span class="output-step__text"><strong>' + escapeHtml(title) + '</strong>' +
           '<span>' + escapeHtml(hint) + '</span></span>' +
+        '<span class="output-step__chevron" aria-hidden="true"></span>' +
       '</summary>' +
       '<div class="output-step__body">' + bodyHtml +
         (footerHtml ? '<div class="output-step__footer">' + footerHtml + '</div>' : '') +
@@ -939,35 +937,110 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '" data-act="output-step-next" data-step="' + escapeHtml(step) + '">' +
       escapeHtml(label) + '</button>';
   }
-  function outputSetupTemplateButton(template, count) {
-    var disabled = count < template.minOutputs;
-    return '<button type="button" class="output-template" data-act="output-template" ' +
-      'data-template="' + escapeHtml(template.id) + '"' + (disabled ? ' disabled' : '') + '>' +
-      '<strong>' + escapeHtml(template.label) + '</strong>' +
-      '<span>' + escapeHtml(template.hint) + '</span>' +
-      '<small>' + escapeHtml(String(template.minOutputs) + '+ output' + (template.minOutputs === 1 ? '' : 's')) + '</small>' +
-    '</button>';
+  function outputTemplateKindFromAxes(layout, speakerMode) {
+    if (layout !== 'mono' && layout !== 'stereo') return '';
+    if (speakerMode !== 'passive' &&
+        speakerMode !== 'active_2way' &&
+        speakerMode !== 'active_3way') {
+      return '';
+    }
+    return layout + '_' + speakerMode;
   }
-  function outputTemplateList() {
-    return [
-      'mono_passive',
-      'mono_active_2way',
-      'mono_active_3way',
-      'stereo_passive',
-      'stereo_active_2way',
-      'stereo_active_3way'
-    ].map(outputTemplateDefinition).filter(Boolean);
+  function outputTemplateAxesForTopology(topology) {
+    var mainGroups = outputGroups(topology).filter(function(group) {
+      return group.kind !== 'subwoofer' && group.mode !== 'subwoofer';
+    });
+    var kinds = mainGroups.map(function(group) { return group.kind; });
+    var layout = (kinds.indexOf('left') >= 0 || kinds.indexOf('right') >= 0)
+      ? 'stereo'
+      : 'mono';
+    var mode = mainGroups.length ? mainGroups[0].mode : 'full_range_passive';
+    var speakerMode = {
+      full_range_passive: 'passive',
+      active_2_way: 'active_2way',
+      active_3_way: 'active_3way'
+    }[mode] || 'passive';
+    return {layout: layout, speakerMode: speakerMode};
+  }
+  function outputTemplateAxisButton(axis, value, label, hint, selected, disabled) {
+    return '<button type="button" class="output-template-option" data-act="output-template-axis" ' +
+      'data-axis="' + escapeHtml(axis) + '" data-value="' + escapeHtml(value) + '" ' +
+      'aria-pressed="' + (selected ? 'true' : 'false') + '"' +
+      (disabled ? ' disabled' : '') + '>' +
+        '<strong>' + escapeHtml(label) + '</strong>' +
+        '<span>' + escapeHtml(hint) + '</span>' +
+      '</button>';
   }
   function renderOutputSetupTemplates(topology) {
     var hardware = outputHardware(topology);
     var count = Number(hardware && hardware.physical_output_count) || 0;
-    var templates = outputTemplateList();
+    var axes = outputTemplateAxesForTopology(topology);
+    var selectedTemplate = outputTemplateDefinition(
+      outputTemplateKindFromAxes(axes.layout, axes.speakerMode)
+    );
+    var hasSub = outputHasSubwoofer(topology);
+    var selectedLabel = selectedTemplate
+      ? selectedTemplate.label + (hasSub ? ' + subwoofer' : '')
+      : 'Choose a layout';
+    var outputCount = selectedTemplate
+      ? selectedTemplate.minOutputs + (hasSub ? 1 : 0)
+      : 0;
+    var layoutChoices = [
+      {value: 'mono', label: 'Mono', hint: 'One speaker or cabinet'},
+      {value: 'stereo', label: 'Stereo', hint: 'Left and right speakers'}
+    ];
+    var speakerChoices = [
+      {value: 'passive', label: 'Passive', hint: 'Full-range output per speaker'},
+      {value: 'active_2way', label: 'Active 2-way', hint: 'Woofer + tweeter'},
+      {value: 'active_3way', label: 'Active 3-way', hint: 'Woofer + mid + tweeter'}
+    ];
     return '<div class="output-card output-card--templates">' +
       '<div class="output-card__head"><div><p class="output-card__title">Setup template</p>' +
-        '<p class="setting-row__hint">Choose the speaker layout you are wiring. This only edits the saved draft map.</p></div></div>' +
-      '<div class="output-template-grid">' + templates.map(function(template) {
-        return outputSetupTemplateButton(template, count);
-      }).join('') + '</div>' +
+        '<p class="setting-row__hint">Choose the speaker map you are wiring. This only edits the saved draft map.</p></div></div>' +
+      '<div class="output-template-axes">' +
+        '<div class="output-template-axis">' +
+          '<p class="output-template-axis__label">Speaker count</p>' +
+          '<div class="output-template-options output-template-options--layout">' +
+            layoutChoices.map(function(choice) {
+              var template = outputTemplateDefinition(
+                outputTemplateKindFromAxes(choice.value, axes.speakerMode)
+              );
+              return outputTemplateAxisButton(
+                'layout',
+                choice.value,
+                choice.label,
+                choice.hint,
+                axes.layout === choice.value,
+                !template || count < template.minOutputs
+              );
+            }).join('') +
+          '</div>' +
+        '</div>' +
+        '<div class="output-template-axis">' +
+          '<p class="output-template-axis__label">Speaker type</p>' +
+          '<div class="output-template-options output-template-options--mode">' +
+            speakerChoices.map(function(choice) {
+              var template = outputTemplateDefinition(
+                outputTemplateKindFromAxes(axes.layout, choice.value)
+              );
+              return outputTemplateAxisButton(
+                'speaker-mode',
+                choice.value,
+                choice.label,
+                choice.hint,
+                axes.speakerMode === choice.value,
+                !template || count < template.minOutputs
+              );
+            }).join('') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<dl class="active-speaker-facts output-facts output-template-summary">' +
+        '<div><dt>Draft map</dt><dd>' + escapeHtml(selectedLabel) + '</dd></div>' +
+        '<div><dt>Physical outputs</dt><dd>' + escapeHtml(
+          outputCount ? String(outputCount) + ' of ' + String(count || 0) + ' assigned' : 'Choose a map'
+        ) + '</dd></div>' +
+      '</dl>' +
     '</div>';
   }
   function renderOutputSubwooferCard(topology) {
@@ -1175,9 +1248,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Choose speaker layout',
         'Pick mono or stereo, active or passive, then optionally add a subwoofer.',
         topology,
-        renderOutputHardwareCard(topology, statusValue) +
-          renderOutputSetupTemplates(topology) +
-          renderOutputSubwooferCard(topology),
+        renderOutputSetupTemplates(topology) +
+          renderOutputSubwooferCard(topology) +
+          renderOutputHardwareCard(topology, statusValue),
         renderOutputStepButton('layout',
           outputTopology.dirty ? 'Save and continue' : 'Next: research drivers',
           true)
@@ -1203,13 +1276,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ) +
       renderOutputStepCard(
         'safety',
-        'Stage, load, and start quiet',
-        'Check environment, stage protected startup, then use bounded readiness and level controls.',
+        'Prepare safe test mode',
+        'Run safety preflight, stage protected startup, then start from the quiet floor.',
         topology,
         renderOutputCommissioningRehearsal() +
         '<div class="output-card output-card--active-status">' +
-          '<div class="output-card__head"><div><p class="output-card__title">Environment and safe-session state</p>' +
-          '<p class="setting-row__hint">These controls do not play sound unless the explicit lab backend is enabled and readiness passes.</p></div></div>' +
+          '<div class="output-card__head"><div><p class="output-card__title">Safety preflight</p>' +
+          '<p class="setting-row__hint">Checks DAC, DSP config, volume limits, and rollback. This does not play sound.</p></div></div>' +
           renderOutputBringupSequence() +
           renderActiveSpeakerStatus() +
         '</div>' +
@@ -1462,12 +1535,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var artifactReady = !!(outputTopology.readinessPlayback && outputTopology.readinessPlayback.artifact);
     var rows = [
       sequenceStep(
-        'Check environment',
+        'Run safety preflight',
         envReady,
         !envChecked,
         envChecked && !envReady,
-        envReady ? 'Output path and config are load-gate ready.' :
-          (envChecked ? 'Resolve environment blockers before loading DSP.' : 'Run Check environment first.')
+        envReady ? 'DAC, DSP config, volume limit, and rollback look ready.' :
+          (envChecked ? 'Resolve safety blockers before loading DSP.' : 'Run the safety preflight first.')
       ),
       sequenceStep(
         'Stage protected startup',
@@ -1923,7 +1996,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderActiveSpeakerStatus() {
     if (activeSpeaker.loading) {
       return '<div class="row-between active-speaker-status__head">' +
-        '<span class="status-pill">Checking environment</span>' +
+        '<span class="status-pill">Checking safety</span>' +
         '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker" disabled>Refresh</button>' +
       '</div>';
     }
@@ -1938,8 +2011,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (!activeSpeaker.payload) {
       return '<div class="row-between active-speaker-status__head">' +
-        '<span class="status-pill status-pill--planned">Not checked</span>' +
-        '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker">Check environment</button>' +
+        '<span class="status-pill status-pill--planned">Preflight needed</span>' +
+        '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker">Run safety preflight</button>' +
       '</div>';
     }
     var p = activeSpeaker.payload || {};
@@ -2121,13 +2194,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderActiveSpeakerIssues(envIssues, sessionIssues) {
     var rows = [];
     envIssues.forEach(function(issue) {
-      rows.push(['Environment', issue]);
+      rows.push(['Preflight', issue]);
     });
     sessionIssues.forEach(function(issue) {
       rows.push(['Session', issue]);
     });
     if (!rows.length) {
-      return '<p class="setting-row__hint">No active load blockers in the read-only environment report.</p>';
+      return '<p class="setting-row__hint">No active blockers in the safety preflight.</p>';
     }
     return '<ul class="active-speaker-issues">' + rows.slice(0, 6).map(function(row) {
       var issue = row[1] || {};
@@ -2727,7 +2800,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'reset-draft') { resetDraft(); }
     else if (act === 'refresh-active-speaker') { refreshActiveSpeakerStatus(); }
     else if (act === 'refresh-output-topology') { refreshOutputTopology(); }
-    else if (act === 'output-template') { setOutputTemplate(t.getAttribute('data-template') || ''); }
+    else if (act === 'output-template-axis') {
+      setOutputTemplateAxis(
+        t.getAttribute('data-axis') || '',
+        t.getAttribute('data-value') || ''
+      );
+    }
     else if (act === 'toggle-output-subwoofer') { toggleOutputSubwoofer(t.getAttribute('data-mode') || 'add'); }
     else if (act === 'output-step-next') { advanceOutputStep(t.getAttribute('data-step') || ''); }
     else if (act === 'save-output-topology') { saveOutputTopology(); }
@@ -2885,6 +2963,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (ev.target && ev.target.classList && ev.target.classList.contains('output-step') &&
         ev.target.open) {
       outputStepOverride = ev.target.getAttribute('data-output-step') || outputStepOverride;
+      el('view-body').querySelectorAll('.output-step[open]').forEach(function(stepEl) {
+        if (stepEl !== ev.target) stepEl.open = false;
+      });
     }
   }, true);
   el('view-body').addEventListener('keydown', function(ev) {
@@ -3079,8 +3160,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       protection_status: tweeter ? 'required_missing' : 'not_required'
     };
   }
-  function baseOutputDraft() {
-    var topology = currentOutputTopology();
+  function baseOutputDraft(source) {
+    var topology = source || currentOutputTopology();
     if (!topology) return null;
     var next = clone(topology);
     next.status = 'draft';
@@ -3212,8 +3293,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
     }[kind] || null;
   }
-  async function setOutputTemplate(kind) {
-    if (outputTopology.dirty &&
+  async function setOutputTemplate(kind, options) {
+    options = options || {};
+    if (outputTopology.dirty && !options.skipDirtyConfirm &&
         !await jtsConfirm('Replace the unsaved output setup draft?')) {
       return;
     }
@@ -3222,6 +3304,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Load output hardware before creating a speaker map.', true);
       return;
     }
+    var keepSubwoofer = outputHasSubwoofer(next);
     var count = Number(next.hardware.physical_output_count) || 0;
     var template = outputTemplateDefinition(kind);
     if (!template) {
@@ -3241,8 +3324,31 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       mono_group_id: template.routing.mono_group_id || null,
       subwoofer_group_ids: template.routing.subwoofer_group_ids || []
     };
+    if (keepSubwoofer) {
+      next = addSubwooferToTopology(next) || next;
+    }
     setOutputDraft(next);
-    status('Output setup template is a draft. Save to validate; no sound will play.');
+    status(
+      keepSubwoofer && !outputHasSubwoofer(next)
+        ? 'Output setup draft updated. Subwoofer was removed because no spare output remains.'
+        : 'Output setup template is a draft. Save to validate; no sound will play.'
+    );
+  }
+  async function setOutputTemplateAxis(axis, value) {
+    var topology = currentOutputTopology();
+    if (!topology) {
+      status('Load output hardware before creating a speaker map.', true);
+      return;
+    }
+    var axes = outputTemplateAxesForTopology(topology);
+    var layout = axis === 'layout' ? value : axes.layout;
+    var speakerMode = axis === 'speaker-mode' ? value : axes.speakerMode;
+    var kind = outputTemplateKindFromAxes(layout, speakerMode);
+    if (!kind) {
+      status('Choose a supported output setup option.', true);
+      return;
+    }
+    await setOutputTemplate(kind, {skipDirtyConfirm: true});
   }
   function toggleOutputSubwoofer(modeValue) {
     var topology = currentOutputTopology();
@@ -3431,7 +3537,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (step === 'safety') {
       outputStepOverride = 'safety';
-      status('Use this card to check environment, stage the protected config, load only when allowed, and start quiet.');
+      status('Use this card to run safety preflight, stage the protected config, load only when allowed, and start quiet.');
       render();
     }
   }
