@@ -72,6 +72,19 @@ Cost per that doc: ~30 MB/hr → ~270 GB/yr against ~100 TBW SD
 endurance — **not a flash-wear emergency.** No `RateLimit*`
 override today (systemd defaults apply).
 
+**The 200 MB cap is also the retention window — forensics have a
+volume-dependent shelf life.** journald vacuums oldest-first at the
+cap, so heavy log volume silently eats the boot-time entries Tier 5
+forensics depend on. Observed 2026-06-11 on jts3 under lab-grade
+multiroom logging: the journal sat at 188 MB and the *current* boot's
+first surviving entry was ~5 h after boot — `event=bootloop_guard.ok`
+from 15 h earlier was already gone while the unit's exit status
+showed it had run fine. Before treating a missing journal line as
+"never happened," check `journalctl --list-boots` first-entry
+timestamps; `/state.resilience.*` and unit exit status are the
+durable surfaces. The household speaker's far lower volume keeps a
+much longer window — this bites lab Pis first.
+
 **The heartbeat-vs-forensic split — the load-bearing principle.**
 The resilience layer is *already* disciplined about steady-state
 noise:

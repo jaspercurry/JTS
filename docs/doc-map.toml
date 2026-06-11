@@ -9,10 +9,11 @@
 # Intentionally present top-level docs that are not canonical subsystem
 # scan targets. They still satisfy the no-orphan-doc invariant, but a
 # code change should not route future maintainers to them as current
-# operational truth.
-session_artifacts = [
-  "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md",
-]
+# operational truth. Empty right now: executed session artifacts move
+# to docs/historical/, which sits outside both the orphan sweep and
+# this routing map (see the moOde-removal and 2026-06-10
+# hw-validation runbooks there).
+session_artifacts = []
 
 [[subsystem]]
 id = "docs-governance"
