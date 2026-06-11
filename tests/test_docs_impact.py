@@ -39,16 +39,29 @@ def test_root_and_top_level_docs_are_intentionally_mapped():
     assert sorted((root_docs | docs_top) - mapped_docs - set(classified_docs)) == []
 
 
-def test_session_artifact_is_classified_without_becoming_canonical_route():
-    docs_impact = load_docs_impact()
-    runbook = "docs/RUNBOOK-2026-06-10-batch-hardware-validation.md"
+def test_historical_docs_are_never_canonical_routes():
+    """Archived docs must stay out of the routing layer entirely.
 
+    docs/historical/ holds executed runbooks and other frozen records
+    (the moOde removal, the 2026-06-10 hw-validation runbook). They are
+    outside the orphan sweep by construction (it globs top-level
+    docs/*.md only), and nothing in doc-map.toml — neither a subsystem
+    route nor a session-artifact classification — may point future
+    maintainers at them as current operational truth.
+    """
+    docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
     classified_docs = docs_impact.load_classified_docs(ROOT / "docs" / "doc-map.toml")
 
-    assert runbook in classified_docs
-    assert all(runbook not in subsystem.docs for subsystem in subsystems)
-    assert docs_impact.impact_report(subsystems, (runbook,)) == []
+    historical = sorted(
+        str(path.relative_to(ROOT))
+        for path in (ROOT / "docs" / "historical").glob("*.md")
+    )
+    assert historical, "docs/historical/ is empty — archive layout moved?"
+    for doc in historical:
+        assert all(doc not in subsystem.docs for subsystem in subsystems), doc
+        assert doc not in classified_docs, doc
+        assert docs_impact.impact_report(subsystems, (doc,)) == [], doc
 
 
 def test_voice_file_routes_to_voice_docs():

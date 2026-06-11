@@ -1,10 +1,16 @@
 # Runbook: 2026-06-10 fix-batch hardware validation
 
-> **Status: session artifact.** One-time validation runbook for the
-> 2026-06-10 audited fix batch (PRs #558, #563, #567, #569, #571).
-> Run once from the laptop checkout on the home LAN; afterwards this
-> doc is historical. Current operational truth lives in
-> [HANDOFF-resilience.md](HANDOFF-resilience.md) and AGENTS.md.
+> **Status: executed; archived 2026-06-11.** One-time validation
+> runbook for the 2026-06-10 audited fix batch (PRs #558, #563, #567,
+> #569, #571), executed 2026-06-11 on the jts3 lab Pi at main
+> `d27fae67` — boot-loop guard tripped and re-armed across two
+> reboots, watchdog conversion and new doctor checks verified green.
+> Full evidence (journal lines, drop-in lists, `/state` snapshots,
+> doctor output) lives in the
+> [PR #573 execution comment](https://github.com/jaspercurry/JTS/pull/573#issuecomment-4683638459).
+> Preserved as the record of what was validated and how; specific
+> facts below will drift. Current operational truth lives in
+> [HANDOFF-resilience.md](../HANDOFF-resilience.md) and AGENTS.md.
 
 The batch is fully merged and CI-green. CI cannot exercise real
 systemd, ALSA, or the watchdog — per AGENTS.md, "green CI means safe
