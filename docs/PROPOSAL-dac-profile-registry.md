@@ -1,13 +1,16 @@
 # Proposal: DAC Profile Registry
 
-> **Status: proposal / implementation handoff, updated 2026-06-10.** The
+> **Status: proposal / implementation handoff, updated 2026-06-11.** The
 > initial IO-free registry scaffold exists in
 > [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py);
 > `jasper.output_hardware` derives static output metadata and card-label
-> matching from it, and `jasper.output_topology` consumes it for known DAC
-> labels, physical output counts, clock-domain labels, and clock-domain
-> contracts. This supersedes the narrower 2026-06-04 sketch that modeled only a
-> single Apple dongle and a HiFiBerry DAC8x. Current operational truth for
+> matching from it, classifies registered single-device DACs through it, and
+> `jasper.output_topology` consumes it for known DAC labels, physical output
+> counts, clock-domain labels, and clock-domain contracts. Composite output
+> profiles still need explicit live-observation and runtime-activation design;
+> `kind="composite"` is not generic aggregate-output permission. This supersedes
+> the narrower 2026-06-04 sketch that modeled only a single Apple dongle and a
+> HiFiBerry DAC8x. Current operational truth for
 > output ownership lives in
 > [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
 > [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md), and
@@ -26,10 +29,13 @@ hardware profiles:
 
 The right product shape is a small data-driven DAC registry that describes
 hardware identity, physical output shape, mixer/headphone policy, validation
-expectations, and runtime constraints. Adding another DAC should normally add
-one profile plus any genuinely new deploy artifact it needs, not scatter
-device-specific branches through doctor, topology, ALSA rendering, outputd,
-commissioning, and docs.
+expectations, and runtime constraints. Adding an ordinary single-device DAC
+should normally add one profile plus detection/contract tests and any genuinely
+new deploy artifact it needs, not scatter device-specific branches through
+doctor, topology, ALSA rendering, outputd, commissioning, and docs.
+Composite or aggregate output profiles are intentionally a higher bar: they
+need explicit child identity/order rules, clock-domain evidence, runtime
+activation gates, fail-closed partial states, and operator-visible diagnostics.
 
 This registry must build on the current boundaries rather than replacing
 them:
@@ -136,7 +142,8 @@ runtime mutation.
 
 `output_hardware` owns live observation: what is plugged in, card IDs, serials,
 USB bus/controller, endpoint sync mode, partial/ready status, and child PCM
-facts.
+facts. Registered single-device DACs should classify through the registry; do
+not add a new `if dac_x:` branch for each ordinary DAC.
 
 `output_topology` owns operator intent: which physical output goes to which
 speaker driver, which identities are verified, and which safety gates are
@@ -175,9 +182,12 @@ outputd process control inside the registry.
 4. Move mixer/headphone policy into profile data, but keep mutation in
    `jasper-dac-init` and `jasper-headphone-monitor`.
 5. Teach `output_hardware` to emit profile IDs from the registry, including
-   composite dual-Apple states. **Mostly landed:** `output_hardware` still owns
-   live probing and composite classification, but its static vocabulary and
-   single-device card matching now derive from `jasper.audio_hardware.dac`.
+   composite dual-Apple states. **Single-device path landed:** `output_hardware`
+   still owns live probing and composite classification, but its static
+   vocabulary, single-device card matching, and registered single-device
+   classification now derive from `jasper.audio_hardware.dac`. Composite
+   profiles still require explicit observation/activation logic; adding
+   `kind="composite"` to the registry alone must not route output.
 6. Keep `jasper-audio-hardware-reconcile` as the runtime owner, but have it
    consume profile metadata rather than duplicating every device string. The
    remaining bash-side matching is intentionally small, covered by drift-guard
@@ -195,7 +205,8 @@ required for deploy, ALSA, mixer, and outputd behavior.
 
 - Keep the registry simple: data plus pure lookup helpers.
 - Do not model future DACs that do not exist yet.
-- Treat composite devices as first-class profiles, not exceptions.
+- Treat composite devices as first-class profiles, not exceptions, but do not
+  generalize them into implicit aggregate-output support.
 - Preserve fail-closed behavior for partial, unknown, or unsafe states.
 - Expose observed vs runtime role clearly. A system can observe dual Apple but
   safely run the single-Apple output path until the active graph is ready.
@@ -222,6 +233,11 @@ Specific follow-up from review:
 - A DAC profile registry is useful, but it is not the runtime graph owner.
   `jasper-audio-hardware-reconcile` still decides whether outputd may switch to
   dual Apple based on both live hardware and active Camilla graph evidence.
+- Ordinary single-device DAC classification is now registry-driven. Future
+  single-device DACs should add profile data plus tests, not another
+  `output_hardware.classify_output_cards` branch. Future composite DACs still
+  need deliberate child identity, clock-domain, activation, fail-closed, and
+  observability design before runtime routing is safe.
 - The first implementation PR should be boring: add profile data and pure tests,
   then move one low-risk consumer such as labels/output counts. Do not combine
   registry creation with outputd, Camilla, or udev behavior changes.
@@ -229,5 +245,6 @@ Specific follow-up from review:
   observed and graph-ready, while still warning on bad physical topology or
   partial hardware states.
 
-Last verified: 2026-06-10 (registry consumers and remaining bash drift guards
-rechecked against the dual-Apple active-output architecture).
+Last verified: 2026-06-11 (registered single-device classification, registry
+consumers, and remaining bash drift guards rechecked against the dual-Apple
+active-output architecture).

@@ -816,7 +816,7 @@ reference. Currently:
   restructuring the `jts.local` management surface into a tighter
   layout with a first-run setup wizard.
 - [`PROPOSAL-dac-profile-registry.md`](docs/PROPOSAL-dac-profile-registry.md)
-  — **Proposal / implementation handoff** (updated 2026-06-09) —
+  — **Proposal / implementation handoff** (updated 2026-06-11) —
   scoped design for the data-driven DAC profile registry now scaffolded
   in `jasper/audio_hardware/dac.py`, covering Apple USB-C, HiFiBerry
   DAC8x-family, and dual-Apple composite output profiles.
