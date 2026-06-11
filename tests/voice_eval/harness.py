@@ -62,6 +62,7 @@ re-runs cost $0.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -696,10 +697,39 @@ class VoiceEvalHarness:
             if needs_end_input:
                 await turn.end_input()
 
-            async def _drain():
+            async def _consume():
                 async for chunk in turn.audio_out():
                     audio_chunks.append(chunk)
                     trace.append("audio_out", {"n_bytes": len(chunk)})
+
+            async def _drain():
+                # The Gemini adapter never closes the audio stream at
+                # turn end — its sentinel only arrives at release(), and
+                # release() happens after this drain, so iterating to
+                # stream-end deadlocks into the timeout on every turn
+                # (the daemon doesn't iterate-to-end; it watches
+                # server_turn_complete(), the protocol's canonical
+                # "model is done speaking" signal — same as the idle
+                # watchdog). Consume in a child task and stop on that
+                # signal; turn_complete is the last server content for
+                # a turn, so a short beat lets the consumer drain the
+                # already-queued tail. Providers whose stream does end
+                # (sentinel) finish via consumer.done() instead.
+                consumer = asyncio.create_task(_consume())
+                try:
+                    while not consumer.done():
+                        if turn.server_turn_complete():
+                            await asyncio.sleep(0.3)
+                            consumer.cancel()
+                            break
+                        await asyncio.sleep(0.1)
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await consumer
+                except asyncio.CancelledError:
+                    consumer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await consumer
+                    raise
 
             try:
                 await asyncio.wait_for(_drain(), timeout=turn_timeout_sec)
