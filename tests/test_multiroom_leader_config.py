@@ -20,36 +20,63 @@ def test_restore_action_none_on_the_common_solo_reconcile():
     This is every reconcile run on a solo speaker — it MUST be a no-op
     (no CamillaDSP churn)."""
     assert restore_action(
-        stash=None, stash_file_exists=False, bonded_active=False,
+        stash=None, stash_usable=False, bonded_active=False,
     ) == "none"
 
 
-def test_restore_action_prefers_the_stash():
+def test_restore_action_prefers_a_usable_stash():
     assert restore_action(
         stash="/var/lib/camilladsp/configs/sound_current.yml",
-        stash_file_exists=True,
+        stash_usable=True,
         bonded_active=True,
     ) == "stash"
     # Stash wins even if camilla already flipped off the bonded config
     # (a half-finished prior unwind retries to the user's real config).
     assert restore_action(
         stash="/var/lib/camilladsp/configs/sound_current.yml",
-        stash_file_exists=True,
+        stash_usable=True,
         bonded_active=False,
     ) == "stash"
 
 
-def test_restore_action_re_emits_when_stash_is_missing_or_gone():
+def test_restore_action_re_emits_when_stash_is_missing_gone_or_pipe_shaped():
     # Bonded active but no stash at all (stash lost): re-emit solo.
     assert restore_action(
-        stash=None, stash_file_exists=False, bonded_active=True,
+        stash=None, stash_usable=False, bonded_active=True,
     ) == "re_emit"
-    # Stash exists but its file was deleted (config dir cleaned): re-emit.
+    # Stash exists but unusable — its file was deleted, OR its content is
+    # PIPE-shaped (a /sound save while bonded regenerated sound_current.yml
+    # with the pipe sink; restoring it after disband would point camilla at
+    # a FIFO whose creator is stopped — the restart-flap wedge): re-emit.
     assert restore_action(
         stash="/var/lib/camilladsp/configs/sound_current.yml",
-        stash_file_exists=False,
+        stash_usable=False,
         bonded_active=True,
     ) == "re_emit"
+
+
+def test_is_pipe_config_distinguishes_pipe_from_solo(tmp_path):
+    """The content check both stash guards share, against REAL emitted
+    configs (emitter/scanner drift fails here)."""
+    from jasper.multiroom.leader_config import _is_pipe_config
+    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    pipe = tmp_path / "pipe.yml"
+    pipe.write_text(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            enable_rate_adjust=False,
+            playback_pipe_path=SNAPFIFO,
+        )
+    )
+    solo = tmp_path / "solo.yml"
+    solo.write_text(emit_sound_config(SoundProfile(enabled=False)))
+
+    assert _is_pipe_config(str(pipe)) is True
+    assert _is_pipe_config(str(solo)) is False
+    assert _is_pipe_config(str(tmp_path / "missing.yml")) is False
 
 
 def test_stash_round_trip(tmp_path):

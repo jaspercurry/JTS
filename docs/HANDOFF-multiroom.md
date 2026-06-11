@@ -641,7 +641,9 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   sink — the raw-DAC fight was the observed pre-Inc-5 failure); the
   reconciler role wiring (outputd lane env + restart-on-change, member
   FIFO, load-bearing apply order, solo-restore unwind ladder with a
-  persistent prior-config stash); runtime health reads producer liveness
+  persistent VALIDATED-SOLO prior-config stash (a pipe-shaped wizard
+  config — e.g. sound_current.yml regenerated while bonded — is never
+  stashed NOR restored; restore falls through to re-emit-solo)); runtime health reads producer liveness
   from the ACTIVE camilla config (daemon-adjacent truth). **Design note:**
   the leader's camilla keeps capturing lane 7 (`jasper_capture`) — all 8
   loopback substreams are allocated, and PR-2's TTS socket flip makes lane
@@ -1612,8 +1614,9 @@ sink; pipe requires rate_adjust=false; never combines with the member weave);
 pipe; follower → solo defaults — its camilla feeds only the inv-B fallback
 lane), so a /sound save while bonded regenerates the pipe config instead of
 silently un-bonding camilla; NEW `jasper/multiroom/leader_config.py` owns the
-bonded apply + solo-restore unwind ladder (persistent prior-config stash →
-re-emit-solo fallback → no-op on the common solo reconcile), reusing the
+bonded apply + solo-restore unwind ladder (persistent VALIDATED-SOLO prior-config
+stash — never written from nor restored to a pipe-shaped config → re-emit-solo
+fallback → no-op on the common solo reconcile), reusing the
 shared validated `apply_dsp_config` engine + camilla's glitch-free config
 swap; the reconciler orchestrates everything in a load-bearing, test-pinned
 order (derived files+FIFO → solo-restore → outputd restart only on lane-env
