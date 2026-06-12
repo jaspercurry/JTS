@@ -1,9 +1,8 @@
 // Exercises a JTS dialog implementation against a minimal DOM shim, simulating
 // the <dialog> `close` event that headless Chrome won't fire — so the
 // Promise-resolve contract of jtsConfirm/jtsAlert gets real automated coverage.
-// Driven by tests/test_dialog_helper.py against BOTH the canonical ES module
-// (deploy/assets/shared/js/dialog.js) and the legacy inline twin
-// (jasper.web._common.dialog_helpers_js), which doubles as a drift guard.
+// Driven by tests/test_dialog_helper.py against the canonical ES module
+// (deploy/assets/shared/js/dialog.js).
 // Prints one JSON line of observations.
 //
 //   node tests/js/dialog_harness.mjs <path-to-dialog-source.js>
@@ -92,7 +91,10 @@ const out = {};
 }
 out.removedAfterClose = doc.body.children.length === 0;
 
-// legacy-only: jtsConfirmSubmit cancels the native submit, re-submits if confirmed
+// legacy-only: jtsConfirmSubmit used to cancel the native submit and re-submit
+// if confirmed. The canonical static module does not ship that shim, but the
+// harness keeps this optional probe so historical copies can still be checked
+// during archaeology.
 out.hasConfirmSubmit = typeof jtsConfirmSubmit === "function";
 if (out.hasConfirmSubmit) {
   let submitted = false;

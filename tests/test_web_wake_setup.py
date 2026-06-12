@@ -90,8 +90,8 @@ def test_render_loads_es_module_not_inline_script():
 
 def test_render_has_no_legacy_chrome():
     html = _render()
-    # wrap_page's PAGE_STYLE (max-width:620px body) and the clickable-div
-    # switch must be gone; the toggle is the shared checkbox markup.
+    # Old max-width body styling and the clickable-div switch must be gone;
+    # the toggle is the shared checkbox markup.
     assert "max-width: 620px" not in html
     assert 'class="switch"' not in html
 

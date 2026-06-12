@@ -253,10 +253,9 @@ def test_static_modules_do_not_use_native_browser_dialogs():
     )
 
 
-# The same retirement applies to the legacy wrap_page()/hand-rolled wizards,
-# whose inline JS lives in Python string literals. There the helper is the
-# inline twin in _common (jtsConfirm/jtsAlert/jtsConfirmSubmit), injected by
-# wrap_page() or embedded by hand-rolled pages. Two invariants below.
+# The same retirement applies to any Python-rendered wizard strings. Dialog
+# interactions belong in static ES modules that import
+# /assets/shared/js/dialog.js, not in inline JavaScript inside *_setup.py.
 
 # A native call: the name not preceded by an identifier char or dot (excludes
 # jtsConfirm, obj.alert, respond_prompt) and opening immediately on a string /
@@ -277,29 +276,24 @@ def test_wizards_do_not_use_native_browser_dialogs():
                 offenders.append(f"{path}:{lineno}: {line.strip()}")
     assert offenders == [], (
         "native confirm()/alert()/prompt() in a wizard — use jtsConfirm/jtsAlert "
-        "(jasper.web._common.dialog_helpers_js) instead:\n" + "\n".join(offenders)
+        "from /assets/shared/js/dialog.js instead:\n" + "\n".join(offenders)
     )
 
 
-def test_wizards_using_dialog_helper_have_it_wired():
-    """A page that calls jtsConfirm/jtsAlert/jtsConfirmSubmit must actually get
-    the helper JS on the page — via the shared wrap_page() (which injects it) or
-    by embedding dialog_helpers_js() itself (hand-rolled pages). Otherwise the
-    call is a runtime ReferenceError — the inert-conversion bug surfaced during
-    the migration, where a page's local _wrap() hand-rolled the shell without
-    the helper."""
+def test_wizard_python_strings_do_not_inline_dialog_helper_calls():
+    """Dialog helper calls live in static ES modules, not Python strings."""
     uses_helper = re.compile(r"\bjts(?:Confirm|Alert|ConfirmSubmit)\s*\(")
-    # \bwrap_page\( matches the SHARED wrap_page() call but NOT a local
-    # _wrap_page( (no word boundary after the leading underscore).
-    wired = re.compile(r"\bwrap_page\s*\(|\bdialog_helpers_js\b")
-    offenders = [
-        str(path) for path in WEB_SETUP_FILES
-        if uses_helper.search(text := path.read_text()) and not wired.search(text)
-    ]
+    offenders = []
+    for path in WEB_SETUP_FILES:
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _is_comment_line(line):
+                continue
+            if uses_helper.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
     assert offenders == [], (
-        "these wizards call jtsConfirm/jtsAlert but never wire the helper (no "
-        "wrap_page() call, no dialog_helpers_js() embed) — the dialog would be a "
-        "ReferenceError at runtime:\n" + "\n".join(offenders)
+        "dialog helper calls in Python-rendered wizard strings — move the "
+        "interaction to a static ES module that imports /assets/shared/js/dialog.js:\n"
+        + "\n".join(offenders)
     )
 
 

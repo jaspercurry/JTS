@@ -19,9 +19,7 @@
 // <dialog>.showModal() is assumed (every browser since 2022 has it — Chrome
 // 37, Firefox 98, Safari 15.4); no native-popup fallback, since reintroducing
 // window.confirm would bring back the suppression bug this module exists to
-// kill. The legacy wrap_page() wizards carry a behaviourally-identical inline
-// twin (jasper.web._common.dialog_helpers_js / DIALOG_CSS) for pages that
-// don't load ES modules — keep the contract in sync if you change it.
+// kill. Pages that need a dialog import this static shared module.
 
 function openDialog({ message, title, buttons }) {
   const dlg = document.createElement("dialog");

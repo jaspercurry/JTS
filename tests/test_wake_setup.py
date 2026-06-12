@@ -468,7 +468,7 @@ def test_index_html_renders_detection_card():
     assert 'id="layer-raw"' in html
     assert 'id="layer-dtln"' in html
     assert 'id="layer-chip_aec"' in html
-    # iOS toggle classes come from the shared _common.TOGGLE_CSS.
+    # Toggle classes are styled by the shared app.css switch rules.
     assert 'class="toggle"' in html
     # Each row exposes a status element for the poll loop to fill.
     assert 'id="layer-status-aec"' in html

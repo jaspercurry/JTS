@@ -1,26 +1,19 @@
-"""Resolve-path + cross-copy contract coverage for the <dialog> confirm/alert
-helper.
+"""Resolve-path contract coverage for the <dialog> confirm/alert helper.
 
 The dialog resolves its Promise on the native <dialog> `close` event, which
 headless Chrome does not fire — so this drives a Node DOM shim instead
 (tests/js/dialog_harness.mjs), giving the resolve path (click Confirm → resolve
 true → action proceeds) real automated coverage rather than manual-only.
 
-Running the same harness against BOTH the canonical ES module and the legacy
-inline twin, and asserting the same behavioural contract, also guards the two
-copies against silent drift. Skips when node isn't on PATH (e.g. a CI image
-without it); runs anywhere node is present.
+Skips when node isn't on PATH (e.g. a CI image without it); runs anywhere node
+is present.
 """
 import json
-import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
-
-from jasper.web._common import dialog_helpers_js
 
 _NODE = shutil.which("node")
 _HARNESS = Path("tests/js/dialog_harness.mjs")
@@ -58,21 +51,6 @@ def _assert_shared_contract(out: dict) -> None:
 def test_canonical_dialog_module_resolves_and_meets_contract():
     out = _drive(str(_CANONICAL))
     _assert_shared_contract(out)
-    # The ES-module pages render their own forms, so no jtsConfirmSubmit there.
+    # Static ES-module pages render their own forms, so no jtsConfirmSubmit
+    # legacy onsubmit shim is shipped.
     assert out["hasConfirmSubmit"] is False
-
-
-def test_legacy_dialog_twin_resolves_and_meets_contract():
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
-        f.write(dialog_helpers_js())
-        path = f.name
-    try:
-        out = _drive(path)
-    finally:
-        os.unlink(path)
-    _assert_shared_contract(out)
-    # The legacy twin adds jtsConfirmSubmit for onsubmit forms: it cancels the
-    # native (synchronous) submit and re-submits only once the user confirms.
-    assert out["hasConfirmSubmit"] is True
-    assert out["confirmSubmitReturnsFalse"] is True
-    assert out["confirmSubmitSubmitsOnConfirm"] is True

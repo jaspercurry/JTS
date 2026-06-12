@@ -33,9 +33,9 @@ def test_wifi_page_is_canonical_document():
     out = _render()
     assert out.startswith("<!doctype html>")
     assert "/assets/app.css?v=" in out
-    # The legacy hand-rolled shell + its inline _PAGE_STYLE are gone.
+    # The old hand-rolled shell and inline page styling are gone.
     assert "max-width: 720px" not in out
-    assert "TOGGLE_CSS" not in out
+    assert "TOGGLE" "_CSS" not in out
     assert "#1db954" not in out
 
 

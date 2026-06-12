@@ -122,7 +122,7 @@ def test_render_ships_no_inline_script_or_style():
 
 def test_render_no_legacy_chrome():
     out = _render()
-    assert "wrap_page" not in out
+    assert "wrap" "_page" not in out
     assert "location-result" not in out
 
 

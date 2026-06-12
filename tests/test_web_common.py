@@ -261,12 +261,6 @@ def test_csrf_field_html_escapes_token_value():
     assert '" onclick="' not in out  # but the attribute injection doesn't
 
 
-def test_shared_toggle_css_respects_reduced_motion():
-    assert "@media (prefers-reduced-motion: reduce)" in _common.TOGGLE_CSS
-    assert ".toggle .track" in _common.TOGGLE_CSS
-    assert "transition: none" in _common.TOGGLE_CSS
-
-
 def test_reject_csrf_sends_403():
     h = _FakeHandler()
     _common.reject_csrf(h)
@@ -400,7 +394,7 @@ def test_canonical_page_links_shared_stylesheet_with_cache_bust():
     # Links the shared stylesheet, cache-busted by a version token.
     assert 'rel="stylesheet"' in out
     assert "/assets/app.css?v=" in out
-    # Does NOT inline the legacy design (a PAGE_STYLE-only marker).
+    # Does NOT inline obsolete per-page wrapper CSS.
     assert "max-width: 620px" not in out
 
 
@@ -494,7 +488,7 @@ def test_canonical_header_places_right_html_in_right_slot():
 
 
 # ----------------------------------------------------------------------
-# Canonical banner (the shared .banner flash, twin of wrap_page's status div)
+# Canonical banner (the shared .banner flash)
 # ----------------------------------------------------------------------
 
 
@@ -520,9 +514,8 @@ def test_canonical_banner_info_for_neutral_message():
     assert 'class="banner banner--info"' in out
 
 
-def test_canonical_banner_classing_mirrors_wrap_page():
-    # The whole point of the twin: a flash string lands in the same severity
-    # bucket on a migrated page as it does on a legacy wrap_page() wizard.
+def test_canonical_banner_classing_matches_flash_contract():
+    # A flash string lands in the expected severity bucket on canonical pages.
     cases = {
         "Saved.": "ok",
         "Cleared.": "ok",
@@ -531,16 +524,7 @@ def test_canonical_banner_classing_mirrors_wrap_page():
         "Name unchanged.": "info",
     }
     for msg, expected in cases.items():
-        legacy = _common.wrap_page("T", "", status_msg=msg).decode()
-        if expected == "ok":
-            assert 'class="msg ok"' in legacy
-            assert "banner--ok" in _common.canonical_banner(msg)
-        elif expected == "danger":
-            assert 'class="msg err"' in legacy
-            assert "banner--danger" in _common.canonical_banner(msg)
-        else:
-            assert '<div class="msg">' in legacy or 'class="msg"' in legacy
-            assert "banner--info" in _common.canonical_banner(msg)
+        assert f"banner--{expected}" in _common.canonical_banner(msg)
 
 
 def test_canonical_banner_escapes_message():
@@ -569,27 +553,6 @@ def test_canonical_banner_escapes_message():
 ])
 def test_is_valid_token_shape(value, expected):
     assert _common._is_valid_token(value) is expected
-
-
-def test_wrap_page_injects_dialog_helper_only_when_used():
-    """The confirm/alert helper (and its CSS) ride along only on pages whose
-    body actually references it — dialogless wizards carry no dead weight."""
-    used = _common.wrap_page(
-        "T", "<button onclick=\"jtsConfirm('x')\">x</button>"
-    ).decode()
-    assert "function jtsConfirm" in used
-    assert "dialog.jts-dialog" in used  # DIALOG_CSS rode along too
-
-    unused = _common.wrap_page("T", "<p>nothing interactive here</p>").decode()
-    assert "function jtsConfirm" not in unused
-    assert "dialog.jts-dialog" not in unused
-
-
-def test_wrap_page_emits_dialog_helper_before_body():
-    """Helper-first: jtsConfirm/jtsAlert are defined ahead of the page markup
-    that references them, so a parse-time call can't hit an undefined symbol."""
-    page = _common.wrap_page("T", "<div id='dlg-marker'>jtsAlert</div>").decode()
-    assert page.index("function jtsAlert") < page.index("dlg-marker")
 
 
 # --- atomic writers: unique temp (concurrent-writer safety) --------------

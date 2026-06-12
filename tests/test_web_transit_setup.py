@@ -60,7 +60,7 @@ def test_transit_page_is_canonical_document():
     out = _render({})
     assert out.startswith("<!doctype html>")
     assert "/assets/app.css?v=" in out
-    # The legacy wrap_page() body styling must be gone.
+    # The old hand-rolled body styling must be gone.
     assert "max-width: 620px" not in out
     assert "1db954" not in out  # no legacy Spotify-green hex
 
@@ -184,10 +184,9 @@ def test_advanced_section_present_in_every_state(stub_gbfs):
 
 
 def test_flash_renders_canonical_banner():
-    # canonical_banner() classes by message text, mirroring the legacy
-    # wrap_page() contract: "saved"/"cleared" prefix -> ok, a message
-    # containing "error"/"fail" -> danger, anything else -> info. The flash
-    # strings the wizard writes ("Saved. …", "Cleared …") hit those buckets.
+    # canonical_banner() classes by message text: "saved"/"cleared" prefix
+    # -> ok, a message containing "error"/"fail" -> danger, anything else
+    # -> info. The flash strings the wizard writes hit those buckets.
     assert "banner--ok" in _render({}, flash="Saved. Voice daemon restarting.")
     assert "banner--ok" in _render({}, flash="Cleared transit settings. Voice restarting.")
     assert "banner--danger" in _render({}, flash="MTA BusTime rejected that key (probe failed).")
