@@ -74,13 +74,7 @@ class _ScriptedMicQ:
     so the loop exits cleanly (no BridgeStalled needed).
 
     Looks up the bridge module's `_shutdown` at call time (not at
-    import) — `test_raw_port_overridable_via_env` calls
-    `importlib.reload(aec_bridge)`, which rebinds the module's
-    `_shutdown` to a fresh Event. The top-of-file import in this
-    test file still holds the OLD Event; `_aec_loop` (whose
-    `__globals__` IS the module dict) looks up the NEW one. A
-    stale-import `_shutdown.set()` would set the wrong Event and
-    the loop would never exit.
+    import) so `_aec_loop` and this queue always share the live Event.
     """
 
     def __init__(self, script):
@@ -111,12 +105,8 @@ def _reset_shutdown_and_stub_sd(monkeypatch):
     """Each test gets a clean `_shutdown` and a no-op
     `sd.RawOutputStream` (the loop opens one on entry).
 
-    Clears the LIVE `aec_bridge._shutdown` (not the top-of-file
-    import) so a prior test's `importlib.reload(aec_bridge)`
-    doesn't leave a stale Event set in the freshly-loaded module.
-    The top-of-file `_shutdown` is the OLD Event; cleared too for
-    completeness, but the loop's actual check goes through the
-    module-dict lookup.
+    Clears both the module Event and the top-of-file import. The loop's
+    actual check goes through the module-dict lookup.
     """
     aec_bridge._shutdown.clear()
     _shutdown.clear()
@@ -147,6 +137,18 @@ def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
     assert data["counters"]["frames_processed"] == 3
     assert data["counters"]["queue_drops"]["mic"] == 2
     assert data["counters"]["packets_sent_by_leg"]["on"] == 1
+
+
+def test_drop_log_debouncer_aggregates_one_second_windows():
+    debouncer = aec_bridge._DropLogDebouncer()
+
+    assert debouncer.record(10.0) == (1, 1.0)
+    assert debouncer.record(10.25) is None
+    assert debouncer.record(10.50) is None
+
+    drops, window_sec = debouncer.record(11.10)
+    assert drops == 3
+    assert window_sec == pytest.approx(1.1)
 
 
 def test_raises_bridge_stalled_at_threshold(monkeypatch):
@@ -360,19 +362,12 @@ def test_raw_port_overridable_via_env(monkeypatch):
     (e.g. for two-bridge testing) without touching the AEC port."""
     monkeypatch.setenv("JASPER_AEC_UDP_PORT_RAW", "19877")
 
-    # Re-import to pick up the env var. (Module-level constant.)
-    import importlib
-    import jasper.cli.aec_bridge as bridge_mod
-    importlib.reload(bridge_mod)
+    config = aec_bridge.BridgeConfig.from_env()
 
-    try:
-        assert bridge_mod.OUT_PORT_RAW == 19877
-        # Default AEC port unaffected
-        assert bridge_mod.OUT_PORT == 9876
-    finally:
-        # Restore defaults so subsequent tests see canonical ports.
-        monkeypatch.delenv("JASPER_AEC_UDP_PORT_RAW", raising=False)
-        importlib.reload(bridge_mod)
+    assert config.out_port_raw == 19877
+    # Default AEC port unaffected; compatibility constant remains canonical.
+    assert config.out_port == 9876
+    assert aec_bridge.OUT_PORT_RAW == 9877
 
 
 def test_raw0_port_default_9879():
@@ -640,6 +635,7 @@ def test_aec_loop_can_feed_aec3_sweep_from_usb_mic(monkeypatch):
     import socket as real_socket
     from jasper.aec_sweep import (
         AEC3_SWEEP_ENV_FLAG,
+        AEC3_SWEEP_SOURCE_ENV,
         AEC3_SWEEP_SOURCE_USB,
         AEC3_SWEEP_VARIANTS,
         USB_AEC3_SWEEP_BASELINE_OVERRIDES,
@@ -648,9 +644,7 @@ def test_aec_loop_can_feed_aec3_sweep_from_usb_mic(monkeypatch):
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.setenv(AEC3_SWEEP_ENV_FLAG, "1")
-    monkeypatch.setattr(
-        aec_bridge, "AEC3_SWEEP_INPUT_SOURCE", AEC3_SWEEP_SOURCE_USB,
-    )
+    monkeypatch.setenv(AEC3_SWEEP_SOURCE_ENV, AEC3_SWEEP_SOURCE_USB)
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
 
     aec_sock = _mock_socket()
@@ -810,6 +804,7 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     from jasper.aec_engines import dtln as dtln_mod
     from jasper.aec_sweep import (
         AEC3_SWEEP_ENV_FLAG,
+        AEC3_SWEEP_SOURCE_ENV,
         AEC3_SWEEP_SOURCE_XVF,
         AEC3_SWEEP_VARIANTS,
     )
@@ -818,8 +813,8 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
     monkeypatch.setenv("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "1")
     monkeypatch.setenv(AEC3_SWEEP_ENV_FLAG, "1")
+    monkeypatch.setenv(AEC3_SWEEP_SOURCE_ENV, AEC3_SWEEP_SOURCE_XVF)
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
-    monkeypatch.setattr(aec_bridge, "AEC3_SWEEP_INPUT_SOURCE", AEC3_SWEEP_SOURCE_XVF)
     monkeypatch.setattr(
         real_socket,
         "socket",
