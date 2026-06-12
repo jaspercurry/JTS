@@ -4,12 +4,13 @@ Two documented hardware-safety claims (docs/HANDOFF-volume.md,
 "Hearing-safety belt") had no test asserting the actual literals:
 
 1. ``MAX_TTS_GAIN_DB = -6 dB`` — the hardware ceiling on the TTS path,
-   enforced independently in three places: the Python legacy playout
-   (``jasper/audio_io.py``), ``rust/jasper-fanin/src/loudness.rs``, and
-   ``rust/jasper-outputd/src/mixer.rs``. The Rust crates' own unit
-   tests assert clamp behaviour *relative to* the constant, so flipping
-   ``-6.0`` to ``+6.0`` would pass cargo test; the Python test only
-   asserted ``<= 0.0``. This pins the literal in all three.
+   enforced by the Python legacy playout (``jasper/audio_io.py``) and
+   the shared Rust loudness policy
+   (``rust/jasper-tts-protocol/src/loudness.rs``), which fan-in and
+   outputd re-export. The Rust crates' own unit tests assert clamp
+   behaviour *relative to* the constant, so flipping ``-6.0`` to
+   ``+6.0`` would pass cargo test; the Python test only asserted
+   ``<= 0.0``. This pins the literal and the daemon shims.
 
 2. ``volume_limit: 0.0`` "in every JTS CamillaDSP YAML". The Python
    config *emitters* raise on a positive limit (tests exist), but the
@@ -33,8 +34,12 @@ REPO = Path(__file__).resolve().parents[1]
 DOCUMENTED_TTS_CEILING_DB = -6.0
 
 RUST_TTS_GAIN_FILES = (
+    "rust/jasper-tts-protocol/src/loudness.rs",
+)
+
+RUST_SHARED_LOUDNESS_SHIMS = (
     "rust/jasper-fanin/src/loudness.rs",
-    "rust/jasper-outputd/src/mixer.rs",
+    "rust/jasper-outputd/src/loudness.rs",
 )
 
 _RUST_CONST_PAT = re.compile(
@@ -52,6 +57,17 @@ def test_rust_tts_gain_ceiling_is_minus_six_db() -> None:
             "docs/HANDOFF-volume.md promises a -6 dB hardware ceiling "
             "on the TTS path. Retuning it is a hearing-safety decision: "
             "update the doc and this pin together."
+        )
+
+
+def test_rust_daemons_use_shared_tts_gain_policy() -> None:
+    for rel in RUST_SHARED_LOUDNESS_SHIMS:
+        text = (REPO / rel).read_text()
+        assert "pub use jasper_tts_protocol::loudness::*;" in text, (
+            f"{rel}: daemon loudness module no longer re-exports the "
+            "shared Rust policy. If this is intentional, update the "
+            "safety pin and explain how the -6 dB TTS ceiling still "
+            "cannot drift between daemons."
         )
 
 
