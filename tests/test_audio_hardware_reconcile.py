@@ -337,6 +337,51 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "--no-block restart jasper-aec-reconcile.service" in commands
 
 
+def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
+    tmp_path: Path,
+):
+    rendered_template = (
+        "pcm.outputd_dac {\n"
+        "    type hw\n"
+        "    card A\n"
+        "    device 0\n"
+        "}\n"
+        "ctl.outputd_dac { card A }\n"
+        "pcm.jasper_out { card A }\n"
+        "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
+    )
+    outputd_env = (
+        "JASPER_OUTPUTD_BACKEND=alsa\n"
+        "JASPER_OUTPUTD_SINK=single_alsa\n"
+        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n"
+        "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
+        "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
+        "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+    )
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env=(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_AUDIO_DAC_CARD=A\n"
+        ),
+        initial_outputd_env=outputd_env,
+        initial_template=rendered_template,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "env_changed=0 render_changed=0" in result.stderr
+    assert _render_log(tmp_path) == ""
+    commands = _systemctl_log(tmp_path)
+    assert "reset-failed jasper-outputd.service" in commands
+    assert "--no-block start jasper-outputd.service" in commands
+    assert "--no-block restart jasper-outputd.service" not in commands
+    assert "stop jasper-voice.service" not in commands
+    assert "--no-block restart jasper-aec-reconcile.service" not in commands
+
+
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     tmp_path: Path,
 ):

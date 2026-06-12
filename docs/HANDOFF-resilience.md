@@ -1051,8 +1051,9 @@ For anyone touching the resilience code:
   rendering fails, the previous runtime env remains in place. If no
   recognized output DAC is present, it parks `jasper-voice` and
   `jasper-outputd` instead of leaving stale direct-DAC state active;
-  recognized DAC arrival restarts outputd so hotplug recovery does not
-  require a full deploy.
+  recognized DAC arrival restarts outputd when state changed and
+  reset-failed+starts outputd when the arrival is value-neutral, so a
+  condition-parked final-output owner recovers without a full deploy.
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
   unit that `reset-failed`s the audio daemons, starts jasper-camilla,
   then runs the reconciler so mic/AEC/voice state matches present

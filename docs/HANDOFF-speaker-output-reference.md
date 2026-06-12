@@ -349,12 +349,15 @@ What exists:
   manual `jasper-audio-hardware-reconcile` run re-renders the managed
   ALSA template; hardware validation artifacts report the observed
   route in `dac_identity`. A recognized role renders the ALSA template first,
-  then publishes the active DAC env values and restarts
-  `jasper-outputd` so hotplug arrival recovers from a previously parked
-  state. An unknown/no-output role does **not** render `outputd_dac` to
-  a guessed card; it stops `jasper-voice` and `jasper-outputd` so stale
-  direct-DAC ownership cannot keep running against removed hardware or
-  burn the outputd reboot escalation budget.
+  then publishes the active DAC env values. If the env/template changed, the
+  reconciler restarts `jasper-outputd`; if the replug is value-neutral, it
+  still `reset-failed` + `start`s `jasper-outputd` so a unit parked by the
+  missing-card `ExecCondition` recovers when the DAC returns. An
+  unknown/no-output role does **not** render `outputd_dac` to a guessed card;
+  it writes `JASPER_OUTPUTD_BACKEND=fake` so outputd keeps its sockets and
+  `/state` surface alive without opening ALSA, and stops `jasper-voice` plus
+  any stale outputd instance so direct-DAC ownership cannot keep running
+  against removed hardware or burn the outputd reboot escalation budget.
 - Apple-only analog mixer services: `jasper-dac-init.service` and
   `jasper-headphone-monitor.service` exist to pin/watch the Apple USB-C
   dongle `Headphone` control. The audio-hardware reconciler enables
@@ -416,6 +419,15 @@ What exists:
   Optional lab retuning belongs in `/var/lib/jasper/outputd.env`; the
   unit loads it after the packaged defaults, and the AirPlay renderer
   reads the same file when deriving backend latency offset.
+  Startup is also gated by the reconciler-owned final-output card:
+  `JASPER_OUTPUTD_BACKEND=fake` passes because it opens no ALSA device,
+  an empty card passes for composite/parked shapes, and an `alsa` backend
+  with a configured card missing from `/proc/asound` logs
+  `event=outputd.output_device_gate.park reason=missing_dac` and parks
+  inactive instead of restart-looping into the reboot escalation. DAC
+  arrival through the audio-hardware reconciler un-parks that state with
+  an idempotent `reset-failed` + `start` even when the env values are
+  unchanged.
   If outputd cannot stay up after its restart burst, systemd reboots
   cleanly via `StartLimitAction=reboot` rather than leaving the speaker
   without its final-output owner.
