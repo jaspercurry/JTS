@@ -1751,11 +1751,28 @@ disagreement = phone moved = reject); recommend_trims maps the
 measured delta to attenuate-only trims renormalized so the quieter
 side rides at 0 dB, with the −24 dB floor surfaced as clamped=True.
 Closed-loop tested by rendering synthetic room captures from the same
-schedule (tests/test_multiroom_balance.py). The wizard surface — a
-/balance/ flow inside the correction service's process+TLS origin,
-reusing its getUserMedia/AudioWorklet capture, play_sweep playback via
-correction_substream, and measurement_window — is the next PR.
-Earlier same day: PAIR TRIM P1 — manual ±dB balance on /rooms.
+schedule (tests/test_multiroom_balance.py). The wizard surface shipped
+in the same increment: https://<host>/balance/ (linked from the /rooms
+bonded card) — jasper/web/balance_flow.py riding INSIDE the correction
+service's process and TLS origin (nginx 443 location /balance/ →
+:8770, prefix kept). Sharing the process is the mutual-exclusion
+design: both flows open measurement_window, so correction's
+_reserve_start_slot consults balance_flow.active_phase() and
+/balance/play is dispatched behind correction's idle check. Flow:
+phone starts recording → POST /balance/play (gates: bonded leader,
+exactly one reachable same-bond peer, channels {left,right}) plays the
+burst WAV through the normal bonded chain inside a measurement window
+→ one continuous capture uploads → gated analysis maps the channel
+delta onto members via the bond's channel assignment, composing with
+each member's CURRENT trim → /balance/apply writes one absolute
+/grouping/set per member (peer first; partial failure reported
+per-member, idempotent retry). A rejected take keeps awaiting_capture
+for re-record without replaying; abandoned flows lazily expire after
+120 s so the measurement mutex can't wedge. Tests:
+tests/test_web_balance_flow.py (gates, window/playback seams, real
+WAV bytes through the real core, apply order/bodies, exclusion +
+expiry). Earlier same day: PAIR TRIM P1 — manual ±dB balance on
+/rooms.
 NEW JASPER_GROUPING_TRIM_DB (wizard/bond-owned intent, validated
 attenuate-only -24..0 — the LOUDER speaker trims down, never a boost;
 outputd re-validates fail-closed) → reconciler derives

@@ -500,8 +500,14 @@ function makeBondCard() {
   const trimIntro = h("p.info-card__note", null,
     "Balance the pair by ear: trim the LOUDER speaker down (0.0 dB = " +
     "no trim; trims only attenuate, never boost).");
+  const balanceLink = h("a", {
+    href: "https://" + location.hostname + "/balance/",
+  }, "Balance automatically with your phone’s microphone ↗");
+  const balanceNote = h("p.info-card__note", null,
+    "Or: ", balanceLink,
+    " (uses the same measurement certificate as room correction).");
   const trimBlock = h("div.trim-block", null,
-    trimIntro, trimSelf.el, trimPeer.el);
+    trimIntro, trimSelf.el, trimPeer.el, balanceNote);
 
   const status = h("p.bond-status.info-card__note",
     { "attr:aria-live": "polite" });
