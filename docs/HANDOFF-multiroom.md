@@ -1737,7 +1737,25 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (PAIR TRIM P1 — manual ±dB balance on /rooms.
+Last verified: 2026-06-12 (PAIR TRIM P2 core —
+jasper/multiroom/balance.py, the hardware-free math for the phone-mic
+SPL auto-match flow: seeded 500 Hz–2 kHz noise-burst synthesis; the
+left/right/left stereo schedule WAV (one channel silent per burst, so
+each bonded member's outputd channel pick emits it from exactly one
+physical speaker through the FULL normal chain including its current
+trim); template-alignment capture segmentation (one continuous phone
+capture, the burst timing is known so only the start offset is
+solved); gates — clipping, SNR vs the capture's own inter-burst gaps,
+and the A/B/A drift gate (left plays first AND last; >1 dB
+disagreement = phone moved = reject); recommend_trims maps the
+measured delta to attenuate-only trims renormalized so the quieter
+side rides at 0 dB, with the −24 dB floor surfaced as clamped=True.
+Closed-loop tested by rendering synthetic room captures from the same
+schedule (tests/test_multiroom_balance.py). The wizard surface — a
+/balance/ flow inside the correction service's process+TLS origin,
+reusing its getUserMedia/AudioWorklet capture, play_sweep playback via
+correction_substream, and measurement_window — is the next PR.
+Earlier same day: PAIR TRIM P1 — manual ±dB balance on /rooms.
 NEW JASPER_GROUPING_TRIM_DB (wizard/bond-owned intent, validated
 attenuate-only -24..0 — the LOUDER speaker trims down, never a boost;
 outputd re-validates fail-closed) → reconciler derives
