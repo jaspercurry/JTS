@@ -86,7 +86,8 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --reason)
-            REASON="${2:-manual}"
+            [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+            REASON="$2"
             shift 2
             ;;
         -h|--help)
@@ -115,12 +116,16 @@ emit() {
     fi
 }
 
+quote_token() {
+    printf '%q' "$1"
+}
+
 # Test seam: JASPER_BOOTLOOP_NOW pins the clock for deterministic
 # window math. Wall-clock (not monotonic) on purpose — the whole point
 # is surviving reboots, and CLOCK_MONOTONIC resets to ~0 each boot.
 NOW="${JASPER_BOOTLOOP_NOW:-$(date +%s)}"
 if ! [[ "$NOW" =~ ^[0-9]+$ ]]; then
-    emit error "reason=bad_clock now=${NOW@Q}"
+    emit error "reason=bad_clock now=$(quote_token "$NOW")"
     exit 0
 fi
 # Tuning knobs must be sane integers, or bash arithmetic on them
@@ -129,11 +134,11 @@ fi
 # These are test seams, not production knobs — the unit sets no
 # EnvironmentFile=, so production always runs the defaults (see header).
 if ! [[ "$WINDOW_SEC" =~ ^[0-9]+$ ]]; then
-    emit error "reason=bad_window value=${WINDOW_SEC@Q} using=3600"
+    emit error "reason=bad_window value=$(quote_token "$WINDOW_SEC") using=3600"
     WINDOW_SEC=3600
 fi
 if ! [[ "$THRESHOLD" =~ ^[1-9][0-9]*$ ]]; then
-    emit error "reason=bad_threshold value=${THRESHOLD@Q} using=3"
+    emit error "reason=bad_threshold value=$(quote_token "$THRESHOLD") using=3"
     THRESHOLD=3
 fi
 # Per-boot identity so re-running the script inside one boot (operator
@@ -230,21 +235,31 @@ write_marker() {
     # $1 = "true"/"false" (tripped). Fail-open: a marker write failure
     # is logged and ignored — observability must not block the boot.
     local tripped="$1"
-    if ! mkdir -p "$(dirname "$MARKER_FILE")" 2>/dev/null; then
-        emit error "reason=marker_dir_unwritable dir=$(dirname "$MARKER_FILE")"
+    # $2 = "true"/"false"/"null" (whether daemon-reload loaded drop-ins).
+    local reload_ok="${2:-null}"
+    local marker_dir tmp
+    marker_dir="$(dirname "$MARKER_FILE")"
+    if ! mkdir -p "$marker_dir" 2>/dev/null; then
+        emit error "reason=marker_dir_unwritable dir=$marker_dir"
         return 0
     fi
-    printf '{"tripped": %s, "boots_in_window": %d, "threshold": %d, "window_sec": %d, "checked_at": %d, "reason": "%s", "units": [%s]}\n' \
-        "$tripped" "$count" "$THRESHOLD" "$WINDOW_SEC" "$NOW" \
+    tmp="$(mktemp "${marker_dir}/.bootloop_guard_marker.XXXXXX" 2>/dev/null)" || tmp=""
+    if [[ -z "$tmp" ]]; then
+        emit error "reason=marker_tmp_failed dir=$marker_dir"
+        return 0
+    fi
+    printf '{"tripped": %s, "reload_ok": %s, "boots_in_window": %d, "threshold": %d, "window_sec": %d, "checked_at": %d, "reason": "%s", "units": [%s]}\n' \
+        "$tripped" "$reload_ok" "$count" "$THRESHOLD" "$WINDOW_SEC" "$NOW" \
         "$(json_safe "$REASON")" \
-        "$units_json" > "$MARKER_FILE" 2>/dev/null \
-        || emit error "reason=marker_write_failed file=$MARKER_FILE"
+        "$units_json" > "$tmp" 2>/dev/null \
+        && mv -f "$tmp" "$MARKER_FILE" \
+        || { rm -f "$tmp"; emit error "reason=marker_write_failed file=$MARKER_FILE"; }
 }
 
 # ---- 3. Healthy boot: arm and exit ----------------------------------------
 
 if (( count < THRESHOLD )); then
-    write_marker false
+    write_marker false null
     emit ok "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units=${#units[@]}"
     exit 0
 fi
@@ -252,7 +267,7 @@ fi
 # ---- 4. Tripped: neuter reboot escalation for THIS boot --------------------
 
 if [[ "${#units[@]}" -eq 0 ]]; then
-    write_marker false
+    write_marker false null
     emit ok "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units=0 note=no_reboot_units"
     exit 0
 fi
@@ -284,13 +299,25 @@ EOF
     fi
 done
 
-if (( wrote > 0 )); then
-    if ! "$SYSTEMCTL" daemon-reload >/dev/null 2>&1; then
-        emit error "reason=daemon_reload_failed"
-    fi
+if (( wrote == 0 )); then
+    write_marker false null
+    emit ok "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units_guarded=0/${#units[@]} note=no_dropins_written"
+    exit 0
 fi
 
-write_marker true
+reload_ok=true
+if ! "$SYSTEMCTL" daemon-reload >/dev/null 2>&1; then
+    emit error "reason=daemon_reload_failed"
+    reload_ok=false
+fi
+
+if [[ "$reload_ok" != "true" ]]; then
+    write_marker false false
+    emit ok "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units_guarded=${wrote}/${#units[@]} note=daemon_reload_failed"
+    exit 0
+fi
+
+write_marker true true
 emit tripped "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units_guarded=${wrote}/${#units[@]}"
 log "reboot escalation disabled for this boot (${wrote} unit drop-ins in $DROPIN_DIR)." \
     "A unit that exhausts its restart budget now parks failed instead of rebooting the Pi." \

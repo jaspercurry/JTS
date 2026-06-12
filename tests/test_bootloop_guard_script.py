@@ -59,7 +59,7 @@ class Harness:
         fake.write_text(
             "#!/usr/bin/env bash\n"
             f"echo \"$*\" >> {self.systemctl_log}\n"
-            "exit 0\n"
+            "exit \"${JASPER_FAKE_SYSTEMCTL_RC:-0}\"\n"
         )
         fake.chmod(0o755)
         self.fake_systemctl = fake
@@ -70,6 +70,7 @@ class Harness:
     def run(
         self, *, now: int, window: int = 3600, threshold: int = 3,
         boot_id: str | None = None, reason: str = "test",
+        systemctl_rc: int = 0,
     ):
         env = {
             "PATH": "/usr/bin:/bin",
@@ -84,6 +85,7 @@ class Harness:
             "JASPER_BOOTLOOP_WINDOW_SEC": str(window),
             "JASPER_BOOTLOOP_THRESHOLD": str(threshold),
             "JASPER_SYSTEMCTL": str(self.fake_systemctl),
+            "JASPER_FAKE_SYSTEMCTL_RC": str(systemctl_rc),
         }
         return subprocess.run(
             ["bash", str(SCRIPT), "--reason", reason],
@@ -109,7 +111,8 @@ def test_first_boot_is_healthy_and_armed(tmp_path):
     assert r.returncode == 0
     assert "event=bootloop_guard.ok" in r.stderr
     assert h.marker() == {
-        "tripped": False, "boots_in_window": 1, "threshold": 3,
+        "tripped": False, "reload_ok": None,
+        "boots_in_window": 1, "threshold": 3,
         "window_sec": 3600, "checked_at": 1000, "reason": "test",
         "units": ["jasper-camilla.service"],
     }
@@ -135,6 +138,7 @@ def test_threshold_boot_in_window_trips_and_writes_dropins(tmp_path):
     assert "systemctl reset-failed" in r.stderr
     m = h.marker()
     assert m["tripped"] is True
+    assert m["reload_ok"] is True
     assert m["boots_in_window"] == 3
     assert sorted(m["units"]) == [
         "jasper-camilla.service", "jasper-voice.service",
@@ -146,6 +150,72 @@ def test_threshold_boot_in_window_trips_and_writes_dropins(tmp_path):
     # Units without reboot escalation are left alone.
     assert not h.dropin_for("jasper-snapserver.service").exists()
     assert h.systemctl_calls() == ["daemon-reload"]
+
+
+def test_daemon_reload_failure_is_not_reported_as_tripped(tmp_path):
+    h = Harness(tmp_path)
+    h.add_unit("jasper-camilla.service", REBOOT_UNIT)
+    h.run(now=0)
+    h.run(now=300)
+    r = h.run(now=600, systemctl_rc=1)
+    assert r.returncode == 0
+    assert "event=bootloop_guard.error reason=daemon_reload_failed" in r.stderr
+    assert "event=bootloop_guard.tripped" not in r.stderr
+    assert "note=daemon_reload_failed" in r.stderr
+    marker = h.marker()
+    assert marker["tripped"] is False
+    assert marker["reload_ok"] is False
+    assert marker["boots_in_window"] == 3
+    assert h.systemctl_calls() == ["daemon-reload"]
+
+
+def test_missing_reason_value_exits_instead_of_spinning(tmp_path):
+    h = Harness(tmp_path)
+    r = subprocess.run(
+        ["bash", str(SCRIPT), "--reason"],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "JASPER_BOOTLOOP_STATE_FILE": str(h.state_file),
+            "JASPER_BOOTLOOP_MARKER_FILE": str(h.marker_file),
+            "JASPER_BOOTLOOP_DROPIN_DIR": str(h.dropin_dir),
+            "JASPER_BOOTLOOP_UNITS_DIR": str(h.units_dir),
+            "JASPER_BOOTLOOP_NOW": "1000",
+            "JASPER_SYSTEMCTL": str(h.fake_systemctl),
+        },
+        capture_output=True,
+        text=True,
+        timeout=2,
+    )
+    assert r.returncode == 2
+    assert "Usage: jasper-bootloop-guard" in r.stderr
+    assert not h.marker_file.exists()
+
+
+def test_reason_shift_two_idiom_is_guarded_in_sibling_scripts():
+    scripts = [
+        ROOT / "deploy" / "bin" / "jasper-aec-reconcile",
+        ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile",
+        ROOT / "deploy" / "bin" / "jasper-bootloop-guard",
+        ROOT / "deploy" / "bin" / "jasper-identity-reconcile",
+        ROOT / "deploy" / "bin" / "jasper-wifi-guardian",
+    ]
+    for script in scripts:
+        lines = script.read_text().splitlines()
+        for idx, line in enumerate(lines):
+            if "shift 2" not in line:
+                continue
+            window = "\n".join(lines[max(0, idx - 3):idx])
+            assert "[[ $# -ge 2 ]]" in window, f"{script} has unguarded shift 2"
+
+
+def test_bootloop_guard_avoids_bash_44_q_expansion():
+    assert "@Q" not in SCRIPT.read_text()
+
+
+def test_marker_write_uses_tempfile_then_rename_pattern():
+    text = SCRIPT.read_text()
+    assert ".bootloop_guard_marker." in text
+    assert 'mv -f "$tmp" "$MARKER_FILE"' in text
 
 
 def test_boots_outside_window_are_pruned_and_do_not_trip(tmp_path):
