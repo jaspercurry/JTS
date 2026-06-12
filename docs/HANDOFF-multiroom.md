@@ -1347,7 +1347,9 @@ keep that step.
 ## 8. Phased delivery
 
 **P0 — feasibility spike with MEASURED gates (throwaway, not
-product).** Stand up `snapserver` reading a hand-fed FIFO on one
+product).** For the practical Zero 2 W endpoint setup, use
+[`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md); this section owns
+the measurement contract. Stand up `snapserver` reading a hand-fed FIFO on one
 brainy Pi + `snapclient` on a second + a **Pi Zero playing a sub
 channel** (conveniently exercises the cheap-endpoint path and the
 loose-sub-sync claim at once) + the leader's own localhost snapclient

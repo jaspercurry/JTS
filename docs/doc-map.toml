@@ -576,14 +576,43 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-multiroom.md",
+  "docs/dumb-endpoint-bringup.md",
 ]
 requires_docs_when = [
   "Grouping roles, the snapcast sync transport, channel/leader assignment, the grouping env contract, off-by-default behaviour, or the sync/RAM spike methodology change.",
+  "The practical Raspberry Pi Zero 2 W dumb-endpoint bring-up path, endpoint package set, DAC assumptions, or lab spike invocation changes.",
   "The /rooms/ directory, its discovery service, or the friendly-name advert (the name= TXT on _jasper-control._tcp rendered by control_advert from the service template) changes.",
   "The shared mDNS browse (jasper/mdns.py), the Avahi *.service renderer (jasper/avahi_service.py), the speaker-identity reader (jasper/identity.py), or where the room label lives (jasper/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
 ]
 verification = [
   "pytest tests/test_multiroom_config.py tests/test_multiroom_reconcile.py tests/test_multiroom_state.py tests/test_mdns.py tests/test_avahi_service.py tests/test_identity.py tests/test_speaker_name.py tests/test_web_rooms_setup.py",
+]
+
+[[subsystem]]
+id = "dumb-audio-endpoints"
+title = "Dumb audio endpoints (Raspberry Pi Zero 2 W timed renderer)"
+safety = "audio-output-risk"
+code = [
+  "jts_contracts/**",
+  "jts_endpoint/**",
+  "deploy/endpoint/**",
+  "deploy/systemd/jts-endpoint-*.service",
+  "scripts/endpoint-*.sh",
+  "tests/test_endpoint_*.py",
+]
+docs = [
+  "AGENTS.md",
+  "docs/HANDOFF-multiroom.md",
+  "docs/dumb-endpoint-bringup.md",
+]
+requires_docs_when = [
+  "The endpoint install boundary, phased build plan, package/dependency split, shared contract vocabulary, endpoint role assignment, buffer policy, health state, service ownership, or endpoint observability changes.",
+  "Endpoint code starts importing new shared modules, the brain starts consuming endpoint status differently, or the endpoint image/service set changes.",
+]
+verification = [
+  "pytest tests/test_endpoint_*.py",
+  "python3 scripts/docs-impact.py --validate-only",
+  "python3 scripts/docs-linkcheck.py --changed-file docs/dumb-endpoint-bringup.md",
 ]
 
 [[subsystem]]

@@ -481,6 +481,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
+| [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up or building a Zero 2 W endpoint | Practical lab runbook, code/install boundary, and phased build plan for a Snapcast-only dumb endpoint (`jts4`-style): flash Raspberry Pi OS Lite, install `snapclient`, verify the DAC, run the multi-room spike, and keep endpoint code separate from the full JTS install |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
 | [docs/HANDOFF-observability.md](docs/HANDOFF-observability.md) | Operator + AI | Logging/observability model (heartbeat-vs-forensic split, the three steady-state verbosity hotspots, persistent-journald rationale) + the approved per-subsystem debug-mode toggle, flight-recorder, and download-diagnostics design |
@@ -536,6 +537,12 @@ reference. Currently:
   the sync engine, a fixed leader per room, and reuses the peering
   discovery substrate. First deliverable is a P0 measurement spike.
   **Start here for any multi-room / stereo-pair / wireless-sub work.**
+- [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) —
+  Practical lab runbook for a Raspberry Pi Zero 2 W endpoint. It
+  explicitly does **not** install the full JTS stack; it defines the
+  future endpoint package/contract boundary and phased build plan, flashes
+  Raspberry Pi OS Lite, installs `snapclient`/audio tools, verifies the DAC,
+  and runs the multi-room spike against the brainy leader.
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine choices, chip-AEC profile, software fallback)
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —

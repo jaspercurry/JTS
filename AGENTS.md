@@ -179,6 +179,49 @@ ready to give the registry a list-returning shape; until then a bespoke
 
 ---
 
+## Dumb endpoint code boundary
+
+The Raspberry Pi Zero 2 W "dumb endpoint" lives in this repository, but it
+is **not** part of the full `jasper-speaker` brain install. Treat it as a
+separate lightweight install target that shares only tiny versioned
+contracts with the brain. Current operator guidance lives in
+[`docs/dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md); current
+multi-room architecture lives in
+[`docs/HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md).
+
+The intended shape is:
+
+- `jasper/` — full speaker/leader package.
+- `jts_contracts/` — stdlib-only shared wire contracts and vocabulary.
+- `jts_endpoint/` — endpoint agent and endpoint-only helpers.
+- `deploy/endpoint/` and `deploy/systemd/jts-endpoint-*` — endpoint image /
+  service assets.
+
+Import direction is load-bearing:
+
+- `jts_contracts` may import only the Python standard library.
+- `jasper` and `jts_endpoint` may import `jts_contracts`.
+- `jts_endpoint` must not import `jasper`.
+- `jasper` must not import `jts_endpoint`.
+
+The contract package owns versioned payload shapes, roles, health states,
+buffer policy vocabulary, event names, and compatibility helpers. It must
+not open sockets, read ALSA/systemd, shell out, or manage Snapcast. The
+endpoint package owns only endpoint-local facts and actions: identity,
+Snapclient supervision, DAC inventory, Wi-Fi/underrun health, and quiet
+failure/reconnect behavior. The brain owns policy, grouping, DSP, source
+selection, UI, and fleet-level health.
+
+Every endpoint PR should include boundary tests: payload round trips,
+unknown/older-version compatibility, import guards (`jts_endpoint` cannot
+import `jasper`; `jts_contracts` cannot import third-party packages),
+package-dependency guards (no OpenAI/CamillaDSP/SciPy/ONNX/web/voice deps in
+the endpoint install), and installer guards proving the brain install does
+not enable endpoint services and the endpoint install does not enable brain
+services.
+
+---
+
 ## Documentation paradigm
 
 How docs in this repo are structured, so additions land in the
