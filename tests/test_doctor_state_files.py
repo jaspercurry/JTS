@@ -113,6 +113,8 @@ def test_bootloop_guard_reload_failure_warns(monkeypatch, tmp_path):
     res = check_bootloop_guard()
     assert res.status == "warn"
     assert "daemon-reload" in res.detail
+    assert "jasper-bootloop-guard --reason manual" in res.detail
+    assert "run `systemctl daemon-reload`" not in res.detail
     assert "jasper-camilla.service" in res.detail
 
 

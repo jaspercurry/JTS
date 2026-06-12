@@ -218,8 +218,9 @@ def check_bootloop_guard() -> CheckResult:
             "`systemctl daemon-reload` failed, so the drop-ins were not "
             "confirmed active. Units with written drop-ins: " +
             (", ".join(units) or "(no units recorded)") +
-            ". Check `journalctl -u jasper-bootloop-guard` and run "
-            "`systemctl daemon-reload` after fixing the systemd error.",
+            ". Check `journalctl -u jasper-bootloop-guard`; after fixing "
+            "the systemd error, re-run `jasper-bootloop-guard --reason "
+            "manual` (or reboot).",
         )
     if not snap.get("tripped"):
         return CheckResult(
