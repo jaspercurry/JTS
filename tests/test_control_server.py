@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import signal
 import threading
 import time
 import urllib.request
@@ -514,6 +515,15 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
     assert popens == [
         ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
     ]
+
+
+def test_json_array_body_is_treated_as_empty_body(server_with_coordinator):
+    base, _ = server_with_coordinator
+
+    status, body = _post_raw(f"{base}/aec/leg", b"[]")
+
+    assert status == 400
+    assert body["error"] == "leg must be one of: chip_aec, dtln, raw"
 
 
 def test_aec_profile_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
@@ -1204,6 +1214,59 @@ def test_source_payload_adds_sources_wizard_availability(monkeypatch):
     assert result["sources"]["bluetooth"]["available"] is False
     assert result["sources"]["spotify"]["enabled"] is True
     assert result["sources"]["usbsink"]["available"] is False
+
+
+def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
+    import jasper.control.server as srv_mod
+    import jasper.web.sources_setup as sources_mod
+
+    entered_probe = threading.Event()
+    release_probe = threading.Event()
+    errors: list[BaseException] = []
+
+    def slow_gather_state():
+        entered_probe.set()
+        assert release_probe.wait(timeout=2)
+        return {
+            "airplay": {"available": True, "enabled": True},
+            "bluetooth": {"available": False, "enabled": False},
+            "spotify_connect": {"available": True, "enabled": True},
+            "usbsink": {"available": True, "enabled": True},
+        }
+
+    def augment():
+        try:
+            srv_mod._augment_source_payload(
+                {
+                    "sources": {
+                        "airplay": {},
+                        "bluetooth": {},
+                        "spotify": {},
+                        "usbsink": {},
+                    },
+                },
+            )
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    monkeypatch.setattr(sources_mod, "_gather_state", slow_gather_state)
+    srv_mod._source_availability_cache = None
+    worker = threading.Thread(target=augment)
+    worker.start()
+    assert entered_probe.wait(timeout=2)
+
+    acquired = srv_mod._source_availability_lock.acquire(timeout=0.2)
+    try:
+        assert acquired, "source availability probe held the cache lock"
+    finally:
+        if acquired:
+            srv_mod._source_availability_lock.release()
+        release_probe.set()
+        worker.join(timeout=2)
+        srv_mod._source_availability_cache = None
+
+    assert not worker.is_alive()
+    assert not errors
 
 
 # --- 404 / coordinator-failure ---
@@ -2197,6 +2260,43 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
     assert router.statuses[0].state == ACCOUNT_OK
 
 
+@pytest.mark.asyncio
+async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
+    import jasper.control.server as srv_mod
+    import jasper.renderer as renderer_mod
+    import jasper.tools.transport as transport_mod
+
+    router = object()
+    seen = {}
+
+    class FakeRendererClient:
+        def __init__(self, **kwargs):
+            seen["renderer_kwargs"] = kwargs
+
+    def fake_make_transport_dispatcher(renderer, spotify_router):
+        seen["renderer"] = renderer
+        seen["spotify_router"] = spotify_router
+
+        async def dispatch(action):
+            return {"action": action}
+
+        return dispatch
+
+    monkeypatch.setattr(srv_mod, "_build_spotify_router_or_none", lambda: router)
+    monkeypatch.setattr(renderer_mod, "RendererClient", FakeRendererClient)
+    monkeypatch.setattr(
+        transport_mod,
+        "make_transport_dispatcher",
+        fake_make_transport_dispatcher,
+    )
+
+    result = await srv_mod._dispatch_transport("toggle")
+
+    assert result == {"action": "toggle"}
+    assert isinstance(seen["renderer"], FakeRendererClient)
+    assert seen["spotify_router"] is router
+
+
 # ---------------------------------------------------------------------------
 # Audit C2 — systemd watchdog plumbing: the HTTP accept loop must drive
 # the Heartbeat progress sentinel so a wedged loop stops the WATCHDOG=1
@@ -2277,6 +2377,74 @@ def test_control_unit_declares_notify_watchdog():
     assert "Type=notify" in unit
     assert "Type=simple" not in unit
     assert re.search(r"^WatchdogSec=\d+s?$", unit, re.M)
+
+
+def test_sigterm_handler_requests_shutdown_from_helper_thread():
+    import jasper.control.server as srv_mod
+
+    shutdown_seen = threading.Event()
+    thread_names: list[str] = []
+
+    class FakeServer:
+        def shutdown(self):
+            thread_names.append(threading.current_thread().name)
+            shutdown_seen.set()
+
+    restore = srv_mod._install_sigterm_shutdown(FakeServer())
+    try:
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        assert shutdown_seen.wait(timeout=2)
+    finally:
+        restore()
+
+    assert thread_names == ["control-sigterm-shutdown"]
+
+
+def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(monkeypatch):
+    import jasper.control.server as srv_mod
+    import jasper.peering as peering_pkg
+    import jasper.peering.daemon as peering_daemon_mod
+
+    started = threading.Event()
+    stopped = threading.Event()
+
+    class _Mode:
+        value = "on"
+
+    class _Config:
+        enabled = True
+        mode = _Mode()
+
+    class FakePeeringDaemon:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        async def start(self):
+            started.set()
+
+        async def stop(self):
+            stopped.set()
+
+    monkeypatch.setattr(peering_pkg, "load_config", lambda: _Config())
+    monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
+    with srv_mod._peering_lock:
+        srv_mod._peering_thread = None
+        srv_mod._peering_loop = None
+    try:
+        srv_mod.start_peering_daemon_if_enabled()
+        assert started.wait(timeout=2)
+        srv_mod.stop_peering_daemon(timeout=2)
+        assert stopped.wait(timeout=2)
+        with srv_mod._peering_lock:
+            assert srv_mod._peering_thread is None
+            assert srv_mod._peering_loop is None
+    finally:
+        srv_mod.stop_peering_daemon(timeout=1)
+        with srv_mod._peering_lock:
+            srv_mod._peering_thread = None
+            srv_mod._peering_loop = None
 
 
 # ---------------------------------------------------------------------------
