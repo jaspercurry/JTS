@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from jasper.active_speaker.calibration_level import (
+    AUDIBLE_RAMP_STEP_DB,
     MIN_TEST_LEVEL_DBFS,
     calibration_level_payload,
 )
@@ -12,7 +13,7 @@ from jasper.active_speaker.driver_protection import (
 )
 
 
-def test_low_frequency_auto_level_raises_one_step_when_mic_is_low() -> None:
+def test_low_frequency_auto_level_raises_one_bounded_step_when_mic_is_low() -> None:
     current = calibration_level_payload(
         requested_level_dbfs=MIN_TEST_LEVEL_DBFS + 4,
         observed_mic_dbfs=-52,
@@ -28,9 +29,28 @@ def test_low_frequency_auto_level_raises_one_step_when_mic_is_low() -> None:
     assert decision["kind"] == AUTO_LEVEL_DECISION_KIND
     assert decision["status"] == "raise"
     assert decision["action"] == "raise"
-    assert decision["next_level_dbfs"] == MIN_TEST_LEVEL_DBFS + 5
-    assert decision["applied_delta_db"] == 1
+    assert decision["next_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS + 4 + AUDIBLE_RAMP_STEP_DB
+    )
+    assert decision["applied_delta_db"] == AUDIBLE_RAMP_STEP_DB
     assert decision["driver_protection"]["role_class"] == "low_frequency"
+
+
+def test_auto_level_can_raise_after_floor_confirmation_without_mic_reading() -> None:
+    current = calibration_level_payload(
+        requested_level_dbfs=MIN_TEST_LEVEL_DBFS,
+    )
+
+    decision = auto_level_decision(
+        current,
+        role="woofer",
+        floor_audio_confirmed=True,
+    )
+
+    assert decision["status"] == "raise"
+    assert decision["action"] == "raise"
+    assert decision["next_level_dbfs"] == MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
+    assert decision["reason"] == "operator-controlled raise toward audible"
 
 
 def test_auto_level_does_not_raise_above_floor_without_confirmation() -> None:

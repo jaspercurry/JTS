@@ -1025,7 +1025,7 @@ def _active_speaker_auto_level_step(raw: dict[str, Any]) -> dict[str, Any]:
     )
     decision_action = str(decision.get("action") or "hold")
     if decision_action == "raise":
-        update_action = "set"
+        update_action = "ramp"
         requested = decision.get("next_level_dbfs")
     elif decision_action == "lower":
         update_action = "lower"
@@ -1076,7 +1076,7 @@ def _active_speaker_auto_level_step(raw: dict[str, Any]) -> dict[str, Any]:
 def _active_speaker_calibration_level_payload(
     raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return or update the backend-owned active-speaker level guard."""
+    """Return or update the backend-owned active-speaker test-volume state."""
 
     from jasper.active_speaker.calibration_level import (
         load_calibration_level_state,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from jasper.active_speaker.calibration_level import (
+    AUDIBLE_RAMP_STEP_DB,
     DEFAULT_TEST_LEVEL_DBFS,
     MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
@@ -20,6 +21,10 @@ def test_calibration_level_defaults_to_floor() -> None:
     assert payload["test_signal"]["normal_system_volume_untouched"] is True
     assert payload["safety"]["operator_controls_level"] is True
     assert payload["safety"]["jts_enforces_bounds"] is True
+    assert payload["safety"]["audible_ramp_step_is_bounded"] is True
+    assert payload["software_gain_guard"]["audible_ramp_step_db"] == (
+        AUDIBLE_RAMP_STEP_DB
+    )
     assert payload["mic_meter"]["status"] == "unmeasured"
 
 
@@ -60,6 +65,27 @@ def test_calibration_level_state_limits_large_upward_steps(tmp_path) -> None:
     assert loaded["test_signal"]["requested_level_dbfs"] == first["test_signal"][
         "requested_level_dbfs"
     ]
+
+
+def test_calibration_level_state_supports_bounded_audible_ramp(tmp_path) -> None:
+    path = tmp_path / "level.json"
+
+    first = update_calibration_level_state(action="ramp", state_path=path)
+    limited = update_calibration_level_state(
+        action="ramp",
+        requested_level_dbfs=-55,
+        state_path=path,
+    )
+
+    assert first["last_action"] == "ramp"
+    assert first["test_signal"]["requested_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
+    )
+    assert first["applied_delta_db"] == AUDIBLE_RAMP_STEP_DB
+    assert limited["test_signal"]["requested_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS + 2 * AUDIBLE_RAMP_STEP_DB
+    )
+    assert limited["issues"][0]["code"] == "audible_ramp_step_limited"
 
 
 def test_calibration_level_state_defaults_when_payload_is_invalid(tmp_path) -> None:

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .calibration_level import (
+    AUDIBLE_RAMP_STEP_DB,
     MAX_TEST_LEVEL_DBFS,
     MIC_USABLE_MAX_DBFS,
     MIC_USABLE_MIN_DBFS,
@@ -270,9 +271,10 @@ def auto_level_decision(
 ) -> dict[str, Any]:
     """Return one bounded closed-loop level decision.
 
-    The decision is deliberately one step only. Callers that persist state
-    must run this again after each observed tone, which keeps the loop
-    interruptible and makes every upward step inspectable.
+    The decision is deliberately one bounded ramp step only. Callers that
+    persist state must run this again after each observed tone, which keeps the
+    loop interruptible and makes every upward move inspectable without forcing
+    one-dB discovery clicks.
     """
 
     protection = driver_protection_payload(
@@ -307,11 +309,11 @@ def auto_level_decision(
         action = "reset_to_floor"
         status = "reset"
         next_level = MIN_TEST_LEVEL_DBFS
-        reason = "microphone clipped; reset to the floor"
+        reason = "microphone clipped; reset to the quietest setting"
     elif issues:
         action = "hold"
         status = "blocked"
-        reason = "driver protection or Stop gate is not ready"
+        reason = "selected driver is not ready for a quiet test"
     elif meter_status == "too_loud":
         action = "lower"
         status = "lower"
@@ -325,7 +327,7 @@ def auto_level_decision(
             action = "hold_for_floor_confirmation"
             status = "waiting_for_floor_confirmation"
             next_level = current
-            reason = "floor-level audio must be confirmed before raising"
+            reason = "quietest-level audio must be confirmed before raising"
         elif current >= max_level - 1e-6:
             action = "hold_at_cap"
             status = "maxed"
@@ -339,7 +341,7 @@ def auto_level_decision(
         else:
             action = "raise"
             status = "raise"
-            next_level = min(current + TEST_LEVEL_STEP_DB, max_level)
+            next_level = min(current + AUDIBLE_RAMP_STEP_DB, max_level)
             reason = "microphone reading is below the usable window"
     elif meter_status == "usable":
         action = "hold"
@@ -347,10 +349,29 @@ def auto_level_decision(
         next_level = current
         reason = "microphone reading is in the usable window"
     elif meter_status == "unmeasured":
-        action = "hold"
-        status = "waiting_for_mic"
-        next_level = current
-        reason = "mic observation is required before closed-loop level changes"
+        if (
+            profile.requires_floor_confirmation_above_floor
+            and not floor_audio_confirmed
+        ):
+            action = "hold_for_floor_confirmation"
+            status = "waiting_for_floor_confirmation"
+            next_level = current
+            reason = "quietest-level audio must be confirmed before raising"
+        elif current >= max_level - 1e-6:
+            action = "hold_at_cap"
+            status = "maxed"
+            next_level = max_level
+            reason = "driver-specific auto-level cap reached"
+            issues.append(_issue(
+                "warning",
+                "auto_level_cap_reached",
+                "operator-controlled raise reached the driver-specific level cap",
+            ))
+        else:
+            action = "raise"
+            status = "raise"
+            next_level = min(current + AUDIBLE_RAMP_STEP_DB, max_level)
+            reason = "operator-controlled raise toward audible"
 
     next_level = clamp_test_level_dbfs(next_level)
     if next_level > max_level:
@@ -366,7 +387,8 @@ def auto_level_decision(
         "next_level_dbfs": next_level,
         "applied_delta_db": round(next_level - current, 3),
         "max_auto_level_dbfs": max_level,
-        "step_db": TEST_LEVEL_STEP_DB,
+        "step_db": AUDIBLE_RAMP_STEP_DB,
+        "manual_step_db": TEST_LEVEL_STEP_DB,
         "mic_meter": {
             **meter,
             "usable_min_dbfs": MIC_USABLE_MIN_DBFS,

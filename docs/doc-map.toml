@@ -434,12 +434,14 @@ code = [
   "jasper/calibration_agent/**",
   "jasper/web/correction_setup.py",
   "deploy/jasper-correction-web.*",
+  "docs/active-crossover-information-design.md",
   "docs/calibration-agent/**",
 ]
 docs = [
   "docs/HANDOFF-correction.md",
   "docs/HANDOFF-calibration-agent.md",
   "docs/HANDOFF-active-speaker-dsp.md",
+  "docs/active-crossover-information-design.md",
   "docs/calibration-agent/README.md",
 ]
 requires_docs_when = [
