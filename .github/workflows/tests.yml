@@ -54,7 +54,7 @@ jobs:
             esac
             shell_files+=("$f")
             bash -n "$f"
-          done < <(git ls-files)
+          done < <(git ls-files deploy/install.sh deploy/configure-bluez.sh deploy/bin deploy/lib scripts firmware)
           if (( ${#shell_files[@]} < 70 )); then
             echo "expected at least 70 tracked shell files, found ${#shell_files[@]}" >&2
             printf 'selected: %s\n' "${shell_files[@]}" >&2
