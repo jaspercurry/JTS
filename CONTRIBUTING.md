@@ -49,7 +49,7 @@ systemd surfaces are mocked. If it passes here, the change is safe to
 deploy to hardware.
 
 The Ubuntu CI path also installs `portaudio19-dev`, then installs
-`openwakeword==0.6.0` with `--no-deps` plus the pure-Python pieces it
+`openwakeword==0.6.0` with `--no-deps` plus the supporting packages it
 actually needs (`requests`, `tqdm`, `scikit-learn`). That mirrors the
 Pi installer's ONNX-only openWakeWord setup and is useful context if
 you're doing audio-adjacent work locally.

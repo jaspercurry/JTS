@@ -19,3 +19,17 @@ def test_dev_dependency_group_matches_dev_extra() -> None:
     assert data["dependency-groups"]["dev"] == (
         data["project"]["optional-dependencies"]["dev"]
     )
+
+
+def test_linux_only_c_extensions_have_platform_markers() -> None:
+    """Keep macOS contributor installs from trying to build Linux-only wheels."""
+
+    dependencies = _pyproject()["project"]["dependencies"]
+    expected = {
+        "pyalsaaudio": "pyalsaaudio>=0.11; sys_platform == 'linux'",
+        "evdev": "evdev>=1.7; sys_platform == 'linux'",
+    }
+
+    for package, requirement in expected.items():
+        matches = [dep for dep in dependencies if dep.startswith(f"{package}>=")]
+        assert matches == [requirement]
