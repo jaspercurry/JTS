@@ -1,7 +1,6 @@
-// Display driver layer: LovyanGFX (GC9A01) + LVGL framework + CST816D
-// touch routed into LVGL as a pointer input. Owns the global gfx
-// object and the LVGL draw buffer; everything else (scene graph)
-// lives in scenes.h/cpp.
+// Display driver layer: LovyanGFX (GC9A01) + LVGL framework. Owns
+// the global gfx object and the LVGL draw buffer; everything else
+// (scene graph) lives in scenes.h/cpp.
 #pragma once
 
 #include <lvgl.h>
