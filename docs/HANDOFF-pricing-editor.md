@@ -56,9 +56,10 @@ list we already discover.
   (missing/malformed → built-in defaults; non-numeric/bool ignored).
 - **The wizard** — [`jasper/web/voice_setup.py`](../jasper/web/voice_setup.py)
   renders per-provider `<details class="account">` cards and writes
-  config on save + restarts `jasper-voice`. Uses the legacy `wrap_page`
-  path with `_VOICE_PAGE_STYLE` (the `details.disclosure` collapsible CSS
-  is already available).
+  config on save + restarts `jasper-voice`. It renders through
+  `canonical_page()` with `/assets/app.css` plus the voice page's static
+  stylesheet/module assets; the `details.disclosure` collapsible CSS is
+  already available in the page-specific styles.
 
 ## Why we are NOT auto-fetching prices from the APIs
 
@@ -256,8 +257,9 @@ not in scope.
 - The section is read-only-safe to render even with no key set (pricing
   isn't a secret) — but gate it behind the same card the model picker
   uses for layout consistency.
-- Keep `voice_setup.py` on its existing `wrap_page`/`_VOICE_PAGE_STYLE`
-  path; do **not** half-migrate it to `canonical_page` here.
+- Keep the pricing editor inside `voice_setup.py`'s existing canonical page
+  structure; do **not** introduce a second page shell or inline-only styling
+  just for pricing.
 
 ### Tests
 - `tests/test_voice_setup.py`: `_apply_pricing_save` builds the right
