@@ -304,3 +304,18 @@ def test_module_snapshot_when_disabled():
     started — the /state default for fresh installs and for
     JASPER_GROUPING_SUPERVISOR=disabled."""
     assert snapshot() == {"enabled": False}
+
+
+async def test_unbond_resets_the_journal_noise_latches():
+    """The once-per-streak WARN latch ends with the streak: going solo
+    clears it, so a later re-bond's first starvation logs its full WARN
+    buildup again instead of arriving pre-silenced at DEBUG."""
+    sup = _FakeSupervisor(starved_threshold=2)
+    sup.status_results = [STARVED, STARVED]
+    for _ in range(2):
+        await sup._tick()
+    assert sup._streak_warned is True  # latched after the threshold kick
+    sup.cfg = _cfg(enabled=False)
+    await sup._tick()
+    assert sup._streak_warned is False
+    assert sup._rate_limit_warned_window is None

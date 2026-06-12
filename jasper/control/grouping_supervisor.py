@@ -159,6 +159,11 @@ class GroupingSupervisor:
             self.watching = False
             self.last_poll_starved = None
             self.consecutive_starved = 0
+            # The noise latches end with the streak: unbonding closes it,
+            # so a later re-bond's first starvation logs its full WARN
+            # buildup again (the docstring's once-per-streak promise).
+            self._streak_warned = False
+            self._rate_limit_warned_window = None
             return
         self.watching = True
         if cfg.role == "leader":
