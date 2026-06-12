@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import urllib.request
 import logging
 import math
 import os
@@ -596,6 +597,35 @@ def _kick_aec_reconciler() -> None:
         ["systemctl", "restart", "--no-block",
          "jasper-aec-reconcile.service"],
     )
+
+
+# Forwarded pair-volume requests carry this header; its presence stops a
+# second hop (see _maybe_forward_volume_to_leader's loop breaker).
+_PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
+
+# Seam for tests: the forward's ONE network call. Patching the stdlib
+# urllib.request.urlopen would also intercept the test driver's own HTTP
+# client (and anything else in-process); this alias scopes the double to
+# the pair forward.
+_pair_urlopen = urllib.request.urlopen
+
+
+def _pair_follower_leader_addr() -> str | None:
+    """The leader's handle when THIS speaker is an active bonded follower,
+    else None. One tiny env-file read per call (multiroom.config.load_config
+    — never the runtime derive with its systemctl/RPC probes: this gates
+    every /volume request)."""
+    from ..multiroom.config import load_config as _load_grouping
+
+    cfg = _load_grouping()
+    if (
+        cfg.enabled
+        and cfg.error is None
+        and cfg.role == "follower"
+        and cfg.leader_addr
+    ):
+        return cfg.leader_addr
+    return None
 
 
 def _kick_grouping_reconciler() -> None:
@@ -1827,6 +1857,76 @@ def _make_handler(
             # been updated.
             return {"db": round(_percent_to_db(percent), 3), "percent": percent}
 
+        def _maybe_forward_volume_to_leader(self) -> bool:
+            """Bonded-follower volume proxy. Returns True when the request
+            was handled (forwarded or rejected) and the caller must stop.
+
+            While this speaker is an ACTIVE bonded follower, its local
+            volume knobs are INERT — bonded content bypasses the local
+            CamillaDSP entirely (the leader's one Camilla bakes the
+            program; HANDOFF-multiroom.md §2). Without this, the landing
+            page slider, a paired dial, and curl all "work" silently
+            with no audible effect — the worst UX shape. So the four
+            /volume endpoints forward verbatim to the leader's control
+            API and relay its answer: every member's volume surface
+            controls the PAIR volume, whichever speaker's page you have
+            open. Solo and leader requests never enter this path; the
+            grouping read is one tiny env-file parse (load_config), NOT
+            the heavy runtime derive — this sits on every volume call.
+            """
+            leader = _pair_follower_leader_addr()
+            if leader is None:
+                return False
+            # Loop breaker: a forwarded request never re-forwards. Two
+            # speakers misconfigured as each other's follower would
+            # otherwise ping-pong until a timeout stack built up.
+            if self.headers.get(_PAIR_FORWARD_HEADER):
+                self._send_json(
+                    {"error": "pair forward loop (both speakers are "
+                              "followers?)", "pair_leader": leader},
+                    status=502,
+                )
+                return True
+            body: bytes | None = None
+            if self.command == "POST":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = 0
+                body = self.rfile.read(length) if length > 0 else b"{}"
+            url = "http://{}:{}{}".format(
+                leader, self.server.server_address[1], self.path,
+            )
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    _PAIR_FORWARD_HEADER: "1",
+                },
+                method=self.command,
+            )
+            try:
+                with _pair_urlopen(req, timeout=2.5) as resp:
+                    payload = json.loads(resp.read().decode())
+            except Exception as e:  # noqa: BLE001 — relay any failure as 502
+                logger.warning(
+                    "event=volume.pair_forward_failed leader=%s path=%s "
+                    "error=%s", leader, self.path, e,
+                )
+                self._send_json(
+                    {"error": f"pair leader unreachable: {e}",
+                     "pair_leader": leader},
+                    status=502,
+                )
+                return True
+            if isinstance(payload, dict):
+                # Additive marker so UIs can label the slider "pair
+                # volume"; dial firmware reads only db/percent.
+                payload.setdefault("pair_leader", leader)
+            self._send_json(payload)
+            return True
+
         # --- routes ---
         #
         # do_GET / do_POST own the dispatch via the _GET_ROUTES /
@@ -1856,6 +1956,8 @@ def _make_handler(
             self._send_json({"ok": True})
 
         def _get_volume(self) -> None:
+            if self._maybe_forward_volume_to_leader():
+                return
             try:
                 percent = asyncio.run(_get_op())
             except Exception as e:  # noqa: BLE001
@@ -2087,6 +2189,8 @@ def _make_handler(
             getattr(self, handler_name)()
 
         def _post_volume_adjust(self) -> None:
+            if self._maybe_forward_volume_to_leader():
+                return
             body = self._read_json()
             # Support both legacy delta_db (dial firmware compat,
             # interpreted on the 50 dB camilla scale) and the
@@ -2130,6 +2234,8 @@ def _make_handler(
             self._send_json(self._volume_payload(new_pct))
 
         def _post_volume_set(self) -> None:
+            if self._maybe_forward_volume_to_leader():
+                return
             body = self._read_json()
             # Support both legacy `db` (dial / older clients) and
             # the cleaner `percent`. Percent is the canonical unit
@@ -2229,6 +2335,8 @@ def _make_handler(
             return
 
         def _post_volume_mute(self) -> None:
+            if self._maybe_forward_volume_to_leader():
+                return
             # Toggle mute: muted → unmute (restore pre-mute level),
             # unmuted → mute (save current level, drop to 0).
             # Used by HID accessory clicks (jasper-input) and any

@@ -198,7 +198,7 @@ Increment 6 (per-follower calibration). What exists:
   `canonical_page()` shell + ES module; `GET /rooms.json` carries the data
   (self block now includes a `peering: {enabled, primary}` wake-response
   block, read fresh via the reused `peering_setup` readers); self is
-  excluded from `peers`. **Three POSTs.** (1) `/peering`, the wake-response
+  excluded from `peers`. **Four POSTs.** (1) `/peering`, the wake-response
   toggle (CSRF via `X-CSRF-Token`; read-modify-writes `peering.env` through
   the reused `peering_setup` constant, preserving `JASPER_PEER_ROOM`;
   restarts voice + control). (2) `/bond`, **the Sonos-style one-flow
@@ -210,15 +210,18 @@ Increment 6 (per-follower calibration). What exists:
   the reconcile bullet above). (3) `/unbond`, **dissolve the bond**: the
   server reads each member's current grouping via `GET /grouping` to
   discover bond membership, then fans `{enabled:false}` to the matches plus
-  self. Configuration is automatic — no per-speaker tinkering. The
+  self. (4) `/swap`, **exchange the pair's left/right channels** (the
+  speakers stay put; each plays the other side): same discovery as
+  `/unbond`, then requires EXACTLY one reachable same-bond peer and a
+  {left,right} channel set — roles/bond_id/leader_addr are preserved,
+  only `channel` flips, and each member's reconciler re-points its
+  outputd ChannelPick. A mono or >2-member bond 400s (no well-defined
+  swap). The rooms-page button rides the bonded card next to Dissolve.
+  Configuration is automatic — no per-speaker tinkering. The
   bond/unbond fan-out runs **concurrently** across members (one slow/absent
   peer doesn't serialize the rest). An SSRF guard limits cross-speaker
   POST/GET targets to private/loopback IPv4 and rejects bare hostnames (see
-  §7 "Grouping control plane — threat model"); audio does **not** yet flow to
-  followers (the outputd producer is unwired — `SNAPFIFO_PRODUCER_WIRED` is
-  `False`, blocked on TTS separation), so a formed leader reads `degraded` and
-  the UI carries an honest "not yet streaming / preview" note (the producer
-  wiring AND perfect sample-lock are both §2 inv. 2). Untrusted mDNS
+  §7 "Grouping control plane — threat model"); audio flows end-to-end since Increment 5 PR-1 (leader CamillaDSP → snapserver pipe → member snapclients → outputd dac_content), and member-local TTS since PR-2; runtime health reads the live truth (active camilla config + snapcast client bindings). Untrusted mDNS
   fields never enter the server HTML (the shell is data-free; data ships as
   `application/json` and the module renders it via DOM/text APIs).
   On `jasper-control` itself the grouping HTTP surface is `POST
@@ -1670,7 +1673,24 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-11 (INCREMENT 5 PR-2 BUILT — member-local TTS + the
+Last verified: 2026-06-12 (PAIR UX — follower landing-page banner +
+pair-volume proxy + channel swap. jasper-control's /volume,
+/volume/{set,adjust,mute} now FORWARD to the leader's control API when
+this speaker is an active bonded follower (every follower volume surface
+was INERT — bonded content bypasses the local CamillaDSP — so slider,
+paired dial, and curl now control the PAIR volume from any member; loop
+breaker via X-JTS-Pair-Forwarded; tiny load_config read per call, never
+the runtime derive; responses additively tagged pair_leader). The
+landing page polls GET /grouping (new exact-match nginx proxy) and on a
+bonded member shows a stereo-pair banner; a FOLLOWER additionally hides
+the source selector and relabels the slider "Pair volume" (leader link
+gated on a hostname-shaped leader_addr; all text via textContent).
+/rooms gained POST /swap — left↔right channel exchange for a 2-speaker
+pair (roles/bond untouched, only channel flips through the same
+/grouping/set fan-out; mono or >2-member bonds 400) — with a "Swap left
+↔ right" button on the bonded card. Also fixed in passing: the /rooms
+doc paragraph still claimed audio doesn't flow to followers, a pre-PR-1
+leftover.) Earlier same day (INCREMENT 5 PR-2 BUILT — member-local TTS + the
 grouping supervisor. outputd grew `tts.rs`: a server speaking fanin's exact
 newline-framed TTS wire protocol (Python keeps ONE playout implementation;
 the wire layer itself — command vocabulary + parser — was extracted to the

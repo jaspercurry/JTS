@@ -439,7 +439,9 @@ function makeBondCard() {
   const dissolveIntro = h("p.info-card__note", null,
     "This speaker is part of a stereo pair. Dissolving sends both speakers " +
     "back to playing on their own.");
-  const dissolveRow = h("div.bond-dissolve", null, dissolveBtn);
+  const swapBtn = h("button.btn",
+    { type: "button" }, "Swap left \u2194 right");
+  const dissolveRow = h("div.bond-dissolve", null, swapBtn, dissolveBtn);
 
   const status = h("p.bond-status.info-card__note",
     { "attr:aria-live": "polite" });
@@ -518,6 +520,12 @@ function makeBondCard() {
       currentSummary.textContent = "";
       appendChildren(currentSummary, summarize(g));
       dissolveBtn.disabled = false;
+      // Swap is only well-defined for a left/right pair; the backend
+      // re-validates (exactly one same-bond peer) — this just avoids
+      // showing the button on a mono/multi-member bond.
+      swapBtn.style.display =
+        (g.channel === "left" || g.channel === "right") ? "" : "none";
+      swapBtn.disabled = false;
       return;
     }
 
@@ -607,7 +615,41 @@ function makeBondCard() {
     }
   }
 
+  async function swap() {
+    const ok = await jtsConfirm(
+      "Swap channels? The left and right speakers trade sides — each " +
+      "briefly restarts its output (~2s).",
+    );
+    if (!ok) return;
+    saving = true;
+    swapBtn.disabled = true;
+    dissolveBtn.disabled = true;
+    status.textContent = "Swapping channels\u2026";
+    try {
+      const data = await postJSON("swap", {});
+      if (data && data.ok) {
+        status.textContent =
+          "Channels swapped \u2014 both speakers are reconfiguring (~10s).";
+      } else {
+        const failed = ((data && data.results) || []).filter((r) => r && !r.ok);
+        const why = failed
+          .map((r) => (r.addr || "this speaker") + ": " + (r.detail || "failed"))
+          .join("; ");
+        status.textContent =
+          "Couldn't swap \u2014 " + (why || (data && data.error) || "unknown error");
+      }
+    } catch (e) {
+      console.error("rooms: channel swap failed", e);
+      status.textContent = "Couldn't swap \u2014 " + e.message;
+    } finally {
+      saving = false;
+      swapBtn.disabled = false;
+      dissolveBtn.disabled = false;
+    }
+  }
+
   createBtn.addEventListener("click", create);
+  swapBtn.addEventListener("click", swap);
   dissolveBtn.addEventListener("click", dissolve);
   // Default to the create face until the first sync() proves we're bonded, so
   // both faces are never visible at once during the initial paint.

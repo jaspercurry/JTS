@@ -468,3 +468,25 @@ def test_install_copies_and_stamps_app_css() -> None:
     # time by substituting the build SHA into the version placeholder.
     assert "__APP_CSS_VERSION__" in _index_html()
     assert "s/__APP_CSS_VERSION__/" in install
+
+
+def test_landing_page_stereo_pair_banner_wiring() -> None:
+    """The pair banner: hidden by default, fed by GET /grouping (proxied by
+    nginx to jasper-control), DOM-written via textContent only (untrusted
+    leader_addr/channel never reach innerHTML), and the leader link is
+    gated on a hostname-shaped value. On a follower the source selector
+    hides and the slider relabels — its requests are forwarded server-side
+    (jasper-control's bonded-follower volume proxy)."""
+    html = _index_html()
+    assert '<section class="control-section pair-banner" id="pair-banner" hidden>' in html
+    assert 'id="source-section"' in html
+    assert 'id="volume-eyebrow"' in html
+    assert "fetch('/grouping')" in html
+    assert "'Pair volume'" in html
+    assert "HOST_RE" in html
+    # The banner script writes text, never markup.
+    pair_js = html.split("Stereo-pair banner", 1)[1].split("Source selector", 1)[0]
+    assert "innerHTML" not in pair_js
+    # nginx exposes GET /grouping on the landing origin.
+    nginx = _NGINX_PATH.read_text(encoding="utf-8")
+    assert "location = /grouping" in nginx

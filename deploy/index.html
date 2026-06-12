@@ -86,6 +86,18 @@
       background: var(--success);
       box-shadow: 0 0 0 2px var(--surface-soft);
     }
+    .pair-banner__text {
+      margin: 0.35rem 0 0.55rem;
+      font-size: 0.92rem;
+      color: var(--muted-foreground);
+    }
+    .pair-banner__links { display: flex; gap: 1.1rem; margin: 0; }
+    .pair-banner__links a {
+      font-size: 0.88rem;
+      color: var(--accent-strong);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
     .source-button:disabled {
       cursor: not-allowed;
       opacity: 0.42;
@@ -443,7 +455,18 @@
   <main class="page">
     <section class="hero" aria-label="Primary controls">
       <div class="control-panel">
-        <section class="control-section">
+        <section class="control-section pair-banner" id="pair-banner" hidden>
+          <div class="control-head">
+            <h2 class="eyebrow">Stereo pair</h2>
+            <span class="status-val" id="pair-channel"></span>
+          </div>
+          <p class="pair-banner__text" id="pair-text"></p>
+          <p class="pair-banner__links">
+            <a id="pair-leader-link" hidden>Open the leader's controls</a>
+            <a href="/rooms/">Manage pair</a>
+          </p>
+        </section>
+        <section class="control-section" id="source-section">
           <div class="control-head">
             <h2 class="eyebrow">Source</h2>
             <span class="status-val" id="source-status">Offline</span>
@@ -483,7 +506,7 @@
 
         <section class="control-section">
           <div class="control-head">
-            <h2 class="eyebrow">Volume</h2>
+            <h2 class="eyebrow" id="volume-eyebrow">Volume</h2>
             <span class="status-val" id="vol-percent">50%</span>
           </div>
           <div class="volume-wrap" id="vol-control"
@@ -975,6 +998,68 @@
             var data = await resp.json();
             if (typeof data.percent === 'number') setUI(data.percent);
           }
+        } catch (_) {}
+      }
+      setInterval(poll, POLL_MS);
+      poll();
+    })();
+
+    // Stereo-pair banner. While this speaker is an active bond member
+    // the banner explains who owns playback. On a FOLLOWER the source
+    // selector hides (sources play through the leader) and the volume
+    // slider is relabeled — its requests are forwarded server-side by
+    // jasper-control's bonded-follower proxy, so it controls the PAIR
+    // volume. Untrusted grouping fields reach the DOM as text nodes
+    // only; the leader link is built only for a hostname-shaped value.
+    (function() {
+      var banner = document.getElementById('pair-banner');
+      var text = document.getElementById('pair-text');
+      var channelEl = document.getElementById('pair-channel');
+      var leaderLink = document.getElementById('pair-leader-link');
+      var sourceSection = document.getElementById('source-section');
+      var volumeEyebrow = document.getElementById('volume-eyebrow');
+      if (!banner || !sourceSection) return;
+      var POLL_MS = 10000;
+      var HOST_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/;
+
+      function apply(g) {
+        var bonded = !!(g && g.enabled && g.bond_id && !g.error);
+        var follower = bonded && g.role === 'follower';
+        banner.hidden = !bonded;
+        sourceSection.style.display = follower ? 'none' : '';
+        if (volumeEyebrow) {
+          volumeEyebrow.textContent = follower ? 'Pair volume' : 'Volume';
+        }
+        if (!bonded) return;
+        var ch = (g.channel === 'left' || g.channel === 'right') ? g.channel : '';
+        channelEl.textContent = ch ? ch + ' channel' : 'paired';
+        if (follower) {
+          text.textContent = 'This speaker plays the ' + (ch || 'second') +
+            ' channel of a stereo pair. Playback and voice are handled ' +
+            'by the pair leader' +
+            (g.leader_addr ? ' (' + g.leader_addr + ')' : '') +
+            '; the slider below sets the pair volume.';
+          if (g.leader_addr && HOST_RE.test(g.leader_addr)) {
+            leaderLink.href = 'http://' + g.leader_addr + '/';
+            leaderLink.hidden = false;
+          } else {
+            leaderLink.hidden = true;
+          }
+        } else {
+          text.textContent = 'This speaker leads a stereo pair and plays ' +
+            'the ' + (ch || 'first') + ' channel. Sources and volume here ' +
+            'control the pair.';
+          leaderLink.hidden = true;
+        }
+      }
+
+      async function poll() {
+        if (document.visibilityState === 'hidden') return;
+        try {
+          var resp = await fetch('/grouping');
+          if (!resp.ok) return;
+          var data = await resp.json();
+          apply(data && data.grouping);
         } catch (_) {}
       }
       setInterval(poll, POLL_MS);
