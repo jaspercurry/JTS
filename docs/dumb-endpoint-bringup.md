@@ -219,16 +219,31 @@ the boundary is a **profile**, not a package. Target shape:
   stream, the round-trip player on the full tier vs direct ALSA here —
   see "Open question: outputd on endpoints" below).
 
-Two guard tests make the boundary loud without package walls:
+Three guard tests make the boundary loud without package walls — these
+are **load-bearing**, not optional polish; the package-wall design was
+rejected on the strength of them:
 
 - **Import-cost guard**: the modules the endpoint tier runs
   (`jasper.control.server`, `jasper.multiroom.*`) import successfully
-  in an environment without the `[voice]` extras — a new top-level
-  import of a heavy dependency fails CI, not the Zero.
+  with the brain-only dependencies blocked — a new top-level import of
+  a heavy dependency fails CI, not the Zero. Mechanically: a subprocess
+  import with a meta-path blocker that raises on the blocklist, since
+  CI machines have everything installed. Starting blocklist (extend as
+  found, never shrink silently): `onnxruntime`, `openwakeword`,
+  `scipy`, `sounddevice` (imports the PortAudio C library at import
+  time — the classic way this breaks), `jasper_aec3` (a compiled
+  module that will not exist on the endpoint), and the voice SDKs
+  (`google.genai`, `openai`, `websockets`).
 - **Install-plan guard**: the endpoint profile's `--dry-run` plan
   contains no cargo builds, no AEC3 build, no renderer source builds,
-  and no voice/web units; the full profile's plan is unchanged
-  byte-for-byte when the profile env is unset.
+  and no voice/web units. Extend the existing dry-run plan test
+  surface (`tests/test_install_plan_covers_main.py` is the pattern).
+- **Full-profile regression guard**: with the profile env unset, the
+  `--dry-run` plan is byte-identical to today's — the endpoint tier
+  must be impossible to detect from a normal speaker's install. This
+  is its own test, not a clause of the previous one: it is the guard
+  that lets endpoint work merge continuously without re-validating
+  every full speaker.
 
 **Open question: outputd on endpoints.** The full tier plays bonded
 audio through `snapclient → FIFO → jasper-outputd` (which carries the
@@ -238,6 +253,51 @@ Zero — accepting snapcast client volume as the trim knob and snapclient
 restart policy as the resilience story. If endpoint-side outputd ever
 earns its keep (uniform health/trim), it arrives as prebuilt artifacts,
 never as an on-Zero cargo build.
+
+## Implementation rails
+
+Hard-won specifics for whoever implements the phases — each of these is
+a place the work will otherwise drift or wedge:
+
+- **Tier is install-time; role is runtime. Never conflate them.** The
+  grouping vocabulary stays exactly `{leader, follower}` — do NOT add
+  an `endpoint` role to `grouping.env`, `validate_grouping`, or the
+  bond fan-out. An endpoint is a *follower on the endpoint install
+  tier*. The only runtime accommodation is the reconciler treating
+  stop/start intents for never-installed units as no-ops.
+- **Persist the install profile on the Pi, and never switch tiers
+  implicitly.** `install.sh` re-runs on every deploy; if the profile
+  lives only in the invoking shell's env, the next bare
+  `deploy-to-pi.sh` full-installs onto the Zero (hours of compiles,
+  OOM risk). First install writes the profile to a root-owned marker
+  (e.g. `/var/lib/jasper/install_profile`); later runs read it and
+  REFUSE a tier change without an explicit override flag — same
+  posture as the deploy identity/downgrade guards.
+- **Deploy verification must probe what the tier has.** The deploy's
+  post-install check probes `/system/data.json` through nginx — the
+  endpoint tier installs neither. Under the endpoint profile, verify
+  against `jasper-control`'s `:8780/healthz` instead. Do not "fix" a
+  failing verification by skipping verification.
+- **`/rooms` discovery needs the avahi advert.** Member discovery
+  rides the `_jasper-control._tcp` service file that `install.sh`
+  installs — the endpoint profile must keep avahi + that advert (and
+  the identity reconciler that feeds the friendly name), or Phase 3
+  silently finds nothing. "Skip the web stuff" must not catch it.
+- **Doctor ships on the endpoint, tier-aware.** `jasper-doctor` is the
+  operator story and must run there, but most checks probe components
+  that were never installed. Reuse the parked-by-role skip idiom from
+  the dumb-follower work, keyed off the persisted install profile —
+  "not installed (endpoint tier)" is an `ok` detail, not a warn. Do
+  not fork a second doctor.
+- **One reconciler, one argv builder.** The managed snapclient unit and
+  its argv come from the existing grouping reconciler
+  (`snapclient_argv`), not an endpoint-specific service or wrapper.
+  If the endpoint plays `snapclient → ALSA` direct (no outputd), that
+  is a *player argument* derived from the tier, not a new code path
+  beside the reconciler.
+- **Work from `main`.** The superseded `codex/dumb-endpoint-plan`
+  branch predates several multiroom increments; nothing on it should
+  be cherry-picked except by re-reading this doc.
 
 ## Working build plan
 
@@ -306,8 +366,10 @@ Exit criteria:
 
 - A fresh Zero installs the endpoint profile in minutes, with no cargo,
   no AEC3 compile, and no voice/wake dependencies on disk.
-- `deploy/install.sh --dry-run` under the profile shows a brain-free
-  plan; the full profile's plan is unchanged.
+- All three boundary guards are in CI: import-cost, install-plan, and
+  the full-profile byte-identical regression guard.
+- The profile is persisted on the device and a bare re-deploy cannot
+  silently switch tiers.
 
 ### Phase 3 — Endpoint joins the pair like any speaker
 
