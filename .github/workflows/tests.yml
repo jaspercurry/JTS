@@ -178,7 +178,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          workspaces: |
+            rust/jasper-fanin
+            rust/jasper-outputd
+            rust/jasper-dual-dac-lab
+            rust/jasper-tts-protocol
 
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
         working-directory: rust/jasper-tts-protocol
