@@ -434,6 +434,10 @@ function describeBondFailure(e) {
 function makeBondCard() {
   let saving = false;
   let selfAddr = "";
+  // Latest reachable peer rows from the poll — kept so the bond submit
+  // can carry the picked peer's directory NAME (the leader records it
+  // as the bond roster for DHCP re-resolution).
+  let lastReachable = [];
 
   // --- Create face: pick a sibling for the right channel ------------------
   const select = h("select.bond-select", {
@@ -613,6 +617,7 @@ function makeBondCard() {
       setEnabled(false);
       return;
     }
+    lastReachable = reachable;
     for (const p of reachable) {
       const label = (p.name || p.address) + " (" + p.address + ")";
       select.appendChild(h("option", { value: p.address }, label));
@@ -628,10 +633,12 @@ function makeBondCard() {
     setEnabled(false);
     status.textContent = "Creating the pair…";
     try {
+      const picked = lastReachable.find((p) => p.address === rightAddr);
       const data = await postJSON("bond", {
         members: [
           { addr: selfAddr, role: "leader", channel: "left" },
-          { addr: rightAddr, role: "follower", channel: "right" },
+          { addr: rightAddr, role: "follower", channel: "right",
+            name: (picked && picked.name) || "" },
         ],
       });
       if (data && data.ok) {

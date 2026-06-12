@@ -674,6 +674,8 @@ def _kick_grouping_reconciler() -> None:
 def _write_grouping(
     *, enabled: bool, role: str, channel: str, bond_id: str, leader_addr: str,
     trim_db: "float | None" = None,
+    peer_addr: "str | None" = None,
+    peer_name: "str | None" = None,
 ) -> None:
     """Persist a grouping role into the wizard-owned grouping.env.
 
@@ -696,6 +698,14 @@ def _write_grouping(
         # caller omits it (bond/unbond/swap fan-outs never send trim, so
         # a calibrated balance survives role/channel changes).
         updates["JASPER_GROUPING_TRIM_DB"] = f"{trim_db:.1f}"
+    # Bond roster (leader only): same preserved-when-omitted contract as
+    # trim; an EXPLICIT empty string clears it (the bond flow clears the
+    # roster on non-leader members so a role flip can't leave a stale
+    # roster behind).
+    if peer_addr is not None:
+        updates["JASPER_GROUPING_PEER_ADDR"] = peer_addr
+    if peer_name is not None:
+        updates["JASPER_GROUPING_PEER_NAME"] = peer_name
     _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
 
 
@@ -2397,6 +2407,12 @@ def _make_handler(
                         {"error": "trim_db must be a number"}, status=400,
                     )
                     return
+            peer_addr: str | None = None
+            if "peer_addr" in body:
+                peer_addr = str(body.get("peer_addr") or "").strip()
+            peer_name: str | None = None
+            if "peer_name" in body:
+                peer_name = str(body.get("peer_name") or "").strip()
             # Validate an ENABLED request up front via the SHARED
             # validate_grouping (same rule the config loader applies on
             # read) so we never persist a fail-loud config. A disabled
@@ -2406,6 +2422,8 @@ def _make_handler(
                     role=role, channel=channel,
                     bond_id=bond_id, leader_addr=leader_addr,
                     trim_db=trim_db if trim_db is not None else 0.0,
+                    peer_addr=peer_addr or "",
+                    peer_name=peer_name or "",
                 )
                 if err:
                     self._send_json({"error": err}, status=400)
@@ -2415,6 +2433,7 @@ def _make_handler(
                     enabled=enabled, role=role, channel=channel,
                     bond_id=bond_id, leader_addr=leader_addr,
                     trim_db=trim_db,
+                    peer_addr=peer_addr, peer_name=peer_name,
                 )
                 _kick_grouping_reconciler()
             except Exception as e:  # noqa: BLE001

@@ -29,6 +29,7 @@ Fail-safe vs fail-loud:
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass
@@ -112,6 +113,19 @@ class GroupingConfig:
     # wide existing constructor surface (tests, fan-out payload builds)
     # stays source-compatible — load_config always sets it explicitly.
     trim_db: float = 0.0
+    # The bond roster, LEADER only: who this leader's pair sibling IS,
+    # recorded at bond-forming time. peer_addr is the follower's LAN
+    # IPv4 (the cross-speaker control calls are IP-only by SSRF
+    # design); peer_name is its directory display name, kept so the
+    # peer can be re-found through discovery when DHCP moves its IP.
+    # Empty on followers, solo speakers, and bonds formed before the
+    # field existed (resolvers fall back to bond-id inference). Why a
+    # roster: inferring membership from "who on the LAN claims my
+    # bond_id" is ambiguous whenever a third device transiently claims
+    # the bond (observed live 2026-06-12 — an endpoint-tier test Pi
+    # made every pair operation fail with "found 2").
+    peer_addr: str = ""
+    peer_name: str = ""
 
 
 # The all-off, no-error config returned whenever the file is absent,
@@ -180,6 +194,8 @@ def validate_grouping(
     leader_addr: str,
     codec: str = DEFAULT_CODEC,
     trim_db: float = 0.0,
+    peer_addr: str = "",
+    peer_name: str = "",
 ) -> str | None:
     """The single grouping-validation rule for an ENABLED config.
 
@@ -231,6 +247,23 @@ def validate_grouping(
             f"JASPER_GROUPING_TRIM_DB={trim_db} must be between "
             f"{TRIM_DB_MIN} and {TRIM_DB_MAX} (attenuate-only pair trim)"
         )
+    if peer_addr:
+        try:
+            ip = ipaddress.ip_address(peer_addr)
+        except ValueError:
+            ip = None
+        if ip is None or ip.version != 4 or not (
+                ip.is_private or ip.is_loopback):
+            return (
+                f"JASPER_GROUPING_PEER_ADDR={peer_addr!r} is not a "
+                "private/loopback IPv4 address"
+            )
+    if peer_name and (len(peer_name) > 64
+                      or any(ord(c) < 32 for c in peer_name)):
+        return (
+            "JASPER_GROUPING_PEER_NAME must be printable and at most "
+            "64 characters"
+        )
     return None
 
 
@@ -265,6 +298,8 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
     leader_addr = src.get("JASPER_GROUPING_LEADER_ADDR", "").strip()
     buffer_ms = _parse_buffer_ms(src.get("JASPER_GROUPING_BUFFER_MS", ""))
     codec = src.get("JASPER_GROUPING_CODEC", "").strip() or DEFAULT_CODEC
+    peer_addr = src.get("JASPER_GROUPING_PEER_ADDR", "").strip()
+    peer_name = src.get("JASPER_GROUPING_PEER_NAME", "").strip()
     trim_raw = src.get("JASPER_GROUPING_TRIM_DB", "").strip()
     trim_parse_error: str | None = None
     trim_db = 0.0
@@ -283,6 +318,8 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         leader_addr=leader_addr,
         codec=codec,
         trim_db=trim_db,
+        peer_addr=peer_addr,
+        peer_name=peer_name,
     )
 
     return GroupingConfig(
@@ -294,6 +331,8 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         buffer_ms=buffer_ms,
         codec=codec,
         trim_db=trim_db,
+        peer_addr=peer_addr,
+        peer_name=peer_name,
         error=error,
     )
 

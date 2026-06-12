@@ -310,6 +310,8 @@ def read_grouping_state(
         "buffer_ms": cfg.buffer_ms,
         "codec": cfg.codec,
         "trim_db": cfg.trim_db,
+        "peer_addr": cfg.peer_addr,
+        "peer_name": cfg.peer_name,
         "error": cfg.error,
     }
     if cfg.enabled:
