@@ -251,7 +251,7 @@ _DISAMBIGUATION_BANNER = """
 """
 
 
-def _wrap_page(
+def _spotify_page(
     title: str, body: str, *, csrf_token: str = "", status_msg: str = "",
 ) -> bytes:
     """Wrap a page body in the canonical document shell.
@@ -351,7 +351,7 @@ def _setup_wizard_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
   </div>
 </form>
 """
-    return _wrap_page(
+    return _spotify_page(
         "Set up Spotify on this speaker", body,
         csrf_token=csrf_token, status_msg=status_msg,
     )
@@ -446,7 +446,7 @@ def _redirect_uri_page_html(
   </div>
 </form>
 """
-    return _wrap_page(
+    return _spotify_page(
         "Almost there — connect Spotify", body,
         csrf_token=csrf_token, status_msg=status_msg,
     )
@@ -512,7 +512,7 @@ def _manual_prewarn_page_html(
 
 <p><a href=".">&larr; Cancel and go back</a></p>
 """
-    return _wrap_page(
+    return _spotify_page(
         f"Connecting {account_name} on Spotify — manual mode",
         body, csrf_token=csrf_token, status_msg=status_msg,
     )
@@ -794,7 +794,7 @@ def _management_html(
   </div>
 </details>
 """
-    return _wrap_page(
+    return _spotify_page(
         "Spotify accounts on this speaker", body,
         csrf_token=csrf_token, status_msg=status_msg,
     )

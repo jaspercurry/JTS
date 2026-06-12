@@ -15,9 +15,8 @@
 //     X-CSRF-Token). jsonHeaders() reads the token from the <meta name=
 //     "jts-csrf"> tag canonical_page() renders; the server's _check_csrf
 //     still compares that X-CSRF-Token header to its per-process token.
-//   * jtsConfirm comes from the shared dialog.js module (was the inline
-//     dialog_helpers_js twin) — never window.confirm, which the browser can
-//     suppress.
+//   * jtsConfirm comes from the shared dialog.js module — never
+//     window.confirm, which the browser can suppress.
 //   * The Python-injected leg labels/order + USB AEC3 labels (formerly
 //     {aec3_sweep_js_labels} / {aec3_sweep_js_order} / {usb_aec3_corpus_label}
 //     / {usb_aec3_sweep_baseline_label} template substitutions) now ride in a

@@ -74,8 +74,6 @@ def test_shared_styles_suppress_browser_focus_outlines():
     css = APP_CSS.read_text()
     assert ":where(a, button, input, select, textarea, [tabindex]):focus" in css
     assert "outline: none;" in css
-    assert "[tabindex]:focus" in _common.PAGE_STYLE
-    assert "outline: none;" in _common.PAGE_STYLE
 
 
 def test_web_css_does_not_reintroduce_focus_ring_selectors():

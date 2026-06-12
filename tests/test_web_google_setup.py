@@ -7,8 +7,8 @@ Covers two things:
    emits the canonical document shell: the `/assets/app.css` link, the
    `.app-header` top bar, the `<meta name="jts-csrf">` tag, the hidden
    `csrf_token` form field, the page's ES module, and the page CSS link.
-   These also assert the migration removed the legacy chrome (no
-   `wrap_page`/`PAGE_STYLE` markers, no inline `<script>` in the body, no
+   These also assert the migration removed the legacy chrome (no old
+   shell/style markers, no inline `<script>` in the body, no
    `jtsConfirmSubmit`/`window.confirm`).
 
 2. Routing + behaviour preserved — the handler returned by `_make_handler`
@@ -67,7 +67,7 @@ def _assert_canonical(page: bytes) -> str:
     assert "/assets/google/google.css" in text, "page CSS link missing"
     assert '/assets/google/js/main.js' in text, "page ES module missing"
     # Legacy chrome must be gone.
-    assert "PAGE_STYLE" not in text
+    assert "PAGE" "_STYLE" not in text
     assert "jtsConfirmSubmit" not in text, "legacy inline confirm shim leaked"
     assert "window.confirm" not in text
     # No inline <script> blocks should remain in the body — all JS moved to

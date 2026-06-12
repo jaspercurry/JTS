@@ -11,8 +11,8 @@
 //   * jsonHeaders() now comes from the shared http.js module (was injected as
 //     csrf_fetch_helpers_js); it reads the CSRF token from the <meta name=
 //     "jts-csrf"> tag and attaches X-CSRF-Token to every mutating POST.
-//   * jtsConfirm / jtsAlert come from the shared dialog.js module (was the
-//     inline dialog_helpers_js twin) — never window.confirm/alert, which the
+//   * jtsConfirm / jtsAlert come from the shared dialog.js module — never
+//     window.confirm/alert, which the
 //     browser can suppress (that silently defeated the radio-kill guard).
 //
 // SSIDs and NM profile names are UNTRUSTED. Every interpolation into innerHTML

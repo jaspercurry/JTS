@@ -203,8 +203,8 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
 # `type="module"`), and the bespoke recorder visuals live in the page
 # stylesheet at /assets/wake-corpus/wake-corpus.css; the "← Home" link and the
 # confirm dialog are provided by the canonical header and the shared
-# dialog.js module respectively, so this page no longer embeds the legacy
-# NAV_BACK_* / DIALOG_CSS / dialog_helpers_js inline twins.
+# dialog.js module respectively, so this page no longer embeds the old
+# one-page chrome or dialog snippets.
 from jasper.web._common import (
     canonical_header,
     canonical_page,

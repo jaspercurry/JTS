@@ -1,6 +1,6 @@
 # Management UI — redesign proposal + reference
 
-**Status:** Reference · created 2026-05-22 · refreshed 2026-05-31.
+**Status:** Reference · created 2026-05-22 · refreshed 2026-06-12.
 Phase 1 IA/visual reshape implemented on 2026-05-28 in
 `deploy/index.html`; the 2026-05-28 polish pass adopted the static reference
 style, local Figtree/Outfit font assets, and a quieter one-column settings
@@ -27,9 +27,9 @@ The first shared cross-page module is the confirm/alert dialog,
 (`jtsConfirm`/`jtsAlert`, Promise-based, styled by `.jts-dialog` in
 `app.css`). It replaces `window.confirm`/`alert`, which the browser can
 suppress ("prevent this page from creating more dialogs") — that suppression
-silently defeated `/system/`'s restart/reboot guards. The legacy
-`wrap_page()` wizards migrate to the same helper via a behaviourally-identical
-inline twin in `_common.py`.
+silently defeated `/system/`'s restart/reboot guards. Pages that need a
+confirm/alert import this shared module from their static ES module; `_common.py`
+does not ship a legacy inline dialog copy.
 
 ## Restyle-in-place migration (legacy → canonical)
 
@@ -57,10 +57,8 @@ re-declare chrome that already exists.
   optional right-slot (`right_html`, default an empty `<span>` so the
   3-column grid stays balanced). `title`/`back_href`/`back_label` are escaped;
   `right_html` is caller-trusted (escape untrusted strings before passing).
-- **`canonical_banner(message)`** → the `.banner` flash, the canonical twin of
-  `wrap_page()`'s inline status `<div>`. Same string → same severity, so a
-  flash written by the shared `send_see_other(flash=...)` reads identically on
-  legacy and migrated pages: contains "error"/"fail" → `banner--danger`;
+- **`canonical_banner(message)`** → the `.banner` flash. Same string → same
+  severity across canonical pages: contains "error"/"fail" → `banner--danger`;
   starts with "saved"/"cleared" → `banner--ok`; else `banner--info`. Blank
   message → `""`, so `canonical_banner(flash)` can drop into the body
   unconditionally.
@@ -81,12 +79,9 @@ was changed):
 - **Banner:** `.banner` + `.banner--ok` / `.banner--info` / `.banner--danger`,
   tone driven by the same `--status-*` token vocabulary as the rest of the UI.
 - **Toggle:** the `.toggle` / `.toggle .track` / `.toggle input:checked +
-  .track` vocabulary — the token-themed twin of `_common.py`'s `TOGGLE_CSS`,
-  matching `toggle_html()`'s markup, with `:disabled` / `:focus-visible` /
-  `prefers-reduced-motion` states.
-
-Canonical pages load `app.css`; legacy pages load `TOGGLE_CSS`. They are
-deliberate twins — **never co-load both on one page.**
+  .track` vocabulary, matching `toggle_html()`'s native-checkbox markup, with
+  `:disabled` / `:focus-visible` / `prefers-reduced-motion` states. The CSS
+  lives in `app.css`; `toggle_html()` only emits the markup.
 
 ### Shared `http.js` ES module
 

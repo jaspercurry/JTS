@@ -29,7 +29,7 @@ def test_airplay_page_is_canonical_document():
     assert out.startswith("<!doctype html>")
     assert "/assets/app.css?v=" in out
     assert "/assets/airplay/airplay.css?v=" in out
-    # Legacy wrap_page shell markers must be gone.
+    # Old shell markers must be gone.
     assert "max-width: 620px" not in out
     assert 'class="sub"' not in out
 

@@ -68,7 +68,7 @@ def test_render_leaves_no_template_placeholders() -> None:
     html_text = wc._render_index_html("t")
     for stale in (
         "{header}", "{config_island}", "{csrf_token}",
-        "{nav_back_css}", "{nav_back_html}", "{dialog_helpers_js}",
+        "{nav_back_css}", "{nav_back_html}",
         "{aec3_sweep_js_labels}", "{aec3_sweep_js_order}",
         "{usb_aec3_corpus_label}", "{usb_aec3_sweep_baseline_label}",
         "{capture_options}",

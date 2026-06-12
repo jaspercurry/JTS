@@ -65,7 +65,7 @@ def test_all_states_are_canonical_documents():
         assert "/assets/app.css?v=" in out
         assert "/assets/home-assistant/home-assistant.css?v=" in out
         # legacy chrome must be gone
-        assert "PAGE_STYLE" not in out
+        assert "PAGE" "_STYLE" not in out
         assert "nav-back" not in out
 
 

@@ -402,8 +402,7 @@ svg { display: block; }
    Backed by <dialog>.showModal(): focus trap, ESC-to-cancel, inert backdrop,
    aria-modal — and, unlike the native popups, the browser can't suppress it
    ("prevent this page from creating more dialogs"), which silently defeated
-   the action guards. Markup is built by /assets/shared/js/dialog.js; the
-   legacy wrap_page() wizards carry a behaviourally-identical inline twin. */
+   the action guards. Markup is built by /assets/shared/js/dialog.js. */
 .jts-dialog {
   margin: auto;                 /* centred by the UA when shown via showModal() */
   width: min(28rem, calc(100vw - 2rem));
@@ -513,8 +512,8 @@ svg { display: block; }
 }
 
 /* ---------------- flash banner ---------------- */
-/* The canonical twin of wrap_page()'s inline status div, built by
-   jasper.web._common.canonical_banner(). Severity is the only variant:
+/* Flash banner markup is built by jasper.web._common.canonical_banner().
+   Severity is the only variant:
    ok (saved/cleared), info (neutral), danger (error/fail). Tone reuses the
    status token vocabulary so the banner re-skins with the rest of the UI. */
 .banner {
@@ -531,13 +530,11 @@ svg { display: block; }
 .banner--danger { --tone: var(--status-danger); }
 
 /* ---------------- toggle switch ---------------- */
-/* The canonical, token-themed twin of _common.py's TOGGLE_CSS. Both style
-   the SAME markup emitted by toggle_html()
+/* Token-themed switch styling for the markup emitted by toggle_html()
    (<label class="toggle"><input type="checkbox"><span class="track"></span>),
-   so a migrated page reuses that helper unchanged. A native checkbox carries
+   so every page reuses that helper unchanged. A native checkbox carries
    the state (keyboard + a11y for free); the .track span is the visual switch.
-   Canonical pages load app.css; legacy pages load TOGGLE_CSS — never both on
-   one page (the two are deliberate twins, not co-loaded). */
+   The CSS lives here in app.css; the Python helper only emits markup. */
 .toggle { position: relative; display: inline-block; width: 44px; height: 24px; flex: none; }
 .toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
 .toggle .track {
