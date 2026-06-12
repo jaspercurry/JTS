@@ -38,6 +38,36 @@ from ._improv import (
 
 logger = logging.getLogger("jasper-dial-onboard")
 
+__all__ = [
+    "DIAL_PROFILE",
+    "Dial",
+    "ESP32_S3_PIDS",
+    "ESP32_S3_VID",
+    "IMPROV_CMD_GET_DEVICE_INFO",
+    "IMPROV_CMD_SUBMIT_SETTINGS",
+    "IMPROV_ERROR_NONE",
+    "IMPROV_HEADER",
+    "IMPROV_PKT_CURRENT_STATE",
+    "IMPROV_PKT_ERROR_STATE",
+    "IMPROV_PKT_RPC",
+    "IMPROV_PKT_RPC_RESPONSE",
+    "IMPROV_STATE_AUTHORIZED",
+    "IMPROV_STATE_AWAITING_AUTH",
+    "IMPROV_STATE_PROVISIONED",
+    "IMPROV_STATE_PROVISIONING",
+    "IMPROV_STATE_STOPPED",
+    "_build_submit_settings",
+    "_improv_packet",
+    "_scan_packets",
+    "find_dial",
+    "flash_firmware",
+    "main",
+    "probe_jts_dial",
+    "push_credentials",
+    "read_pi_wifi",
+    "wait_for_online",
+]
+
 DIAL_PROFILE = DeviceProfile(
     prog="jasper-dial-onboard",
     description="Provision the JTS rotary dial via USB (flash + push WiFi creds)",

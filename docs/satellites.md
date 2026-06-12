@@ -476,11 +476,16 @@ Fall back to a compile-time `JASPER_HOST` if mDNS doesn't resolve.
 WiFi credentials are pushed over USB-CDC using the
 [Improv-over-Serial](https://www.improv-wifi.com/serial/) protocol.
 Satellite firmware uses [jnthas/Improv-WiFi-Library](https://github.com/jnthas/Improv-WiFi-Library);
-Pi-side, [`jasper-dial-onboard`](../jasper/cli/dial_onboard.py) is the
-reference implementation — reads the Pi's NetworkManager creds and
-pushes them. **For new satellites, fork this CLI** rather than adding
-flags to the dial-specific one (or generalize it; that's a judgment
-call).
+Pi-side, [`jasper.cli._improv`](../jasper/cli/_improv.py) owns the
+wire framing/credential push and
+[`jasper.cli._esp32_onboard`](../jasper/cli/_esp32_onboard.py) owns
+the shared USB probe, flash, WiFi credential, and mDNS flow.
+[`jasper-dial-onboard`](../jasper/cli/dial_onboard.py) and
+[`jasper-satellite-onboard`](../jasper/cli/satellite_onboard.py) are
+thin `DeviceProfile` wrappers with device-specific USB signatures,
+firmware paths, boot-log signatures, mDNS names, and done-message copy.
+For new ESP32 satellites, add another profile/shim rather than cloning
+the flow.
 
 ### Control plane — HTTP `:8780` and the voice control socket
 
