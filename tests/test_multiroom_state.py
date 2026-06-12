@@ -78,7 +78,7 @@ def _cfg(tmp_path, body):
 
 
 _EXPECTED_KEYS = {
-    "trim_db",
+    "trim_db", "peer_addr", "peer_name",
     "enabled", "role", "channel", "bond_id",
     "leader_addr", "buffer_ms", "codec", "error",
 }

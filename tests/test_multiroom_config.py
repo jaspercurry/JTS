@@ -521,3 +521,44 @@ def test_trim_db_parse_and_validation_matrix():
     assert "must be between" in cfg_for("JASPER_GROUPING_TRIM_DB=1.0\n").error
     assert "must be between" in cfg_for("JASPER_GROUPING_TRIM_DB=-30\n").error
     assert "not a number" in cfg_for("JASPER_GROUPING_TRIM_DB=loud\n").error
+
+
+def test_peer_roster_parse_and_validation_matrix():
+    """Bond roster (leader records its pair sibling): parsed from the
+    env file; peer_addr must be a private/loopback IPv4 (the
+    cross-speaker control calls are IP-only by SSRF design); peer_name
+    is bounded printable text; both absent -> empty (legacy bonds)."""
+    from jasper.multiroom.config import load_config, validate_grouping
+    import tempfile
+    import os
+
+    def cfg_for(extra: str):
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".env", delete=False) as f:
+            f.write(
+                "JASPER_GROUPING=on\n"
+                "JASPER_GROUPING_ROLE=leader\n"
+                "JASPER_GROUPING_CHANNEL=left\n"
+                "JASPER_GROUPING_BOND_ID=b\n" + extra
+            )
+            path = f.name
+        try:
+            return load_config(path)
+        finally:
+            os.unlink(path)
+
+    cfg = cfg_for("")
+    assert cfg.peer_addr == "" and cfg.peer_name == ""
+    cfg = cfg_for("JASPER_GROUPING_PEER_ADDR=192.168.1.9\n"
+                  "JASPER_GROUPING_PEER_NAME=JTS3\n")
+    assert cfg.peer_addr == "192.168.1.9"
+    assert cfg.peer_name == "JTS3"
+    assert cfg.error is None
+    assert "private/loopback" in cfg_for(
+        "JASPER_GROUPING_PEER_ADDR=8.8.8.8\n").error
+    assert "private/loopback" in cfg_for(
+        "JASPER_GROUPING_PEER_ADDR=jts3.local\n").error
+
+    base = dict(role="leader", channel="left", bond_id="b", leader_addr="")
+    assert validate_grouping(**base, peer_name="x" * 65) is not None
+    assert validate_grouping(**base, peer_name="ok name") is None

@@ -1456,7 +1456,7 @@ def test_post_unbond_logs_unreachable_candidate_count(monkeypatch, caplog):
     infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     assert any(
         "event=rooms.unbond " in m
-        and "candidates=2" in m and "unreachable=1" in m and "peers=1" in m
+        and "roster=no" in m and "unreachable=1" in m and "peers=1" in m
         for m in infos
     )
 
@@ -1749,3 +1749,155 @@ def test_post_trim_peer_resolves_the_bond_sibling(monkeypatch):
     assert json.loads(h.wfile.getvalue())["trim_db"] == -1.5
     assert posts[0][0] == "192.168.1.9"
     assert posts[0][1]["channel"] == "right"  # everything else preserved
+
+
+# ----------------------------------------------------------------------
+# Bond roster — _resolve_bond_peer (the 2026-06-12 "found 2" regression:
+# a foreign endpoint-tier Pi transiently claiming the live bond_id made
+# every pair operation ambiguous; the roster pins the household's
+# actual choice).
+# ----------------------------------------------------------------------
+
+
+def test_swap_with_roster_ignores_foreign_bond_claimer(monkeypatch):
+    """TWO devices claim our bond_id, but the leader's roster names its
+    real sibling — swap resolves to the roster, never 'found 2'."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1", "leader_addr": "",
+                       "peer_addr": "192.168.1.9", "peer_name": "JTS3"},
+        speakers=[{"address": "192.168.1.9", "name": "JTS3"},
+                  {"address": "192.168.1.162", "name": "JTS Endpoint"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "role": "follower",
+                            "channel": "right", "bond_id": "bond-1",
+                            "leader_addr": "jts.local"},
+            # The interloper ALSO claims bond-1 — pre-roster this made
+            # the operation fail with "found 2".
+            "192.168.1.162": {"enabled": True, "role": "follower",
+                              "channel": "right", "bond_id": "bond-1",
+                              "leader_addr": "jts.local"},
+        },
+    )
+    body = json.loads(h.wfile.getvalue().decode())
+    assert body["ok"] is True
+    peer_posts = [addr for addr, _ in posts if addr]
+    assert peer_posts == ["192.168.1.9"]  # only the roster sibling
+
+
+def test_roster_rediscovers_peer_by_name_after_dhcp_move(monkeypatch):
+    """Recorded IP dead, but the directory shows the recorded NAME at a
+    new address that answers for our bond — resolve to it."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1", "leader_addr": "",
+                       "peer_addr": "192.168.1.9", "peer_name": "JTS3"},
+        speakers=[{"address": "192.168.1.77", "name": "JTS3"}],
+        peer_grouping={
+            "192.168.1.9": None,  # old IP gone
+            "192.168.1.77": {"enabled": True, "role": "follower",
+                             "channel": "right", "bond_id": "bond-1",
+                             "leader_addr": "jts.local"},
+        },
+    )
+    body = json.loads(h.wfile.getvalue().decode())
+    assert body["ok"] is True
+    assert [a for a, _ in posts if a] == ["192.168.1.77"]
+
+
+def test_roster_unreachable_is_a_named_error_not_inference(monkeypatch):
+    """Roster peer offline and not rediscoverable → a hard error naming
+    the speaker — NEVER a fall-back to bond-id inference (which a
+    foreign claimer could satisfy)."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1", "leader_addr": "",
+                       "peer_addr": "192.168.1.9", "peer_name": "JTS3"},
+        # A same-bond claimer IS reachable — inference would pick it.
+        speakers=[{"address": "192.168.1.162", "name": "JTS Endpoint"}],
+        peer_grouping={
+            "192.168.1.9": None,
+            "192.168.1.162": {"enabled": True, "role": "follower",
+                              "channel": "right", "bond_id": "bond-1",
+                              "leader_addr": "jts.local"},
+        },
+    )
+    body = json.loads(h.wfile.getvalue().decode())
+    assert body["ok"] is False
+    assert "JTS3" in body["error"] and "unreachable" in body["error"]
+    assert posts == []  # nothing written anywhere
+
+
+def test_unbond_with_roster_never_disables_foreign_claimer(monkeypatch):
+    """Dissolving a rostered pair disables self + the roster sibling —
+    a third device claiming our bond_id is left alone (pre-roster it
+    would have been DISABLED: cross-household sabotage)."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader",
+                       "bond_id": "bond-1",
+                       "peer_addr": "192.168.1.9", "peer_name": "JTS3"},
+        speakers=[{"address": "192.168.1.9", "name": "JTS3"},
+                  {"address": "192.168.1.162", "name": "JTS Endpoint"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "bond_id": "bond-1"},
+            "192.168.1.162": {"enabled": True, "bond_id": "bond-1"},
+        },
+    )
+    body = json.loads(h.wfile.getvalue().decode())
+    assert body["ok"] is True
+    assert [a for a, _ in posts] == ["", "192.168.1.9"]  # self + roster only
+
+
+def test_unbond_roster_peer_offline_still_aims_disable_at_it(monkeypatch):
+    """Best-effort dissolve: the roster peer is offline, so the disable
+    is still SENT to its last known address (and reported), rather than
+    silently skipping it."""
+    h, posts = _post_unbond(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader",
+                       "bond_id": "bond-1",
+                       "peer_addr": "192.168.1.9", "peer_name": "JTS3"},
+        speakers=[],
+        peer_grouping={"192.168.1.9": None},
+    )
+    assert [a for a, _ in posts] == ["", "192.168.1.9"]
+
+
+def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
+    """A 2-member bond writes the follower's addr+name into the LEADER's
+    body and explicit empty roster fields into the follower's (stale
+    roster from a previous leadership must not survive a role flip)."""
+    posts: list[tuple[str, dict]] = []
+
+    def fake_member_post(addr, body, known=None):
+        posts.append((addr, body))
+        return (True, "HTTP 200")
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member",
+                        fake_member_post)
+    monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
+
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/bond")
+    payload = json.dumps({"members": [
+        {"addr": "", "role": "leader", "channel": "left"},
+        {"addr": "192.168.1.9", "role": "follower", "channel": "right",
+         "name": "JTS3"},
+    ]}).encode()
+    h.headers["Content-Length"] = str(len(payload))
+    h.rfile = BytesIO(payload)
+    handler_cls.do_POST(h)
+
+    bodies = {addr: body for addr, body in posts}
+    leader_body = bodies[""]
+    follower_body = bodies["192.168.1.9"]
+    assert leader_body["peer_addr"] == "192.168.1.9"
+    assert leader_body["peer_name"] == "JTS3"
+    assert follower_body["peer_addr"] == ""
+    assert follower_body["peer_name"] == ""

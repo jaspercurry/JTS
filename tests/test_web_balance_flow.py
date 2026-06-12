@@ -400,3 +400,26 @@ def test_render_page_links_module_and_csrf():
     assert 'tok-123' in html
     assert "Balance speakers" in html
     assert 'id="stop"' in html  # the big red button exists
+
+
+def test_start_with_roster_survives_foreign_bond_claimer(
+    pair_env, monkeypatch,
+):
+    """THE 2026-06-12 live regression: a foreign endpoint-tier Pi
+    transiently claims the bond_id, making inference see two peers.
+    With the roster recorded, /balance/start resolves the household's
+    actual sibling and proceeds."""
+    monkeypatch.setattr(
+        mstate, "read_grouping_state",
+        lambda *a, **k: dict(LEADER_G, peer_addr="192.168.1.92",
+                             peer_name="jts3"))
+    monkeypatch.setattr(rooms, "_discover_speakers_cached", lambda: [
+        {"address": "192.168.1.92", "name": "jts3", "hostname": "jts3"},
+        {"address": "192.168.1.162", "name": "jts4", "hostname": "jts4"},
+    ])
+    # BOTH candidates claim our bond — inference alone would fail.
+    monkeypatch.setattr(
+        rooms, "_get_member_grouping",
+        lambda a, known=None: dict(PEER_G))
+    payload = start_ok(pair_env)
+    assert payload["members"]["right"]["label"] == "jts3"

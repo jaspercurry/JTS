@@ -2552,3 +2552,45 @@ def test_grouping_set_trim_settable_validated_and_preserved(
     status, _ = _post(f"{base}/grouping/set", body)  # omitted
     assert status == 200
     assert "JASPER_GROUPING_TRIM_DB" not in writes[-1]
+
+
+def test_grouping_set_peer_roster_settable_preserved_and_cleared(
+    monkeypatch, server_with_coordinator,
+):
+    """Bond roster fields: settable (validated private-IPv4), PRESERVED
+    when omitted (swap/trim fan-outs never send them), and CLEARED by an
+    explicit empty string (the bond flow clears non-leader members so a
+    role flip can't leave a stale roster)."""
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    body = {"enabled": True, "role": "leader", "channel": "left",
+            "bond_id": "b", "leader_addr": ""}
+
+    status, _ = _post(f"{base}/grouping/set",
+                      {**body, "peer_addr": "192.168.1.9",
+                       "peer_name": "JTS3"})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_PEER_ADDR"] == "192.168.1.9"
+    assert writes[-1]["JASPER_GROUPING_PEER_NAME"] == "JTS3"
+
+    status, resp = _post(f"{base}/grouping/set",
+                         {**body, "peer_addr": "8.8.8.8"})
+    assert status == 400 and "private/loopback" in resp["error"]
+
+    status, _ = _post(f"{base}/grouping/set", body)  # omitted → preserved
+    assert status == 200
+    assert "JASPER_GROUPING_PEER_ADDR" not in writes[-1]
+    assert "JASPER_GROUPING_PEER_NAME" not in writes[-1]
+
+    status, _ = _post(f"{base}/grouping/set",
+                      {**body, "peer_addr": "", "peer_name": ""})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_PEER_ADDR"] == ""
+    assert writes[-1]["JASPER_GROUPING_PEER_NAME"] == ""

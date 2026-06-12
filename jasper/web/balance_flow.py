@@ -148,8 +148,7 @@ def _resolve_pair() -> tuple[dict | None, dict | None, str]:
     helper."""
     from .rooms_setup import (
         _discover_speakers_cached,
-        _get_member_grouping,
-        _map_peers,
+        _resolve_bond_peer,
         _self_addresses,
     )
     from ..multiroom.state import read_grouping_state
@@ -161,29 +160,25 @@ def _resolve_pair() -> tuple[dict | None, dict | None, str]:
     if str(own.get("role") or "") != "leader":
         return None, None, "open this page on the pair leader"
 
+    # Shared roster-first resolution (see rooms_setup._resolve_bond_peer)
+    # — the household's recorded pair sibling, never an inference that a
+    # foreign bond-claimer can poison.
     known = _self_addresses()
-    rows = [r for r in _discover_speakers_cached()
-            if str(r.get("address") or "").strip()
-            and str(r.get("address") or "").strip() not in known]
-    groupings = _map_peers(
-        lambda a: _get_member_grouping(a, known),
-        [str(r["address"]).strip() for r in rows],
-    )
-    peers = [
-        {"addr": str(row["address"]).strip(),
-         "label": str(row.get("name") or row.get("hostname")
-                      or row["address"]),
-         "grouping": pg}
-        for row, pg in zip(rows, groupings)
-        if pg is not None
-        and str(pg.get("bond_id") or "").strip() == bond_id
-    ]
-    if len(peers) != 1:
-        return None, None, (
-            "balance needs exactly one reachable paired speaker "
-            f"(found {len(peers)})"
+    addr, pg, perr = _resolve_bond_peer(own, known)
+    if perr:
+        return None, None, f"balance {perr}"
+    label = str(own.get("peer_name") or "").strip()
+    if not label:
+        # Legacy bond (no roster name): borrow the directory's display
+        # name for the resolved address, falling back to the address.
+        label = next(
+            (str(r.get("name") or "").strip()
+             for r in _discover_speakers_cached()
+             if str(r.get("address") or "").strip() == addr
+             and str(r.get("name") or "").strip()),
+            addr,
         )
-    return own, peers[0], ""
+    return own, {"addr": addr, "label": label, "grouping": pg}, ""
 
 
 def _members_by_channel(own: dict, peer: dict, hostname: str) -> dict | None:

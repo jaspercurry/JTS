@@ -1737,7 +1737,34 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (PAIR BALANCE P2, equal-loudness walkthrough
+Last verified: 2026-06-12 (BOND ROSTER — the leader now RECORDS who its
+pair sibling is instead of inferring membership from "who on the LAN
+claims my bond_id". Live failure that forced it: a third, foreign Pi
+(the endpoint-tier test device) transiently claiming the live bond made
+swap, trim, AND balance all fail "found 2" — and unbond would have
+DISABLED the foreign device's grouping. New leader-only grouping.env
+keys, written by the /rooms bond flow for 2-member bonds:
+JASPER_GROUPING_PEER_ADDR (the follower's LAN IPv4 — cross-speaker
+control calls are IP-only by SSRF design) + JASPER_GROUPING_PEER_NAME
+(its directory display name, the DHCP re-resolution key). Both ride
+/grouping/set with the trim_db contract (settable, validated,
+PRESERVED when omitted; explicit empty clears — non-leader bond bodies
+clear so a role flip can't keep a stale roster).
+rooms_setup._resolve_bond_peer is the ONE resolver (swap, trim,
+balance, unbond): roster IP probe → if dead, re-find PEER_NAME in the
+live directory and accept the same-bond match at its new IP (logged
+event=rooms.peer_addr_drift) → else a HARD error naming the speaker —
+never a fall-back to inference a foreign claimer could satisfy.
+Roster-less (pre-roster) bonds keep the legacy inference, whose
+ambiguity error now suggests re-pairing to record the roster. Unbond
+with a roster disables self + the recorded sibling only (best-effort
+at its last known address when offline). Regression tests:
+tests/test_web_rooms_setup.py (foreign-claimer matrix, DHCP
+rediscovery, named unreachable error, unbond containment, bond-body
+roster), test_web_balance_flow.py (start survives a foreign claimer),
+test_multiroom_config.py + test_control_server.py (parse/validate/
+preserve/clear). Earlier same day: PAIR BALANCE P2, equal-loudness
+walkthrough
 — the v1 fixed-level A/B/A burst design was REPLACED the same day
 after first live use: a badly mismatched pair (the exact case the tool
 exists for) put the quiet speaker's bursts under the noise floor and

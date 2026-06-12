@@ -753,13 +753,32 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         addr = str(m.get("addr") or "").strip()
         role = str(m.get("role") or "").strip()
         channel = str(m.get("channel") or "").strip()
-        targets.append((addr, {
+        body = {
             "enabled": True,
             "role": role,
             "channel": channel,
             "bond_id": bond_id,
             "leader_addr": "" if role == "leader" else leader_addr,
-        }))
+            # Explicit empties CLEAR any stale roster (a member that was
+            # a leader in a previous bond must not keep pointing at its
+            # old sibling); the leader of a 2-member bond gets the real
+            # roster below.
+            "peer_addr": "",
+            "peer_name": "",
+        }
+        if role == "leader" and len(members) == 2:
+            # The bond roster: record WHO the pair sibling is, so swap/
+            # trim/balance/unbond resolve the household's actual choice
+            # instead of inferring membership from bond_id claims
+            # (pair vocabulary — N>2 endpoint groups need their own
+            # roster design).
+            other = next(
+                (mm for j, mm in enumerate(members)
+                 if j != i and isinstance(mm, dict)), None)
+            if other is not None:
+                body["peer_addr"] = str(other.get("addr") or "").strip()
+                body["peer_name"] = str(other.get("name") or "").strip()
+        targets.append((addr, body))
         target_idx.append(i)
 
     for slot, (addr, body), (ok, detail) in zip(
@@ -822,18 +841,33 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     # rediscovered. A peer we can't reach (GET → None) or one in a different
     # bond is simply not added to the disable set.
     known = _self_addresses()
-    candidate_addrs = [
-        a for a in (
-            str(s.get("address") or "").strip() for s in _discover_speakers_cached()
-        ) if a and a not in known
-    ]
-    candidate_groupings = _map_peers(
-        lambda a: _get_member_grouping(a, known), candidate_addrs,
-    )
-    peer_addrs = [
-        a for a, pg in zip(candidate_addrs, candidate_groupings)
-        if pg is not None and str(pg.get("bond_id") or "").strip() == bond_id
-    ]
+    roster_addr = str(grouping.get("peer_addr") or "").strip()
+    candidate_groupings: list = []
+    if roster_addr:
+        # Roster-first: disable exactly the recorded sibling — never a
+        # foreign device that happens to claim our bond_id (a transient
+        # claimer here would get its grouping DISABLED, which is worse
+        # than the read-path ambiguity). Best-effort: if the resolver
+        # can't confirm the peer (offline), still aim the disable at its
+        # last known address so a powered-off-then-on follower isn't
+        # left stranded by design; the fan-out reports the failure.
+        resolved_addr, _pg, _err = _resolve_bond_peer(grouping, known)
+        peer_addrs = [resolved_addr or roster_addr]
+    else:
+        candidate_addrs = [
+            a for a in (
+                str(s.get("address") or "").strip()
+                for s in _discover_speakers_cached()
+            ) if a and a not in known
+        ]
+        candidate_groupings = _map_peers(
+            lambda a: _get_member_grouping(a, known), candidate_addrs,
+        )
+        peer_addrs = [
+            a for a, pg in zip(candidate_addrs, candidate_groupings)
+            if pg is not None
+            and str(pg.get("bond_id") or "").strip() == bond_id
+        ]
 
     # Self first (empty addr → loopback), then each matching peer. Reuse the
     # same `known` set for the disable fan-out's SSRF guard.
@@ -866,16 +900,94 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     # without a per-candidate line.
     unreachable = sum(1 for pg in candidate_groupings if pg is None)
     logger.info(
-        "event=rooms.unbond bond=%s candidates=%d unreachable=%d peers=%d "
+        "event=rooms.unbond bond=%s roster=%s unreachable=%d peers=%d "
         "self_ok=%s dissolved=%d",
-        bond_id, len(candidate_addrs), unreachable, len(peer_addrs),
-        self_ok, len(dissolved),
+        bond_id, "yes" if roster_addr else "no", unreachable,
+        len(peer_addrs), self_ok, len(dissolved),
     )
     _send_json(
         handler,
         {"ok": self_ok, "bond_id": bond_id, "dissolved": dissolved, "results": results},
         status=HTTPStatus.OK if self_ok else HTTPStatus.BAD_GATEWAY,
     )
+
+
+def _resolve_bond_peer(
+    grouping: dict, known: set[str] | None = None,
+) -> tuple[str, dict | None, str]:
+    """Resolve THIS speaker's one pair sibling → (addr, peer_grouping, err).
+
+    Roster-first: the bond flow records the chosen peer on the leader
+    (``peer_addr`` + ``peer_name`` in grouping.env), so pair operations
+    resolve THE peer the household actually picked. Probe the recorded
+    IP; if it no longer answers for OUR bond and a ``peer_name`` is
+    recorded, re-find that name in the live directory (DHCP moved the
+    IP) and accept the matching device. With a roster, a FOREIGN device
+    transiently claiming our bond_id can never create ambiguity (the
+    observed 2026-06-12 failure: an endpoint-tier test Pi cycling
+    through bond states made swap/trim/balance all fail with
+    "found 2") — and an unreachable roster peer is a hard, NAMED error,
+    never an excuse to guess. Bonds recorded before the roster existed
+    fall back to the legacy inference (every discovered device claiming
+    our bond_id), which still errors on ambiguity.
+
+    ``err`` is "" on success; on failure addr is "" and grouping None.
+    """
+    if known is None:
+        known = _self_addresses()
+    bond_id = str(grouping.get("bond_id") or "").strip()
+    roster_addr = str(grouping.get("peer_addr") or "").strip()
+    roster_name = str(grouping.get("peer_name") or "").strip()
+
+    if roster_addr:
+        pg = _get_member_grouping(roster_addr, known)
+        if (pg is not None
+                and str(pg.get("bond_id") or "").strip() == bond_id):
+            return roster_addr, pg, ""
+        if roster_name:
+            for row in _discover_speakers_cached():
+                if str(row.get("name") or "").strip() != roster_name:
+                    continue
+                addr = str(row.get("address") or "").strip()
+                if not addr or addr in known or addr == roster_addr:
+                    continue
+                pg2 = _get_member_grouping(addr, known)
+                if (pg2 is not None
+                        and str(pg2.get("bond_id") or "").strip()
+                        == bond_id):
+                    logger.info(
+                        "event=rooms.peer_addr_drift name=%s old=%s new=%s",
+                        roster_name, roster_addr, addr,
+                    )
+                    return addr, pg2, ""
+        label = roster_name or roster_addr
+        return "", None, (
+            f"paired speaker '{label}' is unreachable (last known "
+            f"{roster_addr}) — check its power and network, or re-pair "
+            "at /rooms"
+        )
+
+    candidate_addrs = [
+        a for a in (
+            str(sp.get("address") or "").strip()
+            for sp in _discover_speakers_cached()
+        ) if a and a not in known
+    ]
+    candidate_groupings = _map_peers(
+        lambda a: _get_member_grouping(a, known), candidate_addrs,
+    )
+    peers = [
+        (a, pg) for a, pg in zip(candidate_addrs, candidate_groupings)
+        if pg is not None
+        and str(pg.get("bond_id") or "").strip() == bond_id
+    ]
+    if len(peers) != 1:
+        return "", None, (
+            "needs exactly one reachable paired speaker "
+            f"(found {len(peers)}) — re-pairing at /rooms records the "
+            "pair and removes the ambiguity"
+        )
+    return peers[0][0], peers[0][1], ""
 
 
 def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
@@ -905,28 +1017,15 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         return
 
     known = _self_addresses()
-    candidate_addrs = [
-        a for a in (
-            str(s.get("address") or "").strip() for s in _discover_speakers_cached()
-        ) if a and a not in known
-    ]
-    candidate_groupings = _map_peers(
-        lambda a: _get_member_grouping(a, known), candidate_addrs,
-    )
-    peers = [
-        (a, pg) for a, pg in zip(candidate_addrs, candidate_groupings)
-        if pg is not None and str(pg.get("bond_id") or "").strip() == bond_id
-    ]
-    if len(peers) != 1:
+    peer_addr_r, peer_grouping, perr = _resolve_bond_peer(grouping, known)
+    if perr:
         _send_json(
             handler,
-            {"ok": False, "error": (
-                "channel swap needs exactly one reachable paired speaker "
-                f"(found {len(peers)})"
-            )},
+            {"ok": False, "error": f"channel swap {perr}"},
             status=HTTPStatus.BAD_REQUEST,
         )
         return
+    peers = [(peer_addr_r, peer_grouping)]
 
     peer_addr, peer_grouping = peers[0]
     self_channel = str(grouping.get("channel") or "").strip()
@@ -1066,31 +1165,14 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
             _send_json(handler, {"ok": False, "error": "not in a bond"},
                        status=HTTPStatus.BAD_REQUEST)
             return
-        candidate_addrs = [
-            a for a in (
-                str(sp.get("address") or "").strip()
-                for sp in _discover_speakers_cached()
-            ) if a and a not in known
-        ]
-        candidate_groupings = _map_peers(
-            lambda a: _get_member_grouping(a, known), candidate_addrs,
-        )
-        peers = [
-            (a, pg) for a, pg in zip(candidate_addrs, candidate_groupings)
-            if pg is not None
-            and str(pg.get("bond_id") or "").strip() == bond_id
-        ]
-        if len(peers) != 1:
+        addr, current, perr = _resolve_bond_peer(own, known)
+        if perr:
             _send_json(
                 handler,
-                {"ok": False, "error": (
-                    "trim needs exactly one reachable paired speaker "
-                    f"(found {len(peers)})"
-                )},
+                {"ok": False, "error": f"trim {perr}"},
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
-        addr, current = peers[0]
     else:
         current = read_grouping_state()
     if not current.get("enabled") or current.get("error"):
