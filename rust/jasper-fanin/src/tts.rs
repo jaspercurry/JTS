@@ -841,11 +841,22 @@ fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDe
 mod tests {
     use super::*;
 
-    use std::sync::{Mutex, Once};
+    use std::cell::RefCell;
+    use std::sync::Once;
 
     static TEST_LOGGER: TestLogger = TestLogger;
     static LOG_INIT: Once = Once::new();
-    static TEST_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    // Per-thread buffer: tests run on parallel threads, and a shared buffer's
+    // capture_logs() clear() can race another test between its log emission
+    // and its captured_logs() assertion (observed in CI as a one-off failure
+    // of the stale_program_duck log assert while its sibling metrics assert
+    // passed). Thread-local capture is sound here because every test drives
+    // the mixer synchronously on its own thread; a test that logs from a
+    // spawned thread would capture nothing and fail deterministically.
+    thread_local! {
+        static TEST_LOGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
 
     struct TestLogger;
 
@@ -856,7 +867,8 @@ mod tests {
 
         fn log(&self, record: &log::Record<'_>) {
             if self.enabled(record.metadata()) {
-                TEST_LOGS.lock().unwrap().push(record.args().to_string());
+                let line = record.args().to_string();
+                TEST_LOGS.with(|logs| logs.borrow_mut().push(line));
             }
         }
 
@@ -868,11 +880,11 @@ mod tests {
             let _ = log::set_logger(&TEST_LOGGER);
             log::set_max_level(log::LevelFilter::Info);
         });
-        TEST_LOGS.lock().unwrap().clear();
+        TEST_LOGS.with(|logs| logs.borrow_mut().clear());
     }
 
     fn captured_logs() -> Vec<String> {
-        TEST_LOGS.lock().unwrap().clone()
+        TEST_LOGS.with(|logs| logs.borrow().clone())
     }
 
     use std::io::{Cursor, Write as _};
