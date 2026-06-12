@@ -2021,8 +2021,9 @@ sudo systemctl start jasper-aec-reconcile
 
 Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor` either way.
 
-These commands are duplicated in [`BRINGUP.md`](BRINGUP.md) Phase
-2A.2 — keep both in sync.
+These commands are duplicated in
+[`BRINGUP.md` "Optional: Software AEC bridge"](BRINGUP.md#optional-software-aec-bridge)
+— keep both in sync.
 
 The chip control library (`jasper.xvf.xvf_host`) is useful for
 diagnostics regardless of bridge state. **Never call
