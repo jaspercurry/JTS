@@ -128,6 +128,30 @@ def test_openai_noise_reduction_env(monkeypatch):
     assert cfg.openai_noise_reduction == "off"
 
 
+@pytest.mark.parametrize("value", ["0", "false", "no"])
+def test_server_vad_enabled_keeps_legacy_false_values(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_SERVER_VAD_ENABLED", value)
+
+    assert Config.from_env().server_vad_enabled is False
+
+
+@pytest.mark.parametrize("value", ["", " ", "off", "disabled", "potato"])
+def test_server_vad_enabled_fails_closed_for_empty_and_junk(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_SERVER_VAD_ENABLED", value)
+
+    assert Config.from_env().server_vad_enabled is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "enabled"])
+def test_server_vad_enabled_accepts_truthy_values(monkeypatch, value):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_SERVER_VAD_ENABLED", value)
+
+    assert Config.from_env().server_vad_enabled is True
+
+
 def test_invalid_openai_noise_reduction_env_rejected(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("JASPER_OPENAI_NOISE_REDUCTION", "potato")
@@ -236,9 +260,19 @@ def test_blank_spotify_redirect_uri_uses_hostname_default(monkeypatch):
     )
 
 
+def test_google_setup_url_defaults_to_hostname(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
+    monkeypatch.delenv("JASPER_GOOGLE_SETUP_URL", raising=False)
+    cfg = Config.from_env()
+    assert cfg.google_setup_url == "http://jts3.local/google"
+
+
 @pytest.mark.parametrize(
     ("name", "value", "expected"),
     [
+        ("JASPER_WAKE_THRESHOLD", "abc", "JASPER_WAKE_THRESHOLD must be a number"),
+        ("JASPER_IDLE_TIMEOUT_SEC", "abc", "JASPER_IDLE_TIMEOUT_SEC must be a number"),
         ("JASPER_WAKE_THRESHOLD", "1.2", "JASPER_WAKE_THRESHOLD"),
         ("JASPER_IDLE_TIMEOUT_SEC", "0", "JASPER_IDLE_TIMEOUT_SEC"),
         # 0 is now valid (= disabled); negative is rejected.

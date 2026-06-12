@@ -35,7 +35,7 @@ from jasper.config import Config
 
 _ENV_EXAMPLE = Path(__file__).resolve().parent.parent / ".env.example"
 
-# Truthy set used by Config._env_bool / the inline server-VAD parse. Kept
+# Truthy set used by Config._env_bool. Kept
 # local so a coercion mismatch here surfaces as a real divergence rather
 # than importing config internals that could mask one.
 _TRUTHY = {"1", "true", "yes", "on", "enabled"}
@@ -66,7 +66,7 @@ def _parse_env_example() -> dict[str, str]:
 #   str:   identity — the literal is compared as-is.
 #   float: float(literal)  — every float field reads via _env_float.
 #   int:   int(literal)    — every int field reads via _env_int.
-#   bool:  literal.strip().lower() in _TRUTHY — server_vad_enabled's parse.
+#   bool:  literal.strip().lower() in _TRUTHY — Config._env_bool's parse.
 _CASES: tuple[tuple[str, str, str], ...] = (
     # Active-provider model / voice / tuning selectors (safe shipped
     # defaults; the wizard overrides per provider).
