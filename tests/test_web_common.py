@@ -650,3 +650,32 @@ def test_pair_banner_html_renders_only_when_bonded(monkeypatch):
     monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
     html = common.pair_banner_html()
     assert "stereo pair" in html and "/rooms/" in html
+
+
+def test_pair_banner_renders_on_each_wizard_page(monkeypatch):
+    """The §7.5 interface contract, pinned for the two f-string pages
+    (voice, wake): banner present while a bonded follower, absent when
+    solo, and never a literal brace leak. sound (string concatenation)
+    and correction (header +=) use mechanisms that cannot brace-leak;
+    their renders need heavy state objects, so they are covered by the
+    live deploy check rather than forced through fixtures here."""
+    import jasper.web._common as common
+
+    def render_all():
+        out = {}
+        import jasper.web.voice_setup as vs
+        out["voice"] = vs._index_html({}, "tok")
+        import jasper.web.wake_setup as ws
+        out["wake"] = ws._index_html({}, "tok")
+        return out
+
+    monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
+    for name, page in render_all().items():
+        body = page.decode() if isinstance(page, bytes) else page
+        assert "stereo pair" in body, name
+        assert "{pair_banner_html" not in body, name
+
+    monkeypatch.setattr(common, "bonded_follower_active", lambda: False)
+    for name, page in render_all().items():
+        body = page.decode() if isinstance(page, bytes) else page
+        assert "stereo pair" not in body, name

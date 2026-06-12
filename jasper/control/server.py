@@ -2964,8 +2964,14 @@ def _make_handler(
                 ]
                 if parked:
                     # Restart only the units the follower profile keeps
-                    # alive; the parked renderers stay parked.
-                    units = ["jasper-camilla.service"]
+                    # alive — derived from the parked set so the two
+                    # can never drift (FOLLOWER_PARKED_UNITS is the one
+                    # source of truth for what a follower parks).
+                    from ..multiroom.reconcile import FOLLOWER_PARKED_UNITS
+
+                    units = [
+                        u for u in units if u not in FOLLOWER_PARKED_UNITS
+                    ]
                 action = "restart-audio"
             elif self.path == "/system/reboot":
                 units = []  # systemctl reboot — no units
