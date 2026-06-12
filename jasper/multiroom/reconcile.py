@@ -137,6 +137,7 @@ OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 # outputd_grouping_env): the lane fail-closes on any other bridge mode,
 # and this file is the last env layer, so the pin wins over lab retunes.
 OUTPUTD_CONTENT_BRIDGE_ENV = "JASPER_OUTPUTD_CONTENT_BRIDGE"
+OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
 # Bonded-member TTS (Increment 5 PR-2): while bonded, outputd listens
 # on its TTS socket and mixes voice at the final output stage (post-
 # round-trip, pre-reference — inv-A), and jasper-voice's playout is
@@ -436,11 +437,18 @@ def outputd_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
             OUTPUTD_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
+            # Pair-balance trim (validated <= 0 by load_config; outputd
+            # re-validates fail-closed). Always written while bonded so
+            # a cleared trim converges back to 0.0.
+            OUTPUTD_DAC_CONTENT_TRIM_ENV: f"{cfg.trim_db:.1f}",
         }
     return {
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
         OUTPUTD_TTS_SOCKET_ENV: "",
+        # Empty = unset to outputd's env_f32 (default 0.0) — the same
+        # disable-clears-stale idiom as the lane keys above.
+        OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
     }
 
 

@@ -2519,3 +2519,36 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     assert "jasper-camilla.service" in flat
     assert "librespot.service" not in flat
     assert "shairport-sync.service" not in flat
+
+
+def test_grouping_set_trim_settable_validated_and_preserved(
+    monkeypatch, server_with_coordinator,
+):
+    """trim_db: settable (validated attenuate-only), rejected when
+    garbage or positive, and PRESERVED when omitted — bond/swap fan-outs
+    never send it, so a calibrated balance survives role changes."""
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    body = {"enabled": True, "role": "follower", "channel": "right",
+            "bond_id": "b", "leader_addr": "jts.local"}
+
+    status, _ = _post(f"{base}/grouping/set", {**body, "trim_db": -2.5})
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_TRIM_DB"] == "-2.5"
+
+    status, resp = _post(f"{base}/grouping/set", {**body, "trim_db": 1.5})
+    assert status == 400 and "must be between" in resp["error"]
+
+    status, resp = _post(f"{base}/grouping/set", {**body, "trim_db": "loud"})
+    assert status == 400 and "must be a number" in resp["error"]
+
+    status, _ = _post(f"{base}/grouping/set", body)  # omitted
+    assert status == 200
+    assert "JASPER_GROUPING_TRIM_DB" not in writes[-1]

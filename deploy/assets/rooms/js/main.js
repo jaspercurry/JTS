@@ -465,6 +465,44 @@ function makeBondCard() {
     { type: "button" }, "Swap left \u2194 right");
   const dissolveRow = h("div.bond-dissolve", null, swapBtn, dissolveBtn);
 
+  // Pair-balance trim: one row per member, \u00b10.5 dB nudges. Delta
+  // semantics — the server resolves the peer and returns the new value,
+  // so this card carries no peer addressing or trim state.
+  function makeTrimRow(label, target) {
+    const value = h("span.trim-value", null, "\u2014");
+    const minus = h("button.btn", { type: "button",
+      "attr:aria-label": label + " quieter" }, "\u22120.5 dB");
+    const plus = h("button.btn", { type: "button",
+      "attr:aria-label": label + " louder" }, "+0.5 dB");
+    async function nudge(delta) {
+      minus.disabled = plus.disabled = true;
+      try {
+        const data = await postJSON("trim", { target, delta_db: delta });
+        value.textContent = data.trim_db.toFixed(1) + " dB";
+        status.textContent = "";
+      } catch (e) {
+        console.error("rooms: trim failed", e);
+        status.textContent = "Couldn't trim \u2014 " + describeBondFailure(e);
+      } finally {
+        minus.disabled = plus.disabled = false;
+      }
+    }
+    minus.addEventListener("click", () => nudge(-0.5));
+    plus.addEventListener("click", () => nudge(0.5));
+    return {
+      el: h("div.trim-row", null,
+        h("span.trim-row__label", null, label), minus, value, plus),
+      value,
+    };
+  }
+  const trimSelf = makeTrimRow("This speaker", "self");
+  const trimPeer = makeTrimRow("Paired speaker", "peer");
+  const trimIntro = h("p.info-card__note", null,
+    "Balance the pair by ear: trim the LOUDER speaker down (0.0 dB = " +
+    "no trim; trims only attenuate, never boost).");
+  const trimBlock = h("div.trim-block", null,
+    trimIntro, trimSelf.el, trimPeer.el);
+
   const status = h("p.bond-status.info-card__note",
     { "attr:aria-live": "polite" });
 
@@ -473,6 +511,7 @@ function makeBondCard() {
     picker,
     dissolveIntro,
     currentSummary,
+    trimBlock,
     dissolveRow,
     status,
   );
@@ -494,6 +533,7 @@ function makeBondCard() {
     dissolveIntro.style.display = bonded ? "" : "none";
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
+    trimBlock.style.display = bonded ? "" : "none";
     title.textContent = bonded ? "Stereo pair" : "Create a stereo pair";
   }
 
@@ -541,6 +581,9 @@ function makeBondCard() {
       // Dissolve face: rebuild the summary text from the current grouping.
       currentSummary.textContent = "";
       appendChildren(currentSummary, summarize(g));
+      if (typeof g.trim_db === "number") {
+        trimSelf.value.textContent = g.trim_db.toFixed(1) + " dB";
+      }
       dissolveBtn.disabled = false;
       // Swap is only well-defined for a left/right pair; the backend
       // re-validates (exactly one same-bond peer) — this just avoids

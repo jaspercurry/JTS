@@ -63,6 +63,9 @@ URL surface (after nginx strips the /rooms/ prefix):
                     roles/bond untouched; partial failure rolls back, and a
                     stuck same-channel pair is REPAIRED to left/right rather
                     than rejected (CSRF-verified)
+  POST /trim        nudge one member's pair-balance trim by ±delta_db
+                    (target self|peer; attenuate-only, clamped; applied
+                    via the member's /grouping/set) (CSRF-verified)
 """
 from __future__ import annotations
 
@@ -1017,6 +1020,109 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
     )
 
 
+TRIM_STEP_LIMIT_DB = 3.0  # max single nudge; UI sends ±0.5
+
+
+def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
+    """Handle POST /trim: nudge one member's pair-balance trim.
+
+    Body ``{target: "self"|"peer", delta_db}`` — "peer" resolves the ONE
+    same-bond sibling server-side (same discovery as /swap), so the page
+    needs no peer addressing or trim state. Delta semantics (the UI
+    sends ±0.5): we GET the member's current grouping, clamp
+    current+delta into the validated range, and write it back through
+    the SAME ``/grouping/set`` surface the bond flow uses (member-side
+    validation + reconciler kick apply it to outputd's lane).
+    Attenuate-only is enforced by the member's validate_grouping; the
+    clamp here just keeps the arithmetic in range. Returns
+    ``{ok, trim_db}`` so the row shows the new value."""
+    from ..multiroom.config import TRIM_DB_MIN, TRIM_DB_MAX
+
+    parsed, err = _read_json_body(handler)
+    if err is not None:
+        _send_json(handler, {"ok": False, "error": err},
+                   status=HTTPStatus.BAD_REQUEST)
+        return
+    target = str(parsed.get("target") or "self").strip()
+    try:
+        delta = float(parsed.get("delta_db"))
+    except (TypeError, ValueError):
+        _send_json(handler, {"ok": False, "error": "delta_db must be a number"},
+                   status=HTTPStatus.BAD_REQUEST)
+        return
+    if abs(delta) > TRIM_STEP_LIMIT_DB:
+        _send_json(handler, {"ok": False,
+                             "error": f"delta_db limited to ±{TRIM_STEP_LIMIT_DB}"},
+                   status=HTTPStatus.BAD_REQUEST)
+        return
+
+    known = _self_addresses()
+    addr = ""
+    if target == "peer":
+        own = read_grouping_state()
+        bond_id = str(own.get("bond_id") or "").strip()
+        if not own.get("enabled") or not bond_id:
+            _send_json(handler, {"ok": False, "error": "not in a bond"},
+                       status=HTTPStatus.BAD_REQUEST)
+            return
+        candidate_addrs = [
+            a for a in (
+                str(sp.get("address") or "").strip()
+                for sp in _discover_speakers_cached()
+            ) if a and a not in known
+        ]
+        candidate_groupings = _map_peers(
+            lambda a: _get_member_grouping(a, known), candidate_addrs,
+        )
+        peers = [
+            (a, pg) for a, pg in zip(candidate_addrs, candidate_groupings)
+            if pg is not None
+            and str(pg.get("bond_id") or "").strip() == bond_id
+        ]
+        if len(peers) != 1:
+            _send_json(
+                handler,
+                {"ok": False, "error": (
+                    "trim needs exactly one reachable paired speaker "
+                    f"(found {len(peers)})"
+                )},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        addr, current = peers[0]
+    else:
+        current = read_grouping_state()
+    if not current.get("enabled") or current.get("error"):
+        _send_json(handler, {"ok": False,
+                             "error": "member is not in an active bond"},
+                   status=HTTPStatus.BAD_REQUEST)
+        return
+
+    new_trim = round(
+        max(TRIM_DB_MIN, min(TRIM_DB_MAX,
+                             float(current.get("trim_db") or 0.0) + delta)),
+        1,
+    )
+    body = {
+        "enabled": True,
+        "role": str(current.get("role") or ""),
+        "channel": str(current.get("channel") or ""),
+        "bond_id": str(current.get("bond_id") or ""),
+        "leader_addr": str(current.get("leader_addr") or ""),
+        "trim_db": new_trim,
+    }
+    ok, detail = _post_grouping_to_member(addr, body, known)
+    logger.info(
+        "event=rooms.trim addr=%s delta=%.1f new=%.1f ok=%s",
+        addr or "(self)", delta, new_trim, ok,
+    )
+    _send_json(
+        handler,
+        {"ok": ok, "trim_db": new_trim, "detail": detail},
+        status=HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY,
+    )
+
+
 def _make_handler():
     """Build the request handler class. No state-path binding — the
     directory pulls everything live (mDNS browse + grouping + peering SSOT),
@@ -1040,7 +1146,7 @@ def _make_handler():
         def do_POST(self):  # noqa: N802
             # Route-check BEFORE the CSRF guard (project convention): a bogus
             # path 404s without revealing CSRF state.
-            if self.path not in ("/peering", "/bond", "/unbond", "/swap"):
+            if self.path not in ("/peering", "/bond", "/unbond", "/swap", "/trim"):
                 self.send_response(HTTPStatus.NOT_FOUND)
                 self.end_headers()
                 return
@@ -1055,6 +1161,8 @@ def _make_handler():
                 _unbond(self)
             elif self.path == "/swap":
                 _swap_channels(self)
+            elif self.path == "/trim":
+                _set_member_trim(self)
             else:
                 _save_peering(self)
 

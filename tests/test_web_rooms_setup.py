@@ -1681,3 +1681,71 @@ def test_post_swap_repairs_a_same_channel_pair(monkeypatch):
                          "channel": "right", "bond_id": "bond-1",
                          "leader_addr": "jts.local"}),
     ]
+
+
+# ----------------------------------------------------------------------
+# POST /trim — pair-balance nudges (delta semantics, attenuate-only).
+# ----------------------------------------------------------------------
+
+
+def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
+               peer_grouping=None):
+    posts: list[tuple[str, dict]] = []
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "read_grouping_state",
+                        lambda *a, **k: dict(self_grouping))
+    monkeypatch.setattr(rooms_setup, "_discover_speakers_cached",
+                        lambda: list(speakers))
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_get_member_grouping",
+                        lambda a, known=None: (peer_grouping or {}).get(a))
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member",
+                        lambda a, b, known=None: posts.append((a, b)) or (True, "HTTP 200"))
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/trim")
+    raw = json.dumps(body).encode()
+    h.headers["Content-Length"] = str(len(raw))
+    h.rfile = BytesIO(raw)
+    handler_cls.do_POST(h)
+    return h, posts
+
+
+def test_post_trim_self_nudges_and_clamps_at_zero(monkeypatch):
+    """Delta semantics through the member's own /grouping/set; the clamp
+    keeps arithmetic in the attenuate-only range (0.0 ceiling)."""
+    base = {"enabled": True, "role": "leader", "channel": "left",
+            "bond_id": "b", "leader_addr": "", "trim_db": -0.5, "error": None}
+    h, posts = _post_trim(
+        monkeypatch=monkeypatch,
+        body={"target": "self", "delta_db": 0.5},
+        self_grouping=base,
+    )
+    assert h.status == 200
+    assert json.loads(h.wfile.getvalue())["trim_db"] == 0.0
+    assert posts[0][0] == ""  # loopback self
+    assert posts[0][1]["trim_db"] == 0.0
+    # ceiling: another +0.5 stays at 0.0 (never a boost)
+    h, posts = _post_trim(
+        monkeypatch=monkeypatch,
+        body={"target": "self", "delta_db": 0.5},
+        self_grouping={**base, "trim_db": 0.0},
+    )
+    assert json.loads(h.wfile.getvalue())["trim_db"] == 0.0
+
+
+def test_post_trim_peer_resolves_the_bond_sibling(monkeypatch):
+    h, posts = _post_trim(
+        monkeypatch=monkeypatch,
+        body={"target": "peer", "delta_db": -0.5},
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "b", "leader_addr": "", "trim_db": 0.0},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={"192.168.1.9": {
+            "enabled": True, "role": "follower", "channel": "right",
+            "bond_id": "b", "leader_addr": "jts.local", "trim_db": -1.0,
+        }},
+    )
+    assert h.status == 200
+    assert json.loads(h.wfile.getvalue())["trim_db"] == -1.5
+    assert posts[0][0] == "192.168.1.9"
+    assert posts[0][1]["channel"] == "right"  # everything else preserved

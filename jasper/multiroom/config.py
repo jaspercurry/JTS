@@ -68,6 +68,13 @@ BUFFER_MS_HI = 1500
 ALLOWED_CODECS = ("pcm", "flac", "opus")
 DEFAULT_CODEC = "flac"
 
+# Per-member pair-balance trim (dB). Attenuate-only: balancing trims the
+# LOUDER speaker down — a boost would cost headroom and risk hearing
+# safety (enforced again fail-closed in outputd). The -24 floor marks
+# "misconfigured, not unbalanced" (industry trim ranges are ±10-15).
+TRIM_DB_MIN = -24.0
+TRIM_DB_MAX = 0.0
+
 # A follower's leader_addr must be hostname/IPv4-shaped: it is consumed by
 # THREE surfaces (snapclient argv, the control-API volume forward's URL
 # build, the landing page's leader link) and a string with '/', '@', or
@@ -101,6 +108,10 @@ class GroupingConfig:
     buffer_ms: int
     codec: str           # one of ALLOWED_CODECS
     error: str | None    # human-readable reason an ENABLED config is invalid; else None
+    # Pair-balance trim (TRIM_DB_MIN..0; 0 = none). Defaulted so the
+    # wide existing constructor surface (tests, fan-out payload builds)
+    # stays source-compatible — load_config always sets it explicitly.
+    trim_db: float = 0.0
 
 
 # The all-off, no-error config returned whenever the file is absent,
@@ -113,6 +124,7 @@ _DISABLED = GroupingConfig(
     leader_addr="",
     buffer_ms=DEFAULT_BUFFER_MS,
     codec=DEFAULT_CODEC,
+    trim_db=0.0,
     error=None,
 )
 
@@ -167,6 +179,7 @@ def validate_grouping(
     bond_id: str,
     leader_addr: str,
     codec: str = DEFAULT_CODEC,
+    trim_db: float = 0.0,
 ) -> str | None:
     """The single grouping-validation rule for an ENABLED config.
 
@@ -213,6 +226,11 @@ def validate_grouping(
             f"JASPER_GROUPING_LEADER_ADDR={leader_addr!r} is not a "
             "hostname or IPv4 address"
         )
+    if not (TRIM_DB_MIN <= trim_db <= TRIM_DB_MAX):
+        return (
+            f"JASPER_GROUPING_TRIM_DB={trim_db} must be between "
+            f"{TRIM_DB_MIN} and {TRIM_DB_MAX} (attenuate-only pair trim)"
+        )
     return None
 
 
@@ -247,13 +265,24 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
     leader_addr = src.get("JASPER_GROUPING_LEADER_ADDR", "").strip()
     buffer_ms = _parse_buffer_ms(src.get("JASPER_GROUPING_BUFFER_MS", ""))
     codec = src.get("JASPER_GROUPING_CODEC", "").strip() or DEFAULT_CODEC
+    trim_raw = src.get("JASPER_GROUPING_TRIM_DB", "").strip()
+    trim_parse_error: str | None = None
+    trim_db = 0.0
+    if trim_raw:
+        try:
+            trim_db = float(trim_raw)
+        except ValueError:
+            trim_parse_error = (
+                f"JASPER_GROUPING_TRIM_DB={trim_raw!r} is not a number"
+            )
 
-    error = validate_grouping(
+    error = trim_parse_error or validate_grouping(
         role=role,
         channel=channel,
         bond_id=bond_id,
         leader_addr=leader_addr,
         codec=codec,
+        trim_db=trim_db,
     )
 
     return GroupingConfig(
@@ -264,6 +293,7 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         leader_addr=leader_addr,
         buffer_ms=buffer_ms,
         codec=codec,
+        trim_db=trim_db,
         error=error,
     )
 

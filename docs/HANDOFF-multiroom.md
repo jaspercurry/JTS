@@ -1737,7 +1737,21 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (DUMB-FOLLOWER PR-C — the role-state contract
+Last verified: 2026-06-12 (PAIR TRIM P1 — manual ±dB balance on /rooms.
+NEW JASPER_GROUPING_TRIM_DB (wizard/bond-owned intent, validated
+attenuate-only -24..0 — the LOUDER speaker trims down, never a boost;
+outputd re-validates fail-closed) → reconciler derives
+JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB into grouping-outputd.env (empty on
+solo = unset to env_f32) → outputd applies one precomputed linear gain
+to the whole dac_content-armed path (FIFO AND inv-B fallback periods —
+no level jump on starvation transitions; applied before duck/mix/publish
+so the AEC reference carries the trimmed program, inv-A) and reports
+trim_db in the dac_content STATUS block. Settable via /grouping/set
+(optional trim_db; PRESERVED when omitted, so bond/unbond/swap fan-outs
+never clobber a calibrated balance) and nudged from /rooms POST /trim
+(target self|peer — the peer resolves server-side like /swap; ±0.5 dB
+delta semantics, clamped). The phone-mic auto-match wizard (P2) will
+drive the same knob.) Earlier same day (DUMB-FOLLOWER PR-C — the role-state contract
 + mode-aware interfaces. NEW §7.5: the unit×role table with transition
 ownership, the interface contract, and the DSP two-kinds split (content
 DSP = leader-side baked into the stream; driver DSP = local to the DAC

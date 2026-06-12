@@ -489,3 +489,35 @@ def test_follower_leader_addr_predicate():
     assert follower_leader_addr(cfg(enabled=False)) is None
     assert follower_leader_addr(cfg(error="broken")) is None
     assert follower_leader_addr(cfg(leader_addr="")) is None
+
+
+def test_trim_db_parse_and_validation_matrix():
+    """Pair-balance trim: attenuate-only (the LOUDER speaker comes down),
+    floored at -24 (deeper means misconfigured, not unbalanced), absent
+    -> 0.0, garbage -> fail-LOUD error."""
+    from jasper.multiroom.config import load_config
+    import tempfile
+    import os
+
+    def cfg_for(extra: str):
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".env", delete=False) as f:
+            f.write(
+                "JASPER_GROUPING=on\n"
+                "JASPER_GROUPING_ROLE=follower\n"
+                "JASPER_GROUPING_CHANNEL=right\n"
+                "JASPER_GROUPING_BOND_ID=b\n"
+                "JASPER_GROUPING_LEADER_ADDR=jts.local\n" + extra
+            )
+            path = f.name
+        try:
+            return load_config(path)
+        finally:
+            os.unlink(path)
+
+    assert cfg_for("").trim_db == 0.0
+    assert cfg_for("JASPER_GROUPING_TRIM_DB=-3.5\n").trim_db == -3.5
+    assert cfg_for("JASPER_GROUPING_TRIM_DB=-3.5\n").error is None
+    assert "must be between" in cfg_for("JASPER_GROUPING_TRIM_DB=1.0\n").error
+    assert "must be between" in cfg_for("JASPER_GROUPING_TRIM_DB=-30\n").error
+    assert "not a number" in cfg_for("JASPER_GROUPING_TRIM_DB=loud\n").error

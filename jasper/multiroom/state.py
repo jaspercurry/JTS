@@ -309,6 +309,7 @@ def read_grouping_state(
         "leader_addr": cfg.leader_addr,
         "buffer_ms": cfg.buffer_ms,
         "codec": cfg.codec,
+        "trim_db": cfg.trim_db,
         "error": cfg.error,
     }
     if cfg.enabled:

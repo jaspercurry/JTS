@@ -111,6 +111,13 @@ pub struct Config {
     /// from the round-trip lane (channel-split vocabulary; default
     /// stereo = passthrough). Only meaningful with `dac_content_fifo`.
     pub dac_content_channel: ChannelPick,
+    /// Per-member level trim on the round-trip lane (dB, ALWAYS <= 0 —
+    /// pair balancing attenuates the LOUDER speaker, never boosts;
+    /// positive values fail closed like the duck knob). Applied to the
+    /// whole dac_content-armed content path including inv-B fallback
+    /// periods, so a starvation transition never jumps in level.
+    /// Reconciler-derived from JASPER_GROUPING_TRIM_DB; 0.0 = no trim.
+    pub dac_content_trim_db: f32,
     /// OPTIONAL bonded-member TTS socket (Increment 5 PR-2,
     /// HANDOFF-multiroom.md §2): when set, outputd listens for the
     /// jasper-voice TTS protocol and mixes assistant audio at the final
@@ -294,6 +301,24 @@ impl Config {
         // exists today" — makes a future sink / bridge mode fail CLOSED
         // (loud at startup) instead of silently mis-sizing content_buf.
         let dac_content_fifo = env_optional("JASPER_OUTPUTD_DAC_CONTENT_FIFO");
+        let dac_content_trim_db =
+            env_f32("JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB", 0.0)?;
+        if dac_content_trim_db > 0.0 {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB={} must be <= 0 (pair \
+                 balancing trims the louder speaker down; a boost would \
+                 cost headroom and risk hearing safety)",
+                dac_content_trim_db
+            );
+        }
+        if dac_content_trim_db < -24.0 {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB={} is below the -24 dB \
+                 floor — a trim that deep means the pair is misconfigured, \
+                 not unbalanced",
+                dac_content_trim_db
+            );
+        }
         let dac_content_channel = ChannelPick::parse(&env_str(
             "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL",
             "stereo",
@@ -361,6 +386,7 @@ impl Config {
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
             dac_content_fifo,
             dac_content_channel,
+            dac_content_trim_db,
             tts_socket_path,
             tts_max_pending_frames,
             tts_program_duck_db,
@@ -895,6 +921,37 @@ mod tests {
                 );
                 assert_eq!(cfg.tts_max_pending_frames, 48_000);
                 assert_eq!(cfg.tts_program_duck_db, -18.5);
+            },
+        );
+    }
+
+    #[test]
+    #[test]
+    fn pair_trim_accepts_attenuation_rejects_boost_and_floor() {
+        // Hearing safety: the trim can only attenuate (the LOUDER
+        // speaker comes down); a boost or an absurd depth fails closed.
+        with_env(
+            &[("JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB", Some("-3.5"))],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.dac_content_trim_db, -3.5);
+            },
+        );
+        with_env(&[], || {
+            assert_eq!(Config::from_env().unwrap().dac_content_trim_db, 0.0);
+        });
+        with_env(
+            &[("JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB", Some("2.0"))],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("must be <= 0"), "{err}");
+            },
+        );
+        with_env(
+            &[("JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB", Some("-30"))],
+            || {
+                let err = Config::from_env().unwrap_err().to_string();
+                assert!(err.contains("-24 dB"), "{err}");
             },
         );
     }
