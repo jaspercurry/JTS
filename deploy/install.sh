@@ -50,13 +50,19 @@ RASPOTIFY_SHA256="dc1bc4d209378ef1f8348fd7aa6d1a7865fa83abc30c08990d171012d038a7
 SHAIRPORT_SYNC_VERSION="4.3.7"
 SHAIRPORT_SYNC_COMMIT="0b1c4391ffd398e7b145eb4b98416261380adeea"
 NQPTP_COMMIT="c925f27c1fd12e4033ac477e5a405969b0b0260b"
-NQPTP_ARCHIVE_URL="https://github.com/mikebrady/nqptp/archive/${NQPTP_COMMIT}.tar.gz"
+# Upstream provenance (auto-generated archive, not fetched by install.sh):
+# https://github.com/mikebrady/nqptp/archive/${NQPTP_COMMIT}.tar.gz
+NQPTP_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/nqptp-c925f27c1fd1.tar.gz"
 NQPTP_SHA256="d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9"
-SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/mikebrady/shairport-sync/archive/${SHAIRPORT_SYNC_COMMIT}.tar.gz"
+# Upstream provenance (auto-generated archive, not fetched by install.sh):
+# https://github.com/mikebrady/shairport-sync/archive/${SHAIRPORT_SYNC_COMMIT}.tar.gz
+SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/shairport-sync-0b1c4391ffd3.tar.gz"
 SHAIRPORT_SYNC_SHA256="7ef3a6ba1cbd67bb200f018ddcd3e8dbe40da98b3c1776aee6c7b832632c6865"
 WEBRTC_AEC3_VERSION="v2.1"
 WEBRTC_AEC3_COMMIT="846fe90a289f58b7c9303a635142aa2c7caa93e5"
-WEBRTC_AEC3_ARCHIVE_URL="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/${WEBRTC_AEC3_COMMIT}/webrtc-audio-processing-${WEBRTC_AEC3_COMMIT}.tar.gz"
+# Upstream provenance (auto-generated archive, not fetched by install.sh):
+# https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/${WEBRTC_AEC3_COMMIT}/webrtc-audio-processing-${WEBRTC_AEC3_COMMIT}.tar.gz
+WEBRTC_AEC3_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/webrtc-audio-processing-846fe90a289f.tar.gz"
 WEBRTC_AEC3_SHA256="ddf4e540b9f4291e140cc2ab4560f3eb4fce07ef6212a94d980843bfbf9a4588"
 
 print_install_usage() {

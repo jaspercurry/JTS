@@ -94,6 +94,41 @@ def test_source_artifacts_have_immutable_commits() -> None:
     assert missing == []
 
 
+def test_install_source_archive_mirrors_retain_upstream_provenance() -> None:
+    check_provenance = _load_check_module()
+    data = check_provenance.load_manifest()
+    artifacts = check_provenance.artifacts_by_id(data)
+    documented = check_provenance.provenance_strings(data)
+
+    for artifact_id in (
+        "nqptp",
+        "shairport-sync",
+        "webrtc-audio-processing-v2",
+    ):
+        artifact = artifacts[artifact_id]
+        assert artifact["url"].startswith(
+            "https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/"
+        )
+        assert artifact["url"] == artifact["resolved_url"]
+        assert artifact["upstream_url"].startswith("https://")
+        assert artifact["upstream_resolved_url"].startswith("https://")
+        assert artifact["commit"] in artifact["upstream_resolved_url"]
+        assert artifact["upstream_resolved_url"] in documented
+
+    broken = copy.deepcopy(data)
+    for artifact in broken["artifact"]:
+        if artifact["id"] == "nqptp":
+            del artifact["upstream_url"]
+            break
+
+    errors = check_provenance.validate_artifacts(broken)
+
+    assert any(
+        "nqptp: mirrored source archive requires upstream_url" in e
+        for e in errors
+    )
+
+
 def test_rust_fanin_lock_check_detects_dependency_drift(tmp_path: Path) -> None:
     check_provenance = _load_check_module()
     _write_rust_crate_with_missing_bar(tmp_path, "jasper-fanin")
