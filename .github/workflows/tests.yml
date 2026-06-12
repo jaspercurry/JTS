@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   shell:
     # Static gate for the highest-blast-radius code in the repo: the
@@ -23,27 +30,49 @@ jobs:
     # expansion patterns) remain ungated; tightening further is a
     # separate triage. Do not loosen below warning.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: bash -n + shellcheck (warning severity)
         # deploy/bin mixes bash policy scripts with a python3 librespot
-        # event hook — select shell files by shebang. The shebang-less
-        # scripts/_*.sh source-only libs carry a `# shellcheck
-        # shell=bash` directive and are included. shellcheck is
+        # event hook — select tracked shell files by shebang, plus
+        # shebang-less .sh source libraries and scripts/use. shellcheck is
         # preinstalled on ubuntu-latest runners.
         run: |
           set -euo pipefail
-          shopt -s nullglob
           shell_files=()
-          for f in deploy/install.sh deploy/configure-bluez.sh \
-                   deploy/bin/* deploy/lib/*.sh deploy/lib/install/*.sh \
-                   scripts/*.sh scripts/use; do
-            case "$(head -n 1 "$f")" in
+          while IFS= read -r f; do
+            first_line="$(head -n 1 "$f" || true)"
+            if [[ "$f" != *.sh && "$f" != scripts/use \
+                  && "$first_line" != '#!'*bash* \
+                  && "$first_line" != '#!'*sh* ]]; then
+              continue
+            fi
+            case "$first_line" in
               '#!'*python*|'#!'*node*) echo "skip (non-shell): $f"; continue ;;
             esac
             shell_files+=("$f")
             bash -n "$f"
+          done < <(git ls-files deploy/install.sh deploy/configure-bluez.sh deploy/bin deploy/lib scripts firmware)
+          if (( ${#shell_files[@]} < 60 )); then
+            echo "expected at least 60 tracked shell files, found ${#shell_files[@]}" >&2
+            printf 'selected: %s\n' "${shell_files[@]}" >&2
+            exit 1
+          fi
+          for required in firmware/dial/build.sh firmware/satellite-amoled/build.sh; do
+            found=false
+            for f in "${shell_files[@]}"; do
+              if [[ "$f" == "$required" ]]; then
+                found=true
+                break
+              fi
+            done
+            if [[ "$found" != true ]]; then
+              echo "required shell file not selected: $required" >&2
+              printf 'selected: %s\n' "${shell_files[@]}" >&2
+              exit 1
+            fi
           done
           echo "bash -n ok over ${#shell_files[@]} shell files"
           shellcheck --severity=warning "${shell_files[@]}"
@@ -51,6 +80,7 @@ jobs:
 
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Default provider for tests that load jasper.config (the config
     # loader hard-fails without this set). Individual tests can override.
     env:
@@ -97,6 +127,30 @@ jobs:
         # solely by paid-LLM cost — not by the leak, which is fixed.
         run: pytest -q --tb=short --ignore=tests/voice_eval
 
+  js:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Browser module syntax + harnesses
+        run: |
+          set -euo pipefail
+          js_files=()
+          while IFS= read -r f; do
+            js_files+=("$f")
+          done < <(git ls-files 'deploy/assets/**/js/*.js' 'tests/js/*.mjs')
+          if (( ${#js_files[@]} == 0 )); then
+            echo "no JavaScript files found for syntax check" >&2
+            exit 1
+          fi
+          for f in "${js_files[@]}"; do
+            node --check "$f"
+          done
+          node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
+          node tests/js/dialog_harness.mjs deploy/assets/shared/js/dialog.js
+          node scripts/check-peq-parity.mjs
+
   rust:
     # CI compiles AND tests the Rust audio daemons — the pytest job above
     # does not. Without this, a dependency bump (e.g. the `alsa` crate used
@@ -115,6 +169,7 @@ jobs:
     # calibrated gain is QUIETER, safe-direction) and `cargo test` re-enabled
     # here.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -123,23 +178,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev
 
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          workspaces: |
+            rust/jasper-fanin
+            rust/jasper-outputd
+            rust/jasper-dual-dac-lab
+            rust/jasper-tts-protocol
+
       - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
         working-directory: rust/jasper-tts-protocol
-        run: |
-          cargo build --release --locked
-          cargo test --locked
+        run: cargo test --release --locked
 
       - name: jasper-fanin — build + test (release, locked; mirrors install.sh)
         working-directory: rust/jasper-fanin
-        run: |
-          cargo build --release --locked
-          cargo test --locked
+        run: cargo test --release --locked
 
       - name: jasper-outputd — build + test (release, locked; mirrors install.sh)
         working-directory: rust/jasper-outputd
-        run: |
-          cargo build --release --locked
-          cargo test --locked
+        run: cargo test --release --locked
 
       - name: jasper-dual-dac-lab — build + test (release, locked)
         # Lab-only crate: install.sh does NOT build it, so this step is
@@ -147,6 +204,4 @@ jobs:
         # same `alsa` crate the production daemons pin) can silently
         # break the lab runner until someone needs it on a bench.
         working-directory: rust/jasper-dual-dac-lab
-        run: |
-          cargo build --release --locked
-          cargo test --locked
+        run: cargo test --release --locked
