@@ -448,6 +448,8 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(&mut buf, "flushed_frames", metrics.flushed_frames());
                 buf.push(',');
+                push_kv_bool(&mut buf, "program_duck_active", metrics.program_duck_active());
+                buf.push(',');
                 buf.push_str(r#""assistant_loudness":{"#);
                 let loudness = metrics.loudness_snapshot();
                 push_kv_f64_opt(
@@ -714,6 +716,7 @@ mod tests {
         assert!(j.contains(r#""tts":{"enabled":true"#));
         assert!(j.contains(r#""budget_frames":96000"#));
         assert!(j.contains(r#""stale_commands_dropped":0"#));
+        assert!(j.contains(r#""program_duck_active":false"#));
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));
         assert!(j.contains(r#""decision_seen":false"#));
         assert!(j.contains(r#""final_gain_db":null"#));

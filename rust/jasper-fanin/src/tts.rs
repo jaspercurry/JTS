@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use log::{info, warn};
@@ -30,6 +30,7 @@ use crate::mixer::CHANNELS;
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
+const PROGRAM_DUCK_IDLE_RELEASE_TTL: Duration = Duration::from_secs(30);
 const PACKED_DB_NONE: i64 = i64::MIN;
 
 #[derive(Debug)]
@@ -59,6 +60,7 @@ pub struct TtsMetrics {
     dropped_commands: Arc<AtomicU64>,
     dropped_audio_frames: Arc<AtomicU64>,
     stale_commands_dropped: Arc<AtomicU64>,
+    program_duck_active: Arc<AtomicBool>,
     flush_requests: Arc<AtomicU64>,
     flushed_frames: Arc<AtomicU64>,
     content_short_lufs_x10: Arc<AtomicI64>,
@@ -84,6 +86,7 @@ impl Default for TtsMetrics {
             dropped_commands: Arc::new(AtomicU64::new(0)),
             dropped_audio_frames: Arc::new(AtomicU64::new(0)),
             stale_commands_dropped: Arc::new(AtomicU64::new(0)),
+            program_duck_active: Arc::new(AtomicBool::new(false)),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
             content_short_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
@@ -149,6 +152,10 @@ impl TtsMetrics {
 
     pub fn stale_commands_dropped(&self) -> u64 {
         self.stale_commands_dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn program_duck_active(&self) -> bool {
+        self.program_duck_active.load(Ordering::Relaxed)
     }
 
     pub fn flush_requests(&self) -> u64 {
@@ -233,6 +240,10 @@ impl TtsMetrics {
         self.stale_commands_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn mark_program_duck_active(&self, active: bool) {
+        self.program_duck_active.store(active, Ordering::Relaxed);
+    }
+
     fn mark_flush(&self, requests: usize, frames: u64) {
         self.flush_requests
             .fetch_add(requests as u64, Ordering::Relaxed);
@@ -300,6 +311,8 @@ pub struct TtsMixer {
     max_pending_frames: u64,
     program_duck_gain: f32,
     program_duck_active: bool,
+    program_duck_last_refresh: Option<Instant>,
+    program_duck_idle_release_ttl: Duration,
     content_meter_paused: bool,
     active_segment_gain_db: Option<f32>,
     loudness: AssistantLoudness,
@@ -317,6 +330,8 @@ impl TtsMixer {
             max_pending_frames: input.max_pending_frames,
             program_duck_gain: gain_db_to_linear(input.program_duck_db),
             program_duck_active: false,
+            program_duck_last_refresh: None,
+            program_duck_idle_release_ttl: PROGRAM_DUCK_IDLE_RELEASE_TTL,
             content_meter_paused: false,
             active_segment_gain_db: None,
             loudness: AssistantLoudness::new(input.assistant_loudness),
@@ -326,6 +341,7 @@ impl TtsMixer {
     pub fn prepare_period(&mut self) -> bool {
         self.drain_flushes();
         self.drain_commands();
+        self.release_expired_program_duck();
         self.program_duck_active || self.pending_frames() > 0
     }
 
@@ -407,6 +423,9 @@ impl TtsMixer {
                     for sample in samples {
                         self.queue.push_back(apply_gain_i16(sample, gain));
                     }
+                    if self.program_duck_active {
+                        self.refresh_program_duck();
+                    }
                 }
                 TtsCommand::Flush | TtsCommand::FlushSync => {
                     let frames = self.clear_queue();
@@ -425,12 +444,16 @@ impl TtsMixer {
                         );
                     }
                     self.program_duck_active = true;
+                    self.metrics.mark_program_duck_active(true);
+                    self.refresh_program_duck();
                 }
                 TtsCommand::ProgramDuckOff => {
                     if self.program_duck_active {
                         info!("event=fanin.program_duck on=false");
                     }
                     self.program_duck_active = false;
+                    self.program_duck_last_refresh = None;
+                    self.metrics.mark_program_duck_active(false);
                 }
                 TtsCommand::PrepareAssistant {
                     provider,
@@ -472,6 +495,30 @@ impl TtsMixer {
             }
         }
         self.metrics.mark_pending(self.pending_frames());
+    }
+
+    fn refresh_program_duck(&mut self) {
+        self.program_duck_last_refresh = Some(Instant::now());
+    }
+
+    fn release_expired_program_duck(&mut self) {
+        if !self.program_duck_active || self.pending_frames() > 0 {
+            return;
+        }
+        let Some(last_refresh) = self.program_duck_last_refresh else {
+            return;
+        };
+        let idle = last_refresh.elapsed();
+        if idle < self.program_duck_idle_release_ttl {
+            return;
+        }
+        info!(
+            "event=fanin.program_duck on=false reason=idle_ttl idle_ms={}",
+            idle.as_millis()
+        );
+        self.program_duck_active = false;
+        self.program_duck_last_refresh = None;
+        self.metrics.mark_program_duck_active(false);
     }
 
     fn decide_segment_gain(
@@ -793,7 +840,7 @@ fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+
     use std::sync::{Mutex, Once};
 
     static TEST_LOGGER: TestLogger = TestLogger;
@@ -826,6 +873,29 @@ mod tests {
 
     fn captured_logs() -> Vec<String> {
         TEST_LOGS.lock().unwrap().clone()
+    }
+
+    use std::io::{Cursor, Write as _};
+
+    fn run_tts_client_payload(
+        payload: &[u8],
+        tx: &SyncSender<QueuedTtsCommand>,
+        flush_tx: &SyncSender<QueuedFlush>,
+        epoch: &Arc<AtomicU64>,
+        metrics: &TtsMetrics,
+    ) {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let tx = tx.clone();
+        let flush_tx = flush_tx.clone();
+        let epoch = Arc::clone(epoch);
+        let metrics = metrics.clone();
+        let handle = thread::spawn(move || {
+            handle_tts_client(server, tx, flush_tx, epoch, metrics);
+        });
+        client.write_all(payload).unwrap();
+        client.flush().unwrap();
+        drop(client);
+        handle.join().unwrap();
     }
 
     #[test]
@@ -1036,6 +1106,7 @@ mod tests {
         .unwrap();
 
         assert!(mixer.prepare_period());
+        assert!(metrics.program_duck_active());
 
         tx.send(QueuedTtsCommand {
             epoch: 0,
@@ -1043,6 +1114,127 @@ mod tests {
         })
         .unwrap();
         assert!(!mixer.prepare_period());
+        assert!(!metrics.program_duck_active());
+    }
+
+    #[test]
+    fn one_shot_duck_client_close_does_not_release_before_restore() {
+        let (tx, rx, flush_tx, flush_rx, metrics, epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics: metrics.clone(),
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+
+        run_tts_client_payload(
+            b"PROGRAM_DUCK_ON\nCLOSE\n",
+            &tx,
+            &flush_tx,
+            &epoch,
+            &metrics,
+        );
+        assert!(mixer.prepare_period());
+        assert!(metrics.program_duck_active());
+
+        run_tts_client_payload(
+            b"AUDIO 8\n\x01\0\x02\0\x03\0\x04\0CLOSE\n",
+            &tx,
+            &flush_tx,
+            &epoch,
+            &metrics,
+        );
+        let mut sum = [0i32; 4];
+        assert!(mixer.prepare_period());
+        mixer.mix_period(&mut sum);
+        assert!(metrics.program_duck_active());
+
+        run_tts_client_payload(
+            b"PROGRAM_DUCK_OFF\nCLOSE\n",
+            &tx,
+            &flush_tx,
+            &epoch,
+            &metrics,
+        );
+        assert!(!mixer.prepare_period());
+        assert!(!metrics.program_duck_active());
+    }
+
+    #[test]
+    fn flush_sync_dead_client_exit_does_not_own_duck_release() {
+        let (tx, rx, flush_tx, flush_rx, metrics, epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics: metrics.clone(),
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let handle = thread::spawn(move || {
+            handle_tts_client(server, tx, flush_tx, epoch, metrics);
+        });
+
+        client.write_all(b"PROGRAM_DUCK_ON\n").unwrap();
+        client.flush().unwrap();
+        let mut ducked = false;
+        for _ in 0..50 {
+            if mixer.prepare_period() {
+                ducked = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ducked, "PROGRAM_DUCK_ON did not reach mixer");
+        assert!(mixer.metrics.program_duck_active());
+
+        client.write_all(b"FLUSH_SYNC\n").unwrap();
+        client.flush().unwrap();
+        drop(client);
+        for _ in 0..50 {
+            mixer.prepare_period();
+            if handle.is_finished() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(handle.is_finished(), "FLUSH_SYNC client handler did not exit");
+        handle.join().unwrap();
+        assert!(mixer.metrics.program_duck_active());
+
+        mixer.program_duck_idle_release_ttl = Duration::from_millis(1);
+        mixer.program_duck_last_refresh =
+            Instant::now().checked_sub(Duration::from_secs(1));
+        assert!(!mixer.prepare_period());
+        assert!(!mixer.metrics.program_duck_active());
+    }
+
+    #[test]
+    fn program_duck_auto_releases_after_idle_ttl_without_audio() {
+        let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics: metrics.clone(),
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+        mixer.program_duck_idle_release_ttl = Duration::from_millis(1);
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::ProgramDuckOn,
+        })
+        .unwrap();
+
+        assert!(mixer.prepare_period());
+        mixer.program_duck_last_refresh =
+            Instant::now().checked_sub(Duration::from_secs(1));
+        assert!(!mixer.prepare_period());
+        assert!(!metrics.program_duck_active());
     }
 
     #[test]
