@@ -29,8 +29,11 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Mapping
 
-__all__ = ["atomic_write_text"]
+import fcntl
+
+__all__ = ["atomic_write_text", "locked_update_env_file"]
 
 
 def atomic_write_text(
@@ -67,3 +70,62 @@ def atomic_write_text(
         except OSError:
             pass
         raise
+
+
+def _parse_env_text(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        out[key.strip()] = value.strip()
+    return out
+
+
+def _format_env_text(values: Mapping[str, str]) -> str:
+    lines: list[str] = []
+    for key, value in values.items():
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"env value for {key} contains newline")
+        lines.append(f"{key}={value}\n")
+    return "".join(lines)
+
+
+def _env_lock_path(path: str) -> str:
+    parent = os.path.dirname(path) or "."
+    basename = os.path.basename(path)
+    return os.path.join(parent, f".{basename}.lock")
+
+
+def locked_update_env_file(
+    path: str | os.PathLike,
+    updates: Mapping[str, str],
+    *,
+    mode: int = 0o644,
+) -> dict[str, str]:
+    """Serialize a read-modify-write update of a systemd EnvironmentFile.
+
+    ``atomic_write_text`` protects readers from torn writes, but it cannot
+    protect two writers that both read the old file, update different keys, and
+    then publish whole-file replacements. This helper holds an advisory flock
+    across the read, update, and atomic replace so cooperating writers preserve
+    each other's keys.
+    """
+    fspath = os.fspath(path)
+    parent = os.path.dirname(fspath) or "."
+    os.makedirs(parent, exist_ok=True)
+    lock_path = _env_lock_path(fspath)
+    with open(lock_path, "a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                with open(fspath, encoding="utf-8") as existing:
+                    state = _parse_env_text(existing.read())
+            except FileNotFoundError:
+                state = {}
+            state.update(dict(updates))
+            atomic_write_text(fspath, _format_env_text(state), mode=mode)
+            return dict(state)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)

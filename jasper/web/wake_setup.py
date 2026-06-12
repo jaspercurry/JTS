@@ -75,6 +75,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from ..atomic_io import locked_update_env_file
 from .. import wake_models
 from ._common import (
     DEFAULT_CONTROL_BASE,
@@ -93,7 +94,6 @@ from ._common import (
     send_see_other,
     toggle_html,
     guard_mutating_request,
-    write_env_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -861,8 +861,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             try:
                 # _apply_save always stamps JASPER_WAKE_MODEL on the success
                 # path (errors are guarded above via `err`), so `new` is never
-                # empty — always write, never delete.
-                write_env_file(cfg["state_path"], new, mode=0o644)
+                # empty. Only update that key under the shared lock: the
+                # sensitivity slider writes JASPER_WAKE_THRESHOLD to this same
+                # file from jasper-control, and stale form state must not erase
+                # a concurrent threshold save.
+                new = locked_update_env_file(
+                    cfg["state_path"],
+                    {"JASPER_WAKE_MODEL": new["JASPER_WAKE_MODEL"]},
+                    mode=0o644,
+                )
             except OSError as e:
                 logger.exception("could not write wake-model env file")
                 send_see_other(self, "./", flash=f"Could not save: {e}")

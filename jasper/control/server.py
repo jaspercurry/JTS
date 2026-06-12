@@ -85,6 +85,8 @@ from ..audio_validation import (
 )
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..env_load import subprocess_env_with_fresh_files
+from ..atomic_io import locked_update_env_file
+from ..wake_models import WAKE_MODEL_FILE
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -385,7 +387,7 @@ def start_peering_daemon_if_enabled() -> None:
 
 
 _AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
-_WAKE_MODEL_FILE = "/var/lib/jasper/wake_model.env"
+_WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 
 # Default leg policy — must match deploy/install.sh's reconcile_aec_state
@@ -567,9 +569,10 @@ def _write_wake_threshold(value: float) -> None:
     here)."""
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"threshold out of range: {value}")
-    _atomic_rewrite_env(
+    locked_update_env_file(
         _WAKE_MODEL_FILE,
         {"JASPER_WAKE_THRESHOLD": f"{value:.2f}"},
+        mode=0o644,
     )
 
 

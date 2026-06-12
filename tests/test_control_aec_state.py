@@ -11,11 +11,14 @@ so a regression in parse/write logic surfaces fast.
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
 
+from jasper import atomic_io
 from jasper.control import server
+from jasper.web import wake_setup
 
 
 @pytest.fixture
@@ -205,6 +208,61 @@ def test_write_audio_input_profile_writes_profile_and_legacy_keys(aec_mode_file)
 def test_write_audio_input_profile_rejects_custom(aec_mode_file):
     with pytest.raises(ValueError, match="invalid profile"):
         server._write_audio_input_profile("custom")
+
+
+def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
+    wake_model_file, monkeypatch,
+):
+    """The /wake model form and jasper-control sensitivity endpoint both
+    read-modify-write wake_model.env. If the model writer reads first and the
+    threshold writer lands before it publishes, the final file must still keep
+    both keys."""
+    real_atomic_write = atomic_io.atomic_write_text
+    model_write_paused = threading.Event()
+    release_model_write = threading.Event()
+    errors: list[BaseException] = []
+
+    def pausing_atomic_write(path, text, *, mode=0o644):
+        if "JASPER_WAKE_MODEL=alexa" in text and not model_write_paused.is_set():
+            model_write_paused.set()
+            assert release_model_write.wait(timeout=2)
+        return real_atomic_write(path, text, mode=mode)
+
+    def write_model():
+        try:
+            wake_setup.locked_update_env_file(
+                str(wake_model_file),
+                {"JASPER_WAKE_MODEL": "alexa"},
+                mode=0o644,
+            )
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    def write_threshold():
+        try:
+            server._write_wake_threshold(0.42)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    monkeypatch.setattr(atomic_io, "atomic_write_text", pausing_atomic_write)
+    model_thread = threading.Thread(target=write_model)
+    model_thread.start()
+    assert model_write_paused.wait(timeout=2)
+
+    threshold_thread = threading.Thread(target=write_threshold)
+    threshold_thread.start()
+    release_model_write.set()
+
+    model_thread.join(timeout=2)
+    threshold_thread.join(timeout=2)
+
+    assert not model_thread.is_alive()
+    assert not threshold_thread.is_alive()
+    assert not errors
+    assert wake_setup._load_state(str(wake_model_file)) == {
+        "JASPER_WAKE_MODEL": "alexa",
+        "JASPER_WAKE_THRESHOLD": "0.42",
+    }
 
 
 def test_toggle_to_token_maps_to_real_wake_input_legs():
