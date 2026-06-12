@@ -5,7 +5,7 @@ on a subclass. This sidesteps the `run()` sleep loop entirely and pins
 the policy contract:
 
   - Threshold consecutive probe failures → exactly one restart
-  - Active-session gate suppresses restart and resets the counter
+  - Active-session gate suppresses restart without resetting the counter
   - Rate limit blocks a second supervisor-driven restart in-window
   - Probe success resets the counter
   - Probe exception → counted as a failure
@@ -106,7 +106,21 @@ async def test_active_session_suppresses_restart():
         await sup._tick()
     assert sup.restart_calls == 0
     assert sup.suppressed_count == 1
-    assert sup.consecutive_failures == 0  # reset on suppress
+    assert sup.consecutive_failures == 3  # still armed for session end
+
+
+async def test_active_session_suppression_keeps_failures_armed_until_idle():
+    sup = _FakeSupervisor(failure_threshold=3)
+    sup.probe_results = [False, False, False, False]
+    sup.gate_results = [True, False]
+    for _ in range(3):
+        await sup._tick()
+    assert sup.restart_calls == 0
+    assert sup.consecutive_failures == 3
+
+    await sup._tick()
+    assert sup.restart_calls == 1
+    assert sup.consecutive_failures == 0
 
 
 async def test_success_resets_counter_between_failures():
@@ -165,6 +179,77 @@ async def test_gate_exception_fails_safe_to_active():
         await sup._tick()
     assert sup.restart_calls == 0
     assert sup.suppressed_count == 1
+
+
+async def test_dead_shairport_unit_bypasses_mpris_unknown_and_restarts(
+    monkeypatch,
+):
+    """If shairport is fully dead, MPRIS is unknown because there is no
+    live process/session to protect. The supervisor must count through
+    to restart instead of fail-safing to "active" forever."""
+    async def unknown_mpris(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "jasper.control.shairport_supervisor.mpris.shairport_playing",
+        unknown_mpris,
+    )
+
+    class _DeadUnitSupervisor(ShairportSupervisor):
+        def __init__(self) -> None:
+            super().__init__(
+                interval_sec=0.0,
+                jitter_sec=0.0,
+                cold_start_sec=0.0,
+                failure_threshold=3,
+            )
+            self.restart_calls = 0
+
+        async def probe(self) -> bool:
+            return False
+
+        async def is_shairport_unit_active(self) -> bool | None:
+            return False
+
+        async def restart_shairport(self) -> None:
+            self.restart_calls += 1
+
+    sup = _DeadUnitSupervisor()
+    for _ in range(3):
+        await sup._tick()
+    assert sup.restart_calls == 1
+    assert sup.suppressed_count == 0
+
+
+async def test_is_shairport_unit_active_parses_systemctl_statuses(monkeypatch):
+    class _Proc:
+        def __init__(self, returncode: int, stdout: bytes) -> None:
+            self.returncode = returncode
+            self._stdout = stdout
+
+        async def communicate(self):
+            return self._stdout, b""
+
+    cases = [
+        (0, b"active\n", True),
+        (3, b"inactive\n", False),
+        (3, b"failed\n", False),
+        (3, b"deactivating\n", False),
+        (3, b"dead\n", False),
+        (1, b"unknown\n", False),
+        (1, b"", None),
+    ]
+    sup = ShairportSupervisor()
+
+    for returncode, stdout, expected in cases:
+        async def fake_exec(*args, **kwargs):  # noqa: ARG001
+            return _Proc(returncode, stdout)
+
+        monkeypatch.setattr(
+            "jasper.control.shairport_supervisor.asyncio.create_subprocess_exec",
+            fake_exec,
+        )
+        assert await sup.is_shairport_unit_active() is expected
 
 
 async def test_snapshot_keys_and_values():

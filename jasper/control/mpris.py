@@ -19,7 +19,8 @@ module owns that subprocess so the hygiene rules live in one place:
 
 Returns tri-state so each caller keeps its own unknown-handling:
 `/state` maps None → null (section fails soft); the supervisor gate
-maps None → "assume active" (never restart over an unknown state).
+cross-checks systemd and only maps None → "assume active" while the
+shairport unit itself still appears live or unknown.
 """
 from __future__ import annotations
 
