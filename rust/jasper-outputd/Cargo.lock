@@ -58,9 +58,14 @@ version = "0.1.0"
 dependencies = [
  "alsa",
  "anyhow",
+ "jasper-tts-protocol",
  "libc",
  "signal-hook",
 ]
+
+[[package]]
+name = "jasper-tts-protocol"
+version = "0.1.0"
 
 [[package]]
 name = "libc"

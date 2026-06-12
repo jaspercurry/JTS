@@ -453,6 +453,14 @@ build_install_jasper_fanin() {
     rsync -a --delete \
         --exclude='target/' \
         "${src_dir}/" "${cache_dir}/"
+    # Stage the shared wire-protocol crate as a SIBLING of the cache dir
+    # so the crate's `path = "../jasper-tts-protocol"` dependency
+    # resolves identically to the repo layout. --delete keeps it exact.
+    rsync -a --delete \
+        --exclude='target/' \
+        "${REPO_DIR}/rust/jasper-tts-protocol/" \
+        "$(dirname "${cache_dir}")/jasper-tts-protocol/"
+    chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     # Build as pi so cargo's user cache (~pi/.cargo) is used and the
@@ -498,6 +506,14 @@ build_install_jasper_outputd() {
     rsync -a --delete \
         --exclude='target/' \
         "${src_dir}/" "${cache_dir}/"
+    # Stage the shared wire-protocol crate as a SIBLING of the cache dir
+    # so the crate's `path = "../jasper-tts-protocol"` dependency
+    # resolves identically to the repo layout. --delete keeps it exact.
+    rsync -a --delete \
+        --exclude='target/' \
+        "${REPO_DIR}/rust/jasper-tts-protocol/" \
+        "$(dirname "${cache_dir}")/jasper-tts-protocol/"
+    chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     sudo -u "${BUILD_USER}" -H bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \

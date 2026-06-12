@@ -501,8 +501,9 @@ even after an audio flush advances the TTS epoch; stale
 `PROGRAM_DUCK_ON` is not allowed to relatch after a flush.
 
 On an active multiroom bond member, voice bypasses this socket
-entirely: the grouping reconciler points it at outputd's twin
-(`rust/jasper-outputd/src/tts.rs`, same wire protocol) so assistant
+entirely: the grouping reconciler points it at outputd's TTS server
+(`rust/jasper-outputd/src/tts.rs`; the wire vocabulary + parser are the
+shared `rust/jasper-tts-protocol` crate both daemons import) so assistant
 audio mixes post-round-trip instead of riding the synced stream. One
 contract delta to know when comparing acks: fan-in's `FLUSH_SYNC`
 summary hardcodes `max_audio_played_ms: 0` / `events: []` (no DAC

@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -20,6 +20,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use log::{info, warn};
 
+use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 use crate::loudness::{
     apply_gain_i16, clamp_tts_gain_db, gain_db_to_linear, linear_to_db,
     AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
@@ -27,35 +28,9 @@ use crate::loudness::{
 };
 use crate::mixer::CHANNELS;
 
-pub const MAX_AUDIO_BYTES: usize = 2 * 1024 * 1024;
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
 const PACKED_DB_NONE: i64 = i64::MIN;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TtsCommand {
-    GainDb(f32),
-    PrepareAssistant {
-        provider: String,
-        model: String,
-        voice: String,
-        silence_target_lufs: f32,
-    },
-    ContentMeterPause,
-    ContentMeterResume,
-    ProgramDuckOn,
-    ProgramDuckOff,
-    SegmentStart {
-        kind: SegmentKind,
-        provider_item_id: Option<String>,
-        profile: Option<AssistantProfile>,
-    },
-    Audio(Vec<i16>),
-    SegmentEnd,
-    Flush,
-    FlushSync,
-    Close,
-}
 
 #[derive(Debug)]
 pub struct QueuedTtsCommand {
@@ -723,219 +698,6 @@ fn enqueue_reliable_tts_command(
             tx.send(queued).is_ok()
         }
         Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line)?;
-    if n == 0 {
-        return Ok(None);
-    }
-    let line = line.trim_end_matches(['\r', '\n']);
-    match line {
-        "FLUSH" => return Ok(Some(TtsCommand::Flush)),
-        "FLUSH_SYNC" => return Ok(Some(TtsCommand::FlushSync)),
-        "PROGRAM_DUCK_ON" => return Ok(Some(TtsCommand::ProgramDuckOn)),
-        "PROGRAM_DUCK_OFF" => return Ok(Some(TtsCommand::ProgramDuckOff)),
-        "SEGMENT_END" => return Ok(Some(TtsCommand::SegmentEnd)),
-        "CLOSE" => return Ok(Some(TtsCommand::Close)),
-        "CONTENT_METER_PAUSE" => return Ok(Some(TtsCommand::ContentMeterPause)),
-        "CONTENT_METER_RESUME" => return Ok(Some(TtsCommand::ContentMeterResume)),
-        _ => {}
-    }
-    if let Some(rest) = line.strip_prefix("GAIN ") {
-        let gain = rest
-            .parse::<f32>()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid GAIN value"))?;
-        return Ok(Some(TtsCommand::GainDb(gain)));
-    }
-    if let Some(rest) = line.strip_prefix("AUDIO ") {
-        let byte_len = rest
-            .parse::<usize>()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid AUDIO length"))?;
-        if byte_len > MAX_AUDIO_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "AUDIO byte length exceeds max chunk size",
-            ));
-        }
-        if byte_len % 2 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "AUDIO byte length must be even",
-            ));
-        }
-        let frame_bytes = (CHANNELS as usize) * 2;
-        if byte_len % frame_bytes != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "AUDIO byte length must contain whole stereo frames",
-            ));
-        }
-        let mut bytes = vec![0u8; byte_len];
-        reader.read_exact(&mut bytes)?;
-        let samples = bytes
-            .chunks_exact(2)
-            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-            .collect();
-        return Ok(Some(TtsCommand::Audio(samples)));
-    }
-    if let Some(rest) = line.strip_prefix("SEGMENT_START ") {
-        let mut parts = rest.split(' ');
-        let raw_kind = parts.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing SEGMENT_START kind")
-        })?;
-        let raw_provider = parts.next().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "missing SEGMENT_START provider item id",
-            )
-        })?;
-        let kind = SegmentKind::from_protocol(raw_kind).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid SEGMENT_START kind")
-        })?;
-        let provider_item_id = if raw_provider == "-" {
-            None
-        } else {
-            validate_token(raw_provider, "SEGMENT_START provider item id")?;
-            Some(raw_provider.to_string())
-        };
-        let profile = match parts.next() {
-            None => None,
-            Some(provider) => {
-                let model = parts.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing SEGMENT_START model")
-                })?;
-                let voice = parts.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing SEGMENT_START voice")
-                })?;
-                let source_lufs = parts.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing SEGMENT_START source_lufs")
-                })?;
-                let source_peak_dbfs = parts.next().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "missing SEGMENT_START source_peak_dbfs",
-                    )
-                })?;
-                let confidence = parts.next().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing SEGMENT_START confidence")
-                })?;
-                if parts.next().is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "SEGMENT_START has too many arguments",
-                    ));
-                }
-                validate_token(provider, "SEGMENT_START provider")?;
-                validate_token(model, "SEGMENT_START model")?;
-                validate_token(voice, "SEGMENT_START voice")?;
-                Some(AssistantProfile {
-                    provider: provider.to_string(),
-                    model: model.to_string(),
-                    voice: voice.to_string(),
-                    source_lufs: parse_optional_f32(source_lufs, "SEGMENT_START source_lufs")?,
-                    source_peak_dbfs: parse_optional_f32(
-                        source_peak_dbfs,
-                        "SEGMENT_START source_peak_dbfs",
-                    )?,
-                    confidence: parse_required_f32(confidence, "SEGMENT_START confidence")?,
-                })
-            }
-        };
-        return Ok(Some(TtsCommand::SegmentStart {
-            kind,
-            provider_item_id,
-            profile,
-        }));
-    }
-    if let Some(rest) = line.strip_prefix("PREPARE_ASSISTANT ") {
-        let mut parts = rest.split(' ');
-        let provider = parts.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT provider")
-        })?;
-        let model = parts.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT model")
-        })?;
-        let voice = parts.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT voice")
-        })?;
-        let silence_target = parts.next().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "missing PREPARE_ASSISTANT silence target",
-            )
-        })?;
-        if parts.next().is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "PREPARE_ASSISTANT expects exactly four arguments",
-            ));
-        }
-        validate_token(provider, "PREPARE_ASSISTANT provider")?;
-        validate_token(model, "PREPARE_ASSISTANT model")?;
-        validate_token(voice, "PREPARE_ASSISTANT voice")?;
-        return Ok(Some(TtsCommand::PrepareAssistant {
-            provider: provider.to_string(),
-            model: model.to_string(),
-            voice: voice.to_string(),
-            silence_target_lufs: parse_required_f32(
-                silence_target,
-                "PREPARE_ASSISTANT silence target",
-            )?,
-        }));
-    }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("unknown TTS command: {line}"),
-    ))
-}
-
-fn validate_token(value: &str, field: &str) -> io::Result<()> {
-    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid {field}"),
-        ));
-    }
-    Ok(())
-}
-
-fn parse_optional_f32(value: &str, field: &str) -> io::Result<Option<f32>> {
-    if value == "-" {
-        return Ok(None);
-    }
-    parse_required_f32(value, field).map(Some)
-}
-
-fn parse_required_f32(value: &str, field: &str) -> io::Result<f32> {
-    let parsed = value
-        .parse::<f32>()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("invalid {field}")))?;
-    if !parsed.is_finite() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{field} must be finite"),
-        ));
-    }
-    Ok(parsed)
-}
-
-fn command_name(command: &TtsCommand) -> &'static str {
-    match command {
-        TtsCommand::GainDb(_) => "gain",
-        TtsCommand::PrepareAssistant { .. } => "prepare_assistant",
-        TtsCommand::ContentMeterPause => "content_meter_pause",
-        TtsCommand::ContentMeterResume => "content_meter_resume",
-        TtsCommand::ProgramDuckOn => "program_duck_on",
-        TtsCommand::ProgramDuckOff => "program_duck_off",
-        TtsCommand::SegmentStart { .. } => "segment_start",
-        TtsCommand::Audio(_) => "audio",
-        TtsCommand::SegmentEnd => "segment_end",
-        TtsCommand::Flush => "flush",
-        TtsCommand::FlushSync => "flush_sync",
-        TtsCommand::Close => "close",
     }
 }
 

@@ -1672,8 +1672,10 @@ front-run the complexity nor forget where it belongs.
 
 Last verified: 2026-06-11 (INCREMENT 5 PR-2 BUILT — member-local TTS + the
 grouping supervisor. outputd grew `tts.rs`: a server speaking fanin's exact
-newline-framed TTS wire protocol (the twin is deliberate — Python keeps ONE
-playout implementation; shared-crate extraction is a named follow-up),
+newline-framed TTS wire protocol (Python keeps ONE playout implementation;
+the wire layer itself — command vocabulary + parser — was extracted to the
+shared `rust/jasper-tts-protocol` crate right after merge, so the two
+servers structurally cannot drift),
 feeding the surviving OutputCore engine; the FLUSH_SYNC barge-in ack now
 carries DAC-true audio_played_ms + segment events from the playout ledger
 (fanin's ack hardcodes 0). The reconciler arms both ends while bonded —

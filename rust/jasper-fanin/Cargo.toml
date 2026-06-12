@@ -12,6 +12,7 @@ rust-version = "1.75"
 # rustc (1.75+). See docs/HANDOFF-fan-in-daemon.md "Why Rust" for the
 # language-choice rationale.
 [dependencies]
+jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 # Idiomatic Rust wrapper around libasound — the daemon's primary I/O
 # surface. Mature crate, used by most Rust ALSA projects (paplay,
 # pulse-pipewire-bridge, etc.). Compiles against Trixie's

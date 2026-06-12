@@ -215,6 +215,7 @@ fn run_alsa(
     let mut dac_delay_warning_logged = false;
     let mut content_drain_warning_logged = false;
     let mut reference_sequence = 0u64;
+    let mut last_clipped_samples = 0u32;
 
     while !shutdown.load(Ordering::Relaxed) {
         let mut served_from_fifo = false;
@@ -290,6 +291,7 @@ fn run_alsa(
             let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
             ref_outputs.publish(core.output_period());
             reference_sequence = report.reference_sequence;
+            last_clipped_samples = report.clipped_samples;
             state.mark_period(
                 backend.counters(),
                 reference_sequence,
@@ -313,9 +315,10 @@ fn run_alsa(
         }
         if once {
             eprintln!(
-                "event=outputd.once frames_written={} reference_sequence={} clipped_samples=0",
+                "event=outputd.once frames_written={} reference_sequence={} clipped_samples={}",
                 backend.counters().dac_frames_written,
                 reference_sequence,
+                last_clipped_samples,
             );
             return Ok(());
         }
