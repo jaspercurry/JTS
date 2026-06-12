@@ -604,6 +604,16 @@ restart_audio_if_needed() {
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
 }
 
+start_outputd_if_recognized() {
+    if [[ "$NO_RESTART" == "1" ]]; then
+        log_event "outputd_start_skip" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=1 no_restart=1"
+        return
+    fi
+    "$SYSTEMCTL" reset-failed jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block start jasper-outputd.service 2>/dev/null || true
+    log_event "outputd_start_requested" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=1"
+}
+
 apply_audio_runtime_env() {
     local changed=0
     if [[ "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
@@ -663,7 +673,11 @@ if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     if [[ "$render_changed" == "1" || "$env_changed" == "1" ]]; then
         restart_needed=1
     fi
-    restart_audio_if_needed "$restart_needed"
+    if [[ "$restart_needed" == "1" ]]; then
+        restart_audio_if_needed "$restart_needed"
+    else
+        start_outputd_if_recognized
+    fi
 else
     park_output_audio
 fi

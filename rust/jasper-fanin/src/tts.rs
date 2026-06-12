@@ -30,6 +30,10 @@ use crate::mixer::CHANNELS;
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
+// Keep this above voice's `JASPER_IDLE_TIMEOUT_SEC` default (20 s):
+// fan-in only sees the one-shot duck IPC, not the provider turn state, so
+// a shorter TTL could un-duck program audio during a legitimate quiet turn.
+// If operations raise `JASPER_IDLE_TIMEOUT_SEC` above 30 s, retune this too.
 const PROGRAM_DUCK_IDLE_RELEASE_TTL: Duration = Duration::from_secs(30);
 const PACKED_DB_NONE: i64 = i64::MIN;
 
@@ -1222,6 +1226,76 @@ mod tests {
             Instant::now().checked_sub(Duration::from_secs(1));
         assert!(!mixer.prepare_period());
         assert!(!mixer.metrics.program_duck_active());
+    }
+
+    #[test]
+    fn program_duck_audio_refresh_keeps_idle_ttl_alive() {
+        let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics: metrics.clone(),
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+        mixer.program_duck_idle_release_ttl = Duration::from_secs(60);
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::ProgramDuckOn,
+        })
+        .unwrap();
+        assert!(mixer.prepare_period());
+        mixer.program_duck_last_refresh =
+            Instant::now().checked_sub(Duration::from_secs(120));
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1, 2, 3, 4]),
+        })
+        .unwrap();
+
+        let mut sum = [0i32; 4];
+        assert!(mixer.prepare_period());
+        mixer.mix_period(&mut sum);
+        assert!(mixer.prepare_period());
+        assert!(metrics.program_duck_active());
+    }
+
+    #[test]
+    fn program_duck_idle_ttl_waits_for_zero_pending_frames() {
+        let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics: metrics.clone(),
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+        mixer.program_duck_idle_release_ttl = Duration::from_millis(1);
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::ProgramDuckOn,
+        })
+        .unwrap();
+        assert!(mixer.prepare_period());
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1, 2, 3, 4]),
+        })
+        .unwrap();
+        assert!(mixer.prepare_period());
+        assert_eq!(mixer.pending_frames(), 2);
+        mixer.program_duck_last_refresh =
+            Instant::now().checked_sub(Duration::from_secs(1));
+
+        assert!(mixer.prepare_period());
+        assert!(metrics.program_duck_active());
+        let mut sum = [0i32; 4];
+        mixer.mix_period(&mut sum);
+        assert_eq!(mixer.pending_frames(), 0);
+        assert!(!mixer.prepare_period());
+        assert!(!metrics.program_duck_active());
     }
 
     #[test]

@@ -54,6 +54,20 @@ The two layers compose cleanly. T5.1 catches "a specific critical
 daemon is broken;" T5.2 catches "the whole box is wedged." Tier 5
 hardware watchdog stays in place as the floor.
 
+2026-06-12 output-DAC nuance: `jasper-outputd.service` owns the
+physical DAC in the outputd cutover topology; CamillaDSP writes to
+the `outputd_content_playback` snd-aloop lane and can stay healthy
+when the DAC disappears. Outputd therefore has an `ExecCondition=`
+missing-DAC gate keyed by the reconciler-owned
+`JASPER_AUDIO_DAC_CARD`: fake-backend starts pass because they open no
+ALSA card, but an `alsa` backend with a configured card absent under
+`/proc/asound` skips the start without consuming `Restart=on-failure`
+or escalating to `StartLimitAction=reboot`. The audio-hardware udev
+reconciler remains the recovery path: when a recognized DAC returns it
+re-renders env/asound state when needed and always reset-failed+starts
+outputd, so a condition-parked unit recovers even when the replug does
+not change any env values.
+
 **Still deferred (with revisit triggers documented below)**:
 shorter `RuntimeWatchdogSec` (T5.3 — needs ≥30 days of soak data),
 external hardware watchdog (T5.4 — BOM/chassis change for next
@@ -425,4 +439,4 @@ risk, not worth being first.
 
 ---
 
-Last verified: 2026-05-30
+Last verified: 2026-06-12

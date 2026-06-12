@@ -314,6 +314,40 @@ def test_install_uses_separate_outputd_statefile():
     assert "--statefile /var/lib/camilladsp/outputd-statefile.yml" in camilla_unit
 
 
+def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
+    outputd_unit = (REPO / "deploy" / "systemd" / "jasper-outputd.service").read_text()
+    camilla_unit = (REPO / "deploy" / "systemd" / "jasper-camilla.service").read_text()
+    cutover = (REPO / "deploy" / "camilladsp" / "outputd-cutover.yml").read_text()
+    recover_rule = (
+        REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules"
+    ).read_text()
+    recover_unit = (
+        REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
+    ).read_text()
+    recover_script = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
+
+    assert "StartLimitAction=reboot" in outputd_unit
+    assert "Restart=on-failure" in outputd_unit
+    assert "RestartPreventExitStatus=78" in outputd_unit
+    assert "ExecCondition=/bin/sh -c" in outputd_unit
+    assert 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"' in outputd_unit
+    assert '[ "$$backend" = "fake" ]' in outputd_unit
+    assert 'card="$${JASPER_AUDIO_DAC_CARD:-}"' in outputd_unit
+    assert '[ -e "/proc/asound/$$card" ]' in outputd_unit
+    assert "event=outputd.output_device_gate.park reason=missing_dac" in outputd_unit
+    assert "outputd_backend=$$backend" in outputd_unit
+    assert "exit 1" in outputd_unit
+    assert "ExecStartPre=/bin/sh -c" not in outputd_unit
+
+    assert "JASPER_AUDIO_DAC_CARD" not in camilla_unit
+    assert 'device: "outputd_content_playback"' in cutover
+    assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in recover_rule
+    assert "Before=jasper-outputd.service" in recover_unit
+    assert "--no-block start jasper-outputd.service" in recover_script
+    assert "--no-block restart jasper-outputd.service" in recover_script
+    assert "--no-block stop jasper-voice.service jasper-outputd.service" in recover_script
+
+
 def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
     """inv-A ordering, both branches: the reference tap publishes what
     the DAC was JUST given, never earlier. Solo publishes the raw

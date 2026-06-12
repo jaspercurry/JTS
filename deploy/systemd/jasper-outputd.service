@@ -69,6 +69,15 @@ EnvironmentFile=-/var/lib/jasper/wake_corpus_bridge.env
 # byte-identical solo DAC loop. Last env layer on purpose: the
 # reconciler's derived state must win over any hand-set value.
 EnvironmentFile=-/var/lib/jasper/grouping-outputd.env
+# If the resolved final-output card disappeared, skip the start before
+# the main process opens ALSA. The fake backend deliberately opens no
+# card, keeping outputd's sockets/state alive in no-DAC states, so it
+# must pass this gate. ExecCondition exit 1 parks the unit inactive
+# without consuming Restart=on-failure/StartLimitAction; the
+# audio-hardware udev reconciler reset-failed+starts outputd when a
+# recognized DAC role returns. Camilla is intentionally not gated here:
+# in the outputd cutover topology it writes only to snd-aloop.
+ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${JASPER_AUDIO_DAC_CARD:-}"; id="$${JASPER_AUDIO_DAC_ID:-unknown}"; if [ "$$backend" = "fake" ] || [ -z "$$card" ] || [ -e "/proc/asound/$$card" ]; then exit 0; fi; echo "event=outputd.output_device_gate.park reason=missing_dac output_dac_id=$$id output_dac_card=$$card outputd_backend=$$backend" >&2; exit 1'
 ExecStart=/opt/jasper/bin/jasper-outputd
 
 [Install]
