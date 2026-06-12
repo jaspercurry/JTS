@@ -1344,6 +1344,67 @@ keep that step.
 
 ---
 
+## 7.5 The dumb-follower role-state contract
+
+One table answers "what runs where, and who owns the transition" for
+every unit a bond touches. **Role is runtime** (grouping.env, wizard/
+bond-owned); **tier is install-time** (what exists on disk —
+[dumb-endpoint-bringup.md](dumb-endpoint-bringup.md)); profiles derive
+from both. A future "smart follower" is a profile variant, not a
+rearchitecture.
+
+| Unit | Solo | Leader | Follower | Transition owner |
+|---|---|---|---|---|
+| jasper-control | runs | runs | runs (volume/transport forward to leader) | — always on |
+| jasper-outputd | runs | runs (dac_content L) | runs (dac_content R) | grouping reconciler (env + restart-on-change) |
+| jasper-camilla / jasper-fanin | run | run (camilla bakes the pipe) | run (inv-B fallback lane only) | grouping reconciler (config swap) |
+| jasper-snapserver | stopped | runs | stopped | grouping reconciler (plan) |
+| jasper-snapclient | stopped | runs | runs | grouping reconciler (plan) |
+| shairport-sync + nqptp, librespot, bluealsa(+aplay), bt-agent, jasper-mux, jasper-usbsink | per /sources/ wizard | per /sources/ wizard | **parked** (stop; restore-if-enabled on exit) | grouping reconciler (plan; STOP never disable — /sources/ owns enable/disable) |
+| jasper-voice + jasper-aec-bridge (+aec-init) | per provider/mic gates | per provider/mic gates | **parked** (disable --now) | **jasper-aec-reconcile only** — grouping derives `JASPER_GROUPING_VOICE_PARK=1` into grouping-voice.env and kicks it; bond-validity logic is never re-derived in shell |
+
+Interface contract while a follower (every surface tells the same
+story; "parked-by-role" is surfaced state, NEVER a silent failure):
+
+- Landing page: pair banner; source selector hidden; slider = "Pair
+  volume" (server-side forward); mic card says the leader listens.
+- /sources/: toggles disabled + pair note; POST /set 409s (an
+  `enable --now` would reopen the advertise/leak hole).
+- /voice/, /wake/, /sound/, /correction/: shared pair banner
+  (`_common.pair_banner_html`); saves persist but
+  `restart_voice_daemon` (the ONE helper all nine wizards use) skips
+  the restart while parked — config applies on unbond via the un-park
+  restart. Correction additionally warns: a follower's measurement
+  sweep plays into outputd's DRAINED direct lane (inaudible).
+- /system/: restart-voice 409s with the pair story; restart-audio
+  touches only the alive subset (camilla).
+- Doctor: 8 liveness checks read "parked (bonded follower)" via
+  `_parked_as_bonded_follower` (doctor/_shared); `pair channels` does
+  the cross-member coherence probe.
+- Dial: volume + play/pause forward to the leader; hold-to-talk is
+  dead while parked (accepted).
+
+**DSP ownership — the two-kinds split (decided 2026-06-12):**
+
+- **Content DSP** (room correction, sound preferences, EQ) is
+  LEADER-side, baked per-channel into the synced stream. This is what
+  lets a dumb member stay dumb, and it scales to the Zero endpoint
+  tier unchanged.
+- **Driver DSP** (active crossover, driver protection, per-driver
+  gain/delay) must live ON THE BOX DRIVING THE DAC — it is per-driver
+  signal routing and hardware-safety-critical (full-range program into
+  a tweeter amp). TODAY a bonded follower has NO driver-DSP path (its
+  camilla is bypassed), and outputd's round-trip lane deliberately
+  FAIL-CLOSES on the dual-Apple active-crossover sink (pinned by
+  `dac_content_lane_rejects_non_single_alsa_sink`) — an
+  active-crossover speaker refuses to bond rather than ever playing
+  uncrossed audio into drivers. The increment that lifts this is the
+  follower local driver-DSP path (snapclient → loopback → camilla
+  [crossover/protection only] → outputd active sink, with snapcast's
+  per-client latency offset compensating camilla's fixed latency) —
+  applies to brainy followers and, with the prebuilt camilladsp
+  binary, to a Zero 2 W "crossover endpoint" tier variant.
+
 ## 8. Phased delivery
 
 **P0 — feasibility spike with MEASURED gates (throwaway, not
@@ -1676,7 +1737,19 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (DUMB-FOLLOWER PR-B — voice + the AEC stack
+Last verified: 2026-06-12 (DUMB-FOLLOWER PR-C — the role-state contract
++ mode-aware interfaces. NEW §7.5: the unit×role table with transition
+ownership, the interface contract, and the DSP two-kinds split (content
+DSP = leader-side baked into the stream; driver DSP = local to the DAC
+owner; the dual-Apple fail-closed note + the follower local driver-DSP
+increment). Interface gates shipped with it: restart_voice_daemon — the
+ONE helper all nine wizards use — skips while parked (a /voice//wake/
+/transit/etc save no longer boots 240 MB of parked models; config
+applies on unbond); /sources/ POST 409s while follower + toggles render
+disabled with a pair note (enable --now would reopen the advertise/leak
+hole); /system restart-voice 409s and restart-audio touches only the
+alive subset; voice/wake/sound/correction pages carry the shared
+pair_banner_html.) Earlier same day (DUMB-FOLLOWER PR-B — voice + the AEC stack
 park while bonded, freeing ~310 MB (voice 238 + bridge 74) on a 1 GB
 follower. Ownership stays single-writer: the GROUPING reconciler only
 derives a Python-validated flag (JASPER_GROUPING_VOICE_PARK=1, written

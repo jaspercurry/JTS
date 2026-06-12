@@ -78,6 +78,7 @@ from typing import Any
 from ..atomic_io import locked_update_env_file
 from .. import wake_models
 from ._common import (
+    pair_banner_html,
     DEFAULT_CONTROL_BASE,
     begin_request,
     canonical_header,
@@ -513,6 +514,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     # /assets/wake/js/main.js — no inline <script>.
     body = f"""
 {canonical_header("Wake word")}
+{pair_banner_html()}
 <main class="page">
   {_mic_status_card_html()}
 

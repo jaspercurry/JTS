@@ -2939,7 +2939,20 @@ def _make_handler(
             # (consistent with the wizards). Anyone already on the
             # trusted WiFi can trigger these; the dashboard's
             # confirm dialogs are UX, not security.
+            parked = _pair_follower_leader_addr() is not None
             if self.path == "/system/restart/voice":
+                if parked:
+                    # The dumb-follower profile keeps voice disabled
+                    # while paired — a dashboard restart would boot
+                    # 240 MB of models that jasper-aec-reconcile
+                    # re-parks. Refuse with the story, never silently.
+                    self._send_json(
+                        {"error": "voice is parked while this speaker "
+                                  "is in a stereo pair — the assistant "
+                                  "runs on the pair leader"},
+                        status=409,
+                    )
+                    return
                 units = ["jasper-voice.service"]
                 action = "restart-voice"
             elif self.path == "/system/restart/audio":
@@ -2949,6 +2962,10 @@ def _make_handler(
                     "shairport-sync.service",
                     "bluealsa-aplay.service",
                 ]
+                if parked:
+                    # Restart only the units the follower profile keeps
+                    # alive; the parked renderers stay parked.
+                    units = ["jasper-camilla.service"]
                 action = "restart-audio"
             elif self.path == "/system/reboot":
                 units = []  # systemctl reboot — no units

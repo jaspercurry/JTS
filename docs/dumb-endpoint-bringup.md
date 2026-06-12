@@ -101,6 +101,17 @@ jasper-fanin, the web wizards, and the Rust toolchain that builds them.
 The grouping reconciler's role plan treats absent units as no-ops, so
 one role engine serves both tiers.
 
+**DSP split (see HANDOFF-multiroom §7.5):** content DSP (room
+correction, sound prefs) is leader-side, baked into the stream — an
+endpoint never needs it locally. Driver DSP (active crossover, driver
+protection) must live on the box driving the DAC; a future "crossover
+endpoint" tier variant adds the prebuilt camilladsp binary + the
+follower local driver-DSP path (crossover biquads are trivial CPU on a
+Zero 2 W; the practical risk is dual-DAC USB power on the OTG port —
+hardware-validation item). Until that increment exists, active-crossover
+hardware cannot be an endpoint: outputd's round-trip lane fail-closes on
+the dual-Apple sink by design.
+
 Per-endpoint level trim (the heterogeneous-pair calibration) uses
 snapcast's per-client volume on this tier — a software multiply in
 snapclient with an invertible taper, persisted in the leader's

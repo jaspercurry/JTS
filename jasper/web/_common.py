@@ -484,11 +484,53 @@ def restart_systemd_units(*units: str) -> None:
         logger.warning("%s restart failed: %s", ", ".join(units), e)
 
 
+def bonded_follower_active() -> bool:
+    """True when this speaker is an ACTIVE bonded multiroom FOLLOWER —
+    the dumb-follower profile parks voice/AEC/renderers while paired.
+    The ONE shared predicate (multiroom.config.follower_leader_addr),
+    fail-open to False so a broken read never blocks a solo wizard."""
+    try:
+        from ..multiroom.config import follower_leader_addr, load_config
+
+        return follower_leader_addr(load_config()) is not None
+    except Exception:  # noqa: BLE001 — fail-open
+        return False
+
+
+def pair_banner_html() -> str:
+    """A notice for wizard pages whose subject is parked/delegated while
+    this speaker is a bonded follower. Empty string when not bonded —
+    callers can interpolate unconditionally. Static text only (no
+    untrusted values)."""
+    if not bonded_follower_active():
+        return ""
+    return (
+        '<div class="info-card info-card--accent" role="note">'
+        "This speaker is part of a stereo pair. The assistant, sources, "
+        "and sound shaping run on the pair leader while paired — "
+        "settings saved here apply when the pair is dissolved "
+        '(<a href="/rooms/">manage the pair</a>).</div>'
+    )
+
+
 def restart_voice_daemon() -> None:
     """Best-effort restart of jasper-voice so it picks up new
-    credentials / new provider / wake model on its next boot."""
+    credentials / new provider / wake model on its next boot.
+
+    Two skip gates, both states where a restart would be WRONG:
+    provider unset (voice refuses to start anyway), and parked as a
+    bonded follower — the dumb-follower profile keeps voice disabled
+    while paired, and a wizard save must not boot 240 MB of models
+    that jasper-aec-reconcile would re-park; the saved config applies
+    on unbond (the un-park path restarts voice with fresh env)."""
     if not read_active_provider():
         logger.info("not starting jasper-voice: JASPER_VOICE_PROVIDER is unset")
+        return
+    if bonded_follower_active():
+        logger.info(
+            "not restarting jasper-voice: parked (bonded follower) — "
+            "saved config applies on unbond",
+        )
         return
     _enable_systemd_unit("jasper-voice")
     restart_systemd_units("jasper-voice")

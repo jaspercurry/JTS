@@ -291,8 +291,12 @@ def test_post_set_with_csrf_dispatches_and_reads_back(stub_backends, monkeypatch
     )
     assert applied == [("airplay", True)]
     payload = _body_json(h)
-    # Read-back returns the full /state snapshot.
-    assert set(payload) == {"airplay", "bluetooth", "spotify_connect", "usbsink"}
+    # Read-back returns the full /state snapshot ("pair" is sibling
+    # metadata for the parked-toggles state, not a source).
+    assert set(payload) == {
+        "pair", "airplay", "bluetooth", "spotify_connect", "usbsink",
+    }
+    assert payload["pair"] == {"parked": False}
 
 
 def test_post_set_unknown_source_400(stub_backends, monkeypatch):
@@ -342,3 +346,26 @@ def test_es_module_has_no_native_dialogs_or_innerhtml():
     assert ".innerHTML" not in code
     for native in ("window.confirm", "window.alert", "window.prompt"):
         assert native not in code
+
+
+def test_set_rejected_while_bonded_follower(stub_backends, monkeypatch):
+    """The dumb-follower profile parks every source; `enable --now` from
+    the wizard would START a parked renderer and reopen the
+    advertise/leak hole until the next reconcile — so /set 409s with the
+    pair story and applies NOTHING."""
+    stub_backends()
+    monkeypatch.setattr(mod, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(mod, "_apply", lambda *a: pytest.fail("must not apply"))
+    h = _drive(
+        "POST", "/set",
+        body=json.dumps({"source": "airplay", "enabled": True}).encode(),
+        csrf_cookie=CSRF, csrf_header=CSRF,
+    )
+    assert h.status == 409
+    assert "stereo pair" in _body_json(h)["error"]
+
+
+def test_state_reports_parked_pair(stub_backends, monkeypatch):
+    stub_backends()
+    monkeypatch.setattr(mod, "bonded_follower_active", lambda: True)
+    assert mod._gather_state()["pair"] == {"parked": True}

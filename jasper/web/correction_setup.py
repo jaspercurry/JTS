@@ -56,6 +56,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ._common import (
+    pair_banner_html,
     begin_request,
     canonical_header,
     canonical_page,
@@ -497,6 +498,10 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         "Room correction",
         back_href="http://{host}/".format(host=hostname),
     )
+    # Bonded follower: measurements would play into outputd's DRAINED
+    # direct lane (inaudible — the round-trip FIFO owns the DAC), so the
+    # shared pair banner warns to run correction from the leader.
+    header += pair_banner_html()
     body = (
         _PAGE_BODY
         .replace("__HEADER__", header)

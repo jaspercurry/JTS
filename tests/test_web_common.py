@@ -614,3 +614,39 @@ def test_atomic_write_cleans_up_temp_on_write_error(tmp_path):
         _common.write_env_file(p, {"A": "has\nnewline"})
     assert not (tmp_path / "bad.env").exists()
     assert [f for f in os.listdir(tmp_path) if f.endswith(".tmp")] == []
+
+
+def test_restart_voice_daemon_skips_while_parked(monkeypatch):
+    """A wizard save on a bonded follower must not boot 240 MB of parked
+    models — config persists; the un-park path restarts voice on unbond."""
+    import jasper.web._common as common
+
+    monkeypatch.setattr(common, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
+    calls = []
+    monkeypatch.setattr(common, "_enable_systemd_unit", lambda u: calls.append(("enable", u)))
+    monkeypatch.setattr(common, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
+    common.restart_voice_daemon()
+    assert calls == []
+
+
+def test_restart_voice_daemon_runs_when_solo(monkeypatch):
+    import jasper.web._common as common
+
+    monkeypatch.setattr(common, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(common, "bonded_follower_active", lambda: False)
+    calls = []
+    monkeypatch.setattr(common, "_enable_systemd_unit", lambda u: calls.append(("enable", u)))
+    monkeypatch.setattr(common, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
+    common.restart_voice_daemon()
+    assert ("enable", "jasper-voice") in calls
+
+
+def test_pair_banner_html_renders_only_when_bonded(monkeypatch):
+    import jasper.web._common as common
+
+    monkeypatch.setattr(common, "bonded_follower_active", lambda: False)
+    assert common.pair_banner_html() == ""
+    monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
+    html = common.pair_banner_html()
+    assert "stereo pair" in html and "/rooms/" in html

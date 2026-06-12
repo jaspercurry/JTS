@@ -105,6 +105,7 @@ from jasper.sound.settings import (
 )
 
 from ._common import (
+    pair_banner_html,
     begin_request,
     canonical_page,
     reject_csrf,
@@ -802,6 +803,9 @@ def _index_html(csrf_token: str = "") -> bytes:
   </div>
 </header>
 <main class="page">
+"""
+        + pair_banner_html()
+        + """
   <section class="now-playing">
     <div class="row-between">
       <h2 class="eyebrow">Now playing</h2>

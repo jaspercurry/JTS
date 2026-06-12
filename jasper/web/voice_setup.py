@@ -89,6 +89,7 @@ from jasper.usage import (
 )
 
 from ._common import (
+    pair_banner_html,
     begin_request,
     canonical_banner,
     canonical_header,
@@ -936,6 +937,7 @@ def _index_html(
     #   <button form="save-form">  ← the Save submit explicitly attaches
     body = f"""
 {canonical_header("Voice provider")}
+{pair_banner_html()}
 <main class="page">
   {canonical_banner(status_msg)}
   <p class="form-hint">Configure the real-time voice backend for this speaker.
