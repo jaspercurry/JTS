@@ -28,6 +28,11 @@ uv sync
 .venv/bin/pytest
 ```
 
+`uv.lock` is the canonical lockfile for contributor development
+environments. `uv sync` installs the default `dev` dependency group, so
+the fresh venv has `pytest`, `pytest-asyncio`, and `ruff` without an
+extra flag.
+
 If you'd rather not install a new tool, stock pip + venv works too —
 just make sure your python is 3.11+:
 
@@ -38,10 +43,16 @@ pip install -e '.[dev]'
 pytest
 ```
 
-That's ~1000 tests across 93 files in under a minute. Everything
-reachable without a Pi, mic, or speaker — the audio I/O, network
-calls, and systemd surfaces are all mocked. If it passes here, the
-change is safe to deploy to hardware.
+That runs the full hardware-free suite — thousands of tests reachable
+without a Pi, mic, or speaker. The audio I/O, network calls, and
+systemd surfaces are mocked. If it passes here, the change is safe to
+deploy to hardware.
+
+The Ubuntu CI path also installs `portaudio19-dev`, then installs
+`openwakeword==0.6.0` with `--no-deps` plus the pure-Python pieces it
+actually needs (`requests`, `tqdm`, `scikit-learn`). That mirrors the
+Pi installer's ONNX-only openWakeWord setup and is useful context if
+you're doing audio-adjacent work locally.
 
 Hardware-only work (audio playback, the AEC bridge, the wizards in a
 browser) is covered by [BRINGUP.md](BRINGUP.md), which walks from
@@ -59,17 +70,19 @@ blank SD card to working speaker.
 
 ### Branch protection
 
-`main` is protected: the `pytest` GitHub Actions check (which also runs
-`ruff check .`) **must pass before any PR can merge**, force-pushes and
-branch deletion are blocked, and the rule is enforced for admins too — so
-nobody, including the maintainer, can merge into a red `main`. There is no
-required reviewer, so you can self-merge your own green PR.
+`main` is protected: the required GitHub Actions checks are `pytest`
+(which also runs `ruff check .`) and `rust`. Both **must pass before
+any PR can merge**, force-pushes and branch deletion are blocked, and
+the rule is enforced for admins too — so nobody, including the
+maintainer, can merge into a red `main`. There is no required reviewer,
+so you can self-merge your own green PR.
 
 Two operational notes:
 
-- **The required check is named `pytest`.** If you ever rename that job in
-  `.github/workflows/tests.yml`, update the branch-protection rule in the
-  same change, or every merge will block on a check that never reports.
+- **The required checks are named `pytest` and `rust`.** If you ever
+  rename those jobs in `.github/workflows/tests.yml`, update the
+  branch-protection rule in the same change, or every merge will block
+  on a check that never reports.
 - **Emergency override.** If CI is wedged or GitHub Actions is down and a
   fix genuinely cannot wait, an admin can temporarily lift protection at
   `Settings → Branches → main`, merge, and re-enable it immediately — or
@@ -78,7 +91,7 @@ Two operational notes:
   ```sh
   gh api -X PUT repos/<owner>/<repo>/branches/main/protection \
     -H "Accept: application/vnd.github+json" --input - <<'JSON'
-  {"required_status_checks":{"strict":false,"contexts":["pytest"]},
+  {"required_status_checks":{"strict":false,"contexts":["pytest","rust"]},
    "enforce_admins":true,"required_pull_request_reviews":null,
    "restrictions":null,"allow_force_pushes":false,"allow_deletions":false,
    "required_conversation_resolution":true}
@@ -88,7 +101,14 @@ Two operational notes:
 ## Tests
 
 - **Hardware-free pytest** (`pytest`) — required green before merge.
-  No SDK auth or network. >1000 tests across 93 files.
+  No SDK auth or network. Runs the hardware-free suite.
+- **Rust audio-daemon gate** (`cargo build --release --locked` and
+  `cargo test --locked`) — required green for the `rust/` crates in
+  CI, including the production fan-in/outputd daemons and shared
+  protocol crate.
+- **Shell entry-point gate** (`bash -n` plus `shellcheck
+  --severity=warning`) — CI parses and lints the installer, deploy
+  helpers, and shell operator scripts that can mutate a live speaker.
 - **Supply-chain provenance** (`python3 scripts/check-provenance.py`) —
   required when touching install/build fetches, firmware dependency
   declarations, wake/DTLN model registries, or Python direct URL
@@ -108,7 +128,8 @@ Two operational notes:
 ## Code style
 
 - Python 3.11+ (Pi runs 3.13).
-- Format with `ruff format`; lint with `ruff check`. Both are dev deps.
+- Lint with `ruff check .`. Do not run a tree-wide `ruff format` as drive-by
+  cleanup; formatting the whole tree is a separate, deliberate PR.
 - Match the surrounding style. Don't refactor working code that
   isn't part of your change.
 - For larger or riskier changes, use the COAH quality bar in
@@ -150,8 +171,8 @@ already been made and what's NOT a reviewable trade-off.
   AEC retry, custom XVF firmware) are not. Mic capture is
   consumed by ML (openWakeWord + speech LLMs), never humans —
   optimize for ASR accuracy, not naturalness. See
-  [docs/HANDOFF-aec.md](docs/HANDOFF-aec.md) and AGENTS.md
-  "AEC bridge — reconciler toggle."
+  [docs/HANDOFF-aec.md](docs/HANDOFF-aec.md) and
+  [AGENTS.md "AEC bridge — input profile and reconciler"](AGENTS.md#aec-bridge--input-profile-and-reconciler).
 - **Voice provider abstraction.** New providers go through the
   `LiveConnection` / `LiveTurn` protocol; don't add
   provider-specific branches outside `jasper/voice/`. See
@@ -184,9 +205,9 @@ contributions will be licensed under the same.
 
 ## Where to start
 
-- **First-timer**: read README.md, then pick something off
-  [PLAN.md](PLAN.md) "What comes after v1." Open an issue first to
-  discuss approach before coding.
+- **First-timer**: read README.md, then pick something from
+  [PLAN.md's sequenced roadmap](PLAN.md#sequenced-roadmap). Open an
+  issue first to discuss approach before coding.
 - **Returning**: scan open PRs and `git log --since="2 weeks ago"`
   for active workstreams. Active subsystems (AEC, mic-quality, USB
   gadget) shouldn't get parallel changes without coordinating.
