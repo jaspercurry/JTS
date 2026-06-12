@@ -62,6 +62,9 @@ class _FakeSupervisor(SystemSupervisor):
         self.probe_results: list = []
         self.reboot_calls = 0
         self.now: float = 0.0
+        self.sshd_probe_enabled = True
+        self.sshd_probe_calls = 0
+        self._current_tick = None
 
     def _pop_results(self) -> tuple:
         if not self.probe_results:
@@ -74,10 +77,18 @@ class _FakeSupervisor(SystemSupervisor):
             return (True, True, True)
         return result
 
-    async def probe_sshd(self) -> bool:
-        # Lazy: only pop on the first probe of a tick. We model this
-        # by treating each tick's tuple as the source for all 3.
+    async def _run_all_probes(self) -> tuple[bool, str | None]:
         self._current_tick = self._pop_results()
+        try:
+            return await super()._run_all_probes()
+        finally:
+            self._current_tick = None
+
+    async def should_probe_sshd(self) -> bool:
+        return self.sshd_probe_enabled
+
+    async def probe_sshd(self) -> bool:
+        self.sshd_probe_calls += 1
         v = self._current_tick[0]
         if isinstance(v, BaseException):
             raise v
@@ -156,6 +167,117 @@ async def test_failure_attribution_each_probe_type():
     sup.probe_results = [(True, True, False)]
     await sup._tick()
     assert sup.last_failed_probe == "loadavg"
+
+
+async def test_disabled_sshd_probe_skips_to_other_liveness_checks():
+    """A speaker with sshd disabled is healthy if the other probes pass.
+    The sshd probe must not consume the failure budget or reboot the box."""
+    sup = _FakeSupervisor()
+    sup.sshd_probe_enabled = False
+    sup.probe_results = [(False, True, True)] * 3
+    for _ in range(3):
+        await sup._tick()
+    assert sup.sshd_probe_calls == 0
+    assert sup.reboot_calls == 0
+    assert sup.consecutive_failures == 0
+    assert sup.last_failed_probe is None
+
+
+async def test_disabled_sshd_probe_still_reboots_on_other_probe_failure():
+    """Skipping sshd is not disabling the supervisor: jasper-control or
+    loadavg failures still trip the same threshold."""
+    sup = _FakeSupervisor()
+    sup.sshd_probe_enabled = False
+    sup.probe_results = [(True, False, True)] * 3
+    for _ in range(3):
+        await sup._tick()
+    assert sup.sshd_probe_calls == 0
+    assert sup.last_failed_probe == "jasper_control"
+    assert sup.reboot_calls == 1
+
+
+async def test_sshd_disabled_policy_logs_single_skip_breadcrumb(caplog):
+    class _DisabledSshdPolicy(SystemSupervisor):
+        async def _detect_sshd_probe_enabled(self) -> tuple[bool, str | None]:
+            return False, "ssh.service:disabled,sshd.service:not-found"
+
+    sup = _DisabledSshdPolicy(
+        interval_sec=0.0,
+        jitter_sec=0.0,
+        cold_start_sec=0.0,
+        reboot_state_path=(
+            Path(tempfile.gettempdir())
+            / f"jts-test-supervisor-reboot-{uuid.uuid4().hex}.json"
+        ),
+    )
+    with caplog.at_level("INFO", logger="jasper.control.system_supervisor"):
+        assert await sup.should_probe_sshd() is False
+        assert await sup.should_probe_sshd() is False
+    skipped = [
+        r for r in caplog.records
+        if "event=system_supervisor.sshd_probe_skipped" in r.getMessage()
+    ]
+    assert len(skipped) == 1
+    assert "ssh.service:disabled,sshd.service:not-found" in skipped[0].getMessage()
+
+
+async def test_sshd_policy_skips_when_common_units_disabled_or_missing():
+    class _StatusPolicy(SystemSupervisor):
+        async def _systemctl_is_enabled(self, unit: str) -> str:
+            return {
+                "ssh.service": "disabled",
+                "sshd.service": "not-found",
+            }[unit]
+
+    sup = _StatusPolicy(
+        interval_sec=0.0,
+        jitter_sec=0.0,
+        cold_start_sec=0.0,
+        reboot_state_path=(
+            Path(tempfile.gettempdir())
+            / f"jts-test-supervisor-reboot-{uuid.uuid4().hex}.json"
+        ),
+    )
+    enabled, reason = await sup._detect_sshd_probe_enabled()
+    assert enabled is False
+    assert reason == "ssh.service:disabled,sshd.service:not-found"
+
+
+async def test_sshd_port_zero_env_disables_only_sshd_probe(caplog):
+    class _PortZeroSupervisor(SystemSupervisor):
+        def __init__(self) -> None:
+            super().__init__(
+                interval_sec=0.0,
+                jitter_sec=0.0,
+                cold_start_sec=0.0,
+                reboot_state_path=(
+                    Path(tempfile.gettempdir())
+                    / f"jts-test-supervisor-reboot-{uuid.uuid4().hex}.json"
+                ),
+            )
+            self.sshd_probe_calls = 0
+
+        async def probe_sshd(self) -> bool:
+            self.sshd_probe_calls += 1
+            return False
+
+        async def probe_jasper_control(self) -> bool:
+            return True
+
+        async def probe_loadavg(self) -> bool:
+            return True
+
+    with patch.dict(os.environ, {"JASPER_SYSTEM_SUPERVISOR_SSHD_PORT": "0"}):
+        sup = _PortZeroSupervisor()
+    with caplog.at_level("INFO", logger="jasper.control.system_supervisor"):
+        await sup._tick()
+    assert sup.sshd_probe_calls == 0
+    assert sup.last_probe_ok is True
+    assert any(
+        "event=system_supervisor.sshd_probe_skipped reason=port_disabled"
+        in r.getMessage()
+        for r in caplog.records
+    )
 
 
 async def test_probe_exception_counts_as_failure():
