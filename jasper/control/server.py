@@ -34,6 +34,7 @@ import urllib.request
 import logging
 import math
 import os
+import signal
 import socket
 import subprocess
 import threading
@@ -94,6 +95,9 @@ SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
 _source_availability_cache: tuple[float, dict[str, Any]] | None = None
 _source_availability_lock = threading.Lock()
+_peering_lock = threading.Lock()
+_peering_loop: asyncio.AbstractEventLoop | None = None
+_peering_stop_requested = threading.Event()
 AUDIO_QUALITY_RENDERER_UNITS = [
     "shairport-sync.service",
     "librespot.service",
@@ -101,6 +105,7 @@ AUDIO_QUALITY_RENDERER_UNITS = [
     "jasper-usbsink.service",
 ]
 OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
+SPOTIFY_OAUTH_CALLBACK_BASE = "https://jaspercurry.github.io/spotify-oauth-callback/"
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -336,6 +341,7 @@ _peering_thread: threading.Thread | None = None
 def _run_peering_loop() -> None:
     """Background thread target: own an asyncio loop, run the
     PeeringDaemon until the process exits."""
+    global _peering_loop, _peering_thread
     # Lazy imports — keep jasper-control's import cost light when
     # peering is OFF and these modules never load.
     from ..peering import load_config
@@ -347,12 +353,19 @@ def _run_peering_loop() -> None:
             "event=peering.thread.exit mode=%s — daemon will not start",
             cfg.mode.value,
         )
+        with _peering_lock:
+            if _peering_thread is threading.current_thread():
+                _peering_thread = None
         return
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     daemon = PeeringDaemon(cfg)
+    with _peering_lock:
+        _peering_loop = loop
     try:
         loop.run_until_complete(daemon.start())
+        if _peering_stop_requested.is_set():
+            loop.call_soon(loop.stop)
         loop.run_forever()
     except Exception:  # noqa: BLE001
         logger.exception("peering daemon thread crashed")
@@ -365,6 +378,12 @@ def _run_peering_loop() -> None:
             loop.close()
         except Exception:  # noqa: BLE001
             pass
+        with _peering_lock:
+            if _peering_loop is loop:
+                _peering_loop = None
+            if _peering_thread is threading.current_thread():
+                _peering_thread = None
+            _peering_stop_requested.clear()
 
 
 def start_peering_daemon_if_enabled() -> None:
@@ -378,12 +397,30 @@ def start_peering_daemon_if_enabled() -> None:
     global _peering_thread
     if _peering_thread is not None:
         return
+    _peering_stop_requested.clear()
     _peering_thread = threading.Thread(
         target=_run_peering_loop,
         name="peering-daemon",
         daemon=True,
     )
     _peering_thread.start()
+
+
+def stop_peering_daemon(*, timeout: float = 5.0) -> None:
+    """Stop the background peering loop so daemon.stop() can unpublish mDNS."""
+    with _peering_lock:
+        thread = _peering_thread
+        loop = _peering_loop
+    if thread is None:
+        return
+    _peering_stop_requested.set()
+    if loop is not None and not loop.is_closed():
+        loop.call_soon_threadsafe(loop.stop)
+    if thread is threading.current_thread():
+        return
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        logger.warning("event=peering.thread.stop_timeout timeout=%.1f", timeout)
 
 
 _AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
@@ -530,13 +567,9 @@ def _write_audio_input_profile(profile: str) -> None:
 
 def _atomic_rewrite_env(path: str, updates: dict) -> None:
     """Read-modify-write of a systemd env file. Updates the given keys,
-    preserves all others. Atomic via tempfile + rename. Used by
-    _write_aec_mode and _write_aec_leg so concurrent toggles can't
-    leave the file half-written."""
-    from ..web._common import read_env_file, write_env_file
-    state = read_env_file(path)
-    state.update(updates)
-    write_env_file(path, state, mode=0o644)
+    preserves all others. Cooperating writers are serialized with an
+    advisory flock, and readers see atomic whole-file replacement."""
+    locked_update_env_file(path, updates, mode=0o644)
 
 
 def _read_wake_threshold() -> float:
@@ -838,6 +871,12 @@ def _aec_full_status() -> dict:
     }
 
 
+def _spotify_redirect_uri() -> str:
+    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
+    default_redirect_uri = f"{SPOTIFY_OAUTH_CALLBACK_BASE}?host={hostname}"
+    return os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
+
+
 def _build_spotify_router_or_none():
     """Build a multi-account Spotify router for dial-driven volume.
     Returns None if SPOTIFY_CLIENT_ID isn't set or no accounts have
@@ -860,19 +899,15 @@ def _build_spotify_router_or_none():
             ),
             default_name="default",
         )
-        hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
         # build_clients returns BuildResult. The control daemon doesn't
         # surface revoked-vs-needs-oauth status to the user, so we use
         # the clients dict only — but still pass statuses through to the
         # Router so /state can introspect them if a future endpoint adds
         # a Spotify health probe.
-        default_redirect_uri = (
-            f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}"
-        )
         result = build_clients(
             registry,
             client_id=client_id,
-            redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri,
+            redirect_uri=_spotify_redirect_uri(),
         )
         if not result.clients:
             return None
@@ -1111,13 +1146,17 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if cached is not None and now - cached[0] < SOURCE_AVAILABILITY_TTL_SEC:
             wizard_state = cached[1]
         else:
-            try:
-                from ..web.sources_setup import _gather_state as _sources_state
-                wizard_state = _sources_state()
-            except Exception as e:  # noqa: BLE001
-                logger.debug("source availability read failed: %s", e)
-                return payload
-            _source_availability_cache = (now, wizard_state)
+            wizard_state = None
+    if wizard_state is None:
+        try:
+            from ..web.sources_setup import _gather_state as _sources_state
+            fresh_state = _sources_state()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("source availability read failed: %s", e)
+            return payload
+        with _source_availability_lock:
+            _source_availability_cache = (now, fresh_state)
+        wizard_state = fresh_state
     for spec in MUSIC_SOURCE_SPECS:
         wizard_key = spec.wizard_key
         mux_key = spec.id.value
@@ -1645,9 +1684,7 @@ async def _dispatch_transport(action: str) -> dict:
     dispatcher's documented vocabulary."""
     # Import inside the function so jasper-control doesn't import the
     # full voice-daemon dependency tree at startup.
-    from ..accounts import Registry, maybe_migrate_legacy
     from ..renderer import RendererClient
-    from ..spotify_router import Router, build_clients
     from ..tools.transport import make_transport_dispatcher
 
     renderer = RendererClient(
@@ -1655,39 +1692,8 @@ async def _dispatch_transport(action: str) -> dict:
             "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
         ),
     )
-    router: Router | None = None
-    client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
-    if client_id:
-        accounts_path = os.environ.get(
-            "JASPER_SPOTIFY_ACCOUNTS_PATH",
-            "/var/lib/jasper/spotify/accounts.json",
-        )
-        legacy_cache = os.environ.get(
-            "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache",
-        )
-        hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-        default_redirect_uri = (
-            f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}"
-        )
-        redirect_uri = os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
-        accounts = Registry.load(accounts_path)
-        maybe_migrate_legacy(accounts, legacy_cache, default_name="default")
-        # build_clients returns BuildResult (clients + statuses). Dial
-        # press is a one-shot operation that doesn't need lazy rebuild,
-        # so we don't wire a rebuild_fn here.
-        result = build_clients(
-            accounts,
-            client_id=client_id,
-            redirect_uri=redirect_uri,
-        )
-        if result.clients:
-            router = Router(
-                clients=result.clients,
-                default_name=accounts.default_name,
-                statuses=result.statuses,
-            )
 
-    dispatch = make_transport_dispatcher(renderer, router)
+    dispatch = make_transport_dispatcher(renderer, _build_spotify_router_or_none())
     return await dispatch(action)
 
 
@@ -1810,6 +1816,11 @@ def _make_handler(
             self.wfile.write(body)
 
         def _read_json(self) -> dict[str, Any]:
+            """Return a JSON object body; empty/malformed/non-object => {}.
+
+            The mutating-request guard owns Content-Length validation before
+            any POST handler reaches this helper.
+            """
             length = int(self.headers.get("Content-Length") or "0")
             if length < 0 or length > CONTROL_MAX_POST_BYTES:
                 raise ValueError("invalid body length")
@@ -1817,9 +1828,41 @@ def _make_handler(
                 return {}
             raw = self.rfile.read(length)
             try:
-                return json.loads(raw.decode("utf-8"))
+                payload = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return {}
+            return payload if isinstance(payload, dict) else {}
+
+        def _voice_cmd_or_error(
+            self,
+            cmd: str,
+            *,
+            timeout: float | None = None,
+            missing_error: str | None = "voice_daemon not running",
+            log_label: str = "voice command",
+        ) -> dict[str, Any] | None:
+            try:
+                kwargs = {} if timeout is None else {"timeout": timeout}
+                return asyncio.run(
+                    _voice_socket_command(voice_socket_path, cmd, **kwargs),
+                )
+            except FileNotFoundError as e:
+                error = (
+                    f"voice_daemon unreachable: {e}"
+                    if missing_error is None else missing_error
+                )
+                self._send_json({"error": error}, status=503)
+                return None
+            except (OSError, asyncio.TimeoutError) as e:
+                self._send_json(
+                    {"error": f"voice_daemon unreachable: {e}"},
+                    status=503,
+                )
+                return None
+            except Exception as e:  # noqa: BLE001
+                logger.exception("%s failed", log_label)
+                self._send_json({"error": str(e)}, status=502)
+                return None
 
         def _guard_management_read(self) -> bool:
             if self.path == "/healthz":
@@ -2022,19 +2065,13 @@ def _make_handler(
             # response. If the daemon isn't reachable, surface that
             # explicitly so the UI can grey out the toggle instead
             # of pretending we know the state.
-            try:
-                st = asyncio.run(_voice_socket_command(
-                    voice_socket_path, "STATUS", timeout=2.0,
-                ))
-            except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-                self._send_json(
-                    {"error": f"voice_daemon unreachable: {e}"},
-                    status=503,
-                )
-                return
-            except Exception as e:  # noqa: BLE001
-                logger.exception("mic STATUS failed")
-                self._send_json({"error": str(e)}, status=502)
+            st = self._voice_cmd_or_error(
+                "STATUS",
+                timeout=2.0,
+                missing_error=None,
+                log_label="mic STATUS",
+            )
+            if st is None:
                 return
             self._send_json({"muted": bool(st.get("mic_muted", False))})
 
@@ -2503,25 +2540,12 @@ def _make_handler(
 
         def _post_session(self) -> None:
             cmd = "START" if self.path.endswith("start") else "END"
-            try:
-                result = asyncio.run(
-                    _voice_socket_command(voice_socket_path, cmd),
-                )
-            except FileNotFoundError:
-                self._send_json(
-                    {"error": "voice_daemon not running (socket not found)"},
-                    status=503,
-                )
-                return
-            except (OSError, asyncio.TimeoutError) as e:
-                self._send_json(
-                    {"error": f"voice_daemon unreachable: {e}"},
-                    status=503,
-                )
-                return
-            except Exception as e:  # noqa: BLE001
-                logger.exception("session %s failed", cmd)
-                self._send_json({"error": str(e)}, status=502)
+            result = self._voice_cmd_or_error(
+                cmd,
+                missing_error="voice_daemon not running (socket not found)",
+                log_label=f"session {cmd}",
+            )
+            if result is None:
                 return
             # Result codes from voice_daemon's manual_session_*:
             #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING /
@@ -2555,28 +2579,15 @@ def _make_handler(
                     {"error": "missing 'slug' in body"}, status=400,
                 )
                 return
-            try:
-                # Cues run ~5-6s of audio plus duck/restore plus
-                # drain. 30s gives generous headroom even for the
-                # longest reasonable cue.
-                result = asyncio.run(_voice_socket_command(
-                    voice_socket_path, f"CUE_PLAY {slug}",
-                    timeout=30.0,
-                ))
-            except FileNotFoundError:
-                self._send_json(
-                    {"error": "voice_daemon not running"}, status=503,
-                )
-                return
-            except (OSError, asyncio.TimeoutError) as e:
-                self._send_json(
-                    {"error": f"voice_daemon unreachable: {e}"},
-                    status=503,
-                )
-                return
-            except Exception as e:  # noqa: BLE001
-                logger.exception("cue play failed")
-                self._send_json({"error": str(e)}, status=502)
+            # Cues run ~5-6s of audio plus duck/restore plus drain.
+            # 30s gives generous headroom even for the longest reasonable cue.
+            result = self._voice_cmd_or_error(
+                f"CUE_PLAY {slug}",
+                timeout=30.0,
+                missing_error="voice_daemon not running",
+                log_label="cue play",
+            )
+            if result is None:
                 return
             http_status = 200
             if result.get("result") == "missing_slug":
@@ -2603,24 +2614,13 @@ def _make_handler(
                 )
                 return
             cmd = "MUTE" if bool(body["muted"]) else "UNMUTE"
-            try:
-                result = asyncio.run(_voice_socket_command(
-                    voice_socket_path, cmd, timeout=3.0,
-                ))
-            except FileNotFoundError:
-                self._send_json(
-                    {"error": "voice_daemon not running"}, status=503,
-                )
-                return
-            except (OSError, asyncio.TimeoutError) as e:
-                self._send_json(
-                    {"error": f"voice_daemon unreachable: {e}"},
-                    status=503,
-                )
-                return
-            except Exception as e:  # noqa: BLE001
-                logger.exception("mic %s failed", cmd)
-                self._send_json({"error": str(e)}, status=502)
+            result = self._voice_cmd_or_error(
+                cmd,
+                timeout=3.0,
+                missing_error="voice_daemon not running",
+                log_label=f"mic {cmd}",
+            )
+            if result is None:
                 return
             logger.info(
                 "event=mic.set muted=%s client=%s",
@@ -2698,13 +2698,7 @@ def _make_handler(
             #
             # Risk model: LAN-local + browser-origin guard, same
             # as /aec/toggle.
-            try:
-                body = self._read_json()
-            except (ValueError, OSError) as e:
-                self._send_json(
-                    {"error": f"invalid request body: {e}"}, status=400,
-                )
-                return
+            body = self._read_json()
             leg = body.get("leg")
             enabled_val = body.get("enabled")
             if leg not in _TOGGLE_TO_TOKEN:
@@ -2748,13 +2742,7 @@ def _make_handler(
             # one high-level choice plus rollback-safe legacy leg keys.
             # The older /aec/toggle and /aec/leg routes remain as custom
             # expert controls and stamp JASPER_AUDIO_INPUT_PROFILE=custom.
-            try:
-                body = self._read_json()
-            except (ValueError, OSError) as e:
-                self._send_json(
-                    {"error": f"invalid request body: {e}"}, status=400,
-                )
-                return
+            body = self._read_json()
             profile = body.get("profile")
             if not isinstance(profile, str):
                 self._send_json(
@@ -2799,13 +2787,7 @@ def _make_handler(
             # changes bypass the reconciler since they don't
             # need the bridge to restart. Non-blocking — the
             # slider's "Applying…" state is just UX.
-            try:
-                body = self._read_json()
-            except (ValueError, OSError) as e:
-                self._send_json(
-                    {"error": f"invalid request body: {e}"}, status=400,
-                )
-                return
+            body = self._read_json()
             try:
                 threshold = float(body.get("threshold"))
             except (TypeError, ValueError):
@@ -2851,13 +2833,7 @@ def _make_handler(
             # debug_mode.py). Daemon subsystems restart to apply;
             # control applies in-process. Non-blocking — the card's
             # "Applying…" state is just UX.
-            try:
-                body = self._read_json()
-            except (ValueError, OSError) as e:
-                self._send_json(
-                    {"error": f"invalid request body: {e}"}, status=400,
-                )
-                return
+            body = self._read_json()
             subsystem = str(body.get("subsystem") or "")
             enabled = body.get("enabled")
             if not isinstance(enabled, bool):
@@ -2883,13 +2859,7 @@ def _make_handler(
             return
 
         def _post_system_audio_quality(self) -> None:
-            try:
-                body = self._read_json()
-            except (ValueError, OSError) as e:
-                self._send_json(
-                    {"error": f"invalid request body: {e}"}, status=400,
-                )
-                return
+            body = self._read_json()
             if not isinstance(body, dict):
                 self._send_json(
                     {"error": "invalid request body: expected JSON object"},
@@ -3176,6 +3146,29 @@ def run_dial_log_listener(host: str, port: int) -> threading.Thread:
     return t
 
 
+def _install_sigterm_shutdown(server: ThreadingHTTPServer) -> Callable[[], None]:
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def _handle_sigterm(signum: int, _frame: Any) -> None:
+        try:
+            sig_name = signal.Signals(signum).name
+        except ValueError:
+            sig_name = str(signum)
+        logger.info("event=control.shutdown signal=%s", sig_name)
+        threading.Thread(
+            target=server.shutdown,
+            name="control-sigterm-shutdown",
+            daemon=True,
+        ).start()
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    def _restore() -> None:
+        signal.signal(signal.SIGTERM, previous)
+
+    return _restore
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-control",
@@ -3297,12 +3290,16 @@ def main(argv: list[str] | None = None) -> int:
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
     heartbeat.start()
+    restore_sigterm = _install_sigterm_shutdown(server)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         return 0
     finally:
+        restore_sigterm()
+        stop_peering_daemon()
         heartbeat.stop()
+        server.server_close()
     return 0
 
 

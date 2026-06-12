@@ -210,6 +210,73 @@ def test_write_audio_input_profile_rejects_custom(aec_mode_file):
         server._write_audio_input_profile("custom")
 
 
+def test_aec_mode_interleaved_writers_preserve_each_others_keys(
+    aec_mode_file, monkeypatch,
+):
+    """Two HTTP workers can toggle different AEC legs at once. The env
+    read-modify-write must be flocked so the later writer sees and preserves
+    the earlier writer's keys."""
+    from jasper.web import _common as web_common
+
+    real_atomic_write = atomic_io.atomic_write_text
+    real_web_write = web_common.write_env_file
+    first_write_paused = threading.Event()
+    release_first_write = threading.Event()
+    errors: list[BaseException] = []
+
+    def should_pause(text: str) -> bool:
+        return (
+            "JASPER_WAKE_LEG_RAW=0" in text
+            and not first_write_paused.is_set()
+        )
+
+    def pausing_atomic_write(path, text, *, mode=0o644):
+        if should_pause(text):
+            first_write_paused.set()
+            assert release_first_write.wait(timeout=2)
+        return real_atomic_write(path, text, mode=mode)
+
+    def pausing_web_write(path, values, *, mode=0o644):
+        text = "".join(f"{key}={value}\n" for key, value in values.items())
+        if should_pause(text):
+            first_write_paused.set()
+            assert release_first_write.wait(timeout=2)
+        return real_web_write(path, values, mode=mode)
+
+    def write_raw_off():
+        try:
+            server._write_aec_leg("raw", False)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    def write_dtln_on():
+        try:
+            server._write_aec_leg("dtln", True)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    monkeypatch.setattr(atomic_io, "atomic_write_text", pausing_atomic_write)
+    monkeypatch.setattr(web_common, "write_env_file", pausing_web_write)
+    raw_thread = threading.Thread(target=write_raw_off)
+    raw_thread.start()
+    assert first_write_paused.wait(timeout=2)
+
+    dtln_thread = threading.Thread(target=write_dtln_on)
+    dtln_thread.start()
+    release_first_write.set()
+
+    raw_thread.join(timeout=2)
+    dtln_thread.join(timeout=2)
+
+    assert not raw_thread.is_alive()
+    assert not dtln_thread.is_alive()
+    assert not errors
+    body = aec_mode_file.read_text()
+    assert "JASPER_WAKE_LEG_RAW=0" in body
+    assert "JASPER_WAKE_LEG_DTLN=1" in body
+    assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body
+
+
 def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
     wake_model_file, monkeypatch,
 ):
