@@ -38,7 +38,12 @@ def _env(name: str, default: str | None = None, *, required: bool = False) -> st
 
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
-    return float(raw) if raw else default
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise RuntimeError(f"{name} must be a number") from e
 
 
 def _env_optional_float(name: str) -> float | None:
@@ -53,7 +58,12 @@ def _env_optional_float(name: str) -> float | None:
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
-    return int(raw) if raw else default
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise RuntimeError(f"{name} must be a number") from e
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -591,9 +601,7 @@ class Config:
             vad_barge_in_threshold=_env_float(
                 "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
             ),
-            server_vad_enabled=_env(
-                "JASPER_SERVER_VAD_ENABLED", "0",
-            ).strip().lower() not in ("0", "false", "no"),
+            server_vad_enabled=_env_bool("JASPER_SERVER_VAD_ENABLED", False),
             server_vad_threshold=_env_float(
                 "JASPER_SERVER_VAD_THRESHOLD", 0.5,
             ),
@@ -741,15 +749,14 @@ class Config:
                 # Bounce page (jaspercurry/google-oauth-callback) — see
                 # jasper.web.google_setup.default_redirect_uri for why.
                 "GOOGLE_REDIRECT_URI",
-                "https://jaspercurry.github.io/google-oauth-callback/?host="
-                + _env("JASPER_HOSTNAME", "jts.local"),
+                f"https://jaspercurry.github.io/google-oauth-callback/?host={hostname}",
             ),
             google_accounts_path=_env(
                 "JASPER_GOOGLE_ACCOUNTS_PATH",
                 "/var/lib/jasper/google/accounts.json",
             ),
             google_setup_url=_env(
-                "JASPER_GOOGLE_SETUP_URL", "http://jts.local/google",
+                "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/google",
             ),
             google_web_bind_host=_env(
                 "JASPER_GOOGLE_WEB_HOST", "127.0.0.1",
