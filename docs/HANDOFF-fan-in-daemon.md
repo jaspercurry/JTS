@@ -496,9 +496,16 @@ then mixes TTS/cues into the summed buffer before writing toward
 CamillaDSP. `PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
 drive the same content-loudness/profile/peak-cap gain decision used by
 outputd; the latest values are exposed under `tts.assistant_loudness` in
-the STATUS response. `PROGRAM_DUCK_OFF` is allowed to release a duck
-even after an audio flush advances the TTS epoch; stale
-`PROGRAM_DUCK_ON` is not allowed to relatch after a flush.
+the STATUS response alongside `tts.program_duck_active`. Voice's current
+fanin ducker is intentionally one-shot — it sends `PROGRAM_DUCK_ON` and
+closes, then sends `PROGRAM_DUCK_OFF` from a later connection — so fan-in
+does **not** treat TTS socket EOF as duck ownership release. A stuck
+program duck is bounded inside the mixer instead: if no TTS audio is
+pending and no duck refresh has arrived for the idle TTL, fan-in logs
+`event=fanin.program_duck on=false reason=idle_ttl` and releases the
+duck. `PROGRAM_DUCK_OFF` is still allowed to release a duck even after an
+audio flush advances the TTS epoch; stale `PROGRAM_DUCK_ON` is not
+allowed to relatch after a flush.
 
 On an active multiroom bond member, voice bypasses this socket
 entirely: the grouping reconciler points it at outputd's TTS server
@@ -941,4 +948,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-06-08 (fan-in-owned TTS/duck IPC, outputd final-sink ownership, and assistant loudness ownership rechecked).
+Last verified: 2026-06-12 (fan-in-owned one-shot TTS/duck IPC, bounded idle-TTL duck release, outputd final-sink ownership, and assistant loudness ownership rechecked).
