@@ -15,13 +15,13 @@ The manifest is deliberately small and operational:
 
 - Release archives, source archives, `.deb` files, and model files
   record a SHA-256.
-- Source builds consume commit archive URLs where practical. The
-  immutable commit stays recorded even when the operator-friendly
-  version remains a tag name.
-- GitHub/GitLab auto-generated source archives are transitional: they
-  are SHA-256 checked at install time, but the compressed archive bytes
-  are service-generated and should not be the final public-installer
-  reproducibility story.
+- Source-build provenance records immutable commit archive URLs where
+  practical. The immutable commit stays recorded even when the
+  operator-friendly version remains a tag name.
+- Install-time source builds consume byte-exact JTS release-asset
+  mirrors for upstream GitHub/GitLab auto-generated source archives.
+  The upstream commit archive URLs stay in provenance as
+  `upstream_url` / `upstream_resolved_url`.
 - Firmware top-level PlatformIO inputs record exact versions or commits.
 - Known gaps are represented as `[[surface]]` entries instead of being
   hidden in prose.
@@ -92,26 +92,31 @@ intentionally does **not** hash every installed package or source-built
 binary; those surfaces are verified at install time and doctor checks
 their behavior/version/service state instead.
 
-`deploy/install.sh` also builds these source inputs from commit archive
-URLs and verifies each archive with `sha256sum -c` before unpacking:
+`deploy/install.sh` also builds these source inputs from JTS release-asset
+mirrors and verifies each archive with `sha256sum -c` before unpacking.
+The mirrored bytes were downloaded from the upstream pinned commit archive
+URLs and SHA-256 verified against `deploy/provenance.toml` before upload:
 
-- `nqptp` pinned to commit `c925f27c1fd12e4033ac477e5a405969b0b0260b`.
-- `shairport-sync` tag `4.3.7`, commit
-  `0b1c4391ffd398e7b145eb4b98416261380adeea`.
-- `webrtc-audio-processing` tag `v2.1`, commit
-  `846fe90a289f58b7c9303a635142aa2c7caa93e5`.
+- `nqptp-c925f27c1fd1.tar.gz` mirrors upstream
+  `https://github.com/mikebrady/nqptp/archive/c925f27c1fd12e4033ac477e5a405969b0b0260b.tar.gz`;
+  SHA-256 `d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9`.
+- `shairport-sync-0b1c4391ffd3.tar.gz` mirrors upstream
+  `https://github.com/mikebrady/shairport-sync/archive/0b1c4391ffd398e7b145eb4b98416261380adeea.tar.gz`;
+  SHA-256 `7ef3a6ba1cbd67bb200f018ddcd3e8dbe40da98b3c1776aee6c7b832632c6865`.
+- `webrtc-audio-processing-846fe90a289f.tar.gz` mirrors upstream
+  `https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/846fe90a289f58b7c9303a635142aa2c7caa93e5/webrtc-audio-processing-846fe90a289f58b7c9303a635142aa2c7caa93e5.tar.gz`;
+  SHA-256 `ddf4e540b9f4291e140cc2ab4560f3eb4fce07ef6212a94d980843bfbf9a4588`.
+
+CamillaDSP `v4.1.3`, Raspotify `0.48.1`, and CamillaGUI `4.1.0`
+already consume upstream release assets rather than auto-generated commit
+archives, so they do not need JTS mirrors in this slice.
 
 The Python dependency for `pycamilladsp` uses a direct commit archive
 URL in `pyproject.toml` with a `#sha256=` fragment. This keeps the
 base Pi install from needing `git` just so pip can fetch that package.
-
-**TODO before a public installer/release:** mirror the exact source
-archives above as uploaded JTS release assets, update install/provenance
-to consume those stable release-asset URLs, and keep the upstream
-commit/tag archive URLs only as provenance. The current direct upstream
-archives are acceptable for this private/focused slice because hashes
-fail closed, but a public installer should not depend on hosted
-auto-generated archive byte stability.
+It is tracked under the Python dependency accepted gap because mirroring it
+requires a `pyproject.toml` dependency URL change, not an install.sh
+source-build URL change.
 
 Python dependency determinism is partially started but not complete.
 Several direct runtime dependencies are exact-pinned in
@@ -157,11 +162,11 @@ These are real and intentionally left for later slices:
 - **PlatformIO transitive/toolchain resolution.** Top-level firmware
   inputs are exact, but PlatformIO still consults its package registry
   for toolchains and metadata.
-- **Transitional source archive hosting.** `nqptp`, `shairport-sync`,
-  `webrtc-audio-processing`, and `pycamilladsp` currently download
-  upstream auto-generated commit archives. They are immutable by source
-  ref and checked by SHA-256, but before a public installer/release the
-  exact bytes should be mirrored as uploaded JTS release assets.
+- **Python direct archive hosting.** `pycamilladsp` is pinned by commit
+  and SHA-256 in `pyproject.toml`, but pip still downloads an upstream
+  GitHub commit archive directly. Mirroring it should happen with the
+  broader Python dependency determinism work so the project has one
+  dependency-management story.
 
 ## Update Workflow
 
@@ -208,9 +213,12 @@ install/CI together so there is only one dependency-management story.
 
 The 2026-06-01 install-productization slice removed the base install's
 direct `git` fetches for `nqptp`, `shairport-sync`,
-`webrtc-audio-processing`, and `pycamilladsp`. Optional firmware builds
-may still involve PlatformIO's git-backed library handling, but that
-path remains opt-in behind `JASPER_BUILD_OPTIONAL_FIRMWARE=1`.
+`webrtc-audio-processing`, and `pycamilladsp`. The 2026-06-12
+source-mirroring slice moved the three install.sh source-build archives
+to byte-exact JTS release assets while retaining upstream commit archive
+URLs as provenance. Optional firmware builds may still involve
+PlatformIO's git-backed library handling, but that path remains opt-in
+behind `JASPER_BUILD_OPTIONAL_FIRMWARE=1`.
 
 For the current private fleet, this slice is intentionally fresh/rebuild
 focused. Existing installed renderer binaries are not fingerprinted and
@@ -220,4 +228,4 @@ or support third-party speakers, add a migration/check path that records
 or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
 and CamillaGUI bits.
 
-Last verified: 2026-06-02
+Last verified: 2026-06-12

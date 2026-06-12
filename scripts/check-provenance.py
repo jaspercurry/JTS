@@ -22,6 +22,7 @@ DEFAULT_MANIFEST = ROOT / "deploy" / "provenance.toml"
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 URL_RE = re.compile(r"https?://[^\s\"'<>),]+")
+JTS_RELEASE_ASSET_PREFIX = "https://github.com/jaspercurry/JTS/releases/download/"
 
 SHELL_URL_ASSIGN_RE = re.compile(
     r"^(?:local\s+)?(?:[A-Za-z_][A-Za-z0-9_]*(?:URL|REPO)|url)="
@@ -59,6 +60,8 @@ def provenance_strings(data: dict[str, Any]) -> set[str]:
     keys = {
         "url",
         "resolved_url",
+        "upstream_url",
+        "upstream_resolved_url",
         "repository",
         "direct_url",
         "download_url",
@@ -123,6 +126,27 @@ def validate_artifacts(data: dict[str, Any]) -> list[str]:
         if kind in {"source-archive", "python-source-archive"}:
             if not (artifact.get("url") or artifact.get("direct_url")):
                 errors.append(f"{artifact_id}: {kind} requires url or direct_url")
+            url = artifact.get("url")
+            if (
+                kind == "source-archive"
+                and isinstance(url, str)
+                and url.startswith(JTS_RELEASE_ASSET_PREFIX)
+            ):
+                for field in ("upstream_url", "upstream_resolved_url"):
+                    value = artifact.get(field)
+                    if not (isinstance(value, str) and value.startswith("https://")):
+                        errors.append(
+                            f"{artifact_id}: mirrored source archive requires {field}"
+                        )
+                upstream_resolved_url = artifact.get("upstream_resolved_url")
+                if (
+                    isinstance(commit, str)
+                    and isinstance(upstream_resolved_url, str)
+                    and commit not in upstream_resolved_url
+                ):
+                    errors.append(
+                        f"{artifact_id}: upstream_resolved_url must embed commit"
+                    )
         if kind in {"git-source", "python-direct-git", "platformio-git-library"}:
             if not (artifact.get("repository") or artifact.get("direct_url")):
                 errors.append(f"{artifact_id}: {kind} requires repository or direct_url")
