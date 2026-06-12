@@ -800,6 +800,93 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     usb_engine.close.assert_called_once()
 
 
+def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
+    """Every configured software/corpus leg uses the shared packet emitter.
+
+    The order here is the wire order on the fourth 20 ms frame, when each
+    1280-sample UDP packet first becomes ready.
+    """
+    import socket as real_socket
+    from jasper.aec_engines import dtln as dtln_mod
+    from jasper.aec_sweep import (
+        AEC3_SWEEP_ENV_FLAG,
+        AEC3_SWEEP_SOURCE_XVF,
+        AEC3_SWEEP_VARIANTS,
+    )
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    monkeypatch.setenv("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "1")
+    monkeypatch.setenv(AEC3_SWEEP_ENV_FLAG, "1")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    monkeypatch.setattr(aec_bridge, "AEC3_SWEEP_INPUT_SOURCE", AEC3_SWEEP_SOURCE_XVF)
+    monkeypatch.setattr(
+        real_socket,
+        "socket",
+        MagicMock(side_effect=lambda *args, **kwargs: _mock_socket()),
+    )
+
+    frame = lambda value: bytes([value]) * (FRAME_SAMPLES * 2)
+
+    def engine_returning(value):
+        engine = MagicMock()
+        engine.process.return_value = frame(value)
+        engine.close = MagicMock()
+        return engine
+
+    select_engines = [
+        engine_returning(120),  # xvf_raw0_webrtc_aec3
+        engine_returning(140),  # usb_webrtc
+        *[engine_returning(160 + i) for i, _variant in enumerate(AEC3_SWEEP_VARIANTS)],
+    ]
+    monkeypatch.setattr(aec_bridge, "_select_engine", MagicMock(side_effect=select_engines))
+
+    dtln_engines = [
+        engine_returning(130),  # xvf_raw0_dtln
+        engine_returning(150),  # usb_dtln
+        engine_returning(110),  # production dtln
+    ]
+    monkeypatch.setattr(dtln_mod, "DTLNEngine", MagicMock(side_effect=dtln_engines))
+    monkeypatch.setattr(dtln_mod, "default_model_dir", lambda: "/models")
+
+    emitted: list[str] = []
+    real_emit_packet = aec_bridge.emit_packet
+
+    def counting_emit_packet(**kwargs):
+        packet_ready = len(kwargs["batch"]) + len(kwargs["pcm"]) >= OUT_FRAME_BYTES
+        real_emit_packet(**kwargs)
+        if packet_ready:
+            emitted.append(kwargs["leg"])
+
+    monkeypatch.setattr(aec_bridge, "emit_packet", counting_emit_packet)
+
+    engine = engine_returning(100)
+    _aec_loop(
+        _ScriptedMicQ([frame(i + 40) for i in range(4)]),
+        _ScriptedMicQ([frame(i + 1) for i in range(4)]),
+        engine,
+        raw0_q=_ScriptedMicQ([frame(i + 80) for i in range(4)]),
+        emit_ref=True,
+        usb_raw_q=_ScriptedMicQ([frame(i + 60) for i in range(4)]),
+        xvf_raw0_webrtc_enabled=True,
+        xvf_raw0_dtln_enabled=True,
+    )
+
+    assert emitted == [
+        "ref",
+        "off",
+        "raw0",
+        "xvf_raw0_webrtc_aec3",
+        "xvf_raw0_dtln",
+        "dtln",
+        *[variant.leg for variant in AEC3_SWEEP_VARIANTS],
+        "usb_raw",
+        "usb_webrtc",
+        "usb_dtln",
+        "on",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Slow-drip stall watchdog (_MicStarvationWatchdog) — the rate-based detector
 # that catches an intermittent trickle the consecutive-empty check misses.
