@@ -2408,3 +2408,36 @@ def test_follower_forward_failure_is_502_with_leader_named(
     assert body["pair_leader"] == "jts.local"
     assert "unreachable" in body["error"]
     assert fake.calls == []
+
+
+def test_volume_mute_explicit_set_is_idempotent(server_with_coordinator):
+    """{"muted": true} twice stays muted; {"muted": false} when already
+    unmuted returns the current level untouched — the explicit-set shape
+    voice's distinct mute/unmute intents need (a toggle would invert a
+    stale intent)."""
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/mute", {"muted": True})
+    assert status == 200 and body["percent"] == 0
+    status, body = _post(f"{base}/volume/mute", {"muted": True})
+    assert status == 200 and body["percent"] == 0  # still muted, no unmute
+    status, body = _post(f"{base}/volume/mute", {"muted": False})
+    assert status == 200 and body["percent"] == 60  # restored pre-mute level
+    status, body = _post(f"{base}/volume/mute", {"muted": False})
+    assert status == 200 and body["percent"] == 60  # unchanged, no re-mute
+
+
+def test_volume_mute_empty_body_keeps_legacy_toggle(server_with_coordinator):
+    """HID accessory clicks post an empty body — the toggle contract is
+    load-bearing for them and must survive the explicit-set addition."""
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/mute", {})
+    assert status == 200 and body["percent"] == 0      # toggled to muted
+    status, body = _post(f"{base}/volume/mute", {})
+    assert status == 200 and body["percent"] == 60     # toggled back
+
+
+def test_volume_mute_non_bool_muted_is_400(server_with_coordinator):
+    base, _fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/mute", {"muted": "yes"})
+    assert status == 400
+    assert "boolean" in body["error"]

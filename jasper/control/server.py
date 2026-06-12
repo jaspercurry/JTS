@@ -1759,6 +1759,26 @@ def _make_handler(
             camilla_host=camilla_host, camilla_port=camilla_port,
         )
 
+    async def _mute_set_op(want_muted: bool):
+        async def _op(coord):
+            # Explicit set, idempotent: mute-when-muted stays muted,
+            # unmute-when-unmuted returns the current level untouched.
+            # Voice has distinct mute/unmute INTENTS, so it needs this
+            # rather than the toggle (a toggle would invert a stale
+            # intent — "mute" while already muted must not unmute).
+            if want_muted:
+                if not coord.is_muted():
+                    await coord.mute()
+                return 0
+            if coord.is_muted():
+                return await coord.unmute()
+            return coord.get_listening_level()
+        return await _with_coordinator(
+            _op,
+            camilla_host=camilla_host, camilla_port=camilla_port,
+            duck_active_probe=duck_active_probe,
+        )
+
     async def _mute_toggle_op():
         async def _op(coord):
             # If currently muted, unmute and return restored level.
@@ -1881,6 +1901,15 @@ def _make_handler(
             # speakers misconfigured as each other's follower would
             # otherwise ping-pong until a timeout stack built up.
             if self.headers.get(_PAIR_FORWARD_HEADER):
+                # Drain any request body before responding so the
+                # connection state stays sane if keep-alive is ever
+                # enabled (HTTP/1.0 today, so this is pure hygiene).
+                try:
+                    stale = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    stale = 0
+                if self.command == "POST" and stale > 0:
+                    self.rfile.read(stale)
                 self._send_json(
                     {"error": "pair forward loop (both speakers are "
                               "followers?)", "pair_leader": leader},
@@ -2337,20 +2366,31 @@ def _make_handler(
         def _post_volume_mute(self) -> None:
             if self._maybe_forward_volume_to_leader():
                 return
-            # Toggle mute: muted → unmute (restore pre-mute level),
-            # unmuted → mute (save current level, drop to 0).
-            # Used by HID accessory clicks (jasper-input) and any
-            # other one-shot toggle caller. State persistence and
-            # the pre-mute level live inside VolumeCoordinator.
+            # Default is TOGGLE: muted → unmute (restore pre-mute
+            # level), unmuted → mute. Used by HID accessory clicks
+            # (jasper-input) and other one-shot toggle callers. An
+            # optional explicit {"muted": true|false} body sets the
+            # state idempotently — the shape voice's distinct
+            # mute/unmute intents need (additive; absent = toggle).
+            body = self._read_json()
+            explicit = body.get("muted")
+            if explicit is not None and not isinstance(explicit, bool):
+                self._send_json(
+                    {"error": "muted must be a boolean"}, status=400,
+                )
+                return
             try:
-                new_pct = asyncio.run(_mute_toggle_op())
+                if explicit is None:
+                    new_pct = asyncio.run(_mute_toggle_op())
+                else:
+                    new_pct = asyncio.run(_mute_set_op(explicit))
             except Exception as e:  # noqa: BLE001
-                logger.exception("mute toggle failed")
+                logger.exception("mute failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
             logger.info(
-                "event=volume.mute new_pct=%d client=%s",
-                new_pct, self.address_string(),
+                "event=volume.mute new_pct=%d explicit=%s client=%s",
+                new_pct, explicit, self.address_string(),
             )
             self._send_json(self._volume_payload(new_pct))
             return

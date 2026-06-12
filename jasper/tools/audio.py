@@ -13,6 +13,11 @@ function-call layer sees.
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import os
+import urllib.request
 from typing import TYPE_CHECKING
 
 from . import tool
@@ -32,6 +37,53 @@ VOLUME_MAX_DB = 0.0
 # matches Sonos/Echo/HomePod step size. Keep this here so the
 # system prompt's example doesn't drift from the tool default.
 DEFAULT_STEP_PERCENT = 10
+
+logger = logging.getLogger(__name__)
+
+# jasper-control's local HTTP port — same default the systemd unit uses.
+_CONTROL_PORT = int(os.environ.get("JASPER_CONTROL_PORT", "8780"))
+
+# Test seam for the one network call (mirrors control server's
+# _pair_urlopen — patching the stdlib would intercept unrelated clients).
+_pair_urlopen = urllib.request.urlopen
+
+
+def _pair_volume_request(path: str, body: dict | None) -> dict | None:
+    """Drive a volume change through the LOCAL control API when this
+    speaker is an ACTIVE bonded follower, returning the relayed result.
+
+    While bonded, the follower's own coordinator is INAUDIBLE — bonded
+    content bypasses its CamillaDSP entirely — so "Jarvis, louder" spoken
+    to the follower must move the PAIR volume. jasper-control already owns
+    the one forwarding implementation (its /volume* handlers relay to the
+    leader), so the tools reuse it via loopback rather than growing a
+    second forward here. Returns None when this speaker is solo/leader
+    (callers use the local coordinator as always). Raises on transport
+    failure — the async wrapper turns that into a spoken error, never a
+    silent inert write. Sync by design; called via asyncio.to_thread.
+    """
+    from ..multiroom.config import load_config
+
+    cfg = load_config()
+    if not (
+        cfg.enabled
+        and cfg.error is None
+        and cfg.role == "follower"
+        and cfg.leader_addr
+    ):
+        return None
+    url = f"http://127.0.0.1:{_CONTROL_PORT}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST" if body is not None else "GET",
+    )
+    # 4 s: covers control's own 2.5 s leader hop plus loopback overhead.
+    with _pair_urlopen(req, timeout=4.0) as resp:
+        payload = json.loads(resp.read().decode())
+    return payload if isinstance(payload, dict) else {}
 
 
 def _percent_to_db(percent: int) -> float:
@@ -56,6 +108,23 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
     level.
     """
 
+    async def _pair_volume(path: str, body: dict | None = None) -> dict | None:
+        """None → not a bonded follower (use the local coordinator).
+        A dict → the pair-volume result to return, or an `error` the LLM
+        speaks — never fall back to the local coordinator on failure,
+        whose writes are inaudible while bonded (a lie to the user)."""
+        try:
+            return await asyncio.to_thread(_pair_volume_request, path, body)
+        except Exception as e:  # noqa: BLE001 — degrade to a spoken error
+            logger.warning(
+                "event=volume.pair_tool_forward_failed path=%s error=%s",
+                path, e,
+            )
+            return {
+                "error": "Couldn't reach the pair leader to change the "
+                         "volume. The other speaker may be offline.",
+            }
+
     @tool()
     async def get_volume() -> dict:
         """Return the current speaker volume as a percentage 0-100.
@@ -69,6 +138,11 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         Voice answer style: 'Volume is at 70%.' Just the number,
         no preamble.
         """
+        fwd = await _pair_volume("/volume")
+        if fwd is not None:
+            if "error" in fwd:
+                return fwd
+            return {"percent": int(fwd.get("percent", 0))}
         return {"percent": coordinator.get_listening_level()}
 
     @tool()
@@ -81,6 +155,11 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         Voice answer style: speak the new `percent` from the result
         ('Volume sixty.'). No preamble; no confirmation question.
         """
+        fwd = await _pair_volume("/volume/set", {"percent": int(percent)})
+        if fwd is not None:
+            if "error" in fwd:
+                return fwd
+            return {"ok": True, "percent": int(fwd.get("percent", 0))}
         applied = await coordinator.set_listening_level(percent)
         return {"ok": True, "percent": applied}
 
@@ -96,6 +175,13 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         Voice answer style: speak the new `percent` from the result
         ('Volume seventy.'). No preamble; no confirmation question.
         """
+        fwd = await _pair_volume(
+            "/volume/adjust", {"delta_percent": int(delta_percent)},
+        )
+        if fwd is not None:
+            if "error" in fwd:
+                return fwd
+            return {"ok": True, "percent": int(fwd.get("percent", 0))}
         applied = await coordinator.adjust_listening_level(int(delta_percent))
         return {"ok": True, "percent": applied}
 
@@ -105,6 +191,11 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
 
         Voice answer style: 'Muted.' One word.
         """
+        fwd = await _pair_volume("/volume/mute", {"muted": True})
+        if fwd is not None:
+            if "error" in fwd:
+                return fwd
+            return {"ok": True, "muted": True}
         await coordinator.mute()
         return {"ok": True, "muted": True}
 
@@ -115,6 +206,11 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
 
         Voice answer style: 'Unmuted.' One word.
         """
+        fwd = await _pair_volume("/volume/mute", {"muted": False})
+        if fwd is not None:
+            if "error" in fwd:
+                return fwd
+            return {"ok": True, "percent": int(fwd.get("percent", 0))}
         applied = await coordinator.unmute(fallback_level=50)
         return {"ok": True, "percent": applied}
 
