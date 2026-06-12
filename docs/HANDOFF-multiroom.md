@@ -1676,7 +1676,31 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (SESSION-REVIEW FIX BATCH — failure legibility +
+Last verified: 2026-06-12 (DUMB-FOLLOWER PR-A — the renderer stack parks
+while bonded. plan() role=follower now stops FOLLOWER_PARKED_UNITS
+(shairport-sync, nqptp, librespot, bluealsa + bluealsa-aplay, bt-agent,
+jasper-mux, jasper-usbsink): a follower's local sources are structurally
+unplayable — and a phantom AirPlay/Spotify session into the direct lane
+AUDIBLY LEAKS during outputd's inv-B starvation-fallback periods, so
+parking is correctness, not just UX. STOP, never disable — /sources/
+keeps systemd enable/disable as the household's intent; solo/leader/
+invalid plans carry NEW "restore" intents (start-only-if-enabled, applied
+at the I/O layer) so unbond puts sources back exactly per the wizard.
+_apply treats absent units as clean no-ops (the endpoint install tier's
+dependency: stop/restore against never-installed units must not flip
+rc). ShairportSupervisor gains a parked_by_role gate (no WARN buildup
+against a deliberately-stopped shairport; snapshot says parked). The
+dial's play/pause on a follower forwards to the leader (/transport/*
+joins /volume* on the pair forward — with mux parked the local toggle
+would be a dead button). Doctor: renderer liveness checks
+(librespot/shairport/nqptp/mux/bluealsa) read "parked (bonded follower)"
+via the NEW _parked_as_bonded_follower() shared skip idiom — the same
+idiom PR-B's voice/AEC parking and the endpoint tier's doctor reuse.
+check_grouping's runtime rows now include the parked units
+(expected=stop), and only desired=start units can degrade health.
+jasper-voice/jasper-aec-bridge are deliberately NOT in the parked set —
+those units belong to jasper-aec-reconcile (single-writer rule), PR-B.)
+Earlier same day (SESSION-REVIEW FIX BATCH — failure legibility +
 cross-member coherence. postJSON now carries the server's JSON verdict on
 the thrown error, so /rooms renders per-member swap/bond/unbond detail and
 the rollback outcome instead of "HTTP 502"; the landing pair-volume slider

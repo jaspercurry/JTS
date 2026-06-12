@@ -211,15 +211,28 @@ def _grouping_cfg(**kw):
     return GroupingConfig(**defaults)
 
 
-def _patch_grouping(monkeypatch, cfg, is_active_stdout):
+def _patch_grouping(monkeypatch, cfg, is_active_stdout=None, *,
+                    unit_states=None):
+    """Stub the grouping check's IO. Prefer `unit_states` (a unit→state
+    mapping; unlisted units default to "inactive") — the plan carries the
+    dumb-follower park/restore intents, so positional stdout lines are
+    brittle against the unit list growing."""
     import jasper.multiroom.config as mr_config
 
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
 
-    class FakeRun:
-        stdout = is_active_stdout
+    def fake_run(argv, *a, **kw):
+        class FakeRun:
+            stdout = ""
+        if unit_states is not None and list(argv[:2]) == ["systemctl", "is-active"]:
+            FakeRun.stdout = "\n".join(
+                unit_states.get(u, "inactive") for u in argv[2:]
+            ) + "\n"
+        elif is_active_stdout is not None:
+            FakeRun.stdout = is_active_stdout
+        return FakeRun()
 
-    monkeypatch.setattr(doctor.grouping, "_run", lambda *a, **kw: FakeRun())
+    monkeypatch.setattr(doctor.grouping, "_run", fake_run)
     # No producer-feed stubbing: check_grouping injects leader_tap_path=""
     # unconditionally (no music producer exists yet — HANDOFF-multiroom.md
     # §2, Increments 3–5), so a bonded leader honestly derives degraded.
@@ -256,8 +269,10 @@ def test_check_grouping_leader_reads_degraded_when_config_not_piped(monkeypatch,
     cfg = _grouping_cfg(
         enabled=True, role="leader", channel="left", bond_id="living-room",
     )
-    # plan units order = [snapserver, snapclient]; both active.
-    _patch_grouping(monkeypatch, cfg, "active\nactive\n")
+    _patch_grouping(monkeypatch, cfg, unit_states={
+        "jasper-snapserver.service": "active",
+        "jasper-snapclient.service": "active",
+    })
     r = doctor.check_grouping()
     assert r.status == "warn"
     assert "does not write the snapserver pipe" in r.detail
@@ -269,9 +284,10 @@ def test_check_grouping_follower_unreachable_leader_warns(monkeypatch):
         enabled=True, role="follower", channel="right",
         bond_id="living-room", leader_addr="192.168.1.50",
     )
-    # follower plan units = [snapserver(stop), snapclient(start)];
     # snapclient failed => degraded, leader unreachable.
-    _patch_grouping(monkeypatch, cfg, "inactive\nfailed\n")
+    _patch_grouping(monkeypatch, cfg, unit_states={
+        "jasper-snapclient.service": "failed",
+    })
     r = doctor.check_grouping()
     assert r.status == "warn"
     assert "follower not connected" in r.detail
@@ -286,8 +302,12 @@ def test_check_grouping_connected_follower_is_ok(monkeypatch):
         enabled=True, role="follower", channel="right",
         bond_id="living-room", leader_addr="192.168.1.50",
     )
-    # Connected follower (snapclient active) => ok.
-    _patch_grouping(monkeypatch, cfg, "inactive\nactive\n")
+    # Connected follower (snapclient active) => ok; the parked renderer
+    # stack reads inactive by default, which can never degrade health
+    # (only desired=start units can).
+    _patch_grouping(monkeypatch, cfg, unit_states={
+        "jasper-snapclient.service": "active",
+    })
     r = doctor.check_grouping()
     assert r.status == "ok"
     assert "follower connected" in r.detail
@@ -4038,3 +4058,46 @@ def test_check_fanin_tts_drops_ok_when_status_unreachable(monkeypatch):
     r = doctor.check_fanin_tts_drops()
     assert r.status == "ok"
     assert "jasper-fanin service" in r.detail
+
+
+def test_renderer_checks_read_parked_on_bonded_follower(monkeypatch):
+    """The dumb-follower profile deliberately stops the renderer stack —
+    every liveness check for a parked unit must read ok/'parked', never
+    fail against intended state. Driven through the real shared
+    predicate with only the grouping config patched."""
+    import jasper.multiroom.config as mr_config
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(
+        mr_config, "load_config",
+        lambda *a, **k: _grouping_cfg(
+            enabled=True, role="follower", channel="right",
+            bond_id="b", leader_addr="jts.local",
+        ),
+    )
+    checks = [
+        lambda: rdoc.check_librespot_running(None),
+        rdoc.check_shairport_sync_ap2,
+        rdoc.check_nqptp_running,
+        rdoc.check_jasper_mux,
+        rdoc.check_bluealsa,
+    ]
+    for check in checks:
+        r = check()
+        assert r.status == "ok", r
+        assert "parked (bonded follower)" in r.detail
+
+
+def test_renderer_checks_probe_normally_when_solo(monkeypatch):
+    """The parked skip must vanish on a solo speaker — a dead librespot
+    is a real failure there. (Fail-open contract of the predicate.)"""
+    import jasper.multiroom.config as mr_config
+    from jasper.cli.doctor import renderers as rdoc
+
+    monkeypatch.setattr(
+        mr_config, "load_config",
+        lambda *a, **k: _grouping_cfg(enabled=False),
+    )
+    monkeypatch.setattr(rdoc.os.path, "isfile", lambda p: False)
+    r = rdoc.check_librespot_running(None)
+    assert r.status == "fail"  # binary missing probes through, no skip

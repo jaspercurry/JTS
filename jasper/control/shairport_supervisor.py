@@ -86,6 +86,9 @@ class ShairportSupervisor:
         self.last_restart_at: float | None = None
         self.restart_count: int = 0
         self.suppressed_count: int = 0
+        # True while the probe is intentionally idle because this
+        # speaker is a bonded follower with shairport parked.
+        self.parked_by_role: bool = False
         # Monotonic clock for rate-limit math — separated from
         # last_restart_at so display and arithmetic don't share
         # a time base. time.monotonic() can't go backwards on NTP
@@ -111,6 +114,17 @@ class ShairportSupervisor:
             ))
 
     async def _tick(self) -> None:
+        if self.shairport_parked_by_role():
+            # A bonded FOLLOWER deliberately parks shairport-sync (the
+            # dumb-follower profile — its sources are structurally
+            # unplayable while bonded). Probing it would WARN every tick
+            # against intended state; the grouping reconciler owns the
+            # unit, /rooms + the doctor own the user-facing story.
+            self.consecutive_failures = 0
+            self.last_probe_ok = None
+            self.parked_by_role = True
+            return
+        self.parked_by_role = False
         ok = False
         try:
             ok = await self.probe()
@@ -210,6 +224,20 @@ class ShairportSupervisor:
             return True
         return playing
 
+    def shairport_parked_by_role(self) -> bool:
+        """True when this speaker is an ACTIVE bonded follower — the
+        dumb-follower profile parks shairport-sync, so the wedge probe
+        must idle. One tiny env read per tick via the shared predicate
+        (jasper.multiroom.config.follower_leader_addr); overridable in
+        tests. Fail-open to NOT-parked: a broken read must never
+        silently disable the wedge supervisor on a solo speaker."""
+        try:
+            from ..multiroom.config import follower_leader_addr, load_config
+
+            return follower_leader_addr(load_config()) is not None
+        except Exception:  # noqa: BLE001 — fail-open, keep supervising
+            return False
+
     async def restart_shairport(self) -> None:
         """`reset-failed` clears StartLimitBurst parking; `--no-block
         restart` returns as soon as the job is enqueued so we don't sit
@@ -239,6 +267,7 @@ class ShairportSupervisor:
     def snapshot(self) -> dict[str, Any]:
         return {
             "enabled": True,
+            "parked_by_role": self.parked_by_role,
             "last_probe_at": self.last_probe_at,
             "last_probe_ok": self.last_probe_ok,
             "consecutive_failures": self.consecutive_failures,
