@@ -197,5 +197,7 @@ a.room-row:hover .room-row__go {
 }
 .bond-dissolve {
   display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
   margin-top: 0.9rem;
 }

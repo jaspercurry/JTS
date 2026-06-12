@@ -2277,3 +2277,134 @@ def test_control_unit_declares_notify_watchdog():
     assert "Type=notify" in unit
     assert "Type=simple" not in unit
     assert re.search(r"^WatchdogSec=\d+s?$", unit, re.M)
+
+
+# ---------------------------------------------------------------------------
+# Bonded-follower volume proxy — /volume* forwards to the pair leader.
+# ---------------------------------------------------------------------------
+
+
+def _grouping_cfg(**kw):
+    from jasper.multiroom.config import GroupingConfig
+    base = dict(enabled=True, role="follower", channel="right",
+                bond_id="bond-1", leader_addr="jts.local", buffer_ms=400,
+                codec="flac", error=None)
+    base.update(kw)
+    return GroupingConfig(**base)
+
+
+def test_pair_follower_leader_addr_resolution(monkeypatch):
+    """Only an ACTIVE bonded follower forwards: leader, solo, and
+    fail-LOUD-invalid configs all resolve to None (local handling)."""
+    import jasper.multiroom.config as mcfg
+    import jasper.control.server as srv_mod
+
+    cases = [
+        (_grouping_cfg(), "jts.local"),
+        (_grouping_cfg(role="leader", leader_addr=""), None),
+        (_grouping_cfg(enabled=False), None),
+        (_grouping_cfg(error="broken"), None),
+        (_grouping_cfg(leader_addr=""), None),
+    ]
+    for cfg, want in cases:
+        monkeypatch.setattr(mcfg, "load_config", lambda *a, _c=cfg, **k: _c)
+        assert srv_mod._pair_follower_leader_addr() == want
+
+
+class _FakeUpstream:
+    """Context-manager response double for urllib.request.urlopen."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._payload
+
+
+@pytest.fixture
+def follower_server(monkeypatch, server_with_coordinator):
+    """The coordinator server, with this speaker patched into an active
+    bonded follower and the upstream leader call captured."""
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+    )
+    seen: list = []
+
+    def fake_urlopen(req, timeout=None):
+        seen.append((req, timeout))
+        return _FakeUpstream(b'{"db": -15.0, "percent": 70}')
+
+    monkeypatch.setattr(srv_mod, "_pair_urlopen", fake_urlopen)
+    base, fake = server_with_coordinator
+    return base, fake, seen
+
+
+def test_follower_get_volume_forwards_to_leader(follower_server):
+    base, fake, seen = follower_server
+    status, body = _get(f"{base}/volume")
+    assert status == 200
+    # The leader's payload is relayed, tagged with the pair leader.
+    assert body == {"db": -15.0, "percent": 70, "pair_leader": "jts.local"}
+    assert fake.calls == []  # the LOCAL coordinator was never touched
+    req, timeout = seen[0]
+    assert req.full_url.startswith("http://jts.local:")
+    assert req.full_url.endswith("/volume")
+    assert req.get_header("X-jts-pair-forwarded") == "1"
+    assert timeout == 2.5
+
+
+def test_follower_post_volume_set_relays_body_verbatim(follower_server):
+    base, fake, seen = follower_server
+    status, body = _post(f"{base}/volume/set", {"percent": 35})
+    assert status == 200
+    assert body["pair_leader"] == "jts.local"
+    assert fake.calls == []
+    req, _ = seen[0]
+    assert req.full_url.endswith("/volume/set")
+    assert json.loads(req.data) == {"percent": 35}
+
+
+def test_follower_forward_loop_is_broken(follower_server):
+    """A request that already carries the forward marker is never forwarded
+    again — two mutual followers must error, not ping-pong."""
+    base, fake, seen = follower_server
+    req = urllib.request.Request(
+        f"{base}/volume", headers={"X-JTS-Pair-Forwarded": "1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            status, body = resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        status, body = e.code, json.loads(e.read())
+    assert status == 502
+    assert "loop" in body["error"]
+    assert seen == []  # no upstream call attempted
+
+
+def test_follower_forward_failure_is_502_with_leader_named(
+    monkeypatch, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+    )
+
+    def exploding_urlopen(req, timeout=None):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(srv_mod, "_pair_urlopen", exploding_urlopen)
+    base, fake = server_with_coordinator
+    status, body = _get(f"{base}/volume")
+    assert status == 502
+    assert body["pair_leader"] == "jts.local"
+    assert "unreachable" in body["error"]
+    assert fake.calls == []

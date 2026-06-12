@@ -76,6 +76,21 @@ When the voice tool / dial / "louder" wants to change volume:
    −50..0 dB curve remains unchanged for 1-100%, while 0% additionally
    sets Camilla's `main_mute`.
 
+### Bonded-follower volume proxy (stereo pairs)
+
+While a speaker is an ACTIVE multiroom bond follower, its local volume
+knobs are inert — bonded content bypasses the local CamillaDSP entirely
+(the leader's one Camilla bakes the program;
+[HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2). jasper-control
+therefore forwards `GET /volume` and `POST /volume/{set,adjust,mute}`
+verbatim to the leader's control API and relays the answer (tagged
+`pair_leader`), so the landing-page slider, a paired dial, and any HTTP
+client control the PAIR volume from whichever member they talk to. A
+`X-JTS-Pair-Forwarded` header breaks forward loops; the follower check
+is one grouping.env parse per call. Solo speakers and leaders never
+enter this path. Voice volume commands on a follower still go through
+its local coordinator (the pair mic story is leader-only).
+
 ### `/state` volume policy visibility
 
 `jasper-control` exposes `/state.audio.volume_policy` so the quiet

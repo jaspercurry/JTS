@@ -59,6 +59,9 @@ URL surface (after nginx strips the /rooms/ prefix):
   POST /unbond      dissolve the bond this speaker is in: disable self +
                     every sibling sharing this bond_id, SERVER-side via each
                     member's jasper-control /grouping/set (CSRF-verified)
+  POST /swap        exchange a 2-speaker pair's left/right channels —
+                    roles/bond untouched; partial failure rolls back so the
+                    pair never sticks on a same-channel state (CSRF-verified)
 """
 from __future__ import annotations
 
@@ -870,6 +873,129 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     )
 
 
+def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
+    """Handle POST /swap: exchange the two members' channels (left ↔ right).
+
+    The physical speakers stay where they are; each one simply plays the
+    other channel — the leader keeps streaming the same stereo program and
+    each member's outputd ChannelPick drops the other side after its
+    reconciler applies the change (~a one-period blip per speaker). Roles,
+    bond_id, and leader_addr are untouched: this is a channel-assignment
+    edit, never a leadership change.
+
+    Deliberately scoped to the 2-speaker left/right pair: discovery mirrors
+    :func:`_unbond` (browse siblings, GET each ``/grouping``, match our
+    bond_id), then requires exactly ONE same-bond peer and a {left, right}
+    channel set between us — a mono/multi-member bond has no well-defined
+    "swap" and 400s with the reason. Self's new channel is written via the
+    loopback target (empty addr), the peer via its address, both through
+    the same :func:`_fan_out_grouping` machinery as /bond."""
+    grouping = read_grouping_state()
+    bond_id = str(grouping.get("bond_id") or "").strip()
+    if not grouping.get("enabled") or not bond_id:
+        _send_json(
+            handler, {"ok": False, "error": "not in a bond"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+
+    known = _self_addresses()
+    candidate_addrs = [
+        a for a in (
+            str(s.get("address") or "").strip() for s in _discover_speakers_cached()
+        ) if a and a not in known
+    ]
+    candidate_groupings = _map_peers(
+        lambda a: _get_member_grouping(a, known), candidate_addrs,
+    )
+    peers = [
+        (a, pg) for a, pg in zip(candidate_addrs, candidate_groupings)
+        if pg is not None and str(pg.get("bond_id") or "").strip() == bond_id
+    ]
+    if len(peers) != 1:
+        _send_json(
+            handler,
+            {"ok": False, "error": (
+                "channel swap needs exactly one reachable paired speaker "
+                f"(found {len(peers)})"
+            )},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+
+    peer_addr, peer_grouping = peers[0]
+    self_channel = str(grouping.get("channel") or "").strip()
+    peer_channel = str(peer_grouping.get("channel") or "").strip()
+    if {self_channel, peer_channel} != {"left", "right"}:
+        _send_json(
+            handler,
+            {"ok": False, "error": (
+                "channel swap needs a left/right pair (this speaker is "
+                f"{self_channel or '?'}, peer is {peer_channel or '?'})"
+            )},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+        return
+
+    def _body(g: dict, channel: str) -> dict:
+        return {
+            "enabled": True,
+            "role": str(g.get("role") or ""),
+            "channel": channel,
+            "bond_id": bond_id,
+            "leader_addr": str(g.get("leader_addr") or ""),
+        }
+
+    targets: list[tuple[str, dict]] = [
+        ("", _body(grouping, peer_channel)),
+        (peer_addr, _body(peer_grouping, self_channel)),
+    ]
+    fan_results = _fan_out_grouping(targets, known=known)
+    results = [
+        {"addr": addr, "channel": body["channel"], "ok": ok, "detail": detail}
+        for (addr, body), (ok, detail) in zip(targets, fan_results)
+    ]
+    all_ok = all(r["ok"] for r in results)
+    for r in results:
+        if not r["ok"]:
+            logger.warning(
+                "event=rooms.swap.member_failed bond=%s addr=%s detail=%s",
+                bond_id, r["addr"] or "(self)", r["detail"],
+            )
+    # The two writes fan out CONCURRENTLY, so exactly-one-failed leaves the
+    # pair on a SAME-channel state ({left,left} / {right,right}) — audibly
+    # wrong, and it blocks a retry because the {left,right} precondition no
+    # longer holds. Best-effort rollback: put the member that DID flip back
+    # on its original channel so the bond returns to a consistent,
+    # retryable state. Rollback failure is surfaced, never silent.
+    rolled_back = None
+    if not all_ok and any(r["ok"] for r in results):
+        ok_idx = 0 if results[0]["ok"] else 1
+        rb_addr = targets[ok_idx][0]
+        rb_grouping = grouping if ok_idx == 0 else peer_grouping
+        rb_channel = self_channel if ok_idx == 0 else peer_channel
+        rb_ok, rb_detail = _post_grouping_to_member(
+            rb_addr, _body(rb_grouping, rb_channel), known,
+        )
+        rolled_back = bool(rb_ok)
+        logger.warning(
+            "event=rooms.swap.rollback bond=%s addr=%s channel=%s ok=%s detail=%s",
+            bond_id, rb_addr or "(self)", rb_channel, rb_ok, rb_detail,
+        )
+    logger.info(
+        "event=rooms.swap bond=%s self=%s->%s peer=%s->%s ok=%s",
+        bond_id, self_channel, peer_channel, peer_channel, self_channel, all_ok,
+    )
+    payload = {"ok": all_ok, "bond_id": bond_id, "results": results}
+    if rolled_back is not None:
+        payload["rolled_back"] = rolled_back
+    _send_json(
+        handler,
+        payload,
+        status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
+    )
+
+
 def _make_handler():
     """Build the request handler class. No state-path binding — the
     directory pulls everything live (mDNS browse + grouping + peering SSOT),
@@ -893,7 +1019,7 @@ def _make_handler():
         def do_POST(self):  # noqa: N802
             # Route-check BEFORE the CSRF guard (project convention): a bogus
             # path 404s without revealing CSRF state.
-            if self.path not in ("/peering", "/bond", "/unbond"):
+            if self.path not in ("/peering", "/bond", "/unbond", "/swap"):
                 self.send_response(HTTPStatus.NOT_FOUND)
                 self.end_headers()
                 return
@@ -906,6 +1032,8 @@ def _make_handler():
                 _save_bond(self)
             elif self.path == "/unbond":
                 _unbond(self)
+            elif self.path == "/swap":
+                _swap_channels(self)
             else:
                 _save_peering(self)
 

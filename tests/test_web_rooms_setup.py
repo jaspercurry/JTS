@@ -1459,3 +1459,196 @@ def test_post_unbond_logs_unreachable_candidate_count(monkeypatch, caplog):
         and "candidates=2" in m and "unreachable=1" in m and "peers=1" in m
         for m in infos
     )
+
+
+# ----------------------------------------------------------------------
+# POST /swap — exchange the pair's left/right channels.
+# ----------------------------------------------------------------------
+
+
+def _post_swap(*, monkeypatch, self_grouping, speakers=(), peer_grouping=None,
+               member_results=None):
+    """Drive POST /swap with the cross-speaker GET/POST stubbed. Returns
+    (handler, posts) where posts is the list of (addr, body) written. Same
+    stub set as _post_unbond — swap shares its discovery + fan-out path."""
+    posts: list[tuple[str, dict]] = []
+
+    def fake_member_post(addr, body, known=None):
+        posts.append((addr, body))
+        if member_results and addr in member_results:
+            return member_results[addr]
+        return (True, "HTTP 200")
+
+    def fake_get_grouping(addr, known=None):
+        return (peer_grouping or {}).get(addr)
+
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    monkeypatch.setattr(rooms_setup, "read_grouping_state",
+                        lambda *a, **k: dict(self_grouping))
+    monkeypatch.setattr(rooms_setup, "_discover_speakers_cached",
+                        lambda: list(speakers))
+    monkeypatch.setattr(rooms_setup, "_self_addresses", lambda: set())
+    monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
+    monkeypatch.setattr(rooms_setup, "_post_grouping_to_member", fake_member_post)
+
+    handler_cls = rooms_setup._make_handler()
+    h = _FakeHandler("/swap")
+    h.headers["Content-Length"] = "2"
+    h.rfile = BytesIO(b"{}")
+    handler_cls.do_POST(h)
+    return h, posts
+
+
+def test_post_swap_exchanges_channels_and_keeps_roles(monkeypatch):
+    """Happy path: leader/left + follower/right become leader/right +
+    follower/left. Roles, bond_id, and each member's leader_addr are
+    untouched — swap is a channel edit, never a leadership change."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1", "leader_addr": ""},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "role": "follower",
+                            "channel": "right", "bond_id": "bond-1",
+                            "leader_addr": "jts.local"},
+        },
+    )
+    assert h.status == 200
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is True
+    assert posts == [
+        ("", {"enabled": True, "role": "leader", "channel": "right",
+              "bond_id": "bond-1", "leader_addr": ""}),
+        ("192.168.1.9", {"enabled": True, "role": "follower",
+                         "channel": "left", "bond_id": "bond-1",
+                         "leader_addr": "jts.local"}),
+    ]
+
+
+def test_post_swap_400_when_not_in_a_bond(monkeypatch):
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": False, "role": "", "bond_id": ""},
+        speakers=[{"address": "192.168.1.9"}],
+    )
+    assert h.status == 400
+    assert posts == []
+
+
+def test_post_swap_400_when_peer_unreachable(monkeypatch):
+    """Zero reachable same-bond peers -> 400 (swap needs both ends alive),
+    and nothing is written — a half-swapped pair must be impossible."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1"},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={"192.168.1.9": None},  # GET failed
+    )
+    assert h.status == 400
+    assert "exactly one" in json.loads(h.wfile.getvalue())["error"]
+    assert posts == []
+
+
+def test_post_swap_400_on_multi_member_bond(monkeypatch):
+    """Two same-bond peers -> no well-defined pair swap -> 400, no writes."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1"},
+        speakers=[{"address": "192.168.1.9"}, {"address": "192.168.1.10"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "bond_id": "bond-1",
+                            "channel": "right"},
+            "192.168.1.10": {"enabled": True, "bond_id": "bond-1",
+                             "channel": "right"},
+        },
+    )
+    assert h.status == 400
+    assert posts == []
+
+
+def test_post_swap_400_when_channels_are_not_left_right(monkeypatch):
+    """A mono/mono bond has nothing to swap -> 400 with both channels named."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "mono",
+                       "bond_id": "bond-1"},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "bond_id": "bond-1",
+                            "channel": "mono"},
+        },
+    )
+    assert h.status == 400
+    assert "left/right" in json.loads(h.wfile.getvalue())["error"]
+    assert posts == []
+
+
+def test_post_swap_partial_failure_rolls_back_the_flipped_member(monkeypatch):
+    """The two writes fan out concurrently; exactly-one-failed would leave
+    BOTH speakers on the same channel — audibly wrong AND retry-blocked
+    (the left/right precondition no longer holds). The succeeded member is
+    rolled back to its original channel and the response says so."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1", "leader_addr": ""},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "role": "follower",
+                            "channel": "right", "bond_id": "bond-1",
+                            "leader_addr": "jts.local"},
+        },
+        member_results={"192.168.1.9": (False, "connection refused")},
+    )
+    assert h.status == 502
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is False
+    assert body["rolled_back"] is True
+    # swap writes (self ok, peer failed) + the self rollback to "left".
+    assert len(posts) == 3
+    rb_addr, rb_body = posts[2]
+    assert rb_addr == ""
+    assert rb_body["channel"] == "left"
+    assert rb_body["role"] == "leader"
+
+
+def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
+    """If the rollback itself fails, the response reports rolled_back=False
+    (never a silent stuck pair) — the journal carries the per-member lines."""
+    calls = {"n": 0}
+
+    def flaky_self(addr, body, known=None):
+        # self swap write succeeds; the later self ROLLBACK fails.
+        calls["n"] += 1
+        if addr == "" and calls["n"] >= 3:
+            return (False, "control restarting")
+        if addr == "192.168.1.9":
+            return (False, "connection refused")
+        return (True, "HTTP 200")
+
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1", "leader_addr": ""},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "role": "follower",
+                            "channel": "right", "bond_id": "bond-1",
+                            "leader_addr": "jts.local"},
+        },
+        member_results=None,
+    )
+    # Drive again with the flaky poster: patch directly for this variant.
+    import jasper.web.rooms_setup as rooms_setup_mod
+    monkeypatch.setattr(rooms_setup_mod, "_post_grouping_to_member", flaky_self)
+    handler_cls = rooms_setup_mod._make_handler()
+    h = _FakeHandler("/swap")
+    h.headers["Content-Length"] = "2"
+    h.rfile = BytesIO(b"{}")
+    handler_cls.do_POST(h)
+    body = json.loads(h.wfile.getvalue())
+    assert h.status == 502
+    assert body["rolled_back"] is False
