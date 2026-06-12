@@ -105,6 +105,7 @@ from ._common import (
     restart_systemd_units,
     send_html_response,
     send_see_other,
+    guard_read_request,
     guard_mutating_request,
     write_env_file,
 )
@@ -1008,6 +1009,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             qs = urllib.parse.parse_qs(url.query)
 
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 self._render_index(
                     ctx["csrf_token"], status_msg=ctx["flash"],
@@ -1015,11 +1018,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
 
             if path == "/playlist-preview":
+                if not guard_read_request(self):
+                    return
                 # Read-only AJAX endpoint — no CSRF, no flash.
                 self._handle_playlist_preview(qs)
                 return
 
             if path == "/oauth-callback":
+                if not guard_read_request(self, allow_cross_site_navigation=True):
+                    return
                 # OAuth callback from Spotify (or the bounce page) —
                 # protected by the OAuth `state` nonce, not by CSRF.
                 self._handle_oauth_callback_get(qs)

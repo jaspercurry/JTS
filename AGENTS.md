@@ -391,6 +391,13 @@ primitive layer:
 - Send mutating JSON POSTs with `jsonHeaders()`.
 - Send mutating non-JSON POSTs, such as `audio/wav`, with
   `csrfHeaders({...})`.
+- Route-check unknown GET paths before `guard_read_request()` so bogus
+  paths return 404 without revealing Host / Fetch Metadata guard state.
+  Call `guard_read_request()` before rendering or returning page data on
+  recognized GET routes. It permits valid-host top-level document
+  navigations (needed for OAuth redirect-follow and ordinary links) while
+  still rejecting cross-site `fetch()` / subresource reads; state-changing
+  GET routes must pass `allow_cross_site_navigation=False` or become POSTs.
 - Route-check unknown POST paths before `guard_mutating_request()` so bogus
   paths return 404 without revealing CSRF state.
 - Use `send_html_response()` / `send_see_other()` rather than

@@ -41,6 +41,7 @@ from ._common import (
     reject_csrf,
     send_html_response,
     toggle_html,
+    guard_read_request,
     guard_mutating_request,
 )
 from ..bluetooth.adapter import (
@@ -288,10 +289,14 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 self._send_html(_landing_html(ctx["csrf_token"]))
                 return
             if path == "/state":
+                if not guard_read_request(self):
+                    return
                 try:
                     st = _dispatch().run(adapter_state())
                 except Exception as e:  # noqa: BLE001
@@ -304,9 +309,13 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 self._send_json(st)
                 return
             if path == "/devices/stream":
+                if not guard_read_request(self):
+                    return
                 self._stream_devices()
                 return
             if path.startswith("/pair/") and path.endswith("/stream"):
+                if not guard_read_request(self):
+                    return
                 mac = path[len("/pair/"):-len("/stream")]
                 self._stream_pair(mac)
                 return

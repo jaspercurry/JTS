@@ -62,6 +62,7 @@ from ._common import (
     canonical_page,
     reject_csrf,
     send_html_response,
+    guard_read_request,
     guard_mutating_request,
 )
 
@@ -1481,6 +1482,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
+            if path not in {
+                "/",
+                "/healthz",
+                "/status",
+                "/sessions",
+                "/session-report",
+                "/calibration/models",
+            }:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not guard_read_request(self):
+                return
             if path == "/":
                 ctx = begin_request(self)
                 self._send_html(_render_page(

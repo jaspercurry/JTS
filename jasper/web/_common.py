@@ -13,6 +13,8 @@ Every wizard's request handler should look like this:
 
     def do_GET(self):
         if path == "/":
+            if not guard_read_request(self):
+                return
             ctx = begin_request(self)
             send_html_response(self, render_page(
                 ctx["csrf_token"], status_msg=ctx["flash"],
@@ -71,7 +73,7 @@ from typing import Any
 
 from ..atomic_io import atomic_write_text
 from ..control import client as control
-from ..http_security import mutating_request_allowed
+from ..http_security import management_read_allowed, mutating_request_allowed
 from ..voice.provider_state import read_active_provider
 
 logger = logging.getLogger(__name__)
@@ -700,6 +702,69 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
             getattr(handler, "path", "?"),
         )
     return ok
+
+
+def _header_value(handler: BaseHTTPRequestHandler, name: str) -> str:
+    return (handler.headers.get(name) or "").strip().lower()
+
+
+def _is_top_level_navigation(handler: BaseHTTPRequestHandler) -> bool:
+    """True for browser document navigations, false for subresource/fetch reads."""
+    mode = _header_value(handler, "Sec-Fetch-Mode")
+    dest = _header_value(handler, "Sec-Fetch-Dest")
+    return mode == "navigate" and dest in ("", "document")
+
+
+def guard_read_request(
+    handler: BaseHTTPRequestHandler,
+    *,
+    allow_cross_site_navigation: bool = True,
+) -> bool:
+    """Return True iff a read request's Host / Fetch Metadata is allowed.
+
+    Mirrors jasper-control's read guard for nginx-fronted wizards. This closes
+    DNS-rebinding reads of setup pages and JSON polling endpoints without
+    adding authentication to the trusted-LAN model. Call after a GET route is
+    recognized, but before rendering or returning data, so unknown paths still
+    return 404 without revealing guard state.
+
+    Host validation still runs first. Cross-site browser fetch/subresource
+    reads fail closed, but top-level document navigations are allowed by
+    default so OAuth redirect-follow requests and ordinary links into the
+    management UI do not dead-end on a 403. State-changing GET routes should
+    pass ``allow_cross_site_navigation=False`` or, preferably, become POSTs.
+    """
+    ok, reason = management_read_allowed(handler.headers)
+    if ok:
+        return True
+    if (
+        allow_cross_site_navigation
+        and reason == "cross_site_request"
+        and _is_top_level_navigation(handler)
+    ):
+        return True
+    logger.warning(
+        "event=http.reject reason=%s host=%r sec_fetch_site=%r path=%s",
+        reason,
+        handler.headers.get("Host"),
+        handler.headers.get("Sec-Fetch-Site"),
+        getattr(handler, "path", "?"),
+    )
+    body = (
+        b"<!doctype html><meta charset=utf-8>"
+        b"<title>Forbidden</title>"
+        b"<h1>Forbidden</h1>"
+        b"<p>This JTS management page is only available from the "
+        b"speaker's trusted LAN hostname or address.</p>"
+        + f"<p><code>{html.escape(reason)}</code></p>".encode("utf-8")
+    )
+    handler.send_response(http.HTTPStatus.FORBIDDEN)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(body)
+    return False
 
 
 def _csrf_token_valid(

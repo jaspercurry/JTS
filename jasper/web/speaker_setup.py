@@ -43,6 +43,7 @@ from ._common import (
     reject_csrf,
     send_html_response,
     send_see_other,
+    guard_read_request,
     guard_mutating_request,
 )
 
@@ -224,6 +225,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 state = read_state(cfg["state_path"])
                 send_html_response(self, _index_html(

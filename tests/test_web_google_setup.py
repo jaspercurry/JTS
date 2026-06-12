@@ -25,6 +25,7 @@ The public surface (`_index_html` analogue render fns, `make_server`,
 from __future__ import annotations
 
 import importlib
+from email.message import Message
 from types import SimpleNamespace
 from unittest import mock
 
@@ -154,6 +155,8 @@ class _FakeHandler:
 
     def __init__(self, path: str):
         self.path = path
+        self.headers = Message()
+        self.headers["Host"] = "jts.local"
         self.sent_html: list[bytes] = []
         self.redirects: list[str] = []
         self.errors: list[int] = []

@@ -103,6 +103,7 @@ from ._common import (
     restart_voice_daemon,
     send_html_response,
     send_see_other,
+    guard_read_request,
     guard_mutating_request,
     write_env_file,
     write_json_file,
@@ -1241,6 +1242,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 state = _load_state(cfg["state_path"])
                 discovery = load_cache(cfg["discovery_cache_path"])
                 overrides = load_pricing_overrides(cfg["pricing_path"])

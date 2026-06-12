@@ -41,16 +41,11 @@ The `jasper-control` API (`127.0.0.1:8780`, fronted by nginx) rejects
 obvious browser-origin and DNS-rebinding abuse via
 `jasper/http_security.py` (`management_read_allowed` /
 `mutating_request_allowed`), caps request sizes, and avoids logging
-credentials. The ~18 nginx-fronted setup wizards under `jasper/web/`
-now share that guard on every **state-changing (POST)** request:
-`verify_csrf()` in `jasper/web/_common.py` runs `mutating_request_allowed`
-before any mutation, so a DNS-rebinding / cross-site browser cannot write
-WiFi PSKs, HA tokens, or API keys, or trigger reboots through a wizard.
-The wizard **read (GET)** surface is not yet behind the same Host check
-(there is no single shared GET chokepoint today), so a rebinding read
-could still render a wizard page — though not change state; closing that
-read-side gap is a known, deferred follow-up. Secrets are kept in
-root-owned files where possible.
+credentials. The nginx-fronted setup wizards under `jasper/web/` share
+those guards on state-changing requests and GET routes. A
+DNS-rebinding / cross-site browser should not be able to read masked
+wizard pages, write Wi-Fi PSKs, Home Assistant tokens, or API keys, or
+trigger reboots through a wizard.
 
 ### Threat model — what network position gets you
 

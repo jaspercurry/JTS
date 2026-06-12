@@ -91,6 +91,7 @@ from ._common import (
     begin_request,
     canonical_header,
     canonical_page,
+    guard_read_request,
     guard_mutating_request,
     reject_csrf,
     restart_voice_daemon,
@@ -1028,10 +1029,14 @@ def _make_handler():
 
         def do_GET(self):  # noqa: N802
             if self.path == "/" or self.path.startswith("/?"):
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 send_html_response(self, _render_page(csrf_token=ctx["csrf_token"]))
                 return
             if self.path == "/rooms.json":
+                if not guard_read_request(self):
+                    return
                 _send_json(self, _build_rooms_payload())
                 return
             self.send_response(HTTPStatus.NOT_FOUND)
