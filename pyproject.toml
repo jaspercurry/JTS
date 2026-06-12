@@ -55,7 +55,7 @@ dependencies = [
     # PortAudio (sounddevice's backend) only enumerates hw: devices,
     # not custom asoundrc PCMs like `jasper_capture` (the dsnoop tap
     # we capture the AEC reference from).
-    "pyalsaaudio>=0.11",
+    "pyalsaaudio>=0.11; sys_platform == 'linux'",
     # jasper-{dial,satellite}-onboard: pyserial for USB CDC discovery
     # + Improv handshake; esptool for firmware flash. Both pure-Python
     # and tiny.
@@ -71,7 +71,7 @@ dependencies = [
     # jasper-input: third-party HID accessory bridge (volume knobs,
     # macro pads, etc.) reads /dev/input/event* via python-evdev and
     # watches for hot-plug via pyudev. Tiny pure-Python deps.
-    "evdev>=1.7",
+    "evdev>=1.7; sys_platform == 'linux'",
     "pyudev>=0.24",
     # Web-driven BT pairing for HID accessories. dbus-next is the
     # asyncio-native bluez D-Bus client; lighter and more reliable
@@ -96,6 +96,13 @@ dependencies = [
     # jasper.peering.discovery so the package is import-cheap when
     # peering is OFF (the default). ~5-8 MB Pss when active.
     "zeroconf>=0.149,<1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
 ]
 
 [project.optional-dependencies]

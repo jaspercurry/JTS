@@ -22,7 +22,7 @@ import sys
 from spotipy.oauth2 import SpotifyPKCE
 
 from ..config import Config
-from ..tools.spotify import SPOTIFY_SCOPE
+from ..spotify_router import SPOTIFY_SCOPE
 
 
 def main() -> None:
