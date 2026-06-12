@@ -20,6 +20,7 @@ Design rationale: docs/HANDOFF-resilience.md (Tier 3).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import random
@@ -151,7 +152,6 @@ class ShairportSupervisor:
             active = True
         if active:
             self.suppressed_count += 1
-            self.consecutive_failures = 0
             logger.warning("event=shairport.probe_suppressed reason=active")
             return
         # Rate-limit: at most one supervisor-driven restart per window.
@@ -212,15 +212,21 @@ class ShairportSupervisor:
         return data.startswith(b"RTSP/1.0 200 ")
 
     async def is_session_active(self) -> bool:
-        """True when MPRIS reports Playing, OR when the probe itself
-        errors (busctl missing, spawn failure, DBus stall, non-zero
-        exit). Fail-safe to "active" so we never risk disrupting a
-        live session on an unknown state — even if it means a wedge
-        persists slightly longer when DBus is also broken. The shared
-        probe owns the subprocess hygiene (kill-on-timeout, OSError
-        spawn family)."""
+        """True when MPRIS reports Playing.
+
+        If the MPRIS probe is unknown, fail safe to "active" only
+        while systemd still reports shairport-sync live or unknown. A
+        dead/inactive unit cannot be protecting a listener, so it
+        bypasses the gate and lets the restart path recover it.
+        """
         playing = await mpris.shairport_playing(timeout=2.0)
         if playing is None:
+            unit_active = await self.is_shairport_unit_active()
+            if unit_active is False:
+                logger.warning(
+                    "event=shairport.gate_bypass reason=unit_inactive",
+                )
+                return False
             return True
         return playing
 
@@ -237,6 +243,42 @@ class ShairportSupervisor:
             return follower_leader_addr(load_config()) is not None
         except Exception:  # noqa: BLE001 — fail-open, keep supervising
             return False
+
+    async def is_shairport_unit_active(self) -> bool | None:
+        """Return systemd's shairport unit liveness.
+
+        ``False`` is load-bearing: a dead/failed shairport process must
+        bypass the MPRIS "unknown means active" fail-safe, because the
+        DBus probe returns unknown precisely when there is no live
+        process to disrupt. Unknown systemctl failures still fail safe
+        to None so the caller preserves the active-session guard.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "systemctl", "is-active", "shairport-sync.service",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError:
+            return None
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=2.0,
+            )
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            return None
+        status = stdout.decode("utf-8", "replace").strip()
+        if proc.returncode == 0 and status == "active":
+            return True
+        if status in {"inactive", "failed", "deactivating", "dead"}:
+            return False
+        if proc.returncode != 0 and status:
+            return False
+        return None
 
     async def restart_shairport(self) -> None:
         """`reset-failed` clears StartLimitBurst parking; `--no-block

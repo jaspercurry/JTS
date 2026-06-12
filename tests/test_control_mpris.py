@@ -114,7 +114,22 @@ async def test_supervisor_gate_fails_safe_to_active_on_unknown(monkeypatch):
         "jasper.control.shairport_supervisor.mpris.shairport_playing",
         AsyncMock(return_value=None),
     )
+    monkeypatch.setattr(
+        sup, "is_shairport_unit_active", AsyncMock(return_value=True),
+    )
     assert await sup.is_session_active() is True
+
+
+async def test_supervisor_gate_bypasses_fail_safe_when_unit_is_dead(monkeypatch):
+    sup = ShairportSupervisor()
+    monkeypatch.setattr(
+        "jasper.control.shairport_supervisor.mpris.shairport_playing",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        sup, "is_shairport_unit_active", AsyncMock(return_value=False),
+    )
+    assert await sup.is_session_active() is False
 
 
 async def test_supervisor_gate_maps_playing_through(monkeypatch):
