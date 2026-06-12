@@ -4118,12 +4118,20 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
             bond_id="b", leader_addr="jts.local",
         ),
     )
+    from jasper.cli.doctor import renderers as rdoc
+
     checks = [
         adoc.check_aec_bridge_running,
         adoc.check_aec_bridge_output_health,
         adoc.check_aec_bridge_dtln_engine,
+        adoc.check_audio_profile_runtime,
         lambda: audoc.check_mic_card_matches_config(None),
         lambda: audoc.check_mic_capture(None),
+        # Caught LIVE by the first on-pair doctor run after PR-B
+        # deployed: these three probed parked units and read fail/warn
+        # against intended state.
+        rdoc.check_bluetooth_pairing_policy,
+        lambda: rdoc.check_spotify_connect_device(None),
     ]
     for check in checks:
         r = check()

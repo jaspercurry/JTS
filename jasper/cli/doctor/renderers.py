@@ -165,6 +165,12 @@ def check_bluealsa() -> CheckResult:
 @doctor_check(order=13, group="renderers")
 def check_bluetooth_pairing_policy() -> CheckResult:
     """Verify the JTS no-code pairing agent is installed and idle-closed."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "Bluetooth pairing policy", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "this while paired; the pair leader owns playback + the mic",
+        )
     expected_exec = "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
     try:
         p = _run([
@@ -310,6 +316,12 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     pattern doesn't match what librespot is broadcasting, every
     cold-start `play X` returns 'no spotify target device available'
     — a silent severe failure this check catches."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "Spotify Connect device", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "this while paired; the pair leader owns playback + the mic",
+        )
     label = "Spotify Connect device"
     if not cfg.spotify_enabled:
         return CheckResult(label, "ok", "not configured (skipped)")

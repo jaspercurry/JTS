@@ -192,6 +192,12 @@ def _assess_audio_profile(status: dict) -> CheckResult:
 @doctor_check(order=46, group="aec")
 def check_audio_profile_runtime() -> CheckResult:
     """Summarise requested vs applied mic/AEC profile runtime truth."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "Audio profile", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "this while paired; the pair leader owns playback + the mic",
+        )
 
     return _assess_audio_profile(_audio_profile_status_for_doctor())
 
