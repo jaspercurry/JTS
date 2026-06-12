@@ -1586,9 +1586,11 @@ def test_post_swap_400_when_channels_are_not_left_right(monkeypatch):
     assert posts == []
 
 
-def test_post_swap_502_when_a_member_write_fails(monkeypatch):
-    """A failed member write surfaces as 502 with the member named — the
-    household retries; runtime health shows the half-applied state."""
+def test_post_swap_partial_failure_rolls_back_the_flipped_member(monkeypatch):
+    """The two writes fan out concurrently; exactly-one-failed would leave
+    BOTH speakers on the same channel — audibly wrong AND retry-blocked
+    (the left/right precondition no longer holds). The succeeded member is
+    rolled back to its original channel and the response says so."""
     h, posts = _post_swap(
         monkeypatch=monkeypatch,
         self_grouping={"enabled": True, "role": "leader", "channel": "left",
@@ -1604,4 +1606,49 @@ def test_post_swap_502_when_a_member_write_fails(monkeypatch):
     assert h.status == 502
     body = json.loads(h.wfile.getvalue())
     assert body["ok"] is False
-    assert len(posts) == 2  # both writes attempted; failure is reported
+    assert body["rolled_back"] is True
+    # swap writes (self ok, peer failed) + the self rollback to "left".
+    assert len(posts) == 3
+    rb_addr, rb_body = posts[2]
+    assert rb_addr == ""
+    assert rb_body["channel"] == "left"
+    assert rb_body["role"] == "leader"
+
+
+def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
+    """If the rollback itself fails, the response reports rolled_back=False
+    (never a silent stuck pair) — the journal carries the per-member lines."""
+    calls = {"n": 0}
+
+    def flaky_self(addr, body, known=None):
+        # self swap write succeeds; the later self ROLLBACK fails.
+        calls["n"] += 1
+        if addr == "" and calls["n"] >= 3:
+            return (False, "control restarting")
+        if addr == "192.168.1.9":
+            return (False, "connection refused")
+        return (True, "HTTP 200")
+
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1", "leader_addr": ""},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "role": "follower",
+                            "channel": "right", "bond_id": "bond-1",
+                            "leader_addr": "jts.local"},
+        },
+        member_results=None,
+    )
+    # Drive again with the flaky poster: patch directly for this variant.
+    import jasper.web.rooms_setup as rooms_setup_mod
+    monkeypatch.setattr(rooms_setup_mod, "_post_grouping_to_member", flaky_self)
+    handler_cls = rooms_setup_mod._make_handler()
+    h = _FakeHandler("/swap")
+    h.headers["Content-Length"] = "2"
+    h.rfile = BytesIO(b"{}")
+    handler_cls.do_POST(h)
+    body = json.loads(h.wfile.getvalue())
+    assert h.status == 502
+    assert body["rolled_back"] is False

@@ -424,8 +424,9 @@ Static and external companion surfaces:
 
 - `/` is static HTML under `deploy/`.
 - CamillaGUI remains a separate external surface at `http://jts.local:5005/`.
-- `GET /volume`, `/mic`, and `/source` are same-origin proxies into
-  `jasper-control`.
+- `GET /volume`, `/mic`, `/source`, and `/grouping` (GET-only,
+  exact-match — the stereo-pair banner's read) are same-origin proxies
+  into `jasper-control`.
 
 ### 3.4 What changed since the original proposal
 

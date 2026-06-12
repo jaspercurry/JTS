@@ -59,6 +59,9 @@ URL surface (after nginx strips the /rooms/ prefix):
   POST /unbond      dissolve the bond this speaker is in: disable self +
                     every sibling sharing this bond_id, SERVER-side via each
                     member's jasper-control /grouping/set (CSRF-verified)
+  POST /swap        exchange a 2-speaker pair's left/right channels —
+                    roles/bond untouched; partial failure rolls back so the
+                    pair never sticks on a same-channel state (CSRF-verified)
 """
 from __future__ import annotations
 
@@ -959,13 +962,36 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
                 "event=rooms.swap.member_failed bond=%s addr=%s detail=%s",
                 bond_id, r["addr"] or "(self)", r["detail"],
             )
+    # The two writes fan out CONCURRENTLY, so exactly-one-failed leaves the
+    # pair on a SAME-channel state ({left,left} / {right,right}) — audibly
+    # wrong, and it blocks a retry because the {left,right} precondition no
+    # longer holds. Best-effort rollback: put the member that DID flip back
+    # on its original channel so the bond returns to a consistent,
+    # retryable state. Rollback failure is surfaced, never silent.
+    rolled_back = None
+    if not all_ok and any(r["ok"] for r in results):
+        ok_idx = 0 if results[0]["ok"] else 1
+        rb_addr = targets[ok_idx][0]
+        rb_grouping = grouping if ok_idx == 0 else peer_grouping
+        rb_channel = self_channel if ok_idx == 0 else peer_channel
+        rb_ok, rb_detail = _post_grouping_to_member(
+            rb_addr, _body(rb_grouping, rb_channel), known,
+        )
+        rolled_back = bool(rb_ok)
+        logger.warning(
+            "event=rooms.swap.rollback bond=%s addr=%s channel=%s ok=%s detail=%s",
+            bond_id, rb_addr or "(self)", rb_channel, rb_ok, rb_detail,
+        )
     logger.info(
         "event=rooms.swap bond=%s self=%s->%s peer=%s->%s ok=%s",
         bond_id, self_channel, peer_channel, peer_channel, self_channel, all_ok,
     )
+    payload = {"ok": all_ok, "bond_id": bond_id, "results": results}
+    if rolled_back is not None:
+        payload["rolled_back"] = rolled_back
     _send_json(
         handler,
-        {"ok": all_ok, "bond_id": bond_id, "results": results},
+        payload,
         status=HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY,
     )
 
