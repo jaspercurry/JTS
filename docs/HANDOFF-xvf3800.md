@@ -324,9 +324,10 @@ are gated on the same flag.
 - With `SHF_BYPASS=0` (default), toggling `PP_MIN_NS` /
   `PP_AGCONOFF` while capturing 6 channels of pink noise showed
   1.5–8 dB of variation on ch 0/1; ch 2 showed 0.0–0.4 dB.
-- With `SHF_BYPASS=1` (current JTS production), the same toggles
-  produced 0.2–1.0 dB of variation on ch 1 — same as the
-  measurement noise on ch 2 (0.1–0.7 dB).
+- With `SHF_BYPASS=1` (the software-AEC fallback / restored profile
+  when chip-AEC flags are absent), the same toggles produced 0.2–1.0
+  dB of variation on ch 1 — same as the measurement noise on ch 2
+  (0.1–0.7 dB).
 
 The empirical SHF_BYPASS=1 test confirms: with SHF bypassed, the
 chip post-processing parameters are inert across ch 0/1, ch 2-5
@@ -334,11 +335,19 @@ alike. Channels 0/1 become raw-ish mic feeds.
 
 ### What JTS uses, and why
 
-**JTS captures channel 1 (ASR beam tap, post-SHF mux)** as the
-AEC bridge's near-end input — see `jasper/mics/xvf3800.py`
-`MIC_CHANNEL_INDEX = 1`. Combined with `SHF_BYPASS=1` in
-`jasper-aec-init`, this means JTS captures a raw-ish mic feed
-with chip MIC_GAIN + AEC_HPFONOFF applied (per the table above).
+In the `xvf_software_aec3` fallback, **JTS captures channel 1
+(ASR beam tap, post-SHF mux)** as the AEC bridge's near-end input —
+see `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX = 1`. Combined with
+`SHF_BYPASS=1` in `jasper-aec-init`, this means JTS captures a
+raw-ish mic feed with chip MIC_GAIN + AEC_HPFONOFF applied (per the
+table above).
+
+In the recommended `xvf_chip_aec` profile, `jasper-aec-init` applies a
+volatile chip-AEC profile instead: `SHF_BYPASS=0`, fixed gated
+150°/210° ASR beams, and `AUDIO_MGR_OP_L/R=[7,0]/[7,1]`. The bridge
+captures those two beam outputs, forwards the selected primary beam to
+voice on `:9876`, and emits both fixed beams on `:9887`/`:9888` for
+wake scoring.
 
 Ch 0 vs ch 1 is canonical XVF3800 territory:
 - **Seeed's own example code**: 2-channel `arecord`, takes the
@@ -359,18 +368,18 @@ because: (a) it's the project-standard tap; (b) it includes
 MIC_GAIN; (c) if anyone ever flips SHF_BYPASS=0, ch 1 will
 automatically give us the ASR-tuned signal.
 
-The pairing with `SHF_BYPASS=1` exists because the chip's own AEC
-stage is sabotaged by our external-DAC topology (the chip mirrors
-the host's UAC playback volume into AEC_FAR_EXTGAIN, which in our
-setup attenuates the reference by an unpredictable amount).
-`SHF_BYPASS=1` removes the chip AEC from the path — and, as a
+The software fallback's pairing with `SHF_BYPASS=1` exists because the
+chip's own AEC is sabotaged unless the XVF USB-IN reference path is
+armed. `SHF_BYPASS=1` removes the chip AEC from the path — and, as a
 side effect, also disables chip BF + NS + AGC. Software AEC3 in
-jasper-aec-bridge handles echo cancellation + residual NS
-host-side using the music chain as a clean digital reference.
+jasper-aec-bridge handles echo cancellation + residual NS host-side
+using the music chain as a clean digital reference. The chip-AEC
+profile is the narrow production exception: outputd feeds the XVF
+USB-IN reference and the chip emits fixed ASR beams.
 
-See [HANDOFF-aec.md](HANDOFF-aec.md) § "Production tuning
-(2026-05-16)" for the full rationale and the bridge-side knobs
-(REF_GAIN, MIC_GAIN, HPF, etc.) that complete the picture.
+See [HANDOFF-aec.md](HANDOFF-aec.md) § "Software-AEC tuning
+(2026-05-16)" for the fallback rationale and the bridge-side knobs
+(REF_GAIN, MIC_GAIN, HPF, etc.) that complete that picture.
 
 ### Historical: why we previously used channel 2 (and why we stopped)
 
@@ -391,9 +400,9 @@ adaptive filter." That argument was defensible in isolation, but:
    doing its job and AEC3 alone couldn't compensate.
 
 The switch to channel 1 + `SHF_BYPASS=1` is the canonical
-architecture with one targeted modification (chip AEC off,
-software AEC on). The chip's mild AGC non-linearity is a
-theoretical concern that AEC3 absorbs in practice.
+software-AEC fallback architecture with one targeted modification
+(chip AEC off, software AEC on). The chip's mild AGC non-linearity is
+a theoretical concern that AEC3 absorbs in practice.
 
 ### How channel routing actually works inside the chip
 
