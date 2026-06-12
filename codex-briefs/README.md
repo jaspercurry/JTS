@@ -47,47 +47,44 @@ Known benign overlaps (git merges cleanly, different regions): 02 and 06 both
 add a line to README; 04 and 09 both touch `_common.py` (04 adds a guard
 helper near the top, 09 deletes the legacy block). Rebase order doesn't matter.
 
-## Wave 2 — run AFTER wave 1 merges, one at a time (ask Claude to expand each
-brief when you're ready; they need post-wave-1 reality)
+## Wave 1 status — COMPLETE 2026-06-12
 
-1. **voice_daemon.py** — first a small-fixes PR (track the fire-and-forget
-   arbitrate task in a strong-ref set; add a last-resort output-side stall cap
-   to `_idle_watchdog`; fix the MUTE-persistence docstring; record the firing
-   leg's threshold in `begin_event`), then the seam extractions
-   (voice/prompt.py, voice/earcons.py, voice/turn_playback.py,
-   voice/daemon_main.py) plus a real test-constructor for WakeLoop so the
-   `__new__` fixture idiom and getattr-on-self defensiveness can go.
-2. **control/server.py split** — aec_endpoints / uds / state_aggregate /
-   volume_ops / dial modules. NOTE: this file is hot (multiroom work landing
-   daily); pick a quiet window, expect rebases.
-3. **aec_bridge.py** — route all 7 inline emit blocks through `emit_packet`,
-   leg-emitter table, derive OUT_PORT defaults from `wake_legs` (or lockstep
-   test), move import-time env reads into a BridgeConfig.
-4. **sound-profile JS** — `patchActiveSpeaker()` helper (fixes the rehearsal
-   state-loss bug), seq-token guards on wizard actions, Promise.allSettled for
-   the 9-fetch waterfall, extend the node harness; file split flagged for
-   on-device verification.
-5. **install.sh** — split the two ~520-line functions along the lib/install
-   seam; single `ensure_state_dir` (ends the 0750/0755 flip-flop); de-heredoc
-   the model downloads into jasper/model_downloads.py CLI.
-6. **outputd stranded-module question** — RE-VERIFY first: the 2026-06-12
-   jasper-tts-protocol + outputd tts.rs work may have revived or replaced the
-   layer the review called dead. Diagnose, then either delete or de-duplicate
-   via the shared crate.
-7. **Mechanical noqa strip** (495 vestigial BLE001 markers) — run LAST, when
-   no other PRs are open; it's a tree-wide merge-conflict bomb.
+All nine briefs filed, reviewed (22-agent merge-gate pass + adversarial
+verification), reworked where needed, and merged: 17 PRs on main, plus the
+lan-trust stack (652/653/654), the two resilience reworks (647/650), and the
+XVF rewrite (656) in final re-review/sign-off at the time of writing.
 
-## Owner-only actions (Codex cannot do these)
+## Wave 2 — briefs 10-17 (expanded, ready to assign)
 
-- Merge brief 05's workflow-file PR from the GitHub web UI (OAuth tokens
-  without `workflow` scope cannot merge `.github/workflows/*` changes).
-- Eyeball the upstream licenses brief 01 collects (5-minute legal sanity pass).
-- Flash the dial once to validate the procedural gauge (brief 01) and run the
-  camilla park-on-missing-DAC change on hardware (brief 07).
-- Decide jarvis_v2 default if its license turns out unstated (brief 01).
-- Confirm the actual branch-protection required-check list (brief 03 fixes the
-  docs to match `pytest` + `rust`; verify in repo settings).
-- Tag v0.1.0 when Phase 0 completes.
+| Brief | Theme | Sequencing notes |
+|---|---|---|
+| 10-voice-daemon | Defect PR, then the seam extractions | HOT file — rebase before every push |
+| 11-control-server-split | Defect PR, then the five-module split | HOTTEST file (multiroom) — pick a quiet window |
+| 12-aec-bridge-emit-legs | One emit path, leg table, BridgeConfig | Independent; wire-neutral required |
+| 13-sound-profile-js | rehearsal state-loss bug + guards, then split | Independent; EQ half moves verbatim or not at all |
+| 14-install-sh-split | God-function split + de-heredoc models | Land AFTER brief 17 (both touch install.sh) |
+| 15-outputd-loudness-extract | Shared loudness engine (NOT deletion — layer is live) | Lowest priority; coordinate with multiroom churn |
+| 16-improv-dedup | Shared Improv module for dial/satellite CLIs | Independent |
+| 17-supply-chain-mirrors | Mirror commit archives as release assets | Needs network + gh release perms; BEFORE brief 14 |
+
+Run 12/13/16/17 freely in parallel; 10 and 11 are fine in parallel with each
+other (disjoint files) but expect rebases; 14 after 17; 15 whenever quiet.
+
+**Mechanical noqa strip** (495 vestigial BLE001 markers) — still queued LAST,
+when no other PRs are open; it's a tree-wide merge-conflict bomb.
+
+## Owner-only actions (updated after wave 1)
+
+- Bless #656's provenance position (rewrite-with-reference from XMOS docs,
+  not strict clean-room) so the XVF rewrite can merge.
+- Hardware checks queued: flash the dial once (procedural gauge, #634); one
+  Pi boot-check of XVF chip control after #656 deploys; unplug/replug test
+  for the outputd DAC-park change (#650) after it merges; full
+  `deploy-to-pi.sh` after brief 14 lands.
+- Confirm the live branch-protection required-check list matches the docs
+  (`pytest` + `rust`).
+- Tag v0.1.0 when Phase 0 closes (licensing + privacy + LAN-trust docs all
+  merged).
 
 ## Review loop
 
