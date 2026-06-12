@@ -88,8 +88,14 @@ verbatim to the leader's control API and relays the answer (tagged
 client control the PAIR volume from whichever member they talk to. A
 `X-JTS-Pair-Forwarded` header breaks forward loops; the follower check
 is one grouping.env parse per call. Solo speakers and leaders never
-enter this path. Voice volume commands on a follower still go through
-its local coordinator (the pair mic story is leader-only).
+enter this path. Voice volume commands on a follower route through the
+SAME forward: the audio tools (`jasper/tools/audio.py`,
+`_pair_volume_request`) drive the local control API via loopback when
+bonded-as-follower, so "Jarvis, louder" moves the pair from either
+speaker; a leader-unreachable failure becomes a spoken error, never a
+silently inaudible local write. Voice mute/unmute send an explicit
+`{"muted": bool}` — `/volume/mute` accepts that additively (absent
+body = the legacy HID toggle, contract pinned by tests).
 
 ### `/state` volume policy visibility
 
