@@ -30,6 +30,7 @@ from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _active_audio_dac_env,
+    _parked_as_bonded_follower,
     _active_audio_dac_id,
     _camilla_block_field,
     _run,
@@ -104,6 +105,12 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     install.sh autodetects on the Pi, so the literal may differ from
     'Array' — e.g. when the AEC bridge is enabled, mic moves to a
     UDP-form device (`udp:9876`) and this card check is skipped."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "mic ALSA card", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "voice + the AEC stack while paired; the leader owns the mic",
+        )
     # UDP transport has no ALSA card to validate; just say so. The
     # `jasper-aec-bridge` running check covers transport liveness.
     from jasper.audio_io import parse_udp_device
@@ -207,6 +214,12 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     them. We skip the probe entirely and let jasper-voice's continued
     operation be the evidence.
     """
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "mic capture", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "voice + the AEC stack while paired; the leader owns the mic",
+        )
     # UDP transport: no PortAudio probe possible. The bridge's
     # heartbeat (Tier 1) and `check_aec_bridge_running` already cover
     # whether the transport is alive; this check just stays out of

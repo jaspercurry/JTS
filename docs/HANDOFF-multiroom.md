@@ -1676,7 +1676,26 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (DUMB-FOLLOWER PR-A — the renderer stack parks
+Last verified: 2026-06-12 (DUMB-FOLLOWER PR-B — voice + the AEC stack
+park while bonded, freeing ~310 MB (voice 238 + bridge 74) on a 1 GB
+follower. Ownership stays single-writer: the GROUPING reconciler only
+derives a Python-validated flag (JASPER_GROUPING_VOICE_PARK=1, written
+into grouping-voice.env for an ACTIVE follower, omitted otherwise) and
+KICKS jasper-aec-reconcile on change — that script remains the one owner
+of the voice/bridge units and gains a single new park condition
+(grep -Fxq on the exact flag line; bond-validity logic is never
+re-derived in shell). Park is `disable --now` (mirroring the
+provider-unset park) so a reboot can't boot-start 240 MB of models for
+seconds before re-parking; un-park is automatic (flag disappears →
+restart_voice re-enables; the TTS socket stays armed so a promotion to
+leader resumes with the right playout target). Role park wins over every
+mic/profile shape including the custom-mic early exit. Doctor: the
+bridge/mic liveness family (AEC bridge ×3, mic card, mic capture) reads
+"parked (bonded follower)" via the shared skip idiom; the landing page's
+mic card says "Paired — the assistant listens on the pair leader".
+Accepted costs (owner sign-off): follower timers die on bond-form; dial
+hold-to-talk is dead on a follower (volume/transport still forward).)
+Earlier same day (DUMB-FOLLOWER PR-A — the renderer stack parks
 while bonded. plan() role=follower now stops FOLLOWER_PARKED_UNITS
 (shairport-sync, nqptp, librespot, bluealsa + bluealsa-aplay, bt-agent,
 jasper-mux, jasper-usbsink): a follower's local sources are structurally

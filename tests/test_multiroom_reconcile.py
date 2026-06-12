@@ -628,8 +628,11 @@ def test_main_leader_order_env_restart_units_then_camilla(tmp_path, monkeypatch)
     _target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     rc = main([])
     assert rc == 0
+    # The voice-env change kicks jasper-aec-reconcile, NOT jasper-voice:
+    # that script is the single owner of the voice/bridge units and
+    # decides restart-vs-park from the derived flag + provider + mic.
     assert order == [
-        "write", "outputd_restart", "restart:jasper-voice.service",
+        "write", "outputd_restart", "restart:jasper-aec-reconcile.service",
         "apply", "camilla_bonded", "stream_binding",
     ]
 
@@ -861,3 +864,21 @@ def test_apply_real_failure_still_flips_rc(monkeypatch):
     rc = _apply(ReconcilePlan(
         intents=(UnitIntent("x.service", "stop", "t"),), summary="t"))
     assert rc == 1
+
+
+def test_main_follower_voice_env_kicks_aec_reconcile_with_park_flag(
+    tmp_path, monkeypatch,
+):
+    """Bond-form on a follower: grouping-voice.env carries the validated
+    park flag and the change is applied via ONE kick of
+    jasper-aec-reconcile (the voice/bridge unit owner) — never a direct
+    jasper-voice restart from this reconciler."""
+    from jasper.multiroom.reconcile import VOICE_PARK_ENV
+    _target, order = _patch_main_io(
+        monkeypatch, tmp_path, _follower(leader_addr="192.168.1.50"),
+    )
+    assert main([]) == 0
+    text = (tmp_path / "grouping-voice.env").read_text()
+    assert f"{VOICE_PARK_ENV}=1" in text
+    assert "restart:jasper-aec-reconcile.service" in order
+    assert "restart:jasper-voice.service" not in order

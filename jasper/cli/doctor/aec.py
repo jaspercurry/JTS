@@ -25,6 +25,7 @@ from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _CHIP_AEC_PASSIVE_REQUIRED_CHECKS,
+    _parked_as_bonded_follower,
     _KNOWN_CHIP_AEC_PASSIVE_HARDWARE,
     _loopback_playback_active,
     _run,
@@ -301,6 +302,12 @@ def check_aec_bridge_running() -> CheckResult:
     opted out via JASPER_AEC_MODE=disabled. A silent-disabled bridge
     (the May 2026 reconciler bug that mis-read Playback Channels: 2
     as the capture count) shows up as a hard fail."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "AEC bridge", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "voice + the AEC stack while paired; the leader owns the mic",
+        )
     from ...mics import xvf3800
     is_active = _run(["systemctl", "is-active", "jasper-aec-bridge.service"]).stdout.strip()
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
@@ -557,6 +564,12 @@ def check_aec_bridge_output_health() -> CheckResult:
     sustained outage (the 2026-05-15 dsnoop incident lasted 4
     days). The parser logic is in `_assess_aec_bridge_output` so it
     can be exercised in unit tests without subprocess mocks."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "AEC bridge output", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "voice + the AEC stack while paired; the leader owns the mic",
+        )
     is_active = _run(
         ["systemctl", "is-active", "jasper-aec-bridge.service"]
     ).stdout.strip()
@@ -701,6 +714,12 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     that's the legacy dual-stream / single-stream path, working
     as intended. Journal parsing is delegated to
     `_assess_dtln_engine` so it can be unit-tested in isolation."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "DTLN engine", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "voice + the AEC stack while paired; the leader owns the mic",
+        )
     enabled = os.environ.get("JASPER_AEC_DTLN_ENABLED", "0").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
         return CheckResult(

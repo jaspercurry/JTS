@@ -4101,3 +4101,31 @@ def test_renderer_checks_probe_normally_when_solo(monkeypatch):
     monkeypatch.setattr(rdoc.os.path, "isfile", lambda p: False)
     r = rdoc.check_librespot_running(None)
     assert r.status == "fail"  # binary missing probes through, no skip
+
+
+def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
+    """PR-B: voice + the AEC stack park on a bonded follower — the
+    bridge/mic liveness checks must read parked, never fail against
+    intended state."""
+    import jasper.multiroom.config as mr_config
+    from jasper.cli.doctor import aec as adoc
+    from jasper.cli.doctor import audio as audoc
+
+    monkeypatch.setattr(
+        mr_config, "load_config",
+        lambda *a, **k: _grouping_cfg(
+            enabled=True, role="follower", channel="right",
+            bond_id="b", leader_addr="jts.local",
+        ),
+    )
+    checks = [
+        adoc.check_aec_bridge_running,
+        adoc.check_aec_bridge_output_health,
+        adoc.check_aec_bridge_dtln_engine,
+        lambda: audoc.check_mic_card_matches_config(None),
+        lambda: audoc.check_mic_capture(None),
+    ]
+    for check in checks:
+        r = check()
+        assert r.status == "ok", r
+        assert "parked (bonded follower)" in r.detail
