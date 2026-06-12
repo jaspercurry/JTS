@@ -46,9 +46,8 @@ dependencies = [
     "onnxruntime>=1.17",
     "nyct-gtfs==2.1.0",
     "rapidfuzz>=3.6,<4",
-    # XVF3800 control: jasper.xvf.xvf_host (vendored from
-    # github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY) talks to
-    # the chip's USB vendor-control interface to set AUDIO_MGR_SYS_DELAY.
+    # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
+    # vendor-control interface for boot-time profile writes and diagnostics.
     "pyusb>=1.2",
     "libusb_package>=1.0",
     # ALSA-native PCM access for jasper-aec-bridge — needed because

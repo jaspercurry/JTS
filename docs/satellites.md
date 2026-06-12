@@ -63,11 +63,11 @@ first, displays later.
 ### Jasper Dial — CrowPanel 1.28" HMI ESP32 Rotary Display
 
 **Status:** Phases 1–3 working end-to-end on hardware — volume
-control with on-screen volume gauge, play/pause on short-press,
+control with a procedural LVGL volume gauge, play/pause on short-press,
 hold-to-talk Gemini session on long-press. Phase 5 LVGL is partial:
-the volume gauge ships and renders correctly; the other scenes
-(clock face, listening orb, speaking waveform, now-playing card) have
-firmware scaffold ([commit `493bf60`](https://github.com/jaspercurry/JTS/commit/493bf60))
+the procedural LVGL gauge is pending on-device validation; the other
+scenes (clock face, listening orb, speaking waveform, now-playing card)
+have firmware scaffold ([commit `493bf60`](https://github.com/jaspercurry/JTS/commit/493bf60))
 but aren't yet validated on-device.
 
 **Hardware:** ESP32-S3R8 (8 MB OPI PSRAM, 16 MB flash), GC9A01 240×240
@@ -92,7 +92,7 @@ Re-run after a network change to push new creds.
 
 **Phases (planned and shipped):**
 - ✅ **Phase 1**: WiFi (Improv) + encoder volume → `POST /volume/adjust`,
-  with on-screen volume gauge confirmed working on hardware.
+  with procedural LVGL gauge pending on-device validation.
 - ✅ **Phase 2**: button short-press → `POST /transport/toggle`.
   Working on hardware.
 - ✅ **Phase 3**: button long-press → `POST /session/start`; release →
@@ -101,8 +101,8 @@ Re-run after a network change to push new creds.
 - 🔄 **Phase 5**: LVGL display polish — clock face, listening orb
   (during hold-to-talk session), speaking waveform (during Gemini
   TTS), now-playing card with album art. Scaffold landed; not yet
-  on-device validated. The volume gauge piece of phase 5 is already
-  shipped (see Phase 1).
+  on-device validated. The volume gauge piece of phase 5 is procedural
+  LVGL, pending on-device validation (see Phase 1).
 - 🔮 **Phase 6**: time zone from the Pi's environment so dials shipped
   to other time zones don't need a re-flash.
 
@@ -609,7 +609,7 @@ battery operation. Per-device roadmap below.
 
 | Phase | Description | Status |
 |---|---|---|
-| 1 | WiFi (Improv) + encoder volume + on-screen volume gauge | ✅ working on hardware |
+| 1 | WiFi (Improv) + encoder volume + procedural LVGL volume gauge | ✅ volume control working on hardware; gauge pending on-device validation |
 | 2 | Button short-press → transport toggle | ✅ working on hardware |
 | 3 | Button long-press → hold-to-talk Gemini session | ✅ working on hardware |
 | 5 | Remaining LVGL scenes — clock / listening orb / speaking waveform / now-playing card | 🔄 firmware scaffold present, not yet on-device validated |

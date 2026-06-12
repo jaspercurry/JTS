@@ -41,7 +41,10 @@ class _FakeXvfDevice:
 
 def _install_fake_xvf(monkeypatch, dev: _FakeXvfDevice) -> None:
     fake_xvf = types.ModuleType("jasper.xvf")
-    fake_xvf.xvf_host = types.SimpleNamespace(find=lambda: dev)
+    fake_xvf.xvf_host = types.SimpleNamespace(
+        find=lambda: dev,
+        XvfControlError=RuntimeError,
+    )
     monkeypatch.setitem(sys.modules, "jasper.xvf", fake_xvf)
 
 
@@ -149,3 +152,24 @@ def test_corpus_profile_fails_when_readback_does_not_match(monkeypatch) -> None:
     assert "AEC_HPFONOFF" not in _write_map(dev)
     assert amixer_calls == []
     assert dev.dev.closed is True
+
+
+def test_init_reports_missing_xvf_control_dependency(monkeypatch, caplog) -> None:
+    class MissingXvfControlError(RuntimeError):
+        pass
+
+    def fail_find():
+        raise MissingXvfControlError("XVF3800 USB control dependencies missing")
+
+    fake_xvf = types.ModuleType("jasper.xvf")
+    fake_xvf.xvf_host = types.SimpleNamespace(
+        find=fail_find,
+        XvfControlError=MissingXvfControlError,
+    )
+    monkeypatch.setitem(sys.modules, "jasper.xvf", fake_xvf)
+    caplog.set_level("ERROR", logger="jasper.aec_init")
+
+    assert aec_init.main() == 1
+
+    assert "event=xvf_control_unavailable" in caplog.text
+    assert "dependencies missing" in caplog.text
