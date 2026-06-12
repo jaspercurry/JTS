@@ -4,28 +4,13 @@
 //! saturation behavior as `jasper-fanin`: accumulate in i32, then clamp
 //! to i16. That makes clipping explicit and testable.
 
-pub const MAX_TTS_GAIN_DB: f32 = -6.0;
-pub const MIN_TTS_GAIN_DB: f32 = -60.0;
+pub use jasper_tts_protocol::loudness::{
+    apply_gain_i16, clamp_tts_gain_db, gain_db_to_linear, MAX_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MixStats {
     pub clipped_samples: u32,
-}
-
-pub fn clamp_tts_gain_db(gain_db: f32) -> f32 {
-    if !gain_db.is_finite() {
-        return MIN_TTS_GAIN_DB;
-    }
-    gain_db.clamp(MIN_TTS_GAIN_DB, MAX_TTS_GAIN_DB)
-}
-
-pub fn gain_db_to_linear(gain_db: f32) -> f32 {
-    10.0_f32.powf(clamp_tts_gain_db(gain_db) / 20.0)
-}
-
-pub fn apply_gain_i16(sample: i16, gain_linear: f32) -> i16 {
-    let scaled = (sample as f32) * gain_linear;
-    scaled.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
 pub fn mix_i16_saturating(content: &[i16], assistant: &[i16], out: &mut [i16]) -> MixStats {

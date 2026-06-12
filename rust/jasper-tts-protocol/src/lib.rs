@@ -1,20 +1,23 @@
-//! The JTS assistant/TTS wire protocol — the SINGLE definition.
+//! The JTS assistant/TTS protocol and shared playout policy.
 //!
 //! Newline-framed text commands with binary AUDIO payloads, spoken by
 //! `jasper-voice` (client) to whichever daemon owns assistant playout:
 //! `jasper-fanin` on a solo speaker, `jasper-outputd` on a bonded
 //! multiroom member (HANDOFF-multiroom.md Increment 5 PR-2). Both
-//! daemons previously carried byte-twin copies of this layer; this
-//! crate is the extraction that makes wire drift impossible — the
-//! parser, command vocabulary, and the SEGMENT_START profile types are
-//! defined once and consumed by both ends.
+//! daemons previously carried byte-twin copies of this layer; this crate
+//! is the extraction that makes wire drift impossible — the parser,
+//! command vocabulary, and the SEGMENT_START profile types are defined
+//! once and consumed by both ends.
 //!
-//! Scope is deliberately the WIRE only: queueing policy, epochs,
-//! metrics, flush-ack summaries, and the mixing engines stay
-//! per-daemon — they may legitimately diverge without breaking
-//! compatibility. What lives here may not.
+//! It also owns the shared K-weighted assistant loudness policy used by
+//! fan-in and outputd. Queueing policy, epochs, metrics, flush-ack
+//! summaries, and final mixing engines stay per-daemon — they may
+//! legitimately diverge without breaking compatibility. Wire vocabulary
+//! and assistant loudness decisions may not.
 
 use std::io::{self, BufRead};
+
+pub mod loudness;
 
 /// Wire frames are interleaved stereo S16LE.
 pub const CHANNELS: u16 = 2;
