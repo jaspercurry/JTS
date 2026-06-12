@@ -58,7 +58,7 @@
 #define TFT_RST  14
 #define TFT_BACKLIGHT 46
 
-// --- Touch (CST816D capacitive controller) ---
+// --- Touch controller pins ---
 #define TP_I2C_SDA 6
 #define TP_I2C_SCL 7
 #define TP_RST    13

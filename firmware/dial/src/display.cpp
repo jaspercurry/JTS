@@ -1,6 +1,6 @@
-// LovyanGFX + LVGL bring-up for the GC9A01 round display + CST816D
-// touch. Pin assignments come from include/config.h, which mirrors
-// the CrowPanel HMI factory firmware.
+// LovyanGFX + LVGL bring-up for the GC9A01 round display. Pin
+// assignments come from include/config.h, which mirrors the CrowPanel
+// HMI factory firmware.
 
 #define LGFX_USE_V1
 #include <Arduino.h>
@@ -14,7 +14,6 @@
 #include "display.h"
 #include "config.h"
 #include "scenes.h"
-#include "CST816D.h"
 
 // LovyanGFX wrapper for the GC9A01. Mirrors the factory firmware
 // configuration (SPI 80 MHz, 240x240, color-inverted, RGB order
@@ -68,7 +67,6 @@ public:
 };
 
 static LGFX gfx;
-static CST816D touch(TP_I2C_SDA, TP_I2C_SCL, TP_RST, TP_INT);
 
 // LVGL draw buffer. Half-screen height in PSRAM; double-buffered
 // so DMA + render overlap. 240 * 120 * 2 = 57.6 KB per buffer.
@@ -76,7 +74,6 @@ static lv_disp_draw_buf_t lvgl_draw_buf;
 static lv_color_t *lvgl_buf1 = nullptr;
 static lv_color_t *lvgl_buf2 = nullptr;
 static lv_disp_drv_t lvgl_disp_drv;
-static lv_indev_drv_t lvgl_indev_drv;
 
 // LVGL → display: hand the rendered buffer to LovyanGFX's DMA path.
 // Using pushImageDMA (not pushPixels) so PSRAM-backed buffers work —
@@ -93,21 +90,6 @@ static void disp_flush(lv_disp_drv_t *drv, const lv_area_t *area,
     gfx.pushImageDMA(area->x1, area->y1, w, h,
                      (lgfx::rgb565_t *)&color_p->full);
     lv_disp_flush_ready(drv);
-}
-
-// CST816D → LVGL: report finger pressure as pointer events. Gestures
-// (swipe, double-tap) are read but currently unused — LVGL does its
-// own gesture detection from the pointer stream when needed.
-static void touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
-    uint16_t x = 0, y = 0;
-    uint8_t gesture = 0;
-    if (touch.getTouch(&x, &y, &gesture)) {
-        data->state = LV_INDEV_STATE_PR;
-        data->point.x = x;
-        data->point.y = y;
-    } else {
-        data->state = LV_INDEV_STATE_REL;
-    }
 }
 
 void display_set_backlight(uint8_t level) {
@@ -185,16 +167,10 @@ void display_init() {
     Serial.println("[disp] panel test: black");
     gfx.fillScreen(0x0000);
 
-    // Touch is initialized but NOT registered as an LVGL input
-    // device. The vendored CST816D driver's i2c_read() spins forever
-    // if the chip doesn't ACK (do-while loop on rdDataCount), which
-    // hangs the LVGL pump task every time it polls for input — that
-    // in turn holds the scene mutex and starves anything in main
-    // that tries to update UI. Touch interactions are a phase-6
-    // follow-up; we'll re-enable when we either trust the chip or
-    // wrap getTouch() with a timeout.
-    // touch.begin();
-    (void)touch;
+    // Touch input is not wired into LVGL yet. Future support must use
+    // a permissively licensed bounded-retry driver; fbiego's MIT
+    // CST816S Arduino library is the known register-compatible
+    // candidate, or this can be a small clean-room I2C reader.
 
     lv_init();
 
@@ -220,10 +196,7 @@ void display_init() {
     lvgl_disp_drv.draw_buf = &lvgl_draw_buf;
     lv_disp_drv_register(&lvgl_disp_drv);
 
-    // Touch input device deliberately not registered — see comment
-    // above touch.begin().
-    (void)lvgl_indev_drv;
-    (void)touch_read;
+    // Touch input device deliberately not registered yet.
 }
 
 void display_start_lvgl_task() {
