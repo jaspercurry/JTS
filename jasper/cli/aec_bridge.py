@@ -178,7 +178,13 @@ MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 # orthogonally fixes the daemon's SIGTERM-observability bug from
 # the 2026-05-11 incident.
 OUT_HOST = os.environ.get("JASPER_AEC_UDP_HOST", "127.0.0.1")
-OUT_PORT = int(os.environ.get("JASPER_AEC_UDP_PORT", "9876"))
+
+
+def _leg_udp_port(env_var: str, token: str) -> int:
+    return int(os.environ.get(env_var, str(wake_legs.by_token(token).udp_port)))
+
+
+OUT_PORT = _leg_udp_port("JASPER_AEC_UDP_PORT", "on")
 OUT_RATE = 16000
 
 # Secondary UDP output: chip-direct mic stream, pre-AEC3 — exactly
@@ -199,10 +205,9 @@ OUT_RATE = 16000
 # pipeline. See docs/HANDOFF-wake-telemetry.md for the end-to-end
 # design.
 #
-# Nothing consumes 9877 today (PR 1 of the series is pure
-# plumbing). Safe to deploy alone; jasper-voice ignores it until
-# PR 2 ships.
-OUT_PORT_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW", "9877"))
+# Jasper-voice consumes this leg when the reconciler configures
+# `JASPER_MIC_DEVICE_RAW`; otherwise the extra UDP packets are ignored.
+OUT_PORT_RAW = _leg_udp_port("JASPER_AEC_UDP_PORT_RAW", "off")
 # Optional 3rd UDP stream: DTLN-aec output. The bridge constructs a
 # DTLNEngine when JASPER_AEC_DTLN_ENABLED=1 and shares the same mic +
 # ref capture with the AEC3 engine. Each input chunk is fed to BOTH
@@ -210,7 +215,7 @@ OUT_PORT_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW", "9877"))
 # Adds ~95 MB RAM + ~12% of one Pi 5 core. Disabled by default during
 # the triple-stream rollout; flip via env var per
 # docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan".
-OUT_PORT_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_DTLN", "9878"))
+OUT_PORT_DTLN = _leg_udp_port("JASPER_AEC_UDP_PORT_DTLN", "dtln")
 # 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the
 # chip-direct stream on OUT_PORT_RAW (which is chip channel 1 = ASR
 # beam, with chip BF+NS+AGC+HPF applied), channel 2 is the raw mic 0
@@ -225,7 +230,7 @@ OUT_PORT_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_DTLN", "9878"))
 #
 # Always emitted. Cost is ~0.25% of one core for the extra slice +
 # sendto — same noise-floor cost as the existing :9877 raw leg.
-OUT_PORT_RAW0 = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW0", "9879"))
+OUT_PORT_RAW0 = _leg_udp_port("JASPER_AEC_UDP_PORT_RAW0", "raw0")
 # Corpus-only experiment streams. These are disabled by default so
 # normal production bridge cost stays exactly where it is. When enabled
 # for wake-corpus recording, the bridge emits:
@@ -236,16 +241,29 @@ OUT_PORT_RAW0 = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW0", "9879"))
 #
 # They are intentionally not consumed by jasper-voice. They exist to
 # make the gold corpus useful for cheap-mic portability experiments.
-OUT_PORT_REF = int(os.environ.get("JASPER_AEC_UDP_PORT_REF", "9880"))
-OUT_PORT_USB_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_RAW", "9881"))
-OUT_PORT_USB_WEBRTC = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_WEBRTC", "9882"))
-OUT_PORT_USB_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_DTLN", "9883"))
-OUT_PORT_CHIP_AEC_150 = int(os.environ.get("JASPER_AEC_UDP_PORT_CHIP_AEC_150", "9887"))
-OUT_PORT_CHIP_AEC_210 = int(os.environ.get("JASPER_AEC_UDP_PORT_CHIP_AEC_210", "9888"))
-OUT_PORT_XVF_RAW0_WEBRTC_AEC3 = int(os.environ.get(
-    "JASPER_AEC_UDP_PORT_XVF_RAW0_WEBRTC_AEC3", "9889",
-))
-OUT_PORT_XVF_RAW0_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_XVF_RAW0_DTLN", "9890"))
+OUT_PORT_REF = _leg_udp_port("JASPER_AEC_UDP_PORT_REF", "ref")
+OUT_PORT_USB_RAW = _leg_udp_port("JASPER_AEC_UDP_PORT_USB_RAW", "usb_raw")
+OUT_PORT_USB_WEBRTC = _leg_udp_port(
+    "JASPER_AEC_UDP_PORT_USB_WEBRTC",
+    "usb_webrtc",
+)
+OUT_PORT_USB_DTLN = _leg_udp_port("JASPER_AEC_UDP_PORT_USB_DTLN", "usb_dtln")
+OUT_PORT_CHIP_AEC_150 = _leg_udp_port(
+    "JASPER_AEC_UDP_PORT_CHIP_AEC_150",
+    "chip_aec_150",
+)
+OUT_PORT_CHIP_AEC_210 = _leg_udp_port(
+    "JASPER_AEC_UDP_PORT_CHIP_AEC_210",
+    "chip_aec_210",
+)
+OUT_PORT_XVF_RAW0_WEBRTC_AEC3 = _leg_udp_port(
+    "JASPER_AEC_UDP_PORT_XVF_RAW0_WEBRTC_AEC3",
+    "xvf_raw0_webrtc_aec3",
+)
+OUT_PORT_XVF_RAW0_DTLN = _leg_udp_port(
+    "JASPER_AEC_UDP_PORT_XVF_RAW0_DTLN",
+    "xvf_raw0_dtln",
+)
 OUTPUTD_REF_UDP_HOST = os.environ.get("JASPER_AEC_OUTPUTD_REF_UDP_HOST", "127.0.0.1")
 OUTPUTD_REF_UDP_PORT = int(os.environ.get("JASPER_AEC_OUTPUTD_REF_UDP_PORT", "9891"))
 REF_SOURCE = os.environ.get("JASPER_AEC_REF_SOURCE", "outputd_udp").strip().lower()
@@ -918,7 +936,6 @@ def _usb_capture_rate() -> int:
 
 
 def _ref_thread(ref_q: Queue) -> None:
-    global _ref_clipped_samples, _ref_total_samples
     """Capture 48k stereo ref via alsaaudio (PortAudio doesn't see
     custom asoundrc PCMs like `jasper_capture`), sum L+R to mono,
     downsample to 16k. Push frames of exactly FRAME_SAMPLES samples
@@ -947,6 +964,7 @@ def _ref_thread(ref_q: Queue) -> None:
     speakers + room amplify the chain). Boosting ref closes that
     gap so the adaptive filter operates near its design point. See
     docs/HANDOFF-aec.md "Tuning findings" for measured impact."""
+    global _ref_clipped_samples, _ref_total_samples
     import alsaaudio
     import time as _time
     capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
@@ -1313,6 +1331,19 @@ def _aec_loop(  # noqa: PLR0915
     xvf_raw0_webrtc_enabled: bool = False,
     xvf_raw0_dtln_enabled: bool = False,
 ) -> None:
+    """Drain mic/ref queues, run the selected AEC path, and emit UDP legs.
+
+    Each iteration consumes one mic frame and one reference frame in
+    arrival order. If the reference queue is empty, the loop carries
+    forward the last real reference frame instead of injecting silence;
+    that keeps AEC3's adaptive filter fed while tolerating bursty
+    reference delivery. Primary, raw, corpus, chip-AEC, and optional
+    engine outputs are packetized into per-leg UDP streams.
+
+    Debug-record mode: if `JASPER_AEC_DEBUG_RECORD_DIR` is set, the
+    bridge writes the AEC engine's input mic stream and pre-gain output
+    to WAV files in that directory for offline ERLE analysis.
+    """
     # Post-AEC static gain applied to the engine output before it
     # reaches jasper-voice over UDP. Restores level into openWakeWord's training
     # distribution — the HA Voice PE pattern (`gain_factor: 4`) — when
@@ -1370,25 +1401,6 @@ def _aec_loop(  # noqa: PLR0915
             os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")
         ),
     )
-    """Drain both queues frame-by-frame, run the selected AEC
-    engine, write to Loopback. The two queues drift independently;
-    we loosely sync by always pulling one mic frame and the
-    freshest ref frame we can grab without blocking — falling back
-    to silence if no ref is available (shouldn't happen if camilla
-    is running).
-
-    Periodically logs the per-frame RMS of mic, ref, and AEC out
-    so we can observe whether the engine is actually attenuating
-    the echo. Comparing mic_rms vs aec_rms gives the running
-    attenuation in dB.
-
-    Debug-record mode: if `JASPER_AEC_DEBUG_RECORD_DIR` is set, the
-    bridge writes the AEC engine's input mic stream and pre-gain
-    output to two WAV files in that directory. Used by
-    `scripts/aec-erle-record.sh` to capture both sides of the
-    engine for offline ERLE analysis — couldn't otherwise be done
-    with a second `arecord` because the bridge already holds the
-    Array card exclusively via PortAudio."""
     import math
     import time
     import wave
