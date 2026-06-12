@@ -627,6 +627,7 @@ safety = "safe-ci"
 code = [
   "SECURITY.md",
   "CODE_OF_CONDUCT.md",
+  "CHANGELOG.md",
   "LICENSE",
   "NOTICE",
   "LICENSE-third-party.md",
@@ -648,6 +649,7 @@ code = [
 docs = [
   "SECURITY.md",
   "CODE_OF_CONDUCT.md",
+  "CHANGELOG.md",
   "LICENSE-third-party.md",
   "docs/OSS-READINESS-TOP-FIVE.md",
   "docs/REVIEW-google-oss-readiness.md",
