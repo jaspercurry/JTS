@@ -179,13 +179,19 @@ OPENWAKEWORD_FALLBACK_ASSET_KEYS = frozenset({
 # Order matters — this is the display order on the picker page. Put the
 # recommended default first so a new household lands on it.
 REGISTRY: tuple[WakeModelEntry, ...] = (
+    # Upstream terms verified 2026-06-12: the fwartner
+    # home-assistant-wakewords-collection repository is MIT-licensed
+    # (copyright Florian Wartner), and this model is downloaded from the
+    # pinned 8bcd2f20bb7b76c351b2eff871fa1ce873fe9be2 commit. The
+    # jarvis_v2.onnx upstream blob at that commit is
+    # b2995e5a5224582d3e15880fe6f1b716c9129b2f.
     WakeModelEntry(
         key="jarvis_v2",
         label="Jarvis",
         pronunciation='Say "Jarvis" — "Hey Jarvis" still works too',
         description=(
-            "Community-trained model from the Home Assistant wake-words "
-            "collection (MIT license). Trained on the phrase set "
+            "Community-trained MIT-licensed model from the Home "
+            "Assistant wake-words collection. Trained on the phrase set "
             '“jarvis” / “hey jarvis” / “jarvis!” / “jarvis?”, '
             "so both forms trigger it. Author-reported ~0.18 false fires "
             "per hour, well inside openWakeWord's <0.5/hour target. "
