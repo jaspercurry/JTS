@@ -1,39 +1,46 @@
-"""Tests for the Improv-over-Serial protocol bits in jasper.cli.dial_onboard.
+"""Tests for the shared Improv-over-Serial protocol bits.
 
 The packet framing and SUBMIT_SETTINGS layout are easy to get wrong and
-hard to debug from the dial side (the only feedback channel is the WS2812
-status LED), so we lock the wire format down here.
+hard to debug from the accessory side (the only feedback channel may be
+a status LED), so we lock the wire format down here.
 """
 from __future__ import annotations
 
-from jasper.cli.dial_onboard import (
-    IMPROV_HEADER,
-    IMPROV_PKT_CURRENT_STATE,
-    IMPROV_PKT_RPC,
-    IMPROV_STATE_PROVISIONED,
-    _build_submit_settings,
-    _improv_packet,
-    _scan_packets,
-)
+import pytest
+
+from jasper.cli import dial_onboard, satellite_onboard
 
 
-def test_packet_starts_with_magic_header():
-    pkt = _improv_packet(IMPROV_PKT_CURRENT_STATE, b"\x04")
-    assert pkt[: len(IMPROV_HEADER)] == IMPROV_HEADER
+ONBOARD_IMPLS = [
+    (dial_onboard.DIAL_PROFILE, dial_onboard),
+    (satellite_onboard.SATELLITE_PROFILE, satellite_onboard),
+]
 
 
-def test_packet_checksum_is_byte_sum_mod_256():
-    pkt = _improv_packet(IMPROV_PKT_CURRENT_STATE, b"\x04")
+@pytest.fixture(params=ONBOARD_IMPLS, ids=lambda item: item[0].device_label)
+def onboard_module(request):
+    profile, module = request.param
+    assert profile.boot_signature
+    return module
+
+
+def test_packet_starts_with_magic_header(onboard_module):
+    pkt = onboard_module._improv_packet(onboard_module.IMPROV_PKT_CURRENT_STATE, b"\x04")
+    assert pkt[: len(onboard_module.IMPROV_HEADER)] == onboard_module.IMPROV_HEADER
+
+
+def test_packet_checksum_is_byte_sum_mod_256(onboard_module):
+    pkt = onboard_module._improv_packet(onboard_module.IMPROV_PKT_CURRENT_STATE, b"\x04")
     body = pkt[:-1]
     assert pkt[-1] == sum(body) & 0xFF
 
 
-def test_submit_settings_layout():
+def test_submit_settings_layout(onboard_module):
     # Per Improv spec: RPC packet, command=0x01,
     # data = ssid_len + ssid + pass_len + pass.
-    pkt = _build_submit_settings("MyWifi", "secret123")
+    pkt = onboard_module._build_submit_settings("MyWifi", "secret123")
     # IMPROV<v>(7) + type(1) + outer_len(1) + cmd(1) + inner_len(1) + ssid_len(1) + ssid + pass_len(1) + pass + checksum(1)
-    assert pkt[7] == IMPROV_PKT_RPC, "type byte should be RPC (0x03)"
+    assert pkt[7] == onboard_module.IMPROV_PKT_RPC, "type byte should be RPC (0x03)"
     outer_len = pkt[8]
     expected_outer_len = 1 + 1 + 1 + len("MyWifi") + 1 + len("secret123")
     assert outer_len == expected_outer_len
@@ -49,51 +56,74 @@ def test_submit_settings_layout():
     assert pkt[pwd_off + 1 : pwd_off + 1 + len("secret123")] == b"secret123"
 
 
-def test_scan_extracts_single_packet():
-    pkt = _improv_packet(IMPROV_PKT_CURRENT_STATE, bytes([IMPROV_STATE_PROVISIONED]))
+def test_scan_extracts_single_packet(onboard_module):
+    pkt = onboard_module._improv_packet(
+        onboard_module.IMPROV_PKT_CURRENT_STATE,
+        bytes([onboard_module.IMPROV_STATE_PROVISIONED]),
+    )
     buf = bytearray(pkt)
-    found = _scan_packets(buf)
+    found = onboard_module._scan_packets(buf)
     assert len(found) == 1
     pkt_type, data = found[0]
-    assert pkt_type == IMPROV_PKT_CURRENT_STATE
-    assert data == bytes([IMPROV_STATE_PROVISIONED])
+    assert pkt_type == onboard_module.IMPROV_PKT_CURRENT_STATE
+    assert data == bytes([onboard_module.IMPROV_STATE_PROVISIONED])
     assert len(buf) == 0
 
 
-def test_scan_handles_partial_packet():
-    pkt = _improv_packet(IMPROV_PKT_CURRENT_STATE, bytes([IMPROV_STATE_PROVISIONED]))
+def test_scan_handles_partial_packet(onboard_module):
+    pkt = onboard_module._improv_packet(
+        onboard_module.IMPROV_PKT_CURRENT_STATE,
+        bytes([onboard_module.IMPROV_STATE_PROVISIONED]),
+    )
     # Feed first half — should yield nothing and preserve the partial
     # bytes for the next chunk.
     buf = bytearray(pkt[:7])
-    assert _scan_packets(buf) == []
+    assert onboard_module._scan_packets(buf) == []
     # Feed the rest and we get the packet.
     buf.extend(pkt[7:])
-    found = _scan_packets(buf)
+    found = onboard_module._scan_packets(buf)
     assert len(found) == 1
-    assert found[0][1] == bytes([IMPROV_STATE_PROVISIONED])
+    assert found[0][1] == bytes([onboard_module.IMPROV_STATE_PROVISIONED])
 
 
-def test_scan_skips_garbage_before_header():
-    pkt = _improv_packet(IMPROV_PKT_CURRENT_STATE, b"\x04")
+def test_scan_skips_garbage_before_header(onboard_module):
+    pkt = onboard_module._improv_packet(onboard_module.IMPROV_PKT_CURRENT_STATE, b"\x04")
     buf = bytearray(b"junk\x00\xff" + pkt)
-    found = _scan_packets(buf)
+    found = onboard_module._scan_packets(buf)
     assert len(found) == 1
     assert found[0][1] == b"\x04"
 
 
-def test_scan_drops_bad_checksum():
-    pkt = bytearray(_improv_packet(IMPROV_PKT_CURRENT_STATE, b"\x04"))
+def test_scan_drops_bad_checksum(onboard_module):
+    pkt = bytearray(
+        onboard_module._improv_packet(onboard_module.IMPROV_PKT_CURRENT_STATE, b"\x04")
+    )
     pkt[-1] ^= 0xFF  # corrupt checksum
     buf = bytearray(pkt)
-    found = _scan_packets(buf)
+    found = onboard_module._scan_packets(buf)
     assert found == []  # frame consumed but discarded
 
 
-def test_scan_extracts_multiple_packets():
-    p1 = _improv_packet(IMPROV_PKT_CURRENT_STATE, b"\x05")
-    p2 = _improv_packet(IMPROV_PKT_CURRENT_STATE, b"\x06")
+def test_scan_resyncs_after_bad_checksum(onboard_module):
+    bad = bytearray(
+        onboard_module._improv_packet(onboard_module.IMPROV_PKT_CURRENT_STATE, b"\x04")
+    )
+    bad[-1] ^= 0xFF
+    good = onboard_module._improv_packet(onboard_module.IMPROV_PKT_CURRENT_STATE, b"\x07")
+    buf = bytearray(bad + good)
+
+    found = onboard_module._scan_packets(buf)
+
+    assert len(found) == 1
+    assert found[0][1] == b"\x07"
+    assert len(buf) == 0
+
+
+def test_scan_extracts_multiple_packets(onboard_module):
+    p1 = onboard_module._improv_packet(onboard_module.IMPROV_PKT_CURRENT_STATE, b"\x05")
+    p2 = onboard_module._improv_packet(onboard_module.IMPROV_PKT_CURRENT_STATE, b"\x06")
     buf = bytearray(p1 + p2)
-    found = _scan_packets(buf)
+    found = onboard_module._scan_packets(buf)
     assert len(found) == 2
     assert found[0][1] == b"\x05"
     assert found[1][1] == b"\x06"

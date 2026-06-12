@@ -305,8 +305,9 @@ def _run_onboard(port: str, *, force_flash: bool, timeout_s: float = 180.0) -> d
       smart  → --auto: mDNS pre-check first (already-online dials
                short-circuit instantly with no serial / no chip
                reset), then probe; never flashes an arbitrary
-               ESP32-S3, just pushes WiFi creds if the device speaks
-               Improv. Right call for the common case.
+               ESP32-S3, and only pushes WiFi creds after the
+               boot-log probe positively identifies JTS firmware.
+               Right call for the common case.
       force  → --flash: bypass mDNS, bypass probe; always flash the
                staged firmware bin and push WiFi creds. Right call
                when a dial is wedged / on stale firmware / brand-new
