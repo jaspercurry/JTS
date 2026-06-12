@@ -287,6 +287,24 @@ def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
         return None
     return parts
 
+def _parked_as_bonded_follower() -> bool:
+    """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
+
+    The dumb-follower profile (HANDOFF-multiroom Increment 5) parks the
+    renderer/source stack while bonded — those liveness checks must read
+    "parked (bonded follower)" as ok, never as failures against intended
+    state. The same idiom serves the endpoint install tier later (keyed
+    off the install profile) and PR-B's voice/AEC parking. Fail-open to
+    NOT-parked: a broken read must never silently mask a real failure on
+    a solo speaker."""
+    try:
+        from ...multiroom.config import follower_leader_addr, load_config
+
+        return follower_leader_addr(load_config()) is not None
+    except Exception:  # noqa: BLE001 — fail-open
+        return False
+
+
 _RUNTIME_STATE_UNITS = (
     "jasper-outputd.service",
     "jasper-fanin.service",

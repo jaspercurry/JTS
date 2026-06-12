@@ -17,7 +17,7 @@ from ...config import Config
 from ...mux_mode_persistence import DEFAULT_PATH as _MUX_MODE_DEFAULT_PATH
 from ...music_sources import MUSIC_SOURCES, Source
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import CheckResult, _parked_as_bonded_follower, _run
 
 # ----------------------------------------------------------------------
 # Per-renderer health: each daemon's own surface (HTTP / DBus / system).
@@ -31,6 +31,12 @@ def check_librespot_running(cfg: Config) -> CheckResult:
     on 2026-05-07 specifically for the configurable volume curve
     (--volume-ctrl log over 60 dB range). It has no local control
     HTTP, so health is checked via systemd state + binary version."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "librespot.service", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "this unit while paired; it restores on unbond",
+        )
     bin_path = "/usr/bin/librespot"
     if not os.path.isfile(bin_path):
         return CheckResult(
@@ -59,6 +65,12 @@ def check_shairport_sync_ap2() -> CheckResult:
     AND the systemd unit is active. The Debian Trixie apt package
     is AP1-only; the migration's source-build emits a binary whose
     `-V` output contains 'AirPlay2'."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "shairport-sync AP2", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "this unit while paired; it restores on unbond",
+        )
     if shutil.which("shairport-sync") is None:
         return CheckResult(
             "shairport-sync AP2", "fail",
@@ -86,6 +98,12 @@ def check_shairport_sync_ap2() -> CheckResult:
 def check_nqptp_running() -> CheckResult:
     """nqptp is required for AirPlay 2 timing. Without it,
     shairport-sync's AP2 path silently fails to handshake."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "nqptp.service", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "this unit while paired; it restores on unbond",
+        )
     p = _run(["systemctl", "is-active", "nqptp.service"])
     state = p.stdout.strip()
     if state == "active":
@@ -101,6 +119,12 @@ def check_jasper_mux() -> CheckResult:
     """jasper-mux arbitrates which renderer plays when. Without it,
     source selection and guarded handoff stop working; if fan-in has
     restarted into its safe NONE state, music may stay silent."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "jasper-mux", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "this unit while paired; it restores on unbond",
+        )
     p = _run(["systemctl", "is-active", "jasper-mux.service"])
     state = p.stdout.strip()
     if state == "active":
@@ -120,6 +144,12 @@ def check_bluealsa() -> CheckResult:
     bluealsa-aplay forwards incoming A2DP audio to ALSA. Both
     must be active for "phone-as-Bluetooth-source → speaker"
     to work end-to-end."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "bluealsa", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "this unit while paired; it restores on unbond",
+        )
     p1 = _run(["systemctl", "is-active", "bluealsa.service"])
     p2 = _run(["systemctl", "is-active", "bluealsa-aplay.service"])
     s1 = p1.stdout.strip()

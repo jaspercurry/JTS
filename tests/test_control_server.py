@@ -2469,3 +2469,15 @@ def test_follower_forward_relays_leader_http_verdict(
     assert body == {"error": "percent must be an integer",
                     "pair_leader": "jts.local"}
     assert fake.calls == []  # local coordinator untouched
+
+
+def test_follower_transport_toggle_forwards_to_leader(follower_server):
+    """A dial paired to the follower sends play/pause here; with the
+    renderer stack parked the local mux has nothing to toggle — the
+    leader owns playback, so transport forwards exactly like volume."""
+    base, fake, seen = follower_server
+    status, body = _post(f"{base}/transport/toggle", {})
+    assert status == 200
+    assert body["pair_leader"] == "jts.local"
+    req, _ = seen[0]
+    assert req.full_url.endswith("/transport/toggle")

@@ -46,6 +46,28 @@ logger = logging.getLogger(__name__)
 SNAPSERVER_UNIT = "jasper-snapserver.service"
 SNAPCLIENT_UNIT = "jasper-snapclient.service"
 
+# The renderer/source stack a bonded FOLLOWER parks (dumb-follower
+# profile, HANDOFF-multiroom Increment 5). A follower's local sources
+# are structurally unplayable — bonded content bypasses its CamillaDSP,
+# and worse, a "silent" AirPlay/Spotify session into the direct lane
+# AUDIBLY LEAKS during outputd's inv-B starvation-fallback periods. So
+# while role=follower these advertise nothing and run nothing. STOP,
+# never disable: /sources/ owns systemd enable/disable as the
+# household's intent, so restore is start-if-enabled ("restore" intent).
+# jasper-voice/jasper-aec-bridge are NOT here — those units belong to
+# jasper-aec-reconcile (single-writer rule), which parks them per role
+# in the PR-B increment.
+FOLLOWER_PARKED_UNITS = (
+    "shairport-sync.service",
+    "nqptp.service",
+    "librespot.service",
+    "bluealsa-aplay.service",
+    "bluealsa.service",
+    "bt-agent.service",
+    "jasper-mux.service",
+    "jasper-usbsink.service",
+)
+
 
 # ---------- Snapcast wiring constants ----------
 
@@ -153,8 +175,11 @@ SNAP_STREAM_ID = "jts"
 class UnitIntent:
     """A desired terminal state for one systemd unit.
 
-    `desired` is one of {"start", "stop"}; `reason` is a short
-    human-readable explanation for the log line.
+    `desired` is one of {"start", "stop", "restore"}; `reason` is a
+    short human-readable explanation for the log line. "restore" means
+    start ONLY if the unit is systemd-enabled — the shape that puts a
+    parked renderer back exactly per the /sources/ wizard's intent
+    (a wizard-disabled source must stay off after an unbond).
     """
     unit: str
     desired: str  # "start" | "stop"
@@ -187,21 +212,28 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
       - enabled, valid, leader    => start snapserver + start snapclient.
       - enabled, valid, follower  => stop snapserver + start snapclient.
     """
+    restore_renderers = tuple(
+        UnitIntent(u, "restore", "not a bonded follower — sources per wizard")
+        for u in FOLLOWER_PARKED_UNITS
+    )
+
     if not cfg.enabled:
         return ReconcilePlan(
             intents=(
                 UnitIntent(SNAPSERVER_UNIT, "stop", "grouping off"),
                 UnitIntent(SNAPCLIENT_UNIT, "stop", "grouping off"),
-            ),
+            ) + restore_renderers,
             summary="grouping off (solo)",
         )
 
     if cfg.error is not None:
+        # Fail-safe to SOLO behavior: a broken bond must not keep the
+        # household's sources parked on top of not playing.
         return ReconcilePlan(
             intents=(
                 UnitIntent(SNAPSERVER_UNIT, "stop", "config invalid"),
                 UnitIntent(SNAPCLIENT_UNIT, "stop", "config invalid"),
-            ),
+            ) + restore_renderers,
             summary=(
                 f"grouping enabled but INVALID: {cfg.error} — not starting"
             ),
@@ -212,20 +244,26 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
             intents=(
                 UnitIntent(SNAPSERVER_UNIT, "start", "leader hosts stream"),
                 UnitIntent(SNAPCLIENT_UNIT, "start", "leader plays its channel"),
-            ),
+            ) + restore_renderers,
             summary=f"grouping leader (bond {cfg.bond_id}, channel {cfg.channel})",
         )
 
     # role == "follower" (validated: a valid enabled config is one of the
-    # two ALLOWED_ROLES, and leader is handled above).
+    # two ALLOWED_ROLES, and leader is handled above). The dumb-follower
+    # profile: the local source stack parks alongside snapserver.
+    parked = tuple(
+        UnitIntent(u, "stop", "parked (bonded follower)")
+        for u in FOLLOWER_PARKED_UNITS
+    )
     return ReconcilePlan(
         intents=(
             UnitIntent(SNAPSERVER_UNIT, "stop", "follower runs no server"),
+        ) + parked + (
             UnitIntent(SNAPCLIENT_UNIT, "start", "follower consumes stream"),
         ),
         summary=(
             f"grouping follower (bond {cfg.bond_id}, channel {cfg.channel}, "
-            f"leader {cfg.leader_addr})"
+            f"leader {cfg.leader_addr}, sources parked)"
         ),
     )
 
@@ -431,19 +469,59 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
 # calls. Keep that boundary crisp.
 # ============================================================
 
+def _unit_is_enabled(unit: str) -> bool:
+    """`systemctl is-enabled --quiet` truth for the restore intent.
+
+    Anything other than rc=0 (disabled, static, masked, NOT-FOUND,
+    systemctl missing) reads as not-enabled — restore then skips, which
+    is the safe direction on every shape: a wizard-disabled source
+    stays off, and a never-installed unit (the endpoint install tier)
+    is silently not started.
+    """
+    try:
+        return subprocess.run(
+            ["systemctl", "is-enabled", "--quiet", unit],
+            capture_output=True,
+        ).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def _unit_absent_stderr(stderr: str) -> bool:
+    """True when a systemctl failure means THE UNIT DOES NOT EXIST —
+    the endpoint install tier never installs the parked renderer stack,
+    so stop/park intents against absent units must be clean no-ops
+    (dumb-endpoint-bringup.md, "absent units are no-ops")."""
+    lowered = (stderr or "").lower()
+    return "not loaded" in lowered or "not found" in lowered
+
+
 def _apply(plan_: ReconcilePlan) -> int:
     """Apply a plan via systemctl. Returns a process exit code.
 
-    Each intent is `systemctl <start|stop> <unit>`. A failure on one
-    intent is logged and surfaced in the exit code but does not abort
-    the rest of the plan — a half-applied bond is worse than a
-    best-effort one.
+    Intent kinds: `start` / `stop` map to systemctl verbs; `restore`
+    is start-only-if-enabled (the un-park shape — /sources/ keeps
+    enable/disable as the household's intent, so a parked renderer
+    comes back exactly per the wizard). A failure on one intent is
+    logged and surfaced in the exit code but does not abort the rest of
+    the plan — a half-applied bond is worse than a best-effort one.
+    Units that do not exist on this install tier are clean no-ops.
     """
     rc = 0
     for it in plan_.intents:
+        verb = it.desired
+        if verb == "restore":
+            if not _unit_is_enabled(it.unit):
+                logger.info(
+                    "event=multiroom.reconcile.unit unit=%s desired=restore "
+                    "result=skipped_not_enabled reason=%s",
+                    it.unit, it.reason,
+                )
+                continue
+            verb = "start"
         try:
             subprocess.run(
-                ["systemctl", it.desired, it.unit],
+                ["systemctl", verb, it.unit],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -460,6 +538,13 @@ def _apply(plan_: ReconcilePlan) -> int:
             )
             rc = 1
         except subprocess.CalledProcessError as e:
+            if _unit_absent_stderr(e.stderr):
+                logger.info(
+                    "event=multiroom.reconcile.unit unit=%s desired=%s "
+                    "result=skipped_unit_absent reason=%s",
+                    it.unit, it.desired, it.reason,
+                )
+                continue
             logger.error(
                 "event=multiroom.reconcile.unit_failed unit=%s desired=%s "
                 "rc=%d stderr=%s",

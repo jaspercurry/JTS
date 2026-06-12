@@ -173,7 +173,7 @@ async def test_snapshot_keys_and_values():
     await sup._tick()
     snap = sup.snapshot()
     assert set(snap.keys()) == {
-        "enabled", "last_probe_at", "last_probe_ok",
+        "enabled", "parked_by_role", "last_probe_at", "last_probe_ok",
         "consecutive_failures", "restart_count", "last_restart_at",
         "suppressed_count",
     }
@@ -349,3 +349,26 @@ async def test_default_probe_sends_rfc_2326_options():
         await sup.probe()
         await asyncio.wait_for(received_event.wait(), timeout=1.0)
     assert bytes(received) == _OPTIONS_REQUEST
+
+
+async def test_bonded_follower_parks_the_probe():
+    """The dumb-follower profile deliberately stops shairport-sync; the
+    wedge probe must idle (no probe, no WARN buildup, no restart) and
+    say so in the snapshot. Recovery: the first un-parked tick probes
+    again from a clean counter."""
+    sup = _FakeSupervisor(failure_threshold=3)
+    sup.parked = True
+    sup.shairport_parked_by_role = lambda: sup.parked  # type: ignore[method-assign]
+    # No probe_results scripted — a probe would pop an empty list and
+    # raise, so completing cleanly proves nothing probed.
+    for _ in range(3):
+        await sup._tick()
+    assert sup.restart_calls == 0
+    assert sup.consecutive_failures == 0
+    assert sup.snapshot()["parked_by_role"] is True
+    # Un-park: probing resumes with a clean confidence window.
+    sup.parked = False
+    sup.probe_results = [True]
+    await sup._tick()
+    assert sup.last_probe_ok is True
+    assert sup.snapshot()["parked_by_role"] is False

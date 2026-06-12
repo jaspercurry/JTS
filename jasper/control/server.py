@@ -1874,8 +1874,10 @@ def _make_handler(
             """Bonded-follower volume proxy. Returns True when the request
             was handled (forwarded or rejected) and the caller must stop.
 
-            While this speaker is an ACTIVE bonded follower, its local
-            volume knobs are INERT — bonded content bypasses the local
+            Used by the four /volume* handlers AND /transport/* — every
+            surface where a bonded follower's local action must target
+            the PAIR. While this speaker is an ACTIVE bonded follower,
+            its local volume knobs are INERT — bonded content bypasses the local
             CamillaDSP entirely (the leader's one Camilla bakes the
             program; HANDOFF-multiroom.md §2). Without this, the landing
             page slider, a paired dial, and curl all "work" silently
@@ -2407,6 +2409,13 @@ def _make_handler(
             return
 
         def _post_transport(self) -> None:
+            # Bonded-follower: transport targets the PAIR. A dial paired
+            # to the follower sends play/pause here; with the local
+            # renderer stack parked (dumb-follower profile) the local
+            # mux has nothing to toggle — the leader owns playback, so
+            # the request forwards exactly like /volume*.
+            if self._maybe_forward_volume_to_leader():
+                return
             action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
             try:
                 result = asyncio.run(_dispatch_transport(action))

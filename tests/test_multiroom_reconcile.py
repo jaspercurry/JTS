@@ -110,11 +110,19 @@ def test_plan_disabled_stops_both():
     assert "solo" in p.summary
 
 
-def test_plan_disabled_has_exactly_two_intents():
+def test_plan_disabled_stops_snap_units_and_restores_renderers():
+    """Solo: snap units stop; the parked renderer stack carries RESTORE
+    intents (start-only-if-enabled — the un-park after a bond dissolves;
+    a no-op on a speaker that was never bonded since the units are
+    already running or wizard-disabled)."""
+    from jasper.multiroom.reconcile import FOLLOWER_PARKED_UNITS
     p = plan(_disabled())
-    assert len(p.intents) == 2
-    units = {i.unit for i in p.intents}
-    assert units == {SNAPSERVER_UNIT, SNAPCLIENT_UNIT}
+    by_unit = {i.unit: i.desired for i in p.intents}
+    assert by_unit[SNAPSERVER_UNIT] == "stop"
+    assert by_unit[SNAPCLIENT_UNIT] == "stop"
+    for u in FOLLOWER_PARKED_UNITS:
+        assert by_unit[u] == "restore"
+    assert len(p.intents) == 2 + len(FOLLOWER_PARKED_UNITS)
 
 
 # ---------- plan(): enabled + error => stop both (never start a broken bond) ----------
@@ -134,9 +142,17 @@ def test_plan_invalid_summary_surfaces_error_and_not_starting():
 
 
 def test_plan_invalid_starts_nothing():
-    """Fail-safe: a broken bond must never produce a start intent."""
+    """Fail-safe: a broken bond must never produce a START intent for the
+    snap units — and it RESTORES the parked renderer stack (a broken bond
+    must not keep the household's sources parked on top of not playing).
+    "restore" is start-only-if-enabled, applied at the I/O layer."""
     p = plan(_invalid())
-    assert all(i.desired == "stop" for i in p.intents)
+    snap = {SNAPSERVER_UNIT, SNAPCLIENT_UNIT}
+    assert all(i.desired == "stop" for i in p.intents if i.unit in snap)
+    assert all(
+        i.desired == "restore" for i in p.intents if i.unit not in snap
+    )
+    assert not any(i.desired == "start" for i in p.intents)
 
 
 # ---------- plan(): leader => start server + start client ----------
@@ -746,3 +762,102 @@ def test_main_fresh_solo_first_reconcile_never_touches_voice(
     assert rc == 0
     assert not (tmp_path / "grouping-voice.env").exists()
     assert "restart:jasper-voice.service" not in order
+
+
+# ---------- dumb-follower profile: park + restore + absent-unit no-ops ----
+
+
+def test_plan_follower_parks_the_renderer_stack():
+    """role=follower stops every FOLLOWER_PARKED_UNITS member (the dumb
+    follower advertises and runs no local sources — and a phantom local
+    session would audibly leak during inv-B fallback periods)."""
+    from jasper.multiroom.reconcile import FOLLOWER_PARKED_UNITS
+    p = plan(_follower())
+    by_unit = {i.unit: i.desired for i in p.intents}
+    for u in FOLLOWER_PARKED_UNITS:
+        assert by_unit[u] == "stop", u
+    assert by_unit[SNAPCLIENT_UNIT] == "start"
+    assert by_unit[SNAPSERVER_UNIT] == "stop"
+    # Ordering contract: every stop precedes the snapclient start.
+    kinds = [i.desired for i in p.intents]
+    assert kinds.index("start") == len(kinds) - 1
+
+
+def test_plan_leader_keeps_sources_restored():
+    """The leader is the pair's input hub — its renderer stack is never
+    parked; the restore intents put a just-demoted ex-follower's sources
+    back per the /sources/ wizard."""
+    from jasper.multiroom.reconcile import FOLLOWER_PARKED_UNITS
+    p = plan(_leader())
+    by_unit = {i.unit: i.desired for i in p.intents}
+    for u in FOLLOWER_PARKED_UNITS:
+        assert by_unit[u] == "restore", u
+
+
+def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(),
+                               absent=()):
+    """Run _apply with subprocess.run faked. Returns (rc, calls) where
+    calls is the list of argv lists systemctl saw."""
+    import subprocess as sp
+    from jasper.multiroom.reconcile import ReconcilePlan, _apply
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        verb, unit = argv[1], argv[-1]
+        if verb == "is-enabled":
+            return sp.CompletedProcess(argv, 0 if unit in enabled else 1)
+        if unit in absent:
+            if kw.get("check"):
+                raise sp.CalledProcessError(
+                    5, argv, stderr=f"Failed to {verb} {unit}: Unit not loaded.",
+                )
+            return sp.CompletedProcess(argv, 5)
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    rc = _apply(ReconcilePlan(intents=tuple(intents), summary="test"))
+    return rc, calls
+
+
+def test_apply_restore_starts_only_enabled_units(monkeypatch):
+    from jasper.multiroom.reconcile import UnitIntent
+    rc, calls = _apply_with_fake_systemctl(
+        monkeypatch,
+        [UnitIntent("a.service", "restore", "t"),
+         UnitIntent("b.service", "restore", "t")],
+        enabled={"a.service"},
+    )
+    assert rc == 0
+    assert ["systemctl", "start", "a.service"] in calls
+    assert not any(c[1] == "start" and c[-1] == "b.service" for c in calls)
+
+
+def test_apply_absent_unit_is_a_clean_noop(monkeypatch):
+    """The endpoint install tier never installs the parked renderer
+    stack — stop intents against absent units must not flip the exit
+    code (dumb-endpoint-bringup.md: absent units are no-ops)."""
+    from jasper.multiroom.reconcile import UnitIntent
+    rc, calls = _apply_with_fake_systemctl(
+        monkeypatch,
+        [UnitIntent("ghost.service", "stop", "t"),
+         UnitIntent("real.service", "stop", "t")],
+        absent={"ghost.service"},
+    )
+    assert rc == 0
+    assert ["systemctl", "stop", "real.service"] in calls
+
+
+def test_apply_real_failure_still_flips_rc(monkeypatch):
+    """Absent-unit tolerance must not swallow REAL failures."""
+    import subprocess as sp
+    from jasper.multiroom.reconcile import ReconcilePlan, UnitIntent, _apply
+
+    def fake_run(argv, **kw):
+        raise sp.CalledProcessError(1, argv, stderr="Job failed. See logs.")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    rc = _apply(ReconcilePlan(
+        intents=(UnitIntent("x.service", "stop", "t"),), summary="t"))
+    assert rc == 1
