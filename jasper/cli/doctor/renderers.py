@@ -245,6 +245,13 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             "warn",
             "agent OK, but adapter Discoverable/Pairable state was not reported",
         )
+    if pairable == "yes" and discoverable != "yes":
+        return CheckResult(
+            "Bluetooth pairing policy",
+            "warn",
+            "agent OK, but Pairable=yes outside an open pairing window; "
+            "the runtime floor should close Pairable shortly",
+        )
     if discoverable == "yes" or pairable == "yes":
         return CheckResult(
             "Bluetooth pairing policy",

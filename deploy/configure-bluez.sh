@@ -36,13 +36,10 @@ sudo sed -i "s/^#\?Name = .*/Name = ${speaker_name_sed}/" "$CONF"
 # A2DP-sink-friendly UI (e.g. iOS shows the speaker icon).
 sudo sed -i 's/^#\?Class = .*/Class = 0x200414/' "$CONF"
 
-# Discoverable is OFF at bluetoothd startup — the speaker is not
-# advertising itself to random nearby phones. The JTS no-code agent
-# also closes Pairable when it starts; /bluetooth/ opens both knobs for
-# a timed pairing window. Pre-paired devices keep working (they don't
-# need us to be discoverable or pairable to reconnect); only NEW pairing
-# needs the window.
-#
+# Discoverable and Pairable themselves are runtime adapter properties, not
+# main.conf keys; jasper-bluetooth-agent closes them through BlueZ on startup
+# and when Pairable is observed outside an open pairing window. The main.conf
+# safety net is only the timeout default for tools that open a window.
 # These timeouts are the *default* auto-off when something flips
 # Discoverable or Pairable on. Our web UI sets both per-toggle (5 min
 # when user clicks the switch); the values here matter only if some
@@ -50,7 +47,6 @@ sudo sed -i 's/^#\?Class = .*/Class = 0x200414/' "$CONF"
 # setting a timeout. 300 s is the safety net for that case; 0 means
 # "stay on forever," which is exactly the broadcast/pair-to-the-world
 # failure mode we don't want.
-sudo sed -i 's/^#\?Discoverable = .*/Discoverable = false/' "$CONF"
 sudo sed -i 's/^#\?DiscoverableTimeout = .*/DiscoverableTimeout = 300/' "$CONF"
 sudo sed -i 's/^#\?PairableTimeout = .*/PairableTimeout = 300/' "$CONF"
 
