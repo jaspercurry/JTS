@@ -3,14 +3,16 @@
 JTS is a household LAN speaker, not a cloud service. It has no project
 analytics, telemetry account, or background "phone home" channel. The
 integrations you configure still contact their own upstream services when you
-ask for those features.
+enable or use those features.
 
 ## What Leaves The Device
 
-After the wake word fires, the live voice turn sends post-wake microphone audio
-to the configured voice provider selected by `JASPER_VOICE_PROVIDER` in
-`/var/lib/jasper/voice_provider.env` (`gemini`, `openai`, or `grok`). That
-provider performs the realtime speech-to-speech turn.
+After the wake word fires, the live voice turn sends microphone audio from the
+wake interaction, including up to about 0.6 seconds of audio captured
+immediately before the wake word fired, to the configured voice provider
+selected by `JASPER_VOICE_PROVIDER` in `/var/lib/jasper/voice_provider.env`
+(`gemini`, `openai`, or `grok`). That provider performs the realtime
+speech-to-speech turn.
 
 Voice tools may also send tool results back to that same voice provider so it
 can answer the question. For example, Gmail and Calendar tools are read-only
@@ -37,8 +39,8 @@ member names in filenames. This corpus is not size-capped; it stays until an
 operator deletes clips or sessions.
 
 Spend accounting lives in `/var/lib/jasper/usage.db` by default
-(`JASPER_USAGE_DB`). It stores provider/model usage, token counts, estimated
-cost, and time-billed connection intervals. It does not store speech audio or
+(`JASPER_USAGE_DB`). It stores provider usage, token counts, estimated cost,
+and time-billed connection intervals. It does not store speech audio or
 transcripts.
 
 System logs stay in journald on the speaker unless an operator exports them,
