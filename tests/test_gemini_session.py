@@ -1,8 +1,8 @@
-"""Unit tests for GeminiLiveSession's barge-in / interrupted-flag plumbing.
+"""Unit tests for Gemini Live turn/connection response plumbing.
 
-These tests construct a real GeminiLiveSession (no network calls — the
-genai.Client constructor is local) and exercise the response-dispatch
-pipeline with hand-built fake response objects matching the SDK's shape.
+These tests construct live Gemini connection/turn objects (no network calls)
+and exercise the response-dispatch pipeline with hand-built fake response
+objects matching the SDK's shape.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ try:
     from jasper.voice.gemini_session import (
         GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
         GeminiLiveConnection,
-        GeminiLiveSession,
         GeminiLiveTurn,
     )
     _HAVE_GENAI = True
@@ -67,6 +66,15 @@ async def _run_turn(conn: "GeminiLiveConnection", cum_in: int, cum_out: int):
         server_content=_SC(turn_complete=True),
     ))
     return turn
+
+
+def _new_turn() -> tuple["GeminiLiveConnection", "GeminiLiveTurn"]:
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    turn = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = turn
+    return conn, turn
 
 
 @dataclass
@@ -273,61 +281,62 @@ async def test_interrupted_drains_queued_audio_and_sets_event():
     the interrupt should be dropped (NOT played to the speaker), and
     the interrupt event should fire so the playback task wakes up to
     flush its output."""
-    session = GeminiLiveSession(api_key="fake", model="fake")
+    _, turn = _new_turn()
     # Pre-populate the audio queue with chunks that arrived BEFORE the
     # interrupt — these should never reach the speaker.
-    await session._audio_q.put(b"chunk1")
-    await session._audio_q.put(b"chunk2")
-    await session._audio_q.put(b"chunk3")
-    assert session._audio_q.qsize() == 3
+    await turn._audio_q.put(b"chunk1")
+    await turn._audio_q.put(b"chunk2")
+    await turn._audio_q.put(b"chunk3")
+    assert turn._audio_q.qsize() == 3
 
-    await session._dispatch(_Resp(server_content=_SC(interrupted=True)))
+    await turn._on_response(_Resp(server_content=_SC(interrupted=True)))
 
-    assert session._audio_q.empty()
-    assert session.interrupted() is True
-    assert session._interrupt_event.is_set()
+    assert turn._audio_q.empty()
+    assert turn.interrupted() is True
+    assert turn._interrupt_event.is_set()
 
 
 @pytest.mark.asyncio
 async def test_wait_for_interrupt_resolves_immediately_after_event_set():
     """The playback task awaits wait_for_interrupt() — must wake up as
     soon as the receive loop sets the event."""
-    import asyncio
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    await session._dispatch(_Resp(server_content=_SC(interrupted=True)))
+    _, turn = _new_turn()
+    await turn._on_response(_Resp(server_content=_SC(interrupted=True)))
     # Should resolve quickly since the event is set.
-    await asyncio.wait_for(session.wait_for_interrupt(), timeout=0.1)
+    await asyncio.wait_for(turn.wait_for_interrupt(), timeout=0.1)
 
 
 @pytest.mark.asyncio
 async def test_clear_interrupted_resets_flag_and_event():
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    await session._dispatch(_Resp(server_content=_SC(interrupted=True)))
-    assert session.interrupted() is True
-    assert session._interrupt_event.is_set()
+    _, turn = _new_turn()
+    await turn._on_response(_Resp(server_content=_SC(interrupted=True)))
+    assert turn.interrupted() is True
+    assert turn._interrupt_event.is_set()
 
-    session.clear_interrupted()
-    assert session.interrupted() is False
-    assert not session._interrupt_event.is_set()
+    turn.clear_interrupted()
+    assert turn.interrupted() is False
+    assert not turn._interrupt_event.is_set()
 
 
 @pytest.mark.asyncio
-async def test_turn_complete_increments_counter():
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    assert session.turn_count() == 0
-    await session._dispatch(_Resp(server_content=_SC(turn_complete=True)))
-    await session._dispatch(_Resp(server_content=_SC(turn_complete=True)))
-    assert session.turn_count() == 2
+async def test_turn_complete_marks_live_turn_complete():
+    _, turn = _new_turn()
+    assert turn.server_turn_complete() is False
+    await turn._on_response(_Resp(server_content=_SC(turn_complete=True)))
+    assert turn.server_turn_complete() is True
 
 
 @pytest.mark.asyncio
 async def test_audio_data_queued_for_playback():
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    await session._dispatch(_Resp(data=b"audio_chunk_1"))
-    await session._dispatch(_Resp(data=b"audio_chunk_2"))
-    assert session._audio_q.qsize() == 2
-    assert (await session._audio_q.get()) == b"audio_chunk_1"
-    assert (await session._audio_q.get()) == b"audio_chunk_2"
+    _, turn = _new_turn()
+    await turn._on_response(_Resp(data=b"audio_chunk_1"))
+    await turn._on_response(_Resp(data=b"audio_chunk_2"))
+    assert turn._audio_q.qsize() == 2
+    out = turn.audio_out()
+    assert await anext(out) == b"audio_chunk_1"
+    assert await anext(out) == b"audio_chunk_2"
+    await out.aclose()
+    assert turn.chunks_received() == 2
 
 
 @pytest.mark.asyncio
@@ -335,14 +344,14 @@ async def test_interrupt_drops_audio_received_in_same_response():
     """If a response somehow contains both new audio AND an interrupt
     flag, the interrupt drain runs AFTER the audio is queued — net
     effect should still be no audio surviving the dispatch."""
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    await session._dispatch(_Resp(
+    _, turn = _new_turn()
+    await turn._on_response(_Resp(
         data=b"some_audio",
         server_content=_SC(interrupted=True),
     ))
     # Audio should have been put then immediately drained.
-    assert session._audio_q.empty()
-    assert session.interrupted() is True
+    assert turn._audio_q.empty()
+    assert turn.interrupted() is True
 
 
 # ---- Dispatch seam reads per-tool timeout ----------------------------------
@@ -392,12 +401,12 @@ async def test_dispatch_honours_short_per_tool_timeout():
     reg = ToolRegistry()
     reg.register(slow_tool)
 
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    session._registry = reg
+    conn, turn = _new_turn()
+    conn._registry = reg
     cap = _CaptureSession()
-    session._session = cap
+    conn._session = cap
 
-    await session._dispatch(_Resp(tool_call=_ToolCall(
+    await turn._on_response(_Resp(tool_call=_ToolCall(
         function_calls=[_FC(name="slow_tool", args={})],
     )))
 
@@ -419,12 +428,12 @@ async def test_dispatch_completes_fast_tool_under_default_timeout():
     reg = ToolRegistry()
     reg.register(quick_tool)
 
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    session._registry = reg
+    conn, turn = _new_turn()
+    conn._registry = reg
     cap = _CaptureSession()
-    session._session = cap
+    conn._session = cap
 
-    await session._dispatch(_Resp(tool_call=_ToolCall(
+    await turn._on_response(_Resp(tool_call=_ToolCall(
         function_calls=[_FC(name="quick_tool", args={})],
     )))
 

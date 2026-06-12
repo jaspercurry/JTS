@@ -29,8 +29,8 @@ from jasper.peering.state import (
     StartSession,
     StateMachineParams,
     TimerFired,
-    VoiceSessionEnded,
-    VoiceSessionStarted,
+    VoiceTurnEnded,
+    VoiceTurnStarted,
 )
 
 
@@ -165,7 +165,7 @@ def test_winner_transitions_to_active_on_voice_started():
     epoch = m.current_epoch
     assert epoch is not None
 
-    actions = m.handle(VoiceSessionStarted(epoch=epoch, now=1.2))
+    actions = m.handle(VoiceTurnStarted(epoch=epoch, now=1.2))
     assert m.state is PeerState.ACTIVE
     # Should send the first heartbeat + schedule the next.
     assert any(isinstance(a, BroadcastHeartbeat) for a in actions)
@@ -179,7 +179,7 @@ def test_active_sends_heartbeats_on_timer():
     m = _make("alice")
     m.handle(LocalWake(score=0.8, snr_db=20.0, rms_dbfs=-20.0, can_serve=True, now=1.0))
     m.handle(TimerFired(timer_id=TIMER_ARB_WINDOW, now=1.15))
-    m.handle(VoiceSessionStarted(epoch=m.current_epoch, now=1.2))
+    m.handle(VoiceTurnStarted(epoch=m.current_epoch, now=1.2))
 
     # Timer fires for next heartbeat.
     actions = m.handle(TimerFired(timer_id=TIMER_HEARTBEAT_SEND, now=2.2))
@@ -194,8 +194,8 @@ def test_session_ended_broadcasts_end():
     m.handle(LocalWake(score=0.8, snr_db=20.0, rms_dbfs=-20.0, can_serve=True, now=1.0))
     m.handle(TimerFired(timer_id=TIMER_ARB_WINDOW, now=1.15))
     epoch = m.current_epoch
-    m.handle(VoiceSessionStarted(epoch=epoch, now=1.2))
-    actions = m.handle(VoiceSessionEnded(epoch=epoch, reason="silence", now=10.0))
+    m.handle(VoiceTurnStarted(epoch=epoch, now=1.2))
+    actions = m.handle(VoiceTurnEnded(epoch=epoch, reason="silence", now=10.0))
     assert any(
         isinstance(a, BroadcastEnd) and a.epoch == epoch and a.reason == "silence"
         for a in actions

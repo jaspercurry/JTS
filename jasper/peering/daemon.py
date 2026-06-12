@@ -52,8 +52,8 @@ from .state import (
     StartSession,
     StateMachineParams,
     TimerFired,
-    VoiceSessionEnded,
-    VoiceSessionStarted,
+    VoiceTurnEnded,
+    VoiceTurnStarted,
 )
 from .transport import (
     IncomingClaim,
@@ -378,14 +378,14 @@ class PeeringDaemon:
     async def _handle_session_started(self, epoch: str) -> None:
         if not self._running:
             return
-        self._dispatch(VoiceSessionStarted(
+        self._dispatch(VoiceTurnStarted(
             epoch=epoch, now=self._loop.time(),  # type: ignore[union-attr]
         ))
 
     async def _handle_session_ended(self, epoch: str, reason: str) -> None:
         if not self._running:
             return
-        self._dispatch(VoiceSessionEnded(
+        self._dispatch(VoiceTurnEnded(
             epoch=epoch, reason=reason or "ended",
             now=self._loop.time(),  # type: ignore[union-attr]
         ))

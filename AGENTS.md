@@ -313,9 +313,9 @@ primitive layer:
   [`/assets/shared/js/dialog.js`](deploy/assets/shared/js/dialog.js), never
   native `confirm()`/`alert()` — the browser can suppress those, which
   silently broke the action guards. `await` the confirm; pass `{danger:true}`
-  for destructive actions.
-  `onsubmit="return confirm(...)"` becomes
-  `onsubmit="return jtsConfirmSubmit(this, '...', {danger:true})"`.
+  for destructive actions. Submit guards live in the page's static ES module:
+  listen for `submit`, call `event.preventDefault()`, `await jtsConfirm(...)`,
+  then call `form.submit()` only after the user confirms.
 
 Switch controls must use the shared checkbox-based toggle: `toggle_html()`
 for server-rendered markup plus the canonical `.toggle` rules in
