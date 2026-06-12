@@ -1054,6 +1054,19 @@
         var follower = bonded && g.role === 'follower';
         banner.hidden = !bonded;
         sourceSection.style.display = follower ? 'none' : '';
+        // Dumb-follower profile: voice + mic are parked while paired —
+        // the leader owns the assistant. Annotate the mic card so a
+        // dead /mic probe reads as intended state, not breakage. Text
+        // only; the mic IIFE's own poll repaints when un-parked.
+        var micSub = document.getElementById('mic-sub');
+        if (micSub) {
+          if (follower) {
+            micSub.textContent =
+              'Paired — the assistant listens on the pair leader';
+          } else if (micSub.textContent.indexOf('Paired') === 0) {
+            micSub.textContent = 'Voice control status';
+          }
+        }
         if (volumeEyebrow) {
           volumeEyebrow.textContent = follower ? 'Pair volume' : 'Volume';
         }

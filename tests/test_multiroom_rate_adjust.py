@@ -516,16 +516,24 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
     of the SHARED stream)."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_TTS_SOCKET,
+        VOICE_PARK_ENV,
         VOICE_TTS_SOCKET_ENV,
         voice_grouping_env,
     )
-    for cfg in (
-        _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+    leader = voice_grouping_env(
+        _cfg(enabled=True, role="leader", channel="left", bond_id="b"))
+    assert leader == {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+    # A FOLLOWER additionally carries the dumb-follower park flag (the
+    # validated signal jasper-aec-reconcile gates voice/AEC parking on);
+    # the socket stays armed so a promotion to leader un-parks with the
+    # right playout target already set.
+    follower = voice_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
-             bond_id="b", leader_addr="jts.local"),
-    ):
-        env = voice_grouping_env(cfg)
-        assert env == {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+             bond_id="b", leader_addr="jts.local"))
+    assert follower == {
+        VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
+        VOICE_PARK_ENV: "1",
+    }
     for cfg in (
         _cfg(),  # off
         _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),

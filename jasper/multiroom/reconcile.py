@@ -156,6 +156,20 @@ VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 VOICE_TTS_SOCKET_ENV = "JASPER_TTS_OUTPUTD_SOCKET"
 VOICE_UNIT = "jasper-voice.service"
 
+# jasper-aec-reconcile is the SINGLE owner of jasper-voice +
+# jasper-aec-bridge unit state (it already parks voice when the provider
+# is unconfigured). Role changes therefore KICK it rather than touching
+# those units here — it reads the derived park flag below and
+# restarts-or-parks voice per role + provider + mic, one writer total.
+AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
+
+# Derived, Python-validated park signal for the bash reconciler: written
+# into grouping-voice.env as exactly `JASPER_GROUPING_VOICE_PARK=1` for
+# an ACTIVE bonded FOLLOWER (the dumb-follower profile parks voice + the
+# AEC stack); omitted otherwise. The bash side gates on the exact line
+# (grep -Fxq) so bond-validity logic is never duplicated in shell.
+VOICE_PARK_ENV = "JASPER_GROUPING_VOICE_PARK"
+
 # The snapserver stream id — ONE definition: the argv builder names the
 # pipe source with it, the reconciler's binding pin re-binds persisted
 # groups to it, and the leader's runtime health checks clients against
@@ -441,7 +455,15 @@ def voice_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     omission falls back to the fanin default in jasper.env).
     """
     if cfg.enabled and cfg.error is None:
-        return {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+        env = {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+        if cfg.role == "follower":
+            # The dumb-follower profile: voice (and the AEC stack) park
+            # while this speaker is a bonded follower. The flag is the
+            # validated cross-language contract jasper-aec-reconcile
+            # gates on; the TTS socket stays armed so a role flip to
+            # leader un-parks with the right playout target already set.
+            env[VOICE_PARK_ENV] = "1"
+        return env
     return {}
 
 
@@ -796,21 +818,28 @@ def main(argv: list[str] | None = None) -> int:
     if env_changed and env_ok and not _restart_outputd():
         rc = 1
 
-    # 3b. Voice's TTS socket flip (PR-2): written + restart-on-change
-    # only — a voice restart costs ~10-15 s and must happen only on a
-    # real bond/unbond, never on the routine no-change reconcile.
+    # 3b. Voice's grouping-derived env (PR-2 TTS socket flip + the PR-B
+    # park flag): written + kick-on-change only — a voice restart costs
+    # ~10-15 s and must happen only on a real bond/unbond, never on the
+    # routine no-change reconcile. The kick goes to jasper-aec-reconcile,
+    # NOT jasper-voice directly: that script is the single owner of the
+    # voice/bridge units and decides restart-vs-park from the flag plus
+    # its own provider + mic gates (writer/validator coherence — two
+    # writers of one unit's state was the jts3 boot-loop class).
     voice_env = voice_grouping_env(cfg)
     voice_changed, voice_ok = _write_outputd_env(
         voice_env, path=VOICE_GROUPING_ENV_FILE,
     )
     logger.info(
-        "event=multiroom.reconcile.voice_env path=%s changed=%s ok=%s socket=%s",
+        "event=multiroom.reconcile.voice_env path=%s changed=%s ok=%s "
+        "socket=%s park=%s",
         VOICE_GROUPING_ENV_FILE, voice_changed, voice_ok,
         voice_env.get(VOICE_TTS_SOCKET_ENV, "(solo: fanin default)"),
+        voice_env.get(VOICE_PARK_ENV, "0"),
     )
     if not voice_ok:
         rc = 1
-    if voice_changed and voice_ok and not _restart_unit(VOICE_UNIT):
+    if voice_changed and voice_ok and not _restart_unit(AEC_RECONCILE_UNIT):
         rc = 1
 
     # 4. The unit plan (stops before starts).

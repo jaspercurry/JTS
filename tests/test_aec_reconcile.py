@@ -44,6 +44,9 @@ def _run_reconcile(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[st
             "JASPER_AEC_MODE_FILE": str(tmp_path / "aec_mode.env"),
             "JASPER_VOICE_PROVIDER_FILE": str(tmp_path / "voice_provider.env"),
             "JASPER_VOICE_PROVIDER_IDS_FILE": str(tmp_path / "voice_provider_ids"),
+            "JASPER_GROUPING_VOICE_ENV_FILE": str(
+                tmp_path / "grouping-voice.env"
+            ),
             "JASPER_ASOUND_ROOT": str(tmp_path / "asound"),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
@@ -689,3 +692,47 @@ def test_chip_aec_not_armed_without_6ch_firmware(tmp_path: Path) -> None:
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
     assert "JASPER_AEC_REF_SOURCE=alsa" in body
+
+
+def test_reconcile_parks_voice_and_aec_for_bonded_follower(tmp_path: Path) -> None:
+    """The dumb-follower profile: the Python-validated park flag in
+    grouping-voice.env parks voice (disable --now, never a boot-window
+    start) AND the AEC stack, before any mic/profile logic — a fully
+    healthy Array + valid provider must not override role state."""
+    _write_env(tmp_path, "Array", voice_provider="gemini")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    (tmp_path / "grouping-voice.env").write_text(
+        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
+        "JASPER_GROUPING_VOICE_PARK=1\n"
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "bonded follower" in result.stderr
+    commands = _systemctl_log(tmp_path)
+    assert "disable --now jasper-voice.service" in commands
+    assert "stop jasper-aec-bridge.service jasper-aec-init.service" in commands
+    assert "restart jasper-voice.service" not in commands
+    assert "restart jasper-aec-bridge.service" not in commands
+
+
+def test_reconcile_unparks_voice_when_flag_absent(tmp_path: Path) -> None:
+    """Unbond (or promotion to leader): the flag disappears from
+    grouping-voice.env and the very next reconcile resumes the normal
+    restart path — recovery needs no operator step."""
+    env_file = _write_env(tmp_path, "Array", voice_provider="gemini")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    (tmp_path / "grouping-voice.env").write_text(
+        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
+    commands = _systemctl_log(tmp_path)
+    assert "restart jasper-voice.service" in commands
+    assert "enable jasper-voice.service" in commands

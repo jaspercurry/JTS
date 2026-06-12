@@ -575,6 +575,21 @@ restart_voice() {
     run_systemctl restart jasper-voice.service
 }
 
+# Dumb-follower profile (HANDOFF-multiroom Increment 5): an ACTIVE
+# bonded FOLLOWER parks jasper-voice AND the AEC stack — the leader owns
+# the mic/wake/AI session, and the parked daemons free ~310 MB on a 1 GB
+# Pi. The signal is the Python-validated derived flag the grouping
+# reconciler writes into grouping-voice.env (exact line match, mirroring
+# valid_voice_provider's posture) — bond-validity logic is NEVER
+# re-derived in shell. Missing/unreadable file = not parked (fail-open:
+# a broken read must never park a solo speaker's voice).
+GROUPING_VOICE_ENV_FILE="${JASPER_GROUPING_VOICE_ENV_FILE:-/var/lib/jasper/grouping-voice.env}"
+
+grouping_voice_parked() {
+    [[ -r "$GROUPING_VOICE_ENV_FILE" ]] || return 1
+    grep -Fxq "JASPER_GROUPING_VOICE_PARK=1" "$GROUPING_VOICE_ENV_FILE"
+}
+
 voice_provider_configured() {
     local line provider
     if [[ -f "$VOICE_PROVIDER_FILE" ]]; then
@@ -659,6 +674,24 @@ else
 fi
 
 log "profile=${AUDIO_INPUT_PROFILE} mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN},chip_aec:${LEG_CHIP_AEC}"
+
+if grouping_voice_parked; then
+    # Role park wins over every profile/mic shape below — including the
+    # custom-mic early exit, which deliberately leaves voice untouched.
+    # `disable --now` (not stop): voice must not boot-start its ~240 MB
+    # of models for a few seconds on every reboot only to be re-parked
+    # when this reconciler runs. restart_voice's un-park path already
+    # re-enables. JASPER_MIC_DEVICE is left as-is: parking is role
+    # state, not a mic decision, and the next solo/leader reconcile
+    # resumes from an unchanged mic config.
+    log "bonded follower (grouping-voice.env park flag): parking jasper-voice + AEC stack"
+    run_systemctl disable --now jasper-voice.service
+    reset_failed_units jasper-voice.service
+    stop_disable_aec
+    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC"
+    restart_outputd_if_needed
+    exit 0
+fi
 
 if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
     log "custom JASPER_MIC_DEVICE=${CURRENT_MIC}; leaving voice config untouched"
