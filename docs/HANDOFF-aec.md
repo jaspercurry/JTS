@@ -2068,7 +2068,9 @@ mic 0 sees a clean linear input — much better convergence. The
 DFU mechanism is in-system: the chip exposes its DFU interface in
 normal runtime mode, no Safe Mode entry or button combo required.
 Full operator procedure (download URL, verification, what each
-flag does) is in [BRINGUP.md](../BRINGUP.md) Phase 2A.5. Headline:
+flag does) is in
+[BRINGUP.md "XVF firmware: switch to 6-channel variant via DFU"](../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
+Headline:
 
 ```
 sudo dfu-util -R -e -a 1 -D <6-channel-firmware.bin>
@@ -2580,4 +2582,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-08.
+Last verified: 2026-06-12.
