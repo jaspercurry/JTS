@@ -9,7 +9,6 @@
 #include <freertos/semphr.h>
 
 #include "scenes.h"
-#include "assets/factory_volume.h"
 
 // --- Palette ---------------------------------------------------------------
 // Background and text colors stay constant; only the accent shifts
@@ -141,51 +140,78 @@ static void update_clock() {
 
 // --- Volume overlay --------------------------------------------------------
 //
-// Mirrors the CrowPanel HMI factory screen 2 layout — concentric-arc
-// background image, "Volume" label at top, speaker icon, big cyan
-// percent number in Montserrat 40, and an image-textured arc with a
-// gradient track and glossy cyan fill. Geometry copied verbatim from
-// factory_soucecode/.../ui_Screen2.c so the result is pixel-identical
-// to the gauge that ships on the dial.
+// JTS-owned procedural rendering: an LVGL arc, labels, and simple
+// geometric rings. No third-party image assets are needed for the
+// transient volume scene.
 
 static void build_volume() {
     vol_overlay = make_overlay();
-    // Background image fills the overlay; opaque so the underlying
-    // scene (clock / now-playing) is fully hidden while the gauge is
-    // up. The factory PNG already includes the dial's outer ring, so
-    // we don't draw any frame around it.
     lv_obj_set_style_bg_opa(vol_overlay, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(vol_overlay, lv_color_hex(0x000000), LV_PART_MAIN);
-    lv_obj_set_style_bg_img_src(vol_overlay, &ui_img_v2_bj_volume_100_png, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(vol_overlay, COL_BG, LV_PART_MAIN);
+
+    lv_obj_t *outer = lv_obj_create(vol_overlay);
+    lv_obj_set_size(outer, 214, 214);
+    lv_obj_align(outer, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(outer, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(outer, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(outer, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(outer, COL_BG_SOFT, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(outer, LV_OPA_80, LV_PART_MAIN);
+    lv_obj_clear_flag(outer, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *inner = lv_obj_create(vol_overlay);
+    lv_obj_set_size(inner, 142, 142);
+    lv_obj_align(inner, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(inner, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(inner, COL_BG_SOFT, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(inner, LV_OPA_40, LV_PART_MAIN);
+    lv_obj_set_style_border_width(inner, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *label_volume = lv_label_create(vol_overlay);
-    lv_label_set_text(label_volume, "Volume");
-    lv_obj_set_style_text_color(label_volume, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(label_volume, LV_ALIGN_CENTER, 0, 35);
+    lv_label_set_text(label_volume, "VOLUME");
+    lv_obj_set_style_text_color(label_volume, COL_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(label_volume, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_letter_space(label_volume, 2, 0);
+    lv_obj_align(label_volume, LV_ALIGN_CENTER, 0, 48);
 
-    lv_obj_t *icon = lv_img_create(vol_overlay);
-    lv_img_set_src(icon, &ui_img_icon_volume_40_png);
-    lv_obj_set_size(icon, 20, 20);
-    lv_obj_align(icon, LV_ALIGN_CENTER, 0, -48);
+    lv_obj_t *min_label = lv_label_create(vol_overlay);
+    lv_label_set_text(min_label, "0");
+    lv_obj_set_style_text_color(min_label, COL_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(min_label, &lv_font_montserrat_14, 0);
+    lv_obj_align(min_label, LV_ALIGN_CENTER, -64, 78);
+
+    lv_obj_t *max_label = lv_label_create(vol_overlay);
+    lv_label_set_text(max_label, "100");
+    lv_obj_set_style_text_color(max_label, COL_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(max_label, &lv_font_montserrat_14, 0);
+    lv_obj_align(max_label, LV_ALIGN_CENTER, 63, 78);
 
     vol_label = lv_label_create(vol_overlay);
-    lv_label_set_text(vol_label, " 50%");
-    lv_obj_set_style_text_color(vol_label, lv_color_hex(0x33DCFF), 0);
+    lv_label_set_text(vol_label, "50%");
+    lv_obj_set_style_text_color(vol_label, COL_LISTEN, 0);
     lv_obj_set_style_text_font(vol_label, &lv_font_montserrat_40, 0);
-    lv_obj_align(vol_label, LV_ALIGN_CENTER, 4, 3);
+    lv_obj_set_width(vol_label, 132);
+    lv_obj_set_style_text_align(vol_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(vol_label, LV_ALIGN_CENTER, 0, -4);
 
     vol_arc = lv_arc_create(vol_overlay);
-    lv_obj_set_size(vol_arc, 176, 181);
-    lv_obj_align(vol_arc, LV_ALIGN_CENTER, -1, 4);
+    lv_obj_set_size(vol_arc, 188, 188);
+    lv_obj_align(vol_arc, LV_ALIGN_CENTER, 0, 0);
+    lv_arc_set_rotation(vol_arc, 135);
+    lv_arc_set_bg_angles(vol_arc, 0, 270);
+    lv_arc_set_range(vol_arc, 0, 100);
     lv_arc_set_value(vol_arc, 50);
     lv_obj_remove_style(vol_arc, NULL, LV_PART_KNOB);
     lv_obj_clear_flag(vol_arc, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_width(vol_arc, 25, LV_PART_MAIN);
-    lv_obj_set_style_arc_rounded(vol_arc, false, LV_PART_MAIN);
-    lv_obj_set_style_arc_img_src(vol_arc, &ui_img_bar_light_01_png, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(vol_arc, 25, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(vol_arc, false, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_img_src(vol_arc, &ui_img_bar_bule_02_png, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(vol_arc, 18, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(vol_arc, COL_BG_SOFT, LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(vol_arc, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(vol_arc, true, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(vol_arc, 18, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(vol_arc, COL_LISTEN, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(vol_arc, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(vol_arc, true, LV_PART_INDICATOR);
 }
 
 // --- Listening orb ---------------------------------------------------------
@@ -303,15 +329,8 @@ void scenes_show_volume(int percent) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     lv_arc_set_value(vol_arc, percent);
-    // Factory format: " 50%" (leading space) for <100, "100%" for 100,
-    // so the text width stays roughly stable as the value crosses
-    // 99→100 — keeps the centered alignment from jumping.
     char buf[8];
-    if (percent == 100) {
-        snprintf(buf, sizeof(buf), "%d%%", percent);
-    } else {
-        snprintf(buf, sizeof(buf), " %d%%", percent);
-    }
+    snprintf(buf, sizeof(buf), "%d%%", percent);
     lv_label_set_text(vol_label, buf);
     lv_obj_clear_flag(vol_overlay, LV_OBJ_FLAG_HIDDEN);
     vol_until_ms = lv_tick_get() + 1800;
