@@ -435,7 +435,10 @@ class OpenAIRealtimeTurn(LiveTurn):
         await self._conn._on_turn_released(self)
         assistant_text = self.assistant_transcript().strip()
         if assistant_text:
-            logger.info(
+            # Keep transcript content out of persistent journald. The
+            # flight recorder captures DEBUG around failures, preserving
+            # incident value without writing household utterances to INFO.
+            logger.debug(
                 "event=openai.assistant_transcript transcript=%r",
                 assistant_text,
             )
@@ -1692,16 +1695,15 @@ class OpenAIRealtimeConnection(LiveConnection):
 
         # User audio transcription (what the STT model heard the user
         # say). Diagnostic only — the realtime model's tool choice
-        # comes from the raw audio, not this transcript. Logged at
-        # INFO so it sits alongside the tool-call lines, making the
-        # "model called X — what did STT think the user said?" debug
-        # question trivial to answer by grep. See the comment block
-        # next to ``transcription`` in ``_session_config`` for the
-        # full rationale.
+        # comes from the raw audio, not this transcript. Keep content at
+        # DEBUG so persistent journald does not retain household
+        # utterances; the flight recorder captures DEBUG around failures.
+        # See the comment block next to ``transcription`` in
+        # ``_session_config`` for the full rationale.
         if etype == "conversation.item.input_audio_transcription.completed":
             transcript = _event_field(event, "transcript")
             if isinstance(transcript, str):
-                logger.info(
+                logger.debug(
                     "event=openai.user_transcript transcript=%r",
                     transcript.strip(),
                 )

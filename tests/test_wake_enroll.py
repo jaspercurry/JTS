@@ -7,6 +7,7 @@ SessionStats summarization.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import wave
 from datetime import datetime, timezone
@@ -16,6 +17,10 @@ import numpy as np
 import pytest
 
 from jasper.cli import wake_enroll
+
+
+def _write_mute(path: Path, muted: bool) -> None:
+    path.write_text(f"JASPER_MIC_MUTED={1 if muted else 0}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +184,33 @@ def test_compute_peak_score_handles_empty_input() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Mic mute — enrollment captures UDP mic legs directly while jasper-voice is
+# stopped, so it must honor the persisted household privacy switch itself.
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_muted_blocks_start(tmp_path: Path, caplog) -> None:
+    mute_path = tmp_path / "mic_mute.env"
+    _write_mute(mute_path, True)
+
+    with pytest.raises(wake_enroll.MicMutedError, match="mic is muted"):
+        wake_enroll._refuse_if_muted("start_session", mute_path)
+
+    assert "event=wake_enroll.mute_refused" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_session_refuses_while_muted_before_audio_imports(
+    tmp_path: Path,
+) -> None:
+    mute_path = tmp_path / "mic_mute.env"
+    _write_mute(mute_path, True)
+
+    with pytest.raises(wake_enroll.MicMutedError, match="mic is muted"):
+        await wake_enroll.run_session(argparse.Namespace(mic_mute_path=mute_path))
+
+
+# ---------------------------------------------------------------------------
 # SessionStats
 # ---------------------------------------------------------------------------
 
@@ -256,6 +288,32 @@ async def test_record_window_returns_paired_bytes() -> None:
     # Both legs ran off the same asyncio.timeout; length should match
     # within one packet of slack (5 ms = 80 samples at our fake rate).
     assert abs(len(on_samples) - len(off_samples)) <= wake_enroll.FRAME_SAMPLES
+
+
+@pytest.mark.asyncio
+async def test_record_legs_stops_when_mute_flips_mid_capture(
+    tmp_path: Path,
+) -> None:
+    mute_path = tmp_path / "mic_mute.env"
+    _write_mute(mute_path, False)
+    captures = {
+        "on": _FakeUdpCapture(sample_value=100),
+        "off": _FakeUdpCapture(sample_value=200),
+    }
+
+    async def flip_mute() -> None:
+        await asyncio.sleep(0.03)
+        _write_mute(mute_path, True)
+
+    flipper = asyncio.create_task(flip_mute())
+    with pytest.raises(wake_enroll.MicMutedError, match="mic is muted"):
+        await wake_enroll.record_legs(
+            captures,
+            duration_sec=1.0,
+            mic_mute_path=mute_path,
+            mute_poll_interval_sec=0.01,
+        )
+    await flipper
 
 
 @pytest.mark.asyncio

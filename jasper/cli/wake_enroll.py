@@ -55,12 +55,17 @@ import subprocess
 import sys
 import time
 import wave
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
+from jasper.mic_mute_persistence import (
+    DEFAULT_PATH as MIC_MUTE_STATE_PATH,
+    read_mic_muted,
+)
 from jasper.wake_ports import (
     DEFAULT_AEC_DTLN_PORT,
     DEFAULT_AEC_OFF_PORT,
@@ -93,6 +98,16 @@ INTER_CLIP_PAUSE_SEC = 2.0
 # UDP receiver sockets in production, so it must be down for the
 # enrollment CLI to bind.
 VOICE_UNIT = "jasper-voice"
+
+# Same privacy promise as the wake-corpus recorder: this CLI records the
+# bridge's UDP mic legs directly while jasper-voice is stopped, so it
+# must enforce the persisted household mute flag itself.
+MIC_MUTED_MESSAGE = (
+    "mic is muted — jasper-wake-enroll will not capture audio while "
+    "the household mic mute is on. Unmute from the /system/ dashboard, "
+    "then retry."
+)
+MUTE_POLL_INTERVAL_SEC = 0.25
 
 
 # Conditions the operator picks per session. Maps to the music_active
@@ -170,6 +185,28 @@ def write_wav(path: Path, pcm: bytes) -> None:
     os.replace(tmp, path)
 
 
+class MicMutedError(RuntimeError):
+    """Raised when the household mic-mute privacy switch is on."""
+
+
+def mic_muted(path: Path | str = MIC_MUTE_STATE_PATH) -> bool:
+    return read_mic_muted(path)
+
+
+def _refuse_if_muted(
+    op: str,
+    path: Path | str = MIC_MUTE_STATE_PATH,
+) -> None:
+    if not mic_muted(path):
+        return
+    logger.warning(
+        "event=wake_enroll.mute_refused op=%s path=%s — household "
+        "mic mute is on; refusing to record",
+        op, path,
+    )
+    raise MicMutedError(MIC_MUTED_MESSAGE)
+
+
 def compute_peak_score(detector, pcm_bytes: bytes) -> float:
     """Run `detector.score_frame` over the PCM and return the peak score.
 
@@ -236,6 +273,9 @@ async def _collect_for(udp_capture, duration_sec: float) -> bytes:
 async def record_legs(
     captures: dict[str, "UdpMicCapture"],  # noqa: F821 — forward type
     duration_sec: float,
+    *,
+    mic_mute_path: Path | str | None = None,
+    mute_poll_interval_sec: float = MUTE_POLL_INTERVAL_SEC,
 ) -> dict[str, bytes]:
     """Record arbitrarily many legs concurrently for `duration_sec`.
 
@@ -251,8 +291,39 @@ async def record_legs(
     async def _one(name: str) -> tuple[str, bytes]:
         return name, await _collect_for(captures[name], duration_sec)
 
-    results = await asyncio.gather(*(_one(n) for n in leg_names))
-    return dict(results)
+    async def _collect_all() -> list[tuple[str, bytes]]:
+        return await asyncio.gather(*(_one(n) for n in leg_names))
+
+    collect_task = asyncio.create_task(_collect_all())
+    mute_task: asyncio.Task[None] | None = None
+    if mic_mute_path is not None:
+        async def _watch_mute() -> None:
+            while True:
+                await asyncio.sleep(mute_poll_interval_sec)
+                _refuse_if_muted("recording", mic_mute_path)
+
+        mute_task = asyncio.create_task(_watch_mute())
+
+    try:
+        if mute_task is None:
+            results = await collect_task
+        else:
+            done, _pending = await asyncio.wait(
+                {collect_task, mute_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if mute_task in done:
+                collect_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await collect_task
+                await mute_task
+            results = await collect_task
+        return dict(results)
+    finally:
+        if mute_task is not None and not mute_task.done():
+            mute_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await mute_task
 
 
 async def record_window(
@@ -354,6 +425,8 @@ def _countdown(seconds: int = 3) -> None:
 
 async def run_session(args: argparse.Namespace) -> int:
     """The interactive recording loop. Returns process exit code."""
+    _refuse_if_muted("start_session", args.mic_mute_path)
+
     # Lazy imports so the module is importable without the Pi-side deps
     # (openwakeword for the detector, UdpMicCapture for the audio I/O).
     from jasper.audio_io import UdpMicCapture
@@ -423,7 +496,11 @@ async def run_session(args: argparse.Namespace) -> int:
         for seq in range(1, args.count + 1):
             print(f"\n[{seq:2d}/{args.count}]")
             _countdown(3)
-            recordings = await record_legs(captures, args.duration)
+            recordings = await record_legs(
+                captures,
+                args.duration,
+                mic_mute_path=args.mic_mute_path,
+            )
 
             # Any leg with zero bytes is a soft failure (bridge issue
             # for that leg) — DTLN especially likely on a Pi without
@@ -565,6 +642,12 @@ def main(argv: list[str] | None = None) -> int:
              "where the audio comes from a different source.",
     )
     parser.add_argument(
+        "--mic-mute-path",
+        type=Path,
+        default=Path(MIC_MUTE_STATE_PATH),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="Verbose systemctl logging.",
     )
@@ -575,28 +658,35 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if not args.skip_service_toggle:
-        require_root()
-        systemctl("stop")
+    voice_stopped = False
 
     try:
-        return asyncio.run(run_session(args))
-    finally:
+        _refuse_if_muted("start_session", args.mic_mute_path)
         if not args.skip_service_toggle:
-            # Always try to restart, even on Ctrl+C / exception. If
-            # we leave the speaker with jasper-voice down it stops
-            # responding to wake until the operator notices.
-            try:
-                systemctl("start")
-            except subprocess.CalledProcessError as e:
-                # Don't mask the original error; log + continue. The
-                # operator can `sudo systemctl start jasper-voice`
-                # manually if this fails.
-                print(
-                    f"\nWARNING: failed to restart {VOICE_UNIT}: {e}\n"
-                    f"         Run `sudo systemctl start {VOICE_UNIT}` manually.",
-                    file=sys.stderr,
-                )
+            require_root()
+            systemctl("stop")
+            voice_stopped = True
+        try:
+            return asyncio.run(run_session(args))
+        finally:
+            if voice_stopped:
+                # Always try to restart, even on Ctrl+C / exception. If
+                # we leave the speaker with jasper-voice down it stops
+                # responding to wake until the operator notices.
+                try:
+                    systemctl("start")
+                except subprocess.CalledProcessError as e:
+                    # Don't mask the original error; log + continue. The
+                    # operator can `sudo systemctl start jasper-voice`
+                    # manually if this fails.
+                    print(
+                        f"\nWARNING: failed to restart {VOICE_UNIT}: {e}\n"
+                        f"         Run `sudo systemctl start {VOICE_UNIT}` manually.",
+                        file=sys.stderr,
+                    )
+    except MicMutedError as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

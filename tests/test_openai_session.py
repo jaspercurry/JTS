@@ -440,14 +440,15 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
         await conn.stop()
 
 
-async def test_output_audio_transcript_logged_at_turn_release(caplog):
-    """Production journals should show what the assistant actually said.
+async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
+    """Assistant transcript content stays out of INFO journals.
 
     OpenAI's deployed Realtime stream emits
     ``response.output_audio_transcript.delta`` for assistant speech. The
-    adapter used to ignore that event in production, leaving only the
-    user transcript and tool-call lines for incident debugging."""
-    caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
+    adapter keeps that diagnostic text at DEBUG so the flight recorder
+    can retain failure context without persistent journald carrying the
+    household transcript."""
+    caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -470,10 +471,39 @@ async def test_output_audio_transcript_logged_at_turn_release(caplog):
         await _wait_until(lambda: turn.server_turn_complete(), timeout=2.0)
         assert turn.assistant_transcript() == "Transport error."
         await turn.release()
-        assert (
-            "event=openai.assistant_transcript transcript='Transport error.'"
-            in caplog.text
+        transcript_records = [
+            r for r in caplog.records
+            if "event=openai.assistant_transcript" in r.getMessage()
+        ]
+        assert len(transcript_records) == 1
+        assert transcript_records[0].levelno == logging.DEBUG
+        assert "Transport error." in transcript_records[0].getMessage()
+    finally:
+        await conn.stop()
+
+
+async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
+    caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        sess.feed({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "turn on the kitchen lights",
+        })
+        await _wait_until(
+            lambda: "event=openai.user_transcript" in caplog.text,
+            timeout=2.0,
         )
+        transcript_records = [
+            r for r in caplog.records
+            if "event=openai.user_transcript" in r.getMessage()
+        ]
+        assert len(transcript_records) == 1
+        assert transcript_records[0].levelno == logging.DEBUG
+        assert "turn on the kitchen lights" in transcript_records[0].getMessage()
     finally:
         await conn.stop()
 
