@@ -18,7 +18,10 @@ What this supervisor does
 Runs in `jasper-control`'s existing asyncio thread (no new daemon,
 no new resident-RAM cost beyond ~0). Every 30 s ± jitter, probes:
 
-  1. TCP connect to 127.0.0.1:22 (sshd accepting connections)
+  1. TCP connect to 127.0.0.1:22 (sshd accepting connections), skipped
+     when systemd reports ssh/sshd disabled, masked, or absent. Set
+     `JASPER_SYSTEM_SUPERVISOR_SSHD_PORT=0` for an explicit sshd-probe
+     off switch on non-standard installs.
   2. HTTP GET 127.0.0.1:8780/healthz (jasper-control itself — yes,
      we probe ourselves; this catches the "we're hung in asyncio
      but systemd thinks we're alive" case)
@@ -66,6 +69,7 @@ docs/HANDOFF-tier5-watchdog-liveness.md "Option A".
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -87,6 +91,13 @@ logger = logging.getLogger(__name__)
 # CLOCK_MONOTONIC resets to ~0. Stored as wall-clock (time.time()), not
 # monotonic, precisely because it must outlive the boot.
 DEFAULT_REBOOT_STATE_PATH = Path("/var/lib/jasper/system_supervisor_reboot.json")
+SSHD_PROBE_RECHECK_SEC = 3600.0
+SSHD_UNIT_NAMES = ("ssh.service", "sshd.service")
+SSHD_ENABLED_STATUSES = {
+    "enabled", "enabled-runtime", "linked", "linked-runtime",
+    "alias", "static", "indirect", "generated",
+}
+SSHD_SKIP_STATUSES = {"disabled", "masked", "not-found"}
 
 
 class SystemSupervisor:
@@ -119,7 +130,7 @@ class SystemSupervisor:
         reboot_state_path: Path | str = DEFAULT_REBOOT_STATE_PATH,
     ) -> None:
         self._sshd_host = sshd_host
-        self._sshd_port = sshd_port
+        self._sshd_port = _sshd_port_from_env(sshd_port)
         self._control_host = control_host
         self._control_port = control_port
         self._interval = interval_sec
@@ -146,6 +157,9 @@ class SystemSupervisor:
         self.last_reboot_at: float | None = _read_reboot_state(
             self._reboot_state_path,
         )
+        self._sshd_probe_cache: tuple[bool, str | None] | None = None
+        self._sshd_probe_next_check_at: float = 0.0
+        self._sshd_probe_logged_reasons: set[str] = set()
         # One startup breadcrumb when a persisted reboot time is restored, so
         # an operator reading the journal after a supervisor-driven reboot can
         # see that this process just came back from one (and the rate-limit
@@ -244,13 +258,14 @@ class SystemSupervisor:
 
         Returns on first failure — we don't need a full failure
         attribution, just "is the system healthy or not"."""
-        try:
-            ok = await self.probe_sshd()
-        except Exception:  # noqa: BLE001
-            logger.exception("event=system_supervisor.probe_crash probe=sshd")
-            ok = False
-        if not ok:
-            return False, "sshd"
+        if await self.should_probe_sshd():
+            try:
+                ok = await self.probe_sshd()
+            except Exception:  # noqa: BLE001
+                logger.exception("event=system_supervisor.probe_crash probe=sshd")
+                ok = False
+            if not ok:
+                return False, "sshd"
         try:
             ok = await self.probe_jasper_control()
         except Exception:  # noqa: BLE001
@@ -272,6 +287,85 @@ class SystemSupervisor:
         return True, None
 
     # ---- overridable IO ----
+
+    async def should_probe_sshd(self) -> bool:
+        """Whether the sshd banner probe applies to this install.
+
+        A household may deliberately disable SSH after setup. That is not
+        a userspace wedge, so the supervisor skips the sshd probe when
+        systemd reports both common SSH unit names disabled, masked, or
+        absent. The check is cached for an hour so the steady-state loop
+        does not spawn systemctl every 30 seconds.
+        """
+        if self._sshd_port == 0:
+            self._log_sshd_probe_skipped("port_disabled")
+            return False
+        now = self._now()
+        if (
+            self._sshd_probe_cache is not None
+            and now < self._sshd_probe_next_check_at
+        ):
+            enabled, _reason = self._sshd_probe_cache
+            return enabled
+        enabled, reason = await self._detect_sshd_probe_enabled()
+        self._sshd_probe_cache = (enabled, reason)
+        self._sshd_probe_next_check_at = now + SSHD_PROBE_RECHECK_SEC
+        if not enabled:
+            self._log_sshd_probe_skipped(reason or "disabled")
+        return enabled
+
+    async def _detect_sshd_probe_enabled(self) -> tuple[bool, str | None]:
+        statuses: dict[str, str] = {}
+        for unit in SSHD_UNIT_NAMES:
+            status = await self._systemctl_is_enabled(unit)
+            statuses[unit] = status
+            if status in SSHD_ENABLED_STATUSES:
+                return True, None
+        if statuses and all(
+            status in SSHD_SKIP_STATUSES for status in statuses.values()
+        ):
+            reason = ",".join(
+                f"{unit}:{status}" for unit, status in statuses.items()
+            )
+            return False, reason
+        return True, None
+
+    async def _systemctl_is_enabled(self, unit: str) -> str:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "systemctl", "is-enabled", unit,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError:
+            return "unknown"
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self._probe_timeout,
+            )
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            return "unknown"
+        text = (stdout or stderr).decode("utf-8", "replace").strip()
+        if not text:
+            return "unknown"
+        status = text.splitlines()[0].strip()
+        lowered = status.lower()
+        if "no such file" in lowered or "not found" in lowered:
+            return "not-found"
+        return status
+
+    def _log_sshd_probe_skipped(self, reason: str) -> None:
+        if reason in self._sshd_probe_logged_reasons:
+            return
+        self._sshd_probe_logged_reasons.add(reason)
+        logger.info(
+            "event=system_supervisor.sshd_probe_skipped reason=%s",
+            reason,
+        )
 
     async def probe_sshd(self) -> bool:
         """TCP connect to localhost sshd within timeout. We don't
@@ -395,6 +489,29 @@ def _read_loadavg() -> str:
     of the read doesn't block the event loop."""
     with open("/proc/loadavg") as f:
         return f.read()
+
+
+def _sshd_port_from_env(default: int) -> int:
+    raw = os.environ.get("JASPER_SYSTEM_SUPERVISOR_SSHD_PORT")
+    if raw is None or not raw.strip():
+        return default
+    try:
+        port = int(raw)
+    except ValueError:
+        logger.warning(
+            "JASPER_SYSTEM_SUPERVISOR_SSHD_PORT=%r unrecognized; "
+            "using default %d. Use 0 to disable the sshd probe.",
+            raw, default,
+        )
+        return default
+    if port < 0 or port > 65535:
+        logger.warning(
+            "JASPER_SYSTEM_SUPERVISOR_SSHD_PORT=%r out of range; "
+            "using default %d. Use 0 to disable the sshd probe.",
+            raw, default,
+        )
+        return default
+    return port
 
 
 def _read_reboot_state(path: Path) -> float | None:
