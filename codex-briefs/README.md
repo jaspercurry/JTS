@@ -21,6 +21,10 @@ covers the rest and Codex loads it automatically)
   edit, stop and note it in the PR description instead.
 - Every behavior change lands with a test in the same PR (repo rule: pin
   promises with tests). Every PR body includes the documentation-impact note.
+- Before opening each PR, run the self-review prompt in
+  `codex-briefs/REVIEW-PROMPT.md` against your session's work and fix what it
+  finds. The reviewer applies the same prompt, so passing it honestly first
+  saves a round-trip.
 - Findings cite `main @ 6772b81a`; line numbers may have drifted. Re-locate by
   symbol/grep, and re-verify each claim against current code before fixing
   (several subsystems — fanin/outputd TTS — changed on 2026-06-12).
@@ -88,4 +92,6 @@ brief when you're ready; they need post-wave-1 reality)
 ## Review loop
 
 As PRs open, hand them to Claude (the coordinator session) for review against
-each brief's acceptance criteria + the COAH bar before merge.
+each brief's acceptance criteria + the COAH bar before merge. Both sides use
+`codex-briefs/REVIEW-PROMPT.md`: the working agent runs it as a self-review
+before opening the PR; the coordinator runs it again as the merge gate.
