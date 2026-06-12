@@ -52,6 +52,46 @@ could still render a wizard page — though not change state; closing that
 read-side gap is a known, deferred follow-up. Secrets are kept in
 root-owned files where possible.
 
+### Threat model — what network position gets you
+
+Any device already on the trusted LAN can use the raw management APIs
+without authentication. That includes changing volume (`POST
+/volume/set`, `/volume/adjust`, `/volume/mute`), toggling the privacy
+mic mute (`POST /mic/mute`), changing AEC mode/profile/threshold
+(`POST /aec/toggle`, `/aec/leg`, `/aec/profile`, `/aec/threshold`),
+rebooting or powering off the speaker (`POST /system/reboot`,
+`/system/poweroff`), and rewiring multiroom bonds (`POST
+/grouping/set`). This is deliberate today: the dial, Home Assistant,
+Shortcuts-style automations, and other household integrations use the
+same trusted-LAN posture. Browser-origin attacks are a different class
+and are blocked with Host / Origin / Fetch Metadata checks plus CSRF.
+
+Setup wizards submit API keys, Home Assistant tokens, and Wi-Fi PSKs
+over plain HTTP on the LAN. nginx serves the management UI over HTTP;
+only `/correction/` has HTTPS because phone browsers require it for
+microphone capture. Do setup from a trusted network. A guest VLAN,
+rogue access point, or hostile device on the same Wi-Fi can observe or
+send LAN traffic unless the network itself isolates it. Server-side,
+secrets are kept in root-owned files where possible, usually mode
+`0600`.
+
+Bluetooth pairing uses Just Works auto-accept, but only inside an
+explicit 300-second pairing window opened from `/bluetooth/`. This is
+the same usability trade-off as common smart speakers: pairing is easy
+while a local operator has opened the window. At rest, non-pairability
+is enforced at runtime by the pairing agent's window-scoped adapter
+toggling, not by BlueZ `main.conf`; already-paired devices can still
+reconnect without reopening pairing.
+
+Peering and multiroom control messages are unauthenticated LAN
+multicast today. A device on the same LAN can spoof those control
+messages. The planned follow-up is to add an HMAC over peering messages
+using a shared household secret.
+
+Future work under consideration: an opt-in shared token for the highest
+impact raw control mutations, especially power and mic-mute operations
+on port 8780. That is not implemented today.
+
 Diagnostic scripts redact environment-style secret assignments in their
 log/config snapshots before writing logs or bundles to disk. Wake-event
 audio stays local to the speaker unless an operator explicitly exports it.
