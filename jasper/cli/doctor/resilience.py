@@ -210,6 +210,17 @@ def check_bootloop_guard() -> CheckResult:
             "no marker this boot — guard armed (T5.1 reboot escalation "
             "active)",
         )
+    if snap.get("reload_ok") is False:
+        units = [str(u) for u in (snap.get("units") or [])]
+        return CheckResult(
+            name, "warn",
+            "boot-loop guard attempted to disarm reboot escalation, but "
+            "`systemctl daemon-reload` failed, so the drop-ins were not "
+            "confirmed active. Units with written drop-ins: " +
+            (", ".join(units) or "(no units recorded)") +
+            ". Check `journalctl -u jasper-bootloop-guard` and run "
+            "`systemctl daemon-reload` after fixing the systemd error.",
+        )
     if not snap.get("tripped"):
         return CheckResult(
             name, "ok",

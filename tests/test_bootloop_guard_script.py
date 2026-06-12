@@ -166,6 +166,7 @@ def test_daemon_reload_failure_is_not_reported_as_tripped(tmp_path):
     assert marker["tripped"] is False
     assert marker["reload_ok"] is False
     assert marker["boots_in_window"] == 3
+    assert not h.dropin_for("jasper-camilla.service").exists()
     assert h.systemctl_calls() == ["daemon-reload"]
 
 
@@ -383,6 +384,7 @@ def test_state_snapshot_reads_marker_fresh(tmp_path, monkeypatch):
     snap = bootloop_guard_state.snapshot()
     assert snap["ran"] is True
     assert snap["tripped"] is True
+    assert snap["reload_ok"] is True
     assert snap["boots_in_window"] == 3
     assert snap["units"] == ["jasper-camilla.service"]
 

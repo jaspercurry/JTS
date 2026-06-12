@@ -273,6 +273,7 @@ if [[ "${#units[@]}" -eq 0 ]]; then
 fi
 
 wrote=0
+written_dropins=()
 for u in "${units[@]}"; do
     d="$DROPIN_DIR/${u}.d"
     if ! mkdir -p "$d" 2>/dev/null; then
@@ -294,6 +295,7 @@ StartLimitAction=none
 EOF
     then
         wrote=$((wrote + 1))
+        written_dropins+=("$d/$DROPIN_NAME")
     else
         emit error "reason=dropin_write_failed file=$d/$DROPIN_NAME"
     fi
@@ -312,6 +314,12 @@ if ! "$SYSTEMCTL" daemon-reload >/dev/null 2>&1; then
 fi
 
 if [[ "$reload_ok" != "true" ]]; then
+    if ((${#written_dropins[@]} > 0)); then
+        for dropin in "${written_dropins[@]}"; do
+            rm -f "$dropin" 2>/dev/null \
+                || emit error "reason=dropin_cleanup_failed file=$dropin"
+        done
+    fi
     write_marker false false
     emit ok "boots=${count} threshold=${THRESHOLD} window=${WINDOW_SEC}s units_guarded=${wrote}/${#units[@]} note=daemon_reload_failed"
     exit 0
