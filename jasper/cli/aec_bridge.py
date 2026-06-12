@@ -180,11 +180,11 @@ MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 OUT_HOST = os.environ.get("JASPER_AEC_UDP_HOST", "127.0.0.1")
 
 
-def _leg_udp_port(env_var: str, token: str) -> int:
+def _env_udp_port(env_var: str, token: str) -> int:
     return int(os.environ.get(env_var, str(wake_legs.by_token(token).udp_port)))
 
 
-OUT_PORT = _leg_udp_port("JASPER_AEC_UDP_PORT", "on")
+OUT_PORT = _env_udp_port("JASPER_AEC_UDP_PORT", "on")
 OUT_RATE = 16000
 
 # Secondary UDP output: chip-direct mic stream, pre-AEC3 — exactly
@@ -207,7 +207,7 @@ OUT_RATE = 16000
 #
 # Jasper-voice consumes this leg when the reconciler configures
 # `JASPER_MIC_DEVICE_RAW`; otherwise the extra UDP packets are ignored.
-OUT_PORT_RAW = _leg_udp_port("JASPER_AEC_UDP_PORT_RAW", "off")
+OUT_PORT_RAW = _env_udp_port("JASPER_AEC_UDP_PORT_RAW", "off")
 # Optional 3rd UDP stream: DTLN-aec output. The bridge constructs a
 # DTLNEngine when JASPER_AEC_DTLN_ENABLED=1 and shares the same mic +
 # ref capture with the AEC3 engine. Each input chunk is fed to BOTH
@@ -215,7 +215,7 @@ OUT_PORT_RAW = _leg_udp_port("JASPER_AEC_UDP_PORT_RAW", "off")
 # Adds ~95 MB RAM + ~12% of one Pi 5 core. Disabled by default during
 # the triple-stream rollout; flip via env var per
 # docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan".
-OUT_PORT_DTLN = _leg_udp_port("JASPER_AEC_UDP_PORT_DTLN", "dtln")
+OUT_PORT_DTLN = _env_udp_port("JASPER_AEC_UDP_PORT_DTLN", "dtln")
 # 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the
 # chip-direct stream on OUT_PORT_RAW (which is chip channel 1 = ASR
 # beam, with chip BF+NS+AGC+HPF applied), channel 2 is the raw mic 0
@@ -230,7 +230,7 @@ OUT_PORT_DTLN = _leg_udp_port("JASPER_AEC_UDP_PORT_DTLN", "dtln")
 #
 # Always emitted. Cost is ~0.25% of one core for the extra slice +
 # sendto — same noise-floor cost as the existing :9877 raw leg.
-OUT_PORT_RAW0 = _leg_udp_port("JASPER_AEC_UDP_PORT_RAW0", "raw0")
+OUT_PORT_RAW0 = _env_udp_port("JASPER_AEC_UDP_PORT_RAW0", "raw0")
 # Corpus-only experiment streams. These are disabled by default so
 # normal production bridge cost stays exactly where it is. When enabled
 # for wake-corpus recording, the bridge emits:
@@ -241,26 +241,26 @@ OUT_PORT_RAW0 = _leg_udp_port("JASPER_AEC_UDP_PORT_RAW0", "raw0")
 #
 # They are intentionally not consumed by jasper-voice. They exist to
 # make the gold corpus useful for cheap-mic portability experiments.
-OUT_PORT_REF = _leg_udp_port("JASPER_AEC_UDP_PORT_REF", "ref")
-OUT_PORT_USB_RAW = _leg_udp_port("JASPER_AEC_UDP_PORT_USB_RAW", "usb_raw")
-OUT_PORT_USB_WEBRTC = _leg_udp_port(
+OUT_PORT_REF = _env_udp_port("JASPER_AEC_UDP_PORT_REF", "ref")
+OUT_PORT_USB_RAW = _env_udp_port("JASPER_AEC_UDP_PORT_USB_RAW", "usb_raw")
+OUT_PORT_USB_WEBRTC = _env_udp_port(
     "JASPER_AEC_UDP_PORT_USB_WEBRTC",
     "usb_webrtc",
 )
-OUT_PORT_USB_DTLN = _leg_udp_port("JASPER_AEC_UDP_PORT_USB_DTLN", "usb_dtln")
-OUT_PORT_CHIP_AEC_150 = _leg_udp_port(
+OUT_PORT_USB_DTLN = _env_udp_port("JASPER_AEC_UDP_PORT_USB_DTLN", "usb_dtln")
+OUT_PORT_CHIP_AEC_150 = _env_udp_port(
     "JASPER_AEC_UDP_PORT_CHIP_AEC_150",
     "chip_aec_150",
 )
-OUT_PORT_CHIP_AEC_210 = _leg_udp_port(
+OUT_PORT_CHIP_AEC_210 = _env_udp_port(
     "JASPER_AEC_UDP_PORT_CHIP_AEC_210",
     "chip_aec_210",
 )
-OUT_PORT_XVF_RAW0_WEBRTC_AEC3 = _leg_udp_port(
+OUT_PORT_XVF_RAW0_WEBRTC_AEC3 = _env_udp_port(
     "JASPER_AEC_UDP_PORT_XVF_RAW0_WEBRTC_AEC3",
     "xvf_raw0_webrtc_aec3",
 )
-OUT_PORT_XVF_RAW0_DTLN = _leg_udp_port(
+OUT_PORT_XVF_RAW0_DTLN = _env_udp_port(
     "JASPER_AEC_UDP_PORT_XVF_RAW0_DTLN",
     "xvf_raw0_dtln",
 )
