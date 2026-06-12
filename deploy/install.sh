@@ -25,6 +25,8 @@ CAMILLA_CONF="/etc/camilladsp"
 ENV_DIR="/etc/jasper"
 STATE_DIR="/var/lib/jasper"
 SYSTEMD_DIR="/etc/systemd/system"
+INSTALL_PROFILE_DEFAULT="full"
+INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
@@ -75,11 +77,85 @@ Options:
 
 Environment:
   JASPER_INSTALL_DRY_RUN=1   Same as --dry-run.
+  JASPER_INSTALL_PROFILE=full|endpoint
+                             Install tier. Unset/default is full speaker.
+                             endpoint is the Zero 2 W profile.
+  JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1
+                             Allow a persisted install-profile change.
   JASPER_HOSTNAME=<name>.local
                              Speaker identity/cert hostname for direct
                              Pi-local installs. scripts/deploy-to-pi.sh
                              forwards this automatically.
 EOF
+}
+
+normalize_install_profile() {
+    case "${1:-}" in
+        ""|full)
+            printf 'full\n'
+            ;;
+        endpoint)
+            printf 'endpoint\n'
+            ;;
+        *)
+            echo "invalid JASPER_INSTALL_PROFILE=${1:-<empty>}; use full or endpoint" >&2
+            return 2
+            ;;
+    esac
+}
+
+read_persisted_install_profile() {
+    local marker="${1:-${INSTALL_PROFILE_MARKER}}"
+    if [[ ! -f "${marker}" ]]; then
+        return 0
+    fi
+    local raw
+    raw="$(head -n1 "${marker}" | tr -d '[:space:]')"
+    [[ -n "${raw}" ]] || return 0
+    normalize_install_profile "${raw}"
+}
+
+resolve_install_profile() {
+    local marker="${1:-${INSTALL_PROFILE_MARKER}}"
+    local requested="${JASPER_INSTALL_PROFILE:-}"
+    local persisted requested_profile
+
+    persisted="$(read_persisted_install_profile "${marker}")" || return $?
+    if [[ -n "${requested}" ]]; then
+        requested_profile="$(normalize_install_profile "${requested}")" || return $?
+    elif [[ -n "${persisted}" ]]; then
+        requested_profile="${persisted}"
+    else
+        requested_profile="${INSTALL_PROFILE_DEFAULT}"
+    fi
+
+    if [[ -n "${persisted}" && "${persisted}" != "${requested_profile}" ]] \
+            && ! _is_truthy "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-0}"; then
+        cat >&2 <<EOF
+ERROR: install profile mismatch.
+
+Persisted profile: ${persisted}
+Requested profile: ${requested_profile}
+
+Refusing to switch install tiers implicitly. Set
+JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 only when intentionally converting
+this Pi between full speaker and endpoint tiers.
+EOF
+        return 2
+    fi
+
+    printf '%s\n' "${requested_profile}"
+}
+
+persist_install_profile() {
+    local profile="$1"
+    local marker="${2:-${INSTALL_PROFILE_MARKER}}"
+    profile="$(normalize_install_profile "${profile}")" || return $?
+    install -d -m 0750 "$(dirname "${marker}")"
+    local tmp="${marker}.tmp.$$"
+    printf '%s\n' "${profile}" > "${tmp}"
+    chmod 0644 "${tmp}"
+    mv "${tmp}" "${marker}"
 }
 
 # Pi-generated pip constraints (scripts/generate-pi-constraints.sh).
@@ -95,7 +171,69 @@ jasper_pip_constraints_file() {
     fi
 }
 
+print_endpoint_install_plan() {
+    cat <<EOF
+==> JTS endpoint install plan (dry run)
+
+No host changes are made in this mode. This is the Raspberry Pi Zero 2 W
+install tier: the same JTS repo and control plane, but a small runtime
+profile for a timed Snapcast renderer.
+
+Run for real from a Pi-local checkout after Phase 2 lands:
+  sudo JASPER_INSTALL_PROFILE=endpoint JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
+
+1. Profile guard
+   - Resolve JASPER_INSTALL_PROFILE=endpoint.
+   - Persist the tier in ${INSTALL_PROFILE_MARKER}.
+   - Refuse later full/endpoint tier changes unless
+     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+
+2. System packages
+   - apt-get update.
+   - Minimal runtime packages:
+     python3 python3-venv libasound2 libasound2-plugins alsa-utils
+     curl ca-certificates rsync avahi-daemon avahi-utils snapclient sox.
+
+3. Runtime files and state
+   - Create/update /opt/jasper, /etc/jasper, and /var/lib/jasper.
+   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata.
+   - Copy the jasper Python package, pyproject.toml, ALSA templates,
+     Avahi service templates, multi-room systemd units, jasper-control,
+     jasper-doctor, identity helpers, and install helpers needed by the
+     endpoint tier.
+   - Render /etc/asound.conf for the endpoint DAC path.
+
+4. Python runtime
+   - Create /opt/jasper/.venv.
+   - Install the base JTS Python package without the voice/wake/DSP
+     extras used by full speakers.
+
+5. Services and live actions
+   - Reload udev and systemd.
+   - Enable/start jasper-control, Avahi, identity reconciliation,
+     audio-hardware reconciliation, and the managed JTS snapclient unit.
+   - Install the multi-room grouping reconciler; role=follower starts
+     snapclient from the shared reconciler argv builder.
+   - Disable the distro snapclient.service if the apt package enabled it.
+   - Run jasper-doctor in endpoint-aware mode as a final non-blocking
+     health summary.
+
+6. Explicitly out of scope for the endpoint tier
+   - Voice, wake, microphone/AEC, renderer, setup-wizard, CamillaDSP,
+     fan-in, outputd, Bluetooth-source, AirPlay, Spotify, USB-sink,
+     correction, and accessory firmware build/install surfaces.
+
+This dry run is a planning aid for contributors; it is not a substitute
+for a real Zero 2 W install/deploy validation before release.
+EOF
+}
+
 print_install_plan() {
+    local profile="${1:-full}"
+    if [[ "${profile}" == "endpoint" ]]; then
+        print_endpoint_install_plan
+        return 0
+    fi
     cat <<EOF
 ==> JTS install plan (dry run)
 
@@ -2516,6 +2654,7 @@ run_doctor_summary() {
 
 main() {
     local dry_run="${JASPER_INSTALL_DRY_RUN:-0}"
+    local install_profile
     local arg
     for arg in "$@"; do
         case "${arg}" in
@@ -2534,8 +2673,10 @@ main() {
         esac
     done
 
+    install_profile="$(resolve_install_profile)" || return $?
+
     if _is_truthy "${dry_run}"; then
-        print_install_plan
+        print_install_plan "${install_profile}"
         return 0
     fi
     if ! _is_falsey_or_empty "${dry_run}"; then
@@ -2544,7 +2685,20 @@ main() {
         return 2
     fi
 
-    echo "==> install.sh starting"
+    echo "==> install.sh starting (profile: ${install_profile})"
+    if [[ "${install_profile}" == "endpoint" ]]; then
+        cat >&2 <<'EOF'
+ERROR: JASPER_INSTALL_PROFILE=endpoint is not implemented for live installs yet.
+
+The endpoint tier is wired for dry-run planning and profile-safety tests
+first. Use:
+
+  JASPER_INSTALL_PROFILE=endpoint bash deploy/install.sh --dry-run
+
+until the Phase 2 installer work lands.
+EOF
+        return 2
+    fi
     require_root
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     install_deps

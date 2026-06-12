@@ -67,10 +67,11 @@ package, same control plane — for three reasons:
    that would never execute. The fix is an **install profile** that
    skips those entirely — not a second codebase.
 
-The boundary the package walls defended is held instead by two cheap
+The boundary the package walls defended is held instead by three cheap
 guards: an import-cost test (the daemons the endpoint tier runs must be
-importable without the voice extras) and an install-plan test (the
-endpoint profile's plan contains no brain builds). A future "smart
+importable without the voice extras), an install-plan test (the endpoint
+profile's plan contains no brain builds), and a full-profile regression
+test (the default speaker plan stays byte-identical). A future "smart
 endpoint" is a tier upgrade on the same install, not a migration.
 
 What survives from the earlier draft unchanged: the product contract,
