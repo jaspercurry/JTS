@@ -1737,42 +1737,48 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (PAIR TRIM P2 core —
-jasper/multiroom/balance.py, the hardware-free math for the phone-mic
-SPL auto-match flow: seeded 500 Hz–2 kHz noise-burst synthesis; the
-left/right/left stereo schedule WAV (one channel silent per burst, so
-each bonded member's outputd channel pick emits it from exactly one
-physical speaker through the FULL normal chain including its current
-trim); template-alignment capture segmentation (one continuous phone
-capture, the burst timing is known so only the start offset is
-solved); gates — clipping, SNR vs the capture's own inter-burst gaps,
-and the A/B/A drift gate (left plays first AND last; >1 dB
-disagreement = phone moved = reject); recommend_trims maps the
-measured delta to attenuate-only trims renormalized so the quieter
-side rides at 0 dB, with the −24 dB floor surfaced as clamped=True.
-Closed-loop tested by rendering synthetic room captures from the same
-schedule (tests/test_multiroom_balance.py). The wizard surface shipped
-in the same increment: https://<host>/balance/ (linked from the /rooms
-bonded card) — jasper/web/balance_flow.py riding INSIDE the correction
-service's process and TLS origin (nginx 443 location /balance/ →
-:8770, prefix kept). Sharing the process is the mutual-exclusion
-design: both flows open measurement_window, so correction's
-_reserve_start_slot consults balance_flow.active_phase() and
-/balance/play is dispatched behind correction's idle check. Flow:
-phone starts recording → POST /balance/play (gates: bonded leader,
-exactly one reachable same-bond peer, channels {left,right}) plays the
-burst WAV through the normal bonded chain inside a measurement window
-→ one continuous capture uploads → gated analysis maps the channel
-delta onto members via the bond's channel assignment, composing with
-each member's CURRENT trim → /balance/apply writes one absolute
-/grouping/set per member (peer first; partial failure reported
-per-member, idempotent retry). A rejected take keeps awaiting_capture
-for re-record without replaying; abandoned flows lazily expire after
-120 s so the measurement mutex can't wedge. Tests:
-tests/test_web_balance_flow.py (gates, window/playback seams, real
-WAV bytes through the real core, apply order/bodies, exclusion +
-expiry). Earlier same day: PAIR TRIM P1 — manual ±dB balance on
-/rooms.
+Last verified: 2026-06-12 (PAIR BALANCE P2, equal-loudness walkthrough
+— the v1 fixed-level A/B/A burst design was REPLACED the same day
+after first live use: a badly mismatched pair (the exact case the tool
+exists for) put the quiet speaker's bursts under the noise floor and
+the whole take died with an opaque rejection, and the rapid identical
+L/R/L bursts read as "both speakers at once" to the household. The
+shipped design measures ONE SPEAKER AT A TIME at matched RECEIVED
+loudness: jasper/multiroom/balance.py renders a per-channel stereo
+ramp WAV (silence-lead-in, then 500 Hz–2 kHz seeded noise rising
+-42 → -12 dBFS at 1.5 dB/s with a 4 s ceiling hold; the other channel
+silent, so each bonded member's outputd channel pick emits it from
+exactly one physical speaker through the FULL normal chain including
+its current trim). The phone at the listening position meters its own
+in-band level (biquad band-pass in the AudioWorklet — no audio is
+uploaded) and POSTs /balance/lock when it crosses noise-floor + 15 dB;
+the server derives the DRIVE level from monotonic-since-playback via
+the pure ramp_emission_dbfs function. Spawn/buffer/LAN/detection
+latencies are identical across the two passes and cancel in
+drive_delta_db; locks inside the lead-in get keep_listening (noise
+transient); a ramp that ends unheard marks that channel not_heard —
+the actionable per-speaker error ("check it's powered"), retryable
+per-speaker. recommend_trims is unchanged from v1 (attenuate-only,
+quieter side renormalized to 0 dB, −24 floor surfaced as clamped).
+The wizard (https://<host>/balance/, linked from the /rooms bonded
+card; jasper/web/balance_flow.py riding INSIDE the correction
+service's process + TLS origin, nginx 443 location /balance/ → :8770
+prefix kept) holds ONE measurement_window across the whole walkthrough
+(music doesn't blare back between speakers), released on completion /
+the big Stop button / a SESSION_MAX_S=300 s watchdog so an abandoned
+phone tab can never leave renderers stopped. Mutual exclusion with
+correction is in-process: _reserve_start_slot consults
+balance_flow.active_phase(), /balance/start sits behind correction's
+idle check. /balance/apply writes one absolute /grouping/set per
+member (peer first; partial failure reported per-member; idempotent
+retry). Tests: tests/test_multiroom_balance.py (emission-function
+contract incl. WAV-envelope relative-law tracking, determinism,
+channel exclusivity, drive-delta sign, trim matrix) and
+tests/test_web_balance_flow.py (real background loop, terminable fake
+playback, exact lock offsets via t0 rewind: gates, single held window,
+keep_listening, not_heard + retry, full walkthrough → trims, stop,
+apply order/bodies, correction exclusion). Earlier same day: PAIR
+TRIM P1 — manual ±dB balance on /rooms.
 NEW JASPER_GROUPING_TRIM_DB (wizard/bond-owned intent, validated
 attenuate-only -24..0 — the LOUDER speaker trims down, never a boost;
 outputd re-validates fail-closed) → reconciler derives

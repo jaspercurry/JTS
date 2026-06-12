@@ -1,10 +1,10 @@
-"""Pair-balance measurement core (jasper/multiroom/balance.py).
+"""Pair-balance measurement core (jasper/multiroom/balance.py) —
+equal-loudness ramp method.
 
-The acoustic loop is closed synthetically: a fake room capture is
-rendered from the same schedule the leader would play — each burst
-scaled by an imposed per-speaker gain, plus a noise floor and a
-random capture-start offset — and the pipeline must recover the
-imposed left/right delta through alignment, gating, and band RMS.
+The ramp-emission function is the timing contract between the played
+WAV and the server-side lock math, so the tests pin both ends: the
+pure function's shape, and that the rendered WAV's envelope actually
+follows it.
 """
 
 import numpy as np
@@ -14,235 +14,155 @@ from jasper.multiroom import balance
 from jasper.multiroom.balance import (
     BURST_F_HI,
     BURST_F_LO,
-    BalanceSchedule,
+    CHANNELS,
+    MIN_LOCK_OFFSET_S,
+    RAMP_CEIL_DBFS,
+    RAMP_LEAD_IN_S,
+    RAMP_RATE_DB_S,
+    RAMP_START_DBFS,
     TrimRecommendation,
     band_rms_dbfs,
-    build_balance_schedule,
-    evaluate_capture,
+    drive_delta_db,
+    ramp_duration_s,
+    ramp_emission_dbfs,
     recommend_trims,
-    synth_balance_burst,
-    write_balance_wav,
+    write_ramp_wav,
 )
 
 SR = 48000
 
 
 # ---------------------------------------------------------------------------
-# Burst synthesis
+# Ramp emission function (the timing contract)
 
 
-def test_burst_is_deterministic():
-    a = synth_balance_burst(SR)
-    b = synth_balance_burst(SR)
-    assert np.array_equal(a, b)
+def test_emission_is_silent_during_lead_in():
+    assert ramp_emission_dbfs(0.0) is None
+    assert ramp_emission_dbfs(RAMP_LEAD_IN_S - 0.01) is None
 
 
-def test_burst_peak_at_amplitude():
-    burst = synth_balance_burst(SR, amplitude_dbfs=-12.0)
-    peak_db = 20 * np.log10(np.max(np.abs(burst)))
-    # Fades can only reduce the peak; the pre-fade normalization pins it.
-    assert -12.6 <= peak_db <= -11.9
+def test_emission_ramps_linearly_then_holds_at_ceiling():
+    t1 = RAMP_LEAD_IN_S + 4.0
+    assert ramp_emission_dbfs(t1) == pytest.approx(
+        RAMP_START_DBFS + 4.0 * RAMP_RATE_DB_S)
+    # Deep into the hold: capped at the ceiling.
+    assert ramp_emission_dbfs(ramp_duration_s() - 0.5) == RAMP_CEIL_DBFS
 
 
-def test_burst_energy_concentrated_in_band():
-    burst = synth_balance_burst(SR).astype(np.float64)
-    spectrum = np.abs(np.fft.rfft(burst)) ** 2
-    freqs = np.fft.rfftfreq(burst.size, d=1.0 / SR)
+def test_emission_ends_after_wav():
+    assert ramp_emission_dbfs(ramp_duration_s() + 0.1) is None
+
+
+def test_min_lock_offset_sits_inside_the_ramp():
+    assert ramp_emission_dbfs(MIN_LOCK_OFFSET_S) is not None
+    assert MIN_LOCK_OFFSET_S > RAMP_LEAD_IN_S
+
+
+def test_ceiling_never_exceeds_sweep_level():
+    # Hearing-safety contract: the test signal never exceeds the
+    # correction sweep's -12 dBFS program level.
+    assert RAMP_CEIL_DBFS <= -12.0
+    assert RAMP_START_DBFS <= RAMP_CEIL_DBFS - 25.0  # starts much quieter
+
+
+# ---------------------------------------------------------------------------
+# Ramp WAV rendering
+
+
+@pytest.fixture(scope="module")
+def left_wav(tmp_path_factory):
+    from scipy.io import wavfile
+    path = tmp_path_factory.mktemp("bal") / "left.wav"
+    write_ramp_wav(path, "left", sample_rate=SR)
+    sr, data = wavfile.read(str(path))
+    return sr, data
+
+
+def test_wav_shape_and_duration(left_wav):
+    sr, data = left_wav
+    assert sr == SR
+    assert data.dtype == np.int16 and data.ndim == 2 and data.shape[1] == 2
+    assert data.shape[0] == int(round(ramp_duration_s() * SR))
+
+
+def test_wav_other_channel_is_silent(left_wav):
+    _, data = left_wav
+    assert np.max(np.abs(data[:, 1])) == 0  # right channel silent
+    assert np.max(np.abs(data[:, 0])) > 1000
+
+
+def test_wav_lead_in_is_silent(left_wav):
+    _, data = left_wav
+    lead = int(RAMP_LEAD_IN_S * SR)
+    assert np.max(np.abs(data[:lead, 0])) == 0
+
+
+def test_wav_envelope_tracks_emission_function(left_wav):
+    """RMS of 1 s windows must follow ramp_emission_dbfs's RELATIVE
+    law — the contract the server-side lock math depends on. (Only
+    drive DIFFERENCES enter the trim delta, so the relative law is
+    what must be honest; absolute crest offsets cancel between the
+    two speakers' passes.)"""
+    _, data = left_wav
+    x = data[:, 0].astype(np.float64) / 32767.0
+
+    def window_rms_db(probe_s: float) -> float:
+        a = int((probe_s - 0.5) * SR)
+        b = int((probe_s + 0.5) * SR)
+        return 10 * np.log10(np.mean(x[a:b] ** 2) + 1e-24)
+
+    ref_s = 3.0
+    ref_db = window_rms_db(ref_s)
+    ref_expected = ramp_emission_dbfs(ref_s)
+    for probe_s in (6.0, 10.0, 14.0, ramp_duration_s() - 1.0):
+        measured_rise = window_rms_db(probe_s) - ref_db
+        expected_rise = ramp_emission_dbfs(probe_s) - ref_expected
+        assert measured_rise == pytest.approx(expected_rise, abs=0.8)
+    # And the hold really is flat at the ceiling.
+    hold_a = window_rms_db(ramp_duration_s() - 2.5)
+    hold_b = window_rms_db(ramp_duration_s() - 1.0)
+    assert hold_a == pytest.approx(hold_b, abs=0.5)
+
+
+def test_wav_energy_concentrated_in_band(left_wav):
+    _, data = left_wav
+    x = data[:, 0].astype(np.float64)
+    spectrum = np.abs(np.fft.rfft(x)) ** 2
+    freqs = np.fft.rfftfreq(x.size, d=1.0 / SR)
     in_band = spectrum[(freqs >= BURST_F_LO - 50) & (freqs <= BURST_F_HI + 50)]
     assert in_band.sum() / spectrum.sum() > 0.95
 
 
-def test_burst_fades_to_silence_at_edges():
-    burst = synth_balance_burst(SR)
-    assert abs(burst[0]) < 1e-4 and abs(burst[-1]) < 1e-4
+def test_wav_is_deterministic(tmp_path):
+    a, b = tmp_path / "a.wav", tmp_path / "b.wav"
+    write_ramp_wav(a, "right", sample_rate=SR)
+    write_ramp_wav(b, "right", sample_rate=SR)
+    assert a.read_bytes() == b.read_bytes()
 
 
-def test_burst_rejects_bad_band():
+def test_wav_rejects_unknown_channel(tmp_path):
     with pytest.raises(ValueError):
-        synth_balance_burst(SR, f_lo=2000, f_hi=500)
-    with pytest.raises(ValueError):
-        synth_balance_burst(SR, f_lo=500, f_hi=30000)
+        write_ramp_wav(tmp_path / "x.wav", "centre")
+
+
+def test_channels_vocabulary():
+    assert CHANNELS == ("left", "right")
 
 
 # ---------------------------------------------------------------------------
-# Schedule + WAV
+# Drive delta
 
 
-def test_schedule_is_left_right_left():
-    sched = build_balance_schedule(SR)
-    assert [b.channel for b in sched.bursts] == ["left", "right", "left"]
-    starts = [b.start_s for b in sched.bursts]
-    assert starts == sorted(starts)
-    assert sched.total_s > sched.bursts[-1].end_s
-
-
-def test_schedule_rejects_unknown_channel():
-    with pytest.raises(ValueError):
-        build_balance_schedule(SR, channel_order=("left", "centre"))
-
-
-def test_wav_has_exclusive_channels(tmp_path):
-    from scipy.io import wavfile
-
-    sched = build_balance_schedule(SR)
-    path = tmp_path / "balance.wav"
-    write_balance_wav(path, sched)
-    sr, data = wavfile.read(str(path))
-    assert sr == SR
-    assert data.dtype == np.int16 and data.ndim == 2 and data.shape[1] == 2
-    assert data.shape[0] == int(round(sched.total_s * SR))
-    for spec in sched.bursts:
-        a, b = int(spec.start_s * SR), int(spec.end_s * SR)
-        active = 0 if spec.channel == "left" else 1
-        silent = 1 - active
-        assert np.max(np.abs(data[a:b, active])) > 1000
-        assert np.max(np.abs(data[a:b, silent])) == 0
-
-
-def test_schedule_to_dict_roundtrips_keys():
-    d = build_balance_schedule(SR).to_dict()
-    assert set(d) == {"sample_rate", "total_s", "bursts"}
-    assert all(set(b) == {"channel", "start_s", "end_s"} for b in d["bursts"])
+def test_drive_delta_sign_convention():
+    # Left locked at -30 dBFS drive, right needed -24: left reached the
+    # target with 6 dB less drive → left is the louder speaker.
+    assert drive_delta_db(-30.0, -24.0) == pytest.approx(6.0)
+    assert drive_delta_db(-24.0, -30.0) == pytest.approx(-6.0)
+    assert drive_delta_db(-27.0, -27.0) == 0.0
 
 
 # ---------------------------------------------------------------------------
-# Synthetic room capture
-
-
-def render_capture(
-    sched: BalanceSchedule,
-    left_gain_db: float,
-    right_gain_db: float,
-    *,
-    noise_dbfs: float = -70.0,
-    noise_in_band: bool = False,
-    pre_pad_s: float = 0.7,
-    post_pad_s: float = 0.4,
-    second_left_extra_db: float = 0.0,
-    drop_burst: int | None = None,
-    seed: int = 7,
-) -> np.ndarray:
-    """What the phone would record: each scheduled burst scaled by its
-    speaker's gain, noise floor underneath, unknown start offset."""
-    sr = sched.sample_rate
-    total = int(round((pre_pad_s + sched.total_s + post_pad_s) * sr))
-    out = np.zeros(total)
-    burst = synth_balance_burst(sr).astype(np.float64)
-    left_seen = 0
-    for i, spec in enumerate(sched.bursts):
-        if drop_burst == i:
-            continue
-        gain_db = left_gain_db if spec.channel == "left" else right_gain_db
-        if spec.channel == "left":
-            left_seen += 1
-            if left_seen == 2:
-                gain_db += second_left_extra_db
-        start = int(round((pre_pad_s + spec.start_s) * sr))
-        out[start:start + burst.size] += burst * 10 ** (gain_db / 20.0)
-    rng = np.random.default_rng(seed)
-    noise = rng.standard_normal(total)
-    if noise_in_band:
-        spectrum = np.fft.rfft(noise)
-        freqs = np.fft.rfftfreq(total, d=1.0 / sr)
-        spectrum[(freqs < BURST_F_LO) | (freqs > BURST_F_HI)] = 0.0
-        noise = np.fft.irfft(spectrum, total)
-    noise *= 10 ** (noise_dbfs / 20.0) / np.sqrt(np.mean(noise**2))
-    return out + noise
-
-
-def test_recovers_imposed_delta():
-    sched = build_balance_schedule(SR)
-    capture = render_capture(sched, left_gain_db=-6.0, right_gain_db=-9.0)
-    result = evaluate_capture(capture, SR, sched)
-    assert result.ok, result.reason
-    assert result.delta_db == pytest.approx(3.0, abs=0.3)
-    assert result.drift_db <= 0.2
-    assert result.snr_db > balance.SNR_GATE_DB
-
-
-def test_recovery_is_offset_invariant():
-    sched = build_balance_schedule(SR)
-    a = evaluate_capture(
-        render_capture(sched, -6.0, -9.0, pre_pad_s=0.3), SR, sched)
-    b = evaluate_capture(
-        render_capture(sched, -6.0, -9.0, pre_pad_s=1.9, post_pad_s=1.0),
-        SR, sched)
-    assert a.ok and b.ok
-    assert a.delta_db == pytest.approx(b.delta_db, abs=0.2)
-
-
-def test_right_louder_gives_negative_delta():
-    sched = build_balance_schedule(SR)
-    result = evaluate_capture(
-        render_capture(sched, -10.0, -6.0), SR, sched)
-    assert result.ok
-    assert result.delta_db == pytest.approx(-4.0, abs=0.3)
-
-
-def test_drift_gate_rejects_moved_phone():
-    sched = build_balance_schedule(SR)
-    capture = render_capture(sched, -6.0, -6.0, second_left_extra_db=2.5)
-    result = evaluate_capture(capture, SR, sched)
-    assert not result.ok
-    assert result.reason == "drift"
-    assert result.drift_db > balance.DRIFT_GATE_DB
-
-
-def test_low_snr_rejected():
-    sched = build_balance_schedule(SR)
-    # In-band noise floor ~8 dB under the burst level: alignment can
-    # still lock but the SNR gate must refuse to trust the numbers.
-    capture = render_capture(
-        sched, -6.0, -6.0, noise_dbfs=-18.0, noise_in_band=True)
-    result = evaluate_capture(capture, SR, sched)
-    assert not result.ok
-    assert result.reason in {"low_snr", "no_alignment"}
-
-
-def test_silence_does_not_align():
-    sched = build_balance_schedule(SR)
-    rng = np.random.default_rng(3)
-    capture = rng.standard_normal(int(sched.total_s * SR) + SR) * 1e-4
-    result = evaluate_capture(capture, SR, sched)
-    assert not result.ok
-    assert result.reason == "no_alignment"
-
-
-def test_clipped_capture_rejected():
-    sched = build_balance_schedule(SR)
-    capture = render_capture(sched, 15.0, 15.0)  # bursts peak past 0 dBFS
-    capture = np.clip(capture, -1.0, 1.0)
-    result = evaluate_capture(capture, SR, sched)
-    assert not result.ok
-    assert result.reason == "clipped"
-
-
-def test_short_capture_rejected():
-    sched = build_balance_schedule(SR)
-    capture = render_capture(sched, -6.0, -6.0)[: int(sched.total_s * SR) - 200]
-    result = evaluate_capture(capture, SR, sched)
-    assert not result.ok
-    assert result.reason == "capture_short"
-
-
-def test_missing_burst_rejected():
-    sched = build_balance_schedule(SR)
-    capture = render_capture(sched, -6.0, -6.0, drop_burst=1)
-    result = evaluate_capture(capture, SR, sched)
-    assert not result.ok  # right level collapses to floor → gated
-
-
-def test_band_rms_ignores_out_of_band_energy():
-    t = np.arange(SR) / SR
-    hum = 0.5 * np.sin(2 * np.pi * 60 * t)  # loud mains hum, out of band
-    quiet_tone = 0.01 * np.sin(2 * np.pi * 1000 * t)  # in band
-    level_with_hum = band_rms_dbfs(hum + quiet_tone, SR)
-    level_alone = band_rms_dbfs(quiet_tone, SR)
-    assert level_with_hum == pytest.approx(level_alone, abs=0.5)
-
-
-# ---------------------------------------------------------------------------
-# Trim recommendation
+# Trim recommendation (unchanged contract from v1)
 
 
 def test_left_louder_trims_left():
@@ -256,14 +176,12 @@ def test_right_louder_trims_right():
 
 
 def test_balanced_pair_renormalizes_wasted_attenuation():
-    # Pair already balanced but both trimmed: lift together to 0.
     rec = recommend_trims(0.0, current_left_trim_db=-5.0,
                           current_right_trim_db=-2.0)
     assert rec == TrimRecommendation(-3.0, 0.0, False)
 
 
 def test_residual_delta_composes_with_existing_trims():
-    # Left still 1 dB louder despite -3 already applied.
     rec = recommend_trims(1.0, current_left_trim_db=-3.0,
                           current_right_trim_db=0.0)
     assert rec == TrimRecommendation(-4.0, 0.0, False)
@@ -282,9 +200,19 @@ def test_recommendation_is_stable_at_zero_delta():
     assert again == first
 
 
-def test_result_to_dict_keys():
-    sched = build_balance_schedule(SR)
-    d = evaluate_capture(
-        render_capture(sched, -6.0, -9.0), SR, sched).to_dict()
-    assert set(d) == {"ok", "reason", "left_dbfs", "right_dbfs",
-                      "delta_db", "drift_db", "snr_db", "noise_dbfs"}
+# ---------------------------------------------------------------------------
+# Offline band-RMS helper (kept for fetched-capture analysis)
+
+
+def test_band_rms_ignores_out_of_band_energy():
+    t = np.arange(SR) / SR
+    hum = 0.5 * np.sin(2 * np.pi * 60 * t)  # loud mains hum, out of band
+    quiet_tone = 0.01 * np.sin(2 * np.pi * 1000 * t)  # in band
+    level_with_hum = band_rms_dbfs(hum + quiet_tone, SR)
+    level_alone = band_rms_dbfs(quiet_tone, SR)
+    assert level_with_hum == pytest.approx(level_alone, abs=0.5)
+
+
+def test_band_rms_floor_on_garbage():
+    assert band_rms_dbfs(np.zeros(4), SR) == balance._DBFS_FLOOR
+    assert band_rms_dbfs(np.zeros(SR), 0) == balance._DBFS_FLOOR
