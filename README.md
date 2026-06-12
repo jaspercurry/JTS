@@ -1079,6 +1079,8 @@ If the repo is already deployed and you're just pushing changes:
 bash scripts/deploy-to-pi.sh
 # or with a non-default SSH target:
 PI_HOST=192.168.1.42 JASPER_HOSTNAME=jts.local bash scripts/deploy-to-pi.sh
+# or for a Zero 2 W dumb endpoint:
+PI_HOST=jts4.local JASPER_INSTALL_PROFILE=endpoint bash scripts/deploy-to-pi.sh
 ```
 
 This is a thin wrapper that captures the current git SHA + branch
@@ -1092,6 +1094,13 @@ writes the deploy metadata into `/var/lib/jasper/build.txt` so the
 instead of "unknown" (`.git/` is excluded from the rsync for speed).
 
 The install script is idempotent.
+
+The endpoint profile is the supported Zero 2 W path. It persists
+`/var/lib/jasper/install_profile`, installs only the lightweight
+`jasper-control` + Snapcast renderer surface, and verifies deploys
+through `jasper-control`'s `:8780/healthz` instead of the full speaker
+nginx dashboard. See
+[docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md).
 
 ---
 

@@ -340,6 +340,12 @@ def test_snapclient_argv_adds_file_player_when_fifo_set():
     assert argv[argv.index("--player") + 1] == f"file:filename={fifo}"
 
 
+def test_snapclient_argv_adds_direct_player_when_set():
+    argv = snapclient_argv(_follower(), player="alsa:device=default")
+    assert "--player" in argv
+    assert argv[argv.index("--player") + 1] == "alsa:device=default"
+
+
 # ---------- _assemble_args(): pure derivation of the two env keys ----------
 #
 # These mirror the snap*_argv tests but assert on the env-key VALUES the
@@ -396,6 +402,16 @@ def test_assemble_args_follower_server_empty_client_set():
     assert d[SERVER_KEY] == ""          # a follower runs no server
     assert d[CLIENT_KEY]                # but does run a client
     assert "--host 192.168.1.50" in d[CLIENT_KEY]
+
+
+def test_assemble_args_endpoint_profile_uses_direct_alsa_not_outputd_fifo():
+    from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
+
+    d = _assemble_args(_follower(), install_profile="endpoint")
+
+    assert d[SERVER_KEY] == ""
+    assert "--player alsa:device=default" in d[CLIENT_KEY]
+    assert MEMBER_CONTENT_FIFO not in d[CLIENT_KEY]
 
 
 def test_assemble_args_disabled_clears_both():
@@ -525,6 +541,7 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         str(tmp_path / "member-content.fifo"),
     )
     monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(reconcile_mod, "read_install_profile", lambda: "full")
 
     order: list[str] = []
     real_write = reconcile_mod._write_args_file
@@ -724,6 +741,24 @@ def test_main_camilla_failure_is_fail_soft_but_flips_rc(tmp_path, monkeypatch):
     rc = main([])
     assert rc == 1
     assert "apply" in order  # units still managed
+
+
+def test_main_endpoint_profile_skips_full_speaker_audio_lanes(tmp_path, monkeypatch):
+    target, order = _patch_main_io(
+        monkeypatch, tmp_path, _follower(leader_addr="jts3.local")
+    )
+    monkeypatch.setattr(reconcile_mod, "read_install_profile", lambda: "endpoint")
+
+    rc = main([])
+
+    assert rc == 0
+    assert order == ["write", "apply"]
+    text = target.read_text()
+    assert "--host jts3.local" in text
+    assert "--player alsa:device=default" in text
+    assert not (tmp_path / "grouping-outputd.env").exists()
+    assert not (tmp_path / "grouping-voice.env").exists()
+    assert not (tmp_path / "member-content.fifo").exists()
 
 
 # ---------- the leader's music-producer predicate ----------

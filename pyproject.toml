@@ -4,6 +4,14 @@ version = "0.1.0"
 description = "Voice-controlled smart speaker on Raspberry Pi 5 with CamillaDSP and a swappable real-time voice backend (Gemini Live, OpenAI Realtime, xAI Grok)"
 requires-python = ">=3.11"
 dependencies = [
+    # systemd watchdog notification (sd_notify protocol). Kept in the
+    # base install because jasper-control runs on both full speakers and
+    # endpoint-tier renderers with Type=notify.
+    "sdnotify>=0.3.2",
+]
+
+[project.optional-dependencies]
+full = [
     "google-genai==2.8.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
@@ -77,15 +85,6 @@ dependencies = [
     # than shelling to `bluetoothctl` (parsing its output is flaky
     # across versions). Pure-Python, no C extension.
     "dbus-next>=0.2.3",
-    # systemd watchdog notification (sd_notify protocol). The Tier 1
-    # rung of the resilience ladder: each daemon's main loop bumps
-    # a `last_progress` sentinel; a heartbeat thread reads it and
-    # only pats systemd if the loop is actually making progress.
-    # If progress stops (e.g. PortAudio blocked in a syscall holding
-    # the GIL — the bridge failure mode from 2026-05-11), systemd's
-    # WatchdogSec= timer expires and `Restart=on-watchdog` revives
-    # the daemon with a fresh process. Pure-Python, ~5 kB.
-    "sdnotify>=0.3.2",
     # jasper.peering: mDNS-SD discovery of sibling JTS speakers for
     # multi-device wake arbitration. Used in browse-only mode — the
     # host's Avahi daemon remains the only mDNS responder (peering
@@ -98,13 +97,6 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.6",
-]
-
-[project.optional-dependencies]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",

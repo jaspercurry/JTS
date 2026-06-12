@@ -1123,6 +1123,37 @@ def test_async_doctor_check_exception_becomes_fail_result():
     assert "RuntimeError: synthetic async failure" in result.detail
 
 
+def test_endpoint_profile_doctor_skips_brain_only_groups(monkeypatch):
+    from jasper.cli.doctor._registry import RegisteredCheck
+
+    ran: list[str] = []
+
+    def env_check():
+        ran.append("env")
+        return doctor.CheckResult("env file", "ok", "ran")
+
+    def voice_check(_cfg):
+        ran.append("voice")
+        return doctor.CheckResult("provider key", "fail", "should not run")
+
+    monkeypatch.setattr(doctor, "read_install_profile", lambda: "endpoint")
+    monkeypatch.setattr(doctor, "registered_checks", lambda: [
+        RegisteredCheck(order=0, group="env", func=env_check),
+        RegisteredCheck(
+            order=1, group="voice", func=voice_check,
+            needs_cfg=True, label="provider key",
+        ),
+    ])
+
+    results = asyncio.run(doctor.run_async(object()))
+
+    assert ran == ["env"]
+    assert [(r.name, r.status, r.detail) for r in results] == [
+        ("env file", "ok", "ran"),
+        ("provider key", "ok", "not installed (endpoint tier)"),
+    ]
+
+
 # ------------------------------------------------ ALSA shorthand mic lookup
 
 

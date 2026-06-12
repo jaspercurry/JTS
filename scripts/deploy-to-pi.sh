@@ -392,14 +392,30 @@ echo "==> Running install.sh on ${PI_HOST}..."
 mark_airplay_health_maintenance "${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC}"
 trap 'finish_airplay_health_maintenance >/dev/null 2>&1 || true' EXIT
 
-run_remote_sudo "JASPER_DEPLOY_SHA=$(shell_quote "${SHA}${DIRTY}") \
+install_env="JASPER_DEPLOY_SHA=$(shell_quote "${SHA}${DIRTY}") \
 JASPER_DEPLOY_SHA_FULL=$(shell_quote "${SHA_FULL}${DIRTY}") \
 JASPER_DEPLOY_BRANCH=$(shell_quote "$BRANCH") \
-JASPER_HOSTNAME=$(shell_quote "$HOSTNAME_FOR_INSTALL") \
-bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")"
+JASPER_HOSTNAME=$(shell_quote "$HOSTNAME_FOR_INSTALL")"
+if [[ -n "${JASPER_INSTALL_PROFILE:-}" ]]; then
+    install_env="${install_env} JASPER_INSTALL_PROFILE=$(shell_quote "$JASPER_INSTALL_PROFILE")"
+fi
+if [[ -n "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-}" ]]; then
+    install_env="${install_env} JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=$(shell_quote "$JASPER_ACCEPT_INSTALL_PROFILE_CHANGE")"
+fi
+
+run_remote_sudo "${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")"
 
 echo "==> Build manifest now on Pi:"
 run_remote_sudo 'cat /var/lib/jasper/build.txt 2>/dev/null || echo "(not present)"'
+
+REMOTE_INSTALL_PROFILE="$(
+    run_remote_sudo 'cat /var/lib/jasper/install_profile 2>/dev/null || echo full' \
+        2>/dev/null | tail -n1 | tr -d '[:space:]'
+)"
+if [[ "$REMOTE_INSTALL_PROFILE" != "endpoint" ]]; then
+    REMOTE_INSTALL_PROFILE="full"
+fi
+echo "==> Installed profile: ${REMOTE_INSTALL_PROFILE}"
 
 # Restart/reconcile the Python daemons that run application code so a
 # code change in this deploy actually takes effect. install.sh already
@@ -425,9 +441,15 @@ echo "==> Restarting code daemon: jasper-control.service"
 run_remote_sudo "systemctl restart jasper-control.service" || \
     echo "  (jasper-control restart returned non-zero — see scripts/fetch-pi-logs.sh)"
 
-echo "==> Reconciling mic/AEC/voice state"
-run_remote_sudo "systemctl start jasper-aec-reconcile.service" || \
-    echo "  (jasper-aec-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
+if [[ "$REMOTE_INSTALL_PROFILE" == "endpoint" ]]; then
+    echo "==> Reconciling endpoint grouping state"
+    run_remote_sudo "systemctl restart jasper-grouping-reconcile.service" || \
+        echo "  (jasper-grouping-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
+else
+    echo "==> Reconciling mic/AEC/voice state"
+    run_remote_sudo "systemctl start jasper-aec-reconcile.service" || \
+        echo "  (jasper-aec-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
+fi
 
 # Post-deploy verification: the management surface must answer through
 # nginx under the speaker's real hostname. This exercises the exact
@@ -438,26 +460,49 @@ run_remote_sudo "systemctl start jasper-aec-reconcile.service" || \
 # host_not_allowed) shipped invisibly because nothing probed this path
 # at deploy time. Retries cover jasper-control's restart window and
 # the wizard's socket-activation cold start.
-echo "==> Verifying management surface (Host: ${HOSTNAME_FOR_INSTALL})"
-verify_cmd="code=000; for attempt in 1 2 3 4 5; do \
+if [[ "$REMOTE_INSTALL_PROFILE" == "endpoint" ]]; then
+    echo "==> Verifying endpoint control health (:8780/healthz)"
+    verify_cmd="code=000; for attempt in 1 2 3 4 5; do \
+code=\$(curl -s -o /dev/null -w '%{http_code}' -m 4 \
+http://127.0.0.1:8780/healthz || echo 000); \
+[ \"\$code\" = 200 ] && exit 0; sleep 3; done; \
+echo \"endpoint control probe failed: last HTTP status \$code\" >&2; exit 1"
+    if ssh_remote "$verify_cmd"; then
+        echo "  ✓ jasper-control answers 200 at :8780/healthz"
+    else
+        finish_airplay_health_maintenance
+        trap - EXIT
+        echo "─────────────────────────────────────────────────────────────" >&2
+        echo " DEPLOY VERIFICATION FAILED: endpoint jasper-control is not" >&2
+        echo " answering at http://127.0.0.1:8780/healthz on the Pi."     >&2
+        echo " Diagnose on the Pi:"                                       >&2
+        echo "   sudo /opt/jasper/.venv/bin/jasper-doctor"                >&2
+        echo "   journalctl -u jasper-control -n 120 --no-pager"          >&2
+        echo "─────────────────────────────────────────────────────────────" >&2
+        exit 1
+    fi
+else
+    echo "==> Verifying management surface (Host: ${HOSTNAME_FOR_INSTALL})"
+    verify_cmd="code=000; for attempt in 1 2 3 4 5; do \
 code=\$(curl -s -o /dev/null -w '%{http_code}' -m 4 \
 -H $(shell_quote "Host: ${HOSTNAME_FOR_INSTALL}") \
 http://127.0.0.1/system/data.json || echo 000); \
 [ \"\$code\" = 200 ] && exit 0; sleep 3; done; \
 echo \"management-surface probe failed: last HTTP status \$code\" >&2; exit 1"
-if ssh_remote "$verify_cmd"; then
-    echo "  ✓ /system/data.json answers 200 via nginx as ${HOSTNAME_FOR_INSTALL}"
-else
-    finish_airplay_health_maintenance
-    trap - EXIT
-    echo "─────────────────────────────────────────────────────────────" >&2
-    echo " DEPLOY VERIFICATION FAILED: the management surface is not"   >&2
-    echo " answering at http://${HOSTNAME_FOR_INSTALL}/system/."        >&2
-    echo " Diagnose on the Pi:"                                          >&2
-    echo "   sudo /opt/jasper/.venv/bin/jasper-doctor"                   >&2
-    echo "   journalctl -u jasper-control | grep event=http.reject"      >&2
-    echo "─────────────────────────────────────────────────────────────" >&2
-    exit 1
+    if ssh_remote "$verify_cmd"; then
+        echo "  ✓ /system/data.json answers 200 via nginx as ${HOSTNAME_FOR_INSTALL}"
+    else
+        finish_airplay_health_maintenance
+        trap - EXIT
+        echo "─────────────────────────────────────────────────────────────" >&2
+        echo " DEPLOY VERIFICATION FAILED: the management surface is not"   >&2
+        echo " answering at http://${HOSTNAME_FOR_INSTALL}/system/."        >&2
+        echo " Diagnose on the Pi:"                                          >&2
+        echo "   sudo /opt/jasper/.venv/bin/jasper-doctor"                   >&2
+        echo "   journalctl -u jasper-control | grep event=http.reject"      >&2
+        echo "─────────────────────────────────────────────────────────────" >&2
+        exit 1
+    fi
 fi
 
 finish_airplay_health_maintenance

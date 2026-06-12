@@ -10,11 +10,14 @@ import os
 import shlex
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).parent.parent
 INSTALL_SH = REPO_ROOT / "deploy" / "install.sh"
+DEPLOY_SH = REPO_ROOT / "scripts" / "deploy-to-pi.sh"
+PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 
 def _run_install_plan(*, profile: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -50,11 +53,15 @@ def test_endpoint_import_surface_avoids_brain_only_dependencies():
     """
     modules = [
         "jasper.control.server",
+        "jasper.cli.doctor",
         "jasper.multiroom.config",
         "jasper.multiroom.reconcile",
         "jasper.multiroom.state",
     ]
     blocked = [
+        "camilladsp",
+        "dbus_next",
+        "evdev",
         "onnxruntime",
         "openwakeword",
         "scipy",
@@ -62,7 +69,9 @@ def test_endpoint_import_surface_avoids_brain_only_dependencies():
         "jasper_aec3",
         "google.genai",
         "openai",
+        "spotipy",
         "websockets",
+        "zeroconf",
     ]
     code = f"""
 import importlib
@@ -117,7 +126,7 @@ def test_endpoint_install_plan_excludes_brain_build_surfaces():
         "Persist the tier",
         "Minimal runtime packages",
         "jasper-control",
-        "managed JTS snapclient unit",
+        "managed JTS snapserver/snapclient units",
         "voice/wake/DSP",
     ]:
         assert expected in result.stdout
@@ -132,6 +141,26 @@ def test_endpoint_install_plan_excludes_brain_build_surfaces():
         "Enable socket-activated setup wizards",
     ]:
         assert forbidden not in result.stdout
+
+
+def test_pyproject_base_install_is_endpoint_light():
+    data = tomllib.loads(PYPROJECT.read_text())
+    base = data["project"]["dependencies"]
+    full = data["project"]["optional-dependencies"]["full"]
+
+    assert base == ["sdnotify>=0.3.2"]
+    for dep_prefix in [
+        "camilladsp",
+        "google-genai",
+        "openai",
+        "onnxruntime",
+        "scipy",
+        "sounddevice",
+        "spotipy",
+        "zeroconf",
+    ]:
+        assert not any(dep.startswith(dep_prefix) for dep in base)
+        assert any(dep.startswith(dep_prefix) for dep in full)
 
 
 def test_install_profile_marker_is_reused_when_env_is_unset(tmp_path: Path):
@@ -170,17 +199,23 @@ def test_install_profile_refuses_implicit_tier_change(tmp_path: Path):
     assert override.stdout.strip() == "full"
 
 
-def test_live_endpoint_profile_fails_fast_until_installer_lands():
-    env = os.environ.copy()
-    env["JASPER_INSTALL_PROFILE"] = "endpoint"
-    result = subprocess.run(
-        ["bash", str(INSTALL_SH)],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        env=env,
-    )
+def test_live_endpoint_profile_has_real_installer_branch():
+    text = INSTALL_SH.read_text()
 
-    assert result.returncode == 2
-    assert "endpoint is not implemented for live installs yet" in result.stderr
-    assert "this script must be run as root" not in result.stderr
+    assert "endpoint is not implemented for live installs yet" not in text
+    assert "install_endpoint_deps" in text
+    assert "install_endpoint_jasper" in text
+    assert "install_endpoint_systemd_units" in text
+    assert '"${install_profile}" == "endpoint"' in text
+
+
+def test_deploy_script_forwards_endpoint_profile_and_verifies_control_healthz():
+    text = DEPLOY_SH.read_text()
+
+    assert "JASPER_INSTALL_PROFILE=$(shell_quote" in text
+    assert "JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=$(shell_quote" in text
+    assert "REMOTE_INSTALL_PROFILE" in text
+    assert "systemctl restart jasper-grouping-reconcile.service" in text
+    assert "http://127.0.0.1:8780/healthz" in text
+    assert "jasper-aec-reconcile.service" in text
+    assert "/system/data.json" in text

@@ -26,11 +26,22 @@
 > substrate.
 >
 > Design dialogue + prior-art research: 2026-06-04. Status last reconciled with
-> code: 2026-06-11 (see §0 + the footer changelog).
+> code: 2026-06-12 (see §0 + the footer changelog).
 
 ---
 
-## 0. Implementation status (2026-06-11)
+## 0. Implementation status (2026-06-12)
+
+**Endpoint install tier software is BUILT (2026-06-12), hardware validation
+pending.** A Raspberry Pi Zero 2 W endpoint is now the same JTS package on
+`JASPER_INSTALL_PROFILE=endpoint`: base Python deps only, `jasper-control`,
+Avahi identity/discovery, grouping reconcile, and managed Snapcast units.
+The same reconciler/argv builder serves both tiers. Full speakers keep the
+`snapclient -> FIFO -> outputd` member lane; endpoint installs derive a
+direct Snapclient ALSA player (`alsa:device=default` unless
+`JASPER_ENDPOINT_SNAPCLIENT_PLAYER` overrides it) and skip outputd/voice/
+Camilla side effects. The detailed operator/runbook truth lives in
+[`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md).
 
 **Increment 5 PR-1 (the bonded MUSIC dataplane) is BUILT (2026-06-11).**
 A bond now moves audio end-to-end: the leader's CamillaDSP bakes the shared

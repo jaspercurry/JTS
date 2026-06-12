@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
+from ...install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
 
 from ._registry import doctor_check, registered_checks
 from ._shared import (
@@ -275,6 +276,25 @@ from . import satellites as satellites
 from .satellites import (
     check_dial_heartbeat,
 )
+
+_ENDPOINT_OMITTED_DOCTOR_GROUPS = frozenset({
+    "audio",
+    "voice",
+    "wake",
+    "renderers",
+    "integrations",
+    "web",
+    "correction",
+    "aec",
+    "usbsink",
+    "resilience",
+    "satellites",
+})
+
+
+def _endpoint_skip_result(entry) -> CheckResult:
+    label = entry.label or _check_name(entry.func)
+    return CheckResult(label, "ok", "not installed (endpoint tier)")
 
 __all__ = [
     "doctor_check",
@@ -900,9 +920,15 @@ async def run_async(cfg: Config) -> list[CheckResult]:
     Result order therefore equals the original: the 73 synchronous checks
     in their literal order, then the CamillaDSP websocket check.
     """
+    install_profile = read_install_profile()
+    endpoint_tier = install_profile == ENDPOINT_INSTALL_PROFILE
     sync_checks: list[DoctorCheck] = []
     async_tail: list = []
     for entry in registered_checks():
+        if endpoint_tier and entry.group in _ENDPOINT_OMITTED_DOCTOR_GROUPS:
+            skipped = _endpoint_skip_result(entry)
+            sync_checks.append((skipped.name, lambda skipped=skipped: skipped))
+            continue
         fn = entry.func
         if entry.is_async:
             async_tail.append((entry.label, fn))

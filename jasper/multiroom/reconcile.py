@@ -35,6 +35,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
 from .. import atomic_io
 from .config import GroupingConfig, load_config
 
@@ -99,6 +100,8 @@ ARGS_FILE = ARGS_DIR + "/snapcast-args.env"
 # derived-env contract (one line per key, empty-string to clear).
 _SERVER_ARGS_KEY = "JASPER_SNAPSERVER_ARGS"
 _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
+ENDPOINT_SNAPCLIENT_PLAYER_ENV = "JASPER_ENDPOINT_SNAPCLIENT_PLAYER"
+DEFAULT_ENDPOINT_SNAPCLIENT_PLAYER = "alsa:device=default"
 
 # ---------- the leader's music producer (Increment 5: CamillaDSP) ----------
 #
@@ -314,6 +317,7 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
 
 def snapclient_argv(
     cfg: GroupingConfig, *, player_fifo: str | None = None,
+    player: str | None = None,
 ) -> list[str]:
     """Build the snapclient command line from a GroupingConfig.
 
@@ -334,7 +338,12 @@ def snapclient_argv(
     busy`` failure of the pre-Increment-5 bond). ``None`` leaves the command
     BYTE-FOR-BYTE unchanged. The ``file:filename=`` option string was verified
     against snapclient 0.31.0 on jts3 (``--player file:?``).
+    ``player`` is the endpoint-tier escape hatch: the same builder can target
+    direct ALSA (for example ``alsa:device=default``) without the full speaker's
+    outputd FIFO lane.
     """
+    if player_fifo and player:
+        raise ValueError("snapclient_argv accepts player_fifo or player, not both")
     # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond
     # wizard now mints it as a STABLE mDNS .local handle (the leader's
     # JASPER_HOSTNAME, e.g. "jts3.local"), not a raw DHCP IP, so a follower
@@ -352,10 +361,17 @@ def snapclient_argv(
     ]
     if player_fifo:
         argv += ["--player", f"file:filename={player_fifo}"]
+    elif player:
+        argv += ["--player", player]
     return argv
 
 
-def _assemble_args(cfg: GroupingConfig) -> dict[str, str]:
+def _assemble_args(
+    cfg: GroupingConfig,
+    *,
+    install_profile: str = "full",
+    endpoint_player: str | None = None,
+) -> dict[str, str]:
     """Derive the {key: value} the units read, from a GroupingConfig.
 
     PURE: a deterministic function of `cfg`. Returns the two derived
@@ -389,7 +405,13 @@ def _assemble_args(cfg: GroupingConfig) -> dict[str, str]:
     # pre-Increment-5 bond). outputd reads the FIFO via its dac_content
     # lane (Increment 3) and picks this member's channel there.
     server = "" if cfg.role != "leader" else _join_args(snapserver_argv(cfg))
-    client = _join_args(snapclient_argv(cfg, player_fifo=MEMBER_CONTENT_FIFO))
+    if install_profile == ENDPOINT_INSTALL_PROFILE:
+        client = _join_args(snapclient_argv(
+            cfg,
+            player=endpoint_player or DEFAULT_ENDPOINT_SNAPCLIENT_PLAYER,
+        ))
+    else:
+        client = _join_args(snapclient_argv(cfg, player_fifo=MEMBER_CONTENT_FIFO))
     return {_SERVER_ARGS_KEY: server, _CLIENT_ARGS_KEY: client}
 
 
@@ -769,23 +791,44 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     cfg = load_config()
+    install_profile = read_install_profile()
+    endpoint_tier = install_profile == ENDPOINT_INSTALL_PROFILE
     decision = plan(cfg)
     active = cfg.enabled and cfg.error is None
     active_leader = active and cfg.role == "leader"
     logger.info(
-        "event=multiroom.reconcile.start reason=%s enabled=%s role=%s error=%s summary=%r",
-        args.reason, cfg.enabled, cfg.role or "(none)", cfg.error or "(none)", decision.summary,
+        "event=multiroom.reconcile.start reason=%s install_profile=%s enabled=%s role=%s error=%s summary=%r",
+        args.reason, install_profile, cfg.enabled, cfg.role or "(none)",
+        cfg.error or "(none)", decision.summary,
     )
     rc = 0
 
     # 1. Derived files + FIFO — before any unit work.
-    derived = _assemble_args(cfg)
+    derived = _assemble_args(
+        cfg,
+        install_profile=install_profile,
+        endpoint_player=os.environ.get(ENDPOINT_SNAPCLIENT_PLAYER_ENV),
+    )
     wrote = _write_args_file(derived)
     set_keys = [k for k, v in derived.items() if v]
     logger.info(
         "event=multiroom.reconcile.args path=%s ok=%s set=%s",
         ARGS_FILE, wrote, ",".join(set_keys) or "(none)",
     )
+
+    if endpoint_tier:
+        logger.info(
+            "event=multiroom.reconcile.endpoint_lane "
+            "player=%s outputd=skipped voice=skipped camilla=skipped",
+            os.environ.get(
+                ENDPOINT_SNAPCLIENT_PLAYER_ENV,
+                DEFAULT_ENDPOINT_SNAPCLIENT_PLAYER,
+            ),
+        )
+        rc = max(rc, _apply(decision))
+        logger.info("event=multiroom.reconcile.done rc=%d", rc)
+        return rc
+
     # Paths passed explicitly (module globals read at CALL time) so the
     # test harness can redirect them; a def-time default would pin the
     # production path.

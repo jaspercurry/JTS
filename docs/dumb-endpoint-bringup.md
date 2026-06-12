@@ -12,22 +12,27 @@ working build plan for a dumb endpoint.
 
 ## Current truth
 
-Today, a dumb endpoint is a lab/spike target:
+Today, a dumb endpoint has two supported shapes:
 
-- Raspberry Pi OS Lite on a Zero 2 W.
-- Wi-Fi + SSH.
-- `alsa-utils`, `snapclient`, and `sox`.
-- A DAC that ALSA can see, such as an Apple USB-C to 3.5 mm adapter on
-  the Zero's USB OTG/data port.
+- **Lab/spike target:** Raspberry Pi OS Lite on a Zero 2 W, Wi-Fi + SSH,
+  `alsa-utils`, `snapclient`, `sox`, and a DAC that ALSA can see, such
+  as an Apple USB-C to 3.5 mm adapter on the Zero's USB OTG/data port.
+- **JTS endpoint install tier:** the same repo/package deployed with
+  `JASPER_INSTALL_PROFILE=endpoint`. This installs `jasper-control`,
+  Avahi identity/discovery, the grouping reconciler, and JTS-managed
+  Snapcast units; it never installs `jasper-voice`, CamillaDSP,
+  renderers, web wizards, AEC, fan-in, outputd, or the Rust/AEC build
+  toolchain.
 
-Until the endpoint install profile (Phase 2 below) lands, do **not**
-run `scripts/onboard.sh`, `scripts/deploy-to-pi.sh`, or the full JTS
-install on the Zero 2 W — the FULL install builds AEC3 and two Rust
-daemons, which a 512 MB Zero cannot do comfortably. The decided product
-path (see the decision section) makes the profile-gated deploy the
-supported route; an endpoint never runs `jasper-voice`, CamillaDSP,
-renderers, web wizards, or AEC regardless. The brainy JTS speaker
-remains the leader.
+Do **not** run a bare full install on the Zero 2 W. The full profile
+builds AEC3 and two Rust daemons, which a 512 MB Zero cannot do
+comfortably. Use the profile-gated path:
+
+```sh
+PI_HOST=jts4.local JASPER_INSTALL_PROFILE=endpoint bash scripts/deploy-to-pi.sh
+```
+
+The brainy JTS speaker remains the leader.
 
 The product multi-room path is still in progress. The Zero can be used
 now with [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh)
@@ -213,19 +218,20 @@ the boundary is a **profile**, not a package. Target shape:
 - **pyproject extras split**: the base install carries what
   `jasper-control` + the multiroom plumbing import; the heavy
   voice/wake/DSP dependencies (onnxruntime, openwakeword, scipy, the
-  voice SDKs) move behind a `[voice]` extra that only the full tier
+  voice SDKs) move behind the `[full]` extra that only the full tier
   installs.
 - **`install.sh` profile gating** (e.g. `JASPER_INSTALL_PROFILE=endpoint`):
   the endpoint path skips the shairport/nqptp source builds, the
   webrtc-AEC3 build, both Rust daemon builds, renderer/web/voice unit
   installation, and installs the core Python package, the managed
-  snapclient unit, and the ALSA bits. `deploy/install.sh --dry-run`
+  snapclient unit, and the ALSA userland bits. `deploy/install.sh --dry-run`
   must show a brain-free plan under the endpoint profile.
 - **Same deploy path**: `scripts/deploy-to-pi.sh` against an endpoint
-  works once the profile is honored end-to-end (the earlier "never run
+  works when `JASPER_INSTALL_PROFILE=endpoint` is set or the persisted
+  profile marker already says endpoint. The earlier "never run
   deploy-to-pi.sh on the Zero" rule applied to the FULL install and is
   retired with this decision; the identity/direction guards apply
-  unchanged).
+  unchanged.
 - **Managed snapclient**: the same `jasper-snapclient.service` +
   reconciler-derived argv the full tier already uses (leader address,
   stream, the round-trip player on the full tier vs direct ALSA here —
@@ -245,7 +251,8 @@ rejected on the strength of them:
   `scipy`, `sounddevice` (imports the PortAudio C library at import
   time — the classic way this breaks), `jasper_aec3` (a compiled
   module that will not exist on the endpoint), and the voice SDKs
-  (`google.genai`, `openai`, `websockets`).
+  (`google.genai`, `openai`, `websockets`), plus renderer/discovery
+  extras such as `spotipy`, `zeroconf`, `evdev`, and `dbus_next`.
 - **Install-plan guard**: the endpoint profile's `--dry-run` plan
   contains no cargo builds, no AEC3 build, no renderer source builds,
   and no voice/web units. Extend the existing dry-run plan test
@@ -363,16 +370,22 @@ Exit criteria:
 ### Phase 2 — Endpoint install tier
 
 Goal: make a Zero 2 W installable as a JTS member without ever building
-or installing the brain.
+or installing the brain. The software pieces are now implemented; the
+remaining gate is real Zero 2 W hardware validation.
 
 Build:
 
-- pyproject extras split (`[voice]` heavy deps out of the base install).
+- pyproject extras split (`[full]` heavy deps out of the base install).
 - `install.sh` endpoint profile (skip AEC3/Rust/renderer/web/voice
   builds and units; install core Python + managed snapclient + ALSA).
-- Reconciler role plan tolerates absent units (stop-intent on a unit
-  that was never installed is a no-op).
-- The two boundary guards: import-cost test + install-plan test.
+- `scripts/deploy-to-pi.sh` forwards the endpoint profile and verifies
+  `jasper-control` directly at `:8780/healthz` instead of probing the
+  full speaker's nginx `/system/` dashboard.
+- Reconciler derives the Snapclient player from the install tier:
+  full speakers use the outputd FIFO lane; endpoints use direct ALSA
+  (`alsa:device=default` by default).
+- Boundary guards: import-cost test, install-plan test, base-dependency
+  test, deploy-verification test, and full-profile dry-run regression.
 
 Exit criteria:
 
@@ -382,6 +395,9 @@ Exit criteria:
   the full-profile byte-identical regression guard.
 - The profile is persisted on the device and a bare re-deploy cannot
   silently switch tiers.
+- Hardware run proves the endpoint starts cleanly, reports through
+  `_jasper-control._tcp`, and starts/stops JTS-managed `snapclient`
+  from the grouping reconciler.
 
 ### Phase 3 — Endpoint joins the pair like any speaker
 
@@ -573,11 +589,10 @@ not the complete product. The durable path (phases above) still needs:
 
 - The dumb-follower role profile on the full tier (Phase 1 — the shared
   role engine).
-- The endpoint install profile + extras split + boundary guard tests
-  (Phase 2).
-- Managed `snapclient` with channel selection for `left`, `right`,
-  `mono`, and `sub` derived by the same reconciler argv builder the
-  full tier uses.
+- Hardware validation of the endpoint install profile on the real Zero
+  2 W (Phase 2 exit).
+- Product channel selection for `left`, `right`, `mono`, and `sub`
+  beyond the current direct Snapclient player.
 - A stable leader identity/address rule, with IP fallback for flaky
   mDNS and a path toward peer-id pinning before this becomes
   user-facing.
