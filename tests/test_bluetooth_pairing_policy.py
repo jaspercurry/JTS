@@ -6,6 +6,7 @@ import pytest
 from dbus_next.errors import DBusError
 
 from jasper.bluetooth import adapter
+from jasper.bluetooth import no_code_agent
 from jasper.bluetooth.agent import (
     DEFAULT_AGENT_PATH,
     NoCodeAgent,
@@ -116,6 +117,63 @@ def test_pairing_mode_off_closes_pairable_and_discoverable(monkeypatch):
         ("PairableTimeout", 0),
     ]
     assert fake_bus.disconnected is True
+
+
+def test_no_code_agent_startup_floor_uses_adapter_close_api():
+    calls: list[bool] = []
+
+    async def fake_close(value: bool) -> None:
+        calls.append(value)
+
+    ok = asyncio.run(
+        no_code_agent._close_pairing_window_floor(
+            "startup",
+            close_pairing_window=fake_close,
+        ),
+    )
+
+    assert ok is True
+    assert calls == [False]
+
+
+def test_no_code_agent_closes_pairable_when_window_is_not_open():
+    calls: list[bool] = []
+
+    async def fake_state() -> dict[str, bool]:
+        return {"discoverable": False, "pairable": True}
+
+    async def fake_close(value: bool) -> None:
+        calls.append(value)
+
+    closed = asyncio.run(
+        no_code_agent._enforce_pairable_floor_once(
+            read_state=fake_state,
+            close_pairing_window=fake_close,
+        ),
+    )
+
+    assert closed is True
+    assert calls == [False]
+
+
+def test_no_code_agent_leaves_open_pairing_window_alone():
+    calls: list[bool] = []
+
+    async def fake_state() -> dict[str, bool]:
+        return {"discoverable": True, "pairable": True}
+
+    async def fake_close(value: bool) -> None:
+        calls.append(value)
+
+    closed = asyncio.run(
+        no_code_agent._enforce_pairable_floor_once(
+            read_state=fake_state,
+            close_pairing_window=fake_close,
+        ),
+    )
+
+    assert closed is False
+    assert calls == []
 
 
 def _assert_rejected(exc: BaseException) -> None:

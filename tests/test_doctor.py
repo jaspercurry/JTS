@@ -550,7 +550,7 @@ def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
     assert "not the JTS no-code agent" in r.detail
 
 
-def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypatch):
+def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatch):
     def fake_run(cmd, *args, **kwargs):
         if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
             return SimpleNamespace(
@@ -568,6 +568,38 @@ def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypat
                 stdout=(
                     "\tPowered: yes\n"
                     "\tDiscoverable: no\n"
+                    "\tPairable: yes\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+
+    r = doctor.check_bluetooth_pairing_policy()
+
+    assert r.status == "warn"
+    assert "Pairable=yes outside an open pairing window" in r.detail
+
+
+def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypatch):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["systemctl", "show", "bt-agent.service"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n"
+                ),
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "\tPowered: yes\n"
+                    "\tDiscoverable: yes\n"
                     "\tPairable: yes\n"
                 ),
                 stderr="",
