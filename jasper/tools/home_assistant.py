@@ -50,7 +50,7 @@ def make_home_assistant_tools(ha: HAClient | None):
     if ha is None:
         return []
 
-    @tool(timeout=_HA_TOOL_TIMEOUT_SEC, log_payload=False)
+    @tool(timeout=_HA_TOOL_TIMEOUT_SEC, log_payload=False, log_args=False)
     async def home_assistant(query: str) -> dict:
         """Send a natural-language smart-home request to Home Assistant.
 

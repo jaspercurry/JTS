@@ -83,6 +83,10 @@ class Tool:
     # of the returned payload. Content-bearing tools opt out so
     # journald keeps timing/shape diagnostics without message bodies.
     log_payload: bool = True
+    # Whether INFO-level tool dispatch logs may include argument values.
+    # Tools whose args carry close-to-verbatim user requests opt out so
+    # the start line still shows shape without household utterances.
+    log_args: bool = True
 
 
 @dataclass
@@ -159,6 +163,7 @@ def tool(
     providers: Iterable[str] | None = None,
     timeout: float | None = None,
     log_payload: bool = True,
+    log_args: bool = True,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Tag a function for registration.
 
@@ -170,9 +175,10 @@ def tool(
     `timeout` is the per-tool dispatch budget in seconds applied at the
     session adapters' `asyncio.wait_for` seam. None (default) keeps
     `DEFAULT_TOOL_TIMEOUT_SEC`; raise it for a tool whose backend is
-    legitimately slow (e.g. an LLM-backed Home Assistant agent). Use
+    legitimately slow (e.g. an LLM-backed Home Assistant agent).
     `log_payload=False` keeps the INFO dispatch line redacted for
-    content-bearing tool results.
+    content-bearing tool results; `log_args=False` does the same for
+    content-bearing tool arguments.
 
     Use with `ToolRegistry.register()`."""
 
@@ -183,6 +189,7 @@ def tool(
         if timeout is not None:
             fn.__jasper_tool_timeout__ = timeout  # type: ignore[attr-defined]
         fn.__jasper_tool_log_payload__ = log_payload  # type: ignore[attr-defined]
+        fn.__jasper_tool_log_args__ = log_args  # type: ignore[attr-defined]
         return fn
 
     return decorator
@@ -210,6 +217,7 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     decl_providers = getattr(fn, "__jasper_tool_providers__", None)
     decl_timeout = getattr(fn, "__jasper_tool_timeout__", DEFAULT_TOOL_TIMEOUT_SEC)
     decl_log_payload = getattr(fn, "__jasper_tool_log_payload__", True)
+    decl_log_args = getattr(fn, "__jasper_tool_log_args__", True)
     if not asyncio.iscoroutinefunction(fn):
         # One line per registration (daemon startup), not per dispatch.
         # `dispatch_tool` runs a non-coroutine fn INLINE on the voice
@@ -233,7 +241,20 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
         providers=decl_providers,
         timeout=decl_timeout,
         log_payload=decl_log_payload,
+        log_args=decl_log_args,
     )
+
+
+def _redacted_mapping_preview(values: dict[str, Any]) -> str:
+    preview = repr(values)
+    keys = ",".join(sorted(str(k) for k in values))
+    return f"<redacted keys={keys or '-'} len={len(preview)}>"
+
+
+def _args_preview(tool: Tool, args: dict[str, Any]) -> str:
+    if not tool.log_args:
+        return _redacted_mapping_preview(args)
+    return repr(args)
 
 
 def _payload_preview(tool: Tool, payload: dict[str, Any]) -> str:
@@ -328,10 +349,13 @@ async def dispatch_tool(
     """
     tool = registry.get(name)
     if tool is None:
-        logger.warning("tool %s start args=%s → unknown tool", name, args)
+        logger.warning(
+            "tool %s start args=%s → unknown tool",
+            name, _redacted_mapping_preview(args),
+        )
         return {"error": f"unknown tool {name}"}
 
-    logger.info("tool %s start args=%s", name, args)
+    logger.info("tool %s start args=%s", name, _args_preview(tool, args))
     t_fn = _time.monotonic()
     try:
         out = tool.fn(**args)

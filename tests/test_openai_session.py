@@ -441,13 +441,12 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
 
 
 async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
-    """Assistant transcript content stays out of INFO journals.
+    """Assistant transcript content stays out of persistent logs.
 
     OpenAI's deployed Realtime stream emits
     ``response.output_audio_transcript.delta`` for assistant speech. The
-    adapter keeps that diagnostic text at DEBUG so the flight recorder
-    can retain failure context without persistent journald carrying the
-    household transcript."""
+    adapter logs only metadata, because the flight recorder buffers
+    DEBUG records and dumps them to journald around failures."""
     caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -477,7 +476,9 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
         ]
         assert len(transcript_records) == 1
         assert transcript_records[0].levelno == logging.DEBUG
-        assert "Transport error." in transcript_records[0].getMessage()
+        message = transcript_records[0].getMessage()
+        assert "chars=16" in message
+        assert "Transport error." not in message
     finally:
         await conn.stop()
 
@@ -503,7 +504,9 @@ async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
         ]
         assert len(transcript_records) == 1
         assert transcript_records[0].levelno == logging.DEBUG
-        assert "turn on the kitchen lights" in transcript_records[0].getMessage()
+        message = transcript_records[0].getMessage()
+        assert "chars=26" in message
+        assert "turn on the kitchen lights" not in message
     finally:
         await conn.stop()
 

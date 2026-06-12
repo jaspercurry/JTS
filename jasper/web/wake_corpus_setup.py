@@ -1062,8 +1062,9 @@ _INDEX_BODY_TEMPLATE = """{header}
       <span class="hint">Planning capture graph…</span>
     </div>
     <p class="hint">
-      Raw clips are saved under <code>data/enrollment_positives/</code>
-      with the member name and persist until you delete the session;
+      Raw clips are saved in the configured wake-corpus directory
+      (<code>/var/lib/jasper/enrollment_positives/</code> on an installed
+      speaker) with the member name and persist until you delete the session;
       recording refuses to start while the household mic mute is on.
     </p>
     <div class="session-primary-actions">

@@ -11,12 +11,14 @@ parts of the surface.
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import datetime, timezone
 
 import pytest
 
 from jasper import google_creds as gc
 from jasper.google_creds import GoogleAccount, GoogleClients, GoogleRegistry
+from jasper.tools import ToolRegistry, dispatch_tool
 from jasper.tools import gmail as gmail_mod
 from jasper.tools.gmail import make_gmail_tools
 
@@ -376,6 +378,49 @@ async def test_read_thread_decodes_bodies(monkeypatch):
     assert out["messages"][1]["body"] == "Looks good. Let's go."
     # threads.get was called with the right thread_id
     assert threads.last_kwargs["id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_read_thread_dispatch_redacts_message_content_from_info_logs(
+    monkeypatch,
+    caplog,
+):
+    threads = _FakeThreads({
+        "messages": [
+            {
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Dentist <office@example.com>"},
+                        {"name": "Subject", "value": "Dentist appointment"},
+                    ],
+                    "mimeType": "text/plain",
+                    "body": {
+                        "data": _b64url(
+                            "Your appointment is Tuesday at 9. Bring your card."
+                        ),
+                    },
+                },
+            },
+        ],
+    })
+    service = _FakeGmailService(threads=threads)
+    clients = _make_clients(monkeypatch, service=service)
+    registry = ToolRegistry()
+    for fn in make_gmail_tools(clients):
+        registry.register(fn)
+
+    with caplog.at_level(logging.INFO, logger="jasper.tools"):
+        out = await dispatch_tool(
+            registry,
+            "gmail_read_thread",
+            {"thread_id": "thread-private"},
+        )
+
+    assert out["subject"] == "Dentist appointment"
+    assert out["messages"][0]["body"].startswith("Your appointment is Tuesday")
+    assert "payload=<redacted len=" in caplog.text
+    assert "Dentist appointment" not in caplog.text
+    assert "Your appointment is Tuesday" not in caplog.text
 
 
 @pytest.mark.asyncio
