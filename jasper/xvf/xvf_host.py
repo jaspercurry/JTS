@@ -2,6 +2,12 @@
 
 Source: https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY
 License and redistribution status are tracked in LICENSE-third-party.md.
+
+Verification note (2026-06-12): GitHub reports no license metadata for
+the upstream ReSpeaker repository, and the repository root contains no
+LICENSE, COPYING, or NOTICE file. Do not treat this helper as cleared
+for public redistribution without upstream permission or a licensed
+replacement.
 """
 
 import sys

@@ -31,7 +31,9 @@ The conversion + parity verification recipe is in
 Upstream attribution: DTLN-aec is MIT-licensed work by Nils
 Westhausen + Carl von Ossietzky Universität Oldenburg —
 https://github.com/breizhn/DTLN-aec (paper:
-https://arxiv.org/abs/2010.14337).
+https://arxiv.org/abs/2010.14337). The upstream MIT text is checked in
+at `jasper/aec_engines/DTLN_LICENSE` and should travel with any
+redistributed converted ONNX bundle.
 """
 from __future__ import annotations
 
