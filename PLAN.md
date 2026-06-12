@@ -14,6 +14,15 @@ see [docs/HANDOFF-*.md](docs/).
 
 ### AEC bridge stalls under normal music playback (2026-05-11)
 
+**Status 2026-06-12: mitigated-by 2026-05-19 bridge fixes +
+current restart policy.** `docs/HANDOFF-aec.md` records the
+resampler / ref carry-forward / consume-one-per-iteration fixes, and
+current `jasper-aec-bridge` exits via `BridgeStalled` so
+`jasper-aec-bridge.service`'s `Restart=on-failure` revives the stream.
+Keep this section as incident history and reopen only if current logs
+show recurring `ref queue full`, `mic queue empty`, or slow-drip
+starvation after those fixes.
+
 Observed during the 2026-05-11 deploy verification: `jasper-aec-bridge`
 floods `ref queue full, dropping frame` warnings for ~1 s, then trips
 `mic queue empty for 5s — InputStream is dead`, exits non-zero, and

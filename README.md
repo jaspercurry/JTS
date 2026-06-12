@@ -220,14 +220,15 @@ when the configured AEC mic is present with 6-channel firmware — see
   "only e-bikes" toggle; voice answers always split classic from
   e-bike counts unless the toggle is on. Modular over
   `jasper.transit.REGISTRY`: discovery (bbox + stop lookup) for a new
-  city/mode (Berlin BVG, Capital Bikeshare DC, …) is data-driven from
-  one new module under `jasper/transit/providers/`, but the full
-  contribution is ~9-12 edits across six files (bespoke wizard card,
-  voice tool + client, three `voice_daemon.py` wiring edits, an
-  install.sh migration) — see the checklist in
-  `jasper/transit/__init__.py`. NYC subway and Citi Bike are keyless;
-  NYC bus requires a free MTA BusTime API key — that card is locked
-  until the user pastes one.
+  city/mode (Berlin BVG, Capital Bikeshare DC, …) starts with one new
+  provider module under `jasper/transit/providers/`. The canonical
+  checklist in `jasper/transit/__init__.py` is seven logical edit
+  points: provider module, CityPack entry, wizard card dispatch,
+  bespoke card renderer, voice-tool factory, runtime client, and the
+  install migration for provider env keys. `REGISTRY` and the daemon
+  wiring derive automatically — no `voice_daemon.py` or `config.py`
+  edit. NYC subway and Citi Bike are keyless; NYC bus requires a free
+  MTA BusTime API key — that card is locked until the user pastes one.
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
   AirPlay / Bluetooth / Spotify Connect / USB Audio Input toggles.
   Bluetooth's off toggle prompts for confirmation when a paired
@@ -300,12 +301,13 @@ when the configured AEC mic is present with 6-channel firmware — see
   overview, multi-mic arbitration design, and per-device
   roadmap.
 
-Known marginal items: the chip's onboard AEC isn't usable in this
-topology (we drive the speaker from a separate USB DAC, not the
-chip's codec). Software AEC via WebRTC AEC3 delivers −15 to −18 dB
-on music at ~110 MB RAM — see the AEC section below for the full
-setup. Live with `NO_INTERRUPTION` on the Gemini session and a
-0.7-second wake refractory until/unless that changes.
+Current AEC behavior is profile-driven rather than a separate
+"marginal items" list: `JASPER_AUDIO_INPUT_PROFILE=auto` uses the
+chip-AEC profile on 6-channel XVF3800 hardware, falls back to software
+AEC3/direct mic when needed, and exposes custom raw/DTLN/chip-leg
+switches from `/wake/` for corpus or nonstandard hardware. Resource
+costs are in the table below, and the current wake refractory lives as
+`WAKE_REFRACTORY_SEC` in `jasper/voice_daemon.py`.
 
 ---
 
@@ -346,13 +348,17 @@ jasper/                         Python daemon source
 
 firmware/
   dial/                         PlatformIO project for the ESP32-S3
-                                rotary dial (phase 1: volume only)
+                                rotary dial (volume, play/pause,
+                                hold-to-talk; display scenes scaffolded)
+  satellite-amoled/             PlatformIO project for the Waveshare
+                                ESP32-S3 touchscreen/mic satellite
+  ...                           optional accessory firmware projects
 
 deploy/
   install.sh                    Idempotent installer (run as root on Pi)
   alsa/                         /etc/asound.conf template
   camilladsp/                   legacy v1.yml + outputd-cutover.yml baselines
-  systemd/                      jasper-{camilla,voice,control,mux,outputd,aec-bridge,aec-init}
+  systemd/                      jasper-{camilla,voice,control,mux,outputd,aec-bridge,aec-init,...}
                                 + librespot, shairport-sync, nqptp, Bluetooth no-code agent
   modules-load.d/               snd-aloop autoload
   modprobe.d/                   snd-aloop single-card config
@@ -385,6 +391,8 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-volume.md             Source-aware volume coordinator
   multi-user-spotify.md
   audit-pending-followups.md    Open Tier 2/3 follow-ups
+  ...                           additional HANDOFF, proposal, research,
+                                and archived/history docs are mapped below
 
 scripts/                        Operator helpers (run from laptop)
   fetch-pi-logs.sh              Pull journals, reboot/OOM forensics,
@@ -529,15 +537,14 @@ reference. Currently:
   `http://jts.local/peers/`. P2P via mDNS-SD + multicast UDP, no
   hub, no SPOF. **Start here for `jasper/peering/`, the wake-handler
   restructure, or anything related to the `/peers/` wizard.**
-- [`HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md) — **Proposed
-  design (not yet built).** Synchronized grouped playback across
-  speakers: stereo pair, 2.1 with a wireless sub, and multi-room.
-  Brainy speakers (Pi 5 + CamillaDSP) + cheap dumb endpoints (Pi
-  Zero 2 W + I2S DAC) for the sub and a full-range satellite. A room
-  is one logical speaker to AirPlay/Spotify/BT. Adopts Snapcast as
-  the sync engine, a fixed leader per room, and reuses the peering
-  discovery substrate. First deliverable is a P0 measurement spike.
-  **Start here for any multi-room / stereo-pair / wireless-sub work.**
+- [`HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md) — **In-progress
+  grouped playback.** Stereo-pair control/observability, the music
+  dataplane, and member-local TTS are built and off by default; the
+  current handoff names the remaining calibration, wider bond UI, and
+  validation gates. Covers synchronized grouped playback across
+  speakers: stereo pair, 2.1 with a wireless sub, and multi-room,
+  using Snapcast plus the JTS peering/identity substrate. **Start here
+  for any multi-room / stereo-pair / wireless-sub work.**
 - [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) —
   Raspberry Pi Zero 2 W endpoint: today's lab runbook (OS Lite +
   `snapclient` + the multi-room spike) and the decided product path —
@@ -726,7 +733,8 @@ reference. Currently:
   auto-release, then the button), and the open questions before
   specing. Referenced from PLAN.md.
 - [`HANDOFF-persistent-live-session.md`](docs/HANDOFF-persistent-live-session.md)
-  — **Historical** (per AGENTS.md rule #9). Frozen-in-time
+  — **Historical** (per AGENTS.md "Historical handoffs are tagged at
+  the top"). Frozen-in-time
   session-pickup brief from 2026-05-05 when the persistent-single
   Gemini Live rework was scoped. Preserved for primary-source
   archaeology; do NOT read for current state. Current operational
@@ -920,8 +928,10 @@ match that capture shape. As of
 6-channel variant in upstream `master`); browse the
 [upstream firmware directory](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb)
 before flashing in case a newer one has shipped. The full
-procedure is in BRINGUP.md Phase 2A.5; the known-good version
-constants are tracked in [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py).
+procedure is in
+[`BRINGUP.md` "XVF firmware: switch to 6-channel variant via DFU"](BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu);
+the known-good version constants are tracked in
+[`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py).
 On the 2-channel firmware the bridge stays disabled and voice
 reads the chip's processed conference channel directly. `install.sh` runs
 `jasper-aec-reconcile`, which auto-detects + auto-enables when the

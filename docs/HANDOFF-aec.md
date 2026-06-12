@@ -172,14 +172,17 @@ kernel-state-corruption incident — see
 
 ---
 
-## Production tuning (2026-05-16) — the current state
+## Software-AEC tuning (2026-05-16) — fallback baseline
 
-This is the authoritative section for "what's tuned, where, and
-why" in the AEC subsystem. It supersedes the "Tuning findings"
-section below (which captures the previous architecture and is
-retained for historical context).
+This is the authoritative section for the `xvf_software_aec3`
+fallback profile: what is tuned, where, and why when chip-AEC is
+unavailable or explicitly bypassed. It supersedes the older "Tuning
+findings" section below for the software path. Current profile
+selection starts in the TL;DR above: on recommended 6-channel XVF3800
+hardware, `auto` resolves to `xvf_chip_aec`; software AEC3 remains the
+fallback, not the default recommended path.
 
-### Architecture in one diagram
+### Software-AEC fallback architecture
 
 ```
 4 mics → preamp → MIC_GAIN → AEC_HPFONOFF=125 Hz → [SHF_BYPASS=1: entire SHF block off]
@@ -1232,11 +1235,11 @@ topology XMOS designed the chip for.
 > residual risks are narrower than drift: a non-rational SOF divisor, or
 > a ref→air *delay* that wanders over time past the chip's fixed bulk
 > delay (0–500 ms) + 192 ms tail. Only measurement settles it. Software
-> AEC3 (the production default) sidesteps the whole question — its
+> AEC3 (the fallback for unvalidated DACs) sidesteps the whole question — its
 > reference is the digital `pcm.jasper_capture` tap and AEC3 handles
 > render/capture clock mismatch in software; a DAC8x on AEC3 is a
-> routing + re-tune at low/negligible risk, **recommended for
-> production**.
+> routing + re-tune at low/negligible risk, **recommended until that
+> DAC passes the chip-AEC validation gate**.
 >
 > **The full decision procedure for evaluating any candidate DAC**
 > (transport/clock-role classification, why "different PLL off the same
@@ -1513,15 +1516,11 @@ previous state because:
   SHF_BYPASS=1 because the HPF lives at mic ingress, before the
   SHF block. Channel 2 has no HPF.
 
-If we ever want the chip's actual BF / NS / AGC, the path is
-`SHF_BYPASS=0` — but that puts the chip's AEC back in the signal
-path, and that AEC is incompatible with our external-DAC topology.
-Worth investigating in a future session: is there a way to keep
-SHF_BYPASS=0 (chip processing active) while neutralizing chip-AEC's
-self-sabotage? Possible candidate: write a known-good reference
-into the chip's USB-IN (mirror of the host's music chain) — but
-this re-introduces all the volume-mirroring complications that
-chip AEC has in our topology.
+Historical note: the open question above was answered by the later
+Option D work. The current `xvf_chip_aec` profile keeps
+`SHF_BYPASS=0`, feeds the chip a known-good USB-IN reference from
+outputd, and uses fixed ASR beams. The software-AEC fallback still
+uses `SHF_BYPASS=1` for the reasons in this section.
 
 ### Why SHF_BYPASS=1 instead of relying on chip AEC
 
@@ -1538,9 +1537,9 @@ useless coefficients.
 
 `SHF_BYPASS=1` removes the entire SHF stage from the signal path
 on channels 0/1 — AEC, BF, NS, AGC all become passthrough.
-Software AEC3 in jasper-aec-bridge handles all post-mic
+In the software-AEC fallback, jasper-aec-bridge handles post-mic
 processing (echo cancellation + residual noise suppression via
-AEC3's internal NS at kModerate).
+AEC3's internal NS).
 
 ---
 
@@ -2020,7 +2019,7 @@ are now:
   high SPL — falls over on music. Best measured was −2 to −8 dB.
   Removed when AEC3 landed; see git log for the historical
   config.
-- **WebRTC AEC3** (current production). The modern Google echo
+- **WebRTC AEC3** (current software-AEC fallback). The modern Google echo
   controller — frequency-domain canceler with residual suppressor
   and drift-tolerant delay estimator. Trixie's apt ships
   `libwebrtc-audio-processing-1` v1.3-3, which IS AEC3 (the 1.x
@@ -2068,7 +2067,9 @@ mic 0 sees a clean linear input — much better convergence. The
 DFU mechanism is in-system: the chip exposes its DFU interface in
 normal runtime mode, no Safe Mode entry or button combo required.
 Full operator procedure (download URL, verification, what each
-flag does) is in [BRINGUP.md](../BRINGUP.md) Phase 2A.5. Headline:
+flag does) is in
+[BRINGUP.md "XVF firmware: switch to 6-channel variant via DFU"](../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
+Headline:
 
 ```
 sudo dfu-util -R -e -a 1 -D <6-channel-firmware.bin>
@@ -2081,11 +2082,20 @@ version fixed it — we never call it regardless of firmware version.
 
 ---
 
-## Hardware vs software AEC — comparison summary
+## Historical comparison before the chip-AEC profile
 
-| Dimension | XVF3800 hardware AEC | WebRTC AEC3 software AEC (current) |
+This table captures the pre-2026-05-29 state that justified building
+the WebRTC AEC3 bridge. At that point, JTS had an external-DAC speaker
+path without outputd's direct USB-IN reference fanout to the chip, so
+the XVF3800's built-in AEC could not converge usefully. The current
+recommended path is different: `xvf_chip_aec` arms outputd's chip
+reference producer and uses fixed 150°/210° ASR beams. Keep this
+comparison as history for why the software fallback exists, not as the
+current profile recommendation.
+
+| Dimension | Legacy XVF3800 hardware-AEC attempt | WebRTC AEC3 software-AEC fallback |
 |---|---|---|
-| **Topology fit for our setup** | Designed for chip-driven speaker; doesn't work with external DAC | Topology-agnostic — bridge can capture any reference and any mic |
+| **Topology fit for our setup** | Designed for chip-driven speaker; did not work in the pre-outputd external-DAC test path | Topology-agnostic — bridge can capture any reference and any mic |
 | **Effectiveness in our setup** | ≤2 dB sustained attenuation (measured) | −15 to −18 dB mean on music with production tuning; deep-cancel windows to −44 dB |
 | **Host CPU cost** | ~0% (chip handles it) | ~3-8% of one A76 core |
 | **Host RAM cost** | ~0 MB | ~110 MB RSS (Python + numpy + scipy + sounddevice + jasper_aec3) |
@@ -2096,11 +2106,11 @@ version fixed it — we never call it regardless of firmware version.
 | **Convergence** | Stable when working | Stable; residual suppressor + drift-tolerant delay estimator keep it consistent across music passes |
 | **Worst-case (loud music + soft voice + far-field)** | Designed to handle this | Marginal — see Tuning findings for current numbers and remaining levers |
 
-The honest summary: hardware AEC would be much better for our use
-case if it worked, but it doesn't work in our topology. Software
-AEC is what we have because nothing else is available to us
-without significant additional engineering (custom firmware,
-mic/speaker swap, hardware redesign).
+The historical conclusion was: without a chip-owned or chip-fed
+speaker reference, hardware AEC was worse than software AEC3 in this
+external-DAC build. The production chip-AEC profile that shipped later
+changes that premise by feeding the XVF USB-IN reference through
+outputd and applying a volatile fixed-beam chip profile.
 
 ---
 
@@ -2248,8 +2258,8 @@ Files involved in the AEC subsystem:
 > previous architecture (raw mic 0 / channel 2, no chip processing
 > on the mic path). The "production config" recommended below
 > (`REF_GAIN_DB=25, AGC2=0`) is **no longer current** — see
-> [Production tuning (2026-05-16)](#production-tuning-2026-05-16--the-current-state)
-> for the new authoritative values. Retained for context: the
+> [Software-AEC tuning (2026-05-16)](#software-aec-tuning-2026-05-16--fallback-baseline)
+> for the current software-fallback values. Retained for context: the
 > sweep matrix below shows AEC3 behavior on a raw-mic input, which
 > may be useful if someone ever needs to revisit that architecture.
 
@@ -2580,4 +2590,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-06-08.
+Last verified: 2026-06-12.

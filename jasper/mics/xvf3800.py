@@ -58,8 +58,9 @@ VARIANT_6CH = FirmwareVariant(
     raw_mic_indices=(2, 3, 4, 5),
 )
 
-# Required for software AEC — the bridge reads MIC_CHANNEL_INDEX
-# (channel 2 = raw mic 0) from this variant's capture endpoint.
+# Required for the reconciler-managed XVF AEC profiles. The bridge opens
+# the 6-channel capture shape for both chip-AEC (fixed beams on ch0/1)
+# and the software-AEC fallback (raw-ish ch1 plus raw mic legs).
 RECOMMENDED_FIRMWARE = VARIANT_6CH
 
 
@@ -161,14 +162,16 @@ MIXER_VOLUME_MAX = 60  # ALSA units; 0=-60 dB, 60=0 dB on this device
 #   2 = Raw mic 0  (pre-everything — no BF, no NS, no AGC, no HPF)
 #   3-5 = Raw mics 1-3
 #
-# We use channel 1 because it is the canonical XVF3800 voice-assistant
-# capture channel — used by Seeed's own examples, the Reachy Mini stack,
-# and the formatBCE/ESPHome integration. In production,
-# jasper-aec-init writes `SHF_BYPASS=1` because the chip's AEC pipeline
-# is incompatible with our external-DAC topology. Empirically that also
-# bypasses the chip SHF post-processing path on channels 0/1, so this is
-# a raw-ish input rather than a beamformed / NS / AGC output. Software
-# AEC3 then runs on top of that host-side.
+# We use channel 1 for the software-AEC fallback because it is the
+# canonical XVF3800 voice-assistant capture channel — used by Seeed's own
+# examples, the Reachy Mini stack, and the formatBCE/ESPHome integration.
+# In that fallback profile, jasper-aec-init writes `SHF_BYPASS=1` because
+# the chip's AEC pipeline is incompatible unless the outputd USB-IN
+# reference path is armed. Empirically that also bypasses the chip SHF
+# post-processing path on channels 0/1, so this is a raw-ish input rather
+# than a beamformed / NS / AGC output. Software AEC3 then runs host-side.
+# In chip-AEC mode, the bridge captures ch0/ch1 as fixed 150/210 ASR
+# beams instead and forwards the selected beam directly.
 #
 # Was previously channel 2 (raw mic 0). The switch was made on
 # 2026-05-15 after measuring that raw mic 0 has literally no chip

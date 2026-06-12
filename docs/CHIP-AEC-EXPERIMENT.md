@@ -382,7 +382,7 @@ conversion from the same telemetry spine: `fired_legs`, per-leg score
 columns, and explicit per-beam WAV paths.
 
 > ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
-> reconciler toggle" says *"Architecture is fixed; swap the engine,
+> input profile and reconciler" says *"Architecture is fixed; swap the engine,
 > not the topology"* and names "dual-USB-sink hardware-AEC retry"
 > and "custom XVF firmware" as paths agents must not propose.
 > [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Hardware AEC, revisited"
@@ -747,7 +747,7 @@ The sanity comparison is **04**:
 
 ```
 Need a production/corpus leg?
-├── NO → Keep WebRTC AEC3 as production default; preserve this doc.
+├── NO → Keep WebRTC AEC3 as the fallback profile; preserve this doc.
 └── YES → first build direct source fanout:
          one decoded/rendered source → DAC + XVF3800 USB-IN reference
          ├── Long drift check still ~1 ppm?
@@ -784,11 +784,13 @@ Need a production/corpus leg?
      it), or a second snd-aloop card downstream of CamillaDSP. Phase 6
      work.
 
-2. **TTS not in reference.** TTS bypasses CamillaDSP (writes directly to
-   `pcm.jasper_out` dmix). Chip's AEC reference doesn't see TTS. This
-   matches current production behavior (WebRTC bridge also doesn't see
-   TTS). The 0.7 s wake refractory + `NO_INTERRUPTION` flag handle
-   TTS-self-trigger. **Not a regression.**
+2. **Original lab harness did not include TTS in the reference.** The
+   pre-outputd experiment fed the chip from the music/reference harness
+   only, so it was not a proof of TTS cancellation. Current production
+   is different: assistant TTS/cues enter before outputd and the
+   outputd final-buffer fanout is the chip reference. Treat this as a
+   limitation of replaying the old harness, not of the shipped
+   `xvf_chip_aec` profile.
 
 3. **`AUDIO_MGR_SYS_DELAY` starts at 12** (Seeed default). If the
    measured chip-USB-IN → mic delay is materially different, convergence
@@ -1069,7 +1071,7 @@ node — its deviation from 1.0 is the drift.
 
 In rough order of effort/risk:
 
-1. **Use software AEC3 instead (the production default — lowest risk).**
+1. **Use software AEC3 instead (fallback profile — lowest risk).**
    AEC3's reference is the digital `pcm.jasper_capture` tap, and WebRTC
    AEC3 explicitly handles render/capture clock mismatch (it resamples
    and flags `clock_drift` in the delay controller). Any DAC (DAC8x

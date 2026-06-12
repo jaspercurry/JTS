@@ -3,8 +3,8 @@
 Runs as a one-shot systemd unit before jasper-aec-bridge starts.
 Three jobs:
 
-  1. Set `SHF_BYPASS=1` to disable the chip's on-board AEC stage in
-     production mode.
+  1. Restore the software-AEC fallback profile (`SHF_BYPASS=1`) when
+     chip-AEC is not requested.
      The chip's AEC was designed for the topology where the chip
      drives the speaker via its own codec; in our external-DAC
      topology, the chip's AEC reference path is sabotaged (see
@@ -12,8 +12,9 @@ Three jobs:
      adaptive filter is removed from channels 0/1's signal path.
      Empirically, this bypasses the SHF post-processing path too, so
      channels 0/1 become raw-ish mic feeds rather than beamformed /
-     NS / AGC outputs. Software AEC3 (jasper-aec-bridge) handles echo
-     cancellation host-side using the music chain as ref.
+     NS / AGC outputs. In the `xvf_software_aec3` fallback profile,
+     software AEC3 (jasper-aec-bridge) handles echo cancellation
+     host-side using the music chain as ref.
      Chip-AEC mode is the narrow exception: the wake toggle sets
      `JASPER_AEC_CHIP_AEC_ENABLED=1` for production, while the recorder
      sets `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1` for labeled corpus
@@ -55,12 +56,11 @@ every REBOOT triggered a USB disconnect, which fired the
 REBOOT again. See docs/HANDOFF-aec.md "Lessons learned" #9.
 
 The historical boot-time `AUDIO_MGR_SYS_DELAY` calibration job is gone.
-The default production path does not use chip AEC, and chip-AEC
-production/corpus modes set their own volatile delay/profile from env.
-The 6-ch firmware exposes raw mics on channels 2-5; in default
-production the bridge captures channel 1 as a raw-ish chip feed and runs
-WebRTC AEC3 host-side. In chip-AEC mode, the bridge captures channels
-0/1 as chip ASR beams and forwards them directly.
+Chip-AEC production/corpus modes set their own volatile delay/profile
+from env. The 6-ch firmware exposes raw mics on channels 2-5; in the
+software-AEC fallback profile the bridge captures channel 1 as a raw-ish
+chip feed and runs WebRTC AEC3 host-side. In chip-AEC mode, the bridge
+captures channels 0/1 as chip ASR beams and forwards them directly.
 """
 from __future__ import annotations
 
@@ -257,11 +257,12 @@ def main() -> int:
                 mode, sys_delay,
             )
         else:
-            # Disable the chip's on-board AEC. SHF_BYPASS=1 removes the
-            # AEC adaptive filter from the signal path on channels 0/1.
-            # Empirically this bypasses the SHF post-processing path too,
-            # so channels 0/1 are raw-ish chip feeds; software AEC3 in
-            # jasper-aec-bridge handles default production cancellation.
+            # Restore the software-AEC fallback profile. SHF_BYPASS=1
+            # removes the AEC adaptive filter from the signal path on
+            # channels 0/1. Empirically this bypasses the SHF
+            # post-processing path too, so channels 0/1 are raw-ish chip
+            # feeds; software AEC3 in jasper-aec-bridge handles fallback
+            # cancellation when chip-AEC is unavailable or disabled.
             # Also restore the output mux and corpus-only beam/AEC
             # switches that wake-corpus mode writes. These commands are
             # volatile, but "exit corpus mode" must be deterministic

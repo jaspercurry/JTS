@@ -368,7 +368,8 @@ page. The dashboard surfaces the same checks with more context and
 remediation links. Common warnings:
 
 - **XVF firmware is 2-channel** — software AEC stays off until you
-  DFU-flash 6-channel firmware. See [BRINGUP.md](BRINGUP.md) Phase 2A.5.
+  DFU-flash 6-channel firmware. See
+  [BRINGUP.md "XVF firmware: switch to 6-channel variant via DFU"](BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
 - **Voice provider not configured** — visit `/voice/` and paste an
   API key.
 - **Apple USB-C dongle not detected** — check that headphones (or
