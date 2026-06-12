@@ -438,6 +438,12 @@ impl StateServer {
                     metrics.dropped_audio_frames(),
                 );
                 buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "stale_commands_dropped",
+                    metrics.stale_commands_dropped(),
+                );
+                buf.push(',');
                 push_kv_u64(&mut buf, "flush_requests", metrics.flush_requests());
                 buf.push(',');
                 push_kv_u64(&mut buf, "flushed_frames", metrics.flushed_frames());
@@ -707,6 +713,7 @@ mod tests {
         let j = server.snapshot_json();
         assert!(j.contains(r#""tts":{"enabled":true"#));
         assert!(j.contains(r#""budget_frames":96000"#));
+        assert!(j.contains(r#""stale_commands_dropped":0"#));
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));
         assert!(j.contains(r#""decision_seen":false"#));
         assert!(j.contains(r#""final_gain_db":null"#));

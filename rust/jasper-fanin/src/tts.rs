@@ -58,6 +58,7 @@ pub struct TtsMetrics {
     budget_frames: Arc<AtomicU64>,
     dropped_commands: Arc<AtomicU64>,
     dropped_audio_frames: Arc<AtomicU64>,
+    stale_commands_dropped: Arc<AtomicU64>,
     flush_requests: Arc<AtomicU64>,
     flushed_frames: Arc<AtomicU64>,
     content_short_lufs_x10: Arc<AtomicI64>,
@@ -82,6 +83,7 @@ impl Default for TtsMetrics {
             budget_frames: Arc::new(AtomicU64::new(0)),
             dropped_commands: Arc::new(AtomicU64::new(0)),
             dropped_audio_frames: Arc::new(AtomicU64::new(0)),
+            stale_commands_dropped: Arc::new(AtomicU64::new(0)),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
             content_short_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
@@ -143,6 +145,10 @@ impl TtsMetrics {
 
     pub fn dropped_audio_frames(&self) -> u64 {
         self.dropped_audio_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn stale_commands_dropped(&self) -> u64 {
+        self.stale_commands_dropped.load(Ordering::Relaxed)
     }
 
     pub fn flush_requests(&self) -> u64 {
@@ -221,6 +227,10 @@ impl TtsMetrics {
         self.dropped_commands.fetch_add(1, Ordering::Relaxed);
         self.dropped_audio_frames
             .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    fn mark_stale_command_dropped(&self) {
+        self.stale_commands_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
     fn mark_flush(&self, requests: usize, frames: u64) {
@@ -350,9 +360,20 @@ impl TtsMixer {
             let Ok(queued) = self.rx.try_recv() else {
                 break;
             };
-            let is_duck_restore =
-                matches!(&queued.command, TtsCommand::ProgramDuckOff);
-            if queued.epoch != self.active_epoch && !is_duck_restore {
+            let is_restore = matches!(
+                &queued.command,
+                TtsCommand::ProgramDuckOff | TtsCommand::ContentMeterResume
+            );
+            if queued.epoch != self.active_epoch && !is_restore {
+                self.metrics.mark_stale_command_dropped();
+                if !matches!(&queued.command, TtsCommand::Audio(_)) {
+                    warn!(
+                        "event=fanin.tts_command_dropped reason=stale_epoch command={} epoch={} active_epoch={}",
+                        command_name(&queued.command),
+                        queued.epoch,
+                        self.active_epoch
+                    );
+                }
                 continue;
             }
             match queued.command {
@@ -773,6 +794,39 @@ fn log_assistant_loudness_decision(kind: SegmentKind, decision: &AssistantGainDe
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::sync::{Mutex, Once};
+
+    static TEST_LOGGER: TestLogger = TestLogger;
+    static LOG_INIT: Once = Once::new();
+    static TEST_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    struct TestLogger;
+
+    impl log::Log for TestLogger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Info
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                TEST_LOGS.lock().unwrap().push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    fn capture_logs() {
+        LOG_INIT.call_once(|| {
+            let _ = log::set_logger(&TEST_LOGGER);
+            log::set_max_level(log::LevelFilter::Info);
+        });
+        TEST_LOGS.lock().unwrap().clear();
+    }
+
+    fn captured_logs() -> Vec<String> {
+        TEST_LOGS.lock().unwrap().clone()
+    }
 
     #[test]
     fn reads_outputd_compatible_gain_audio_and_flush() {
@@ -970,7 +1024,7 @@ mod tests {
         let mut mixer = TtsMixer::new(TtsInput {
             rx,
             flush_rx,
-            metrics,
+            metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
@@ -1025,11 +1079,12 @@ mod tests {
 
     #[test]
     fn stale_program_duck_on_does_not_relatch_after_flush() {
+        capture_logs();
         let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
         let mut mixer = TtsMixer::new(TtsInput {
             rx,
             flush_rx,
-            metrics,
+            metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
@@ -1047,5 +1102,78 @@ mod tests {
         .unwrap();
 
         assert!(!mixer.prepare_period());
+        assert_eq!(metrics.stale_commands_dropped(), 1);
+        assert!(captured_logs().iter().any(|line| {
+            line.contains("event=fanin.tts_command_dropped reason=stale_epoch")
+                && line.contains("command=program_duck_on")
+        }));
     }
+
+    #[test]
+    fn stale_audio_drop_is_counted_without_per_command_warn() {
+        capture_logs();
+        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics: metrics.clone(),
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+        flush_tx
+            .send(QueuedFlush {
+                epoch: 1,
+                ack: None,
+            })
+            .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1, 2, 3, 4]),
+        })
+        .unwrap();
+
+        assert!(!mixer.prepare_period());
+        assert_eq!(metrics.stale_commands_dropped(), 1);
+        assert!(!captured_logs().iter().any(|line| {
+            line.contains("event=fanin.tts_command_dropped reason=stale_epoch")
+                && line.contains("command=audio")
+        }));
+    }
+
+    #[test]
+    fn stale_content_meter_resume_survives_flush() {
+        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let mut mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 48_000,
+            program_duck_db: -25.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+        });
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::ContentMeterPause,
+        })
+        .unwrap();
+        let _ = mixer.prepare_period();
+        assert!(mixer.content_meter_paused);
+
+        flush_tx
+            .send(QueuedFlush {
+                epoch: 1,
+                ack: None,
+            })
+            .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::ContentMeterResume,
+        })
+        .unwrap();
+
+        let _ = mixer.prepare_period();
+        assert!(!mixer.content_meter_paused);
+    }
+
 }
