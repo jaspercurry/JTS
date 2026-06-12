@@ -78,6 +78,8 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
     if cfg.idle_timeout_sec <= 0:
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
+    if cfg.response_stall_timeout_sec <= 0:
+        raise RuntimeError("JASPER_RESPONSE_STALL_TIMEOUT_SEC must be > 0")
     if not 0.0 <= cfg.server_vad_threshold <= 1.0:
         raise RuntimeError("JASPER_SERVER_VAD_THRESHOLD must be between 0.0 and 1.0")
     if cfg.server_vad_silence_ms <= 0:
@@ -207,6 +209,7 @@ class Config:
     duck_db: float
     duck_transport: str
     idle_timeout_sec: int
+    response_stall_timeout_sec: int
     # Per-provider idle context reset thresholds (seconds). 0 = disabled
     # (default). Without a reset, the persistent live session keeps
     # conversational context indefinitely; OpenAI Realtime auto-truncates
@@ -627,6 +630,16 @@ class Config:
             # docs/HANDOFF-voice-providers.md "Idle anchor + tool
             # rounds" for the full rationale.
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 20),
+            # Last-resort output-side cap after a provider has begun
+            # speaking but never sends turn_complete. Normal speech
+            # pauses are much shorter, and providers should end via the
+            # explicit server signal; this is only the recovery path for
+            # a wedged response stream that would otherwise leave music
+            # ducked and the wake loop in SESSION indefinitely.
+            response_stall_timeout_sec=_env_int(
+                "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
+                120,
+            ),
             # Idle context reset is OFF by default. Each turn pays full
             # uncached price for the system prompt + tool defs on the
             # first turn after a reset (OpenAI: ~$0.008 vs $0.001

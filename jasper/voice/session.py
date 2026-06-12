@@ -153,6 +153,33 @@ class LiveTurn(Protocol):
         without racing mid-response chunk gaps that look like idleness."""
         ...
 
+    def mark_server_vad(self) -> None:
+        """Optional server-VAD shadow hook.
+
+        Called by the daemon after a provider-specific
+        ``LiveConnection.set_turn_detection({"type": "server_vad", ...})``
+        succeeds for this turn. Providers that do not support
+        server-side VAD may omit this method; the daemon probes for it
+        with ``getattr`` before calling."""
+        ...
+
+    def server_speech_started(self) -> bool:
+        """Optional server-VAD shadow state.
+
+        True after the provider reports server-side speech start for
+        the active turn. The daemon uses this only when server-VAD mode
+        is active; providers without that mode may omit the method."""
+        ...
+
+    async def wait_for_server_eou(self) -> None:
+        """Optional server-VAD shadow awaitable.
+
+        Resolve when the provider's server-side VAD has committed the
+        user audio buffer and the daemon may ask the model to respond
+        via ``LiveConnection.create_response_only()``. Providers without
+        daemon-controlled server VAD may omit the method."""
+        ...
+
     def audio_chunks_pending(self) -> int:
         """How many audio chunks are queued waiting for the playback
         consumer to dequeue. The idle watchdog reads this to defer its
@@ -235,6 +262,26 @@ class LiveConnection(Protocol):
         """Whether this provider supports mid-session switching to
         server-side VAD via set_turn_detection(). Default False —
         adapters that support it override to return True."""
+        ...
+
+    async def set_turn_detection(self, mode: dict | None) -> None:
+        """Optional server-VAD shadow control.
+
+        Switch provider turn detection for the current connection.
+        ``mode=None`` restores manual daemon-controlled VAD; a dict
+        with ``{"type": "server_vad", ...}`` enables provider-side VAD.
+        The daemon calls this only after ``supports_server_vad()``
+        returns true and still probes with ``getattr`` so providers
+        without this optional surface can omit it."""
+        ...
+
+    async def create_response_only(self) -> None:
+        """Optional server-VAD shadow control.
+
+        Ask the provider to create a response without first committing
+        the input buffer. Used after server-side VAD has already
+        committed the user audio. Providers without daemon-controlled
+        server VAD may omit the method."""
         ...
 
 

@@ -77,6 +77,7 @@ def _make_wake_loop(
     wl._refractory_until = 0.0
     wl._acquiring = False
     wl._acquire_buffer = MagicMock()
+    wl._fire_and_forget = set()
     wl._wake_event_at_monotonic = 0.0
     wl._spend_cap = MagicMock()
     wl._spend_cap.allowed = MagicMock(return_value=spend_allowed)

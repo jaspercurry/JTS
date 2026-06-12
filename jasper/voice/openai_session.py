@@ -522,8 +522,11 @@ class OpenAIRealtimeTurn(LiveTurn):
     async def wait_for_server_eou(self) -> None:
         await self._server_eou_event.wait()
 
-    def _mark_server_vad(self) -> None:
+    def mark_server_vad(self) -> None:
         self._server_vad_active = True
+
+    def _mark_server_vad(self) -> None:
+        self.mark_server_vad()
 
     def _on_speech_started(self) -> None:
         self._server_speech_started = True
@@ -1028,10 +1031,13 @@ class OpenAIRealtimeConnection(LiveConnection):
         await self._send_event({"type": "input_audio_buffer.commit"})
         await self._send_event({"type": "response.create"})
 
-    async def _create_response_only(self) -> None:
+    async def create_response_only(self) -> None:
         """Send response.create WITHOUT a preceding commit — used when
         server_vad has already committed the audio buffer."""
         await self._send_event({"type": "response.create"})
+
+    async def _create_response_only(self) -> None:
+        await self.create_response_only()
 
     async def set_turn_detection(self, mode: dict | None) -> None:
         """Switch turn detection mid-session.

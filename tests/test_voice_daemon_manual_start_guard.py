@@ -58,6 +58,7 @@ def _make_wake_loop():
     wl._state = State.WAKE
     wl._mic_muted = False
     wl._measurement_active = asyncio.Event()
+    wl._fire_and_forget = set()
     # If a guard is skipped, these would be reached — make them visible.
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
     wl._connection = types.SimpleNamespace(is_paused=lambda: False)
