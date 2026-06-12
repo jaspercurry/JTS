@@ -1000,13 +1000,13 @@ keeps the bridge off. Either way, AEC is reversible at runtime — see
 
 ### The chip control library
 
-`jasper/xvf/xvf_host.py` is vendored from
-`respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/python_control/` and
-is useful as a diagnostic tool independent of AEC:
+`jasper/xvf/xvf_host.py` is a JTS-owned USB control helper for the
+XVF3800 command subset JTS uses. It is useful as a diagnostic tool
+independent of AEC:
 
 ```sh
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host VERSION
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host --list  # all params
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host --list  # JTS-supported params
 ```
 
 Read AEC convergence, dump filter coefficients, change beam

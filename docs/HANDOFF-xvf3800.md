@@ -447,15 +447,17 @@ mux. See §7 for the full hypothesis ladder.
 
 ---
 
-## 4. The full parameter space (resid/cmdid table)
+## 4. The parameter space (resid/cmdid table)
 
-The vendored `jasper/xvf/xvf_host.py` (verbatim from
-[respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY @ python_control/xvf_host.py](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/python_control/xvf_host.py))
-encodes the host-visible parameter table. Each parameter is a
-`(resid, cmdid, length, type, access, description)` tuple that maps
-to a USB vendor control transfer (`bmRequestType =
+`jasper/xvf/xvf_host.py` is now a JTS-owned implementation of the
+XVF3800 USB vendor-control command surface JTS actually uses. It is
+not a vendored copy of the ReSpeaker Python helper. Each local
+`Command` maps to a USB vendor control transfer (`bmRequestType =
 VENDOR|DEVICE|OUT`, `bRequest = 0`, `wValue = cmdid` for write or
-`0x80|cmdid` for read, `wIndex = resid`).
+`0x80|cmdid` for read, `wIndex = resid`). For commands outside the
+local operational subset, use the XMOS XVF3800 user guide or the
+ReSpeaker host_control documentation as protocol references before
+adding a narrow local entry.
 
 Resource IDs (`resid`) group the parameters by subsystem:
 
@@ -740,15 +742,15 @@ we have a working chip side-by-side with a broken chip both
 returning BOOT_STATUS, we can't conclusively map char positions
 to meanings.
 
-### 4.15 The XMOS chip parameter table in full
+### 4.15 The local XMOS chip command subset
 
-The full PARAMETERS dict in `jasper/xvf/xvf_host.py` is the
-single source of truth — Python file, 95 entries — covering AEC
-(filter coeffs, beamformer azimuths, RT60), Audio Manager
-(routing, gain, idle timing), Post-Processing (AGC, limiter, NS,
-echo suppression), GPIO, LED, App-level (VERSION, REBOOT,
-USB_BIT_DEPTH). For diagnostics not covered above, `xvf_host.py
---list` prints the whole table on the Pi.
+`jasper/xvf/xvf_host.py` intentionally carries only the command
+subset JTS uses for boot-time chip setup, chip-AEC experiments, and
+operator diagnostics. `xvf_host.py --list` prints that local subset
+on the Pi. If an investigation needs a new chip command, add only
+that entry from XMOS-published protocol facts and hardware validation;
+do not re-vendor upstream demo code without a verified redistribution
+license.
 
 ---
 
@@ -1306,10 +1308,10 @@ for p in VERSION BLD_MSG BLD_HOST BLD_REPO_HASH BLD_MODIFIED BOOT_STATUS \
 done
 ```
 
-(`GPI_READ_VALUES` is not in the vendored `PARAMETERS` table —
-the host_control C app has it but the vendored Python tool
-doesn't; if you need to read the mute-button state from Python,
-add it to `PARAMETERS` first or use the C `xvf_host` directly.)
+(`GPI_READ_VALUES` is not in the local command subset. The
+host_control C app has it; if you need to read the mute-button
+state from Python, add a narrow local command entry from the XMOS
+protocol docs and hardware validation.)
 
 The expected output on a healthy chip:
 
@@ -1367,10 +1369,10 @@ This is the cleanest A/B and is worth the disruption.
 
 ## 9. The library we use, and how to extend it
 
-`jasper/xvf/xvf_host.py` is a verbatim vendored copy of
-`python_control/xvf_host.py` from the upstream repo. We vendor
-rather than clone-at-install for the reasons documented in
-`jasper/xvf/__init__.py`. To call any parameter:
+`jasper/xvf/xvf_host.py` is a JTS-owned USB control helper for the
+XVF3800 command subset we use. It replaced the older vendored
+ReSpeaker Python helper on 2026-06-12 so JTS no longer redistributes
+uncleared ReSpeaker source. To call a supported parameter:
 
 ```sh
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host --list
@@ -1379,16 +1381,15 @@ sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_MIC_GAIN
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_OP_L --values 8 0
 ```
 
-The `PARAMETERS` table at the top of the file is the contract
-with the firmware — diff carefully when re-vendoring after an
-upstream firmware update, because a misaligned (resid, cmdid)
-will silently write to the wrong subsystem.
+The local `COMMANDS` table is the contract with the firmware for
+JTS-supported commands. A misaligned `(resid, cmdid)` will silently
+write to the wrong subsystem.
 
-Updating procedure: clone upstream, `diff` the
-`python_control/xvf_host.py` against ours, port any new entries
-to our vendored file, leave the rest alone. The only
-JTS-specific modifications today are the comment at the top —
-no algorithm changes.
+Updating procedure: start from the XMOS-published control-command
+documentation and the behavior JTS needs, add the smallest local
+entry/API surface, and validate on hardware. Do not copy the
+ReSpeaker Python table, comments, descriptions, or CLI wholesale
+unless its redistribution license has been verified.
 
 ---
 
@@ -1424,7 +1425,7 @@ where our local knowledge is incomplete or unverified.
 
 In rough order of how often we reach for each:
 
-- **Vendored code**: `jasper/xvf/xvf_host.py` (parameter table),
+- **Local chip-control code**: `jasper/xvf/xvf_host.py` (JTS command subset),
   `jasper/cli/aec_init.py`, `jasper/cli/aec_bridge.py`
   (operational use of the parameters).
 - **Local docs**: [`docs/HANDOFF-aec.md`](HANDOFF-aec.md) (chip-side

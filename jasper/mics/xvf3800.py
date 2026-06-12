@@ -3,9 +3,8 @@
 Canonical reference: docs/HANDOFF-xvf3800.md (hardware identity,
 parameter space, firmware variants, failure modes).
 
-Chip control library: jasper/xvf/xvf_host.py (vendored from
-respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY upstream — used for
-chip-side parameter reads/writes and the REBOOT path).
+Chip control library: jasper/xvf/xvf_host.py (JTS-owned USB
+vendor-control helper used for chip-side parameter reads/writes).
 
 This module holds the mic-family-specific knowledge consulted by
 doctor checks, the AEC bridge, and operator tooling. The bash

@@ -1,13 +1,11 @@
-"""Vendored XMOS XVF3800 control interface.
+"""JTS-owned XMOS XVF3800 control interface.
 
-xvf_host.py is a verbatim copy of
-github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/python_control/xvf_host.py
-(MIT licensed). We vendor rather than git-clone at install time so
-the daemon has a fixed dependency that survives upstream renames /
-deletions, and so deploy/install.sh has no network dependency.
+`xvf_host.py` implements the small USB vendor-control command surface
+JTS needs for boot-time chip setup, chip-AEC experiments, and operator
+diagnostics. It is not a vendored copy of the ReSpeaker Python helper.
 
-Update procedure: re-fetch from upstream when XMOS publishes a new
-firmware release that adds parameters we want. Diff carefully —
-the parameter table at the top of xvf_host.py is the contract
-between firmware and this script.
+When a future firmware release exposes a command JTS needs, add only
+that command to `xvf_host.py` from XMOS-published protocol facts and
+hardware validation. Do not re-vendor upstream demo code without a
+verified redistribution license.
 """

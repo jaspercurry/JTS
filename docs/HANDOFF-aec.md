@@ -6,7 +6,7 @@ is the canonical source for anyone touching `jasper-aec-bridge`,
 `jasper-aec-init`, the `pcm.jasper_capture` dsnoop, the bridge↔voice
 UDP transport (see [HANDOFF-resilience.md](HANDOFF-resilience.md)
 for why it's UDP and not a second snd-aloop card), the
-`jasper/xvf/` vendored XMOS control library, or any of the
+`jasper/xvf/` XMOS control helper, or any of the
 supporting documentation in `BRINGUP.md` and
 `docs/audit-pending-followups.md`.
 
@@ -1182,7 +1182,7 @@ fix) with **clock drift** (non-issue in the proposed topology).
 
 | Property | Value | Source |
 |---|---|---|
-| Type / unit | `int32`, samples at 16 kHz (62.5 µs/sample) | `jasper/xvf/xvf_host.py:90`; XMOS Tuning Guide §4 |
+| Type / unit | `int32`, samples at 16 kHz (62.5 µs/sample) | `jasper/xvf/xvf_host.py` command table; XMOS Tuning Guide §4 |
 | Empirical accepted range | **−64 to +256** (values >256 silently clamp) | HANDOFF-aec.md line 1461, our 2025 sweep |
 | Sign convention | positive delays the reference; negative delays the mic (used to fix acausal systems) | XMOS Tuning Guide §4 |
 | Seeed default | `AUDIO_MGR_SYS_DELAY = 12` (≈0.75 ms) | respeaker/host_control README |
@@ -1363,7 +1363,7 @@ fallback profile and avoid stacking it under chip-AEC.
 - [XMOS lib_adec Overview](https://www.xmos.com/documentation/XM-014785-PC/html/modules/voice/modules/lib_adec/doc/src/overview.html) — Automatic Delay Estimation; estimation auto-triggers at power-up
 - [XMOS lib_sw_pll on GitHub](https://github.com/xmos/lib_sw_pll) — the software PLL implementation used for USB→mic clock sync
 - [reSpeaker XVF3800 host_control README](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md) — Seeed default `AUDIO_MGR_SYS_DELAY = 12`
-- In-repo: `jasper/xvf/xvf_host.py:90` (parameter definition), HANDOFF-aec.md lines 1437–1469 (prior sweep history, range −64 to +256, convergence-flag-never-flipped observation, REF_GAIN trap that bricked the previous attempt)
+- In-repo: `jasper/xvf/xvf_host.py` (`AUDIO_MGR_SYS_DELAY` command definition), HANDOFF-aec.md lines 1437–1469 (prior sweep history, range −64 to +256, convergence-flag-never-flipped observation, REF_GAIN trap that bricked the previous attempt)
 
 ### E — Vendor newer libwebrtc as a Meson subproject
 
@@ -1812,10 +1812,8 @@ topology, regardless of configuration.
 - A `jasper-aec-tune` CLI that does white-noise cross-correlation
   to measure the host-to-mic round-trip delay and program the
   chip with the result.
-- The vendored `xvf_host.py` (from
-  `respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/python_control/`)
-  for talking to the chip's parameter API over USB vendor control
-  transfers.
+- The JTS-owned `xvf_host.py` helper for talking to the chip's
+  parameter API over USB vendor control transfers.
 
 All of this is still in the repo, partly because the architecture
 (snd-aloop + chip control) is still useful and partly as
@@ -2215,8 +2213,7 @@ Files involved in the AEC subsystem:
   sets UAC2 PCM to unity)
 - `jasper/cli/aec_tune.py` — calibrator for chip-side
   `AUDIO_MGR_SYS_DELAY` (vestigial; kept for diagnostic use)
-- `jasper/xvf/xvf_host.py` — vendored from
-  respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY
+- `jasper/xvf/xvf_host.py` — JTS-owned XVF3800 USB control helper
 - `jasper/cli/doctor.py` — `check_aec_bridge_running`,
   `check_mic_capture`, `check_xvf_firmware_6ch`
 - `deploy/alsa/asoundrc.jasper` — defines `pcm.jasper_capture`
