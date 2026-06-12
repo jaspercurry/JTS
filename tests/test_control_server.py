@@ -2481,3 +2481,41 @@ def test_follower_transport_toggle_forwards_to_leader(follower_server):
     assert body["pair_leader"] == "jts.local"
     req, _ = seen[0]
     assert req.full_url.endswith("/transport/toggle")
+
+
+def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordinator):
+    """The dashboard's restart-voice button must not boot the parked
+    daemon on a bonded follower — refuse with the pair story."""
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
+    base, _fake = server_with_coordinator
+    status, body = _post(f"{base}/system/restart/voice", {})
+    assert status == 409
+    assert "parked" in body["error"]
+
+
+def test_system_restart_audio_keeps_parked_renderers_parked(
+    monkeypatch, server_with_coordinator,
+):
+    """restart-audio on a follower touches only the units the profile
+    keeps alive (camilla) — never the parked renderer stack."""
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
+    seen = []
+
+    def fake_popen(argv, **kw):
+        seen.append(list(argv))
+        class _P:
+            pass
+        return _P()
+
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", fake_popen)
+    base, _fake = server_with_coordinator
+    status, _body = _post(f"{base}/system/restart/audio", {})
+    assert status == 200
+    flat = [a for argv in seen for a in argv]
+    assert "jasper-camilla.service" in flat
+    assert "librespot.service" not in flat
+    assert "shairport-sync.service" not in flat

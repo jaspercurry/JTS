@@ -50,6 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from ._common import (
+    bonded_follower_active,
     begin_request,
     canonical_banner,
     canonical_header,
@@ -173,6 +174,11 @@ def _gather_state() -> dict[str, dict[str, bool]]:
     systemctl probes."""
     bt_available, bt_powered, bt_has_hid = asyncio.run(_bt_state())
     return {
+        # Sibling key, not a source: the JS iterates a fixed SOURCES
+        # list, so this rides alongside safely. While this speaker is a
+        # bonded FOLLOWER the dumb-follower profile parks every source —
+        # the page disables the toggles and explains, and POST /set 409s.
+        "pair": {"parked": bonded_follower_active()},
         "airplay": {
             "enabled": _unit_active(AIRPLAY_UNIT),
             "available": True,
@@ -263,6 +269,14 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
     """Render the sources page. Initial toggle state is loaded from the
     server on the first /state poll (one extra round trip on page load —
     keeps the HTML static and cache-friendly)."""
+    pair_note = (
+        '<div class="info-card info-card--accent" id="pair-note" '
+        'style="display:none" role="note">This speaker is part of a '
+        "stereo pair — music plays through the pair leader, so local "
+        "sources are parked. Unpair on "
+        '<a href="/rooms/">the Speakers page</a> to use them again.'
+        "</div>"
+    )
     rows = "".join([
         _source_row(name="AirPlay", input_id="t-airplay"),
         _source_row(
@@ -302,7 +316,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
   <section class="info-card">
     <h2 class="section__title">Sources</h2>
     <div class="sources" id="sources">
-      {rows}
+      {pair_note}{rows}
     </div>
   </section>
 </main>
@@ -366,6 +380,19 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 if source not in VALID_SOURCES:
                     self._send_json(
                         {"error": f"unknown source {source!r}"}, status=400,
+                    )
+                    return
+                if bonded_follower_active():
+                    # `enable --now` would START a parked renderer and
+                    # reopen the advertise/leak hole until the next
+                    # reconcile. Sources are pair-managed while bonded;
+                    # intent changes happen after unpairing.
+                    self._send_json(
+                        {"error": "sources are managed by the stereo "
+                                  "pair while this speaker is a "
+                                  "follower — unpair on /rooms/ to "
+                                  "change local sources"},
+                        status=409,
                     )
                     return
                 try:

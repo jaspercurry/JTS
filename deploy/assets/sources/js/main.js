@@ -33,13 +33,18 @@ const el = (id) => document.getElementById(id);
 
 function applyState(state) {
   latestState = state;
+  // Dumb-follower profile: every source is parked while this speaker
+  // is a bonded follower — toggles read disabled and the pair note
+  // explains (POST /set 409s server-side regardless).
+  const parked = !!(state.pair && state.pair.parked);
+  if (el("pair-note")) el("pair-note").style.display = parked ? "" : "none";
   for (const name of SOURCES) {
     const s = state[name] || {};
     const input = el("t-" + name);
     if (!input) continue;
     if (dirty[name]) continue; // user toggled mid-flight; don't clobber
     input.checked = !!s.enabled;
-    input.disabled = s.available === false;
+    input.disabled = parked || s.available === false;
   }
   const btUnavailable =
     state.bluetooth && state.bluetooth.available === false;
