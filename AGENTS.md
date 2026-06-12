@@ -58,6 +58,99 @@ detail; they do not replace this baseline.
    operational probe that proves the change. If the environment cannot
    run a relevant check, say exactly what blocked it.
 
+### Project-specific reinforcements
+
+- **Bug work starts with evidence.** Fetch the logs, probe the
+  affected daemon/user surface, and name the specific failure line or
+  state transition before proposing a fix.
+- **Use existing integration helpers.** Existing helpers —
+  `pycamilladsp`, `openwakeword`, `google-genai`, `spotipy`, the
+  transit/provider registries, and the reconcilers — handle most of
+  the integration. Do not reinvent them.
+- **Surgical changes — file ownership.** Our files live under
+  `/opt/jasper/`, `/etc/camilladsp/`, `/etc/jasper/`,
+  `/etc/modprobe.d/snd-aloop.conf`, `/etc/asound.conf`,
+  `/etc/shairport-sync.conf`, `/etc/nginx/sites-enabled/jasper.conf`,
+  and `/etc/systemd/system/{jasper-*,librespot,shairport-sync,nqptp,bt-agent}.service`.
+  Touch only what you must when modifying these.
+- **Renderer ALSA device names must resolve as the renderer's
+  runtime user.** When changing a renderer's ALSA device (the
+  `--device` in librespot.service, `output_device` in
+  shairport-sync.conf, `--pcm` in bluealsa-aplay's drop-in), the
+  new name MUST be openable via `sudo -u $USER aplay -D $DEVICE
+  -c 2 -r 48000 -f S16_LE -d 0.1 /dev/zero`. This catches the
+  PR #214 bug class: a user-space ALSA PCM defined only in a
+  root-readable `~/.asoundrc` fails to resolve under non-root
+  renderer users (shairport-sync, pi). System-wide PCM defs go
+  in `/etc/asound.conf` (mode 0644). `jasper-doctor`'s
+  `check_renderer_device_resolvable` runs this probe on every
+  install, but verify by hand before relying on it.
+- **No silent failure paths.** Any new code path that would
+  prevent the speaker from responding to a wake event MUST also
+  trigger an audio cue (so the user hears why nothing happened).
+  Add cues by appending a `CueDef` to
+  [`jasper/cues/registry.py`](jasper/cues/registry.py) and calling
+  `cues.play("<slug>")` from the failure handler; see
+  [docs/HANDOFF-audible-feedback.md](docs/HANDOFF-audible-feedback.md).
+  Cue text must stay provider-agnostic (no "Google" / "Gemini" —
+  voice backend is replaceable).
+- **Codify, don't memorise.** If a runtime value matters for the
+  speaker to behave correctly, it MUST be set somewhere the next
+  fresh Pi will pick up automatically — either as a code default
+  in [`jasper/config.py`](jasper/config.py), a seeded value in
+  [`.env.example`](.env.example) (with a prose comment explaining
+  what it does and why this default), or an explicit step in
+  [`install.sh`](deploy/install.sh). Setting a value live on a Pi
+  and not codifying it is a hidden runtime dependency. Same
+  principle applies to wizards: the wizard writes a file to
+  `/var/lib/jasper/`, but the wizard itself is the codification,
+  and absence of the file MUST fail loudly. For env-var changes
+  specifically: every `JASPER_*` line added to `.env.example`
+  ships with a prose comment block above it (what, why this
+  default, recommended ranges if tunable).
+- **Pin promises with tests.** A documented behavior, invariant,
+  or safety claim that no test asserts is where bugs hide. When a
+  comment, docstring, or doc says "X disables Y" / "A keeps B
+  safe" / "this never runs", that sentence gets a test in the
+  same PR. The reusable guard-pattern catalog lives in
+  [docs/testing-tooling.md](docs/testing-tooling.md) "Guard &
+  contract test patterns".
+- **Fix what you notice — tier the response.** Trivial + obvious
+  stale prose, typos, dead links, and 1-3 line fixes should be fixed
+  inline. Significant bugs, design judgments, or behavior changes
+  should be surfaced after finishing the requested task. When in
+  doubt, flag it.
+- **Verify at the user's surface, not at upstream config.** When
+  the user references what they observe (a wizard, dashboard,
+  HTTP response), verify by hitting that URL or reading the
+  rendering code. JTS systemd units chain multiple
+  `EnvironmentFile=` directives (`/var/lib/jasper/*.env`
+  overrides `/etc/jasper/jasper.env`), so the runtime answer
+  lives in whichever file is loaded last. For daemon state,
+  prefer the daemon's own surface (`/state`, MPRIS, websocket)
+  over `/etc/*` files when both exist.
+- **JTS is a production speaker — design for resilience.**
+  Reasonable physical actions (unplugging speakers, power
+  cycling, briefly losing WiFi, removing a satellite) must not
+  put the speaker in a state it can't self-recover from. When
+  touching systemd units, daemon startup paths, or any code near
+  hardware, ask whether the resource can disappear and later
+  recover without operator intervention. No silent restart loops:
+  either the system recovers or someone hears/sees the issue via a
+  cue, log, dashboard, or dial LED.
+- **Scope fixes to the observed-broken path, not symmetric ones.**
+  When fixing a bug in one provider's adapter (for example,
+  OpenAI session), don't preemptively mirror the change into
+  sibling adapters (Gemini, Grok) just because they share a
+  protocol. Shared interfaces don't mean shared bugs.
+- **Mic capture is consumed by ML, not humans.** The downstream
+  consumers are openWakeWord (16 kHz ONNX) and the real-time
+  speech LLMs — never a human listener. Optimize for wake-word
+  reliability and ASR accuracy, not naturalness. Aggressive
+  band-limiting to roughly 100 Hz-7 kHz is often a win; human-
+  perceptual tunings can make ML consumers worse. See
+  [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
+
 ---
 
 ## COAH quality bar
@@ -774,10 +867,18 @@ fan-in and CamillaDSP in the chain and owns "what the speaker actually
 emits." `jasper-voice` declares it as a hard `After=`/`Wants=`
 dependency; `jasper-camilla` integrates with it through a shared
 CamillaDSP statefile (`outputd-statefile.yml`, seeded from
-`outputd-cutover.yml`) rather than a systemd dependency. Assistant TTS
-routes to its local socket (`JASPER_TTS_TRANSPORT=outputd`,
-`JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock`) rather than the
-legacy PortAudio `jasper_out` writer. The topology contract lives in
+`outputd-cutover.yml`) rather than a systemd dependency. In solo mode,
+assistant TTS/cues route to fan-in's outputd-compatible local socket
+(`JASPER_TTS_TRANSPORT=outputd`,
+`JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock`,
+`JASPER_DUCK_TRANSPORT=fanin`) so they enter before CamillaDSP and keep
+the crossover/correction/protection path. While a speaker is bonded in
+multi-room mode, the grouping reconciler may layer
+`/var/lib/jasper/grouping-voice.env` to point voice at
+`/run/jasper-outputd/tts.sock` and arm outputd's local TTS lane for
+member-local responses. Source-of-truth code: `jasper/config.py`
+(`Config.from_env`), `deploy/systemd/jasper-voice.service`, and
+`jasper/multiroom/reconcile.py`. The topology contract lives in
 [`jasper/output_topology.py`](jasper/output_topology.py). This is coarse
 on purpose — the canonical design (output/reference/TTS/barge-in signal
 flow, rollback behavior) is
@@ -1883,7 +1984,8 @@ awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
 # Expect "Channels: 6"
 ```
 
-DFU flash procedure is in [`BRINGUP.md`](BRINGUP.md) Phase 2A.5.
+DFU flash procedure is in
+[`BRINGUP.md` "XVF firmware: switch to 6-channel variant via DFU"](BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
 The reconciler also self-heals the post-flash ALSA mixer mute trap
 (2-ch → 6-ch firmware can leave kernel-side ch2-5 muted across
 reboot via `alsactl restore`); `jasper-doctor` flags drift under
@@ -1942,52 +2044,36 @@ Full design, schema, queries:
 
 ### Enable multi-leg wake OR-gate
 
-Default with `JASPER_MIC_DEVICE=udp:9876` is single-stream. Two
-levels of OR-gating are available, each via env vars set in
-`/etc/jasper/jasper.env`. Both are **strictly opt-in** and
-**independent** — keeping them off means the speaker runs the
-exact same single-stream wake path it always has.
+Normal operator path: use `http://jts.local/wake/`. Pick a profile
+(`auto`, `xvf_chip_aec`, `xvf_software_aec3`, `direct_mic`) first;
+only use the advanced `raw`, `dtln`, and `chip_aec` layer switches for
+custom/corpus work. The page stamps `JASPER_AUDIO_INPUT_PROFILE=custom`
+when a layer switch changes, then calls jasper-control.
 
-**Dual-stream** (AEC ON + AEC OFF, shipped in PR #191). Recovers
-the ~60% of wakes the `jarvis_v2` model silently misses on the
-AEC ON leg (the documented 0.001-confidence failure mode):
+Automation path: call `POST /aec/leg` on jasper-control, for example:
 
 ```sh
-echo 'JASPER_MIC_DEVICE_RAW=udp:9877' | sudo tee -a /etc/jasper/jasper.env
-sudo systemctl restart jasper-voice
+curl -sS -X POST http://127.0.0.1:8780/aec/leg \
+  -H 'Content-Type: application/json' \
+  -d '{"leg":"dtln","enabled":true}'
 ```
 
-**Triple-stream** (AEC ON + AEC OFF + DTLN-aec, shipped 2026-05-23
-on `claude/aec3-best-a-prod`). Adds the DTLN-aec neural engine as
-a third leg, OR-gated with the other two. Three env vars; the
-first two switch the bridge to BEST_A + DTLN, the third tells
-voice to listen on the new UDP port:
+Accepted `leg` values are `raw`, `dtln`, and `chip_aec`. The handler
+writes the intent keys (`JASPER_WAKE_LEG_RAW`,
+`JASPER_WAKE_LEG_DTLN`, `JASPER_WAKE_LEG_CHIP_AEC`) into
+`/var/lib/jasper/aec_mode.env` and restarts
+`jasper-aec-reconcile.service`. The reconciler is the single writer of
+the daemon-facing devices (`JASPER_MIC_DEVICE_RAW`,
+`JASPER_MIC_DEVICE_DTLN`, `JASPER_MIC_DEVICE_CHIP_AEC_150`,
+`JASPER_MIC_DEVICE_CHIP_AEC_210`) and bridge flags. Do **not** hand-
+append those lower-level vars to `/etc/jasper/jasper.env`; install
+migrations strip them because stale UDP devices leave voice listening
+on ports nobody feeds.
 
-```sh
-sudo tee -a /etc/jasper/jasper.env <<'EOF'
-JASPER_MIC_DEVICE_RAW=udp:9877
-JASPER_MIC_DEVICE_DTLN=udp:9878
-JASPER_AEC_DTLN_ENABLED=1
-EOF
-sudo systemctl restart jasper-aec-bridge jasper-voice
-```
-
-Verify: `journalctl -u jasper-voice | grep UdpMicCapture` shows
-all configured ports binding. The bridge's startup log carries
-the engine selection: `engine=aec3_v2(BEST_A) ... DTLN-aec ready
-... udp outputs: aec=127.0.0.1:9876 raw=127.0.0.1:9877
-dtln=127.0.0.1:9878`. After a wake fires, the wake_events DB row
-carries scores across every active leg + a `fired_legs` CSV
-(`'off'`, `'dtln,off'`, `'dtln,off,on'`, etc.).
-
-**Rip-out is single env-var changes.** To revert triple → dual,
-set `JASPER_AEC_DTLN_ENABLED=0` (drops DTLN from the bridge) and
-remove or empty `JASPER_MIC_DEVICE_DTLN` (voice stops opening
-the tertiary listener); the `mic_device_dtln` column in config
-defaults to empty so leaving the line out works too. To revert
-to single-stream, also empty `JASPER_MIC_DEVICE_RAW`. To revert
-BEST_A back to legacy AEC3 v1.3, append `JASPER_AEC_BINDING=v1`.
-All three layers are independent and graceful.
+Verify through `GET /aec`, `/state.voice.wake_legs`, or
+`journalctl -u jasper-voice | grep UdpMicCapture`. The bridge/reconciler
+truth is in `deploy/bin/jasper-aec-reconcile` (`write_leg_env`) and
+`jasper/control/server.py` (`_post_aec_leg`).
 
 ### Pull the corpus to laptop for review
 
@@ -2179,23 +2265,27 @@ corpus; to pull an archive, rsync explicitly from the archive path.
 
 ### Architecture in one paragraph
 
-The AEC bridge emits **up to three** UDP streams: the post-AEC mono
-mic on `:9876` (AEC3, default BEST_A on v2 binding), the chip-direct
-mic (pre-AEC, post chip's own BF/NS/AGC/HPF) on `:9877`, and the
-DTLN-aec engine on `:9878` (when `JASPER_AEC_DTLN_ENABLED=1`).
-jasper-voice opens whichever ports are configured via `JASPER_MIC_DEVICE`
-(`udp:9876` always), `JASPER_MIC_DEVICE_RAW` (optional), and
-`JASPER_MIC_DEVICE_DTLN` (optional). Per-leg `WakeWordDetector`
-instances score every frame and OR-gate their fires with a shared
-refractory window (`WAKE_REFRACTORY_SEC` in
-[`jasper/voice_daemon.py`](jasper/voice_daemon.py) — the comment
-there carries the tuning history). `WakeEventStore` (`jasper/wake_events.py`) writes
-to SQLite at wake-fire + each funnel stage transition; a
-fire-and-forget task waits 2 s post-fire then snapshots each active
-leg's capture ring and writes one WAV per leg. The schema has
-per-leg `peak_score_*`, `audio_*_path`, `mic_rms_dbfs_*` columns +
-a `fired_legs` CSV recording which legs crossed threshold at fire
-time — the analyze-three-leg.sh script keys off this column.
+The AEC bridge leg vocabulary lives in
+[`jasper/wake_legs.py`](jasper/wake_legs.py), with emit defaults in
+[`jasper/cli/aec_bridge.py`](jasper/cli/aec_bridge.py). Production
+wake inputs are `on` (`:9876`, software AEC3 or the chip-AEC primary
+carrier), `off` (`:9877`, chip-direct), `dtln` (`:9878`), and the
+hardware-AEC beam pair `chip_aec_150` / `chip_aec_210`
+(`:9887` / `:9888`). Corpus-only legs include `raw0` (`:9879`),
+`ref` (`:9880`), `usb_raw` (`:9881`), `usb_webrtc` (`:9882`),
+`usb_dtln` (`:9883`), `xvf_raw0_webrtc_aec3` (`:9889`), and
+`xvf_raw0_dtln` (`:9890`), plus parametric AEC3 sweep variants from
+`jasper.aec_sweep`; outputd's final-speaker reference is an input to
+the bridge on `:9891`, not a wake leg. jasper-voice opens the
+configured `wake_input=True` legs, gives each its own
+`WakeWordDetector`, and OR-gates fires with the shared refractory
+window (`WAKE_REFRACTORY_SEC` in
+[`jasper/voice_daemon.py`](jasper/voice_daemon.py)). `WakeEventStore`
+([`jasper/wake_events.py`](jasper/wake_events.py)) writes SQLite rows
+at wake-fire + each funnel transition, then snapshots active leg rings
+into one WAV per leg after the post-fire window. The schema has
+per-leg `peak_score_*`, `audio_*_path`, `mic_rms_dbfs_*` columns and a
+`fired_legs` CSV recording which legs crossed threshold.
 Telemetry is **fail-soft** everywhere — store failures log at WARN
 and never block wake / session paths.
 
@@ -2503,14 +2593,17 @@ The flash itself wipes NVS (factory.bin pads 0x0–0x10000 with
 that follows refills it — no manual provisioning step.
 
 **Local PIO setup** for the v3.x toolchain (laptop-side):
-pioarduino requires Python ≥ 3.10 — the JTS project venv is
-3.9 — so build inside a separate Python 3.11 venv with
+pioarduino requires Python ≥ 3.10. The JTS project itself now floors
+at Python 3.11 (`pyproject.toml`) and the Pi runtime is Python 3.13,
+so installing PlatformIO into a normal JTS/dev venv is fine. The
+separate-venv dance is only for hosts whose `python3`/current venv is
+older (notably Apple's system Python 3.9) or for maintainers who want
+to keep the large PlatformIO toolchain out of the repo venv:
 `brew install python@3.11 && python3.11 -m venv /tmp/jts-pio-venv
 && /tmp/jts-pio-venv/bin/pip install platformio`. Prefix `pio`
-invocations with `PATH="/opt/homebrew/bin:$PATH"` so PIO's
-subprocess can find git for the Improv-WiFi library install.
-The Pi already has Python 3.13 + PIO and builds cleanly without
-the dance.
+invocations with `PATH="/opt/homebrew/bin:$PATH"` if PIO's subprocess
+cannot find git for the Improv-WiFi library install. The Pi already has
+Python 3.13 + PIO and builds cleanly without the dance.
 
 To capture audio for testing or SNR comparisons:
 
@@ -2691,125 +2784,6 @@ rsync the captures.
   while sshd's banner exchange timed out. T5.2 closes that gap.
 - See [docs/HANDOFF-resilience.md](docs/HANDOFF-resilience.md)
   + [docs/HANDOFF-tier5-watchdog-liveness.md](docs/HANDOFF-tier5-watchdog-liveness.md).
-
----
-
-## Behavioral rules for working in this codebase
-
-Per the user's CLAUDE.md
-(`github.com/jaspercurry/claude-rules`) and reinforced for this
-specific project:
-
-- **Diagnose before solving.** If something's broken, fetch the
-  logs and point at the specific line that produced the failure
-  before proposing a fix.
-- **Check prior art.** Existing helpers — `pycamilladsp`,
-  `openwakeword`, `google-genai`, `spotipy` — handle most of
-  the integration. Don't reinvent.
-- **Surgical changes — file ownership.** Our files live under
-  `/opt/jasper/`, `/etc/camilladsp/`, `/etc/jasper/`,
-  `/etc/modprobe.d/snd-aloop.conf`, `/etc/asound.conf`,
-  `/etc/shairport-sync.conf`, `/etc/nginx/sites-enabled/jasper.conf`,
-  and `/etc/systemd/system/{jasper-*,librespot,shairport-sync,nqptp,bt-agent}.service`.
-  Touch only what you must when modifying these.
-- **Renderer ALSA device names must resolve as the renderer's
-  runtime user.** When changing a renderer's ALSA device (the
-  `--device` in librespot.service, `output_device` in
-  shairport-sync.conf, `--pcm` in bluealsa-aplay's drop-in), the
-  new name MUST be openable via `sudo -u $USER aplay -D $DEVICE
-  -c 2 -r 48000 -f S16_LE -d 0.1 /dev/zero`. This catches the
-  PR #214 bug class: a user-space ALSA PCM defined only in a
-  root-readable `~/.asoundrc` fails to resolve under non-root
-  renderer users (shairport-sync, pi). System-wide PCM defs go
-  in `/etc/asound.conf` (mode 0644). `jasper-doctor`'s
-  `check_renderer_device_resolvable` runs this probe on every
-  install — but verify by hand before relying on it.
-- **No silent failure paths.** Any new code path that would
-  prevent the speaker from responding to a wake event MUST also
-  trigger an audio cue (so the user hears why nothing happened).
-  Add cues by appending a `CueDef` to
-  [`jasper/cues/registry.py`](jasper/cues/registry.py) and calling
-  `cues.play("<slug>")` from the failure handler — see
-  [docs/HANDOFF-audible-feedback.md](docs/HANDOFF-audible-feedback.md)
-  for the full pattern. Cue text must stay provider-agnostic
-  (no "Google" / "Gemini" — voice backend is replaceable).
-- **Codify, don't memorise.** If a runtime value matters for the
-  speaker to behave correctly, it MUST be set somewhere the next
-  fresh Pi will pick up automatically — either as a code default
-  in [`jasper/config.py`](jasper/config.py), a seeded value in
-  [`.env.example`](.env.example) (with a prose comment explaining
-  what it does and why this default), or an explicit step in
-  [`install.sh`](deploy/install.sh). Setting a value live on a Pi
-  and not codifying it is a hidden runtime dependency — the next
-  rebuild silently behaves differently. Same principle applies to
-  the wizards: the wizard writes a file to `/var/lib/jasper/`,
-  but the wizard itself is the codification, and absence of the
-  file MUST fail loudly (not silently default). For env-var
-  changes specifically: every `JASPER_*` line added to
-  `.env.example` ships with a prose comment block above it (what,
-  why this default, recommended ranges if it's tunable). The
-  template doubles as documentation — no separate "tuning knobs"
-  page.
-- **Pin promises with tests.** A documented behavior, invariant,
-  or safety claim that no test asserts is where bugs hide. When a
-  comment, docstring, or doc says "X disables Y" / "A keeps B
-  safe" / "this never runs", that sentence gets a test in the
-  same PR. Evidence (2026-06-10 fix batch): the spend-cap disable
-  knob was inverted (blocked every wake), a documented mux
-  debounce was dead code, and two bash quoting bugs shipped —
-  each was untested prose, and each fix landed with a guard that
-  has since caught real regressions in CI that local verification
-  structurally could not (different bash/awk on the runner, the
-  doctor registry order invariant, the doc staleness sweep, the
-  doc-atlas rule). The reusable guard-pattern catalog lives in
-  [docs/testing-tooling.md](docs/testing-tooling.md) "Guard &
-  contract test patterns".
-- **Fix what you notice — tier the response.** When you spot
-  something broken or stale that pre-existed your change (typo,
-  dead link, comment contradicting the code), don't shrug "not
-  my problem." Apply the tier rule: **trivial + obvious** (typo,
-  dead link, 1–3 line fix) → fix inline. **Significant** (real
-  bug, design judgment, behavior change) → finish the original
-  task, then surface the issue at the end so the user can decide
-  whether to fix in-session or spawn parallel work. **When in
-  doubt, flag** — stale-looking prose sometimes carries signal
-  (a runbook marker, a load-bearing TODO).
-- **Verify at the user's surface, not at upstream config.** When
-  the user references what they observe (a wizard, dashboard,
-  HTTP response), verify by hitting that URL or reading the
-  rendering code. JTS systemd units chain multiple
-  `EnvironmentFile=` directives (`/var/lib/jasper/*.env`
-  overrides `/etc/jasper/jasper.env`), so the runtime answer
-  lives in whichever file is loaded last. For daemon state,
-  prefer the daemon's own surface (`/state`, MPRIS, websocket)
-  over `/etc/*` files when both exist.
-- **JTS is a production speaker — design for resilience.**
-  Reasonable physical actions (unplugging speakers, power
-  cycling, briefly losing WiFi, removing a satellite) must not
-  put the speaker in a state it can't self-recover from. When
-  touching systemd units, daemon startup paths, or any code near
-  hardware, ask: "if the underlying resource isn't there right
-  now, does this recover without operator intervention when it
-  comes back?" If not, flag it. No silent restart loops — either
-  the system recovers or someone hears about it (cue, log,
-  dashboard, dial LED).
-- **Scope fixes to the observed-broken path, not symmetric
-  ones.** When fixing a bug in one provider's adapter (e.g.
-  OpenAI session), don't preemptively mirror the change into
-  sibling adapters (Gemini, Grok) just because they share a
-  protocol. Shared interfaces don't mean shared bugs — wait for
-  the symptom to manifest in the other path before touching it.
-  Same applies to "while I'm here, might as well fix Y" — don't,
-  unless Y is a confirmed instance of the same defect.
-- **Mic capture is consumed by ML, not humans.** The downstream
-  consumers are openWakeWord (16 kHz ONNX) and the real-time
-  speech LLMs — never a human listener. Optimize for wake-word
-  reliability and ASR accuracy, not naturalness. Aggressive
-  band-limiting to ~100 Hz–7 kHz is a free win (anything outside
-  the speech band is noise to the consumers). "Human-perceptual"
-  tunings (loudness compensation, presence boost) often make ML
-  models *worse* because the training distribution doesn't
-  include them. See [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
 
 ---
 
