@@ -70,6 +70,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ..atomic_io import atomic_write_text
+from ..control import client as control
 from ..http_security import mutating_request_allowed
 from ..voice.provider_state import read_active_provider
 
@@ -104,255 +105,17 @@ _CSRF_TOKEN_BYTES = 32  # 32 bytes → 43 base64-url-safe chars
 _CTX_ATTR = "_jts_request_ctx"
 
 
-# Page CSS. Same look as the Spotify wizard so the speaker presents one
-# coherent settings UI instead of a stack of mismatched tools. Spotify-
-# green primary button (#1db954) is intentional even on non-Spotify
-# pages — the user knows that "the JTS settings green" means "save /
-# proceed" by the time they see the second wizard.
-PAGE_STYLE = """
-  body { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-         max-width: 620px; margin: 2em auto; padding: 0 1em;
-         color: #222; background: #fff; }
-  h1 { margin-bottom: 0.25em; } h2 { margin-top: 2em; }
-  .sub { color: #666; margin-top: 0; }
-  .msg { background: #e8f4ff; border: 1px solid #abd; padding: 0.6em 0.8em;
-          border-radius: 6px; margin: 1em 0; }
-  .msg.ok { background: #e6f9ec; border-color: #1db954; color: #14542a; }
-  .msg.ok::before { content: "✓ "; font-weight: 700; }
-  .err { background: #ffe8e8; border-color: #d99; }
-  ol.steps { padding-left: 1.4em; }
-  ol.steps > li { margin-bottom: 1em; }
-  form { margin-top: 1em; }
-  label { display: block; margin: 0.6em 0 0.2em; font-weight: 600; }
-  input[type=text], input[type=password], select {
-    width: 100%; padding: 0.5em; border: 1px solid #bbb;
-    border-radius: 4px; font-size: 1em; box-sizing: border-box;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: #fff;
-  }
-  small { color: #666; }
-  .hint { color: #666; font-size: 0.92em; }
-  button, a.btn {
-    background: #1db954; color: white; border: 0;
-    padding: 0.6em 1.2em; border-radius: 4px; font-size: 1em;
-    cursor: pointer; text-decoration: none; display: inline-block;
-  }
-  a.btn.secondary, button.secondary { background: #4a4a4a; }
-  button.danger { background: #d44; }
-  button:hover, a.btn:hover { filter: brightness(1.1); }
-  button:disabled { background: #b8b8b8; cursor: not-allowed; filter: none; }
-  a:focus, button:focus, input:focus, select:focus, textarea:focus, [tabindex]:focus {
-    outline: none;
-  }
-  .copy-row { display: flex; gap: 0.5em; align-items: stretch; margin: 0.6em 0; }
-  .copy-row input { flex: 1; }
-  .copy-row button { padding: 0 1em; }
-  .copy-feedback { color: #1db954; font-weight: 600; margin-left: 0.4em;
-                   visibility: hidden; transition: opacity 0.2s; }
-  .copy-feedback.shown { visibility: visible; }
-  .credbox {
-    background: #fafafa; border: 1px solid #ddd; padding: 0.4em 0.8em;
-    border-radius: 6px; margin: 0.6em 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.92em; color: #555; word-break: break-all;
-  }
-
-  /* Account = expand/collapse card. Used by both /spotify (account
-     management) and /voice (per-provider config). Common shape, same
-     CSS, lives here once. */
-  .accounts-help { color: #666; font-size: 0.92em; margin: 0 0 0.8em; }
-  details.account { background: #f4f4f4; border-radius: 6px;
-                     margin-bottom: 0.5em; overflow: hidden; }
-  details.account > summary {
-    list-style: none; cursor: pointer; padding: 0.7em 0.9em;
-    display: flex; align-items: center; gap: 0.6em;
-    user-select: none; -webkit-user-select: none;
-  }
-  details.account > summary::-webkit-details-marker { display: none; }
-  details.account > summary::before {
-    content: "▸"; color: #888; font-size: 0.9em;
-    transition: transform 0.15s ease; display: inline-block; width: 0.9em;
-  }
-  details.account[open] > summary::before { transform: rotate(90deg); }
-  details.account > summary:hover { background: #ececec; }
-  details.account > summary .name { font-weight: 600; flex: 1; }
-  details.account > summary .badge {
-    background: #4a8; color: white; padding: 0.1em 0.5em;
-    border-radius: 4px; font-size: 0.8em;
-  }
-  details.account > summary .badge.muted {
-    background: #aaa;
-  }
-  details.account > summary .pl-count {
-    color: #888; font-size: 0.88em; font-variant-numeric: tabular-nums;
-  }
-  details.account .account-body {
-    padding: 0 0.9em 0.9em; border-top: 1px solid #e6e6e6;
-  }
-
-  /* Shared back-to-home nav link (NAV_BACK_HTML below). Sits above
-     the page <h1> so every wizard has the same one-click escape
-     back to http://jts.local/. Pages that define their own style
-     block (dial, bluetooth, correction) re-import NAV_BACK_CSS so
-     this rule travels with the link wherever it goes.*/
-  .nav-back {
-    display: inline-block; color: #666; text-decoration: none;
-    font-size: 0.92em; margin-bottom: 0.6em;
-  }
-  .nav-back:hover { color: #222; }
-
-  /* ---- Top-level disclosures (Connection details, Setup guide,
-     OAuth client settings, etc.) shared across wizards.
-     Browser-default <summary> is plain text + a tiny native
-     triangle — easy to miss as clickable. These rules give the
-     summary a card-style hover affordance and a right-aligned
-     caret that rotates on open. Targets `.disclosure` only so
-     other <details> patterns (account cards, contextual hints,
-     log expanders) keep their own styling. */
-  details.disclosure { margin-top: 1.4em; }
-  details.disclosure > summary {
-    list-style: none;
-    cursor: pointer;
-    user-select: none; -webkit-user-select: none;
-    padding: 0.85em 2.4em 0.85em 1em;
-    background: #f4f4f4;
-    border: 1px solid #e6e6e6;
-    border-radius: 8px;
-    font-weight: 600;
-    color: #222;
-    position: relative;
-    transition: background 0.15s ease, border-color 0.15s ease;
-  }
-  details.disclosure > summary:hover {
-    background: #f0fff4;
-    border-color: #1db954;
-  }
-  details.disclosure[open] > summary {
-    border-bottom-left-radius: 0;
-    border-bottom-right-radius: 0;
-    border-bottom-color: transparent;
-  }
-  details.disclosure > summary::-webkit-details-marker { display: none; }
-  details.disclosure > summary::after {
-    content: "▸";
-    position: absolute;
-    right: 1em; top: 50%;
-    transform: translateY(-50%);
-    color: #888;
-    transition: transform 0.15s ease, color 0.15s ease;
-  }
-  details.disclosure > summary:hover::after,
-  details.disclosure[open] > summary::after {
-    color: #1db954;
-  }
-  details.disclosure[open] > summary::after {
-    transform: translateY(-50%) rotate(90deg);
-  }
-  details.disclosure > .disclosure-body {
-    padding: 0.6em 1em 1em;
-    border: 1px solid #e6e6e6;
-    border-top: none;
-    border-bottom-left-radius: 8px;
-    border-bottom-right-radius: 8px;
-    background: #fff;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .copy-feedback,
-    details.account > summary::before,
-    details.disclosure > summary,
-    details.disclosure > summary::after {
-      transition: none;
-    }
-  }
-"""
-
-
-# Single source of truth for the home-link. Imported by every setup
-# page so the markup stays identical even though each page renders
-# its own HTML wrapper.
-#
-# Behaviour: unconditional <a href="/"> to the dashboard. This link
-# is semantically an *Up* affordance (return to the speaker's home),
-# not a Back affordance (reverse-chronological browser history).
-# Android codifies this distinction explicitly; modern web design
-# (GitHub, GitLab, Reddit, Material) follows it: chrome links reflect
-# information hierarchy, the browser's Back button reflects history.
-#
-# The prior version did `history.back()` when `history.length > 1`,
-# which broke in two ways:
-#   1. After a save → ?msg=… redirect, history was
-#      [/, /voice/, /voice/?msg=Saved…]; clicking Back went to
-#      /voice/ without the message → the user perceived "back did
-#      nothing." (Bigger fix: flash cookies replace ?msg=, so the
-#      ghost entry no longer exists.)
-#   2. `history.length` counts the whole tab's session history,
-#      including cross-origin entries. Deep-link entries from
-#      a phone-launcher / email / Slack had length > 1, so the JS
-#      fired history.back() and exited JTS entirely.
-# Pages with a different natural parent can override the label
-# per-wizard.
-NAV_BACK_HTML = '<a class="nav-back" href="/">← Home</a>'
-
-# CSS for `.nav-back` is included in `PAGE_STYLE` above. Re-exported
-# here as a string fragment for pages that build their own style
-# block instead of using `PAGE_STYLE` (dial / bluetooth / correction).
-NAV_BACK_CSS = """
-  .nav-back {
-    display: inline-block; color: #666; text-decoration: none;
-    font-size: 0.92em; margin-bottom: 0.6em;
-  }
-  .nav-back:hover { color: #222; }
-"""
-
-
-# iOS-style on/off switch. Used by every wizard that exposes a binary
-# toggle (sources, wake detection layers). One source of truth for the
-# size, the green-when-on accent, and the disabled appearance — pages
-# import this CSS and the matching `toggle_html()` helper rather than
-# rolling their own checkbox styling. Embed inside any <style> block.
-TOGGLE_CSS = """
-  .toggle {
-    position: relative; display: inline-block; flex-shrink: 0;
-    width: 54px; height: 30px;
-  }
-  .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
-  .toggle .track {
-    position: absolute; inset: 0;
-    background-color: #ccc;
-    border-radius: 30px;
-    cursor: pointer;
-    transition: background-color 0.18s ease;
-  }
-  .toggle .track::before {
-    position: absolute; content: "";
-    width: 24px; height: 24px;
-    top: 3px; left: 3px;
-    background-color: #fff;
-    border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-    transition: transform 0.18s ease;
-  }
-  .toggle input:checked + .track { background-color: #1db954; }
-  .toggle input:checked + .track::before { transform: translateX(24px); }
-  .toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
-  @media (prefers-reduced-motion: reduce) {
-    .toggle .track,
-    .toggle .track::before {
-      transition: none;
-    }
-  }
-"""
-
-
 def toggle_html(
     input_id: str, *, checked: bool = False, disabled: bool = False,
 ) -> str:
-    """Render an iOS-style toggle. Pairs with `TOGGLE_CSS`.
+    """Render the checkbox markup for the canonical toggle control.
 
     `input_id` is the DOM id; pages bind to it via
     `document.getElementById(input_id).addEventListener('change', ...)`.
     Initial `checked` / `disabled` set the first-paint state — server-
     rendered HTML is hydrated by a /state poll so the actual value
-    converges to truth within a poll cycle anyway."""
+    converges to truth within a poll cycle anyway. The `.toggle` classes
+    are styled by `/assets/app.css` on canonical pages."""
     attrs = [f'id="{html.escape(input_id)}"', 'type="checkbox"']
     if checked:
         attrs.append("checked")
@@ -366,180 +129,17 @@ def toggle_html(
     )
 
 
-# Modal confirm/alert dialog. The inline twin of the canonical
-# /assets/shared/js/dialog.js (deploy/assets/shared/js/dialog.js), themed for
-# the legacy wizard look. Replaces window.confirm/alert, which the browser can
-# suppress ("prevent this page from creating more dialogs") — that suppression
-# silently defeated the action guards. <dialog>.showModal() can't be
-# suppressed and gives a focus trap, ESC-to-cancel, and a backdrop for free.
-#
-# CSS rides inside wrap_page()'s <style> on pages that use the helper; the
-# hand-rolled pages (wifi, bluetooth, correction, home_assistant, wake_corpus)
-# that build their own style block embed DIALOG_CSS the same way as TOGGLE_CSS /
-# NAV_BACK_CSS. The dialog self-styles its buttons (green default, .secondary
-# grey, .danger red) so it looks identical regardless of the page's own theme.
-DIALOG_CSS = """
-  dialog.jts-dialog {
-    margin: auto; width: min(26em, calc(100vw - 2em)); padding: 0;
-    border: 1px solid #ccc; border-radius: 8px; color: #222; background: #fff;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
-  }
-  dialog.jts-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
-  .jts-dialog form { margin: 0; padding: 1.2em 1.3em; }
-  .jts-dialog h2 { margin: 0 0 0.6em; font-size: 1.15em; }
-  .jts-dialog__body { margin: 0 0 1.1em; line-height: 1.45; white-space: pre-line; }
-  .jts-dialog__actions { display: flex; justify-content: flex-end; gap: 0.5em; }
-  /* Self-styled so the dialog looks identical on every wizard, regardless of
-     that page's own button theme (some pages ship a bespoke _PAGE_STYLE). The
-     `.jts-dialog__actions button.x` specificity (0,2,1) beats a page-level
-     `button.x` (0,1,1). Palette matches the shared green/grey/red buttons. */
-  .jts-dialog__actions button {
-    margin: 0; padding: 0.55em 1.2em; border: 0; border-radius: 4px;
-    font-size: 1em; cursor: pointer; color: #fff; background: #1db954;
-  }
-  .jts-dialog__actions button.secondary { background: #4a4a4a; }
-  .jts-dialog__actions button.danger { background: #d44; }
-  .jts-dialog__actions button:hover { filter: brightness(1.08); }
-"""
-
-
-def dialog_helpers_js() -> str:
-    """JavaScript for the modal confirm/alert dialog (legacy wizards).
-
-    wrap_page() embeds this on pages that use it (detected by the helper's
-    function names in the body); hand-rolled pages (wifi, bluetooth, correction,
-    home_assistant, wake_corpus) embed it themselves. Exposes three globals:
-
-      * `jtsConfirm(message, opts)` → Promise<boolean>. opts: {danger, title,
-        confirmLabel, cancelLabel}. `danger:true` reddens the confirm button
-        and autofocuses Cancel so a stray Enter can't fire a destructive
-        action; ESC always cancels. Use as `if (await jtsConfirm(…)) {…}`.
-      * `jtsAlert(message, opts)` → Promise<void>. opts: {title, okLabel}.
-      * `jtsConfirmSubmit(form, message, opts)` → false, for
-        `onsubmit="return jtsConfirmSubmit(this, '…')"`. confirm() was
-        synchronous (its false return cancelled the submit); the dialog is
-        async, so this always cancels the native submit and re-submits the
-        form programmatically only once the user confirms. form.submit() does
-        not re-fire onsubmit, so there's no recursion.
-
-    Message text is set via textContent (never innerHTML) so interpolated
-    untrusted strings — SSIDs, Bluetooth/device names — can't inject markup;
-    CSS `white-space: pre-line` renders multi-line \\n messages.
-
-    NOTE: unlike native confirm()/alert(), these are async and DO NOT block —
-    a non-awaited call returns immediately while the modal is open, so `await`
-    if subsequent code must run only after the user dismisses it."""
-    return """
-function jtsDialog(message, title, buttons) {
-  var dlg = document.createElement('dialog');
-  dlg.className = 'jts-dialog';
-  var form = document.createElement('form');
-  form.method = 'dialog';
-  if (title) { var h = document.createElement('h2'); h.textContent = title; form.appendChild(h); }
-  var body = document.createElement('p');
-  body.className = 'jts-dialog__body';
-  body.textContent = message;
-  form.appendChild(body);
-  var actions = document.createElement('div');
-  actions.className = 'jts-dialog__actions';
-  buttons.forEach(function (b) {
-    var btn = document.createElement('button');
-    btn.type = 'submit';
-    btn.value = b.value;
-    btn.textContent = b.label;
-    if (b.cls) btn.className = b.cls;
-    if (b.autofocus) btn.autofocus = true;
-    actions.appendChild(btn);
-  });
-  form.appendChild(actions);
-  dlg.appendChild(form);
-  document.body.appendChild(dlg);
-  return new Promise(function (resolve) {
-    dlg.addEventListener('close', function () {
-      var value = dlg.returnValue;
-      dlg.remove();
-      resolve(value);
-    }, { once: true });
-    dlg.showModal();
-  });
-}
-function jtsConfirm(message, opts) {
-  opts = opts || {};
-  var danger = !!opts.danger;
-  return jtsDialog(message, opts.title || '', [
-    { label: opts.cancelLabel || 'Cancel', value: 'cancel', cls: 'secondary', autofocus: danger },
-    { label: opts.confirmLabel || 'Confirm', value: 'confirm', cls: danger ? 'danger' : '', autofocus: !danger }
-  ]).then(function (value) { return value === 'confirm'; });
-}
-function jtsAlert(message, opts) {
-  opts = opts || {};
-  return jtsDialog(message, opts.title || '', [
-    { label: opts.okLabel || 'OK', value: 'ok', cls: '', autofocus: true }
-  ]).then(function () {});
-}
-function jtsConfirmSubmit(form, message, opts) {
-  jtsConfirm(message, opts).then(function (ok) { if (ok) form.submit(); });
-  return false;
-}
-""".strip()
-
-
-def wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
-    """Wrap a body fragment into a complete HTML5 document with the
-    shared style and an optional status banner.
-
-    `status_msg` is rendered with an `err` class when it contains
-    "error" or "fail" (case-insensitive), and with an `ok` class
-    (green with a leading ✓) when it starts with "Saved" or "Cleared"
-    — the two success vocabularies the wizards write back from save
-    handlers. Anything else gets neutral info-blue styling."""
-    lowered = status_msg.lower()
-    if "error" in lowered or "fail" in lowered:
-        msg_class = "msg err"
-    elif lowered.startswith(("saved", "cleared")):
-        msg_class = "msg ok"
-    else:
-        msg_class = "msg"
-    msg_html = (
-        f'<p class="{msg_class}">{html.escape(status_msg)}</p>'
-        if status_msg else ""
-    )
-    # Ship the confirm/alert dialog helper only to pages that actually use it
-    # (detected by the helper's function names in the body), so dialogless
-    # wizards carry no dead weight. Emit it *before* the body so jtsConfirm /
-    # jtsAlert are defined before any page script that references them.
-    needs_dialog = "jtsConfirm" in body or "jtsAlert" in body
-    dialog_css = DIALOG_CSS if needs_dialog else ""
-    dialog_js = f"<script>{dialog_helpers_js()}</script>" if needs_dialog else ""
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(title)}</title>
-<style>{PAGE_STYLE}{dialog_css}</style>
-</head>
-<body>
-{NAV_BACK_HTML}
-<h1>{html.escape(title)}</h1>
-{msg_html}
-{dialog_js}
-{body}
-</body>
-</html>""".encode()
-
-
 # ---------------------------------------------------------------------------
 # Canonical design system (the redesigned look).
 # ---------------------------------------------------------------------------
 #
 # The management landing page (deploy/index.html) and the redesigned
 # wizards share one stylesheet — /assets/app.css — served static by nginx
-# and browser-cached. `canonical_page()` is the new-look analog of
-# `wrap_page()`: it emits the document shell (head + stylesheet link +
-# CSRF meta + the shared icon sprite) so a wizard authors only its body.
-# Page-specific CSS rides in `page_css`; shared primitives live in
-# app.css. This is the seam every migrated wizard reuses.
+# and browser-cached. `canonical_page()` emits the document shell
+# (head + stylesheet link + CSRF meta + the shared icon sprite) so a
+# wizard authors only its body. Page-specific CSS rides in `page_css`;
+# shared primitives live in app.css. This is the seam every migrated
+# wizard reuses.
 
 _asset_version_cache: str | None = None
 
@@ -639,10 +239,9 @@ def canonical_page(
     """Wrap a body fragment in a full HTML document on the canonical
     design system (the redesigned management look).
 
-    The new-look analog of `wrap_page()`. Shared tokens, fonts, and
-    component primitives live in the static stylesheet /assets/app.css
-    (one source of truth for every page); this helper emits the document
-    shell so a wizard authors only its body markup:
+    Shared tokens, fonts, and component primitives live in the static
+    stylesheet /assets/app.css (one source of truth for every page); this
+    helper emits the document shell so a wizard authors only its body markup:
 
       * doctype + head with the cache-busted app.css <link>,
       * the CSRF meta tag (when `csrf_token` is given, for fetch POSTs),
@@ -715,12 +314,10 @@ def canonical_header(
 def canonical_banner(message: str) -> str:
     """A canonical flash banner (`.banner`) for a migrated wizard.
 
-    The canonical twin of ``wrap_page``'s inline status ``<div>``: same
-    message → same severity, so a flash string written by the shared
-    ``send_see_other(flash=...)`` reads identically on legacy and migrated
-    pages. An empty / blank message renders nothing (returns ``""``) so the
-    caller can unconditionally drop ``canonical_banner(flash)`` into the
-    body. Severity classing mirrors ``wrap_page`` exactly:
+    A flash string written by the shared ``send_see_other(flash=...)`` maps
+    to a stable status, danger, or info severity. An empty / blank message
+    renders nothing (returns ``""``) so the caller can unconditionally drop
+    ``canonical_banner(flash)`` into the body:
 
       * contains "error" or "fail" (case-insensitive) → ``banner--danger``
       * starts with "saved" / "cleared" → ``banner--ok``
@@ -1293,10 +890,6 @@ def mask_secret(value: str) -> str:
 # URL / transport / error model); they keep the `(status, body)` tuple +
 # unreachable-to-502 contract the wizard callers depend on.
 
-import json as _json  # noqa: E402  (lazy: only imported by proxy helpers)
-
-from ..control import client as control  # noqa: E402
-
 DEFAULT_CONTROL_BASE = control.DEFAULT_BASE_URL
 
 
@@ -1315,7 +908,7 @@ def proxy_get(
         r = control.get(path, base_url=control_base, timeout=timeout)
         return r.status, r.body
     except control.ControlError as e:
-        return 502, _json.dumps(
+        return 502, json.dumps(
             {"error": f"jasper-control unreachable: {e}"},
         ).encode()
 
@@ -1336,7 +929,7 @@ def proxy_post(
         )
         return r.status, r.body
     except control.ControlError as e:
-        return 502, _json.dumps(
+        return 502, json.dumps(
             {"error": f"jasper-control unreachable: {e}"},
         ).encode()
 

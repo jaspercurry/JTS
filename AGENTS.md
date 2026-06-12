@@ -309,26 +309,26 @@ primitive layer:
   (the /ha/ stored-XSS bug class). A conventions test in
   [`tests/test_web_json_island.py`](tests/test_web_json_island.py)
   fails any page that hand-rolls an island.
-- Confirm/alert with `jtsConfirm(msg, {danger})` / `jtsAlert(msg)` (from
-  `dialog_helpers_js()`), never native `confirm()`/`alert()` — the browser
-  can suppress those, which silently broke the action guards. `await` the
-  confirm; pass `{danger:true}` for destructive actions.
+- Confirm/alert with `jtsConfirm(msg, {danger})` / `jtsAlert(msg)` from
+  [`/assets/shared/js/dialog.js`](deploy/assets/shared/js/dialog.js), never
+  native `confirm()`/`alert()` — the browser can suppress those, which
+  silently broke the action guards. `await` the confirm; pass `{danger:true}`
+  for destructive actions.
   `onsubmit="return confirm(...)"` becomes
   `onsubmit="return jtsConfirmSubmit(this, '...', {danger:true})"`.
 
-Switch controls must use the shared checkbox-based toggle:
-`TOGGLE_CSS` plus `toggle_html()` where server-rendered markup is
-convenient. Avoid clickable `<div class="switch">` controls. Native
-checkboxes give keyboard interaction, focus state, and accessibility
-semantics for free.
+Switch controls must use the shared checkbox-based toggle: `toggle_html()`
+for server-rendered markup plus the canonical `.toggle` rules in
+[`deploy/assets/app.css`](deploy/assets/app.css). Avoid clickable
+`<div class="switch">` controls. Native checkboxes give keyboard interaction,
+focus state, and accessibility semantics for free.
 
 The confirm/alert dialog ships automatically on every wizard: each one
 now renders through `canonical_page()` (migration complete — see
 "Canonical design system" below), which loads the shared
 [`/assets/shared/js/dialog.js`](deploy/assets/shared/js/dialog.js)
 module. No wizard hand-rolls its own `<!doctype html>` shell anymore, so
-none needs to manually embed `DIALOG_CSS` / `dialog_helpers_js()` — that
-legacy inline twin in `_common.py` is now unused. A regression test in
+none should manually embed dialog CSS or inline dialog JavaScript. A regression test in
 [`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
 keeps native `confirm()`/`alert()`/`prompt()` out of the canonical ES
 modules.
@@ -378,11 +378,10 @@ which every page already depends on for fonts); `jasper-doctor`'s
 [`jasper/web/sound_setup.py`](jasper/web/sound_setup.py) (`/sound/`) and
 [`jasper/web/system_setup.py`](jasper/web/system_setup.py) (`/system/`)
 are the reference wizards — mirror their shape when adding a new one.
-The legacy `wrap_page`/`PAGE_STYLE`/`TOGGLE_CSS`/`NAV_BACK` primitives
-in [`jasper/web/_common.py`](jasper/web/_common.py) are now **unused by
-any shipped wizard** (a removal candidate); the constants remain in
-`_common.py` only because that dead-code cleanup is deferred — they have
-*not* been deleted. The design tokens currently live
+The old wrapper/style/nav primitives have been deleted from
+[`jasper/web/_common.py`](jasper/web/_common.py); use `canonical_page()`,
+`canonical_header()`, `canonical_banner()`, and `toggle_html()` for migrated
+pages. The design tokens currently live
 in both `deploy/index.html` and `app.css` until the landing page is
 migrated to link the stylesheet — a test
 ([`tests/test_web_design_system.py`](tests/test_web_design_system.py))
@@ -397,11 +396,11 @@ component sets `--tone: var(--status-ok|warn|danger|idle)` on its root and
 the CSS reads it.
 
 The jts.local management UI intentionally does not show browser focus rings.
-`app.css` and legacy `PAGE_STYLE` suppress native outlines; active/selected
-state must be represented by component state (`.active`, `[aria-pressed]`,
-checked radio/toggle styling), not by `:focus-visible`/`:focus-within` rings.
-Do not add page-level focus outlines or box-shadow rings; the static design
-system tests should fail if those selectors return.
+`app.css` suppresses native outlines; active/selected state must be represented
+by component state (`.active`, `[aria-pressed]`, checked radio/toggle styling),
+not by `:focus-visible`/`:focus-within` rings. Do not add page-level focus
+outlines or box-shadow rings; the static design system tests should fail if
+those selectors return.
 
 **Page behaviour ships as static ES modules, not inline `<script>`.** A
 migrated page's JavaScript lives in `deploy/assets/<page>/js/*.js` (today:
@@ -442,9 +441,6 @@ and records every copied asset in `assets/.install-manifest`
 regression test in
 [`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py)
 keeps native `confirm()`/`alert()`/`prompt()` out of the canonical ES modules.
-(The legacy `wrap_page()` wizards, which don't load ES modules, have a
-behaviourally-identical inline twin in `_common.py` — `dialog_helpers_js()`
-+ `DIALOG_CSS`; see the "Web wizard conventions" section.)
 
 ---
 
