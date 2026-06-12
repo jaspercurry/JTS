@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
@@ -152,36 +151,53 @@ def _follower_cfg():
     )
 
 
-class _FakeResp:
-    def __init__(self, payload: bytes):
+class _FakeControlResponse:
+    def __init__(self, status: int, payload: dict):
+        self.status = status
         self._payload = payload
 
-    def __enter__(self):
-        return self
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status < 300
 
-    def __exit__(self, *a):
-        return False
-
-    def read(self):
+    def json(self):
         return self._payload
 
 
-def _arm_follower(monkeypatch, payload=b'{"db": -15.0, "percent": 70, "pair_leader": "jts.local"}'):
+class _FakeControlClient:
+    """Stands in for AsyncControlClient: records (path, body) and replays
+    a scripted response (or raises a scripted ControlError)."""
+
+    def __init__(self, status=200, payload=None, error=None):
+        self.status = status
+        self.payload = payload or {"db": -15.0, "percent": 70,
+                                   "pair_leader": "jts.local"}
+        self.error = error
+        self.seen: list[tuple[str, dict | None]] = []
+
+    async def get(self, path):
+        return await self._reply(path, None)
+
+    async def post(self, path, body=None):
+        return await self._reply(path, body)
+
+    async def _reply(self, path, body):
+        self.seen.append((path, body))
+        if self.error is not None:
+            raise self.error
+        return _FakeControlResponse(self.status, dict(self.payload))
+
+
+def _arm_follower(monkeypatch, **client_kw):
     """Patch this speaker into an active bonded follower with the control
-    API call captured. Returns the list of (url, body) requests seen."""
+    client faked. Returns the fake client (inspect .seen)."""
     import jasper.multiroom.config as mcfg
     import jasper.tools.audio as audio_mod
 
     monkeypatch.setattr(mcfg, "load_config", lambda *a, **k: _follower_cfg())
-    seen: list[tuple[str, dict | None]] = []
-
-    def fake_urlopen(req, timeout=None):
-        body = json.loads(req.data) if req.data else None
-        seen.append((req.full_url, body))
-        return _FakeResp(payload)
-
-    monkeypatch.setattr(audio_mod, "_pair_urlopen", fake_urlopen)
-    return seen
+    fake = _FakeControlClient(**client_kw)
+    monkeypatch.setattr(audio_mod, "_control_client", fake)
+    return fake
 
 
 async def test_follower_set_volume_moves_pair_not_local(monkeypatch):
@@ -189,41 +205,37 @@ async def test_follower_set_volume_moves_pair_not_local(monkeypatch):
     set_volume must drive the pair through the local control API (whose
     /volume* handlers forward to the leader) and never touch the
     coordinator."""
-    seen = _arm_follower(monkeypatch)
+    fake = _arm_follower(monkeypatch)
     coord = FakeCoordinator(level=10)
     result = await _tools(coord)["set_volume"](30)
     assert result == {"ok": True, "percent": 70}  # the LEADER's answer
     assert coord.calls == []
-    url, body = seen[0]
-    assert url == "http://127.0.0.1:8780/volume/set"
-    assert body == {"percent": 30}
+    assert fake.seen == [("/volume/set", {"percent": 30})]
 
 
 async def test_follower_adjust_and_get_route_to_pair(monkeypatch):
-    seen = _arm_follower(monkeypatch)
+    fake = _arm_follower(monkeypatch)
     coord = FakeCoordinator(level=10)
     tools = _tools(coord)
     assert (await tools["adjust_volume"](-5))["percent"] == 70
     assert (await tools["get_volume"]())["percent"] == 70
     assert coord.calls == []
-    assert seen[0][0].endswith("/volume/adjust")
-    assert seen[0][1] == {"delta_percent": -5}
-    assert seen[1][0].endswith("/volume")
-    assert seen[1][1] is None  # GET carries no body
+    assert fake.seen[0] == ("/volume/adjust", {"delta_percent": -5})
+    assert fake.seen[1] == ("/volume", None)  # GET carries no body
 
 
 async def test_follower_mute_unmute_send_explicit_state(monkeypatch):
     """Voice has distinct mute/unmute INTENTS — the forward must carry an
     explicit {"muted": bool}, never the legacy toggle (a toggle would
     invert a stale intent)."""
-    seen = _arm_follower(monkeypatch)
+    fake = _arm_follower(monkeypatch)
     coord = FakeCoordinator(level=40)
     tools = _tools(coord)
     assert (await tools["mute"]()) == {"ok": True, "muted": True}
     assert (await tools["unmute"]())["percent"] == 70
     assert coord.calls == []
-    assert seen[0][1] == {"muted": True}
-    assert seen[1][1] == {"muted": False}
+    assert fake.seen[0][1] == {"muted": True}
+    assert fake.seen[1][1] == {"muted": False}
 
 
 async def test_follower_forward_failure_is_a_spoken_error_not_inert_write(
@@ -231,20 +243,33 @@ async def test_follower_forward_failure_is_a_spoken_error_not_inert_write(
 ):
     """Leader unreachable → the tool returns an `error` the LLM speaks.
     Falling back to the local coordinator would 'succeed' inaudibly."""
-    import jasper.multiroom.config as mcfg
-    import jasper.tools.audio as audio_mod
+    from jasper.control.client import ControlError
 
-    monkeypatch.setattr(mcfg, "load_config", lambda *a, **k: _follower_cfg())
-
-    def exploding(req, timeout=None):
-        raise OSError("no route to host")
-
-    monkeypatch.setattr(audio_mod, "_pair_urlopen", exploding)
+    fake = _arm_follower(
+        monkeypatch, error=ControlError("POST", "/volume/set", "no route"),
+    )
     coord = FakeCoordinator(level=40)
     result = await _tools(coord)["set_volume"](80)
     assert "error" in result
     assert "pair leader" in result["error"]
     assert coord.calls == []
+    assert fake.seen  # the forward was attempted
+
+
+async def test_follower_leader_reject_is_relayed_not_generic(monkeypatch):
+    """jasper-control relays the leader's own error verdict (status+body);
+    the tool passes that specific reason to the LLM instead of claiming
+    the leader is offline."""
+    fake = _arm_follower(
+        monkeypatch, status=400,
+        payload={"error": "percent must be an integer",
+                 "pair_leader": "jts.local"},
+    )
+    coord = FakeCoordinator(level=40)
+    result = await _tools(coord)["set_volume"](80)
+    assert result == {"error": "percent must be an integer"}
+    assert coord.calls == []
+    assert fake.seen
 
 
 async def test_leader_and_solo_keep_the_local_coordinator(monkeypatch):

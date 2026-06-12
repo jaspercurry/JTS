@@ -121,6 +121,14 @@ class GroupingSupervisor:
         # wall-clock display fields so NTP jumps can't reopen or
         # extend the window.
         self._last_kick_monotonic: float | None = None
+        # Journal-noise latches. A follower whose leader is unplugged
+        # for WEEKS is a legitimate long-lived state — the journal gets
+        # the full WARN buildup once per starvation streak and one
+        # rate-limited WARN per kick window, then one ERROR per kick;
+        # everything else drops to DEBUG. (/state carries the live
+        # counters regardless.) Both reset on a healthy poll.
+        self._streak_warned: bool = False
+        self._rate_limit_warned_window: float | None = None
 
     # ---- main loop ----
 
@@ -199,14 +207,19 @@ class GroupingSupervisor:
         self.last_poll_starved = starved
         if not starved:
             self.consecutive_starved = 0
+            self._streak_warned = False
+            self._rate_limit_warned_window = None
             return
         self.consecutive_starved += 1
-        logger.warning(
+        log = logger.debug if self._streak_warned else logger.warning
+        log(
             "event=grouping_supervisor.starved consecutive=%d threshold=%d "
             "outputd_reachable=%s lane_enabled=%s",
             self.consecutive_starved, self._threshold,
             status is not None, dac.get("enabled") is True,
         )
+        if self.consecutive_starved >= self._threshold:
+            self._streak_warned = True
         if self.consecutive_starved < self._threshold:
             return
         mono = self._now()
@@ -215,7 +228,13 @@ class GroupingSupervisor:
             and mono - self._last_kick_monotonic < self._rate_limit
         ):
             self.rate_limited_count += 1
-            logger.warning(
+            log = (
+                logger.debug
+                if self._rate_limit_warned_window == self._last_kick_monotonic
+                else logger.warning
+            )
+            self._rate_limit_warned_window = self._last_kick_monotonic
+            log(
                 "event=grouping_supervisor.kick_rate_limited "
                 "since_last_kick=%.0fs limit=%.0fs",
                 mono - self._last_kick_monotonic, self._rate_limit,

@@ -1652,3 +1652,32 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
     body = json.loads(h.wfile.getvalue())
     assert h.status == 502
     assert body["rolled_back"] is False
+
+
+def test_post_swap_repairs_a_same_channel_pair(monkeypatch):
+    """A {left,left} pair (interrupted swap whose rollback also failed) must
+    be repairable BY swap itself — a strict left/right precondition would
+    make Swap the one button that can't fix the state Swap created. Self
+    keeps its channel; the peer takes the opposite; response says repaired."""
+    h, posts = _post_swap(
+        monkeypatch=monkeypatch,
+        self_grouping={"enabled": True, "role": "leader", "channel": "left",
+                       "bond_id": "bond-1", "leader_addr": ""},
+        speakers=[{"address": "192.168.1.9"}],
+        peer_grouping={
+            "192.168.1.9": {"enabled": True, "role": "follower",
+                            "channel": "left", "bond_id": "bond-1",
+                            "leader_addr": "jts.local"},
+        },
+    )
+    assert h.status == 200
+    body = json.loads(h.wfile.getvalue())
+    assert body["ok"] is True
+    assert body["repaired"] is True
+    assert posts == [
+        ("", {"enabled": True, "role": "leader", "channel": "left",
+              "bond_id": "bond-1", "leader_addr": ""}),
+        ("192.168.1.9", {"enabled": True, "role": "follower",
+                         "channel": "right", "bond_id": "bond-1",
+                         "leader_addr": "jts.local"}),
+    ]

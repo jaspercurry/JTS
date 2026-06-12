@@ -1673,7 +1673,25 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (PAIR UX — follower landing-page banner +
+Last verified: 2026-06-12 (SESSION-REVIEW FIX BATCH — failure legibility +
+cross-member coherence. postJSON now carries the server's JSON verdict on
+the thrown error, so /rooms renders per-member swap/bond/unbond detail and
+the rollback outcome instead of "HTTP 502"; the landing pair-volume slider
+reverts to the last server-confirmed level and shows an em dash when
+writes/polls fail (no more optimistic lie on a dead leader); the volume
+forward relays a leader's own 4xx/5xx verdict verbatim (only transport
+failures read "unreachable"). NEW doctor check `pair channels` (follower
+GETs its leader's /grouping): a same-channel pair — interrupted swap whose
+rollback also failed — was green on every member-local surface; /rooms
+Swap now also REPAIRS that state (peer takes the opposite channel) instead
+of rejecting it. leader_addr is shape-validated at validate_grouping
+(hostname/IPv4 — it feeds snapclient argv, the forward's URL, the leader
+link). Voice tools now compose jasper.control.client (the transport's one
+owner) and the shared follower_leader_addr predicate; the grouping
+supervisor's journal noise is latched (full WARN buildup once per
+starvation streak, one rate-limited WARN per kick window, DEBUG
+otherwise — /state counters unaffected); first-write-empty is pinned by
+test.) Earlier same day (PAIR UX — follower landing-page banner +
 pair-volume proxy + channel swap. jasper-control's /volume,
 /volume/{set,adjust,mute} now FORWARD to the leader's control API when
 this speaker is an active bonded follower (every follower volume surface

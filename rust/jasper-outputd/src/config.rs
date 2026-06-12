@@ -521,8 +521,12 @@ mod tests {
         let _guard = ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // JASPER_DUCK_DB is the one non-prefixed var from_env reads (the
+        // shared duck fallback) — scrub it too, or an ambient value from a
+        // sourced jasper.env flakes the default-asserting tests. Mirrors
+        // fanin's twin harness, which lists it for the same reason.
         let snapshot: Vec<(String, String)> = std::env::vars()
-            .filter(|(k, _)| k.starts_with("JASPER_OUTPUTD_"))
+            .filter(|(k, _)| k.starts_with("JASPER_OUTPUTD_") || k == "JASPER_DUCK_DB")
             .collect();
         for (k, _) in &snapshot {
             std::env::remove_var(k);

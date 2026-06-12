@@ -614,18 +614,11 @@ def _pair_follower_leader_addr() -> str | None:
     """The leader's handle when THIS speaker is an active bonded follower,
     else None. One tiny env-file read per call (multiroom.config.load_config
     — never the runtime derive with its systemctl/RPC probes: this gates
-    every /volume request)."""
-    from ..multiroom.config import load_config as _load_grouping
+    every /volume request). The predicate itself is the shared
+    follower_leader_addr, so bond-validity semantics live in one place."""
+    from ..multiroom.config import follower_leader_addr, load_config
 
-    cfg = _load_grouping()
-    if (
-        cfg.enabled
-        and cfg.error is None
-        and cfg.role == "follower"
-        and cfg.leader_addr
-    ):
-        return cfg.leader_addr
-    return None
+    return follower_leader_addr(load_config())
 
 
 def _kick_grouping_reconciler() -> None:
@@ -1938,7 +1931,24 @@ def _make_handler(
             try:
                 with _pair_urlopen(req, timeout=2.5) as resp:
                     payload = json.loads(resp.read().decode())
-            except Exception as e:  # noqa: BLE001 — relay any failure as 502
+            except urllib.error.HTTPError as e:
+                # The leader ANSWERED — relay its verdict (status + JSON
+                # body) verbatim, tagged. Collapsing a 400 invalid-body
+                # reject into "unreachable" would tell the household a
+                # responding speaker is offline.
+                try:
+                    relayed = json.loads(e.read().decode())
+                except Exception:  # noqa: BLE001 — non-JSON error body
+                    relayed = {"error": f"pair leader error: {e}"}
+                if isinstance(relayed, dict):
+                    relayed.setdefault("pair_leader", leader)
+                logger.warning(
+                    "event=volume.pair_forward_rejected leader=%s path=%s "
+                    "status=%d", leader, self.path, e.code,
+                )
+                self._send_json(relayed, status=e.code)
+                return True
+            except Exception as e:  # noqa: BLE001 — transport failure: 502
                 logger.warning(
                     "event=volume.pair_forward_failed leader=%s path=%s "
                     "error=%s", leader, self.path, e,
@@ -2087,8 +2097,9 @@ def _make_handler(
             # fail-soft read returns {"grouping": null} unambiguously.
             # Read SERVER-SIDE by another speaker's /rooms /unbond
             # fan-out (rooms_setup._get_member_grouping) to discover which
-            # siblings share a bond_id before dissolving it — NOT by the
-            # browser (the page reads self.grouping from /rooms.json).
+            # siblings share a bond_id, AND by the browser: the landing
+            # page's stereo-pair banner polls it every 10 s through
+            # nginx's exact-match /grouping proxy.
             # NO CSRF: a read on the same no-auth LAN surface as /state
             # and /healthz. Fail-soft like /state's grouping section —
             # a broken read returns 200 with null rather than 500.

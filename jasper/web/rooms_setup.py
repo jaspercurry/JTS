@@ -60,8 +60,9 @@ URL surface (after nginx strips the /rooms/ prefix):
                     every sibling sharing this bond_id, SERVER-side via each
                     member's jasper-control /grouping/set (CSRF-verified)
   POST /swap        exchange a 2-speaker pair's left/right channels —
-                    roles/bond untouched; partial failure rolls back so the
-                    pair never sticks on a same-channel state (CSRF-verified)
+                    roles/bond untouched; partial failure rolls back, and a
+                    stuck same-channel pair is REPAIRED to left/right rather
+                    than rejected (CSRF-verified)
 """
 from __future__ import annotations
 
@@ -926,7 +927,24 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
     peer_addr, peer_grouping = peers[0]
     self_channel = str(grouping.get("channel") or "").strip()
     peer_channel = str(peer_grouping.get("channel") or "").strip()
-    if {self_channel, peer_channel} != {"left", "right"}:
+    repairing = (
+        self_channel == peer_channel and self_channel in ("left", "right")
+    )
+    if repairing:
+        # Same-channel pair ({left,left} / {right,right}) — the residue of
+        # an interrupted swap whose rollback also failed. A strict
+        # left/right precondition would make Swap the one button that
+        # CANNOT fix the state Swap created, so this completes the
+        # interrupted intent instead: self keeps its channel, the peer
+        # takes the opposite. Any {left,right} assignment beats a stuck
+        # same-channel pair; one more tap swaps again if it lands
+        # backwards.
+        swapped_self, swapped_peer = self_channel, (
+            "right" if self_channel == "left" else "left"
+        )
+    elif {self_channel, peer_channel} == {"left", "right"}:
+        swapped_self, swapped_peer = peer_channel, self_channel
+    else:
         _send_json(
             handler,
             {"ok": False, "error": (
@@ -947,8 +965,8 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         }
 
     targets: list[tuple[str, dict]] = [
-        ("", _body(grouping, peer_channel)),
-        (peer_addr, _body(peer_grouping, self_channel)),
+        ("", _body(grouping, swapped_self)),
+        (peer_addr, _body(peer_grouping, swapped_peer)),
     ]
     fan_results = _fan_out_grouping(targets, known=known)
     results = [
@@ -983,10 +1001,13 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
             bond_id, rb_addr or "(self)", rb_channel, rb_ok, rb_detail,
         )
     logger.info(
-        "event=rooms.swap bond=%s self=%s->%s peer=%s->%s ok=%s",
-        bond_id, self_channel, peer_channel, peer_channel, self_channel, all_ok,
+        "event=rooms.swap bond=%s self=%s->%s peer=%s->%s repaired=%s ok=%s",
+        bond_id, self_channel, swapped_self, peer_channel, swapped_peer,
+        repairing, all_ok,
     )
     payload = {"ok": all_ok, "bond_id": bond_id, "results": results}
+    if repairing:
+        payload["repaired"] = True
     if rolled_back is not None:
         payload["rolled_back"] = rolled_back
     _send_json(

@@ -409,6 +409,28 @@ function makeWakeCard() {
 // (channel, leader_addr) reach the DOM through h() text nodes and the option
 // value — never innerHTML, never inline onclick.
 // ---------------------------------------------------------------------------
+// One legible line from a failed bond action. postJSON attaches the
+// server's parsed JSON verdict to err.body, so the per-member results,
+// precondition reasons, and the swap rollback outcome actually reach the
+// household instead of a bare "HTTP 502".
+function describeBondFailure(e) {
+  const body = e && e.body;
+  if (!body) return e && e.message ? e.message : "unknown error";
+  const failed = (Array.isArray(body.results) ? body.results : [])
+    .filter((r) => r && !r.ok);
+  let msg = failed.length
+    ? failed.map((r) => (r.addr || "this speaker") + ": " +
+        (r.detail || "failed")).join("; ")
+    : (body.error || e.message || "unknown error");
+  if (body.rolled_back === true) {
+    msg += " — the change was rolled back; both speakers kept their channels.";
+  } else if (body.rolled_back === false) {
+    msg += " — ROLLBACK ALSO FAILED: the pair may be on one channel; " +
+      "press Swap again to repair it.";
+  }
+  return msg;
+}
+
 function makeBondCard() {
   let saving = false;
   let selfAddr = "";
@@ -566,17 +588,10 @@ function makeBondCard() {
       if (data && data.ok) {
         status.textContent =
           "Stereo pair created — both speakers are configuring (~10s).";
-      } else {
-        // Surface which member failed so the household can fix it.
-        const failed = ((data && data.results) || []).filter((r) => r && !r.ok);
-        const why = failed
-          .map((r) => (r.addr || "?") + ": " + (r.detail || "failed"))
-          .join("; ");
-        status.textContent = "Couldn't pair — " + (why || "unknown error");
       }
     } catch (e) {
       console.error("rooms: bond create failed", e);
-      status.textContent = "Couldn't pair — " + e.message;
+      status.textContent = "Couldn't pair — " + describeBondFailure(e);
     } finally {
       saving = false;
       setEnabled(true);
@@ -598,17 +613,10 @@ function makeBondCard() {
       const data = await postJSON("unbond", {});
       if (data && data.ok) {
         status.textContent = "Pair dissolved.";
-      } else {
-        const failed = ((data && data.results) || []).filter((r) => r && !r.ok);
-        const why = failed
-          .map((r) => (r.addr || "?") + ": " + (r.detail || "failed"))
-          .join("; ");
-        status.textContent =
-          "Couldn't dissolve — " + (why || (data && data.error) || "unknown error");
       }
     } catch (e) {
       console.error("rooms: bond dissolve failed", e);
-      status.textContent = "Couldn't dissolve — " + e.message;
+      status.textContent = "Couldn't dissolve — " + describeBondFailure(e);
     } finally {
       saving = false;
       dissolveBtn.disabled = false;
@@ -627,20 +635,12 @@ function makeBondCard() {
     status.textContent = "Swapping channels\u2026";
     try {
       const data = await postJSON("swap", {});
-      if (data && data.ok) {
-        status.textContent =
-          "Channels swapped \u2014 both speakers are reconfiguring (~10s).";
-      } else {
-        const failed = ((data && data.results) || []).filter((r) => r && !r.ok);
-        const why = failed
-          .map((r) => (r.addr || "this speaker") + ": " + (r.detail || "failed"))
-          .join("; ");
-        status.textContent =
-          "Couldn't swap \u2014 " + (why || (data && data.error) || "unknown error");
-      }
+      status.textContent = data && data.repaired
+        ? "Pair repaired to left/right — both speakers are reconfiguring (~10s)."
+        : "Channels swapped — both speakers are reconfiguring (~10s).";
     } catch (e) {
       console.error("rooms: channel swap failed", e);
-      status.textContent = "Couldn't swap \u2014 " + e.message;
+      status.textContent = "Couldn't swap — " + describeBondFailure(e);
     } finally {
       saving = false;
       swapBtn.disabled = false;

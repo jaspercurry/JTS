@@ -870,6 +870,18 @@
       var THROTTLE_MS = 150;
       var POLL_MS = 1500;
       var SETTLE_MS = 1500;
+      // Last level the server CONFIRMED — the truth the UI falls back to
+      // when a write fails, so the fill never keeps displaying a drag the
+      // speaker rejected (on a bonded follower with its leader down,
+      // every write 502s; an optimistic fill would lie indefinitely).
+      var lastServerPct = null;
+      var pollFails = 0;
+
+      function markWriteFailed() {
+        if (dragging || pending !== null) return; // don't fight a live drag
+        if (lastServerPct !== null) setUI(lastServerPct);
+        percentEl.textContent = '\u2014'; // em dash: "no response"
+      }
 
       function clampPct(pct) {
         return Math.max(0, Math.min(100, Math.round(pct)));
@@ -927,14 +939,18 @@
               });
               if (resp.ok) {
                 var data = await resp.json();
+                if (typeof data.percent === 'number') {
+                  lastServerPct = data.percent;
+                }
                 if (!dragging && pending === null && toSend === desiredPct &&
                     typeof data.percent === 'number') {
                   setUI(data.percent);
                 }
+              } else {
+                markWriteFailed();
               }
             } catch (_) {
-              // Network blip: leave optimistic value in place. Polling
-              // reconciles after the settle window.
+              markWriteFailed();
             } finally {
               inFlight = false;
             }
@@ -996,9 +1012,20 @@
           var resp = await fetch('/volume');
           if (resp.ok) {
             var data = await resp.json();
-            if (typeof data.percent === 'number') setUI(data.percent);
+            pollFails = 0;
+            if (typeof data.percent === 'number') {
+              lastServerPct = data.percent;
+              setUI(data.percent);
+            }
+            return;
           }
         } catch (_) {}
+        // Volume truth unavailable (e.g. a bonded follower whose pair
+        // leader is down — the forward 502s). After three misses show
+        // an honest dash instead of a stale number; the next good poll
+        // restores it.
+        pollFails += 1;
+        if (pollFails >= 3) percentEl.textContent = '\u2014';
       }
       setInterval(poll, POLL_MS);
       poll();
@@ -1035,10 +1062,11 @@
         channelEl.textContent = ch ? ch + ' channel' : 'paired';
         if (follower) {
           text.textContent = 'This speaker plays the ' + (ch || 'second') +
-            ' channel of a stereo pair. Playback and voice are handled ' +
-            'by the pair leader' +
+            ' channel of a stereo pair. Music is controlled on the pair ' +
+            'leader' +
             (g.leader_addr ? ' (' + g.leader_addr + ')' : '') +
-            '; the slider below sets the pair volume.';
+            '; voice answers locally, and the slider below sets the ' +
+            'pair volume.';
           if (g.leader_addr && HOST_RE.test(g.leader_addr)) {
             leaderLink.href = 'http://' + g.leader_addr + '/';
             leaderLink.hidden = false;

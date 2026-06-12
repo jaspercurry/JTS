@@ -17,10 +17,10 @@
 //! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC /
 //! CLOSE) with a one-line JSON ack for FLUSH_SYNC. `jasper-voice`'s
 //! `audio_io.py` speaks it unchanged — the reconciler only flips the
-//! socket path per grouping role. The DUPLICATION of the parser/server
-//! half with fanin is deliberate and bounded (a shared crate is a named
-//! follow-up, not smuggled into this feature): keep the two `read_command`
-//! implementations in sync when the protocol grows.
+//! socket path per grouping role. The wire layer itself (command
+//! vocabulary + `read_command` parser) lives ONCE in the shared
+//! `jasper-tts-protocol` crate, imported by both daemons — the twins
+//! structurally cannot drift when the protocol grows.
 //!
 //! ## What is NOT duplicated: the engine
 //!
@@ -42,7 +42,6 @@
 //! SEGMENT_END or DUCK_OFF corrupts state). The audio loop never blocks
 //! on any of it (inv-1: the DAC write stays the sole pacer).
 
-use std::collections::VecDeque;
 use std::fs;
 use std::io::{self, BufReader, Write as IoWrite};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -403,10 +402,6 @@ pub struct TtsBridge {
     duck_active: bool,
     open_segment: Option<SegmentId>,
     active_epoch: u64,
-    // Audio that arrived before any SEGMENT_START in this connection era
-    // (the legacy GAIN+AUDIO cue path) opens an implicit Assistant
-    // segment lazily; tracked so SEGMENT_START closes it first.
-    implicit_segment: bool,
 }
 
 impl TtsBridge {
@@ -425,7 +420,6 @@ impl TtsBridge {
             duck_active: false,
             open_segment: None,
             active_epoch: 0,
-            implicit_segment: false,
         }
     }
 
@@ -441,9 +435,6 @@ impl TtsBridge {
         }
     }
 
-    pub fn pending_frames(&self, core: &OutputCore) -> u64 {
-        core.pending_assistant_frames()
-    }
 
     /// Drain flushes then commands into `core`. Called once per DAC
     /// period by the audio loop; O(queued) with bounded queues.
@@ -463,7 +454,6 @@ impl TtsBridge {
             let pending_before = core.pending_assistant_frames();
             let events = core.flush_assistant();
             self.open_segment = None;
-            self.implicit_segment = false;
             self.active_epoch = flush.epoch;
             let flushed: u64 = events.iter().map(|e| e.flushed_frames).sum();
             self.metrics
@@ -535,7 +525,6 @@ impl TtsBridge {
                         profile,
                     );
                     self.open_segment = Some(id);
-                    self.implicit_segment = false;
                 }
                 TtsCommand::Audio(samples) => {
                     let incoming = (samples.len() / (CHANNELS as usize)) as u64;
@@ -566,7 +555,6 @@ impl TtsBridge {
                                 self.fallback_gain_db,
                             );
                             self.open_segment = Some(id);
-                            self.implicit_segment = true;
                             id
                         }
                     };
@@ -583,7 +571,6 @@ impl TtsBridge {
         if let Some(id) = self.open_segment.take() {
             core.end_assistant_segment(id);
         }
-        self.implicit_segment = false;
     }
 }
 
@@ -591,14 +578,9 @@ fn db_to_linear(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
 
-// Keep VecDeque import meaningful if the queue moves here later.
-#[allow(unused)]
-type _Unused = VecDeque<i16>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     fn bridge_with_core() -> (
         TtsBridge,
@@ -648,7 +630,7 @@ mod tests {
         send(&tx, 0, TtsCommand::Audio(vec![2000i16; 8]));
         bridge.drain(&mut core);
         assert!(core.pending_assistant_frames() > 0);
-        assert!(bridge.open_segment.is_some() && bridge.implicit_segment);
+        assert!(bridge.open_segment.is_some());
     }
 
     #[test]

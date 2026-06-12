@@ -38,13 +38,26 @@ export async function getJSON(path) {
 }
 
 // POST a JSON body with the CSRF header; parse + return the JSON response.
-// Throws on a non-2xx status or transport failure, mirroring getJSON.
+// Throws on a non-2xx status or transport failure, mirroring getJSON — but
+// the thrown Error carries the server's parsed JSON verdict on `.body`
+// (and `.status`), because this codebase's APIs put their actionable
+// failure detail IN the body (per-member results, precondition reasons,
+// rolled_back flags). Without this, every carefully built failure payload
+// dies unread at the browser.
 export async function postJSON(path, body) {
   const r = await fetch(path, {
     method: "POST",
     headers: jsonHeaders(),
     body: JSON.stringify(body === undefined ? {} : body),
   });
-  if (!r.ok) throw new Error("HTTP " + r.status);
+  if (!r.ok) {
+    let parsed = null;
+    try { parsed = await r.json(); } catch (_) { /* non-JSON error page */ }
+    const message = (parsed && parsed.error) ? parsed.error : "HTTP " + r.status;
+    const err = new Error(message);
+    err.status = r.status;
+    err.body = parsed;
+    throw err;
+  }
   return r.json();
 }
