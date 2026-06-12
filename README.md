@@ -813,6 +813,10 @@ reference. Currently:
   model, safe bring-up, channel-map hazards, TTS/cue bypass risk,
   near-field/null-depth/gated measurement triad, LR/IIR-first default,
   and delay/null verification.
+- [`active-crossover-information-design.md`](docs/active-crossover-information-design.md)
+  — Working product-design note for the active crossover setup flow:
+  first-time user journey, card hierarchy, warning-vs-blocker language,
+  no-audio preview expectations, and quiet-first-test copy principles.
 - [`dual-apple-dac-lab.md`](docs/dual-apple-dac-lab.md) —
   Lab-only runbook for validating two Apple USB-C to 3.5 mm adapters
   as one stereo DAC per speaker. Keeps the experiment outside the

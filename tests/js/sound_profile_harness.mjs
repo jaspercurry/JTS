@@ -110,6 +110,28 @@ function topologyPayload() {
   };
 }
 
+function emptyTopologyPayload() {
+  return {
+    artifact_schema_version: 1,
+    kind: "jts_output_topology",
+    topology_id: "bench",
+    name: "Bench output setup",
+    status: "draft",
+    hardware: {
+      device_id: "hifiberry_dac8x",
+      device_label: "HiFiBerry DAC8x",
+      physical_output_count: 8,
+      outputs: [
+        { index: 0, human_label: "DAC output 1" },
+        { index: 1, human_label: "DAC output 2" },
+      ],
+    },
+    speaker_groups: [],
+    routing: {},
+    evaluation: {},
+  };
+}
+
 function activePayloads() {
   const level = {
     status: "ready",
@@ -274,10 +296,12 @@ async function loadAndSetActiveState(harness) {
   await harness.flush();
 }
 
-function assertRehearsalVisible(harness, label) {
+function assertQuietTestSurfaceVisible(harness, label) {
   const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Path check sentinel") || !html.includes("sentinel rehearsal evidence")) {
-    fail(`${label} should preserve commissioning rehearsal evidence`, { html });
+  for (const expected of ["Prepare first quiet test", "Test volume"]) {
+    if (!html.includes(expected)) {
+      fail(`${label} should keep the quiet-test surface visible`, { expected, html });
+    }
   }
 }
 
@@ -337,7 +361,7 @@ async function testLiveTabReplay() {
   };
 }
 
-async function testRehearsalPreservedAcrossStartupActions() {
+async function testQuietTestSurfaceSurvivesStartupActions() {
   const active = activePayloads();
   const fetchHandler = baseFetch({
     "./active-speaker/check-path-safety": () => Promise.resolve(response({
@@ -354,27 +378,27 @@ async function testRehearsalPreservedAcrossStartupActions() {
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
-  assertRehearsalVisible(harness, "initial refresh");
+  assertQuietTestSurfaceVisible(harness, "initial refresh");
 
   harness.dispatchClick({ "data-act": "check-active-path-safety" });
   await harness.flush();
   await harness.flush();
   await harness.flush();
-  assertRehearsalVisible(harness, "path safety check");
+  assertQuietTestSurfaceVisible(harness, "path safety check");
 
   harness.dispatchClick({ "data-act": "load-active-startup" });
   await harness.flush();
   await harness.flush();
   await harness.flush();
-  assertRehearsalVisible(harness, "startup load");
+  assertQuietTestSurfaceVisible(harness, "startup load");
 
   harness.dispatchClick({ "data-act": "rollback-active-startup" });
   await harness.flush();
   await harness.flush();
   await harness.flush();
-  assertRehearsalVisible(harness, "startup rollback");
+  assertQuietTestSurfaceVisible(harness, "startup rollback");
 
-  return { rehearsalPreserved: true };
+  return { quietTestSurfacePreserved: true };
 }
 
 async function testStaleLevelResponseDiscarded() {
@@ -442,25 +466,71 @@ async function testPartialRefreshKeepsSuccessfulSections() {
   const html = harness.elements.get("view-body").innerHTML;
   for (const expected of [
     "Partial refresh: environment probe failed",
-    "Safety preflight",
-    "Safety session",
-    "Protected startup config",
-    "Calibration level",
-    "Commissioning rehearsal",
-    "Path check sentinel",
+    "Prepare first quiet test",
+    "Test volume",
+    "Quiet test mode is ready",
   ]) {
     if (!html.includes(expected)) {
-      fail("Partial active-speaker refresh should keep successful or previously known sections", { expected, html });
+      fail("Partial active-speaker refresh should keep the known quiet-test surface", { expected, html });
     }
   }
   return { partialRefreshPreservedSections: true };
 }
 
+async function testActiveCrossoverFirstStepRender() {
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(emptyTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "not_saved",
+      summary: {},
+      operator_inputs: {},
+    })),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+      status: "not_prepared",
+      summary: {},
+      groups: [],
+      issues: [],
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const includes = (needle) => {
+    if (!html.includes(needle)) fail(`Rendered active crossover flow should include ${needle}`, { html });
+  };
+  const excludes = (needle) => {
+    if (html.includes(needle)) fail(`Rendered active crossover flow should not include ${needle}`, { html });
+  };
+  includes("Active crossover setup");
+  includes("Choose speaker layout");
+  includes("Speaker count");
+  includes("Speaker type");
+  includes('data-output-step="layout" open');
+  includes('data-output-step="research"');
+  includes('data-output-step="map"');
+  includes('data-output-step="safety"');
+  excludes('data-output-step="research" open');
+  excludes('data-output-step="map" open');
+  excludes('data-output-step="safety" open');
+  excludes("Save output map");
+  excludes("Check readiness");
+  excludes("Change protection");
+  excludes("Hardware protected");
+  excludes("Use software guard");
+  excludes("Use quiet-start");
+  return { activeCrossoverFirstStepRendered: true };
+}
+
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
-results.push(await testRehearsalPreservedAcrossStartupActions());
+results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testStaleLevelResponseDiscarded());
 results.push(await testPartialRefreshKeepsSuccessfulSections());
+results.push(await testActiveCrossoverFirstStepRender());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

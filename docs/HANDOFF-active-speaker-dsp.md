@@ -29,14 +29,14 @@
 > in `routing.subwoofer_group_ids`. Saving that speaker layout only persists
 > the output topology JSON and runs backend validation; it does not load
 > CamillaDSP or emit sound. The UI organizes this work as collapsible task
-> cards — choose layout, research drivers, map and verify outputs, then
-> prepare safe test mode. It defaults to the first task card on page load,
+> cards — choose layout, research drivers, confirm outputs, then run the
+> first quiet-test preparation. It defaults to the first unfinished task card,
 > keeps one task card open at a time, prevents opening future prerequisite-gated
 > cards, and uses only transient browser intent when the operator advances or
 > reopens a card; it does not create a separate persisted wizard-progress source
-> of truth, and earlier cards remain editable. The safety preflight still calls
-> `/sound/active-speaker/environment` and displays the read-only environment
-> report without touching live audio.
+> of truth, and earlier cards remain editable. Quiet-test preparation still
+> calls `/sound/active-speaker/environment` and displays translated setup issues
+> without touching live audio.
 > `/sound/active-speaker/channel-identity` now exposes and updates
 > operator-confirmed physical channel identity evidence for the saved
 > topology. The UI can mark or clear an assigned channel as physically
@@ -88,13 +88,15 @@
 > enablement plus a loaded/current protected startup config can turn it true.
 > If CamillaDSP is no longer
 > running the loaded startup config path, readiness blocks before the playback
-> backend is reached. The `/sound/` safety card now presents those same
-> gates as an operator sequence — check environment, stage protected
-> startup, check protected path, load protected startup, arm safe session,
-> check one target, reset to the level floor, then verify an artifact before
-> any audible test, confirm floor audio, then raise slowly. The readiness card
+> backend is reached. The `/sound/` quiet-test card keeps those backend gates
+> deterministic but presents them as one user action at a time: prepare the
+> first quiet test, load the test setup, open quiet test controls, choose one
+> confirmed driver, reset to the quietest test level, then verify an artifact
+> before any audible test, confirm the selected driver was heard, then raise
+> toward audible in bounded steps. The readiness card
 > also summarizes the selected target, backend, rollback state, test level, and
-> "why sound is blocked" reasons. For tweeter/high-frequency targets it also
+> translated attention items rather than a backend checklist. For
+> tweeter/high-frequency targets it also
 > includes a **High-frequency bring-up readiness** packet that distinguishes
 > blocked, manual floor-test candidate, and guided floor-test candidate states
 > from topology/protection/startup-load/Stop/level/mic evidence. The packet
@@ -167,8 +169,11 @@
 > tests/CLI/default-preset work, not the product route's implicit answer once a
 > design draft exists. `/sound/active-speaker/channel-protection`
 > records either physical compression-driver protection evidence or a
-> software-guarded bring-up request. The software-guard state is deliberately
-> still a topology/playback blocker; it only lets
+> software-guarded bring-up request. The normal UI path does not expose this as
+> a separate "protection" choice; after the operator confirms a high-frequency
+> output and chooses "Test this driver," the page records the software-guard
+> request internally before checking readiness. The software-guard state is
+> deliberately still a topology/playback blocker; it only lets
 > `/sound/active-speaker/stage-config` write a no-load muted/protected
 > CamillaDSP candidate plus
 > `/var/lib/jasper/active_speaker_staged_config.json` evidence. That route
@@ -783,14 +788,17 @@ schema, logging, retention, and Stop semantics before richer measurement
 automation exists.
 
 `jasper.active_speaker.calibration_level` owns the commissioning test-signal
-level contract. It deliberately separates calibration level from normal system
+level contract. It deliberately separates test volume from normal system
 volume: the operator controls the requested test level, JTS clamps it to a
-small safe envelope, and the default is the minimum (`-80 dBFS`). As of
+small safe envelope, and the default is the quietest setting (`-80 dBFS`). As of
 2026-06-03 the level is a backend-owned persisted guard at
 `/var/lib/jasper/active_speaker_calibration_level.json` (test override:
 `JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE`). The `/sound/` card updates
 that state through `/sound/active-speaker/calibration-level`; upward movement
-is limited to one 1 dB backend transition, while lowering, reset, Stop, and
+is limited to one 1 dB manual `set` transition. Product-facing
+`raise_toward_audible` / `ramp` transitions may move by the larger bounded
+audible-step constant (`AUDIBLE_RAMP_STEP_DB`, currently 6 dB) so the operator
+is not forced through dozens of clicks, while lowering, reset, Stop, and
 mic-clipping resets can return directly to the floor. The same route also
 accepts `action=observe` with an operator-observed capture dBFS reading; that
 records the coarse mic-meter status (`unmeasured`, `too_quiet`, `low`,
@@ -806,9 +814,12 @@ reset, or hold. The browser cannot supply its own auto-level cap or target
 protection verdict. Tone-plan, readiness, and artifact routes read the accepted
 persisted level rather than trusting request-local `level_dbfs`. No current
 code raises listening volume, writes live CamillaDSP volume, emits samples, or
-treats the slider or mic observation as permission to play. This is still not
-real microphone capture or calibrated SPL; it is the operator-observed
-feedback loop the first audible slice can consume.
+treats a mic observation as permission to play. The current `aplay` lab backend
+is still a synchronous one-shot tone backend; a true 5-15 second continuous
+ramp must wait for a cancellable playback backend that owns the running process
+and can stop immediately. This is still not real microphone capture or
+calibrated SPL; it is the operator-observed feedback loop the first audible
+slice can consume.
 
 `jasper.active_speaker.bringup` owns the read-only preflight packet for the
 high-frequency bring-up product decision. It composes output topology, channel identity,
@@ -1047,4 +1058,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-11
+Last verified: 2026-06-12

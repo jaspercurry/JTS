@@ -168,10 +168,13 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Active crossover setup" in js
     assert "./active-speaker/environment" in js
     assert "./output-topology" in js
-    assert "Run safety preflight" in js
+    assert "Prepare first quiet test" in js
     assert "safe_playback" in js
-    assert "Build the speaker layout, add driver info, map DAC outputs" in js
-    assert "function defaultOutputStep() {\n    return 'layout';\n  }" in js
+    assert "Build the speaker layout, add driver info, confirm DAC outputs" in js
+    assert "function defaultOutputStep()" in js
+    assert "if (!driverResearchStepSatisfied()) return 'research';" in js
+    assert "if (!outputIdentityComplete()) return 'map';" in js
+    assert "return 'safety';" in js
     assert "Finish the current card before opening" in js
     assert "output-step__chevron" in js
     assert "querySelectorAll('.output-step[open]')" in js
@@ -193,7 +196,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/check-path-safety'" in js
     assert "fetch('./active-speaker/load-startup-config'" in js
     assert "fetch('./active-speaker/rollback-startup-config'" in js
-    assert "activeSpeakerPost('./active-speaker/arm', 'Arming')" in js
+    assert "activeSpeakerPost('./active-speaker/arm', 'Starting quiet test mode')" in js
     assert "activeSpeakerPost('./active-speaker/stop', 'Stopping')" in js
     assert "fetch('./active-speaker/tone-plan'" in js
     assert "fetch('./active-speaker/play-tone'" in js
@@ -206,77 +209,65 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "Save design draft" in js
     assert "Prepare crossover preview" in js
     assert "savedStatus === 'ready_for_review' && !driverResearch.dirty" in js
+    assert "function driverResearchCanPreparePreview()" in js
+    assert "function driverResearchStepSatisfied()" in js
+    assert "if (!driverResearchStepSatisfied()) return 'research';" in js
+    assert "Driver research is skipped for now. Continue with output mapping." in js
+    assert "saved driver research" in js
+    assert "Wiring and quiet test checks happen before any sound." in js
     assert "data-act=\"arm-active-speaker\"" in js
     assert "data-act=\"stop-active-speaker\"" in js
     assert "data-act=\"stage-active-config\"" in js
-    assert "data-act=\"check-active-path-safety\"" in js
+    assert "data-act=\"check-active-path-safety\"" not in js
+    assert "active-speaker/check-path-safety" in js
     assert "data-act=\"load-active-startup\"" in js
     assert "data-act=\"rollback-active-startup\"" in js
     assert "data-act=\"prepare-active-tone\"" in js
     assert "data-act=\"verify-active-tone\"" in js
     assert "class=\"btn btn--danger\" data-act=\"stop-active-speaker\"" in js
     assert "activeSpeaker.playback" in js
-    assert "'<details class=\"advanced\"' + (open ? ' open' : '')" in js
-    assert "safe.playback_allowed ? 'Allowed' : 'Not allowed yet'" in js
-    assert "Calibration level" in js
+    assert "var activeSpeakerSetupOpen = false;" in js
+    assert "'<details class=\"advanced\" data-active-speaker-setup' + (open ? ' open' : '')" in js
+    assert "activeSpeakerSetupOpen = !!ev.target.open;" in js
+    assert "No sound plays until you explicitly start a quiet test." in js
+    assert "Test volume" in js
     assert "activeSpeakerLevelConfig()" in js
     assert "active-speaker-level" in js
     assert "data-act=\"active-level\"" in js
-    assert "Raise 1 dB" in js
+    assert "Back to quiet" in js
+    assert "Raise toward audible" in js
     assert "Mic reading dBFS" in js
     assert "data-act=\"active-mic-observation\"" in js
     assert "data-act=\"active-auto-level\"" in js
-    assert "Apply recommended step" in js
+    assert "activeSpeakerAutoLevelLabel(autoLevel)" in js
     assert "action: 'observe'" in js
     assert "action: 'auto_step'" in js
     assert "observed_mic_dbfs" in js
     assert "mic_clipping" in js
-    assert "Uses the selected saved-channel readiness target" in js
-    assert "This records operator-observed capture level only" in js
-    assert "Level guard:" in js
+    assert "Normal listening volume is untouched" in js
+    assert "The mic reading helps JTS decide whether to hold, lower, or raise" in js
+    assert "Test volume:" in js
     assert "Normal listening volume is untouched" in js
     assert "if (requestedLevel != null) body.level_dbfs = requestedLevel" in js
     assert "level_dbfs: requestedLevel == null ? cfg.value : requestedLevel" not in js
     assert "requested_level_dbfs" in js
     assert "isFinite(returnedLevel) ? returnedLevel" in js
     assert "function renderActiveSpeakerIssues(envIssues, sessionIssues)" in js
-    assert "row[0] + ': ' + (issue.code || 'issue')" in js
-    assert "function renderActiveSpeakerStagedConfig(staged)" in js
-    assert "Protected startup config" in js
-    assert "Staged startup" in js
-    assert "Stage protected config" in js
-    assert "This writes a candidate file only; it will not load CamillaDSP or play sound." in js
-    assert "function renderActiveSpeakerBringup(preflight)" in js
-    assert "Bring-up preflight" in js
-    assert "Manual guarded" in js
-    assert "Guided calibration" in js
-    assert "manual guarded bring-up stays available" in js
-    assert "function renderActiveSpeakerStartupLoad(startupLoad)" in js
-    assert "Startup load" in js
-    assert "Check protected path" in js
-    assert "Safe bring-up sequence" in js
-    assert "Verify artifact before audio" in js
-    assert "Confirm floor audio" in js
+    assert "friendlySetupIssue(issue)" in js
+    assert "Prepare first quiet test" in js
+    assert "Prepare quiet test" in js
+    assert "Open quiet test controls" in js
+    assert "Exit quiet mode" in js
+    assert "quiet-test path check failed" in js
+    assert "Prepare the first quiet test from the saved speaker layout?" in js
     assert "What did you hear?" in js
     assert "data-act=\"active-floor-result\"" in js
     assert "Heard correct driver" in js
-    assert "Floor test pending" in js
-    assert "Raise slowly" in js
-    assert "Artifact-only verification remains the default" in js
-    assert "function renderOutputHighFrequencyReadiness(readiness)" in js
-    assert "High-frequency bring-up readiness" in js
-    assert "Summarizes protection, mic, and auto-level evidence" in js
-    assert "hf.audio_allowed ? 'Yes' : 'No'" in js
-    assert "Floor-test preview" in js
-    assert "Preview only:" in js
-    assert "function checkActivePathSafety()" in js
-    assert "var environment = await fetchActiveSpeakerEnvironment()" in js
-    assert "payload: environment" in js
-    assert "Protected path check passed. No sound was played." in js
-    assert "Load protected config" in js
-    assert "Rollback to prior config" in js
-    assert "This reloads the DSP graph but does not play tones" in js
-    assert "reloads CamillaDSP but does not play sound" in js
+    assert "quiet-test result" in js
+    assert "Use Raise toward audible" in js
+    assert "active-speaker/check-path-safety" in js
+    assert "Continue preparing the first quiet test?" in js
+    assert "Exit quiet test mode and restore the previous DSP setup?" in js
     assert "function renderActiveSpeakerPlan(plan)" in js
     assert "function renderActiveSpeakerPlayback(playback)" in js
     assert "Would play" in js
@@ -284,11 +275,9 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "No audio was emitted by this backend." in js
     assert "No preset channel targets available." in js
     assert ">Prepare channel test</button>" not in js
-    assert "Arming records the safety state only; it does not play sound." in js
-    assert "Artifact checks are available" in js
-    assert "explicit lab enablement" in js
+    assert "This opens the test controls at the quietest setting." in js
     assert "load CamillaDSP" in js
-    assert "play tones" in js
+    assert "No sound will play" in js
 
 
 def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
@@ -298,7 +287,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "function refreshOutputTopology(options)" in js
     assert "function saveOutputTopology(options)" in js
     assert "function updateOutputChannelIdentity(button)" in js
-    assert "function updateOutputChannelProtection(button)" in js
+    assert "function saveOutputChannelProtectionState(groupId, role, nextStatus)" in js
     assert "function fetchOutputPlaybackReadiness(groupId, role)" in js
     assert "function checkOutputPlaybackReadiness(button)" in js
     assert "fetch('./output-topology'" in js
@@ -306,51 +295,60 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "fetch('./active-speaker/channel-protection'" in js
     assert "fetch('./active-speaker/playback-readiness'" in js
     assert 'data-act="mark-output-identity"' in js
-    assert 'data-act="mark-output-protection"' in js
     assert 'data-act="check-output-readiness"' in js
+    assert 'data-protection-required="' in js
+    assert 'data-protection-status="' in js
     assert "headers: jsonHeaders()" in js
     assert "Saved speaker layout. No sound was played." in js
-    assert "Backend validation owns the final decision." in js
-    assert "Physical verification is operator evidence." in js
+    assert "Confirm each DAC output after you check the wiring." in js
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js
     assert "supported" in js
     assert "needs attention" in js
     assert "not enabled" in js
-    assert "Mark verified" in js
-    assert "Hardware protected" in js
-    assert "Use software guard" in js
+    assert "Confirm output" in js
+    assert "Test this driver" in js
+    assert "JTS will start this driver quiet" in js
+    assert "Preparing ' + label + ' for a quiet first test. No sound will play." in js
+    assert "Hardware protected" not in js
+    assert "Use software guard" not in js
     assert "software_guard_requested" in js
-    assert "Check readiness" in js
-    assert "Playback readiness" in js
+    assert 'data-act="mark-output-protection"' not in js
+    assert "function updateOutputChannelProtection(button)" not in js
+    assert "Check readiness" not in js
+    assert "Playback readiness" not in js
+    assert "Change protection" not in js
+    assert "Change quiet-start" not in js
+    assert "Use quiet-start" not in js
+    assert "Use for first test" not in js
+    assert "protected startup DSP" not in js
     assert "function renderOutputReadinessSummary(readiness)" in js
     assert "function renderOutputReadinessBlockers(readiness)" in js
     assert "function outputCurrentLevelAtFloor()" in js
     assert "function outputFloorAudioConfirmedForReadiness(readiness)" in js
     assert "function quietStartTargetLabel(target)" in js
     assert "function readinessTargetLockReason(readiness)" in js
-    assert "Why sound is blocked" in js
-    assert "High-frequency playback requires a valid protection profile." in js
+    assert "What to do next" in js
+    assert "Choose this driver again so JTS can start it quiet." in js
     assert "Audible tests are limited to woofer, mid, and subwoofer targets in this slice." in js
-    assert "Reset calibration level to the quiet floor before verifying an artifact or playing a test." in js
-    assert "Floor audio is confirmed for this target/session" in js
-    assert "Floor confirmed for last target" in js
-    assert "Quiet start" in js
-    assert "Role policy" in js
-    assert "artifact-only" in js
-    assert "Preconditions passed" in js
-    assert "Verify artifact" in js
-    assert "Play quiet " in js
-    assert "The last readiness check failed" in js
-    assert "Save this speaker layout draft before recording physical verification evidence." in js
-    assert "Sound tests remain disabled for this setup surface." in js
+    assert "Return test volume to the quietest level before starting this driver." in js
+    assert "Quiet test confirmed for " in js
+    assert "Quiet test" in js
+    assert "Role policy" not in js
+    assert "Preconditions passed" not in js
+    assert "Preview test signal" in js
+    assert "Start quiet " in js
+    assert "JTS could not prepare that driver" in js
+    assert "Save this speaker layout draft before confirming outputs." in js
     assert "Setup template" in js
     assert "Speaker count" in js
     assert "Speaker type" in js
+    assert "var outputTemplateDraftAxes = {layout: '', speakerMode: ''};" in js
+    assert "function outputTemplateChoiceDisabled(count, axis, value, axes)" in js
+    assert "Choose passive, active 2-way, or active 3-way to continue." in js
     assert "Refresh hardware to start a speaker layout." in js
     assert "renderOutputHardwareRefresh() +" in js
-    assert "Prepare safe test mode" in js
-    assert "Safety preflight" in js
+    assert "First quiet test" in js
     assert "data-act=\"output-template-axis\"" in js
     assert "output-template-grid" not in js
     assert "Save output map" not in js
@@ -358,6 +356,10 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Mono active 2-way" in js
     assert "Stereo active 3-way" in js
     assert "Speaker layout is a draft." in js
+    assert "active-speaker-issues--warning" in js
+    assert "renderIssueList(issues, 5)" in js
+    assert "function crossoverPreviewDisplayStatus(payload)" in js
+    assert "JTS still checks the setup before any sound." in js
     assert "Starter stereo" not in js
     assert "Starter 2-way" not in js
     assert "protection_status: tweeter ? 'required_missing' : 'not_required'" in js
@@ -761,9 +763,9 @@ def test_active_speaker_auto_level_step_uses_saved_target_and_floor_evidence(
     assert payload["target"]["output_index"] == 0
     assert payload["auto_level"]["action"] == "raise"
     assert payload["auto_level"]["floor_audio_confirmed"] is True
-    assert payload["auto_level_applied_action"] == "set"
-    assert payload["test_signal"]["requested_level_dbfs"] == -79.0
-    assert payload["applied_delta_db"] == 1.0
+    assert payload["auto_level_applied_action"] == "ramp"
+    assert payload["test_signal"]["requested_level_dbfs"] == -74.0
+    assert payload["applied_delta_db"] == 6.0
 
 
 def test_active_speaker_auto_level_step_holds_without_floor_evidence(
@@ -2157,6 +2159,23 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
     assert out["liveTabMarked"] is True
 
 
+def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+
+    proc = subprocess.run(
+        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE), "active-crossover-flow"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert out["ok"] is True
+    assert {"activeCrossoverFirstStepRendered": True} in out["results"]
+
+
 def test_sound_css_marks_live_sources_with_red_dots():
     js = _SOUND_MODULE.read_text()
     css = _SOUND_CSS.read_text()
@@ -2165,6 +2184,10 @@ def test_sound_css_marks_live_sources_with_red_dots():
     assert ".app-header__tabs .segmented__btn.is-live::after" in css
     assert ".profile-row__dot--on" in css
     assert "background: var(--destructive);" in css
+    assert ".active-speaker-issues--warning" in css
+    assert ".active-speaker-issue--blocker" in css
+    assert ".active-speaker-note" in css
+    assert ".output-sequence__item--needs-action .output-sequence__marker" not in css
 
 
 def test_sound_module_draws_a_single_response_curve_with_no_overlays():

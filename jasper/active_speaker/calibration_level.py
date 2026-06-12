@@ -24,6 +24,7 @@ MIN_TEST_LEVEL_DBFS = -80.0
 DEFAULT_TEST_LEVEL_DBFS = MIN_TEST_LEVEL_DBFS
 MAX_TEST_LEVEL_DBFS = -45.0
 TEST_LEVEL_STEP_DB = 1.0
+AUDIBLE_RAMP_STEP_DB = 6.0
 
 MIC_TOO_QUIET_BELOW_DBFS = -55.0
 MIC_USABLE_MIN_DBFS = -45.0
@@ -153,7 +154,9 @@ def calibration_level_payload(
             "current_level_dbfs": requested,
             "floor_level_dbfs": MIN_TEST_LEVEL_DBFS,
             "max_level_dbfs": MAX_TEST_LEVEL_DBFS,
-            "upward_step_limit_db": TEST_LEVEL_STEP_DB,
+            "manual_step_db": TEST_LEVEL_STEP_DB,
+            "audible_ramp_step_db": AUDIBLE_RAMP_STEP_DB,
+            "upward_step_limit_db": AUDIBLE_RAMP_STEP_DB,
             "starts_at_floor": requested <= MIN_TEST_LEVEL_DBFS,
             "live_camilla_write": False,
             "future_camilla_volume_write_required": True,
@@ -173,6 +176,8 @@ def calibration_level_payload(
             "start_at_minimum": True,
             "backend_is_level_authority": True,
             "upward_steps_are_limited": True,
+            "audible_ramp_step_is_bounded": True,
+            "continuous_audio_ramp_requires_cancellable_backend": True,
             "requires_explicit_target": True,
             "requires_stop_control": True,
         },
@@ -224,8 +229,10 @@ def update_calibration_level_state(
 ) -> dict[str, Any]:
     """Persist one guarded level transition.
 
-    Upward motion is intentionally one step per backend transition. Lowering
-    and reset-to-floor are unrestricted because they reduce risk.
+    Upward motion remains backend-owned. Manual ``set`` stays one dB at a time;
+    the product-facing audible ramp action may move by a larger bounded step so
+    the user is not forced through dozens of clicks. Lowering and reset-to-floor
+    remain unrestricted because they reduce risk.
     """
 
     path = _state_path(state_path)
@@ -250,6 +257,21 @@ def update_calibration_level_state(
         next_level = current
     elif action_id == "raise":
         next_level = min(current + TEST_LEVEL_STEP_DB, MAX_TEST_LEVEL_DBFS)
+    elif action_id in {"ramp", "raise_toward_audible", "audible_ramp"}:
+        requested = _finite_float(requested_level_dbfs)
+        requested = current + AUDIBLE_RAMP_STEP_DB if requested is None else requested
+        if requested > current + AUDIBLE_RAMP_STEP_DB:
+            next_level = current + AUDIBLE_RAMP_STEP_DB
+            issues.append({
+                "severity": "warning",
+                "code": "audible_ramp_step_limited",
+                "message": (
+                    "requested test level was above the bounded audible-ramp "
+                    "step limit"
+                ),
+            })
+        else:
+            next_level = requested
     elif action_id == "lower":
         requested = _finite_float(requested_level_dbfs)
         if requested is None:
