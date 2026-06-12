@@ -25,10 +25,15 @@ so construction is genuinely hardware-free.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
+from types import SimpleNamespace
 
+import pytest
 from jasper.config import Config
+from tests.voice_eval import harness as harness_mod
+from tests.voice_eval import tts
 from tests.voice_eval.harness import _build_test_registry
 
 # Synthetic but well-formed values — enough to flip the `*_enabled`
@@ -148,3 +153,107 @@ def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
         assert "home_assistant" not in names
     finally:
         _cleanup(test_state)
+
+
+def test_harness_writes_transcript_on_drain_timeout(monkeypatch, tmp_path):
+    class FakeTurn:
+        def __init__(self) -> None:
+            self.released = False
+
+        async def send_audio(self, _pcm: bytes) -> None:
+            return None
+
+        async def end_input(self) -> None:
+            return None
+
+        async def audio_out(self):
+            while True:
+                await asyncio.sleep(0.1)
+                if False:  # pragma: no cover - keeps this an async generator
+                    yield b""
+
+        def server_turn_complete(self) -> bool:
+            return False
+
+        def usage_tokens(self) -> dict:
+            return {}
+
+        async def release(self) -> None:
+            self.released = True
+
+    class FakeConnection:
+        def __init__(self, turn: FakeTurn) -> None:
+            self.turn = turn
+
+        async def acquire_turn(self) -> FakeTurn:
+            return self.turn
+
+    async def fake_synth(_text: str, *, cache_dir):
+        return tmp_path / "prompt.wav"
+
+    transcript_calls: list[tuple[str, list[str], bytes]] = []
+
+    def fake_write_transcript(prompt, trace, audio, *, out_dir):
+        transcript_calls.append((prompt, [event.kind for event in trace.events], audio))
+        return tmp_path / "turn.md", tmp_path / "turn.response.wav"
+
+    turn = FakeTurn()
+    harness = harness_mod.VoiceEvalHarness.__new__(harness_mod.VoiceEvalHarness)
+    harness.cfg = SimpleNamespace(voice_provider="gemini")
+    harness.audio_cache_dir = tmp_path
+    harness._session_id = "session-test"
+
+    async def fake_ensure_connection():
+        return FakeConnection(turn)
+
+    harness._ensure_connection = fake_ensure_connection
+
+    monkeypatch.setattr(harness_mod.tts, "synth", fake_synth)
+    monkeypatch.setattr(harness_mod, "_load_wav_pcm", lambda _path: b"")
+    monkeypatch.setattr(harness_mod, "_write_transcript", fake_write_transcript)
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(harness.ask("hello", turn_timeout_sec=0.01))
+
+    assert turn.released is True
+    assert len(transcript_calls) == 1
+    prompt, kinds, audio = transcript_calls[0]
+    assert prompt == "hello"
+    assert audio == b""
+    assert "turn_end" in kinds
+
+
+def test_tts_cache_write_publishes_with_replace(monkeypatch, tmp_path):
+    real_replace = os.replace
+    promoted: list[tuple[str, str]] = []
+
+    def capture_replace(src, dst):
+        promoted.append((str(src), str(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", capture_replace)
+    path = tmp_path / "cached.wav"
+
+    tts._write_wav_atomic(path, b"\0\0" * 16, sample_rate=tts.DAEMON_RATE_HZ)
+
+    assert path.exists()
+    assert len(promoted) == 1
+    src, dst = promoted[0]
+    assert dst == str(path)
+    assert src != str(path)
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_tts_cache_write_failure_does_not_publish_partial_file(monkeypatch, tmp_path):
+    def fail_after_partial_temp(path, _pcm, *, sample_rate):
+        path.write_bytes(b"partial")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tts, "_write_wav", fail_after_partial_temp)
+    path = tmp_path / "cached.wav"
+
+    with pytest.raises(RuntimeError, match="boom"):
+        tts._write_wav_atomic(path, b"\0\0" * 16, sample_rate=tts.DAEMON_RATE_HZ)
+
+    assert not path.exists()
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]

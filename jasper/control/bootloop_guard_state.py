@@ -27,10 +27,11 @@ def _marker_path() -> str:
 
 def snapshot() -> dict[str, Any]:
     """Fail-soft marker read. Fields when the guard ran this boot:
-    ``ran`` / ``tripped`` / ``boots_in_window`` / ``threshold`` /
-    ``window_sec`` / ``checked_at`` / ``units`` (drop-in targets when
-    tripped). A missing or corrupt marker resolves to ``{"ran": False}``
-    — the guard fails open, and so does its observability."""
+    ``ran`` / ``tripped`` / ``reload_ok`` / ``boots_in_window`` /
+    ``threshold`` / ``window_sec`` / ``checked_at`` / ``units`` (drop-in
+    targets when tripped). A missing or corrupt marker resolves to
+    ``{"ran": False}`` — the guard fails open, and so does its
+    observability."""
     try:
         with open(_marker_path(), encoding="utf-8") as f:
             raw = json.load(f)
@@ -41,6 +42,7 @@ def snapshot() -> dict[str, Any]:
     return {
         "ran": True,
         "tripped": bool(raw.get("tripped")),
+        "reload_ok": raw.get("reload_ok"),
         "boots_in_window": raw.get("boots_in_window"),
         "threshold": raw.get("threshold"),
         "window_sec": raw.get("window_sec"),

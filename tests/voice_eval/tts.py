@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import tempfile
 import wave
 from pathlib import Path
 
@@ -93,7 +94,7 @@ async def synth(
     pcm_24k = await response.aread()
 
     pcm_16k = _resample_24k_to_16k(pcm_24k)
-    _write_wav(path, pcm_16k, sample_rate=DAEMON_RATE_HZ)
+    _write_wav_atomic(path, pcm_16k, sample_rate=DAEMON_RATE_HZ)
     return path
 
 
@@ -138,6 +139,27 @@ def _write_wav(path: Path, pcm: bytes, *, sample_rate: int) -> None:
         w.setsampwidth(2)
         w.setframerate(sample_rate)
         w.writeframes(pcm)
+
+
+def _write_wav_atomic(path: Path, pcm: bytes, *, sample_rate: int) -> None:
+    """Write a complete WAV to a tempfile, then atomically publish it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    os.close(fd)
+    tmp_path = Path(tmp)
+    try:
+        _write_wav(tmp_path, pcm, sample_rate=sample_rate)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def synth_sync(text: str, **kw) -> Path:

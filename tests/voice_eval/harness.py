@@ -686,6 +686,9 @@ class VoiceEvalHarness:
         token = set_active(trace)
 
         audio_chunks: list[bytes] = []
+        audio = b""
+        md_path: Path | None = None
+        wav_path: Path | None = None
         turn = None
         try:
             turn = await asyncio.wait_for(
@@ -751,11 +754,12 @@ class VoiceEvalHarness:
                     await turn.release()
                 except Exception:  # noqa: BLE001
                     logger.warning("voice-eval: turn.release() raised", exc_info=True)
-
-        audio = b"".join(audio_chunks)
-        md_path, wav_path = _write_transcript(
-            prompt, trace, audio, out_dir=TRANSCRIPTS_DIR,
-        )
+            audio = b"".join(audio_chunks)
+            md_path, wav_path = _write_transcript(
+                prompt, trace, audio, out_dir=TRANSCRIPTS_DIR,
+            )
+        assert md_path is not None
+        assert wav_path is not None
         # Per-turn cost estimate, printed loudly so unexpected spend
         # surfaces immediately during dev. Not a billing source of
         # truth — see _PROVIDER_RATES_USD_PER_M for the rate table.

@@ -104,6 +104,20 @@ def test_bootloop_guard_untripped_marker_is_ok_armed(monkeypatch, tmp_path):
     assert "1 boot(s)" in res.detail
 
 
+def test_bootloop_guard_reload_failure_warns(monkeypatch, tmp_path):
+    _bootloop_marker(monkeypatch, tmp_path, json.dumps({
+        "tripped": False, "reload_ok": False, "boots_in_window": 3,
+        "threshold": 3, "window_sec": 3600, "checked_at": 1000,
+        "reason": "systemd", "units": ["jasper-camilla.service"],
+    }))
+    res = check_bootloop_guard()
+    assert res.status == "warn"
+    assert "daemon-reload" in res.detail
+    assert "jasper-bootloop-guard --reason manual" in res.detail
+    assert "run `systemctl daemon-reload`" not in res.detail
+    assert "jasper-camilla.service" in res.detail
+
+
 def test_bootloop_guard_tripped_warns_with_units_and_remediation(
     monkeypatch, tmp_path,
 ):
