@@ -178,14 +178,14 @@ class TimerFired:
 
 
 @dataclass(frozen=True, slots=True)
-class VoiceSessionStarted:
+class VoiceTurnStarted:
     """jasper-voice notified us its turn opened."""
     epoch: str
     now: float
 
 
 @dataclass(frozen=True, slots=True)
-class VoiceSessionEnded:
+class VoiceTurnEnded:
     """jasper-voice notified us its turn closed."""
     epoch: str
     reason: str
@@ -194,7 +194,7 @@ class VoiceSessionEnded:
 
 Event = (
     LocalWake | PeerWake | PeerClaim | PeerHeartbeat | PeerEnd
-    | TimerFired | VoiceSessionStarted | VoiceSessionEnded
+    | TimerFired | VoiceTurnStarted | VoiceTurnEnded
 )
 
 
@@ -270,8 +270,8 @@ class PeeringStateMachine:
             case PeerHeartbeat():       return self._on_peer_heartbeat(event)
             case PeerEnd():             return self._on_peer_end(event)
             case TimerFired():          return self._on_timer(event)
-            case VoiceSessionStarted(): return self._on_voice_started(event)
-            case VoiceSessionEnded():   return self._on_voice_ended(event)
+            case VoiceTurnStarted(): return self._on_voice_started(event)
+            case VoiceTurnEnded():   return self._on_voice_ended(event)
             case _:                     return []
 
     # ---- event handlers ----
@@ -431,7 +431,7 @@ class PeeringStateMachine:
             return self._on_heartbeat_timeout(ev.now)
         return []
 
-    def _on_voice_started(self, ev: VoiceSessionStarted) -> list[Action]:
+    def _on_voice_started(self, ev: VoiceTurnStarted) -> list[Action]:
         # voice confirms it opened a session for our winning epoch.
         # Begin heartbeating.
         if self._state is PeerState.WINNER and self._epoch and self._epoch.epoch == ev.epoch:
@@ -439,7 +439,7 @@ class PeeringStateMachine:
             return self._send_heartbeat_and_reschedule(ev.now)
         return []
 
-    def _on_voice_ended(self, ev: VoiceSessionEnded) -> list[Action]:
+    def _on_voice_ended(self, ev: VoiceTurnEnded) -> list[Action]:
         # Session ended cleanly. Broadcast END, cancel timers, return
         # to IDLE.
         if (
