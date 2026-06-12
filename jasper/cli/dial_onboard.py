@@ -53,10 +53,10 @@ DIAL_PROFILE = DeviceProfile(
     mdns_hostname="jasper-dial.local",
     mdns_help="mDNS hostname to ping after provisioning (default jasper-dial.local)",
     auto_help=(
-        "udev-triggered idempotent mode: if the dial already responds at "
+        "idempotent mode: if the dial already responds at "
         "--mdns-host, exit without flashing or pushing creds. If not, proceed "
-        "with the normal flash + provision flow. Designed for the on-plug-in "
-        "udev rule so re-plugging an already-provisioned dial is a no-op."
+        "only when the boot-log probe confirms JTS firmware; otherwise refuse "
+        "before reading or pushing WiFi credentials."
     ),
     boot_signature=b"jasper-dial firmware",
     boot_log_description='[boot] jasper-dial firmware v<version>',

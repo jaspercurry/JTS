@@ -17,6 +17,8 @@ from ._improv import push_credentials
 
 ESP32_S3_VID = 0x303A
 ESP32_S3_PIDS = {0x1001, 0x1002, 0x4001}
+NMCLI_TIMEOUT_S = 5.0
+ESPTOOL_TIMEOUT_S = 120.0
 
 
 @dataclass(frozen=True)
@@ -170,13 +172,21 @@ def _read_wifi_nm() -> tuple[str, str] | None:
             check=True,
             capture_output=True,
             text=True,
+            timeout=NMCLI_TIMEOUT_S,
         ).stdout
     except subprocess.CalledProcessError:
         return None
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            "Timed out after 5 s reading active WiFi connection via nmcli. "
+            "NetworkManager or D-Bus may be wedged; pass --ssid and --password "
+            "explicitly, or retry after restarting NetworkManager."
+        ) from e
     name = None
     for line in out.splitlines():
-        if line.startswith("802-11-wireless:") or line.startswith("wifi:"):
-            name = line.split(":", 1)[1]
+        fields = _split_nmcli_terse(line, maxsplit=1)
+        if len(fields) == 2 and fields[0] in {"802-11-wireless", "wifi"}:
+            name = fields[1]
             break
     if not name:
         return None
@@ -196,15 +206,50 @@ def _read_wifi_nm() -> tuple[str, str] | None:
             check=True,
             capture_output=True,
             text=True,
+            timeout=NMCLI_TIMEOUT_S,
         ).stdout
     except subprocess.CalledProcessError:
         return None
-    fields = dict(line.split(":", 1) for line in out.splitlines() if ":" in line)
-    ssid = fields.get("802-11-wireless.ssid", "").strip()
-    psk = fields.get("802-11-wireless-security.psk", "").strip()
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            "Timed out after 5 s reading WiFi secrets via nmcli. "
+            "NetworkManager or D-Bus may be wedged; pass --ssid and --password "
+            "explicitly, or retry after restarting NetworkManager."
+        ) from e
+    fields = dict(
+        parts
+        for line in out.splitlines()
+        if len(parts := _split_nmcli_terse(line, maxsplit=1)) == 2
+    )
+    ssid = fields.get("802-11-wireless.ssid", "")
+    psk = fields.get("802-11-wireless-security.psk", "")
     if ssid and psk:
         return ssid, psk
     return None
+
+
+def _split_nmcli_terse(line: str, *, maxsplit: int = -1) -> list[str]:
+    """Split nmcli terse output on unescaped colons and unescape fields."""
+    fields: list[str] = []
+    current: list[str] = []
+    escaped = False
+    splits = 0
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":" and (maxsplit < 0 or splits < maxsplit):
+            fields.append("".join(current))
+            current = []
+            splits += 1
+        else:
+            current.append(char)
+    if escaped:
+        current.append("\\")
+    fields.append("".join(current))
+    return fields
 
 
 def _read_wifi_wpa_supplicant() -> tuple[str, str] | None:
@@ -218,7 +263,7 @@ def _read_wifi_wpa_supplicant() -> tuple[str, str] | None:
             continue
         try:
             text = Path(path).read_text()
-        except (OSError, PermissionError):
+        except OSError:
             continue
         match = re.search(
             r"network\s*=\s*\{[^}]*?ssid\s*=\s*\"([^\"]+)\"[^}]*?psk\s*=\s*\"([^\"]+)\"",
@@ -243,7 +288,7 @@ def probe_firmware(
     log = log or logging.getLogger(__name__)
     try:
         ser = serial.Serial(port, 115200, timeout=0.2)
-    except (OSError, Exception) as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         log.debug("%s probe: open %s failed: %s", profile.device_label, port, e)
         return False
 
@@ -299,7 +344,7 @@ def flash_firmware(
         str(bin_path),
     ]
     log.info("flashing %s -> %s", bin_path, port)
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=ESPTOOL_TIMEOUT_S)
     time.sleep(2.0)
 
 
@@ -375,16 +420,15 @@ def run_onboard(profile: DeviceProfile, argv: list[str] | None = None) -> int:
         if args.no_flash:
             should_flash = False
         elif args.auto:
-            log.info(
-                "device on %s didn't show the JTS boot signature, but "
-                "the probe is unreliable when the chip doesn't reset on "
-                "serial open. Trying Improv push anyway - if it's a JTS "
-                "%s the push will succeed, otherwise it'll time out "
-                "cleanly without flashing.",
+            log.error(
+                "auto mode refuses to push WiFi credentials to %s because "
+                "the boot-log probe did not positively identify JTS %s "
+                "firmware. Confirm the hardware and rerun manually before "
+                "provisioning.",
                 device.port,
                 profile.device_label,
             )
-            should_flash = False
+            return 4
         else:
             should_flash = True
 
@@ -395,6 +439,14 @@ def run_onboard(profile: DeviceProfile, argv: list[str] | None = None) -> int:
                 device = find_device(profile, None)
         except subprocess.CalledProcessError as e:
             log.error("esptool failed: %s", e)
+            return 2
+        except subprocess.TimeoutExpired:
+            log.error(
+                "esptool timed out after %.0f s while flashing %s. "
+                "Check the USB connection and retry.",
+                ESPTOOL_TIMEOUT_S,
+                args.bin,
+            )
             return 2
 
     if args.ssid is None or args.password is None:

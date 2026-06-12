@@ -58,16 +58,16 @@ SATELLITE_PROFILE = DeviceProfile(
         "(default jasper-satellite-amoled.local)"
     ),
     auto_help=(
-        "udev-triggered idempotent mode: if the satellite already responds at "
-        "--mdns-host, exit without flashing or pushing creds. If not, proceed "
-        "with the normal flash + provision flow. Designed for the on-plug-in "
-        "udev rule so re-plugging an already-provisioned satellite is a no-op."
+        "idempotent mode: if the satellite already responds at --mdns-host, "
+        "exit without flashing or pushing creds. If not, proceed only when "
+        "the boot-log probe confirms JTS firmware; otherwise refuse before "
+        "reading or pushing WiFi credentials."
     ),
     boot_signature=b"jasper-satellite-amoled firmware",
     boot_log_description='[boot] jasper-satellite-amoled firmware v<version>',
     done_message=(
         "done. Unplug from the Pi and connect to USB power; "
-        "turning the knob will adjust volume."
+        "the satellite should connect to the speaker over WiFi."
     ),
 )
 
