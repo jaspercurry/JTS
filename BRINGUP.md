@@ -1145,11 +1145,18 @@ persist them to flash via that command.
   `/var/lib/jasper/usage.db` if you need to inspect it with sqlite3.
 
 **Music plays but voice TTS is silent (or vice versa).**
-- On the outputd cutover branch, both converge inside
-  `jasper-outputd`: music reaches it from `outputd_content_capture`,
-  and TTS reaches it over `/run/jasper-outputd/tts.sock`. Check
-  `systemctl status jasper-outputd`, `/state.outputd`, and
+- In solo mode, assistant TTS/cues enter `jasper-fanin` over
+  `/run/jasper-fanin/tts.sock`, then travel through CamillaDSP before
+  `jasper-outputd` owns the final DAC. Check
+  `systemctl status jasper-fanin jasper-outputd`,
+  `journalctl -u jasper-voice -u jasper-fanin`, `/state.outputd`, and
   `cat /etc/asound.conf`.
+- In multi-room bonded mode, the grouping reconciler may instead layer
+  `/var/lib/jasper/grouping-voice.env` so voice targets outputd's
+  member-local TTS lane at `/run/jasper-outputd/tts.sock`; the matching
+  outputd lane is armed from `/var/lib/jasper/grouping-outputd.env`.
+  `jasper-doctor`'s grouping check reports stale or half-armed TTS lane
+  drift.
 
 **AirPlay senders see the speaker but won't connect.**
 - shairport-sync.conf must use `shairport_substream`, the AirPlay
