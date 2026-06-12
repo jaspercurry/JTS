@@ -30,6 +30,7 @@ if "rapidfuzz" not in sys.modules:
 
 from jasper.voice.session import LiveConnection, LiveTurn  # noqa: E402
 from jasper.voice_daemon import (  # noqa: E402
+    State,
     WakeLoop,
     _idle_watchdog,
     _server_vad_response_trigger,
@@ -94,6 +95,42 @@ async def test_fire_and_forget_shutdown_cancels_and_awaits_tasks():
 
     assert cancelled.is_set()
     assert wl._fire_and_forget == set()
+
+
+async def test_run_shutdown_stops_wake_legs_before_sweeping_fire_and_forget():
+    wl = WakeLoop.__new__(WakeLoop)
+    wl._fire_and_forget = set()
+    wl._heartbeat = None
+    wl._state = State.WAKE
+    wl._legs = {"on": object(), "off": object()}
+    wl._stop_event = asyncio.Event()
+    wl._stop_event.set()
+
+    class _OneFrameMic:
+        async def frames(self):
+            yield object()
+
+    wl._mic = _OneFrameMic()
+
+    async def _late_shutdown_task() -> None:
+        await asyncio.Event().wait()
+
+    async def _wake_leg_loop(_leg_name: str) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            wl._create_fire_and_forget_task(
+                _late_shutdown_task(),
+                name="late-shutdown",
+            )
+
+    wl._wake_leg_loop = _wake_leg_loop
+
+    try:
+        await wl.run()
+        assert wl._fire_and_forget == set()
+    finally:
+        await wl._cancel_fire_and_forget_tasks()
 
 
 class _StalledTurn:

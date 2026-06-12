@@ -1937,10 +1937,11 @@ class WakeLoop:
                 else:
                     await self._handle_session_frame(frame)
         finally:
-            await self._cancel_fire_and_forget_tasks()
-            # Cancel + join every leg loop on any exit path. Without this
-            # a task could outlive run() and keep scoring frames against a
-            # stopped detector / closed mic.
+            # Cancel + join every leg loop before sweeping tracked side-work.
+            # The leg loops are producers: while they are alive, a late wake
+            # frame can still enqueue acquire/finalize tasks into
+            # _fire_and_forget. Stop producers first so the cancellation sweep
+            # below observes every task created during shutdown.
             for _t in leg_tasks:
                 _t.cancel()
             for _t in leg_tasks:
@@ -1948,6 +1949,7 @@ class WakeLoop:
                     await _t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+            await self._cancel_fire_and_forget_tasks()
 
     async def _wake_leg_loop(self, leg_name: str) -> None:
         """Parallel wake-only consumer for a non-primary leg.
