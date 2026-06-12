@@ -198,9 +198,10 @@ sudo dfu-util -R -e -a 1 -D <firmware-blob.bin>
 "detach (exit DFU) before download" (harmless and required on some
 host stacks). The `Invalid DFU suffix signature` warning at the
 start of dfu-util output is normal — Seeed doesn't sign the
-binaries. BRINGUP.md Phase 2A.5 has the full operator-facing
-procedure (download URL, verification steps, what each `dfu-util`
-flag does and why).
+binaries.
+[BRINGUP.md "XVF firmware: switch to 6-channel variant via DFU"](../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu)
+has the full operator-facing procedure (download URL, verification
+steps, what each `dfu-util` flag does and why).
 
 Sources: [upstream dfu_guide.md](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/xmos_firmwares/dfu_guide.md), [upstream issue #8](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/issues/8) (DataPartition + recovery), [Seeed wiki Update Firmware section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/), and the captured `lsusb -v` from the 2026-05-15 jts2 investigation (`logs/xvf-interrogate-*-jts2-*-20260515T*.txt`).
 
@@ -874,7 +875,7 @@ fault), PortAudio's `sd.InputStream` enters an unrecoverable state
 and silently stops invoking the callback. The bridge stops getting
 mic frames. This is why `jasper-aec-bridge` has stall detection
 (`BridgeStalled`) and systemd `Restart=on-failure`. Documented in
-[AGENTS.md "AEC bridge — reconciler toggle"](../AGENTS.md#aec-bridge--reconciler-toggle) and at
+[AGENTS.md "AEC bridge — input profile and reconciler"](../AGENTS.md#aec-bridge--input-profile-and-reconciler) and at
 the top of `jasper/cli/aec_bridge.py`.
 
 This would manifest as **all six channels going silent
@@ -1418,8 +1419,10 @@ In rough order of how often we reach for each:
   `jasper/cli/aec_init.py`, `jasper/cli/aec_bridge.py`
   (operational use of the parameters).
 - **Local docs**: [`docs/HANDOFF-aec.md`](HANDOFF-aec.md) (chip-side
-  AEC investigation), [`BRINGUP.md`](../BRINGUP.md) Phase 2A.5
-  (DFU procedure — but flagged `-a 0` typo).
+  AEC investigation),
+  [`BRINGUP.md` "XVF firmware: switch to 6-channel variant via DFU"](../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu)
+  (operator DFU procedure; current command uses the upgrade
+  partition with `-a 1`).
 - **Upstream repo**: [`respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY),
   particularly:
   - [`host_control/README.md`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md) — most complete published parameter reference, especially the AUDIO_MGR_OP table.
@@ -1438,4 +1441,4 @@ In rough order of how often we reach for each:
 
 ---
 
-Last verified: 2026-05-31 (production OP_R non-silent routing plus production/corpus chip-AEC routing restore/readback rechecked)
+Last verified: 2026-06-12 (DFU link, production OP_R non-silent routing, and production/corpus chip-AEC routing restore/readback rechecked)
