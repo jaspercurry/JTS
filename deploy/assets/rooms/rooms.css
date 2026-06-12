@@ -201,3 +201,13 @@ a.room-row:hover .room-row__go {
   flex-wrap: wrap;
   margin-top: 0.9rem;
 }
+
+.trim-block { margin: 0.9rem 0 0.2rem; }
+.trim-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.45rem;
+}
+.trim-row__label { min-width: 9.5em; }
+.trim-value { min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }

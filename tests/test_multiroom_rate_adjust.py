@@ -636,3 +636,19 @@ def test_pair_channels_check_warns_on_bond_mismatch(monkeypatch):
     )
     assert r.status == "warn"
     assert "re-pair" in r.detail
+
+
+def test_outputd_grouping_env_carries_the_trim():
+    """Bonded: the validated trim derives into the outputd lane env
+    (always written, so a cleared trim converges to 0.0); solo clears
+    with EMPTY (outputd's env_f32 reads empty as unset -> default 0)."""
+    from jasper.multiroom.reconcile import (
+        OUTPUTD_DAC_CONTENT_TRIM_ENV,
+        outputd_grouping_env,
+    )
+    bonded = outputd_grouping_env(
+        _cfg(enabled=True, role="follower", channel="right",
+             bond_id="b", leader_addr="jts.local", trim_db=-2.5))
+    assert bonded[OUTPUTD_DAC_CONTENT_TRIM_ENV] == "-2.5"
+    solo = outputd_grouping_env(_cfg())
+    assert solo[OUTPUTD_DAC_CONTENT_TRIM_ENV] == ""

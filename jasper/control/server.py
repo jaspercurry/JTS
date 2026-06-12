@@ -640,6 +640,7 @@ def _kick_grouping_reconciler() -> None:
 
 def _write_grouping(
     *, enabled: bool, role: str, channel: str, bond_id: str, leader_addr: str,
+    trim_db: "float | None" = None,
 ) -> None:
     """Persist a grouping role into the wizard-owned grouping.env.
 
@@ -650,13 +651,19 @@ def _write_grouping(
     no-auth LAN surface as the dial's /volume — so one speaker can configure
     another by POSTing to its :PORT/grouping/set (the bond-forming flow).
     """
-    _atomic_rewrite_env(GROUPING_ENV_FILE, {
+    updates = {
         "JASPER_GROUPING": "on" if enabled else "off",
         "JASPER_GROUPING_ROLE": role,
         "JASPER_GROUPING_CHANNEL": channel,
         "JASPER_GROUPING_BOND_ID": bond_id,
         "JASPER_GROUPING_LEADER_ADDR": leader_addr,
-    })
+    }
+    if trim_db is not None:
+        # Settable like the role fields, preserved like codec when the
+        # caller omits it (bond/unbond/swap fan-outs never send trim, so
+        # a calibrated balance survives role/channel changes).
+        updates["JASPER_GROUPING_TRIM_DB"] = f"{trim_db:.1f}"
+    _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
 
 
 def _fresh_jasper_env() -> dict[str, str]:
@@ -2344,6 +2351,15 @@ def _make_handler(
             channel = str(body.get("channel", "")).strip()
             bond_id = str(body.get("bond_id", "")).strip()
             leader_addr = str(body.get("leader_addr", "")).strip()
+            trim_db: float | None = None
+            if "trim_db" in body:
+                try:
+                    trim_db = float(body["trim_db"])
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "trim_db must be a number"}, status=400,
+                    )
+                    return
             # Validate an ENABLED request up front via the SHARED
             # validate_grouping (same rule the config loader applies on
             # read) so we never persist a fail-loud config. A disabled
@@ -2352,6 +2368,7 @@ def _make_handler(
                 err = validate_grouping(
                     role=role, channel=channel,
                     bond_id=bond_id, leader_addr=leader_addr,
+                    trim_db=trim_db if trim_db is not None else 0.0,
                 )
                 if err:
                     self._send_json({"error": err}, status=400)
@@ -2360,6 +2377,7 @@ def _make_handler(
                 _write_grouping(
                     enabled=enabled, role=role, channel=channel,
                     bond_id=bond_id, leader_addr=leader_addr,
+                    trim_db=trim_db,
                 )
                 _kick_grouping_reconciler()
             except Exception as e:  # noqa: BLE001
