@@ -102,17 +102,21 @@ TTS is already a core realtime-voice component:
 
 - `OutputdTtsPlayout` preserves the `TtsPlayout` contract: it resamples
   provider audio to 48 kHz stereo, sends un-gained PCM plus
-  provider/model/voice profile metadata to the fan-in TTS IPC socket
-  (`/run/jasper-fanin/tts.sock`, using the outputd-compatible text
-  protocol), tracks expected drain, and supports `flush()` for
-  interruption. `jasper-outputd` no longer binds a TTS socket or keeps a
-  duplicate TTS protocol parser; TTS/cue ingress is a fan-in concern.
-- `jasper-fanin` owns assistant gain in the packaged topology. It
-  snapshots pre-duck content loudness, applies the provider
-  source-loudness profile and peak-capped gain policy, emits
-  `event=fanin.assistant_loudness`, and publishes the latest decision
-  under `tts.assistant_loudness` in its STATUS payload. Python seeds and
-  learns profiles but does not set final gain.
+  provider/model/voice profile metadata to the active TTS IPC socket,
+  tracks expected drain, and supports `flush()` for interruption. In the
+  solo packaged topology that socket is `/run/jasper-fanin/tts.sock`; on
+  an active bonded multiroom member, the grouping reconciler instead
+  points voice at `/run/jasper-outputd/tts.sock` so assistant audio mixes
+  post-round-trip at the final output owner.
+- Fan-in and outputd speak the same `jasper-tts-protocol` wire
+  vocabulary and share the same assistant loudness policy. `jasper-fanin`
+  owns assistant gain in the solo packaged topology: it snapshots
+  pre-duck content loudness, applies the provider source-loudness profile
+  and peak-capped gain policy, emits `event=fanin.assistant_loudness`, and
+  publishes the latest decision under `tts.assistant_loudness` in its
+  STATUS payload. On a bonded member, outputd applies the same loudness
+  policy at the post-round-trip mix point. Python seeds and learns
+  profiles but does not set final gain.
 - Cues and chirps route through the same `TtsPlayout` object. They
   inherit fan-in routing, drain behavior, flush behavior, and
   profile/peak-capped gain policy without training live assistant
@@ -953,18 +957,23 @@ datum: how much assistant audio was actually heard.
   and parks dual Apple with the fake backend until outputd has a real
   four-channel active graph. `/state`,
   `/sound/output-topology`, and `jasper-doctor` now read the same artifact.
-- 2026-06-08: Retired outputd's disabled TTS IPC implementation after
-  rollback no longer needed it. Fan-in is the sole production TTS/cue IPC
-  owner; outputd owns final electrical output and monitor/reference fanout.
-  Dual-Apple outputd activation is also graph-gated: hardware observation
-  alone records the composite profile, but outputd switches to the
-  four-channel sink only after the active-speaker startup config is loaded
-  and CamillaDSP's outputd statefile points at that active graph.
+- 2026-06-08: Retired outputd's then-disabled TTS IPC implementation after
+  rollback no longer needed it. At that point fan-in was the sole
+  production TTS/cue IPC owner; outputd owned final electrical output and
+  monitor/reference fanout. Dual-Apple outputd activation was also
+  graph-gated: hardware observation alone records the composite profile,
+  but outputd switches to the four-channel sink only after the
+  active-speaker startup config is loaded and CamillaDSP's outputd
+  statefile points at that active graph.
 - 2026-06-09: Documented the current robust barge-in contract:
   local speech detection triggers the active TTS transport flush first,
   the final playout ledger supplies `audio_played_ms`, and provider
   adapters reconcile conversation state after the local audio stop.
   First acceptance target is interrupting assistant speech with a local
   volume command and no second wake word.
+- 2026-06-11: Multiroom Increment 5 PR-2 reintroduced an outputd TTS
+  socket only for active bonded members. Solo stays fan-in-owned, while a
+  bonded member mixes its own assistant audio in outputd after the
+  snapcast round trip and before reference publication.
 
-Last verified: 2026-06-09
+Last verified: 2026-06-12 (solo fan-in TTS ownership and bonded-member outputd TTS ownership rechecked against rust/jasper-outputd and HANDOFF-multiroom).

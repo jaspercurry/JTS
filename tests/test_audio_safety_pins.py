@@ -7,10 +7,12 @@ Two documented hardware-safety claims (docs/HANDOFF-volume.md,
    enforced by the Python legacy playout (``jasper/audio_io.py``) and
    the shared Rust loudness policy
    (``rust/jasper-tts-protocol/src/loudness.rs``), which fan-in and
-   outputd re-export. The Rust crates' own unit tests assert clamp
-   behaviour *relative to* the constant, so flipping ``-6.0`` to
-   ``+6.0`` would pass cargo test; the Python test only asserted
-   ``<= 0.0``. This pins the literal and the daemon shims.
+   outputd re-export. Outputd also keeps its older ``mixer`` helper
+   names as compatibility re-exports for existing callers. The Rust
+   crates' own unit tests assert clamp behaviour *relative to* the
+   constant, so flipping ``-6.0`` to ``+6.0`` would pass cargo test; the
+   Python test only asserted ``<= 0.0``. This pins the literal, daemon
+   shims, and outputd compatibility surface.
 
 2. ``volume_limit: 0.0`` "in every JTS CamillaDSP YAML". The Python
    config *emitters* raise on a positive limit (tests exist), but the
@@ -42,8 +44,23 @@ RUST_SHARED_LOUDNESS_SHIMS = (
     "rust/jasper-outputd/src/loudness.rs",
 )
 
+RUST_OUTPUTD_MIXER = "rust/jasper-outputd/src/mixer.rs"
+
+RUST_OUTPUTD_MIXER_GAIN_SYMBOLS = (
+    "apply_gain_i16",
+    "clamp_tts_gain_db",
+    "gain_db_to_linear",
+    "MAX_TTS_GAIN_DB",
+    "MIN_TTS_GAIN_DB",
+)
+
 _RUST_CONST_PAT = re.compile(
     r"^pub const MAX_TTS_GAIN_DB: f32 = (-?\d+(?:\.\d+)?);", re.MULTILINE
+)
+
+_RUST_SHARED_LOUDNESS_USE_PAT = re.compile(
+    r"^pub use jasper_tts_protocol::loudness::\{(?P<body>[^}]+)\};",
+    re.MULTILINE | re.DOTALL,
 )
 
 
@@ -60,7 +77,7 @@ def test_rust_tts_gain_ceiling_is_minus_six_db() -> None:
         )
 
 
-def test_rust_daemons_use_shared_tts_gain_policy() -> None:
+def test_rust_daemon_loudness_modules_reexport_shared_tts_gain_policy() -> None:
     for rel in RUST_SHARED_LOUDNESS_SHIMS:
         text = (REPO / rel).read_text()
         assert "pub use jasper_tts_protocol::loudness::*;" in text, (
@@ -68,6 +85,34 @@ def test_rust_daemons_use_shared_tts_gain_policy() -> None:
             "shared Rust policy. If this is intentional, update the "
             "safety pin and explain how the -6 dB TTS ceiling still "
             "cannot drift between daemons."
+        )
+
+
+def test_outputd_mixer_reexports_shared_tts_gain_helpers() -> None:
+    text = (REPO / RUST_OUTPUTD_MIXER).read_text()
+    match = _RUST_SHARED_LOUDNESS_USE_PAT.search(text)
+    assert match, (
+        f"{RUST_OUTPUTD_MIXER}: outputd mixer no longer re-exports TTS gain "
+        "helpers from jasper_tts_protocol::loudness. If this is intentional, "
+        "update the safety pin and explain how outputd helper callers still "
+        "cannot drift from the shared -6 dB policy."
+    )
+    exported = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", match.group("body")))
+    missing = sorted(set(RUST_OUTPUTD_MIXER_GAIN_SYMBOLS) - exported)
+    assert not missing, (
+        f"{RUST_OUTPUTD_MIXER}: missing shared TTS gain re-export(s): "
+        f"{', '.join(missing)}"
+    )
+    for symbol in RUST_OUTPUTD_MIXER_GAIN_SYMBOLS:
+        assert not re.search(rf"^(?:pub\s+)?fn\s+{symbol}\b", text, re.MULTILINE), (
+            f"{RUST_OUTPUTD_MIXER}: {symbol} is locally defined instead of "
+            "re-exported from jasper_tts_protocol::loudness."
+        )
+        assert not re.search(
+            rf"^(?:pub\s+)?const\s+{symbol}\b", text, re.MULTILINE
+        ), (
+            f"{RUST_OUTPUTD_MIXER}: {symbol} is locally defined instead of "
+            "re-exported from jasper_tts_protocol::loudness."
         )
 
 

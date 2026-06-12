@@ -603,7 +603,7 @@ mod tests {
         assert!((gain_db_to_linear(-6.0) - 0.5011872).abs() < 0.000001);
     }
 
-    fn parity_sequence_decisions() -> Vec<AssistantGainDecision> {
+    fn representative_sequence_decisions() -> Vec<AssistantGainDecision> {
         let mut loudness = AssistantLoudness::new(AssistantLoudnessConfig::default());
         let content = stereo_sine(0.08, (SAMPLE_RATE as usize) / 2);
         loudness.observe_content_period(&content);
@@ -632,10 +632,10 @@ mod tests {
     }
 
     #[test]
-    fn fanin_and_outputd_paths_share_identical_gain_decisions() {
-        let fanin_path = parity_sequence_decisions();
-        let outputd_path = parity_sequence_decisions();
+    fn representative_gain_sequence_is_deterministic() {
+        let first_path = representative_sequence_decisions();
+        let second_path = representative_sequence_decisions();
 
-        assert_eq!(fanin_path, outputd_path);
+        assert_eq!(first_path, second_path);
     }
 }
