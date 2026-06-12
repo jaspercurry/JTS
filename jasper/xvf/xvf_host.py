@@ -15,13 +15,16 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
+_USB_IMPORT_ERROR: ModuleNotFoundError | None = None
+
 try:  # Optional at import time so ``--list`` works in dev envs.
     import libusb_package
     import usb.core
     import usb.util
-except ModuleNotFoundError:
+except ModuleNotFoundError as exc:
     libusb_package = None
     usb = None  # type: ignore[assignment]
+    _USB_IMPORT_ERROR = exc
 
 
 Access = Literal["ro", "rw", "wo"]
@@ -100,6 +103,48 @@ class XvfControlError(RuntimeError):
     """Raised when the XVF3800 rejects or cannot complete a control request."""
 
 
+def _raise_usb_dependency_error() -> None:
+    detail = f": {_USB_IMPORT_ERROR}" if _USB_IMPORT_ERROR is not None else ""
+    raise XvfControlError(
+        "XVF3800 USB control dependencies missing; install pyusb and "
+        f"libusb_package before using hardware commands{detail}"
+    ) from _USB_IMPORT_ERROR
+
+
+def _coerce_integral(
+    value: int | float | str,
+    *,
+    kind: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if isinstance(value, int):
+        coerced = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(
+                f"{kind} value must be an integer in range "
+                f"{minimum}..{maximum}, got {value!r}"
+            )
+        coerced = int(value)
+    elif isinstance(value, str):
+        try:
+            coerced = int(value, 0)
+        except ValueError as exc:
+            raise ValueError(
+                f"{kind} value must be an integer in range "
+                f"{minimum}..{maximum}, got {value!r}"
+            ) from exc
+    else:
+        raise TypeError(f"{kind} value must be int-compatible, got {type(value)!r}")
+    if not minimum <= coerced <= maximum:
+        raise ValueError(
+            f"{kind} value must be an integer in range "
+            f"{minimum}..{maximum}, got {value!r}"
+        )
+    return coerced
+
+
 def _payload_size(command: Command) -> int:
     if command.kind in {"char", "uint8"}:
         return command.count
@@ -131,13 +176,39 @@ def _pack_values(command: Command, values: list[int | float | str]) -> bytes:
         joined = "".join(str(v) for v in values)
         return joined.encode("utf-8")[: command.count].ljust(command.count, b"\0")
     if command.kind == "uint8":
-        return bytes(int(v) & 0xFF for v in values)
+        return bytes(
+            _coerce_integral(v, kind="uint8", minimum=0, maximum=0xFF)
+            for v in values
+        )
     if command.kind == "uint16":
-        return struct.pack("<" + ("H" * command.count), *(int(v) for v in values))
+        return struct.pack(
+            "<" + ("H" * command.count),
+            *(
+                _coerce_integral(v, kind="uint16", minimum=0, maximum=0xFFFF)
+                for v in values
+            ),
+        )
     if command.kind == "uint32":
-        return struct.pack("<" + ("I" * command.count), *(int(v) for v in values))
+        return struct.pack(
+            "<" + ("I" * command.count),
+            *(
+                _coerce_integral(v, kind="uint32", minimum=0, maximum=0xFFFF_FFFF)
+                for v in values
+            ),
+        )
     if command.kind == "int32":
-        return struct.pack("<" + ("i" * command.count), *(int(v) for v in values))
+        return struct.pack(
+            "<" + ("i" * command.count),
+            *(
+                _coerce_integral(
+                    v,
+                    kind="int32",
+                    minimum=-(2**31),
+                    maximum=(2**31) - 1,
+                )
+                for v in values
+            ),
+        )
     if command.kind in {"float", "radians"}:
         return struct.pack("<" + ("f" * command.count), *(float(v) for v in values))
     raise AssertionError(f"unhandled XVF value kind: {command.kind}")
@@ -221,11 +292,11 @@ class ReSpeaker:
 def find(vid: int = 0x2886, pid: int = 0x001A) -> ReSpeaker | None:
     if sys.platform.startswith("win"):
         if libusb_package is None:
-            return None
+            _raise_usb_dependency_error()
         dev = libusb_package.find(idVendor=vid, idProduct=pid)
     else:
         if usb is None:
-            return None
+            _raise_usb_dependency_error()
         dev = usb.core.find(idVendor=vid, idProduct=pid)
     if not dev:
         return None
@@ -291,7 +362,11 @@ def main() -> int:
     if not args.COMMAND:
         parser.error("COMMAND is required unless --list is used")
 
-    dev = find(vid=args.vid, pid=args.pid)
+    try:
+        dev = find(vid=args.vid, pid=args.pid)
+    except XvfControlError as exc:
+        print(f"Error locating XVF3800: {exc}")
+        return 1
     if dev is None:
         print("No device found")
         return 1

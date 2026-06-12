@@ -328,7 +328,7 @@ jasper/                         Python daemon source
   cli/                          jasper-doctor, jasper-spotify-auth,
                                 jasper-aec-{init,tune,bridge},
                                 jasper-dial-onboard
-  xvf/                          Vendored XMOS XVF3800 control library
+  xvf/                          JTS-owned XVF3800 USB control helper
   mics/                         Per-mic-family profile registry — one
                                   module per supported mic (xvf3800.py
                                   today). Identity, firmware variants,
@@ -1009,9 +1009,12 @@ sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host VERSION
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host --list  # JTS-supported params
 ```
 
-Read AEC convergence, dump filter coefficients, change beam
-parameters, etc. Don't call `SAVE_CONFIGURATION` — known brick
-hazard on certain firmware versions (respeaker repo issue #8).
+Read AEC convergence, inspect supported routing/profile values, change
+beam parameters, etc. The JTS helper intentionally does not expose
+filter-coefficient dumps; add and hardware-validate a narrow command
+from XMOS documentation before relying on that workflow. Don't call
+`SAVE_CONFIGURATION` — known brick hazard on certain firmware versions
+(respeaker repo issue #8).
 
 ---
 

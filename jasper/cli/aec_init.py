@@ -213,7 +213,11 @@ def main() -> int:
     # the find() up to 10 times with 1 sec backoff.
     dev = None
     for attempt in range(10):
-        dev = xvf_host.find()
+        try:
+            dev = xvf_host.find()
+        except xvf_host.XvfControlError as e:
+            logger.error("event=xvf_control_unavailable error=%s", e)
+            return 1
         if dev is not None:
             break
         logger.info("XVF3800 not yet on USB, retrying (%d/10)", attempt + 1)

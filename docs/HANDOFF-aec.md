@@ -1331,10 +1331,13 @@ Realistic bring-up sequence:
    (`scripts/aec-probe-latency.sh`). If total is 10–15 ms, set
    `AUDIO_MGR_SYS_DELAY` to compensate (positive value, 62.5 µs
    per sample) until the impulse-response peak lands at taps 5–30.
-4. Verify with `SPECIAL_CMD_AEC_FILTER_COEFFS` dump (we already
-   have the tooling at HANDOFF-aec.md lines 1439–1441 from prior
-   white-noise xcorr work).
-5. Confirm `AEC_AECCONVERGED = 1` after 30 s of music.
+4. Do not assume coefficient-dump tooling exists in the local helper:
+   `SPECIAL_CMD_AEC_FILTER_COEFFS` is not currently exposed by
+   `jasper/xvf/xvf_host.py`. If coefficient inspection is needed,
+   add the single command from XMOS documentation and validate it on
+   hardware before relying on that workflow.
+5. Confirm `AEC_AECCONVERGED = 1` after 30 s of music, with the
+   latency/chirp evidence above as the primary sanity check.
 
 **Effort estimate:**
 
@@ -1363,7 +1366,10 @@ fallback profile and avoid stacking it under chip-AEC.
 - [XMOS lib_adec Overview](https://www.xmos.com/documentation/XM-014785-PC/html/modules/voice/modules/lib_adec/doc/src/overview.html) — Automatic Delay Estimation; estimation auto-triggers at power-up
 - [XMOS lib_sw_pll on GitHub](https://github.com/xmos/lib_sw_pll) — the software PLL implementation used for USB→mic clock sync
 - [reSpeaker XVF3800 host_control README](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md) — Seeed default `AUDIO_MGR_SYS_DELAY = 12`
-- In-repo: `jasper/xvf/xvf_host.py` (`AUDIO_MGR_SYS_DELAY` command definition), HANDOFF-aec.md lines 1437–1469 (prior sweep history, range −64 to +256, convergence-flag-never-flipped observation, REF_GAIN trap that bricked the previous attempt)
+- In-repo: `jasper/xvf/xvf_host.py` (`AUDIO_MGR_SYS_DELAY` command
+  definition) and this doc's prior sweep history: range −64 to +256,
+  convergence flag never flipped, and the REF_GAIN trap that bricked
+  the previous attempt.
 
 ### E — Vendor newer libwebrtc as a Meson subproject
 
@@ -1850,7 +1856,9 @@ data physically reaching the chip):
   `AUDIO_MGR_SYS_DELAY` values from −64 to +256 samples
   (the chip's accepted range — values >256 silently clamp)
   showed bypass-vs-AEC RMS differing by ≤2 dB at every setting.
-- A filter coefficient dump (`SPECIAL_CMD_AEC_FILTER_COEFFS`)
+- A historical filter coefficient dump (`SPECIAL_CMD_AEC_FILTER_COEFFS`,
+  from earlier external tooling; not currently exposed by JTS's local
+  `xvf_host.py` subset)
   showed the adaptive filter HAD adapted in some past state
   (RMS 0.224, peaks at taps 2 and 243), but with peak magnitudes
   >1.0 — indicating the LMS algorithm had run away due to a

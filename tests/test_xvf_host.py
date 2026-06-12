@@ -45,6 +45,26 @@ def test_write_packs_uint8_vendor_control_payload() -> None:
     ]
 
 
+def test_write_accepts_integral_float_uint8_values() -> None:
+    fake = _FakeUsbDevice()
+    dev = xvf_host.ReSpeaker(fake)
+
+    dev.write("AUDIO_MGR_OP_L", [1.0, 0])
+
+    assert fake.calls[0][4] == b"\x01\x00"
+
+
+@pytest.mark.parametrize("values", [[-1, 0], [256, 0], [1.5, 0]])
+def test_write_rejects_invalid_uint8_values(values) -> None:
+    fake = _FakeUsbDevice()
+    dev = xvf_host.ReSpeaker(fake)
+
+    with pytest.raises(ValueError, match="uint8"):
+        dev.write("AUDIO_MGR_OP_L", values)
+
+    assert fake.calls == []
+
+
 def test_read_unpacks_int32_vendor_control_response() -> None:
     fake = _FakeUsbDevice([bytes([0]) + struct.pack("<i", 1)])
     dev = xvf_host.ReSpeaker(fake)
@@ -98,3 +118,16 @@ def test_read_rejects_write_only_commands() -> None:
     with pytest.raises(ValueError, match="write-only"):
         dev.read("REBOOT")
     assert fake.calls == []
+
+
+def test_find_reports_missing_usb_dependency(monkeypatch) -> None:
+    monkeypatch.setattr(xvf_host.sys, "platform", "linux")
+    monkeypatch.setattr(xvf_host, "usb", None)
+    monkeypatch.setattr(
+        xvf_host,
+        "_USB_IMPORT_ERROR",
+        ModuleNotFoundError("No module named 'usb'"),
+    )
+
+    with pytest.raises(xvf_host.XvfControlError, match="dependencies missing"):
+        xvf_host.find()
