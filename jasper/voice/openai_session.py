@@ -68,7 +68,7 @@ from ._supervisor import (
     FailureFingerprint,
     reconnect_backoff_delay,
 )
-from .session import AudioOutChunk, LiveConnection, LiveTurn
+from .session import AudioOutChunk, LiveTurn
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +197,7 @@ def _upsample_16k_to_24k(
 # ---------- Per-turn adapter ------------------------------------------------
 
 
-class OpenAIRealtimeTurn(LiveTurn):
+class OpenAIRealtimeTurn:
     """A single turn against an open ``OpenAIRealtimeConnection``.
 
     Owns the per-turn audio queue, the resampler state, and per-turn
@@ -672,7 +672,7 @@ class OpenAIRealtimeTurn(LiveTurn):
 # ---------- Long-lived connection ------------------------------------------
 
 
-class OpenAIRealtimeConnection(LiveConnection):
+class OpenAIRealtimeConnection:
     """Long-lived OpenAI Realtime connection.
 
     One instance per daemon. Holds the SDK client, the active WebSocket

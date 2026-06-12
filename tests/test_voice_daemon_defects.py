@@ -9,6 +9,8 @@ import time
 import types
 import weakref
 
+import pytest
+
 
 if "httpx" not in sys.modules:
     httpx = types.ModuleType("httpx")
@@ -206,3 +208,18 @@ def test_live_protocols_declare_public_server_vad_shadow_members():
     assert hasattr(LiveTurn, "wait_for_server_eou")
     assert hasattr(LiveConnection, "set_turn_detection")
     assert hasattr(LiveConnection, "create_response_only")
+
+
+def test_gemini_does_not_inherit_optional_server_vad_shadow_members():
+    pytest.importorskip("google.genai")
+
+    from jasper.voice.gemini_session import GeminiLiveConnection, GeminiLiveTurn
+
+    assert not hasattr(GeminiLiveTurn, "mark_server_vad")
+    assert not hasattr(GeminiLiveTurn, "server_speech_started")
+    assert not hasattr(GeminiLiveTurn, "wait_for_server_eou")
+    assert not hasattr(GeminiLiveConnection, "set_turn_detection")
+    assert not hasattr(GeminiLiveConnection, "create_response_only")
+
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    assert conn.supports_server_vad() is False
