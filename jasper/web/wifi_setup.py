@@ -66,6 +66,7 @@ from ._common import (
     canonical_page,
     reject_csrf,
     send_html_response,
+    guard_read_request,
     guard_mutating_request,
 )
 
@@ -1149,10 +1150,14 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 self._send_html(_landing_html(ctx["csrf_token"]))
                 return
             if path == "/state":
+                if not guard_read_request(self):
+                    return
                 try:
                     self._send_json(gather_state())
                 except Exception as e:  # noqa: BLE001

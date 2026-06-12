@@ -94,6 +94,7 @@ from ._common import (
     send_proxy_json,
     send_see_other,
     toggle_html,
+    guard_read_request,
     guard_mutating_request,
 )
 
@@ -713,6 +714,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 state = _load_state(cfg["state_path"])
                 ctx = begin_request(self)
                 send_html_response(self, _index_html(
@@ -720,6 +723,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ))
                 return
             if path == "/detection.json":
+                if not guard_read_request(self):
+                    return
                 status, body = proxy_get(
                     "/aec",
                     control_base=cfg["control_base"], timeout=5.0,

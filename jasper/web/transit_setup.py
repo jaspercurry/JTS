@@ -75,6 +75,7 @@ from ._common import (
     reject_csrf,
     send_html_response,
     send_see_other,
+    guard_read_request,
     guard_mutating_request,
     read_form,
     restart_voice_daemon,
@@ -1243,6 +1244,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 state = _load_state(cfg["state_path"])
                 ctx = begin_request(self)
                 # Wrap render in a top-level guard: an unexpected

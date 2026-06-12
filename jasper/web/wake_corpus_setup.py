@@ -208,6 +208,7 @@ from jasper.wake_corpus.recording_backend import (  # noqa: F401 - re-exported
 from jasper.web._common import (
     canonical_header,
     canonical_page,
+    guard_read_request,
     json_island,
     toggle_html,
 )
@@ -348,8 +349,8 @@ class _Handler(BaseHTTPRequestHandler):
     # jasper/control/server.py.
     #
     # ORDERING IS LOAD-BEARING and preserved from the inline form:
-    #   - GET is NOT CSRF-protected (read-only). POST + DELETE check CSRF
-    #     FIRST (before any body read or table lookup).
+    #   - GET is read-guarded but NOT CSRF-protected (read-only). POST +
+    #     DELETE check CSRF FIRST (before any body read or table lookup).
     #   - do_POST reads + parses the JSON body AFTER the CSRF check, then
     #     dispatches; each POST handler takes the parsed `body`.
     #   - Prefix routes that don't fit an exact-match table
@@ -360,6 +361,19 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         url = urlparse(self.path)
         path = url.path.rstrip("/") or "/"
+        clip_wav_route = path.startswith("/api/clip/") and path.endswith("/wav")
+        level_route = path == "/api/recording/level"
+
+        if not (
+            path == "/"
+            or path in self._GET_ROUTES
+            or clip_wav_route
+            or level_route
+        ):
+            self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
+            return
+        if not guard_read_request(self):
+            return
 
         if path == "/":
             html_text = _render_index_html(self.csrf_token)
@@ -377,11 +391,11 @@ class _Handler(BaseHTTPRequestHandler):
             getattr(self, handler_name)()
             return
 
-        if path.startswith("/api/clip/") and path.endswith("/wav"):
+        if clip_wav_route:
             self._serve_wav(path, url)
             return
 
-        if path == "/api/recording/level":
+        if level_route:
             self._serve_level_sse()
             return
 

@@ -50,6 +50,7 @@ from ._common import (
     restart_voice_daemon,
     send_html_response,
     send_see_other,
+    guard_read_request,
     guard_mutating_request,
     write_env_file,
 )
@@ -399,6 +400,8 @@ def _make_handler(state_path: str):
 
         def do_GET(self):  # noqa: N802
             if self.path == "/" or self.path.startswith("/?"):
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 body = _render_page(
                     state_path=state_path,

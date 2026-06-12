@@ -82,6 +82,7 @@ from ._common import (
     restart_voice_daemon,
     send_html_response,
     send_see_other,
+    guard_read_request,
     guard_mutating_request,
     write_env_file,
 )
@@ -1001,6 +1002,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 state = read_env_file(cfg["state_path"])
                 ctx = begin_request(self)
                 self._send_html(_render_index(
@@ -1008,6 +1011,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ))
                 return
             if path == "/reset":
+                if not guard_read_request(self, allow_cross_site_navigation=False):
+                    return
                 # Clear URL + token + agent (keep recent URLs) and go back
                 # to state 1. Equivalent to "Use a different URL" link.
                 state = read_env_file(cfg["state_path"])

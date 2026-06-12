@@ -41,6 +41,7 @@ from ._common import (
     restart_voice_daemon,
     send_html_response,
     send_see_other,
+    guard_read_request,
     guard_mutating_request,
     write_env_file,
 )
@@ -372,6 +373,8 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 weather_state = _load_state(cfg["state_path"])
                 transit_state = read_env_file(cfg["transit_path"])

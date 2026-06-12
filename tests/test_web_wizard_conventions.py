@@ -8,8 +8,20 @@ jasper.web._common.
 from __future__ import annotations
 
 import ast
+import http
+import json
 import re
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
+
+from jasper.web import (
+    google_setup,
+    home_assistant_setup,
+    spotify_setup,
+    system_setup,
+    wifi_setup,
+)
 
 
 WEB_SETUP_FILES = tuple(Path("jasper/web").glob("*_setup.py"))
@@ -57,6 +69,244 @@ def _mutating_handlers():
                 "do_POST", "do_DELETE",
             ):
                 yield path, node.name, ast.get_source_segment(text, node)
+
+
+def _get_handlers():
+    """Yield (path, func_name, source_segment) for every real wizard do_GET."""
+    for path in WEB_PY_FILES:
+        text = path.read_text()
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.FunctionDef) and node.name == "do_GET":
+                yield path, node.name, ast.get_source_segment(text, node)
+
+
+def test_every_wizard_get_handler_uses_the_read_guard():
+    handlers = list(_get_handlers())
+    assert handlers, "expected wizard do_GET handlers to scan"
+    offenders = []
+    for path, name, seg in handlers:
+        if path.name == "__main__.py":
+            assert "_delegate" in seg, (
+                f"{path}::{name} no longer delegates — it must call "
+                "guard_read_request() itself"
+            )
+            continue
+        if "guard_read_request" not in seg:
+            offenders.append(f"{path}::{name}")
+    assert offenders == [], (
+        "wizard GET handlers that never call guard_read_request() "
+        "(the shared Host + Fetch Metadata read chokepoint in "
+        "jasper/web/_common.py):\n" + "\n".join(offenders)
+    )
+
+
+class _WizardGetRequest:
+    """Drive a real wizard Handler instance without opening a socket."""
+
+    def __init__(
+        self,
+        handler_cls,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        h = handler_cls.__new__(handler_cls)
+        h.path = path
+        h.headers = Message()
+        h.headers["Content-Length"] = "0"
+        for key, value in (headers or {}).items():
+            h.headers[key] = value
+        h.rfile = BytesIO()
+        h.wfile = BytesIO()
+        h.client_address = ("127.0.0.1", 0)
+
+        self.status: int | None = None
+        self.sent_headers: list[tuple[str, str]] = []
+        self.wfile = h.wfile
+
+        h.send_response = self._record_status
+        h.send_response_only = self._record_status
+        h.send_header = lambda name, value: self.sent_headers.append((name, value))
+        h.end_headers = lambda: None
+        h.send_error = self._record_status
+        h.address_string = lambda: "127.0.0.1"
+        h.log_message = lambda *a, **k: None
+        self._handler = h
+
+    def _record_status(self, status, *args, **kwargs):  # noqa: ANN001
+        self.status = int(status)
+
+    def do_GET(self):
+        self._handler.do_GET()
+
+
+def test_wizard_get_rejects_dns_rebinding_host():
+    for handler_cls in (wifi_setup._make_handler(), system_setup._make_handler()):
+        req = _WizardGetRequest(handler_cls, "/", headers={"Host": "evil.example"})
+        req.do_GET()
+        assert req.status == int(http.HTTPStatus.FORBIDDEN)
+        assert b"host_not_allowed" in req.wfile.getvalue()
+
+
+def test_wizard_get_rejects_cross_site_fetch_metadata():
+    req = _WizardGetRequest(
+        wifi_setup._make_handler(),
+        "/",
+        headers={
+            "Host": "jts.local",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "cors",
+        },
+    )
+    req.do_GET()
+    assert req.status == int(http.HTTPStatus.FORBIDDEN)
+    assert b"cross_site_request" in req.wfile.getvalue()
+
+
+def test_wizard_get_unknown_route_404s_before_read_guard():
+    for handler_cls in (wifi_setup._make_handler(), system_setup._make_handler()):
+        req = _WizardGetRequest(
+            handler_cls,
+            "/not-a-route",
+            headers={"Host": "evil.example"},
+        )
+        req.do_GET()
+        assert req.status == int(http.HTTPStatus.NOT_FOUND)
+
+
+def test_wizard_get_allows_normal_management_host():
+    for handler_cls in (wifi_setup._make_handler(), system_setup._make_handler()):
+        req = _WizardGetRequest(handler_cls, "/", headers={"Host": "jts.local"})
+        req.do_GET()
+        assert req.status == int(http.HTTPStatus.OK)
+
+
+def test_wizard_get_allows_cross_site_top_level_navigation():
+    req = _WizardGetRequest(
+        system_setup._make_handler(),
+        "/",
+        headers={
+            "Host": "jts.local",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+        },
+    )
+    req.do_GET()
+    assert req.status == int(http.HTTPStatus.OK)
+
+
+def test_state_changing_get_can_reject_cross_site_top_level_navigation():
+    req = _WizardGetRequest(
+        home_assistant_setup._make_handler({"state_path": "/tmp/jts-test-ha.env"}),
+        "/reset",
+        headers={
+            "Host": "jts.local",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+        },
+    )
+    req.do_GET()
+    assert req.status == int(http.HTTPStatus.FORBIDDEN)
+    assert b"cross_site_request" in req.wfile.getvalue()
+
+
+def test_wifi_polling_state_get_still_works_with_normal_host(monkeypatch):
+    monkeypatch.setattr(
+        wifi_setup,
+        "gather_state",
+        lambda: {
+            "adapterPresent": True,
+            "radioOn": True,
+            "hasEthernet": False,
+            "lockoutRisk": "low",
+            "current": None,
+            "saved": [],
+        },
+    )
+    req = _WizardGetRequest(
+        wifi_setup._make_handler(),
+        "/state",
+        headers={"Host": "jts.local"},
+    )
+    req.do_GET()
+    assert req.status == int(http.HTTPStatus.OK)
+    assert json.loads(req.wfile.getvalue().decode())["lockoutRisk"] == "low"
+
+
+def _spotify_handler_cls():
+    return spotify_setup._make_handler({
+        "client_id": "",
+        "mode": "bounce",
+        "registry_path": "/tmp/jts-test-spotify-accounts.json",
+        "bounce_redirect_uri": (
+            "https://jaspercurry.github.io/spotify-oauth-callback/?host=jts.local"
+        ),
+        "manual_redirect_uri": "http://127.0.0.1:8888/callback",
+    })
+
+
+def _google_handler_cls():
+    return google_setup._make_handler({
+        "client_id": "",
+        "client_secret": "",
+        "redirect_uri": (
+            "https://jaspercurry.github.io/google-oauth-callback/?host=jts.local"
+        ),
+        "registry_path": "/tmp/jts-test-google-accounts.json",
+    })
+
+
+def test_oauth_callbacks_allow_cross_site_top_level_navigation():
+    headers = {
+        "Host": "jts.local",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+    }
+    cases = (
+        (_spotify_handler_cls(), "/oauth-callback"),
+        (_google_handler_cls(), "/callback"),
+    )
+    for handler_cls, path in cases:
+        req = _WizardGetRequest(handler_cls, path, headers=headers)
+        req.do_GET()
+        assert req.status == int(http.HTTPStatus.SEE_OTHER)
+
+
+def test_oauth_redirect_follow_index_allows_cross_site_top_level_navigation():
+    headers = {
+        "Host": "jts.local",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+    }
+    cases = (
+        (_spotify_handler_cls(), "/?msg=Linked+Spotify"),
+        (_google_handler_cls(), "/?msg=Linked+Google"),
+    )
+    for handler_cls, path in cases:
+        req = _WizardGetRequest(handler_cls, path, headers=headers)
+        req.do_GET()
+        assert req.status == int(http.HTTPStatus.OK)
+
+
+def test_oauth_callbacks_still_reject_cross_site_fetch_reads():
+    headers = {
+        "Host": "jts.local",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "cors",
+    }
+    cases = (
+        (_spotify_handler_cls(), "/oauth-callback"),
+        (_google_handler_cls(), "/callback"),
+    )
+    for handler_cls, path in cases:
+        req = _WizardGetRequest(handler_cls, path, headers=headers)
+        req.do_GET()
+        assert req.status == int(http.HTTPStatus.FORBIDDEN)
+        assert b"cross_site_request" in req.wfile.getvalue()
 
 
 def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():

@@ -44,6 +44,7 @@ from ._common import (
     canonical_page,
     reject_csrf,
     send_html_response,
+    guard_read_request,
     guard_mutating_request,
 )
 
@@ -393,10 +394,14 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 self._send_html(_landing_html(ctx["csrf_token"]))
                 return
             if path == "/setup":
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 ssid = _read_pi_ssid()
                 firmware = _read_firmware_status()
@@ -405,6 +410,8 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 ))
                 return
             if path == "/scan":
+                if not guard_read_request(self):
+                    return
                 self._send_json({"devices": _list_esp32_s3_ports()})
                 return
             self.send_error(HTTPStatus.NOT_FOUND)

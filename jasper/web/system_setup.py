@@ -46,6 +46,7 @@ from ._common import (
     reject_csrf,
     send_html_response,
     send_proxy_json,
+    guard_read_request,
     guard_mutating_request,
 )
 
@@ -95,16 +96,22 @@ def _make_handler(
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
+                if not guard_read_request(self):
+                    return
                 ctx = begin_request(self)
                 send_html_response(self, _render_page(ctx["csrf_token"]))
                 return
             if path == "/data.json":
+                if not guard_read_request(self):
+                    return
                 status, body = proxy_get(
                     "/system/snapshot", control_base=control_base,
                 )
                 send_proxy_json(self, body, status=status)
                 return
             if path == "/diagnostics.json":
+                if not guard_read_request(self):
+                    return
                 status, body = proxy_get(
                     "/system/diagnostics",
                     control_base=control_base, timeout=30.0,
