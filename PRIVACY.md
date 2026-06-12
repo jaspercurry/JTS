@@ -30,9 +30,11 @@ Wake-event telemetry lives under `/var/lib/jasper/wake-events/`, including
 by `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES` (default 1 GB). SQLite rows remain; WAV
 paths are marked rolled off when audio is pruned.
 
-Wake-corpus and wake-enrollment clips are raw WAVs saved under
-`data/enrollment_positives/` with member names in filenames. This corpus is not
-size-capped; it stays until an operator deletes clips or sessions.
+Wake-corpus and wake-enrollment clips are raw WAVs saved under the configured
+wake-corpus directory (`/var/lib/jasper/enrollment_positives/` on an installed
+speaker; `data/enrollment_positives/` for the standalone CLI/dev default) with
+member names in filenames. This corpus is not size-capped; it stays until an
+operator deletes clips or sessions.
 
 Spend accounting lives in `/var/lib/jasper/usage.db` by default
 (`JASPER_USAGE_DB`). It stores provider/model usage, token counts, estimated
@@ -40,10 +42,12 @@ cost, and time-billed connection intervals. It does not store speech audio or
 transcripts.
 
 System logs stay in journald on the speaker unless an operator exports them,
-for example with `scripts/fetch-pi-logs.sh`. Transcript content is DEBUG-only;
-normal INFO journald logs keep timing/state markers without household
-utterances. Content-bearing tool payload previews for Gmail, Calendar, and Home
-Assistant are redacted at INFO.
+for example with `scripts/fetch-pi-logs.sh`. OpenAI transcript events log
+metadata such as character counts, not transcript text; that keeps both normal
+INFO logs and flight-recorder DEBUG dumps free of household utterances.
+Content-bearing tool payload previews for Gmail, Calendar, and Home Assistant
+are redacted at INFO, and Home Assistant's natural-language tool argument is
+also redacted.
 
 ## Mic Mute Scope
 
