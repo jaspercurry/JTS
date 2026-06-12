@@ -299,7 +299,12 @@ Mode in the consumer apps and dictation in Claude Code.
   `create_response: false` + `interrupt_response: false`, receives
   `speech_started` / `speech_stopped` / `committed` events, and fires
   `response.create` from the `_server_vad_response_trigger` background
-  task. Manual VAD is restored on turn release. The switching is also
+  task. Provider adapters that support this surface implement the public
+  `LiveConnection.set_turn_detection()` / `create_response_only()` hooks
+  and the public `LiveTurn.mark_server_vad()` /
+  `server_speech_started()` / `wait_for_server_eou()` hooks; the older
+  OpenAI private helper names are compatibility wrappers, not the daemon
+  contract. Manual VAD is restored on turn release. The switching is also
   gated on the voice daemon's cheap content-activity observer. Production defaults
   to local Silero (`JASPER_SERVER_VAD_ENABLED=0`) because the May 2026
   A/B matrix found server VAD cut off real utterances and was prone to
@@ -411,6 +416,13 @@ and abandons the turn if `idle_for > JASPER_IDLE_TIMEOUT_SEC` *and* no
 audio has been received yet. The watchdog is protocol-agnostic — all
 adapters share this one timer.
 
+Once audio has started, the same watchdog switches to a response-stall
+cap: if the server has not signalled turn-complete and no new output
+chunk arrives for `JASPER_RESPONSE_STALL_TIMEOUT_SEC` (default 120 s),
+the daemon abandons the turn instead of holding the speaker in session
+forever. Active long responses are unaffected because each chunk refreshes
+`turn.last_chunk_at()`.
+
 That makes the turn class's idle anchor a cross-provider contract:
 **any event from the server that means "model is still working" must
 advance the anchor**, not just audio deltas and the final
@@ -500,4 +512,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-06-09 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice)
+Last verified: 2026-06-12 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`)

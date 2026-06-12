@@ -43,6 +43,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_GROK_MODEL", "JASPER_GROK_VOICE",
         "JASPER_WAKE_MODEL",
         "JASPER_DUCK_DB", "JASPER_DUCK_TRANSPORT",
+        "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
         "JASPER_DAILY_SPEND_CAP_USD",
         "JASPER_MIC_DEVICE", "JASPER_TTS_DEVICE",
         "JASPER_SPEAKER_NAME",
@@ -72,6 +73,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.wake_model == "hey_jarvis"
     assert cfg.duck_db == -25.0
     assert cfg.duck_transport == "fanin"
+    assert cfg.response_stall_timeout_sec == 120
     # Idle context reset is opt-in (0 = disabled). Per-provider so the
     # cost/race tradeoffs can be tuned separately.
     assert cfg.openai_context_reset_sec == 0
@@ -273,8 +275,18 @@ def test_google_setup_url_defaults_to_hostname(monkeypatch):
     [
         ("JASPER_WAKE_THRESHOLD", "abc", "JASPER_WAKE_THRESHOLD must be a number"),
         ("JASPER_IDLE_TIMEOUT_SEC", "abc", "JASPER_IDLE_TIMEOUT_SEC must be a number"),
+        (
+            "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
+            "abc",
+            "JASPER_RESPONSE_STALL_TIMEOUT_SEC must be a number",
+        ),
         ("JASPER_WAKE_THRESHOLD", "1.2", "JASPER_WAKE_THRESHOLD"),
         ("JASPER_IDLE_TIMEOUT_SEC", "0", "JASPER_IDLE_TIMEOUT_SEC"),
+        (
+            "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
+            "0",
+            "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
+        ),
         # 0 is now valid (= disabled); negative is rejected.
         ("JASPER_OPENAI_CONTEXT_RESET_SEC", "-1", "JASPER_OPENAI_CONTEXT_RESET_SEC"),
         ("JASPER_GEMINI_CONTEXT_RESET_SEC", "-1", "JASPER_GEMINI_CONTEXT_RESET_SEC"),
@@ -363,6 +375,17 @@ def test_wake_threshold_default_matches_env_example(monkeypatch):
 
     env_value = float(_parse_env_example()["JASPER_WAKE_THRESHOLD"])
     assert Config.from_env().wake_threshold == env_value
+
+
+def test_response_stall_timeout_default_matches_env_example(monkeypatch):
+    """Mid-response stall recovery must not drift between code and the
+    install-time env seed, or fresh Pis will run a different cap than
+    tests and comments claim."""
+    monkeypatch.delenv("JASPER_RESPONSE_STALL_TIMEOUT_SEC", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    env_value = int(_parse_env_example()["JASPER_RESPONSE_STALL_TIMEOUT_SEC"])
+    assert Config.from_env().response_stall_timeout_sec == env_value
 
 
 def test_config_import_chain_does_not_require_httpx():

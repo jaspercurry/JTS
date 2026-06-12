@@ -9,6 +9,7 @@ import socket
 import sys
 import time
 from collections import deque
+from collections.abc import Coroutine
 from enum import Enum
 
 from .accounts import Registry, maybe_migrate_legacy
@@ -86,6 +87,46 @@ VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
 SYNTHETIC_AUDIO_PROFILE_PROVIDER = "jts"
 SYNTHETIC_AUDIO_PROFILE_UPDATED_AT = "static"
+
+
+def _track_task(
+    task: asyncio.Task,
+    task_set: set[asyncio.Task],
+    *,
+    label: str,
+) -> asyncio.Task:
+    task_set.add(task)
+
+    def _discard(done: asyncio.Task) -> None:
+        task_set.discard(done)
+        try:
+            exc = done.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.warning(
+                "fire-and-forget task %s failed: %s",
+                label,
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    task.add_done_callback(_discard)
+    return task
+
+
+async def _cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
+    tasks = list(task_set)
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+    task_set.difference_update(tasks)
 
 
 class FanInDucker:
@@ -873,7 +914,10 @@ def _build_cues_manager(
     )
 
 
-def _schedule_cue_regen(manager: AudioCueManager) -> None:
+def _schedule_cue_regen(
+    manager: AudioCueManager,
+    task_set: set[asyncio.Task],
+) -> None:
     """Background task: bake any missing / stale cues. Failures
     (network down, API key wrong, quota) are logged but never raised
     — the daemon should still come up if regeneration can't run."""
@@ -891,10 +935,17 @@ def _schedule_cue_regen(manager: AudioCueManager) -> None:
         else:
             logger.info("cue regen: all cues already cached")
 
-    asyncio.create_task(_run(), name="jasper-cues-regen")
+    _track_task(
+        asyncio.create_task(_run(), name="jasper-cues-regen"),
+        task_set,
+        label="jasper-cues-regen",
+    )
 
 
-def _schedule_assistant_loudness_seed(cfg: Config) -> None:
+def _schedule_assistant_loudness_seed(
+    cfg: Config,
+    task_set: set[asyncio.Task],
+) -> None:
     """Opt-in background silent provider test that seeds the loudness profile.
 
     This can spend a small provider TTS request, so it never runs by
@@ -923,7 +974,11 @@ def _schedule_assistant_loudness_seed(cfg: Config) -> None:
                 profile.source_lufs, profile.confidence,
             )
 
-    asyncio.create_task(_run(), name="assistant-loudness-seed")
+    _track_task(
+        asyncio.create_task(_run(), name="assistant-loudness-seed"),
+        task_set,
+        label="assistant-loudness-seed",
+    )
 
 
 def _build_router(cfg: Config) -> Router | None:
@@ -1149,7 +1204,10 @@ async def _play_responses(
 
 
 async def _idle_watchdog(
-    turn: LiveTurn, tts: TtsPlayout, timeout: float,
+    turn: LiveTurn,
+    tts: TtsPlayout,
+    timeout: float,
+    response_stall_timeout: float,
 ) -> None:
     """Close the turn based on explicit server-side signals where
     possible, falling back to a timer when the server stays silent.
@@ -1164,8 +1222,11 @@ async def _idle_watchdog(
         API can take 3-5 s, sometimes longer).
       * Chunks arriving but turn_complete hasn't fired → mid-response
         chunk gaps can be > 1.5 s during normal speech pauses, so a
-        timer here would race with real output. Wait for either
-        turn_complete (case 1) or connection drop.
+        short timer here would race with real output. A separate,
+        generous last-resort cap handles the wedged-provider case:
+        if no new output chunk arrives for `response_stall_timeout`
+        seconds and the server never sends turn_complete, end the turn
+        through the normal teardown path.
 
     Coordinates with ``_play_responses``: the consumer awaits
     ``tts.wait_drained()`` after its final write, while this watchdog
@@ -1198,6 +1259,15 @@ async def _idle_watchdog(
                 float(timeout),
             )
             return
+        if any_chunk_received:
+            stalled_for = now - turn.last_chunk_at()
+            if stalled_for > response_stall_timeout:
+                logger.warning(
+                    "idle timeout (response stalled, %.1fs since last chunk); "
+                    "no turn_complete, ending turn",
+                    stalled_for,
+                )
+                return
 
 
 async def _server_vad_response_trigger(turn, connection) -> None:
@@ -1215,7 +1285,7 @@ async def _server_vad_response_trigger(turn, connection) -> None:
         raise
     if turn.turn_lost():
         return
-    create = getattr(connection, "_create_response_only", None)
+    create = getattr(connection, "create_response_only", None)
     if create is not None and callable(create):
         try:
             await create()
@@ -1482,6 +1552,7 @@ class WakeLoop:
         # SESSION through the teardown so output-stream gates hold.
         self._ending: bool = False
         self._bg_tasks: set[asyncio.Task] = set()
+        self._fire_and_forget: set[asyncio.Task] = set()
         self._refractory_until: float = 0.0
 
         # Room-correction measurement window. When set, the WakeLoop
@@ -1627,6 +1698,21 @@ class WakeLoop:
         # session" — either peering is disabled, or this is a
         # dial-driven session that didn't go through arbitration.
         self._peering_current_epoch: str = ""
+
+    def _create_fire_and_forget_task(
+        self,
+        coro: Coroutine[object, object, object],
+        *,
+        name: str,
+    ) -> asyncio.Task:
+        return _track_task(
+            asyncio.create_task(coro, name=name),
+            self._fire_and_forget,
+            label=name,
+        )
+
+    async def _cancel_fire_and_forget_tasks(self) -> None:
+        await _cancel_tracked_tasks(self._fire_and_forget)
 
     async def play_cue(self, slug: str) -> str:
         """Public wrapper for `_play_cue`, callable via the control
@@ -1851,9 +1937,11 @@ class WakeLoop:
                 else:
                     await self._handle_session_frame(frame)
         finally:
-            # Cancel + join every leg loop on any exit path. Without this
-            # a task could outlive run() and keep scoring frames against a
-            # stopped detector / closed mic.
+            # Cancel + join every leg loop before sweeping tracked side-work.
+            # The leg loops are producers: while they are alive, a late wake
+            # frame can still enqueue acquire/finalize tasks into
+            # _fire_and_forget. Stop producers first so the cancellation sweep
+            # below observes every task created during shutdown.
             for _t in leg_tasks:
                 _t.cancel()
             for _t in leg_tasks:
@@ -1861,6 +1949,7 @@ class WakeLoop:
                     await _t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+            await self._cancel_fire_and_forget_tasks()
 
     async def _wake_leg_loop(self, leg_name: str) -> None:
         """Parallel wake-only consumer for a non-primary leg.
@@ -2221,9 +2310,10 @@ class WakeLoop:
         rt.recent_score = score
         rt.recent_score_at = now_loop
 
-        if score < self._fuser.effective_threshold(
+        firing_threshold = self._fuser.effective_threshold(
             leg, self._current_condition, detector.threshold,
-        ):
+        )
+        if score < firing_threshold:
             return
 
         # Threshold crossed on this leg. Try to win the OR-gate race
@@ -2280,7 +2370,7 @@ class WakeLoop:
         if not self._fuser.verify(leg, fired_set, self._current_condition):
             logger.info(
                 "event=wake.suppressed leg=%s fired=%s threshold=%.2f",
-                leg, fired_legs, detector.threshold,
+                leg, fired_legs, firing_threshold,
             )
             return
 
@@ -2305,7 +2395,7 @@ class WakeLoop:
                 _parts.append(f"score_{_n}={_lr.recent_score:.2f}")
         logger.info(
             "event=wake.detected leg=%s %s threshold=%.2f fired=%s",
-            leg, " ".join(_parts), detector.threshold, fired_legs,
+            leg, " ".join(_parts), firing_threshold, fired_legs,
         )
 
         # Pre-compute the "can we actually serve this turn?" gates.
@@ -2431,7 +2521,7 @@ class WakeLoop:
                 await store.begin_event(
                     event_id=event_id,
                     trigger_kind=trigger_kind,
-                    threshold=self._detector.threshold,
+                    threshold=firing_threshold,
                     wake_model=self._cfg.wake_model,
                     voice_provider=getattr(self._cfg, "voice_provider", None),
                     bridge_config=bridge_config,
@@ -2457,7 +2547,7 @@ class WakeLoop:
             # per the "fire-once-and-exit tasks not in bg_tasks" rule
             # in this file.
             if self._current_event_id is not None:
-                asyncio.create_task(
+                self._create_fire_and_forget_task(
                     self._finalize_event_audio(self._current_event_id),
                     name="wake-event-audio-finalize",
                 )
@@ -2468,7 +2558,7 @@ class WakeLoop:
         # ACQUIRE_BUFFER_MAX_FRAMES). When peering is disabled this
         # task immediately proceeds to the existing acquire-and-drain
         # flow; when enabled, it first awaits the peering UDS verdict.
-        asyncio.create_task(
+        self._create_fire_and_forget_task(
             self._arbitrate_acquire_drain(
                 score=score,
                 rms_dbfs=rms_dbfs,
@@ -2685,7 +2775,7 @@ class WakeLoop:
             # parallel with `_begin_turn` opening rather than adding
             # ~70 ms to time-to-listen. NOT added to self._bg_tasks —
             # any done task in that set would end the turn early.
-            asyncio.create_task(
+            self._create_fire_and_forget_task(
                 self._play_listening_chirp(going_on=True),
                 name="listening-chirp-on",
             )
@@ -3080,7 +3170,7 @@ class WakeLoop:
         if self._connection.is_paused():
             return "PAUSED"
         await self._prepare_assistant_loudness_context()
-        asyncio.create_task(
+        self._create_fire_and_forget_task(
             self._play_listening_chirp(going_on=True),
             name="listening-chirp-on",
         )
@@ -3235,7 +3325,7 @@ class WakeLoop:
                         "interrupt_response": False,
                     })
                     self._server_vad_this_turn = True
-                    mark = getattr(self._turn, "_mark_server_vad", None)
+                    mark = getattr(self._turn, "mark_server_vad", None)
                     if callable(mark):
                         mark()
                     logger.info(
@@ -3282,7 +3372,12 @@ class WakeLoop:
             _play_responses(self._turn, self._tts)
         )
         idle = asyncio.create_task(
-            _idle_watchdog(self._turn, self._tts, self._cfg.idle_timeout_sec)
+            _idle_watchdog(
+                self._turn,
+                self._tts,
+                self._cfg.idle_timeout_sec,
+                self._cfg.response_stall_timeout_sec,
+            )
         )
         self._bg_tasks = {playback, idle}
         if self._server_vad_this_turn:
@@ -3562,7 +3657,7 @@ async def _start_control_socket(
         MUTE                → user-driven mic mute. Drops mic frames
                               at the wake-loop gate, ends any active
                               session, plays a low-pitch click. Runtime
-                              only (no persistence). Idempotent.
+                              state is persisted. Idempotent.
         UNMUTE              → resume listening. Plays a higher-pitch
                               click. Idempotent.
 
@@ -3868,6 +3963,7 @@ async def run() -> None:
         await cues_manager.prerender_text(announcement_text(t))
     timer_scheduler.set_pre_render(_prerender_timer)
 
+    startup_fire_and_forget: set[asyncio.Task] = set()
     stop_event = asyncio.Event()
 
     def _shutdown(*_):
@@ -4021,8 +4117,8 @@ async def run() -> None:
             # Doesn't block daemon "ready" — if regen fails (no
             # internet / bad API key), cues silently won't play; the
             # daemon's other voice paths still work.
-            _schedule_cue_regen(cues_manager)
-            _schedule_assistant_loudness_seed(cfg)
+            _schedule_cue_regen(cues_manager, startup_fire_and_forget)
+            _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)
 
             # Tier 1 of the resilience ladder. Bumped on every mic
             # frame inside WakeLoop.run; pairs with `Type=notify` +
@@ -4077,6 +4173,7 @@ async def run() -> None:
                 except Exception:  # noqa: BLE001
                     pass
     finally:
+        await _cancel_tracked_tasks(startup_fire_and_forget)
         # Stop the scheduler FIRST so any in-flight `_run` tasks that
         # were about to fire get cancelled before we tear down the
         # cue manager / TtsPlayout they'd be calling into.

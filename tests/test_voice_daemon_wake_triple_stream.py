@@ -94,6 +94,7 @@ def _make_wake_loop_triple(
     wl._refractory_until = 0.0
     wl._acquiring = False
     wl._acquire_buffer = MagicMock()
+    wl._fire_and_forget = set()
     wl._wake_event_at_monotonic = 0.0
     wl._spend_cap = MagicMock()
     wl._spend_cap.allowed = MagicMock(return_value=spend_allowed)
@@ -209,6 +210,28 @@ async def test_aec_off_fire_still_records_fire_aec_off():
     kwargs = wl._wake_event_store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_aec_off"
     assert kwargs["peak_score_aec_off"] == pytest.approx(0.88)
+
+
+async def test_non_primary_fire_records_firing_leg_effective_threshold():
+    """begin_event must store the threshold the firing leg actually had
+    to cross. AEC ON can keep the base threshold while AEC OFF is raised
+    for the current condition; if AEC OFF wins, the row should record
+    the raised AEC OFF threshold, not the primary detector's base value."""
+    from jasper.wake_fusion import WakeFuser
+
+    detector_off = _make_detector(threshold=0.5)
+    detector_off.score_frame.return_value = 0.72
+    wl = _make_wake_loop_triple(detector_off=detector_off)
+    wl._fuser = WakeFuser({("off", "music"): 0.2})
+    wl._current_condition = "music"
+    wl._condition_refreshed_at = asyncio.get_event_loop().time()
+
+    await wl._handle_wake_frame(_frame(), leg="off")
+
+    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    assert kwargs["trigger_kind"] == "fire_aec_off"
+    assert kwargs["fired_legs"] == "off"
+    assert kwargs["threshold"] == pytest.approx(0.7)
 
 
 async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_legs():

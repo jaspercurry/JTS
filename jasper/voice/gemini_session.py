@@ -19,7 +19,7 @@ from ._supervisor import (
     FailureFingerprint,
     reconnect_backoff_delay,
 )
-from .session import AudioOutChunk, LiveConnection, LiveTurn, VoiceSession
+from .session import AudioOutChunk, LiveTurn, VoiceSession
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ class ConnectionState(Enum):
     CLOSED = "closed"
 
 
-class GeminiLiveTurn(LiveTurn):
+class GeminiLiveTurn:
     """A single turn against an open `GeminiLiveConnection`.
 
     Owns the per-turn audio queue and per-turn counters. The connection's
@@ -471,7 +471,7 @@ class GeminiLiveTurn(LiveTurn):
             pass
 
 
-class GeminiLiveConnection(LiveConnection):
+class GeminiLiveConnection:
     """Long-lived Gemini Live connection.
 
     One instance per daemon. Holds the SDK client, the active WebSocket
