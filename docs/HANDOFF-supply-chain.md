@@ -15,9 +15,9 @@ The manifest is deliberately small and operational:
 
 - Release archives, source archives, `.deb` files, and model files
   record a SHA-256.
-- Source builds consume commit archive URLs where practical. The
-  immutable commit stays recorded even when the operator-friendly
-  version remains a tag name.
+- Source-build provenance records immutable commit archive URLs where
+  practical. The immutable commit stays recorded even when the
+  operator-friendly version remains a tag name.
 - Install-time source builds consume byte-exact JTS release-asset
   mirrors for upstream GitHub/GitLab auto-generated source archives.
   The upstream commit archive URLs stay in provenance as
