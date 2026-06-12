@@ -291,6 +291,21 @@ async def test_record_window_returns_paired_bytes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_window_threads_mute_gate(tmp_path: Path) -> None:
+    mute_path = tmp_path / "mic_mute.env"
+    _write_mute(mute_path, True)
+
+    with pytest.raises(wake_enroll.MicMutedError, match="mic is muted"):
+        await wake_enroll.record_window(
+            _FakeUdpCapture(sample_value=100),
+            _FakeUdpCapture(sample_value=200),
+            duration_sec=0.15,
+            mic_mute_path=mute_path,
+            mute_poll_interval_sec=0.01,
+        )
+
+
+@pytest.mark.asyncio
 async def test_record_legs_stops_when_mute_flips_mid_capture(
     tmp_path: Path,
 ) -> None:

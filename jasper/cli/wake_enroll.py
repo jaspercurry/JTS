@@ -327,14 +327,24 @@ async def record_legs(
 
 
 async def record_window(
-    udp_on, udp_off, duration_sec: float,
+    udp_on,
+    udp_off,
+    duration_sec: float,
+    *,
+    mic_mute_path: Path | str = MIC_MUTE_STATE_PATH,
+    mute_poll_interval_sec: float = MUTE_POLL_INTERVAL_SEC,
 ) -> tuple[bytes, bytes]:
     """Two-leg convenience wrapper around `record_legs`.
 
     Returns `(on_bytes, off_bytes)` for callers that pre-date the
     triple-leg refactor. New code should use `record_legs` directly.
     """
-    res = await record_legs({"on": udp_on, "off": udp_off}, duration_sec)
+    res = await record_legs(
+        {"on": udp_on, "off": udp_off},
+        duration_sec,
+        mic_mute_path=mic_mute_path,
+        mute_poll_interval_sec=mute_poll_interval_sec,
+    )
     return res["on"], res["off"]
 
 
