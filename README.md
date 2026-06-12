@@ -14,6 +14,8 @@ The pitch: a music streamer that's also a voice assistant, built
 from open hardware and open audio software, with the LLM costing
 roughly $1–3/month at light use on the cheapest provider.
 
+Privacy details: [PRIVACY.md](PRIVACY.md) explains cloud egress, local retention, and mic mute scope.
+
 **Want to set one up?**
 - **Using Claude Code?** Just open this repo and say *"I want to set up
   a JTS speaker"* (or *"set up a Pi"*, *"I just got a new Pi"*,
@@ -470,6 +472,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributors | Quick start, PR flow, testing, doc layout |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Security reporters / maintainers | Supported versions, vulnerability reporting path, current LAN-appliance security model |
+| [PRIVACY.md](PRIVACY.md) | Operators / OSS reviewers | What leaves the device, what stays local, retention defaults, and mic mute scope |
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |
 | [LICENSE-third-party.md](LICENSE-third-party.md) | Redistributors / maintainers | First-pass third-party software, asset, model, and data attribution inventory |

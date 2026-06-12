@@ -624,6 +624,7 @@ title = "Security, OSS readiness, licensing, and maintainer backlog"
 safety = "safe-ci"
 code = [
   "SECURITY.md",
+  "PRIVACY.md",
   "CODE_OF_CONDUCT.md",
   "LICENSE",
   "NOTICE",
@@ -645,6 +646,7 @@ code = [
 ]
 docs = [
   "SECURITY.md",
+  "PRIVACY.md",
   "CODE_OF_CONDUCT.md",
   "LICENSE-third-party.md",
   "docs/OSS-READINESS-TOP-FIVE.md",
