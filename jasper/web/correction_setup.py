@@ -132,6 +132,15 @@ def _reserve_start_slot() -> str | None:
     `/start` and the new session visibly leaving IDLE.
     """
     global _start_in_progress
+    # The pair-balance flow shares this process precisely so the two
+    # measurement surfaces can exclude each other here (both open
+    # measurement_window; concurrent windows would interleave the
+    # renderer stop/start). Lazy import: balance_flow never imports
+    # this module back.
+    from .balance_flow import active_phase as _balance_phase
+    balance_active = _balance_phase()
+    if balance_active is not None:
+        return f"balance:{balance_active}"
     with _session_lock:
         if _start_in_progress:
             return "starting"
@@ -1478,6 +1487,47 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         ) -> None:
             self._send_json({"error": message}, status=status)
 
+        def _dispatch_balance(self, path: str) -> None:
+            """POST /balance/* — the pair-balance flow (balance_flow).
+            /play additionally requires the correction session to be
+            idle: both flows open measurement_window, and this is
+            where the correction side of the mutual exclusion lives
+            (the balance side lives in _reserve_start_slot)."""
+            from . import balance_flow
+            try:
+                if path == "/balance/play":
+                    with _session_lock:
+                        blocked = (
+                            "starting" if _start_in_progress
+                            else _active_state_for_session(_session)
+                        )
+                    if blocked is not None:
+                        self._send_json(
+                            {"ok": False, "error": (
+                                "a room-correction session is active "
+                                f"({blocked})"
+                            )},
+                            status=HTTPStatus.CONFLICT)
+                        return
+                    payload, status = balance_flow.handle_play(
+                        cfg["hostname"], _run_async)
+                elif path == "/balance/upload-capture":
+                    try:
+                        raw = _read_wav_body(self)
+                    except BadRequest as e:
+                        self._send_client_error(str(e))
+                        return
+                    payload, status = balance_flow.handle_upload(raw)
+                elif path == "/balance/apply":
+                    payload, status = balance_flow.handle_apply()
+                else:  # /balance/reset
+                    payload, status = balance_flow.handle_reset()
+                self._send_json(payload, status=int(status))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("%s failed", path)
+                self._send_json({"ok": False, "error": str(e)},
+                                status=500)
+
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
@@ -1489,6 +1539,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/sessions",
                 "/session-report",
                 "/calibration/models",
+                "/balance",
+                "/balance/status",
             }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -1499,6 +1551,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self._send_html(_render_page(
                     cfg["hostname"], ctx["csrf_token"], ctx["flash"],
                 ))
+                return
+            if path == "/balance":
+                from . import balance_flow
+                ctx = begin_request(self)
+                self._send_html(
+                    balance_flow.render_page(ctx["csrf_token"]))
+                return
+            if path == "/balance/status":
+                from . import balance_flow
+                try:
+                    self._send_json(balance_flow.handle_status())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("/balance/status failed")
+                    self._send_json({"error": str(e)}, status=500)
                 return
             if path == "/healthz":
                 body = b"ok\n"
@@ -1564,11 +1630,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/apply",
                 "/reset",
                 "/session/delete",
+                "/balance/play",
+                "/balance/upload-capture",
+                "/balance/apply",
+                "/balance/reset",
             }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not guard_mutating_request(self):
                 reject_csrf(self)
+                return
+            if path.startswith("/balance/"):
+                self._dispatch_balance(path)
                 return
             try:
                 if path == "/start":

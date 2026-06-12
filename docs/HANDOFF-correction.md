@@ -1573,6 +1573,13 @@ Internal:
 
 ---
 
-Last verified: 2026-06-01 (MEASURE_PAUSE now pauses outputd content
-loudness metering instead of the retired TTS RMS tracker; prior 2026-05-31
-advisor/model-call and HTTPS asset notes still apply.)
+Last verified: 2026-06-12 (the pair-balance wizard /balance/* now
+rides this service's process and TLS origin —
+jasper/web/balance_flow.py, dispatched from correction_setup's
+Handler. It opens the same measurement_window, so _reserve_start_slot
+consults balance_flow.active_phase() and /balance/play is gated behind
+the correction session being idle; design + flow live in
+HANDOFF-multiroom.md, not here. Earlier 2026-06-01: MEASURE_PAUSE now
+pauses outputd content loudness metering instead of the retired TTS
+RMS tracker; prior 2026-05-31 advisor/model-call and HTTPS asset notes
+still apply.)
