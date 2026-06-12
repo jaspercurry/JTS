@@ -81,8 +81,10 @@ Caveats this implementation does NOT yet address:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import os
+import socket
 import signal
 import sys
 import threading
@@ -387,6 +389,47 @@ def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:
     while not _shutdown.wait(0.5):
         _bridge_stats.write_snapshot(path)
     _bridge_stats.write_snapshot(path)
+
+
+def emit_packet(
+    *,
+    sock: socket.socket,
+    dest: tuple[str, int],
+    batch: bytearray,
+    pcm: bytes,
+    leg: str,
+) -> None:
+    batch.extend(pcm)
+    if len(batch) < OUT_FRAME_BYTES:
+        return
+    try:
+        sock.sendto(bytes(batch[:OUT_FRAME_BYTES]), dest)
+        _bridge_stats.inc_nested("packets_sent_by_leg", leg)
+    except BlockingIOError:
+        _bridge_stats.inc_nested("udp_send_drops_by_leg", leg)
+        logger.warning("udp %s sendto would block, dropping frame", leg)
+    del batch[:OUT_FRAME_BYTES]
+
+
+@dataclass
+class LegEmitter:
+    sock: socket.socket
+    dest: tuple[str, int]
+    batch: bytearray
+    stats_key: str
+    engine_token: str | None = None
+
+    def emit(self, pcm: bytes) -> None:
+        emit_packet(
+            sock=self.sock,
+            dest=self.dest,
+            batch=self.batch,
+            pcm=pcm,
+            leg=self.stats_key,
+        )
+
+    def close(self) -> None:
+        self.sock.close()
 
 
 class BridgeStalled(RuntimeError):
@@ -1347,7 +1390,6 @@ def _aec_loop(  # noqa: PLR0915
     with a second `arecord` because the bridge already holds the
     Array card exclusively via PortAudio."""
     import math
-    import socket
     import time
     import wave
     if production_chip_aec_enabled and not chip_aec_qs:
@@ -1358,52 +1400,56 @@ def _aec_loop(  # noqa: PLR0915
     # thread can always observe SIGTERM and exit cleanly inside
     # `TimeoutStopSec=5s` — no more SIGKILL, no more snd-aloop
     # kernel-state corruption.
-    out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    out_sock.setblocking(False)
-    out_dest = (OUT_HOST, OUT_PORT)
+    emitters: dict[str, LegEmitter] = {}
+
+    def add_emitter(
+        leg: str,
+        port: int,
+        *,
+        engine_token: str | None = None,
+    ) -> LegEmitter:
+        emitter = LegEmitter(
+            sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+            dest=(OUT_HOST, port),
+            batch=bytearray(),
+            stats_key=leg,
+            engine_token=engine_token,
+        )
+        emitter.sock.setblocking(False)
+        emitters[leg] = emitter
+        return emitter
+
+    on_emitter = add_emitter("on", OUT_PORT)
     # Secondary socket carries the chip-direct mic (pre-AEC3),
     # batched and packetized identically to the primary AEC ON
     # stream. See OUT_PORT_RAW comment above for the rationale.
     # Independent socket so a sendto failure on one stream doesn't
     # affect the other.
-    out_sock_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    out_sock_raw.setblocking(False)
-    out_dest_raw = (OUT_HOST, OUT_PORT_RAW)
+    raw_emitter = add_emitter("off", OUT_PORT_RAW)
     # 4th-leg socket for truly-raw mic 0 (chip channel 2). Same
     # 1280-sample / 16 kHz mono int16 packet shape as the other
     # legs. Independent socket so a sendto failure here doesn't
     # affect the AEC ON or chip-direct paths.
-    out_sock_raw0 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    out_sock_raw0.setblocking(False)
-    out_dest_raw0 = (OUT_HOST, OUT_PORT_RAW0)
-    out_batch_raw0 = bytearray()
-    out_sock_chip_aec: dict[str, socket.socket] = {}
-    out_dest_chip_aec: dict[str, tuple[str, int]] = {}
-    out_batch_chip_aec: dict[str, bytearray] = {}
+    raw0_emitter = add_emitter("raw0", OUT_PORT_RAW0)
+    chip_aec_emitters: dict[str, LegEmitter] = {}
     if chip_aec_qs:
         for leg, port in (
             ("chip_aec_150", OUT_PORT_CHIP_AEC_150),
             ("chip_aec_210", OUT_PORT_CHIP_AEC_210),
         ):
-            out_sock_chip_aec[leg] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            out_sock_chip_aec[leg].setblocking(False)
-            out_dest_chip_aec[leg] = (OUT_HOST, port)
-            out_batch_chip_aec[leg] = bytearray()
+            chip_aec_emitters[leg] = add_emitter(leg, port)
 
     xvf_raw0_engine = None
-    out_sock_xvf_raw0_webrtc = None
-    out_dest_xvf_raw0_webrtc = None
-    out_batch_xvf_raw0_webrtc = bytearray()
+    xvf_raw0_webrtc_emitter = None
     if xvf_raw0_webrtc_enabled:
         xvf_raw0_engine = _select_engine(label="xvf_raw0_webrtc_aec3")
-        out_sock_xvf_raw0_webrtc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        out_sock_xvf_raw0_webrtc.setblocking(False)
-        out_dest_xvf_raw0_webrtc = (OUT_HOST, OUT_PORT_XVF_RAW0_WEBRTC_AEC3)
+        xvf_raw0_webrtc_emitter = add_emitter(
+            "xvf_raw0_webrtc_aec3",
+            OUT_PORT_XVF_RAW0_WEBRTC_AEC3,
+        )
 
     xvf_raw0_dtln_engine = None
-    out_sock_xvf_raw0_dtln = None
-    out_dest_xvf_raw0_dtln = None
-    out_batch_xvf_raw0_dtln = bytearray()
+    xvf_raw0_dtln_emitter = None
     if xvf_raw0_dtln_enabled:
         try:
             from jasper.aec_engines import dtln_models
@@ -1417,9 +1463,10 @@ def _aec_loop(  # noqa: PLR0915
             xvf_raw0_dtln_engine = DTLNEngine(
                 model_dir=default_model_dir(), model_size=xvf_raw0_dtln_size,
             )
-            out_sock_xvf_raw0_dtln = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            out_sock_xvf_raw0_dtln.setblocking(False)
-            out_dest_xvf_raw0_dtln = (OUT_HOST, OUT_PORT_XVF_RAW0_DTLN)
+            xvf_raw0_dtln_emitter = add_emitter(
+                "xvf_raw0_dtln",
+                OUT_PORT_XVF_RAW0_DTLN,
+            )
             logger.info(
                 "XVF raw0 DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
                 xvf_raw0_dtln_size, OUT_HOST, OUT_PORT_XVF_RAW0_DTLN,
@@ -1430,32 +1477,18 @@ def _aec_loop(  # noqa: PLR0915
                 "DTLN couldn't load: %s. Continuing without xvf_raw0_dtln.",
                 e,
             )
-    out_sock_ref = None
-    out_dest_ref = None
-    out_batch_ref = bytearray()
+    ref_emitter = None
     if emit_ref:
-        out_sock_ref = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        out_sock_ref.setblocking(False)
-        out_dest_ref = (OUT_HOST, OUT_PORT_REF)
+        ref_emitter = add_emitter("ref", OUT_PORT_REF)
 
-    out_sock_usb_raw = None
-    out_dest_usb_raw = None
-    out_batch_usb_raw = bytearray()
-    out_sock_usb_webrtc = None
-    out_dest_usb_webrtc = None
-    out_batch_usb_webrtc = bytearray()
+    usb_raw_emitter = None
+    usb_webrtc_emitter = None
     usb_engine = None
     usb_dtln_engine = None
-    out_sock_usb_dtln = None
-    out_dest_usb_dtln = None
-    out_batch_usb_dtln = bytearray()
+    usb_dtln_emitter = None
     if usb_raw_q is not None:
-        out_sock_usb_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        out_sock_usb_raw.setblocking(False)
-        out_dest_usb_raw = (OUT_HOST, OUT_PORT_USB_RAW)
-        out_sock_usb_webrtc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        out_sock_usb_webrtc.setblocking(False)
-        out_dest_usb_webrtc = (OUT_HOST, OUT_PORT_USB_WEBRTC)
+        usb_raw_emitter = add_emitter("usb_raw", OUT_PORT_USB_RAW)
+        usb_webrtc_emitter = add_emitter("usb_webrtc", OUT_PORT_USB_WEBRTC)
         usb_webrtc_overrides = USB_AEC3_CORPUS_OVERRIDES
         usb_webrtc_label = "usb_webrtc/aec3_edge_combo_80"
         usb_webrtc_display_label = USB_AEC3_CORPUS_LABEL
@@ -1493,9 +1526,7 @@ def _aec_loop(  # noqa: PLR0915
                 usb_dtln_engine = DTLNEngine(
                     model_dir=default_model_dir(), model_size=usb_dtln_size,
                 )
-                out_sock_usb_dtln = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                out_sock_usb_dtln.setblocking(False)
-                out_dest_usb_dtln = (OUT_HOST, OUT_PORT_USB_DTLN)
+                usb_dtln_emitter = add_emitter("usb_dtln", OUT_PORT_USB_DTLN)
                 logger.info(
                     "USB DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
                     usb_dtln_size, OUT_HOST, OUT_PORT_USB_DTLN,
@@ -1534,15 +1565,12 @@ def _aec_loop(  # noqa: PLR0915
                         variant.leg, e,
                     )
                     continue
-                variant_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                variant_sock.setblocking(False)
                 variant_port = OUT_PORT_AEC3_SWEEP[variant.leg]
+                variant_emitter = add_emitter(variant.leg, variant_port)
                 aec3_sweep_paths.append({
                     "variant": variant,
                     "engine": variant_engine,
-                    "sock": variant_sock,
-                    "dest": (OUT_HOST, variant_port),
-                    "batch": bytearray(),
+                    "emitter": variant_emitter,
                     "input_source": AEC3_SWEEP_INPUT_SOURCE,
                 })
                 logger.info(
@@ -1568,40 +1596,18 @@ def _aec_loop(  # noqa: PLR0915
                     engine_variant.close()
                 except Exception:  # noqa: BLE001
                     pass
-                try:
-                    path["sock"].close()
-                except OSError:
-                    pass
+                emitter = path["emitter"]
+                emitter.close()
+                emitters.pop(variant.leg, None)
                 aec3_sweep_paths.remove(path)
                 continue
-            batch = path["batch"]
-            batch.extend(variant_clean)
-            if len(batch) >= OUT_FRAME_BYTES:
-                try:
-                    path["sock"].sendto(
-                        bytes(batch[:OUT_FRAME_BYTES]),
-                        path["dest"],
-                    )
-                    _bridge_stats.inc_nested(
-                        "packets_sent_by_leg", variant.leg,
-                    )
-                except BlockingIOError:
-                    _bridge_stats.inc_nested(
-                        "udp_send_drops_by_leg", variant.leg,
-                    )
-                    logger.warning(
-                        "udp %s sendto would block, dropping frame",
-                        variant.leg,
-                    )
-                del batch[:OUT_FRAME_BYTES]
+            path["emitter"].emit(variant_clean)
 
     # Optional DTLN-aec parallel engine. Constructed once, mutated
     # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
     # for the streaming algorithm.
     dtln_engine = None
-    out_sock_dtln = None
-    out_dest_dtln = None
-    out_batch_dtln = bytearray()
+    dtln_emitter = None
     dtln_wanted = (
         not production_chip_aec_enabled
     ) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0")
@@ -1616,9 +1622,7 @@ def _aec_loop(  # noqa: PLR0915
             dtln_engine = DTLNEngine(
                 model_dir=default_model_dir(), model_size=dtln_size,
             )
-            out_sock_dtln = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            out_sock_dtln.setblocking(False)
-            out_dest_dtln = (OUT_HOST, OUT_PORT_DTLN)
+            dtln_emitter = add_emitter("dtln", OUT_PORT_DTLN)
             _bridge_stats.set_leg_engine("dtln", enabled=True, loaded=True)
             logger.info(
                 "DTLN-aec engine enabled: size=%d, udp out=%s:%d",
@@ -1650,7 +1654,7 @@ def _aec_loop(  # noqa: PLR0915
         ("chip_aec_150", OUT_PORT_CHIP_AEC_150),
         ("chip_aec_210", OUT_PORT_CHIP_AEC_210),
     ):
-        if leg in out_sock_chip_aec:
+        if leg in chip_aec_emitters:
             output_parts.append(f"{leg}={OUT_HOST}:{port}")
     if xvf_raw0_engine is not None:
         output_parts.append(f"xvf_raw0_webrtc_aec3={OUT_HOST}:{OUT_PORT_XVF_RAW0_WEBRTC_AEC3}")
@@ -1672,14 +1676,9 @@ def _aec_loop(  # noqa: PLR0915
         "udp outputs: %s frame=%d samples (%d bytes)",
         " ".join(output_parts), OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
-    # Aggregate four AEC frames (320 samples each) into one UDP
-    # packet (1280 samples = MicCapture.OUTPUT_FRAME_SAMPLES) so
-    # voice's UdpMicCapture sees the same chunk size it gets from
-    # the PortAudio path. Bytearray rather than list-of-bytes to
-    # avoid per-frame allocation churn. The _raw batch tracks the
-    # chip-direct mic stream on the same cadence.
-    out_batch = bytearray()
-    out_batch_raw = bytearray()
+    # Each LegEmitter aggregates four 320-sample frames into one
+    # 1280-sample UDP packet so voice's UdpMicCapture sees the same
+    # chunk size it gets from the PortAudio path.
     silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
     # Cold-start value for ref carry-forward. Used only until the first
     # real ref frame arrives — after that, last_ref_bytes always holds
@@ -1687,25 +1686,6 @@ def _aec_loop(  # noqa: PLR0915
     # why we carry forward instead of falling back to silence.
     last_ref_bytes = silence
     frames_processed = 0
-
-    def emit_packet(
-        *,
-        sock: socket.socket,
-        dest: tuple[str, int],
-        batch: bytearray,
-        pcm: bytes,
-        leg: str,
-    ) -> None:
-        batch.extend(pcm)
-        if len(batch) < OUT_FRAME_BYTES:
-            return
-        try:
-            sock.sendto(bytes(batch[:OUT_FRAME_BYTES]), dest)
-            _bridge_stats.inc_nested("packets_sent_by_leg", leg)
-        except BlockingIOError:
-            _bridge_stats.inc_nested("udp_send_drops_by_leg", leg)
-            logger.warning("udp %s sendto would block, dropping frame", leg)
-        del batch[:OUT_FRAME_BYTES]
 
     # Optional debug WAV writers — see `_aec_loop` docstring.
     debug_dir = os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
@@ -1826,18 +1806,7 @@ def _aec_loop(  # noqa: PLR0915
                 _bridge_stats.inc("ref_starved_frames")
             ref_bytes = last_ref_bytes
             if emit_ref:
-                out_batch_ref.extend(ref_bytes)
-                if len(out_batch_ref) >= OUT_FRAME_BYTES:
-                    try:
-                        out_sock_ref.sendto(
-                            bytes(out_batch_ref[:OUT_FRAME_BYTES]),
-                            out_dest_ref,
-                        )
-                        _bridge_stats.inc_nested("packets_sent_by_leg", "ref")
-                    except BlockingIOError:
-                        _bridge_stats.inc_nested("udp_send_drops_by_leg", "ref")
-                        logger.warning("udp ref sendto would block, dropping frame")
-                    del out_batch_ref[:OUT_FRAME_BYTES]
+                ref_emitter.emit(ref_bytes)
 
             # Emit chip-direct mic on OUT_PORT_RAW BEFORE running
             # the AEC engine. This is the "AEC OFF" leg the
@@ -1856,13 +1825,7 @@ def _aec_loop(  # noqa: PLR0915
                     raw_agc.process(mic_bytes) if raw_agc is not None
                     else mic_bytes
                 )
-                emit_packet(
-                    sock=out_sock_raw,
-                    dest=out_dest_raw,
-                    batch=out_batch_raw,
-                    pcm=raw_emit_bytes,
-                    leg="off",
-                )
+                raw_emitter.emit(raw_emit_bytes)
 
             # Truly-raw mic 0 (chip channel 2 — no chip DSP) UDP
             # leg. Drained independently of mic_q so a backlog on
@@ -1879,13 +1842,7 @@ def _aec_loop(  # noqa: PLR0915
                 except Empty:
                     pass
                 if raw0_bytes:
-                    emit_packet(
-                        sock=out_sock_raw0,
-                        dest=out_dest_raw0,
-                        batch=out_batch_raw0,
-                        pcm=raw0_bytes,
-                        leg="raw0",
-                    )
+                    raw0_emitter.emit(raw0_bytes)
                     if xvf_raw0_engine is not None:
                         try:
                             xvf_raw0_clean = xvf_raw0_engine.process(
@@ -1900,13 +1857,7 @@ def _aec_loop(  # noqa: PLR0915
                             xvf_raw0_engine = None
                             xvf_raw0_clean = b""
                         if xvf_raw0_clean:
-                            emit_packet(
-                                sock=out_sock_xvf_raw0_webrtc,
-                                dest=out_dest_xvf_raw0_webrtc,
-                                batch=out_batch_xvf_raw0_webrtc,
-                                pcm=xvf_raw0_clean,
-                                leg="xvf_raw0_webrtc_aec3",
-                            )
+                            xvf_raw0_webrtc_emitter.emit(xvf_raw0_clean)
                     if xvf_raw0_dtln_engine is not None:
                         try:
                             xvf_raw0_dtln_clean = xvf_raw0_dtln_engine.process(
@@ -1921,13 +1872,7 @@ def _aec_loop(  # noqa: PLR0915
                             xvf_raw0_dtln_engine = None
                             xvf_raw0_dtln_clean = b""
                         if xvf_raw0_dtln_clean:
-                            emit_packet(
-                                sock=out_sock_xvf_raw0_dtln,
-                                dest=out_dest_xvf_raw0_dtln,
-                                batch=out_batch_xvf_raw0_dtln,
-                                pcm=xvf_raw0_dtln_clean,
-                                leg="xvf_raw0_dtln",
-                            )
+                            xvf_raw0_dtln_emitter.emit(xvf_raw0_dtln_clean)
 
             chip_frames: dict[str, bytes] = {}
             if chip_aec_qs:
@@ -1937,13 +1882,7 @@ def _aec_loop(  # noqa: PLR0915
                     except Empty:
                         continue
                     chip_frames[leg] = chip_bytes
-                    emit_packet(
-                        sock=out_sock_chip_aec[leg],
-                        dest=out_dest_chip_aec[leg],
-                        batch=out_batch_chip_aec[leg],
-                        pcm=chip_bytes,
-                        leg=leg,
-                    )
+                    chip_aec_emitters[leg].emit(chip_bytes)
 
             if production_chip_aec_enabled:
                 clean = chip_frames.get(chip_aec_primary_leg, b"")
@@ -1981,22 +1920,7 @@ def _aec_loop(  # noqa: PLR0915
                     dtln_engine = None
                     dtln_clean = b""
                 if dtln_clean:
-                    out_batch_dtln.extend(dtln_clean)
-                    if len(out_batch_dtln) >= OUT_FRAME_BYTES:
-                        try:
-                            out_sock_dtln.sendto(
-                                bytes(out_batch_dtln[:OUT_FRAME_BYTES]),
-                                out_dest_dtln,
-                            )
-                            _bridge_stats.inc_nested("packets_sent_by_leg", "dtln")
-                        except BlockingIOError:
-                            _bridge_stats.inc_nested(
-                                "udp_send_drops_by_leg", "dtln",
-                            )
-                            logger.warning(
-                                "udp dtln sendto would block, dropping frame"
-                            )
-                        del out_batch_dtln[:OUT_FRAME_BYTES]
+                    dtln_emitter.emit(dtln_clean)
 
             if AEC3_SWEEP_INPUT_SOURCE == AEC3_SWEEP_SOURCE_XVF:
                 emit_aec3_sweep(mic_bytes, ref_bytes)
@@ -2007,24 +1931,7 @@ def _aec_loop(  # noqa: PLR0915
                 except Empty:
                     usb_bytes = b""
                 if usb_bytes:
-                    out_batch_usb_raw.extend(usb_bytes)
-                    if len(out_batch_usb_raw) >= OUT_FRAME_BYTES:
-                        try:
-                            out_sock_usb_raw.sendto(
-                                bytes(out_batch_usb_raw[:OUT_FRAME_BYTES]),
-                                out_dest_usb_raw,
-                            )
-                            _bridge_stats.inc_nested(
-                                "packets_sent_by_leg", "usb_raw",
-                            )
-                        except BlockingIOError:
-                            _bridge_stats.inc_nested(
-                                "udp_send_drops_by_leg", "usb_raw",
-                            )
-                            logger.warning(
-                                "udp usb_raw sendto would block, dropping frame"
-                            )
-                        del out_batch_usb_raw[:OUT_FRAME_BYTES]
+                    usb_raw_emitter.emit(usb_bytes)
 
                     if usb_engine is not None:
                         try:
@@ -2038,25 +1945,7 @@ def _aec_loop(  # noqa: PLR0915
                             usb_engine = None
                             usb_clean = b""
                         if usb_clean:
-                            out_batch_usb_webrtc.extend(usb_clean)
-                            if len(out_batch_usb_webrtc) >= OUT_FRAME_BYTES:
-                                try:
-                                    out_sock_usb_webrtc.sendto(
-                                        bytes(out_batch_usb_webrtc[:OUT_FRAME_BYTES]),
-                                        out_dest_usb_webrtc,
-                                    )
-                                    _bridge_stats.inc_nested(
-                                        "packets_sent_by_leg", "usb_webrtc",
-                                    )
-                                except BlockingIOError:
-                                    _bridge_stats.inc_nested(
-                                        "udp_send_drops_by_leg", "usb_webrtc",
-                                    )
-                                    logger.warning(
-                                        "udp usb_webrtc sendto would block, "
-                                        "dropping frame"
-                                    )
-                                del out_batch_usb_webrtc[:OUT_FRAME_BYTES]
+                            usb_webrtc_emitter.emit(usb_clean)
 
                     if usb_dtln_engine is not None:
                         try:
@@ -2072,25 +1961,7 @@ def _aec_loop(  # noqa: PLR0915
                             usb_dtln_engine = None
                             usb_dtln_clean = b""
                         if usb_dtln_clean:
-                            out_batch_usb_dtln.extend(usb_dtln_clean)
-                            if len(out_batch_usb_dtln) >= OUT_FRAME_BYTES:
-                                try:
-                                    out_sock_usb_dtln.sendto(
-                                        bytes(out_batch_usb_dtln[:OUT_FRAME_BYTES]),
-                                        out_dest_usb_dtln,
-                                    )
-                                    _bridge_stats.inc_nested(
-                                        "packets_sent_by_leg", "usb_dtln",
-                                    )
-                                except BlockingIOError:
-                                    _bridge_stats.inc_nested(
-                                        "udp_send_drops_by_leg", "usb_dtln",
-                                    )
-                                    logger.warning(
-                                        "udp usb_dtln sendto would block, "
-                                        "dropping frame"
-                                    )
-                                del out_batch_usb_dtln[:OUT_FRAME_BYTES]
+                            usb_dtln_emitter.emit(usb_dtln_clean)
                     if AEC3_SWEEP_INPUT_SOURCE == AEC3_SWEEP_SOURCE_USB:
                         emit_aec3_sweep(usb_bytes, ref_bytes)
 
@@ -2114,21 +1985,7 @@ def _aec_loop(  # noqa: PLR0915
                 # of hard-clipping. Below ±~26000 it's near-linear.
                 arr = 32767.0 * np.tanh(arr / 32767.0)
                 clean = arr.astype(np.int16).tobytes()
-            out_batch.extend(clean)
-            if len(out_batch) >= OUT_FRAME_BYTES:
-                # `sendto` is non-blocking (setblocking(False) above).
-                # On `lo` at ~256 kbps, the kernel UDP send buffer
-                # never fills, so BlockingIOError essentially never
-                # fires; if it ever does, dropping the packet is the
-                # right call (voice sees an 80 ms gap, recovers next
-                # frame).
-                try:
-                    out_sock.sendto(bytes(out_batch[:OUT_FRAME_BYTES]), out_dest)
-                    _bridge_stats.inc_nested("packets_sent_by_leg", "on")
-                except BlockingIOError:
-                    _bridge_stats.inc_nested("udp_send_drops_by_leg", "on")
-                    logger.warning("udp out sendto would block, dropping frame")
-                del out_batch[:OUT_FRAME_BYTES]
+            on_emitter.emit(clean)
             frames_processed += 1
             _bridge_stats.inc("frames_processed")
             if heartbeat is not None:
@@ -2191,38 +2048,17 @@ def _aec_loop(  # noqa: PLR0915
                 _out_clipped_samples = _out_total_samples = 0
                 _ref_starved_frames = 0
     finally:
-        out_sock.close()
-        out_sock_raw.close()
-        out_sock_raw0.close()
-        for sock in out_sock_chip_aec.values():
-            sock.close()
-        if out_sock_xvf_raw0_webrtc is not None:
-            out_sock_xvf_raw0_webrtc.close()
-        if out_sock_xvf_raw0_dtln is not None:
-            out_sock_xvf_raw0_dtln.close()
+        for emitter in emitters.values():
+            emitter.close()
         if xvf_raw0_engine is not None:
             xvf_raw0_engine.close()
         if xvf_raw0_dtln_engine is not None:
             xvf_raw0_dtln_engine.close()
-        if out_sock_ref is not None:
-            out_sock_ref.close()
-        if out_sock_usb_raw is not None:
-            out_sock_usb_raw.close()
-        if out_sock_usb_webrtc is not None:
-            out_sock_usb_webrtc.close()
-        if out_sock_usb_dtln is not None:
-            out_sock_usb_dtln.close()
         if usb_engine is not None:
             usb_engine.close()
         if usb_dtln_engine is not None:
             usb_dtln_engine.close()
-        if out_sock_dtln is not None:
-            out_sock_dtln.close()
         for path in aec3_sweep_paths:
-            try:
-                path["sock"].close()
-            except OSError:
-                pass
             try:
                 path["engine"].close()
             except Exception:  # noqa: BLE001
