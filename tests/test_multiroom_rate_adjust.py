@@ -547,3 +547,84 @@ def test_outputd_grouping_env_arms_tts_socket_with_the_lane():
     assert bonded[OUTPUTD_TTS_SOCKET_ENV] == OUTPUTD_TTS_SOCKET
     solo = outputd_grouping_env(_cfg())
     assert solo[OUTPUTD_TTS_SOCKET_ENV] == ""  # empty = unset to outputd
+
+
+def _pair_channels_check(monkeypatch, *, cfg, leader_payload=None,
+                         leader_error=None):
+    import jasper.cli.doctor.grouping as groupmod  # noqa: F401 — import side
+    import jasper.multiroom.config as cfgmod
+    from jasper.cli.doctor.grouping import check_grouping_pair_channels
+    from jasper.control import client as control_client
+
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
+
+    class _Resp:
+        def json(self):
+            return {"grouping": leader_payload}
+
+    def fake_get(path, *, base_url, timeout):
+        if leader_error is not None:
+            raise leader_error
+        assert path == "/grouping"
+        assert base_url == f"http://{cfg.leader_addr}:8780"
+        return _Resp()
+
+    monkeypatch.setattr(control_client, "get", fake_get)
+    return check_grouping_pair_channels()
+
+
+def test_pair_channels_check_skips_solo_and_leader(monkeypatch):
+    assert _pair_channels_check(monkeypatch, cfg=_cfg()).status == "ok"
+    assert _pair_channels_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+    ).status == "ok"
+
+
+def test_pair_channels_check_warns_on_same_channel_pair(monkeypatch):
+    """The cross-member drift no member-local check can see: both speakers
+    on one channel after an interrupted swap whose rollback failed."""
+    r = _pair_channels_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="left",
+                 bond_id="b", leader_addr="jts.local"),
+        leader_payload={"bond_id": "b", "channel": "left"},
+    )
+    assert r.status == "warn"
+    assert "BOTH speakers" in r.detail
+    assert "Swap" in r.detail  # remediation is one tap
+
+
+def test_pair_channels_check_ok_when_coherent(monkeypatch):
+    r = _pair_channels_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+        leader_payload={"bond_id": "b", "channel": "left"},
+    )
+    assert r.status == "ok"
+    assert "coherent" in r.detail
+
+
+def test_pair_channels_check_unreachable_leader_defers_to_health(monkeypatch):
+    """Connectivity already has an owner (grouping health) — this check
+    must not double-report one root cause."""
+    r = _pair_channels_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+        leader_error=OSError("no route"),
+    )
+    assert r.status == "ok"
+    assert "could not compare" in r.detail
+
+
+def test_pair_channels_check_warns_on_bond_mismatch(monkeypatch):
+    r = _pair_channels_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+        leader_payload={"bond_id": "OTHER", "channel": "left"},
+    )
+    assert r.status == "warn"
+    assert "re-pair" in r.detail

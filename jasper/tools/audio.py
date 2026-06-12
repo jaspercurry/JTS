@@ -13,14 +13,11 @@ function-call layer sees.
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
-import urllib.request
 from typing import TYPE_CHECKING
 
 from . import tool
+from ..control.client import AsyncControlClient, ControlError
 
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeCoordinator
@@ -40,50 +37,32 @@ DEFAULT_STEP_PERCENT = 10
 
 logger = logging.getLogger(__name__)
 
-# jasper-control's local HTTP port — same default the systemd unit uses.
-_CONTROL_PORT = int(os.environ.get("JASPER_CONTROL_PORT", "8780"))
+# The control-API transport is OWNED by jasper.control.client (base URL,
+# timeout policy, error model) — the tools compose it instead of re-rolling
+# urllib. 4 s outer timeout covers jasper-control's own 2.5 s leader hop.
+# Module-level so tests can swap in a fake; constructed lazily so importing
+# this module costs nothing on speakers that never bond.
+_control_client: AsyncControlClient | None = None
 
-# Test seam for the one network call (mirrors control server's
-# _pair_urlopen — patching the stdlib would intercept unrelated clients).
-_pair_urlopen = urllib.request.urlopen
+
+def _get_control_client() -> AsyncControlClient:
+    global _control_client
+    if _control_client is None:
+        _control_client = AsyncControlClient(timeout=4.0)
+    return _control_client
 
 
-def _pair_volume_request(path: str, body: dict | None) -> dict | None:
-    """Drive a volume change through the LOCAL control API when this
-    speaker is an ACTIVE bonded follower, returning the relayed result.
+def _pair_follower_active() -> bool:
+    """True when this speaker is an ACTIVE bonded follower — the one shared
+    predicate (multiroom.config.follower_leader_addr), read fresh from the
+    tiny grouping.env each call. While bonded, the follower's own
+    coordinator is INAUDIBLE (bonded content bypasses its CamillaDSP), so
+    "Jarvis, louder" spoken to the follower must move the PAIR volume via
+    the local control API — whose /volume* handlers already forward to the
+    leader. One forwarding implementation total."""
+    from ..multiroom.config import follower_leader_addr, load_config
 
-    While bonded, the follower's own coordinator is INAUDIBLE — bonded
-    content bypasses its CamillaDSP entirely — so "Jarvis, louder" spoken
-    to the follower must move the PAIR volume. jasper-control already owns
-    the one forwarding implementation (its /volume* handlers relay to the
-    leader), so the tools reuse it via loopback rather than growing a
-    second forward here. Returns None when this speaker is solo/leader
-    (callers use the local coordinator as always). Raises on transport
-    failure — the async wrapper turns that into a spoken error, never a
-    silent inert write. Sync by design; called via asyncio.to_thread.
-    """
-    from ..multiroom.config import load_config
-
-    cfg = load_config()
-    if not (
-        cfg.enabled
-        and cfg.error is None
-        and cfg.role == "follower"
-        and cfg.leader_addr
-    ):
-        return None
-    url = f"http://127.0.0.1:{_CONTROL_PORT}{path}"
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST" if body is not None else "GET",
-    )
-    # 4 s: covers control's own 2.5 s leader hop plus loopback overhead.
-    with _pair_urlopen(req, timeout=4.0) as resp:
-        payload = json.loads(resp.read().decode())
-    return payload if isinstance(payload, dict) else {}
+    return follower_leader_addr(load_config()) is not None
 
 
 def _percent_to_db(percent: int) -> float:
@@ -113,9 +92,15 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
         A dict → the pair-volume result to return, or an `error` the LLM
         speaks — never fall back to the local coordinator on failure,
         whose writes are inaudible while bonded (a lie to the user)."""
+        if not _pair_follower_active():
+            return None
+        client = _get_control_client()
         try:
-            return await asyncio.to_thread(_pair_volume_request, path, body)
-        except Exception as e:  # noqa: BLE001 — degrade to a spoken error
+            if body is None:
+                resp = await client.get(path)
+            else:
+                resp = await client.post(path, body)
+        except ControlError as e:
             logger.warning(
                 "event=volume.pair_tool_forward_failed path=%s error=%s",
                 path, e,
@@ -124,6 +109,17 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
                 "error": "Couldn't reach the pair leader to change the "
                          "volume. The other speaker may be offline.",
             }
+        payload = resp.json()
+        payload = payload if isinstance(payload, dict) else {}
+        if not resp.ok:
+            # jasper-control relays the leader's own error verdicts
+            # (status + body) — pass the specific reason to the LLM.
+            return {
+                "error": str(payload.get("error"))
+                if payload.get("error")
+                else "The pair leader rejected the volume change.",
+            }
+        return payload
 
     @tool()
     async def get_volume() -> dict:

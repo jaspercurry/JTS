@@ -383,5 +383,4 @@ mod tests {
         assert!(matches!(read_command(&mut reader), Ok(None)));
     }
 
-    // ---------- the bridge against the REAL engine ----------
 }

@@ -2441,3 +2441,31 @@ def test_volume_mute_non_bool_muted_is_400(server_with_coordinator):
     status, body = _post(f"{base}/volume/mute", {"muted": "yes"})
     assert status == 400
     assert "boolean" in body["error"]
+
+
+def test_follower_forward_relays_leader_http_verdict(
+    monkeypatch, server_with_coordinator,
+):
+    """A leader that ANSWERS with 4xx/5xx is relayed verbatim (status +
+    JSON body, pair_leader-tagged) — never mislabeled 'unreachable'. Only
+    transport failures take the 502 path."""
+    import io
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod, "_pair_follower_leader_addr", lambda: "jts.local",
+    )
+
+    def rejecting_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 400, "Bad Request", hdrs=None,
+            fp=io.BytesIO(b'{"error": "percent must be an integer"}'),
+        )
+
+    monkeypatch.setattr(srv_mod, "_pair_urlopen", rejecting_urlopen)
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/set", {"percent": "shout"})
+    assert status == 400
+    assert body == {"error": "percent must be an integer",
+                    "pair_leader": "jts.local"}
+    assert fake.calls == []  # local coordinator untouched

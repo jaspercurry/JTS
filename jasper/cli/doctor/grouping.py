@@ -344,6 +344,64 @@ def check_grouping_tts_lane() -> CheckResult:
     )
 
 
+@doctor_check(order=75.7, group="grouping")
+def check_grouping_pair_channels() -> CheckResult:
+    """Cross-MEMBER channel coherence — the one drift no member-local check
+    can see. A same-channel pair ({left,left} / {right,right}) is the
+    residue of an interrupted swap whose rollback also failed: audibly
+    wrong, yet each member's env matches its OWN config, so runtime health
+    and the channel-pick check both read green. The FOLLOWER owns this
+    probe (it already knows its leader's address; the leader would need
+    mDNS discovery) — one GET of the leader's /grouping, compared against
+    our own channel. Remediation is one tap: /rooms Swap repairs a
+    same-channel pair to left/right."""
+    from ...multiroom.config import is_active_member, load_config
+
+    label = "grouping: pair channels"
+    cfg = load_config()
+    if not is_active_member(cfg) or cfg.role != "follower":
+        return CheckResult(label, "ok", "solo / not a bonded follower (n/a)")
+    if cfg.channel not in ("left", "right"):
+        return CheckResult(
+            label, "ok", f"channel={cfg.channel or '?'} (not an L/R pair, n/a)",
+        )
+    from ...control import client as control_client
+    from ...multiroom.state import parse_grouping_response
+
+    try:
+        resp = control_client.get(
+            "/grouping",
+            base_url=f"http://{cfg.leader_addr}:8780",
+            timeout=2.0,
+        )
+        leader = parse_grouping_response(resp.json()) or {}
+    except Exception as e:  # noqa: BLE001 — connectivity has its own check
+        return CheckResult(
+            label, "ok",
+            f"could not compare (leader {cfg.leader_addr} unreachable: {e} "
+            "— connectivity is covered by the grouping health check)",
+        )
+    leader_channel = str(leader.get("channel") or "")
+    if str(leader.get("bond_id") or "") != cfg.bond_id:
+        return CheckResult(
+            label, "warn",
+            f"leader {cfg.leader_addr} reports bond "
+            f"{leader.get('bond_id') or '(none)'} but this follower is in "
+            f"{cfg.bond_id} — re-pair from /rooms",
+        )
+    if leader_channel == cfg.channel:
+        return CheckResult(
+            label, "warn",
+            f"BOTH speakers play the {cfg.channel} channel — an interrupted "
+            "swap left the pair on one side; press Swap on /rooms (it "
+            "repairs a same-channel pair to left/right)",
+        )
+    return CheckResult(
+        label, "ok",
+        f"this={cfg.channel} leader={leader_channel or '?'} (coherent)",
+    )
+
+
 # NOTE: the former ``check_grouping_tts_separation`` (order 78) was REMOVED
 # 2026-06-11 with the rest of the retired outputd-as-producer machinery
 # (`SnapfifoSink` / `SNAPFIFO_PRODUCER_WIRED` / the reconciler tap limb): the

@@ -30,6 +30,7 @@ Fail-safe vs fail-loud:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -66,6 +67,14 @@ BUFFER_MS_HI = 1500
 # corrected — an unknown codec would make snapserver refuse to start.
 ALLOWED_CODECS = ("pcm", "flac", "opus")
 DEFAULT_CODEC = "flac"
+
+# A follower's leader_addr must be hostname/IPv4-shaped: it is consumed by
+# THREE surfaces (snapclient argv, the control-API volume forward's URL
+# build, the landing page's leader link) and a string with '/', '@', or
+# whitespace would reshape a URL rather than name a host. Same alphabet as
+# the landing page's HOST_RE gate — one rule, enforced at validation time
+# so every consumer downstream can trust the shape.
+_LEADER_ADDR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
 
 
 @dataclass(frozen=True)
@@ -199,6 +208,11 @@ def validate_grouping(
         )
     if role == "follower" and not leader_addr:
         return "JASPER_GROUPING_LEADER_ADDR is empty for role=follower"
+    if leader_addr and not _LEADER_ADDR_RE.match(leader_addr):
+        return (
+            f"JASPER_GROUPING_LEADER_ADDR={leader_addr!r} is not a "
+            "hostname or IPv4 address"
+        )
     return None
 
 
@@ -275,3 +289,14 @@ def is_active_member(cfg: GroupingConfig) -> bool:
     invalid config (nothing is streaming there, so it is NOT an active member).
     """
     return cfg.enabled and cfg.error is None
+
+
+def follower_leader_addr(cfg: GroupingConfig) -> str | None:
+    """The leader's handle when ``cfg`` is an ACTIVE bonded FOLLOWER, else
+    None. The one predicate behind every pair-forward gate (jasper-control's
+    /volume* proxy, the voice tools' loopback reuse of it) — composed from
+    :func:`is_active_member` so bond-validity semantics can grow in one
+    place. PURE."""
+    if is_active_member(cfg) and cfg.role == "follower" and cfg.leader_addr:
+        return cfg.leader_addr
+    return None

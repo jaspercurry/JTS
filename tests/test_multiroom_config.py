@@ -446,3 +446,46 @@ def test_is_enabled_true_for_configured_but_invalid(tmp_path):
 
 def test_is_enabled_absent_file(tmp_path):
     assert is_enabled(str(tmp_path / "missing.env")) is False
+
+
+def test_validate_grouping_leader_addr_shape_gate():
+    """leader_addr feeds THREE consumers (snapclient argv, the control-API
+    volume forward's URL build, the landing page's leader link) — a value
+    with '/', '@', or whitespace would reshape a URL rather than name a
+    host, so validation enforces hostname/IPv4 shape (same alphabet as the
+    landing page's HOST_RE gate)."""
+    from jasper.multiroom.config import validate_grouping
+
+    def err(addr):
+        return validate_grouping(
+            role="follower", channel="right", bond_id="b", leader_addr=addr,
+        )
+
+    assert err("jts.local") is None
+    assert err("jts.local.") is None        # FQDN trailing dot
+    assert err("192.168.1.9") is None
+    assert err("speaker-2") is None
+    for bad in ("evil.com/x", "user@host", "jts local", "http://jts.local",
+                "[::1]"):
+        assert err(bad) is not None, bad
+        assert "hostname or IPv4" in err(bad)
+
+
+def test_follower_leader_addr_predicate():
+    """The ONE active-bonded-follower predicate behind every pair-forward
+    gate (control server + voice tools) — composed from is_active_member
+    so bond-validity semantics live in one place."""
+    from jasper.multiroom.config import GroupingConfig, follower_leader_addr
+
+    def cfg(**kw):
+        base = dict(enabled=True, role="follower", channel="right",
+                    bond_id="b", leader_addr="jts.local", buffer_ms=400,
+                    codec="flac", error=None)
+        base.update(kw)
+        return GroupingConfig(**base)
+
+    assert follower_leader_addr(cfg()) == "jts.local"
+    assert follower_leader_addr(cfg(role="leader", leader_addr="")) is None
+    assert follower_leader_addr(cfg(enabled=False)) is None
+    assert follower_leader_addr(cfg(error="broken")) is None
+    assert follower_leader_addr(cfg(leader_addr="")) is None
