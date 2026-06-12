@@ -57,11 +57,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
+  var ACTIVE_GAIN_EPSILON_DB = 0.05;
   var activeSpeaker = {
     loading: false, action: '', payload: null, session: null, targets: null,
     stagedConfig: null, calibrationLevel: null, plan: null, playback: null,
     bringup: null, startupLoad: null, rehearsal: null, error: '', levelDbfs: null
   };
+  var activeSpeakerLevelSeq = 0;
   var activeSpeakerMicObservation = {observedDbfs: '', clipping: false};
   var outputTopology = {
     loading: false, saving: false, payload: null, draft: null,
@@ -107,6 +109,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function fmtQ(v) { return 'Q ' + (Number(v) || 0).toFixed(1); }
   function fmtDbfs(v) { return fmtDb(v) + ' dBFS'; }
+  function patchActiveSpeaker(patch) {
+    activeSpeaker = Object.assign({}, activeSpeaker, patch || {});
+    return activeSpeaker;
+  }
   function zeroSimple() {
     var out = {};
     (simpleBands.length ? simpleBands : LIMIT_DEFAULTS.simple_bands).forEach(function(b) {
@@ -254,7 +260,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // Cut/notch bands are active by virtue of existing; gain-bearing bands
   // need a non-trivial gain to count (mirrors FilterSpec.active() in Python).
   function specActive(s) {
-    return isGainless(s) || Math.abs(Number(s.gain_db || 0)) >= 0.05;
+    return isGainless(s) || Math.abs(Number(s.gain_db || 0)) >= ACTIVE_GAIN_EPSILON_DB;
   }
   // Real RBJ biquad magnitude (shared eq-math.js, byte-equivalent to the
   // Python preview). Replaces the old exp() approximation; required for the
@@ -464,7 +470,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function bandCountLabel(profile) {
     profile = normalizeProfile(profile);
     var n = 0;
-    Object.keys(profile.simple_eq).forEach(function(k) { if (Math.abs(profile.simple_eq[k]) >= 0.05) n += 1; });
+    Object.keys(profile.simple_eq).forEach(function(k) {
+      if (Math.abs(profile.simple_eq[k]) >= ACTIVE_GAIN_EPSILON_DB) n += 1;
+    });
     n += profile.parametric_bands.filter(function(b) { return b.enabled !== false && specActive(b); }).length;
     if (profile.curve_id && profile.curve_id !== 'flat') n += 1;
     return n === 0 ? 'Flat' : n + ' band' + (n === 1 ? '' : 's');
@@ -1985,7 +1993,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker" disabled>Refresh</button>' +
       '</div>';
     }
-    if (activeSpeaker.error) {
+    if (activeSpeaker.error && !activeSpeaker.payload) {
       return '<div class="active-speaker-status__stack">' +
         '<div class="row-between active-speaker-status__head">' +
           '<span class="status-pill status-pill--blocked">Probe failed</span>' +
@@ -2026,10 +2034,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var sessionIssues = Array.isArray(session.issues) ? session.issues.slice(0, 4) : [];
     return '<div class="active-speaker-status__stack">' +
       '<div class="row-between active-speaker-status__head">' +
-        '<span class="status-pill ' + (ok ? 'status-pill--ready' : 'status-pill--blocked') + '">' +
-          escapeHtml(ok ? 'Load gate ready' : 'Load gate blocked') + '</span>' +
+        '<span class="status-pill ' + (activeSpeaker.error ? 'status-pill--planned' :
+          (ok ? 'status-pill--ready' : 'status-pill--blocked')) + '">' +
+          escapeHtml(activeSpeaker.error ? 'Partial refresh' :
+            (ok ? 'Load gate ready' : 'Load gate blocked')) + '</span>' +
         '<button type="button" class="btn btn--ghost" data-act="refresh-active-speaker">Refresh</button>' +
       '</div>' +
+      (activeSpeaker.error ? '<p class="setting-row__hint">' + escapeHtml(activeSpeaker.error) + '</p>' : '') +
       '<dl class="active-speaker-facts">' + rows.map(function(row) {
         return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
       }).join('') + '</dl>' +
@@ -2511,7 +2522,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         ico('plus') + 'Add band</button></div></div>';
     }
     var activeCount = mode === 'simple'
-      ? Object.keys(draft.simple_eq).filter(function(k) { return Math.abs(draft.simple_eq[k]) >= 0.05; }).length
+      ? Object.keys(draft.simple_eq).filter(function(k) {
+        return Math.abs(draft.simple_eq[k]) >= ACTIVE_GAIN_EPSILON_DB;
+      }).length
       : draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).length;
     var bandsSection = '<section class="bands-section"><div class="row-between">' +
       '<h2 class="eyebrow">Bands</h2>' +
@@ -2738,7 +2751,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var e = el('active-count');
     if (!e) return;
     var n = mode === 'simple'
-      ? Object.keys(draft.simple_eq).filter(function(k) { return Math.abs(draft.simple_eq[k]) >= 0.05; }).length
+      ? Object.keys(draft.simple_eq).filter(function(k) {
+        return Math.abs(draft.simple_eq[k]) >= ACTIVE_GAIN_EPSILON_DB;
+      }).length
       : draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).length;
     e.textContent = n + ' active';
   }
@@ -2903,12 +2918,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (ev.target.id === 'name-input') { nameDraft = ev.target.value; return; }
     if (ev.target.id === 'active-speaker-level') {
       var cfg = activeSpeakerLevelConfig();
-      activeSpeaker.levelDbfs = clamp(ev.target.value, cfg.min, cfg.max);
+      var levelPatch = {levelDbfs: clamp(ev.target.value, cfg.min, cfg.max)};
+      if (activeSpeaker.plan) {
+        levelPatch.plan = null;
+        levelPatch.playback = null;
+      }
+      patchActiveSpeaker(levelPatch);
       var levelReadout = el('active-speaker-level-readout');
       if (levelReadout) levelReadout.textContent = fmtDbfs(activeSpeaker.levelDbfs);
-      if (activeSpeaker.plan) {
-        activeSpeaker.plan = null;
-        activeSpeaker.playback = null;
+      if (levelPatch.plan === null) {
         render();
       }
       return;
@@ -2986,10 +3004,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     } else {
       // Simple -> PEQ keeps the simple bands as gains; PEQ owns the bands going forward.
       draft.parametric_bands = (simpleBands || []).filter(function(s) {
-        return Math.abs(draft.simple_eq[s.field] || 0) >= 0.05;
+        return Math.abs(draft.simple_eq[s.field] || 0) >= ACTIVE_GAIN_EPSILON_DB;
       }).map(function(s) {
+        // Simple EQ shelves ignore Q in the backend, but carrying a stable
+        // PEQ-side default keeps converted bands predictable if the type changes.
         return {enabled: true, type: s.type, freq_hz: s.freq_hz,
-                gain_db: draft.simple_eq[s.field], q: s.type === 'Peaking' ? 1.0 : 1.0};
+                gain_db: draft.simple_eq[s.field], q: 1.0};
       });
       draft.simple_eq = zeroSimple();
       activeBand = 0;
@@ -3140,7 +3160,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     driverResearch.dirty = true;
     crossoverPreview.payload = null;
     crossoverPreview.error = '';
-    activeSpeaker.stagedConfig = null;
+    patchActiveSpeaker({stagedConfig: null});
     render();
   }
   function outputChannel(role, index) {
@@ -3541,7 +3561,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.saving = true;
     outputTopology.touched = true;
     outputTopology.error = '';
-    activeSpeaker.stagedConfig = null;
+    patchActiveSpeaker({stagedConfig: null});
     render();
     try {
       var resp = await fetch('./output-topology', {
@@ -3628,7 +3648,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.readinessPlayback = null;
     outputTopology.readinessPlaybackChecking = '';
     outputTopology.touched = true;
-    activeSpeaker.stagedConfig = null;
+    patchActiveSpeaker({stagedConfig: null});
     render();
     try {
       var resp = await fetch('./active-speaker/channel-protection', {
@@ -3723,21 +3743,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!resp.ok) throw new Error(result.error || 'channel test failed');
       outputTopology.readinessPlayback = result.playback || null;
       outputTopology.readinessPlaybackChecking = '';
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
         session: result.session || activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
         plan: result.plan || activeSpeaker.plan,
         playback: result.playback || activeSpeaker.playback,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status(audio ? 'Played quiet channel test.' : 'Verified channel test artifact. No sound was played.');
     } catch (e) {
       outputTopology.readinessPlaybackChecking = '';
@@ -3754,21 +3767,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     var target = outputTopology.readiness && outputTopology.readiness.target || null;
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Recording floor result',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-      plan: activeSpeaker.plan,
-      playback: activeSpeaker.playback,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var resp = await fetch('./active-speaker/floor-audio-result', {
@@ -3781,21 +3784,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var result = await resp.json();
       if (!resp.ok) throw new Error(result.error || 'floor-test result failed');
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
         session: result,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       if (target && target.speaker_group_id && target.role) {
         try {
           outputTopology.readiness = await fetchOutputPlaybackReadiness(
@@ -3813,21 +3807,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Floor audio confirmed for this target.' :
         'Floor audio was not confirmed; stay at the floor before continuing.');
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status('Could not record floor-test result: ' + e.message, true);
     }
     render();
@@ -3843,21 +3827,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     )) {
       return;
     }
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Staging protected config',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-      plan: activeSpeaker.plan,
-      playback: activeSpeaker.playback,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var resp = await fetch('./active-speaker/stage-config', {
@@ -3868,66 +3842,41 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'protected config staging failed');
       var startupLoad = await fetchActiveSpeakerStartupLoad();
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
         stagedConfig: payload,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
         startupLoad: startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status(payload.status === 'staged' ?
         'Staged protected startup config. No DSP graph was loaded.' :
         'Protected startup config is blocked; review the staging evidence.',
         payload.status !== 'staged');
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status('Could not stage protected config: ' + e.message, true);
     }
     render();
   }
   async function updateActiveSpeakerLevel(action, requestedLevel) {
+    var seq = activeSpeakerLevelSeq += 1;
     var cfg = activeSpeakerLevelConfig();
     var body = {
       action: action || 'set'
     };
     if (requestedLevel != null) body.level_dbfs = requestedLevel;
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Updating level',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
       levelDbfs: cfg.value
-    };
+    });
     render();
     try {
       var resp = await fetch('./active-speaker/calibration-level', {
@@ -3937,43 +3886,30 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'calibration level update failed');
+      if (seq !== activeSpeakerLevelSeq) return;
       var accepted = payload && payload.test_signal ?
         Number(payload.test_signal.requested_level_dbfs) : cfg.value;
       var startupLoad = await fetchActiveSpeakerStartupLoad();
-      activeSpeaker = {
+      if (seq !== activeSpeakerLevelSeq) return;
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
         calibrationLevel: payload,
-        bringup: activeSpeaker.bringup,
         startupLoad: startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : cfg.value
-      };
+      });
       status(payload.issues && payload.issues.length ?
         'Level raised one guarded step; larger upward move was limited.' :
         'Calibration level updated.');
     } catch (e) {
-      activeSpeaker = {
+      if (seq !== activeSpeakerLevelSeq) return;
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status('Could not update calibration level: ' + e.message, true);
     }
     render();
@@ -3992,22 +3928,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Enter a mic reading or mark clipping before recording an observation.', true);
       return;
     }
+    activeSpeakerLevelSeq += 1;
     activeSpeakerMicObservation = {observedDbfs: raw, clipping: clipping};
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Recording mic reading',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var body = {action: 'observe', mic_clipping: clipping};
@@ -4029,41 +3958,26 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         observedDbfs: meter.observed_dbfs != null ? String(meter.observed_dbfs) : raw,
         clipping: meter.status === 'clipping'
       };
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
         calibrationLevel: payload,
         bringup: await bringupResp.json(),
         startupLoad: startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
-      };
+      });
       await refreshActiveSpeakerRehearsal();
       status(meter.status === 'clipping' ?
         'Mic clipping recorded; calibration level reset to the floor.' :
         'Mic observation recorded.');
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status('Could not record mic observation: ' + e.message, true);
     }
     render();
@@ -4083,22 +3997,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Enter the observed mic level as dBFS, for example -35.0.', true);
       return;
     }
+    activeSpeakerLevelSeq += 1;
     activeSpeakerMicObservation = {observedDbfs: raw, clipping: clipping};
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Applying guided level',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     outputTopology.readinessPlayback = null;
     outputTopology.readinessPlaybackChecking = '';
     render();
@@ -4142,40 +4049,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         outputTopology.readinessError = refreshErr2.message;
         refreshWarning = refreshWarning || refreshErr2.message;
       }
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
         calibrationLevel: payload,
-        bringup: activeSpeaker.bringup,
         startupLoad: startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
-      };
+      });
       await refreshActiveSpeakerRehearsal();
       status('Guided level step: ' + (decision.reason || decision.status || 'level held') +
         (refreshWarning ? ' Refresh warning: ' + refreshWarning + '.' : '.'));
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status('Could not apply guided level step: ' + e.message, true);
     }
     render();
@@ -4192,9 +4083,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   async function refreshActiveSpeakerRehearsal() {
     try {
-      activeSpeaker.rehearsal = await fetchActiveSpeakerCommissioningRehearsal();
+      patchActiveSpeaker({rehearsal: await fetchActiveSpeakerCommissioningRehearsal()});
     } catch (e) {
-      activeSpeaker.rehearsal = activeSpeaker.rehearsal || null;
+      patchActiveSpeaker({rehearsal: activeSpeaker.rehearsal || null});
     }
   }
   async function fetchActiveSpeakerEnvironment() {
@@ -4203,21 +4094,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return await resp.json();
   }
   async function checkActivePathSafety() {
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Checking protected path',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var resp = await fetch('./active-speaker/check-path-safety', {
@@ -4229,40 +4112,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!resp.ok) throw new Error(payload.error || 'protected path check failed');
       var ready = payload.report && payload.report.ok_to_load_active_config;
       var environment = await fetchActiveSpeakerEnvironment();
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
         payload: environment,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
         startupLoad: payload.startup_load || activeSpeaker.startupLoad,
         plan: null,
         playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status(ready ?
         'Protected path check passed. No sound was played.' :
         'Protected path check found blockers. No sound was played.',
         !ready);
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status('Could not check protected path: ' + e.message, true);
     }
     render();
@@ -4274,21 +4142,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     )) {
       return;
     }
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Loading protected config',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var resp = await fetch('./active-speaker/load-startup-config', {
@@ -4298,14 +4158,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'startup load failed');
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
         startupLoad: {
           state: payload.load || {},
           preflight: payload.preflight || {}
@@ -4314,28 +4168,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       var loaded = payload.load && payload.load.status === 'loaded';
       status(loaded ?
         'Protected startup config loaded. No sound was played.' :
         'Startup config load is blocked; review the load evidence.',
         !loaded);
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status('Could not load protected config: ' + e.message, true);
     }
     render();
@@ -4347,21 +4193,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     )) {
       return;
     }
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Rolling back',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var resp = await fetch('./active-speaker/rollback-startup-config', {
@@ -4372,14 +4210,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'startup rollback failed');
       var startupLoad = await fetchActiveSpeakerStartupLoad();
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
         startupLoad: startupLoad.state ? startupLoad : {
           state: payload.rollback || {},
           preflight: activeSpeaker.startupLoad && activeSpeaker.startupLoad.preflight || {}
@@ -4388,116 +4220,83 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       var rolledBack = payload.rollback && payload.rollback.status === 'rolled_back';
       status(rolledBack ?
         'Rolled back to the prior config. No sound was played.' :
         'Startup rollback is blocked; review the load evidence.',
         !rolledBack);
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
       status('Could not roll back startup config: ' + e.message, true);
     }
     render();
   }
   async function refreshActiveSpeakerStatus() {
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: true, action: '',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
-    try {
-      var envResp = await fetch('./active-speaker/environment', {cache: 'no-store'});
-      if (!envResp.ok) throw new Error('environment probe failed');
-      var sessionResp = await fetch('./active-speaker/safe-playback', {cache: 'no-store'});
-      if (!sessionResp.ok) throw new Error('safe playback status failed');
-      var stagedResp = await fetch('./active-speaker/staged-config', {cache: 'no-store'});
-      if (!stagedResp.ok) throw new Error('staged config status failed');
-      var levelResp = await fetch('./active-speaker/calibration-level', {cache: 'no-store'});
-      if (!levelResp.ok) throw new Error('calibration level status failed');
-      var bringupResp = await fetch('./active-speaker/bringup-preflight', {cache: 'no-store'});
-      if (!bringupResp.ok) throw new Error('bring-up preflight failed');
-      var startupLoadResp = await fetch('./active-speaker/startup-load', {cache: 'no-store'});
-      if (!startupLoadResp.ok) throw new Error('startup load status failed');
-      var rehearsalResp = await fetch('./active-speaker/commissioning-rehearsal', {cache: 'no-store'});
-      if (!rehearsalResp.ok) throw new Error('commissioning rehearsal failed');
-      var targetsResp = await fetch('./active-speaker/tone-targets', {cache: 'no-store'});
-      if (!targetsResp.ok) throw new Error('tone targets failed');
-      var nextLevel = await levelResp.json();
-      var nextBringup = await bringupResp.json();
-      var nextStartupLoad = await startupLoadResp.json();
-      var nextRehearsal = await rehearsalResp.json();
-      var nextTargets = await targetsResp.json();
-      activeSpeaker = {
-        loading: false, action: '',
-        payload: await envResp.json(),
-        session: await sessionResp.json(),
-        targets: nextTargets,
-        stagedConfig: await stagedResp.json(),
-        calibrationLevel: nextLevel,
-        bringup: nextBringup,
-        startupLoad: nextStartupLoad,
-        rehearsal: nextRehearsal,
-        plan: null,
-        playback: null,
-        error: '',
-        levelDbfs: nextLevel && nextLevel.test_signal ?
-          Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
-      };
-    } catch (e) {
-      activeSpeaker = {
-        loading: false, action: '', payload: null, session: null, targets: null,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
-        plan: null, playback: null, error: e.message, levelDbfs: activeSpeaker.levelDbfs
-      };
+    var probes = [
+      ['payload', function() { return fetch('./active-speaker/environment', {cache: 'no-store'}); },
+        'environment probe failed'],
+      ['session', function() { return fetch('./active-speaker/safe-playback', {cache: 'no-store'}); },
+        'safe playback status failed'],
+      ['stagedConfig', function() { return fetch('./active-speaker/staged-config', {cache: 'no-store'}); },
+        'staged config status failed'],
+      ['calibrationLevel', function() { return fetch('./active-speaker/calibration-level', {cache: 'no-store'}); },
+        'calibration level status failed'],
+      ['bringup', function() { return fetch('./active-speaker/bringup-preflight', {cache: 'no-store'}); },
+        'bring-up preflight failed'],
+      ['startupLoad', function() { return fetch('./active-speaker/startup-load', {cache: 'no-store'}); },
+        'startup load status failed'],
+      ['rehearsal', function() { return fetch('./active-speaker/commissioning-rehearsal', {cache: 'no-store'}); },
+        'commissioning rehearsal failed'],
+      ['targets', function() { return fetch('./active-speaker/tone-targets', {cache: 'no-store'}); },
+        'tone targets failed']
+    ];
+    var results = await Promise.allSettled(probes.map(function(probe) {
+      return probe[1]().then(async function(resp) {
+        if (!resp.ok) throw new Error(probe[2]);
+        return await resp.json();
+      });
+    }));
+    var patch = {loading: false, action: '', plan: null, playback: null, error: ''};
+    var errors = [];
+    results.forEach(function(result, index) {
+      var key = probes[index][0];
+      if (result.status === 'fulfilled') {
+        patch[key] = result.value;
+        return;
+      }
+      errors.push(result.reason && result.reason.message || probes[index][2]);
+    });
+    var nextLevel = patch.calibrationLevel || activeSpeaker.calibrationLevel;
+    if (nextLevel && nextLevel.test_signal) {
+      patch.levelDbfs = Number(nextLevel.test_signal.requested_level_dbfs);
     }
+    if (errors.length) patch.error = 'Partial refresh: ' + errors.join('; ');
+    patchActiveSpeaker(patch);
     render();
   }
   async function activeSpeakerPost(path, actionLabel) {
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: actionLabel,
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
       plan: null,
       playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var resp = await fetch(path, {
@@ -4514,22 +4313,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         if (levelResp.ok) nextLevel = await levelResp.json();
       }
       var startupLoad = await fetchActiveSpeakerStartupLoad();
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
         session: nextSession,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
         calibrationLevel: nextLevel,
-        bringup: activeSpeaker.bringup,
         startupLoad: startupLoad,
-        rehearsal: activeSpeaker.rehearsal,
         plan: null,
         playback: null,
         error: '',
         levelDbfs: nextLevel && nextLevel.test_signal ?
           Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
-      };
+      });
       await refreshActiveSpeakerRehearsal();
       outputTopology.readiness = null;
       outputTopology.readinessChecking = '';
@@ -4537,40 +4331,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       outputTopology.readinessPlayback = null;
       outputTopology.readinessPlaybackChecking = '';
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
     }
     render();
   }
   async function activeSpeakerTonePlan(target) {
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Preparing',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-      plan: activeSpeaker.plan,
-      playback: activeSpeaker.playback,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var payload = Object.assign({}, target || {});
@@ -4585,57 +4359,30 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         nextPlan.calibration_level.test_signal ?
         Number(nextPlan.calibration_level.test_signal.requested_level_dbfs) :
         Number(nextPlan && nextPlan.tone && nextPlan.tone.level_dbfs);
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
         calibrationLevel: nextPlan.calibration_level || activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
         plan: nextPlan,
         playback: null,
         error: '',
         levelDbfs: isFinite(returnedLevel) ? returnedLevel : activeSpeakerLevelConfig().value
-      };
+      });
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
     }
     render();
   }
   async function activeSpeakerTonePlayback() {
     var target = activeSpeaker.plan && activeSpeaker.plan.target || {};
-    activeSpeaker = {
+    patchActiveSpeaker({
       loading: false, action: 'Verifying',
-      payload: activeSpeaker.payload,
-      session: activeSpeaker.session,
-      targets: activeSpeaker.targets,
-      stagedConfig: activeSpeaker.stagedConfig,
-      calibrationLevel: activeSpeaker.calibrationLevel,
-      bringup: activeSpeaker.bringup,
-      startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-      plan: activeSpeaker.plan,
-      playback: activeSpeaker.playback,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
-    };
+    });
     render();
     try {
       var payload = {
@@ -4650,38 +4397,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!resp.ok) throw new Error('tone artifact check failed');
       var result = await resp.json();
       var playback = result.playback || null;
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
         session: result.session || activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
         calibrationLevel: result.plan && result.plan.calibration_level || activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
         plan: result.plan || activeSpeaker.plan,
         playback: playback,
         error: '',
         levelDbfs: playback && playback.tone && isFinite(Number(playback.tone.level_dbfs)) ?
           Number(playback.tone.level_dbfs) : activeSpeaker.levelDbfs
-      };
+      });
     } catch (e) {
-      activeSpeaker = {
+      patchActiveSpeaker({
         loading: false, action: '',
-        payload: activeSpeaker.payload,
-        session: activeSpeaker.session,
-        targets: activeSpeaker.targets,
-        stagedConfig: activeSpeaker.stagedConfig,
-        calibrationLevel: activeSpeaker.calibrationLevel,
-        bringup: activeSpeaker.bringup,
-        startupLoad: activeSpeaker.startupLoad,
-      rehearsal: activeSpeaker.rehearsal,
-        plan: activeSpeaker.plan,
-        playback: activeSpeaker.playback,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
-      };
+      });
     }
     render();
   }
