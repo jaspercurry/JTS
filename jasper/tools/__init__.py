@@ -79,6 +79,14 @@ class Tool:
     # `asyncio.wait_for` seam. Defaults to `DEFAULT_TOOL_TIMEOUT_SEC`;
     # raise it for a tool whose backend is legitimately slow.
     timeout: float = DEFAULT_TOOL_TIMEOUT_SEC
+    # Whether INFO-level tool dispatch logs may include a repr preview
+    # of the returned payload. Content-bearing tools opt out so
+    # journald keeps timing/shape diagnostics without message bodies.
+    log_payload: bool = True
+    # Whether INFO-level tool dispatch logs may include argument values.
+    # Tools whose args carry close-to-verbatim user requests opt out so
+    # the start line still shows shape without household utterances.
+    log_args: bool = True
 
 
 @dataclass
@@ -154,6 +162,8 @@ def tool(
     *,
     providers: Iterable[str] | None = None,
     timeout: float | None = None,
+    log_payload: bool = True,
+    log_args: bool = True,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Tag a function for registration.
 
@@ -165,8 +175,12 @@ def tool(
     `timeout` is the per-tool dispatch budget in seconds applied at the
     session adapters' `asyncio.wait_for` seam. None (default) keeps
     `DEFAULT_TOOL_TIMEOUT_SEC`; raise it for a tool whose backend is
-    legitimately slow (e.g. an LLM-backed Home Assistant agent). Use
-    with `ToolRegistry.register()`."""
+    legitimately slow (e.g. an LLM-backed Home Assistant agent).
+    `log_payload=False` keeps the INFO dispatch line redacted for
+    content-bearing tool results; `log_args=False` does the same for
+    content-bearing tool arguments.
+
+    Use with `ToolRegistry.register()`."""
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         fn.__jasper_tool_name__ = name or fn.__name__  # type: ignore[attr-defined]
@@ -174,6 +188,8 @@ def tool(
             fn.__jasper_tool_providers__ = frozenset(providers)  # type: ignore[attr-defined]
         if timeout is not None:
             fn.__jasper_tool_timeout__ = timeout  # type: ignore[attr-defined]
+        fn.__jasper_tool_log_payload__ = log_payload  # type: ignore[attr-defined]
+        fn.__jasper_tool_log_args__ = log_args  # type: ignore[attr-defined]
         return fn
 
     return decorator
@@ -200,6 +216,8 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     params = _params_schema(fn)
     decl_providers = getattr(fn, "__jasper_tool_providers__", None)
     decl_timeout = getattr(fn, "__jasper_tool_timeout__", DEFAULT_TOOL_TIMEOUT_SEC)
+    decl_log_payload = getattr(fn, "__jasper_tool_log_payload__", True)
+    decl_log_args = getattr(fn, "__jasper_tool_log_args__", True)
     if not asyncio.iscoroutinefunction(fn):
         # One line per registration (daemon startup), not per dispatch.
         # `dispatch_tool` runs a non-coroutine fn INLINE on the voice
@@ -222,7 +240,30 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
         parameters=params,
         providers=decl_providers,
         timeout=decl_timeout,
+        log_payload=decl_log_payload,
+        log_args=decl_log_args,
     )
+
+
+def _redacted_mapping_preview(values: dict[str, Any]) -> str:
+    preview = repr(values)
+    keys = ",".join(sorted(str(k) for k in values))
+    return f"<redacted keys={keys or '-'} len={len(preview)}>"
+
+
+def _args_preview(tool: Tool, args: dict[str, Any]) -> str:
+    if not tool.log_args:
+        return _redacted_mapping_preview(args)
+    return repr(args)
+
+
+def _payload_preview(tool: Tool, payload: dict[str, Any]) -> str:
+    preview = repr(payload)
+    if not tool.log_payload:
+        return f"<redacted len={len(preview)}>"
+    if len(preview) > 240:
+        preview = preview[:237] + "..."
+    return preview
 
 
 def _params_schema(fn: Callable[..., Any]) -> dict[str, Any]:
@@ -308,10 +349,13 @@ async def dispatch_tool(
     """
     tool = registry.get(name)
     if tool is None:
-        logger.warning("tool %s start args=%s → unknown tool", name, args)
+        logger.warning(
+            "tool %s start args=%s → unknown tool",
+            name, _redacted_mapping_preview(args),
+        )
         return {"error": f"unknown tool {name}"}
 
-    logger.info("tool %s start args=%s", name, args)
+    logger.info("tool %s start args=%s", name, _args_preview(tool, args))
     t_fn = _time.monotonic()
     try:
         out = tool.fn(**args)
@@ -325,10 +369,9 @@ async def dispatch_tool(
         payload = out if isinstance(out, dict) else {"value": out}
         fn_ms = (_time.monotonic() - t_fn) * 1000
         # Truncate the payload preview — weather/subway responses can be
-        # 4-8 KB and flood the journal.
-        preview = repr(payload)
-        if len(preview) > 240:
-            preview = preview[:237] + "..."
+        # 4-8 KB and flood the journal. Content-bearing tools redact the
+        # preview entirely but keep length/timing diagnostics.
+        preview = _payload_preview(tool, payload)
         logger.info("tool %s fn done in %.0fms ok payload=%s", name, fn_ms, preview)
         return payload
     except asyncio.TimeoutError:

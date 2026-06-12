@@ -435,9 +435,13 @@ class OpenAIRealtimeTurn(LiveTurn):
         await self._conn._on_turn_released(self)
         assistant_text = self.assistant_transcript().strip()
         if assistant_text:
-            logger.info(
-                "event=openai.assistant_transcript transcript=%r",
-                assistant_text,
+            # Keep transcript content out of logging entirely: the
+            # flight recorder buffers DEBUG records and dumps them to
+            # journald around failures, so even DEBUG lines must carry
+            # metadata rather than household utterances.
+            logger.debug(
+                "event=openai.assistant_transcript chars=%d",
+                len(assistant_text),
             )
         if self._chunks_received > 0:
             avg = self._chunk_bytes_total // self._chunks_received
@@ -1692,18 +1696,18 @@ class OpenAIRealtimeConnection(LiveConnection):
 
         # User audio transcription (what the STT model heard the user
         # say). Diagnostic only — the realtime model's tool choice
-        # comes from the raw audio, not this transcript. Logged at
-        # INFO so it sits alongside the tool-call lines, making the
-        # "model called X — what did STT think the user said?" debug
-        # question trivial to answer by grep. See the comment block
-        # next to ``transcription`` in ``_session_config`` for the
-        # full rationale.
+        # comes from the raw audio, not this transcript. Keep transcript
+        # content out of logging entirely: the flight recorder buffers
+        # DEBUG records and dumps them to journald around failures.
+        # See the comment block next to ``transcription`` in
+        # ``_session_config`` for the full rationale.
         if etype == "conversation.item.input_audio_transcription.completed":
             transcript = _event_field(event, "transcript")
             if isinstance(transcript, str):
-                logger.info(
-                    "event=openai.user_transcript transcript=%r",
-                    transcript.strip(),
+                text = transcript.strip()
+                logger.debug(
+                    "event=openai.user_transcript chars=%d",
+                    len(text),
                 )
             return
         if etype == "conversation.item.input_audio_transcription.failed":

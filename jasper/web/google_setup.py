@@ -468,6 +468,7 @@ def _connection_details_html(client_id: str) -> str:
       <li>Gmail — <strong>read-only</strong>; the speaker cannot send, modify, or delete email</li>
       <li>Profile + email — used once at link time to label the linked account</li>
     </ul>
+    <p class="form-hint">When you ask about mail or calendar, matching message or event content is sent to the household's configured voice AI provider so it can answer.</p>
     <p class="form-hint">To revoke access from Google's side at any time, visit <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a> on each linked account and remove the app (its name is whatever you set on the Branding tab — "JTS Speaker" by default). Removing here only deletes the speaker's local refresh token; revoking at Google invalidates it everywhere.</p>
 
     <h3>OAuth client</h3>

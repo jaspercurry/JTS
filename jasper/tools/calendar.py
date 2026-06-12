@@ -168,7 +168,7 @@ def make_calendar_tools(clients: "GoogleClients | None"):
     if clients is None:
         return []
 
-    @tool()
+    @tool(log_payload=False)
     async def calendar_today_summary(account: str = "") -> dict:
         """Return today's calendar events for a household member's
         Google account.
@@ -223,7 +223,7 @@ def make_calendar_tools(clients: "GoogleClients | None"):
             "events": events,
         }
 
-    @tool()
+    @tool(log_payload=False)
     async def calendar_upcoming(hours: int = 24, account: str = "") -> dict:
         """Return calendar events starting within the next `hours`
         hours.

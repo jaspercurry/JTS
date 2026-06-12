@@ -11,6 +11,7 @@ change what the model sees back.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -92,6 +93,61 @@ async def test_timeout_returns_error_and_respects_per_tool_budget():
     # hanging the session.
     out = await asyncio.wait_for(dispatch_tool(reg, "slow", {}), timeout=2)
     assert out == {"error": "slow timed out"}
+
+
+@pytest.mark.asyncio
+async def test_redacted_tool_payload_omits_body_text_from_info_logs(caplog):
+    @tool(log_payload=False)
+    async def read_private_message() -> dict:
+        """Return sensitive content."""
+        return {
+            "ok": True,
+            "subject": "dentist appointment",
+            "body": "Your appointment is Tuesday at 9.",
+        }
+
+    reg = _registry(read_private_message)
+    with caplog.at_level(logging.INFO, logger="jasper.tools"):
+        out = await dispatch_tool(reg, "read_private_message", {})
+
+    assert out["body"] == "Your appointment is Tuesday at 9."
+    assert "payload=<redacted len=" in caplog.text
+    assert "dentist appointment" not in caplog.text
+    assert "Your appointment is Tuesday" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_redacted_tool_args_omit_user_text_from_info_logs(caplog):
+    @tool(log_args=False)
+    async def relay_user_phrase(query: str) -> dict:
+        """Forward a private user phrase."""
+        return {"ok": True}
+
+    reg = _registry(relay_user_phrase)
+    with caplog.at_level(logging.INFO, logger="jasper.tools"):
+        out = await dispatch_tool(
+            reg,
+            "relay_user_phrase",
+            {"query": "turn on the bedroom lights"},
+        )
+
+    assert out == {"ok": True}
+    assert "args=<redacted keys=query len=" in caplog.text
+    assert "turn on the bedroom lights" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_args_are_value_redacted(caplog):
+    with caplog.at_level(logging.WARNING, logger="jasper.tools"):
+        out = await dispatch_tool(
+            ToolRegistry(),
+            "missing_tool",
+            {"query": "unlock the front door"},
+        )
+
+    assert out == {"error": "unknown tool missing_tool"}
+    assert "args=<redacted keys=query len=" in caplog.text
+    assert "unlock the front door" not in caplog.text
 
 
 def test_default_timeout_is_single_sourced():

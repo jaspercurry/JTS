@@ -11,6 +11,7 @@ Confirms:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import pytest
@@ -21,7 +22,12 @@ from jasper.home_assistant import (
     OUTCOME_NETWORK,
     OUTCOME_OK,
 )
-from jasper.tools import DEFAULT_TOOL_TIMEOUT_SEC, ToolRegistry, build_tool
+from jasper.tools import (
+    DEFAULT_TOOL_TIMEOUT_SEC,
+    ToolRegistry,
+    build_tool,
+    dispatch_tool,
+)
 from jasper.tools.home_assistant import make_home_assistant_tools
 
 
@@ -115,6 +121,14 @@ def test_tool_schema_has_query_string_param():
     assert built.parameters.get("required") == ["query"]
 
 
+def test_tool_redacts_argument_and_payload_previews():
+    fake = _FakeHAClient(_ok_response())
+    [fn] = make_home_assistant_tools(fake)
+    built = build_tool(fn)
+    assert built.log_args is False
+    assert built.log_payload is False
+
+
 # ---- Dispatch: tool forwards to HAClient.process() -------------------------
 
 @pytest.mark.asyncio
@@ -130,6 +144,28 @@ async def test_tool_dispatches_query_to_process_verbatim():
     assert result["response_type"] == "action_done"
     assert result["error_code"] is None
     assert result["error_detail"] == ""
+
+
+@pytest.mark.asyncio
+async def test_dispatch_logs_redact_household_phrase(caplog):
+    fake = _FakeHAClient(_ok_response("Turned on the bedroom lights."))
+    registry = ToolRegistry()
+    for fn in make_home_assistant_tools(fake):
+        registry.register(fn)
+
+    with caplog.at_level(logging.INFO, logger="jasper.tools"):
+        result = await dispatch_tool(
+            registry,
+            "home_assistant",
+            {"query": "turn on the bedroom lights"},
+        )
+
+    assert result["success"] is True
+    assert fake.calls == ["turn on the bedroom lights"]
+    assert "args=<redacted keys=query len=" in caplog.text
+    assert "payload=<redacted len=" in caplog.text
+    assert "turn on the bedroom lights" not in caplog.text
+    assert "Turned on the bedroom lights" not in caplog.text
 
 
 @pytest.mark.asyncio

@@ -1061,6 +1061,12 @@ _INDEX_BODY_TEMPLATE = """{header}
     <div id="capture-plan-preview" class="capture-plan-preview">
       <span class="hint">Planning capture graph…</span>
     </div>
+    <p class="hint">
+      Raw clips are saved in the configured wake-corpus directory
+      (<code>/var/lib/jasper/enrollment_positives/</code> on an installed
+      speaker) with the member name and persist until you delete the session;
+      recording refuses to start while the household mic mute is on.
+    </p>
     <div class="session-primary-actions">
       <button id="session-begin" class="primary">
         Enter corpus test mode &amp; begin session
