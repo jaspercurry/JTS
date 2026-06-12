@@ -1488,14 +1488,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self._send_json({"error": message}, status=status)
 
         def _dispatch_balance(self, path: str) -> None:
-            """POST /balance/* — the pair-balance flow (balance_flow).
-            /play additionally requires the correction session to be
-            idle: both flows open measurement_window, and this is
-            where the correction side of the mutual exclusion lives
-            (the balance side lives in _reserve_start_slot)."""
+            """POST /balance/* — the pair-balance walkthrough
+            (balance_flow). /start additionally requires the
+            correction session to be idle: both flows open
+            measurement_window, and this is where the correction side
+            of the mutual exclusion lives (the balance side lives in
+            _reserve_start_slot)."""
             from . import balance_flow
+
+            def _schedule(coro):
+                return asyncio.run_coroutine_threadsafe(
+                    coro, _ensure_loop())
+
             try:
-                if path == "/balance/play":
+                if path == "/balance/start":
                     with _session_lock:
                         blocked = (
                             "starting" if _start_in_progress
@@ -1509,19 +1515,19 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             )},
                             status=HTTPStatus.CONFLICT)
                         return
-                    payload, status = balance_flow.handle_play(
-                        cfg["hostname"], _run_async)
-                elif path == "/balance/upload-capture":
-                    try:
-                        raw = _read_wav_body(self)
-                    except BadRequest as e:
-                        self._send_client_error(str(e))
-                        return
-                    payload, status = balance_flow.handle_upload(raw)
+                    payload, status = balance_flow.handle_start(
+                        cfg["hostname"], _schedule)
+                elif path == "/balance/ramp":
+                    payload, status = balance_flow.handle_ramp(
+                        self, _run_async, _schedule)
+                elif path == "/balance/lock":
+                    payload, status = balance_flow.handle_lock(self)
+                elif path == "/balance/stop":
+                    payload, status = balance_flow.handle_stop()
                 elif path == "/balance/apply":
                     payload, status = balance_flow.handle_apply()
                 else:  # /balance/reset
-                    payload, status = balance_flow.handle_reset()
+                    payload, status = balance_flow.handle_stop()
                 self._send_json(payload, status=int(status))
             except Exception as e:  # noqa: BLE001
                 logger.exception("%s failed", path)
@@ -1630,8 +1636,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/apply",
                 "/reset",
                 "/session/delete",
-                "/balance/play",
-                "/balance/upload-capture",
+                "/balance/start",
+                "/balance/ramp",
+                "/balance/lock",
+                "/balance/stop",
                 "/balance/apply",
                 "/balance/reset",
             }:

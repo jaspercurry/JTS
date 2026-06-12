@@ -1,27 +1,30 @@
-"""Pair-balance wizard flow (jasper/web/balance_flow.py).
+"""Pair-balance walkthrough flow (jasper/web/balance_flow.py).
 
-Drives the handler layer with every external seam faked (grouping
-state, peer discovery, measurement window, playback, member POST) and
-real WAV bytes through the real analysis core — the synthetic-capture
-loop from test_multiroom_balance, one layer up.
+Drives the handler layer against a REAL background asyncio loop (the
+same shape correction_setup hosts in production) with every external
+seam faked: grouping state, peer discovery, the measurement window, a
+terminable fake playback process, and the member POST. Lock offsets
+are made exact by rewinding the recorded ramp ``t0`` instead of
+patching clocks.
 """
 
 import asyncio
-import io
+import threading
 import time
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 
-import numpy as np
 import pytest
 
 import jasper.correction.coordinator as coordinator
-import jasper.correction.playback as playback
 import jasper.multiroom.state as mstate
 import jasper.web.rooms_setup as rooms
-from jasper.multiroom.balance import synth_balance_burst
+from jasper.multiroom.balance import (
+    RAMP_LEAD_IN_S,
+    RAMP_RATE_DB_S,
+    RAMP_START_DBFS,
+)
 from jasper.web import balance_flow
-
-SR = 48000
 
 LEADER_G = {
     "enabled": True, "role": "leader", "channel": "left",
@@ -35,21 +38,50 @@ PEER_G = {
 }
 
 
-@pytest.fixture(autouse=True)
-def _reset_state():
-    balance_flow.handle_reset()
-    yield
-    balance_flow.handle_reset()
+class FakeProc:
+    """Stands in for the aplay subprocess: wait() blocks until
+    terminate() (lock/stop path) or finish() (WAV ended naturally —
+    the not_heard path)."""
 
+    def __init__(self):
+        self._done = asyncio.Event()
+        self._loop = asyncio.get_running_loop()
+        self.terminated = False
 
-def run_async(coro, *, timeout=None):
-    return asyncio.run(coro)
+    def terminate(self):
+        self.terminated = True
+        self._loop.call_soon_threadsafe(self._done.set)
+
+    def finish(self):
+        self._loop.call_soon_threadsafe(self._done.set)
+
+    async def wait(self):
+        await self._done.wait()
 
 
 @pytest.fixture
-def pair_env(monkeypatch):
-    """A healthy bonded pair: self=left leader, jts3=right follower."""
-    calls = {"window": 0, "played": [], "posted": []}
+def loop_thread():
+    loop = asyncio.new_event_loop()
+    t = threading.Thread(target=loop.run_forever, daemon=True)
+    t.start()
+    yield loop
+    loop.call_soon_threadsafe(loop.stop)
+    t.join(timeout=2)
+
+
+@pytest.fixture(autouse=True)
+def _reset_state():
+    balance_flow.handle_stop()
+    yield
+    balance_flow.handle_stop()
+
+
+@pytest.fixture
+def pair_env(loop_thread, monkeypatch):
+    """A healthy bonded pair plus fakes for every seam; returns the
+    call log + the schedule/run_async bridges bound to the loop."""
+    calls = {"window_open": 0, "window_closed": 0,
+             "spawned": [], "procs": [], "posted": []}
     monkeypatch.setattr(
         mstate, "read_grouping_state", lambda *a, **k: dict(LEADER_G))
     monkeypatch.setattr(rooms, "_self_addresses",
@@ -65,173 +97,257 @@ def pair_env(monkeypatch):
 
     @asynccontextmanager
     async def fake_window(**kwargs):
-        calls["window"] += 1
-        yield
-
-    async def fake_play(path, *a, **k):
-        calls["played"].append(path)
+        calls["window_open"] += 1
+        try:
+            yield
+        finally:
+            calls["window_closed"] += 1
 
     monkeypatch.setattr(coordinator, "measurement_window", fake_window)
-    monkeypatch.setattr(playback, "play_sweep", fake_play)
+
+    async def fake_spawn(wav_path):
+        proc = FakeProc()
+        calls["spawned"].append(wav_path)
+        calls["procs"].append(proc)
+        return proc
+
+    monkeypatch.setattr(balance_flow, "_start_playback", fake_spawn)
+    # The ramp WAVs are expensive to render and irrelevant here.
+    monkeypatch.setattr(
+        balance_flow, "_ramp_wav_path", lambda ch: f"/tmp/{ch}.wav")
 
     def fake_post(addr, body, known=None):
         calls["posted"].append((addr, dict(body)))
         return True, "HTTP 200"
 
     monkeypatch.setattr(rooms, "_post_grouping_to_member", fake_post)
+
+    calls["schedule"] = (
+        lambda coro: asyncio.run_coroutine_threadsafe(coro, loop_thread))
+    calls["run_async"] = (
+        lambda coro, timeout=10.0: asyncio.run_coroutine_threadsafe(
+            coro, loop_thread).result(timeout))
     return calls
 
 
-def wav_bytes(samples: np.ndarray, sr: int = SR) -> bytes:
-    from scipy.io import wavfile
-    buf = io.BytesIO()
-    wavfile.write(buf, sr,
-                  (np.clip(samples, -1, 1) * 32767).astype(np.int16))
-    return buf.getvalue()
+class FakeHandler:
+    """Just enough of BaseHTTPRequestHandler for _read_json."""
+
+    def __init__(self, body: bytes = b"{}"):
+        import io
+        self.headers = {"Content-Length": str(len(body))}
+        self.rfile = io.BytesIO(body)
 
 
-def render_capture(schedule, left_db: float, right_db: float,
-                   pre_s: float = 0.5) -> np.ndarray:
-    sr = schedule.sample_rate
-    total = int((pre_s + schedule.total_s + 0.4) * sr)
-    out = np.zeros(total)
-    burst = synth_balance_burst(sr).astype(np.float64)
-    for spec in schedule.bursts:
-        gain = left_db if spec.channel == "left" else right_db
-        start = int((pre_s + spec.start_s) * sr)
-        out[start:start + burst.size] += burst * 10 ** (gain / 20.0)
-    out += np.random.default_rng(5).standard_normal(total) * 1e-4
-    return out
-
-
-def play_ok(calls) -> dict:
-    payload, status = balance_flow.handle_play("jts.local", run_async)
+def start_ok(env) -> dict:
+    payload, status = balance_flow.handle_start(
+        "jts.local", env["schedule"])
     assert status == 200, payload
     return payload
 
 
+def ramp_ok(env, channel: str) -> dict:
+    body = f'{{"channel": "{channel}"}}'.encode()
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(body), env["run_async"], env["schedule"])
+    assert status == 200, payload
+    return payload
+
+
+def lock_at(env, channel: str, offset_s: float) -> tuple[dict, int]:
+    """Rewind the live ramp's t0 so the lock arrives at an exact
+    offset, then post the lock."""
+    with balance_flow._lock:
+        balance_flow._state["ramp"]["t0"] = time.monotonic() - offset_s
+    body = f'{{"channel": "{channel}"}}'.encode()
+    return balance_flow.handle_lock(FakeHandler(body))
+
+
+def drive_at(offset_s: float) -> float:
+    return RAMP_START_DBFS + RAMP_RATE_DB_S * (offset_s - RAMP_LEAD_IN_S)
+
+
 # ---------------------------------------------------------------------------
-# /balance/play gates
+# /balance/start gates
 
 
-def test_play_rejects_when_not_bonded(pair_env, monkeypatch):
+def test_start_rejects_when_not_bonded(pair_env, monkeypatch):
     monkeypatch.setattr(
         mstate, "read_grouping_state",
         lambda *a, **k: {"enabled": False})
-    payload, status = balance_flow.handle_play("jts.local", run_async)
+    payload, status = balance_flow.handle_start(
+        "jts.local", pair_env["schedule"])
     assert status == 409 and "bond a pair" in payload["error"]
 
 
-def test_play_rejects_follower(pair_env, monkeypatch):
+def test_start_rejects_follower(pair_env, monkeypatch):
     g = dict(LEADER_G, role="follower", leader_addr="jts.local")
     monkeypatch.setattr(
         mstate, "read_grouping_state", lambda *a, **k: g)
-    payload, status = balance_flow.handle_play("jts.local", run_async)
+    payload, status = balance_flow.handle_start(
+        "jts.local", pair_env["schedule"])
     assert status == 409 and "leader" in payload["error"]
 
 
-def test_play_rejects_ambiguous_peers(pair_env, monkeypatch):
+def test_start_rejects_ambiguous_peers(pair_env, monkeypatch):
     monkeypatch.setattr(rooms, "_discover_speakers_cached", lambda: [
         {"address": "192.168.1.92", "name": "jts3", "hostname": "jts3"},
         {"address": "192.168.1.162", "name": "jts4", "hostname": "jts4"},
     ])
-    payload, status = balance_flow.handle_play("jts.local", run_async)
+    payload, status = balance_flow.handle_start(
+        "jts.local", pair_env["schedule"])
     assert status == 409 and "found 2" in payload["error"]
 
 
-def test_play_rejects_same_channel_pair(pair_env, monkeypatch):
+def test_start_rejects_same_channel_pair(pair_env, monkeypatch):
     monkeypatch.setattr(
         rooms, "_get_member_grouping",
         lambda a, known=None: dict(PEER_G, channel="left"))
-    payload, status = balance_flow.handle_play("jts.local", run_async)
+    payload, status = balance_flow.handle_start(
+        "jts.local", pair_env["schedule"])
     assert status == 409 and "swap" in payload["error"]
 
 
-def test_play_rejects_while_active(pair_env):
-    play_ok(pair_env)  # → awaiting_capture
-    payload, status = balance_flow.handle_play("jts.local", run_async)
+def test_start_opens_one_window_and_rejects_double_start(pair_env):
+    payload = start_ok(pair_env)
+    assert payload["members"]["left"]["is_self"] is True
+    assert payload["members"]["right"]["label"] == "jts3"
+    assert pair_env["window_open"] == 1
+    assert pair_env["window_closed"] == 0  # held across the session
+    assert balance_flow.active_phase() == "measuring"
+    payload, status = balance_flow.handle_start(
+        "jts.local", pair_env["schedule"])
     assert status == 409 and "already" in payload["error"]
 
 
 # ---------------------------------------------------------------------------
-# Happy path: play → upload → apply
+# Ramp + lock
 
 
-def test_play_runs_inside_measurement_window(pair_env):
-    payload = play_ok(pair_env)
-    assert pair_env["window"] == 1
-    assert len(pair_env["played"]) == 1
-    assert payload["schedule"]["bursts"][0]["channel"] == "left"
-    assert payload["members"]["left"]["is_self"] is True
-    assert payload["members"]["right"]["label"] == "jts3"
-    assert balance_flow.active_phase() == "awaiting_capture"
-    assert balance_flow.handle_status()["phase"] == "awaiting_capture"
+def test_ramp_requires_session_and_valid_channel(pair_env):
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(b'{"channel": "left"}'),
+        pair_env["run_async"], pair_env["schedule"])
+    assert status == 409  # no session
+    start_ok(pair_env)
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(b'{"channel": "centre"}'),
+        pair_env["run_async"], pair_env["schedule"])
+    assert status == 400
 
 
-def test_play_failure_resets_to_idle(pair_env, monkeypatch):
-    async def boom(path, *a, **k):
-        raise RuntimeError("aplay exploded")
+def test_ramp_plays_the_channel_wav_once(pair_env):
+    start_ok(pair_env)
+    payload = ramp_ok(pair_env, "left")
+    assert payload["duration_s"] > 20
+    assert pair_env["spawned"] == ["/tmp/left.wav"]
+    assert balance_flow.handle_status()["ramping"] == "left"
+    payload, status = balance_flow.handle_ramp(
+        FakeHandler(b'{"channel": "right"}'),
+        pair_env["run_async"], pair_env["schedule"])
+    assert status == 409 and "already playing" in payload["error"]
 
-    monkeypatch.setattr(playback, "play_sweep", boom)
-    payload, status = balance_flow.handle_play("jts.local", run_async)
-    assert status == 500 and "aplay exploded" in payload["error"]
-    assert balance_flow.handle_status()["phase"] == "idle"
+
+def test_early_lock_keeps_listening(pair_env):
+    start_ok(pair_env)
+    ramp_ok(pair_env, "left")
+    payload, status = lock_at(pair_env, "left", 0.6)  # inside lead-in
+    assert status == 200
+    assert payload["keep_listening"] and not payload["ok"]
+    assert not pair_env["procs"][0].terminated
+    assert balance_flow.handle_status()["ramping"] == "left"
 
 
-def test_upload_without_play_conflicts(pair_env):
-    payload, status = balance_flow.handle_upload(b"RIFFnope")
+def test_lock_mismatched_channel_conflicts(pair_env):
+    start_ok(pair_env)
+    ramp_ok(pair_env, "left")
+    payload, status = balance_flow.handle_lock(
+        FakeHandler(b'{"channel": "right"}'))
     assert status == 409
 
 
-def test_upload_rejection_keeps_awaiting(pair_env):
-    play_ok(pair_env)
-    sched = balance_flow._state["schedule"]
-    silence = np.random.default_rng(3).standard_normal(
-        int((sched.total_s + 1.0) * SR)) * 1e-4
-    payload, status = balance_flow.handle_upload(wav_bytes(silence))
-    assert status == 200
-    assert payload["rejected"] and not payload["ok"]
-    assert payload["result"]["reason"] == "no_alignment"
-    assert balance_flow.handle_status()["phase"] == "awaiting_capture"
+def test_full_walkthrough_computes_trims(pair_env):
+    start_ok(pair_env)
+    ramp_ok(pair_env, "left")
+    payload, status = lock_at(pair_env, "left", 10.0)
+    assert status == 200 and payload["ok"]
+    assert pair_env["procs"][0].terminated
+    assert payload["phase"] == "measuring"
+    assert payload["drive_dbfs"] == pytest.approx(drive_at(10.0), abs=0.1)
 
-
-def test_upload_recommends_member_trims(pair_env):
-    play_ok(pair_env)
-    sched = balance_flow._state["schedule"]
-    capture = render_capture(sched, left_db=-6.0, right_db=-9.0)
-    payload, status = balance_flow.handle_upload(wav_bytes(capture))
-    assert status == 200 and payload["ok"], payload
-    assert payload["result"]["delta_db"] == pytest.approx(3.0, abs=0.3)
+    ramp_ok(pair_env, "right")
+    payload, status = lock_at(pair_env, "right", 14.0)
+    assert status == 200 and payload["ok"]
+    assert payload["phase"] == "analyzed"
     rec = payload["recommendation"]
-    assert rec["left_trim_db"] == pytest.approx(-3.0, abs=0.3)
+    # Right needed 4 s more ramp = 6 dB more drive → left louder by 6.
+    assert rec["delta_db"] == pytest.approx(6.0, abs=0.1)
+    assert rec["left_trim_db"] == pytest.approx(-6.0, abs=0.1)
     assert rec["right_trim_db"] == 0.0
-    assert not rec["clamped"]
-    assert balance_flow.handle_status()["phase"] == "analyzed"
+    deadline = time.monotonic() + 2.0
+    while (pair_env["window_closed"] != 1
+           and time.monotonic() < deadline):
+        time.sleep(0.02)
+    assert pair_env["window_closed"] == 1  # renderers restored
+    assert balance_flow.active_phase() is None  # analyzed ≠ active
 
 
-def test_upload_composes_with_existing_trims(pair_env, monkeypatch):
-    # Peer (right) already trimmed -2; capture still shows left +1.
-    monkeypatch.setattr(
-        rooms, "_get_member_grouping",
-        lambda a, known=None: dict(PEER_G, trim_db=-2.0))
-    play_ok(pair_env)
-    sched = balance_flow._state["schedule"]
-    capture = render_capture(sched, left_db=-6.0, right_db=-7.0)
-    payload, _ = balance_flow.handle_upload(wav_bytes(capture))
+def test_lock_in_ceiling_hold_uses_ceiling_drive(pair_env):
+    from jasper.multiroom.balance import RAMP_CEIL_DBFS, ramp_duration_s
+    start_ok(pair_env)
+    ramp_ok(pair_env, "left")
+    payload, status = lock_at(
+        pair_env, "left", ramp_duration_s() - 0.5)
     assert payload["ok"]
-    rec = payload["recommendation"]
-    # left -1; renormalize lifts right's -2 → left -1+? Walk it:
-    # left 0-1=-1, right -2 → lift +1 → left 0... no: lift = -max(-1,-2)=1
-    # → left 0, right -1. The pair regains a wasted dB.
-    assert rec["left_trim_db"] == pytest.approx(0.0, abs=0.3)
-    assert rec["right_trim_db"] == pytest.approx(-1.0, abs=0.3)
+    assert payload["drive_dbfs"] == pytest.approx(RAMP_CEIL_DBFS)
+
+
+def test_ramp_ending_unheard_marks_channel(pair_env):
+    start_ok(pair_env)
+    ramp_ok(pair_env, "left")
+    pair_env["procs"][0].finish()  # WAV ended, nobody locked
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        st = balance_flow.handle_status()
+        if st["locks"].get("left", {}).get("not_heard"):
+            break
+        time.sleep(0.02)
+    st = balance_flow.handle_status()
+    assert st["locks"]["left"] == {"not_heard": True}
+    assert st["ramping"] == ""
+    # Retry is allowed and clears the failed answer.
+    ramp_ok(pair_env, "left")
+    assert balance_flow.handle_status()["locks"].get("left") is None
+
+
+def test_stop_terminates_playback_and_releases_window(pair_env):
+    start_ok(pair_env)
+    ramp_ok(pair_env, "left")
+    payload, status = balance_flow.handle_stop()
+    assert status == 200
+    assert pair_env["procs"][0].terminated
+    deadline = time.monotonic() + 2.0
+    while (pair_env["window_closed"] != 1
+           and time.monotonic() < deadline):
+        time.sleep(0.02)
+    assert pair_env["window_closed"] == 1
+    assert balance_flow.handle_status()["phase"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# Apply (contract unchanged from v1)
+
+
+def analyzed_state(pair_env):
+    start_ok(pair_env)
+    ramp_ok(pair_env, "left")
+    lock_at(pair_env, "left", 10.0)
+    ramp_ok(pair_env, "right")
+    lock_at(pair_env, "right", 14.0)
 
 
 def test_apply_writes_peer_first_then_self(pair_env):
-    play_ok(pair_env)
-    sched = balance_flow._state["schedule"]
-    balance_flow.handle_upload(
-        wav_bytes(render_capture(sched, -6.0, -9.0)))
+    analyzed_state(pair_env)
     payload, status = balance_flow.handle_apply()
     assert status == 200 and payload["ok"]
     addrs = [a for a, _ in pair_env["posted"]]
@@ -242,15 +358,12 @@ def test_apply_writes_peer_first_then_self(pair_env):
     assert peer_body["trim_db"] == 0.0
     assert peer_body["bond_id"] == "bond-x"
     assert self_body["channel"] == "left"
-    assert self_body["trim_db"] == pytest.approx(-3.0, abs=0.3)
+    assert self_body["trim_db"] == pytest.approx(-6.0, abs=0.1)
     assert balance_flow.handle_status()["phase"] == "applied"
 
 
 def test_apply_partial_failure_reports_and_stops(pair_env, monkeypatch):
-    play_ok(pair_env)
-    sched = balance_flow._state["schedule"]
-    balance_flow.handle_upload(
-        wav_bytes(render_capture(sched, -6.0, -9.0)))
+    analyzed_state(pair_env)
 
     def fail_post(addr, body, known=None):
         return False, "connection refused"
@@ -258,35 +371,23 @@ def test_apply_partial_failure_reports_and_stops(pair_env, monkeypatch):
     monkeypatch.setattr(rooms, "_post_grouping_to_member", fail_post)
     payload, status = balance_flow.handle_apply()
     assert status == 502 and not payload["ok"]
-    assert any(not w["ok"] for w in payload["writes"].values())
-    # Stopped at the first failure — never reached the second member.
-    assert len(payload["writes"]) == 1
+    assert len(payload["writes"]) == 1  # stopped at the first failure
     assert balance_flow.handle_status()["phase"] != "applied"
 
 
 def test_apply_without_analysis_conflicts(pair_env):
     payload, status = balance_flow.handle_apply()
-    assert status == 409
+    assert status == HTTPStatus.CONFLICT
 
 
 # ---------------------------------------------------------------------------
-# Mutual exclusion + expiry
-
-
-def test_active_phase_expires_after_deadline(pair_env, monkeypatch):
-    play_ok(pair_env)
-    assert balance_flow.active_phase() == "awaiting_capture"
-    monkeypatch.setattr(
-        time, "monotonic",
-        lambda: balance_flow._state["deadline"] + 1.0)
-    assert balance_flow.active_phase() is None
-    assert balance_flow.handle_status()["phase"] == "idle"
+# Mutual exclusion with correction
 
 
 def test_correction_start_blocked_by_balance(pair_env):
-    play_ok(pair_env)
+    start_ok(pair_env)
     from jasper.web.correction_setup import _reserve_start_slot
-    assert _reserve_start_slot() == "balance:awaiting_capture"
+    assert _reserve_start_slot() == "balance:measuring"
 
 
 # ---------------------------------------------------------------------------
@@ -298,3 +399,4 @@ def test_render_page_links_module_and_csrf():
     assert '/assets/balance/js/main.js' in html
     assert 'tok-123' in html
     assert "Balance speakers" in html
+    assert 'id="stop"' in html  # the big red button exists
