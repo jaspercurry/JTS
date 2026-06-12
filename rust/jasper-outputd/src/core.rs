@@ -289,6 +289,10 @@ impl OutputCore {
         self.content_meter_paused = true;
     }
 
+    pub fn content_meter_paused(&self) -> bool {
+        self.content_meter_paused
+    }
+
     pub fn resume_content_meter(&mut self) {
         self.content_meter_paused = false;
         self.loudness.clear_context();

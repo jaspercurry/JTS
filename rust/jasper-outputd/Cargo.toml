@@ -9,6 +9,7 @@ authors = ["Jasper Curry <jaspercurry@gmail.com>"]
 rust-version = "1.75"
 
 [dependencies]
+jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 # Same ALSA wrapper used by jasper-fanin. outputd's ALSA backend reads
 # Camilla's post-DSP loopback lane and writes the final DAC directly.
 alsa = "0.11"

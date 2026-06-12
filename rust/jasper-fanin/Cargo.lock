@@ -153,11 +153,16 @@ dependencies = [
  "alsa",
  "anyhow",
  "env_logger",
+ "jasper-tts-protocol",
  "libc",
  "log",
  "sd-notify",
  "signal-hook",
 ]
+
+[[package]]
+name = "jasper-tts-protocol"
+version = "0.1.0"
 
 [[package]]
 name = "jiff"

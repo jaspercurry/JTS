@@ -229,12 +229,23 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     assert "pub mod protocol;" not in outputd_lib_rs
     assert "TtsCommand::FlushSync" in tts_rs
     assert "TtsCommand::ProgramDuckOn" in tts_rs
-    assert '"PROGRAM_DUCK_ON"' in tts_rs
     assert "prepare_period()" in mixer_rs
     assert "mix_into_with_gain" in mixer_rs
     assert "program_gain" in mixer_rs
-    assert "AUDIO byte length must contain whole stereo frames" in tts_rs
     assert "tts.mix_period(&mut self.sum_buf)" in mixer_rs
+    # The wire layer itself (command vocabulary + parser) lives ONCE in
+    # the shared crate; both daemons consume it as a path dependency —
+    # the structural guarantee the old byte-twin asserts approximated.
+    proto_rs = (
+        REPO / "rust" / "jasper-tts-protocol" / "src" / "lib.rs"
+    ).read_text()
+    assert '"PROGRAM_DUCK_ON"' in proto_rs
+    assert "AUDIO byte length must contain whole stereo frames" in proto_rs
+    assert "pub fn read_command" in proto_rs
+    for crate in ("jasper-fanin", "jasper-outputd"):
+        manifest = (REPO / "rust" / crate / "Cargo.toml").read_text()
+        assert 'jasper-tts-protocol = { path = "../jasper-tts-protocol" }' in manifest
+    assert '"PROGRAM_DUCK_ON"' not in tts_rs  # no drifting local copy
 
 
 def test_voice_uses_fanin_tts_and_duck_for_all_output_profiles():

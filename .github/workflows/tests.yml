@@ -123,6 +123,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev
 
+      - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
+        working-directory: rust/jasper-tts-protocol
+        run: |
+          cargo build --release --locked
+          cargo test --locked
+
       - name: jasper-fanin — build + test (release, locked; mirrors install.sh)
         working-directory: rust/jasper-fanin
         run: |
