@@ -1235,11 +1235,11 @@ topology XMOS designed the chip for.
 > residual risks are narrower than drift: a non-rational SOF divisor, or
 > a ref→air *delay* that wanders over time past the chip's fixed bulk
 > delay (0–500 ms) + 192 ms tail. Only measurement settles it. Software
-> AEC3 (the production default) sidesteps the whole question — its
+> AEC3 (the fallback for unvalidated DACs) sidesteps the whole question — its
 > reference is the digital `pcm.jasper_capture` tap and AEC3 handles
 > render/capture clock mismatch in software; a DAC8x on AEC3 is a
-> routing + re-tune at low/negligible risk, **recommended for
-> production**.
+> routing + re-tune at low/negligible risk, **recommended until that
+> DAC passes the chip-AEC validation gate**.
 >
 > **The full decision procedure for evaluating any candidate DAC**
 > (transport/clock-role classification, why "different PLL off the same
