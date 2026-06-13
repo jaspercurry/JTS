@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from jasper.audio_hardware import dac
+from tests.install_surface import installer_text
 
 from ._voice_runtime_text import voice_runtime_text
 
@@ -60,7 +61,7 @@ def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
 
 
 def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
@@ -86,7 +87,7 @@ def test_install_prefers_dac8x_for_outputd_without_reusing_dongle_mixer_card():
 
 def test_bash_output_detection_literals_track_registered_dac_profiles():
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
 
     for profile_id in (
         dac.APPLE_USB_C_DONGLE_ID,
@@ -139,7 +140,7 @@ def test_apple_dongle_mixer_services_are_enabled_only_for_apple_output_role():
 def test_apple_dongle_helpers_use_runtime_safe_card_template():
     init_unit = (REPO / "deploy" / "systemd" / "jasper-dac-init.service").read_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-headphone-monitor.service").read_text()
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     init_script = (REPO / "deploy" / "bin" / "jasper-dac-init").read_text()
     monitor_script = (REPO / "deploy" / "bin" / "jasper-headphone-monitor").read_text()
     assert "ExecStart=/usr/local/bin/jasper-dac-init __APPLE_DONGLE_CARD__ Headphone" in init_unit
@@ -164,7 +165,7 @@ def test_apple_dongle_udev_rule_escapes_literal_headphone_percent():
 
 
 def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
@@ -304,7 +305,7 @@ def test_camilla_outputd_config_is_not_legacy_v1():
 
 
 def test_install_uses_separate_outputd_statefile():
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     camilla_unit = (REPO / "deploy" / "systemd" / "jasper-camilla.service").read_text()
     assert "outputd-cutover.yml" in install_sh
     assert "config_path: /etc/camilladsp/outputd-cutover.yml" in install_sh

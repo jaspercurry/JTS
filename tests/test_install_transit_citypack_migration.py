@@ -34,6 +34,7 @@ def _run_migrate(tmp_path: Path) -> subprocess.CompletedProcess[str]:
         check=True,
     ).stdout
     assert "migrate_transit_config()" in helper
+    helper = 'ensure_state_dir() { install -d -m 0750 "${STATE_DIR}"; }\n' + helper
 
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",

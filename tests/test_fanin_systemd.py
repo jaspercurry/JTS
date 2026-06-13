@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.install_surface import installer_text
+
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-fanin.service"
@@ -325,7 +327,7 @@ def test_fanin_starts_before_hot_path_consumers():
 def test_install_sh_enables_fanin_and_retires_topology_switch():
     """Fan-in is mandatory now: install.sh enables the daemon directly
     and removes the retired dmix/fanin switch state."""
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     env_migrations_lib = (
         REPO / "deploy" / "lib" / "install" / "env-migrations.sh"
     ).read_text()
@@ -358,7 +360,7 @@ def test_install_sh_enables_fanin_and_retires_topology_switch():
 def test_install_sh_restarts_camilla_after_fanin():
     """Camilla captures fan-in's summed output; deploy must not leave it
     holding a stale capture fd after asound/fan-in updates."""
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     assert re.search(
         r"systemctl restart jasper-fanin\.service.*?"
         r"systemctl try-restart jasper-camilla\.service",
@@ -371,7 +373,7 @@ def test_install_sh_builds_and_installs_binary():
     """install.sh must build the Rust crate and install the
     release binary to /opt/jasper/bin/jasper-fanin. Without these
     lines, the unit's ExecStart fails with ENOENT."""
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     assert "build_install_jasper_fanin" in install_sh, (
         "install.sh must define + call build_install_jasper_fanin "
         "(builds rust/jasper-fanin and installs the binary). "

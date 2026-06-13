@@ -28,6 +28,7 @@ def _run_migrate(tmp_path: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True, text=True, check=True,
     ).stdout
     assert "migrate_wake_legs_config()" in helper
+    helper = 'ensure_state_dir() { install -d -m 0750 "${STATE_DIR}"; }\n' + helper
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "ENV_DIR": str(env_dir),

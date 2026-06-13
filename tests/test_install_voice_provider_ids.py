@@ -25,6 +25,7 @@ def _extract_render_helper() -> str:
         check=True,
     ).stdout
     assert "render_voice_provider_ids_manifest()" in helper
+    helper = 'ensure_state_dir() { install -d -m 0750 "${STATE_DIR}"; }\n' + helper
     return helper
 
 

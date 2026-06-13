@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.install_surface import installer_text
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -111,23 +113,17 @@ def test_shairport_template_keeps_renderer_placeholder():
 
 
 def test_install_writes_fanin_asound_conf_and_retires_switcher():
-    install = (REPO / "deploy" / "install.sh").read_text()
+    install = installer_text()
     assert "jasper_asound_render_template" in install
     assert '"${ENV_DIR}/asoundrc.jasper.template"' in install
     assert "/usr/local/sbin/jasper-render-asound-conf" in install
     assert "ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf" in install
     assert "chmod 0644 /var/lib/jasper-asound/asound.conf" in install
     assert 'grep -q "shairport_substream" /etc/asound.conf' in install
-    # install_renderers (which removes the retired switcher binary)
-    # lives in the sourced deploy/lib/install/renderers.sh now.
-    renderers_lib = (
-        REPO / "deploy" / "lib" / "install" / "renderers.sh"
-    ).read_text()
-    assert "rm -f /usr/local/sbin/jasper-audio-topology" in renderers_lib
+    assert "rm -f /usr/local/sbin/jasper-audio-topology" in install
     assert "retire_audio_topology_switch" in install
     assert "systemctl enable jasper-camilla.service jasper-fanin.service" in install
     assert "/usr/local/sbin/jasper-audio-topology fanin" not in install
-    assert "/usr/local/sbin/jasper-audio-topology fanin" not in renderers_lib
 
 
 def test_snd_aloop_modprobe_pins_substreams_and_notify():

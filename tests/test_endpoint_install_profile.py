@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.install_surface import installer_text
+
 
 REPO_ROOT = Path(__file__).parent.parent
 INSTALL_SH = REPO_ROOT / "deploy" / "install.sh"
@@ -286,8 +288,9 @@ def test_system_dashboard_honors_endpoint_capabilities():
 
 
 def test_endpoint_profile_installs_endpoint_web_not_combined_bundle():
-    text = INSTALL_SH.read_text()
-    endpoint_block = text.split(
+    install_sh = INSTALL_SH.read_text()
+    text = installer_text()
+    endpoint_block = install_sh.split(
         'if [[ "${install_profile}" == "endpoint" ]]; then', 1,
     )[1].split("return 0", 1)[0]
 
@@ -295,6 +298,26 @@ def test_endpoint_profile_installs_endpoint_web_not_combined_bundle():
     assert "jasper-system-web.socket jasper-sources-web.socket" in text
     assert "jasper-web.socket" in text
     assert "combined full-speaker jasper-web bundle disabled" in text
+
+
+def test_full_profile_disables_endpoint_sources_socket_before_combined_web():
+    text = installer_text()
+    full_systemd = text.split("install_systemd_units() {", 1)[1].split(
+        "\n}",
+        1,
+    )[0]
+    disable = (
+        "systemctl disable --now jasper-sources-web.socket "
+        "jasper-sources-web.service"
+    )
+
+    assert disable in full_systemd
+    disable_block = full_systemd.split(disable, 1)[1].split("# Migrate", 1)[0]
+    assert ">/dev/null 2>&1 || true" in disable_block
+    assert full_systemd.index("systemctl daemon-reload") < full_systemd.index(
+        disable
+    )
+    assert full_systemd.index(disable) < full_systemd.index("# Migrate")
 
 
 def test_deploy_script_forwards_endpoint_profile_and_verifies_management_surface():
@@ -460,7 +483,7 @@ def test_endpoint_unit_validator_rejects_empty_dependency_directive(tmp_path: Pa
 
 
 def test_endpoint_systemd_verify_skips_absent_snapserver_binary():
-    text = INSTALL_SH.read_text()
+    text = installer_text()
 
     assert 'if [[ -x /usr/bin/snapserver ]]' in text
     assert 'verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")' in text

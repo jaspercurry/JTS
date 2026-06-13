@@ -24,6 +24,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from tests.install_surface import installer_text
+
 from jasper.env_load import parse_env_file
 
 
@@ -307,5 +309,5 @@ def test_install_enables_timer_with_now():
     validation, with the doctor's snapshot-staleness warn as backstop).
     The installer must use `enable --now` so the 5-min re-check loop is
     live from the first deploy."""
-    install_sh = (ROOT / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     assert "systemctl enable --now jasper-identity-reconcile.timer" in install_sh

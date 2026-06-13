@@ -99,6 +99,7 @@ def _run_migrate(
         "couldn't extract helper from env-migrations.sh — has the "
         "function been renamed or restructured?"
     )
+    helper = 'ensure_state_dir() { install -d -m 0750 "${STATE_DIR}"; }\n' + helper
 
     # Run the helper with a hermetic PATH so a real Pi's /usr/bin/nmcli
     # cannot leak into the "nmcli missing" test case.

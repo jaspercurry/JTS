@@ -25,10 +25,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "deploy" / "install.sh"
+INSTALL_LIB_DIR = ROOT / "deploy" / "lib" / "install"
 
 
 def _install_text() -> str:
-    return INSTALL_SH.read_text(encoding="utf-8")
+    paths = [INSTALL_SH, *sorted(INSTALL_LIB_DIR.glob("*.sh"))]
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 
 def _call_site_index(lines: list[str]) -> int:
