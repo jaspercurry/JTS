@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ._voice_runtime_text import voice_runtime_text
+
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-outputd.service"
 VOICE_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-voice.service"
 ROLLBACK_SCRIPT_PATH = REPO / "scripts" / "disable-outputd-cutover.sh"
-VOICE_DAEMON_PATH = REPO / "jasper" / "voice_daemon.py"
 
 
 def _read_unit() -> str:
@@ -139,7 +140,7 @@ def test_voice_unit_parks_cleanly_when_provider_is_unconfigured():
 
 
 def test_voice_daemon_maps_unconfigured_provider_to_ex_config():
-    source = VOICE_DAEMON_PATH.read_text()
+    source = voice_runtime_text()
     assert "EX_CONFIG_EXIT = 78" in source
     assert "VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT" in source
     assert "except VoiceProviderNotConfigured as e:" in source
@@ -148,7 +149,7 @@ def test_voice_daemon_maps_unconfigured_provider_to_ex_config():
 
 
 def test_voice_daemon_maps_vad_setup_failure_to_ex_config():
-    source = VOICE_DAEMON_PATH.read_text()
+    source = voice_runtime_text()
     assert "EX_CONFIG_EXIT = 78" in source
     assert "VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT" in source
     assert "except SpeechVADSetupError as e:" in source
