@@ -97,9 +97,17 @@ class FakeCamillaWithoutLiveRaw:
         return True
 
 
-_SOUND_MODULE = (
+_SOUND_MODULE_DIR = (
     Path(__file__).resolve().parent.parent
-    / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
+    / "deploy" / "assets" / "sound-profile" / "js"
+)
+_SOUND_MODULE = _SOUND_MODULE_DIR / "main.js"
+_SOUND_MODULE_GRAPH = (
+    _SOUND_MODULE,
+    _SOUND_MODULE_DIR / "api.js",
+    _SOUND_MODULE_DIR / "store.js",
+    _SOUND_MODULE_DIR / "active-speaker-views.js",
+    _SOUND_MODULE_DIR / "active-speaker-actions.js",
 )
 _SOUND_CSS = (
     Path(__file__).resolve().parent.parent
@@ -107,6 +115,10 @@ _SOUND_CSS = (
 )
 _SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness.mjs"
 _NODE = shutil.which("node")
+
+
+def _sound_module_graph_text() -> str:
+    return "\n".join(path.read_text() for path in _SOUND_MODULE_GRAPH)
 
 
 def _start_sound_server(tmp_path: Path):
@@ -154,6 +166,7 @@ def test_sound_module_preserves_editor_behaviour():
     5-band Simple field names, the backend endpoints + epoch handshake, the
     CSRF-via-meta wiring, and no legacy prompt() flow."""
     js = _SOUND_MODULE.read_text()
+    graph_js = _sound_module_graph_text()
     assert "sub_bass_db" in js
     assert "presence_db" in js
     for path in (
@@ -165,24 +178,24 @@ def test_sound_module_preserves_editor_behaviour():
     assert "function cancelLiveDrafts()" in js
     assert "jsonHeaders()" in js
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
-    assert "Active crossover setup" in js
-    assert "./active-speaker/environment" in js
-    assert "./output-topology" in js
-    assert "Prepare first quiet test" in js
-    assert "safe_playback" in js
-    assert "Build the speaker layout, add driver info, confirm DAC outputs" in js
-    assert "function defaultOutputStep()" in js
-    assert "if (!driverResearchStepSatisfied()) return 'research';" in js
-    assert "if (!outputIdentityComplete()) return 'map';" in js
-    assert "return 'safety';" in js
-    assert "Finish the current card before opening" in js
-    assert "output-step__chevron" in js
-    assert "querySelectorAll('.output-step[open]')" in js
-    assert "window.prompt" not in js
+    assert "Active crossover setup" in graph_js
+    assert "./active-speaker/environment" in graph_js
+    assert "./output-topology" in graph_js
+    assert "Prepare first quiet test" in graph_js
+    assert "safe_playback" in graph_js
+    assert "Build the speaker layout, add driver info, confirm DAC outputs" in graph_js
+    assert "function defaultOutputStep()" in graph_js
+    assert "if (!driverResearchStepSatisfied()) return 'research';" in graph_js
+    assert "if (!outputIdentityComplete()) return 'map';" in graph_js
+    assert "return 'safety';" in graph_js
+    assert "Finish the current card before opening" in graph_js
+    assert "output-step__chevron" in graph_js
+    assert "querySelectorAll('.output-step[open]')" in graph_js
+    assert "window.prompt" not in graph_js
 
 
 def test_sound_module_active_speaker_status_is_explicit_read_only():
-    js = _SOUND_MODULE.read_text()
+    js = _sound_module_graph_text()
 
     assert "function refreshActiveSpeakerStatus()" in js
     assert "fetch('./active-speaker/environment'" in js
@@ -284,7 +297,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
 
 
 def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
-    js = _SOUND_MODULE.read_text()
+    js = _sound_module_graph_text()
 
     assert "function renderOutputTopologySetup()" in js
     assert "function refreshOutputTopology(options)" in js

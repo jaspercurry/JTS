@@ -15,8 +15,8 @@ const escapePreamble = readFileSync(escapePath, "utf8")
 const localModulePaths = [
   "../../deploy/assets/sound-profile/js/api.js",
   "../../deploy/assets/sound-profile/js/store.js",
-  "../../deploy/assets/sound-profile/js/active-speaker/views.js",
-  "../../deploy/assets/sound-profile/js/active-speaker/actions.js",
+  "../../deploy/assets/sound-profile/js/active-speaker-views.js",
+  "../../deploy/assets/sound-profile/js/active-speaker-actions.js",
 ];
 const localModulePreamble = localModulePaths.map((moduleName) => {
   const moduleUrl = new URL(moduleName, import.meta.url);
