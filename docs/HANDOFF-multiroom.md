@@ -1792,8 +1792,10 @@ card; jasper/web/balance_flow.py riding INSIDE the correction
 service's process + TLS origin, nginx 443 location /balance/ → :8770
 prefix kept) holds ONE measurement_window across the whole walkthrough
 (music doesn't blare back between speakers), released on completion /
-the big Stop button / a SESSION_MAX_S=300 s watchdog so an abandoned
-phone tab can never leave renderers stopped. Mutual exclusion with
+the big Stop button / an INACTIVITY timeout (IDLE_TIMEOUT_S=90 s,
+bumped by each ramp/lock/unheard so an active session is never yanked
+mid-use however slow, while an abandoned phone tab releases the
+renderers + wake loop within one idle window). Mutual exclusion with
 correction is in-process: _reserve_start_slot consults
 balance_flow.active_phase(), /balance/start sits behind correction's
 idle check. /balance/apply writes one absolute /grouping/set per

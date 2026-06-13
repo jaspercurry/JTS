@@ -23,7 +23,13 @@ buffering, the snapclient buffer, LAN round-trip, the phone's
 detection smoothing — is identical across the two passes and cancels
 in the drive-level difference; what doesn't cancel is bounded by the
 ramp rate (0.3 s of asymmetric delay at 1.5 dB/s ≈ 0.45 dB, under the
-wizard's 0.5 dB step).
+wizard's 0.5 dB step). The one latency that is per-MEMBER rather than
+shared is the snapclient playout buffer (``JASPER_GROUPING_BUFFER_MS``,
+operator-tuned per member, not set by the bond flow): a difference
+between the two members feeds straight into the delta at the ramp
+rate. In practice both default to 400 ms and an asymmetry large enough
+to matter (≈100 ms → ≈0.15 dB) is itself a sync misconfiguration the
+household would hear as an imaging smear before it dented a trim.
 
 Hearing safety is structural: the ramp STARTS 30 dB below its
 ceiling, the ceiling is the same -12 dBFS program level as the
@@ -39,7 +45,6 @@ jasper/correction/sweep.py. The wizard-layer trim write composition
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -72,8 +77,6 @@ RAMP_LEAD_IN_S = 0.5
 # transient (door slam, cough), not the speaker — the wizard tells the
 # phone to keep listening.
 MIN_LOCK_OFFSET_S = RAMP_LEAD_IN_S + 1.0
-
-_DBFS_FLOOR = -120.0
 
 CHANNELS = ("left", "right")
 
@@ -218,31 +221,3 @@ def recommend_trims(
         right_trim_db=round(new_right, 1),
         clamped=clamped,
     )
-
-
-def band_rms_dbfs(
-    samples: np.ndarray,
-    sample_rate: int,
-    f_lo: float = BURST_F_LO,
-    f_hi: float = BURST_F_HI,
-) -> float:
-    """In-band RMS of a chunk in dB (Hann/rFFT-power, one band).
-
-    Convention caveat: the normalization is window-length-dependent
-    (values scale as rms/sqrt(N)), so levels are directly comparable
-    only between equal-length windows. Kept for offline analysis of
-    fetched captures; the live wizard meters in-band on the phone."""
-    x = np.asarray(samples, dtype=np.float64)
-    if x.ndim != 1 or sample_rate <= 0 or x.size < 8:
-        return _DBFS_FLOOR
-    window = np.hanning(x.size)
-    spectrum = np.fft.rfft(x * window)
-    freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
-    power = np.abs(spectrum) ** 2
-    mask = (freqs >= f_lo) & (freqs < f_hi)
-    if not np.any(mask):
-        return _DBFS_FLOOR
-    rms_like = math.sqrt(float(np.mean(power[mask]))) / max(1, x.size)
-    if rms_like <= 0 or not math.isfinite(rms_like):
-        return _DBFS_FLOOR
-    return max(_DBFS_FLOOR, 20.0 * math.log10(rms_like))
