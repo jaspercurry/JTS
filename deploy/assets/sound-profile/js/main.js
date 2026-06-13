@@ -909,7 +909,6 @@ import { createActiveSpeakerActions } from "./active-speaker-actions.js";
     else if (act === 'save-driver-design') { activeActions.saveDriverResearchDraft(); }
     else if (act === 'prepare-crossover-preview') { activeActions.prepareCrossoverPreview(); }
     else if (act === 'mark-output-identity') { activeActions.updateOutputChannelIdentity(t); }
-    else if (act === 'mark-output-protection') { activeActions.updateOutputChannelProtection(t); }
     else if (act === 'check-output-readiness') { activeActions.checkOutputPlaybackReadiness(t); }
     else if (act === 'play-output-readiness-tone') { activeActions.playOutputReadinessTone(t); }
     else if (act === 'active-floor-result') { activeActions.recordFloorAudioResult(t); }
@@ -917,7 +916,7 @@ import { createActiveSpeakerActions } from "./active-speaker-actions.js";
     else if (act === 'check-active-path-safety') { activeActions.checkActivePathSafety(); }
     else if (act === 'load-active-startup') { activeActions.loadActiveStartupConfig(); }
     else if (act === 'rollback-active-startup') { activeActions.rollbackActiveStartupConfig(); }
-    else if (act === 'arm-active-speaker') { activeActions.activeSpeakerPost('./active-speaker/arm', 'Arming'); }
+    else if (act === 'arm-active-speaker') { activeActions.activeSpeakerPost('./active-speaker/arm', 'Starting quiet test mode'); }
     else if (act === 'stop-active-speaker') { activeActions.activeSpeakerPost('./active-speaker/stop', 'Stopping'); }
     else if (act === 'active-level') {
       activeActions.updateActiveSpeakerLevel(t.getAttribute('data-level-action') || 'set');
@@ -928,13 +927,6 @@ import { createActiveSpeakerActions } from "./active-speaker-actions.js";
     else if (act === 'active-auto-level') {
       activeActions.applyActiveSpeakerAutoLevel();
     }
-    else if (act === 'prepare-active-tone') {
-      activeActions.activeSpeakerTonePlan({
-        side: t.getAttribute('data-side') || '',
-        driver_role: t.getAttribute('data-driver-role') || ''
-      });
-    }
-    else if (act === 'verify-active-tone') { activeActions.activeSpeakerTonePlayback(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {

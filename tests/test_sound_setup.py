@@ -238,9 +238,9 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"verify-active-tone\"" not in js
     assert "class=\"btn btn--danger\" data-act=\"stop-active-speaker\"" in js
     assert "activeSpeaker.playback" not in js
-    assert "var activeSpeakerSetupOpen = false;" in js
+    assert "activeSpeakerSetupOpen: false" in js
     assert "'<details class=\"advanced\" data-active-speaker-setup' + (open ? ' open' : '')" in js
-    assert "activeSpeakerSetupOpen = !!ev.target.open;" in js
+    assert "store.activeSpeakerSetupOpen = !!target.open;" in js
     assert "No sound plays until you explicitly start a quiet test." in js
     assert "Test volume" in js
     assert "activeSpeakerLevelConfig()" in js
@@ -316,6 +316,9 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert 'data-protection-status="' in js
     assert "headers: jsonHeaders()" in js
     assert "Saved speaker layout. No sound was played." in js
+    assert "JTS will re-check the layout after save, then you can confirm each DAC output." in js
+    assert "JTS will re-run backend validation after save" not in js
+    assert "sound_test_blockers" not in js
     assert "Confirm each DAC output after you check the wiring." in js
     assert "Multi-DAC aggregate" in js
     assert "Composite clock" in js

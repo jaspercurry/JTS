@@ -3,11 +3,11 @@ export function createActiveSpeakerActions(deps) {
   var api = deps.api;
   var views = deps.views;
   var activeSpeaker = store.activeSpeaker;
-  var activeSpeakerMicObservation = store.activeSpeakerMicObservation;
   var outputTopology = store.outputTopology;
   var driverResearch = store.driverResearch;
   var crossoverPreview = store.crossoverPreview;
   var patchActiveSpeaker = store.patchActiveSpeaker;
+  var patchActiveSpeakerMicObservation = store.patchActiveSpeakerMicObservation;
   var el = deps.el;
   var jsonHeaders = deps.jsonHeaders;
   var clone = deps.clone;
@@ -40,12 +40,13 @@ export function createActiveSpeakerActions(deps) {
   var driverResearchPrompt = views.driverResearchPrompt;
   var summarizeDriverResearchPayload = views.summarizeDriverResearchPayload;
   var driverResearchDraftSaved = views.driverResearchDraftSaved;
+  var driverResearchCanPreparePreview = views.driverResearchCanPreparePreview;
+  var driverResearchStepSatisfied = views.driverResearchStepSatisfied;
   var ingestDesignDraft = views.ingestDesignDraft;
   var fetchDesignDraft = views.fetchDesignDraft;
   var ingestCrossoverPreview = views.ingestCrossoverPreview;
   var fetchCrossoverPreview = views.fetchCrossoverPreview;
   var toneSummary = views.toneSummary;
-  var humanProtectionStatus = views.humanProtectionStatus;
   var renderOutputTopologySetup = views.renderOutputTopologySetup;
   var renderOutputHardwareRefresh = views.renderOutputHardwareRefresh;
   var outputIdentityComplete = views.outputIdentityComplete;
@@ -110,8 +111,6 @@ export function createActiveSpeakerActions(deps) {
   var renderActiveSpeakerBringup = views.renderActiveSpeakerBringup;
   var renderActiveSpeakerStartupLoad = views.renderActiveSpeakerStartupLoad;
   var renderActiveSpeakerActions = views.renderActiveSpeakerActions;
-  var renderActiveSpeakerPlan = views.renderActiveSpeakerPlan;
-  var renderActiveSpeakerPlayback = views.renderActiveSpeakerPlayback;
   var outputChannel = views.outputChannel;
   var baseOutputDraft = views.baseOutputDraft;
   var outputTemplateDefinition = views.outputTemplateDefinition;
@@ -236,7 +235,7 @@ export function createActiveSpeakerActions(deps) {
     var speakerMode = axis === 'speaker-mode' ? value : axes.speakerMode;
     var kind = outputTemplateKindFromAxes(layout, speakerMode);
     if (!kind) {
-      status('Choose a supported speaker layout option.', true);
+      status('Choose passive, active 2-way, or active 3-way to continue.', true);
       return;
     }
     await setOutputTemplate(kind, {skipDirtyConfirm: true});
@@ -305,6 +304,14 @@ export function createActiveSpeakerActions(deps) {
   }
   async function saveDriverResearchDraft(options) {
     options = options || {};
+    if (!driverResearch.dirty && driverResearchStepSatisfied() && options.nextStep) {
+      store.outputStepOverride = options.nextStep;
+      status(driverResearchCanPreparePreview() ?
+        'Driver research is already saved. Continue with output mapping.' :
+        'Driver research is skipped for now. Continue with output mapping.');
+      render();
+      return true;
+    }
     if (outputTopology.dirty) {
       status('Save the speaker layout before saving driver research.', true);
       return false;
@@ -408,7 +415,7 @@ export function createActiveSpeakerActions(deps) {
     if (step === 'map') {
       if (outputTopology.dirty) {
         store.outputStepOverride = 'map';
-        status('Save the speaker layout before recording or relying on physical verification.', true);
+        status('Save the speaker layout before confirming outputs.', true);
         render();
         return;
       }
@@ -417,13 +424,13 @@ export function createActiveSpeakerActions(deps) {
         var assigned = Number(report && report.assigned_channel_count || 0);
         store.outputStepOverride = 'map';
         status(assigned > 0 ?
-          'Verify every assigned physical output before continuing to safety checks.' :
-          'Save a speaker layout with assigned physical outputs before continuing to safety checks.', true);
+          'Confirm every assigned output before continuing.' :
+          'Save a speaker layout with assigned outputs before continuing.', true);
         render();
         return;
       }
       openOutputStep('safety');
-      status('Output identity is complete. Continue with protected staging and readiness checks.');
+      status('Outputs are confirmed. Continue with the first quiet test.');
       return;
     }
     if (step === 'safety') {
@@ -460,7 +467,7 @@ export function createActiveSpeakerActions(deps) {
   }
   async function updateOutputChannelIdentity(button) {
     if (outputTopology.dirty) {
-      status('Save the speaker layout before changing channel identity evidence.', true);
+      status('Save the speaker layout before changing output confirmation.', true);
       return;
     }
     var groupId = button.getAttribute('data-group-id') || '';
@@ -468,9 +475,9 @@ export function createActiveSpeakerActions(deps) {
     var verified = button.getAttribute('data-verified') !== 'false';
     var label = button.getAttribute('data-label') || (groupId + ' ' + role);
     var message = verified
-      ? 'Mark "' + label + '" as physically verified? Only do this after wiring inspection, dummy-load/DMM checks, or a low-level channel test confirms it.'
-      : 'Clear physical verification for "' + label + '"?';
-    if (!await jtsConfirm(message, {danger: verified && role === 'tweeter'})) return;
+      ? 'Confirm that "' + label + '" is wired to the driver shown here? No sound will play.'
+      : 'Mark "' + label + '" as not confirmed?';
+    if (!await jtsConfirm(message, {danger: false})) return;
 
     outputTopology.identitySaving = groupId + ':' + role;
     outputTopology.error = '';
@@ -492,7 +499,7 @@ export function createActiveSpeakerActions(deps) {
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'channel identity update failed');
       ingestOutputTopology(payload);
-      status((verified ? 'Marked verified: ' : 'Cleared verification: ') + label + '.');
+      status((verified ? 'Confirmed output: ' : 'Cleared output confirmation: ') + label + '.');
     } catch (e) {
       outputTopology.identitySaving = '';
       outputTopology.error = e.message;
@@ -500,54 +507,19 @@ export function createActiveSpeakerActions(deps) {
     }
     render();
   }
-  async function updateOutputChannelProtection(button) {
-    if (outputTopology.dirty) {
-      status('Save the speaker layout before changing protection evidence.', true);
-      return;
-    }
-    var groupId = button.getAttribute('data-group-id') || '';
-    var role = button.getAttribute('data-role') || '';
-    var nextStatus = button.getAttribute('data-status') || (
-      button.getAttribute('data-present') !== 'false' ? 'present' : 'required_missing'
-    );
-    var label = button.getAttribute('data-label') || (groupId + ' ' + role);
-    var message = nextStatus === 'present'
-      ? 'Mark physical compression-driver protection present for "' + label + '"? Only do this after the protection path is installed and inspected.'
-      : (nextStatus === 'software_guard_requested'
-        ? 'Use software-guarded bring-up for "' + label + '"? JTS will still block playback; this only allows a muted, high-passed, limited startup candidate to be staged for review.'
-        : 'Clear compression-driver guard evidence for "' + label + '"?');
-    if (!await jtsConfirm(message, {danger: nextStatus === 'present'})) return;
-
-    outputTopology.protectionSaving = groupId + ':' + role;
-    outputTopology.error = '';
-    outputTopology.readinessError = '';
-    outputTopology.readiness = null;
-    outputTopology.readinessPlayback = null;
-    outputTopology.readinessPlaybackChecking = '';
-    outputTopology.touched = true;
-    patchActiveSpeaker({stagedConfig: null});
-    render();
-    try {
-      var resp = await fetch('./active-speaker/channel-protection', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          speaker_group_id: groupId,
-          role: role,
-          protection_status: nextStatus
-        })
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'channel protection update failed');
-      ingestOutputTopology(payload);
-      outputTopology.protectionSaving = '';
-      status('Set guard to ' + humanProtectionStatus(nextStatus) + ': ' + label + '.');
-    } catch (e) {
-      outputTopology.protectionSaving = '';
-      outputTopology.error = e.message;
-      status('Could not update channel protection: ' + e.message, true);
-    }
-    render();
+  async function saveOutputChannelProtectionState(groupId, role, nextStatus) {
+    var resp = await fetch('./active-speaker/channel-protection', {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        speaker_group_id: groupId,
+        role: role,
+        protection_status: nextStatus
+      })
+    });
+    var payload = await resp.json();
+    if (!resp.ok) throw new Error(payload.error || 'channel quiet test setup update failed');
+    return payload;
   }
   async function fetchOutputPlaybackReadiness(groupId, role) {
     var resp = await fetch('./active-speaker/playback-readiness', {
@@ -564,28 +536,48 @@ export function createActiveSpeakerActions(deps) {
   }
   async function checkOutputPlaybackReadiness(button) {
     if (outputTopology.dirty) {
-      status('Save the speaker layout before checking playback readiness.', true);
+      status('Save the speaker layout before choosing the first quiet test channel.', true);
       return;
     }
     var groupId = button.getAttribute('data-group-id') || '';
     var role = button.getAttribute('data-role') || '';
     var label = button.getAttribute('data-label') || (groupId + ' ' + role);
+    var protectionRequired = button.getAttribute('data-protection-required') === 'true';
+    var protectionStatus = button.getAttribute('data-protection-status') || 'unknown';
     var targetId = groupId + ':' + role;
+    var needsSoftwareGuard = protectionRequired &&
+      protectionStatus !== 'present' &&
+      protectionStatus !== 'software_guard_requested';
     outputTopology.readinessChecking = targetId;
+    outputTopology.protectionSaving = needsSoftwareGuard ? targetId : '';
     outputTopology.error = '';
     outputTopology.readinessError = '';
+    outputTopology.readiness = null;
     outputTopology.readinessPlayback = null;
     outputTopology.readinessPlaybackChecking = '';
     outputTopology.touched = true;
+    activeSpeaker.stagedConfig = null;
+    if (needsSoftwareGuard) {
+      status('Preparing ' + label + ' for a quiet first test. No sound will play.');
+    }
     render();
     try {
+      if (needsSoftwareGuard) {
+        ingestOutputTopology(await saveOutputChannelProtectionState(
+          groupId,
+          role,
+          'software_guard_requested'
+        ));
+        outputTopology.protectionSaving = '';
+      }
       outputTopology.readiness = await fetchOutputPlaybackReadiness(groupId, role);
       outputTopology.readinessChecking = '';
-      status('Checked playback readiness for ' + label + '. No sound was played.');
+      status('Selected ' + label + ' for the first quiet test. No sound was played.');
     } catch (e) {
+      outputTopology.protectionSaving = '';
       outputTopology.readinessChecking = '';
       outputTopology.readinessError = e.message;
-      status('Could not check playback readiness: ' + e.message, true);
+      status('Could not prepare that driver for a quiet test: ' + e.message, true);
     }
     render();
   }
@@ -596,7 +588,7 @@ export function createActiveSpeakerActions(deps) {
     var audio = button.getAttribute('data-audio') === 'true';
     if (audio && !await jtsConfirm(
       'Play one short quiet ' + humanRole(role).toLowerCase() + ' test on "' +
-        label + '"? JTS will use the protected startup DSP, bounded test level, and Stop gate for this target.',
+        label + '"? JTS will use the quiet test setup, bounded test level, and Stop gate for this target.',
       {danger: true}
     )) {
       return;
@@ -623,8 +615,6 @@ export function createActiveSpeakerActions(deps) {
       patchActiveSpeaker({
         loading: false, action: '',
         session: result.session || activeSpeaker.session,
-        plan: result.plan || activeSpeaker.plan,
-        playback: result.playback || activeSpeaker.playback,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
@@ -660,7 +650,7 @@ export function createActiveSpeakerActions(deps) {
         })
       });
       var result = await resp.json();
-      if (!resp.ok) throw new Error(result.error || 'floor-test result failed');
+      if (!resp.ok) throw new Error(result.error || 'quiet-test result failed');
       patchActiveSpeaker({
         loading: false, action: '',
         session: result,
@@ -689,23 +679,23 @@ export function createActiveSpeakerActions(deps) {
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not record floor-test result: ' + e.message, true);
+      status('Could not record quiet-test result: ' + e.message, true);
     }
     render();
   }
   async function stageActiveSpeakerConfig() {
     if (outputTopology.dirty) {
-      status('Save the speaker layout before staging protected config.', true);
+      status('Save the speaker layout before preparing quiet test mode.', true);
       return;
     }
     if (!await jtsConfirm(
-      'Stage a muted protected startup config from the saved speaker layout? This writes a candidate file only; it will not load CamillaDSP or play sound.',
+      'Prepare the first quiet test from the saved speaker layout? JTS will build the quiet test setup, but it will not load CamillaDSP or play sound yet.',
       {danger: false}
     )) {
       return;
     }
     patchActiveSpeaker({
-      loading: false, action: 'Staging protected config',
+      loading: false, action: 'Preparing quiet test mode',
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -727,8 +717,8 @@ export function createActiveSpeakerActions(deps) {
         levelDbfs: activeSpeaker.levelDbfs
       });
       status(payload.status === 'staged' ?
-        'Staged protected startup config. No DSP graph was loaded.' :
-        'Protected startup config is blocked; review the staging evidence.',
+        'Quiet test mode is prepared. Continue when you are ready; no sound was played.' :
+        'Quiet test mode needs one more setup step before it can continue.',
         payload.status !== 'staged');
     } catch (e) {
       patchActiveSpeaker({
@@ -736,7 +726,7 @@ export function createActiveSpeakerActions(deps) {
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not stage protected config: ' + e.message, true);
+      status('Could not prepare quiet test mode: ' + e.message, true);
     }
     render();
   }
@@ -749,8 +739,6 @@ export function createActiveSpeakerActions(deps) {
     if (requestedLevel != null) body.level_dbfs = requestedLevel;
     patchActiveSpeaker({
       loading: false, action: 'Updating level',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: cfg.value
     });
@@ -772,8 +760,6 @@ export function createActiveSpeakerActions(deps) {
         loading: false, action: '',
         calibrationLevel: payload,
         startupLoad: startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : cfg.value
       });
@@ -806,11 +792,9 @@ export function createActiveSpeakerActions(deps) {
       return;
     }
     store.nextActiveSpeakerLevelSeq();
-    activeSpeakerMicObservation = {observedDbfs: raw, clipping: clipping};
+    patchActiveSpeakerMicObservation({observedDbfs: raw, clipping: clipping});
     patchActiveSpeaker({
       loading: false, action: 'Recording mic reading',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -831,17 +815,15 @@ export function createActiveSpeakerActions(deps) {
       var bringupResp = await fetch('./active-speaker/bringup-preflight', {cache: 'no-store'});
       if (!bringupResp.ok) throw new Error('bring-up preflight failed');
       var startupLoad = await fetchActiveSpeakerStartupLoad();
-      activeSpeakerMicObservation = {
+      patchActiveSpeakerMicObservation({
         observedDbfs: meter.observed_dbfs != null ? String(meter.observed_dbfs) : raw,
         clipping: meter.status === 'clipping'
-      };
+      });
       patchActiveSpeaker({
         loading: false, action: '',
         calibrationLevel: payload,
         bringup: await bringupResp.json(),
         startupLoad: startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
       });
@@ -862,7 +844,7 @@ export function createActiveSpeakerActions(deps) {
   async function applyActiveSpeakerAutoLevel() {
     var target = activeSpeakerSelectedReadinessTarget();
     if (!target) {
-      status('Check readiness on one saved channel before applying a guided level step.', true);
+      status('Choose a saved driver before applying a guided level step.', true);
       return;
     }
     var input = el('active-speaker-mic-dbfs');
@@ -875,11 +857,9 @@ export function createActiveSpeakerActions(deps) {
       return;
     }
     store.nextActiveSpeakerLevelSeq();
-    activeSpeakerMicObservation = {observedDbfs: raw, clipping: clipping};
+    patchActiveSpeakerMicObservation({observedDbfs: raw, clipping: clipping});
     patchActiveSpeaker({
       loading: false, action: 'Applying guided level',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -905,10 +885,10 @@ export function createActiveSpeakerActions(deps) {
         Number(payload.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs;
       var meter = payload.mic_meter || {};
       var decision = payload.auto_level || {};
-      activeSpeakerMicObservation = {
+      patchActiveSpeakerMicObservation({
         observedDbfs: meter.observed_dbfs != null ? String(meter.observed_dbfs) : raw,
         clipping: meter.status === 'clipping'
-      };
+      });
       var startupLoad = activeSpeaker.startupLoad;
       var refreshWarning = '';
       try {
@@ -930,8 +910,6 @@ export function createActiveSpeakerActions(deps) {
         loading: false, action: '',
         calibrationLevel: payload,
         startupLoad: startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
       });
@@ -970,8 +948,6 @@ export function createActiveSpeakerActions(deps) {
   async function checkActivePathSafety() {
     patchActiveSpeaker({
       loading: false, action: 'Checking protected path',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -983,15 +959,13 @@ export function createActiveSpeakerActions(deps) {
         body: '{}'
       });
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'protected path check failed');
+      if (!resp.ok) throw new Error(payload.error || 'quiet-test path check failed');
       var ready = payload.report && payload.report.ok_to_load_active_config;
       var environment = await fetchActiveSpeakerEnvironment();
       patchActiveSpeaker({
         loading: false, action: '',
         payload: environment,
         startupLoad: payload.startup_load || activeSpeaker.startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
@@ -1011,15 +985,13 @@ export function createActiveSpeakerActions(deps) {
   }
   async function loadActiveStartupConfig() {
     if (!await jtsConfirm(
-      'Load the protected startup config into CamillaDSP? This reloads the DSP graph but does not play tones or change the calibration level.',
+      'Continue preparing the first quiet test? This reloads the quiet test setup but does not play sound or change the test level.',
       {danger: false}
     )) {
       return;
     }
     patchActiveSpeaker({
-      loading: false, action: 'Loading protected config',
-      plan: null,
-      playback: null,
+      loading: false, action: 'Loading quiet test mode',
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -1038,39 +1010,33 @@ export function createActiveSpeakerActions(deps) {
           state: payload.load || {},
           preflight: payload.preflight || {}
         },
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
       var loaded = payload.load && payload.load.status === 'loaded';
       status(loaded ?
-        'Protected startup config loaded. No sound was played.' :
-        'Startup config load is blocked; review the load evidence.',
+        'Quiet test mode is loaded. No sound was played.' :
+        'Quiet test mode needs one more setup step before it can continue.',
         !loaded);
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
-        plan: null,
-        playback: null,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not load protected config: ' + e.message, true);
+      status('Could not load quiet test mode: ' + e.message, true);
     }
     render();
   }
   async function rollbackActiveStartupConfig() {
     if (!await jtsConfirm(
-      'Rollback to the config that was active before the protected startup load? This reloads CamillaDSP but does not play sound.',
+      'Exit quiet test mode and restore the previous DSP setup? This reloads CamillaDSP but does not play sound.',
       {danger: false}
     )) {
       return;
     }
     patchActiveSpeaker({
-      loading: false, action: 'Rolling back',
-      plan: null,
-      playback: null,
+      loading: false, action: 'Exiting quiet test mode',
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -1090,33 +1056,27 @@ export function createActiveSpeakerActions(deps) {
           state: payload.rollback || {},
           preflight: activeSpeaker.startupLoad && activeSpeaker.startupLoad.preflight || {}
         },
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
       var rolledBack = payload.rollback && payload.rollback.status === 'rolled_back';
       status(rolledBack ?
-        'Rolled back to the prior config. No sound was played.' :
-        'Startup rollback is blocked; review the load evidence.',
+        'Exited quiet test mode. No sound was played.' :
+        'Could not exit quiet test mode yet; review the setup state.',
         !rolledBack);
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
-        plan: null,
-        playback: null,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not roll back startup config: ' + e.message, true);
+      status('Could not exit quiet test mode: ' + e.message, true);
     }
     render();
   }
   async function refreshActiveSpeakerStatus() {
     patchActiveSpeaker({
       loading: true, action: '',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -1144,7 +1104,7 @@ export function createActiveSpeakerActions(deps) {
         return api.jsonFromResponse(resp, probe[2]);
       });
     }));
-    var patch = {loading: false, action: '', plan: null, playback: null, error: ''};
+    var patch = {loading: false, action: '', error: ''};
     var errors = [];
     results.forEach(function(result, index) {
       var key = probes[index][0];
@@ -1165,8 +1125,6 @@ export function createActiveSpeakerActions(deps) {
   async function activeSpeakerPost(path, actionLabel) {
     patchActiveSpeaker({
       loading: false, action: actionLabel,
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -1191,8 +1149,6 @@ export function createActiveSpeakerActions(deps) {
         session: nextSession,
         calibrationLevel: nextLevel,
         startupLoad: startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: nextLevel && nextLevel.test_signal ?
           Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
@@ -1212,101 +1168,15 @@ export function createActiveSpeakerActions(deps) {
     }
     render();
   }
-  async function activeSpeakerTonePlan(target) {
-    patchActiveSpeaker({
-      loading: false, action: 'Preparing',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var payload = Object.assign({}, target || {});
-      var resp = await fetch('./active-speaker/tone-plan', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(payload)
-      });
-      if (!resp.ok) throw new Error('tone plan failed');
-      var nextPlan = await resp.json();
-      var returnedLevel = nextPlan && nextPlan.calibration_level &&
-        nextPlan.calibration_level.test_signal ?
-        Number(nextPlan.calibration_level.test_signal.requested_level_dbfs) :
-        Number(nextPlan && nextPlan.tone && nextPlan.tone.level_dbfs);
-      patchActiveSpeaker({
-        loading: false, action: '',
-        calibrationLevel: nextPlan.calibration_level || activeSpeaker.calibrationLevel,
-        plan: nextPlan,
-        playback: null,
-        error: '',
-        levelDbfs: isFinite(returnedLevel) ? returnedLevel : activeSpeakerLevelConfig().value
-      });
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-    }
-    render();
-  }
-  async function activeSpeakerTonePlayback() {
-    var target = activeSpeaker.plan && activeSpeaker.plan.target || {};
-    patchActiveSpeaker({
-      loading: false, action: 'Verifying',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var payload = {
-        side: target.side || '',
-        driver_role: target.driver_role || ''
-      };
-      var resp = await fetch('./active-speaker/play-tone', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(payload)
-      });
-      if (!resp.ok) throw new Error('tone artifact check failed');
-      var result = await resp.json();
-      var playback = result.playback || null;
-      patchActiveSpeaker({
-        loading: false, action: '',
-        session: result.session || activeSpeaker.session,
-        calibrationLevel: result.plan && result.plan.calibration_level || activeSpeaker.calibrationLevel,
-        plan: result.plan || activeSpeaker.plan,
-        playback: playback,
-        error: '',
-        levelDbfs: playback && playback.tone && isFinite(Number(playback.tone.level_dbfs)) ?
-          Number(playback.tone.level_dbfs) : activeSpeaker.levelDbfs
-      });
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-    }
-    render();
-  }
-
   function handleActiveSpeakerLevelInput(value) {
     var cfg = activeSpeakerLevelConfig();
-    var levelPatch = {levelDbfs: clamp(value, cfg.min, cfg.max)};
-    if (activeSpeaker.plan) {
-      levelPatch.plan = null;
-      levelPatch.playback = null;
-    }
-    patchActiveSpeaker(levelPatch);
+    patchActiveSpeaker({levelDbfs: clamp(value, cfg.min, cfg.max)});
     var levelReadout = el('active-speaker-level-readout');
     if (levelReadout) levelReadout.textContent = fmtDbfs(activeSpeaker.levelDbfs);
-    if (levelPatch.plan === null) {
-      render();
-    }
   }
 
   function setActiveSpeakerMicClipping(checked) {
-    activeSpeakerMicObservation.clipping = checked;
+    patchActiveSpeakerMicObservation({clipping: checked});
   }
 
   function handleDriverResearchFieldInput(driverField, value) {
@@ -1325,6 +1195,10 @@ export function createActiveSpeakerActions(deps) {
   }
 
   function handleOutputStepToggle(target) {
+    if (target && target.matches && target.matches('[data-active-speaker-setup]')) {
+      store.activeSpeakerSetupOpen = !!target.open;
+      return;
+    }
     if (target && target.classList && target.classList.contains('output-step') &&
         target.open) {
       var step = target.getAttribute('data-output-step') || store.outputStepOverride;
@@ -1359,7 +1233,6 @@ export function createActiveSpeakerActions(deps) {
     advanceOutputStep: advanceOutputStep,
     saveOutputTopology: saveOutputTopology,
     updateOutputChannelIdentity: updateOutputChannelIdentity,
-    updateOutputChannelProtection: updateOutputChannelProtection,
     fetchOutputPlaybackReadiness: fetchOutputPlaybackReadiness,
     checkOutputPlaybackReadiness: checkOutputPlaybackReadiness,
     playOutputReadinessTone: playOutputReadinessTone,
@@ -1377,8 +1250,6 @@ export function createActiveSpeakerActions(deps) {
     rollbackActiveStartupConfig: rollbackActiveStartupConfig,
     refreshActiveSpeakerStatus: refreshActiveSpeakerStatus,
     activeSpeakerPost: activeSpeakerPost,
-    activeSpeakerTonePlan: activeSpeakerTonePlan,
-    activeSpeakerTonePlayback: activeSpeakerTonePlayback,
     handleActiveSpeakerLevelInput: handleActiveSpeakerLevelInput,
     setActiveSpeakerMicClipping: setActiveSpeakerMicClipping,
     handleDriverResearchFieldInput: handleDriverResearchFieldInput,

@@ -530,10 +530,12 @@ token from the `<meta name="jts-csrf">` tag (so the cached file carries no
 secret) and uses the same `jsonHeaders()` / `X-CSRF-Token` contract as the
 inline wizards. This is why no inline JS remains on a migrated page —
 `system-status/` is split into `dom`/`format`/`charts`/`components`/
-`views`/`main`; `sound-profile/` is the EQ editor relocated as a single
-module (its interactions need CamillaDSP hardware to re-verify, so it was
-moved verbatim rather than split — splitting it finely is a good follow-up
-done on-device).
+`views`/`main`; `sound-profile/` keeps the hardware-validated EQ
+editor/profile library in `main.js` while active-speaker setup is split into
+flat sibling modules (`active-speaker-views.js`, `active-speaker-actions.js`,
+`store.js`, `api.js`). Splitting the remaining EQ half finely is a good
+follow-up done on-device because its interactions need CamillaDSP hardware to
+re-verify.
 
 **Confirm/alert use a shared `<dialog>`, never `window.confirm`/`alert`.**
 The first cross-page shared module,

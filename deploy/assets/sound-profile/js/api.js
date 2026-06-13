@@ -7,7 +7,7 @@ export function createSoundProfileApi() {
       if (!resp.ok) throw new Error(fallbackMessage);
       throw e;
     }
-    if (!resp.ok) throw new Error(payload.error || fallbackMessage);
+    if (!resp.ok) throw new Error(fallbackMessage);
     return payload;
   }
   async function get(path, fallbackMessage) {
