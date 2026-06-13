@@ -60,7 +60,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var ACTIVE_GAIN_EPSILON_DB = 0.05;
   var activeSpeaker = {
     loading: false, action: '', payload: null, session: null, targets: null,
-    stagedConfig: null, calibrationLevel: null, plan: null, playback: null,
+    stagedConfig: null, calibrationLevel: null,
     bringup: null, startupLoad: null, rehearsal: null, error: '', levelDbfs: null
   };
   var activeSpeakerLevelSeq = 0;
@@ -531,7 +531,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderActiveSpeakerSetup() {
     var open = activeSpeakerSetupOpen || activeSpeaker.loading || activeSpeaker.payload ||
       activeSpeaker.session || activeSpeaker.stagedConfig ||
-      activeSpeaker.plan || activeSpeaker.playback ||
       activeSpeaker.error || outputTopology.loading || outputTopology.saving ||
       outputTopology.identitySaving || outputTopology.protectionSaving || outputTopology.error ||
       outputTopology.readinessChecking || outputTopology.readinessPlaybackChecking ||
@@ -873,17 +872,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function outputRoleStatusText(channel) {
     if (!channel || channel.physical_output_index == null) return 'No DAC output assigned yet.';
     if (!channel.identity_verified) {
-      return 'Confirm this wire before any test.';
+      return 'Confirm this wire before choosing it for a quiet test.';
     }
     if (!outputChannelGuardReady(channel)) {
-      return 'Confirmed. JTS will start this driver quiet.';
+      return 'Confirmed. Continue to First quiet test; JTS will start it at the quietest level.';
     }
     if (channel.protection_required) {
       return channel.protection_status === 'present' ?
-        'Confirmed. Extra protection noted; JTS will still start quiet.' :
-        'Confirmed. JTS will start this driver quiet.';
+        'Confirmed. Extra protection noted; quiet tests still start low.' :
+        'Confirmed. Continue to First quiet test; JTS will start it at the quietest level.';
     }
-    return 'Confirmed. Ready for a quiet test.';
+    return 'Confirmed. Continue to First quiet test when ready.';
   }
   function renderOutputTopologySetup() {
     return '<div class="setting-row setting-row--stack output-setup">' +
@@ -939,7 +938,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function outputStepTitle(step) {
     return {
       layout: 'Choose speaker layout',
-      research: 'Research drivers',
+      research: 'Add driver info',
       map: 'Confirm outputs',
       safety: 'First quiet test'
     }[step] || 'this card';
@@ -1057,8 +1056,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       {value: 'active_3way', label: 'Active 3-way', hint: 'Woofer + mid + tweeter'}
     ];
     return '<div class="output-card output-card--templates">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Setup template</p>' +
-        '<p class="setting-row__hint">Choose the speaker layout you are wiring. This only edits the saved draft.</p></div></div>' +
+      '<div class="output-card__head"><div><p class="output-card__title">Main speakers</p>' +
+        '<p class="setting-row__hint">Choose what you are wiring. No sound plays here.</p></div></div>' +
       '<div class="output-template-axes">' +
         '<div class="output-template-axis">' +
           '<p class="output-template-axis__label">Speaker count</p>' +
@@ -1092,9 +1091,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</div>' +
       '</div>' +
       '<dl class="active-speaker-facts output-facts output-template-summary">' +
-        '<div><dt>Draft map</dt><dd>' + escapeHtml(selectedLabel) + '</dd></div>' +
-        '<div><dt>Physical outputs</dt><dd>' + escapeHtml(
-          outputCount ? String(outputCount) + ' of ' + String(count || 0) + ' assigned' : 'Choose a map'
+        '<div><dt>Selected setup</dt><dd>' + escapeHtml(selectedLabel) + '</dd></div>' +
+        '<div><dt>Outputs needed</dt><dd>' + escapeHtml(
+          outputCount ? String(outputCount) + ' of ' + String(count || 0) + ' available' : 'Choose a setup'
         ) + '</dd></div>' +
       '</dl>' +
     '</div>';
@@ -1181,8 +1180,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</label>';
     }).join('');
     return '<div class="output-card output-card--driver-research">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Driver research helper</p>' +
-        '<p class="setting-row__hint">Generate a precise prompt for an external assistant, then paste bounded JSON back for review.</p></div></div>' +
+      '<div class="output-card__head"><div><p class="output-card__title">Driver info helper</p>' +
+        '<p class="setting-row__hint">Optional. Copy the prompt, paste JSON back, then save before previewing crossover ideas.</p></div></div>' +
       '<div class="driver-research__grid">' +
         '<div class="driver-research__fields">' +
           fields +
@@ -1208,7 +1207,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               '<button type="button" class="btn btn--ghost" data-act="parse-driver-research">Check JSON</button>' +
               '<button type="button" class="btn btn--primary" data-act="save-driver-design"' +
                 (saveDisabled ? ' disabled' : '') + '>' +
-                escapeHtml(driverResearch.saving ? 'Saving' : 'Save design draft') +
+                escapeHtml(driverResearch.saving ? 'Saving' : 'Save driver info') +
               '</button>' +
             '</div>' +
           '</div>' +
@@ -1355,17 +1354,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           renderOutputHardwareCard(topology, layoutStatusValue),
         renderOutputHardwareRefresh() +
           renderOutputStepButton('layout',
-          outputTopology.dirty ? 'Save and continue' : 'Next: research drivers',
+          outputTopology.dirty ? 'Save and continue' : 'Next: add driver info',
           true)
       ) +
       renderOutputStepCard(
         'research',
-        'Research drivers',
-        'Optional helper: generate a prompt, paste JSON back, and save a draft.',
+        'Add driver info',
+        'Optional helper: collect driver facts and preview crossover ideas.',
         topology,
         renderDriverResearchCard(topology) +
           renderCrossoverPreviewCard(),
-        renderOutputStepButton('research', 'Next: map outputs', true)
+        renderOutputStepButton('research', 'Next: confirm outputs', true)
       ) +
       renderOutputStepCard(
         'map',
@@ -1489,16 +1488,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<span class="output-group__badge">' + escapeHtml(group.kind || 'speaker') + '</span>' +
       '</div>' +
       '<div class="output-roles">' + channels.map(function(channel) {
-        var protectionStatus = channel.protection_status || 'unknown';
         var label = channel.human_output_label ||
           (channel.physical_output_index == null ? 'No output assigned' : 'Output ' + (Number(channel.physical_output_index) + 1));
         var target = identityTargetFor(group.id, channel.role) || {};
         var targetId = target.id || (group.id + ':' + channel.role);
         var busy = outputTopology.identitySaving === targetId;
-        var protectionBusy = outputTopology.protectionSaving === targetId;
         var readinessBusy = outputTopology.readinessChecking === targetId;
-        var disabled = outputTopology.dirty || busy || protectionBusy ||
-          readinessBusy || channel.physical_output_index == null;
+        var disabled = outputTopology.dirty || busy || readinessBusy ||
+          channel.physical_output_index == null;
         return '<div class="output-role">' +
           '<div class="output-role__text">' +
             '<span>' + escapeHtml(humanRole(channel.role)) + '</span>' +
@@ -1514,15 +1511,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
               'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
               (disabled ? ' disabled' : '') + '>' +
               escapeHtml(busy ? 'Saving' : (channel.identity_verified ? 'Change' : 'Confirm output')) + '</button>' +
-            (channel.identity_verified ? '<button type="button" class="btn btn--ghost output-role__action" ' +
-              'data-act="check-output-readiness" ' +
-              'data-group-id="' + escapeHtml(group.id) + '" ' +
-              'data-role="' + escapeHtml(channel.role) + '" ' +
-              'data-protection-required="' + (channel.protection_required ? 'true' : 'false') + '" ' +
-              'data-protection-status="' + escapeHtml(protectionStatus) + '" ' +
-              'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
-              (disabled ? ' disabled' : '') + '>' +
-              escapeHtml((readinessBusy || protectionBusy) ? 'Preparing' : 'Test this driver') + '</button>' : '') +
           '</div>' +
         '</div>';
       }).join('') + '</div>' +
@@ -1531,7 +1519,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderOutputIdentityCard() {
     if (outputTopology.dirty) {
       return '<div class="output-card output-card--identity">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Channel identity</p>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Confirmation progress</p>' +
         '<p class="setting-row__hint">Save this speaker layout draft before confirming outputs.</p></div>' +
         '<span class="status-pill">draft</span></div>' +
         '<p class="setting-row__hint">JTS will re-check the layout after save, then you can confirm each DAC output.</p>' +
@@ -1540,7 +1528,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var report = outputIdentityReport();
     if (!report) {
       return '<div class="output-card output-card--identity">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Channel identity</p>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Confirmation progress</p>' +
         '<p class="setting-row__hint">Load or save the speaker layout to see verification progress.</p></div></div>' +
       '</div>';
     }
@@ -1557,7 +1545,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</li>';
     }).join('') : '<li class="output-identity-row"><span>No channels configured</span><strong>Draft</strong></li>';
     return '<div class="output-card output-card--identity">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Channel identity</p>' +
+      '<div class="output-card__head"><div><p class="output-card__title">Confirmation progress</p>' +
         '<p class="setting-row__hint">Confirm each DAC output after you check the wiring. No sound plays here.</p></div>' +
         '<span class="status-pill' + (unverified === 0 && assigned > 0 ? ' status-pill--ready' : '') + '">' +
           escapeHtml(verified + '/' + assigned + ' confirmed') + '</span></div>' +
@@ -1731,6 +1719,32 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
     }).join('') + '</dl>';
   }
+  function renderQuietTestTargetChoices() {
+    if (outputTopology.dirty || !outputIdentityComplete()) return '';
+    var topology = currentOutputTopology();
+    var groups = outputGroups(topology);
+    var buttons = [];
+    groups.forEach(function(group) {
+      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
+        if (!channel.identity_verified || channel.physical_output_index == null) return;
+        var label = channel.human_output_label ||
+          ('Output ' + (Number(channel.physical_output_index) + 1));
+        var targetLabel = (group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label;
+        buttons.push('<button type="button" class="btn btn--ghost" data-act="check-output-readiness" ' +
+          'data-group-id="' + escapeHtml(group.id) + '" ' +
+          'data-role="' + escapeHtml(channel.role) + '" ' +
+          'data-protection-required="' + (channel.protection_required ? 'true' : 'false') + '" ' +
+          'data-protection-status="' + escapeHtml(channel.protection_status || 'unknown') + '" ' +
+          'data-label="' + escapeHtml(targetLabel) + '">' +
+          'Choose ' + escapeHtml(humanRole(channel.role)) +
+          ' · ' + escapeHtml(label) + '</button>');
+      });
+    });
+    if (!buttons.length) return '';
+    return '<div class="active-speaker-actions active-speaker-actions--targets">' +
+      buttons.join('') +
+    '</div>';
+  }
   function renderOutputReadinessBlockers(readiness) {
     var reasons = readinessBlockedReasons(readiness);
     if (!reasons.length) {
@@ -1748,21 +1762,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderOutputReadinessCard() {
     if (outputTopology.dirty) {
       return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">First quiet test channel</p>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Choose first driver</p>' +
         '<p class="setting-row__hint">Save the speaker layout before choosing a driver for the first test.</p></div>' +
         '<span class="status-pill">draft</span></div>' +
       '</div>';
     }
     if (outputTopology.readinessChecking) {
       return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">First quiet test channel</p>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Selected driver</p>' +
         '<p class="setting-row__hint">Preparing the selected driver. No sound will play.</p></div>' +
         '<span class="status-pill">preparing</span></div>' +
       '</div>';
     }
     if (outputTopology.readinessError) {
       return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">First quiet test channel</p>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Selected driver</p>' +
         '<p class="setting-row__hint">JTS could not prepare that driver. The saved speaker layout is still available.</p></div>' +
         '<span class="status-pill status-pill--blocked">check failed</span></div>' +
         '<p class="setting-row__hint">' + escapeHtml(outputTopology.readinessError) + '</p>' +
@@ -1770,16 +1784,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     var readiness = outputTopology.readiness;
     if (!readiness) {
+      var choices = renderQuietTestTargetChoices();
       return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">First quiet test channel</p>' +
-        '<p class="setting-row__hint">After outputs are confirmed, choose one driver above for the first quiet test.</p></div>' +
-        '<span class="status-pill">not selected</span></div>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Choose first driver</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(choices ?
+          'Choose one confirmed driver. JTS will prepare it, but no sound plays yet.' :
+          'Confirm outputs first, then choose one driver for the first quiet test.') + '</p></div>' +
+        '<span class="status-pill">' + escapeHtml(choices ? 'next' : 'confirm outputs') + '</span></div>' +
+        choices +
       '</div>';
     }
     var target = readiness.target || {};
     var statusValue = readiness.preconditions_passed ? 'ready' : 'needs one step';
     return '<div class="output-card output-card--readiness">' +
-      '<div class="output-card__head"><div><p class="output-card__title">First quiet test channel</p>' +
+      '<div class="output-card__head"><div><p class="output-card__title">Selected driver</p>' +
         '<p class="setting-row__hint">' + escapeHtml(target.label || 'Selected channel') + '</p></div>' +
         '<span class="status-pill' + (readiness.preconditions_passed ? ' status-pill--ready' : '') + '">' +
           escapeHtml(statusValue) + '</span></div>' +
@@ -1872,7 +1890,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return '<div class="output-card output-card--active-status active-speaker-status__stack">' +
         '<div class="output-card__head"><div><p class="output-card__title">Prepare first quiet test</p>' +
           '<p class="setting-row__hint">JTS checks the saved setup, keeps test volume at its quietest setting, and will not play sound yet.</p></div>' +
-          '<span class="status-pill">not prepared</span></div>' +
+        '<span class="status-pill">next</span></div>' +
         '<div class="active-speaker-actions">' +
           '<button type="button" class="btn btn--primary" data-act="refresh-active-speaker">Prepare first quiet test</button>' +
         '</div>' +
@@ -1893,15 +1911,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       !!startupState.current_config_matches_loaded;
     var armed = session.status === 'armed';
     var statusLabel = armed ? 'ready' :
-      (startupReady ? 'loaded' : (stagedReady ? 'prepared' : (ok ? 'checked' : 'needs one step')));
+      (startupReady ? 'step 3 of 3' : (stagedReady ? 'step 2 of 3' : (ok ? 'step 1 of 3' : 'needs one step')));
     var nextCopy = armed ?
-      'Quiet test mode is ready. Choose a confirmed driver below when you are ready to start quietly.' :
+      'Quiet test mode is ready. Choose one confirmed driver when you are ready to start quietly.' :
       (startupReady ?
-        'The quiet test setup is loaded. Open the quiet test controls before choosing a driver.' :
+        'One more setup step opens the quiet test controls. No sound plays yet.' :
         (stagedReady ?
-          'The quiet test setup is prepared. Continue to load it; this reloads DSP but still plays no sound.' :
+          'Continue setup to load the quiet test DSP. No sound plays yet.' :
           (ok ?
-            'JTS can build the quiet test setup now. This does not play sound.' :
+            'JTS can set up quiet test mode now. This does not play sound.' :
             'JTS needs one setup item fixed before quiet test mode.')));
     return '<div class="output-card output-card--active-status active-speaker-status__stack">' +
       '<div class="output-card__head"><div><p class="output-card__title">Prepare first quiet test</p>' +
@@ -1911,9 +1929,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (activeSpeaker.error ? '<p class="setting-row__hint">' + escapeHtml(activeSpeaker.error) + '</p>' : '') +
       renderActiveSpeakerIssues(envIssues, sessionIssues) +
       renderActiveSpeakerActions(ok, session) +
-      renderActiveSpeakerLevel() +
-      renderActiveSpeakerPlan(activeSpeaker.plan) +
-      renderActiveSpeakerPlayback(activeSpeaker.playback) +
+      ((armed && activeSpeakerSelectedReadinessTarget()) ? renderActiveSpeakerLevel() : '') +
       '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'No sound plays until you explicitly start a quiet test.') + '</p>' +
     '</div>';
   }
@@ -1965,7 +1981,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderActiveSpeakerLevel() {
     var cfg = activeSpeakerLevelConfig();
     var contract = activeSpeaker.calibrationLevel ||
-      activeSpeaker.plan && activeSpeaker.plan.calibration_level ||
       activeSpeaker.targets && activeSpeaker.targets.calibration_level || {};
     var meter = contract.mic_meter || {};
     var guard = contract.software_gain_guard || {};
@@ -2063,8 +2078,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var startupReady = startupState.status === 'loaded' &&
       !!startupState.rollback_available &&
       !!startupState.current_config_matches_loaded;
-    var targets = activeSpeaker.targets && Array.isArray(activeSpeaker.targets.targets)
-      ? activeSpeaker.targets.targets : [];
     var stageDisabled = outputTopology.dirty ? ' disabled' : '';
     if (busy) {
       return '<div class="active-speaker-actions">' +
@@ -2078,94 +2091,30 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }
     if (state.status === 'armed') {
-      var targetButtons = targets.length ? targets.slice(0, 6).map(function(target) {
-        var label = target.label || ((target.side || '') + ' ' + (target.driver_role || 'channel'));
-        return '<button type="button" class="btn btn--ghost" data-act="prepare-active-tone" ' +
-          'data-side="' + escapeHtml(target.side || '') + '" ' +
-          'data-driver-role="' + escapeHtml(target.driver_role || '') + '">' +
-          'Prepare ' + escapeHtml(label) + '</button>';
-      }).join('') : '<span class="setting-row__hint">No preset channel targets available.</span>';
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--danger" data-act="stop-active-speaker">Stop</button>' +
         '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup">Exit quiet mode</button>' +
-        '<span class="setting-row__hint">Quiet test mode is ready. Start with one driver at the quietest test level.</span>' +
-      '</div>' +
-      '<div class="active-speaker-actions active-speaker-actions--targets">' +
-        targetButtons +
+        '<span class="setting-row__hint">Quiet test mode is ready. Choose a driver below, then start at the quietest level.</span>' +
       '</div>';
     }
     if (!stagedReady) {
       return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="stage-active-config"' + stageDisabled + '>Prepare quiet test</button>' +
-        '<span class="setting-row__hint">Builds the quiet test setup. No sound will play.</span>' +
+        '<button type="button" class="btn btn--primary" data-act="stage-active-config"' + stageDisabled + '>Set up quiet test mode</button>' +
+        '<span class="setting-row__hint">Step 1 of 3: build the quiet test setup. No sound will play.</span>' +
       '</div>';
     }
     if (!startupReady) {
       return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="load-active-startup">Load test setup</button>' +
-        '<span class="setting-row__hint">Loads the quiet test setup. No sound will play.</span>' +
+        '<button type="button" class="btn btn--primary" data-act="load-active-startup">Continue setup</button>' +
+        '<span class="setting-row__hint">Step 2 of 3: load the quiet test setup. No sound will play.</span>' +
       '</div>';
     }
     return '<div class="active-speaker-actions">' +
-      '<button type="button" class="btn btn--primary" data-act="arm-active-speaker">Open quiet test controls</button>' +
+      '<button type="button" class="btn btn--primary" data-act="arm-active-speaker">Open test controls</button>' +
       '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup">Exit quiet mode</button>' +
-      '<span class="setting-row__hint">This opens the test controls at the quietest setting. It does not play sound by itself.</span>' +
+      '<span class="setting-row__hint">Step 3 of 3: open controls at the quietest setting. It does not play sound by itself.</span>' +
     '</div>';
   }
-  function renderActiveSpeakerPlan(plan) {
-    if (!plan) return '';
-    var tone = plan.tone || {};
-    var target = plan.target || {};
-    var rows = [
-      ['Plan status', plan.status || 'unknown'],
-      ['Target', target.label || target.driver_role || 'unknown'],
-      ['Tone', (tone.frequency_hz || '?') + ' Hz at ' + fmtDbfs(tone.level_dbfs)],
-      ['Duration', String(tone.duration_ms || '?') + ' ms'],
-      ['Would play', plan.would_play ? 'Yes' : 'No']
-    ];
-    var issues = Array.isArray(plan.issues) ? plan.issues.slice(0, 4) : [];
-    return '<div class="active-speaker-plan">' +
-      '<p class="setting-row__title">Prepared channel test</p>' +
-      '<dl class="active-speaker-facts">' + rows.map(function(row) {
-        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
-      }).join('') + '</dl>' +
-      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
-        return '<li>' + escapeHtml('Plan: ' + (issue.code || 'issue')) + '</li>';
-      }).join('') + '</ul>' : '') +
-      (plan.status === 'ready' ? '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--ghost" data-act="verify-active-tone">Verify tone artifact</button>' +
-        '<span class="setting-row__hint">Generates a no-audio multi-channel WAV for inspection.</span>' +
-      '</div>' : '') +
-      '<p class="setting-row__hint">' + escapeHtml(plan.next_step || 'Prepared only; no sound was emitted.') + '</p>' +
-    '</div>';
-  }
-  function renderActiveSpeakerPlayback(playback) {
-    if (!playback) return '';
-    var artifact = playback.artifact || {};
-    var target = playback.target || {};
-    var rows = [
-      ['Playback status', playback.status || 'unknown'],
-      ['Backend', playback.backend || 'none'],
-      ['Target', target.label || target.driver_role || 'unknown'],
-      ['Artifact', artifact.wav_basename || 'none'],
-      ['Channels', artifact.channel_count == null ? 'unknown' : String(artifact.channel_count)],
-      ['Audio emitted', playback.audio_emitted ? 'Yes' : 'No']
-    ];
-    var issues = Array.isArray(playback.issues) ? playback.issues.slice(0, 4) : [];
-    return '<div class="active-speaker-plan">' +
-      '<p class="setting-row__title">Tone artifact check</p>' +
-      '<dl class="active-speaker-facts">' + rows.map(function(row) {
-        return '<div><dt>' + escapeHtml(row[0]) + '</dt><dd>' + escapeHtml(row[1]) + '</dd></div>';
-      }).join('') + '</dl>' +
-      (issues.length ? '<ul class="active-speaker-issues">' + issues.map(function(issue) {
-        return '<li>' + escapeHtml('Playback: ' + (issue.code || 'issue')) + '</li>';
-      }).join('') + '</ul>' : '') +
-      '<p class="setting-row__hint">' + escapeHtml(playback.audio_emitted ?
-        'Audio was emitted by the explicitly enabled lab backend.' :
-        'No audio was emitted by this backend.') + '</p>' +
-    '</div>';
-  }
-
   function rangeRow(label, value, min, max, opts) {
     opts = opts || {};
     var pct, thumb;
@@ -2583,13 +2532,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'active-auto-level') {
       applyActiveSpeakerAutoLevel();
     }
-    else if (act === 'prepare-active-tone') {
-      activeSpeakerTonePlan({
-        side: t.getAttribute('data-side') || '',
-        driver_role: t.getAttribute('data-driver-role') || ''
-      });
-    }
-    else if (act === 'verify-active-tone') { activeSpeakerTonePlayback(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -2669,16 +2611,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (ev.target.id === 'active-speaker-level') {
       var cfg = activeSpeakerLevelConfig();
       var levelPatch = {levelDbfs: clamp(ev.target.value, cfg.min, cfg.max)};
-      if (activeSpeaker.plan) {
-        levelPatch.plan = null;
-        levelPatch.playback = null;
-      }
       patchActiveSpeaker(levelPatch);
       var levelReadout = el('active-speaker-level-readout');
       if (levelReadout) levelReadout.textContent = fmtDbfs(activeSpeaker.levelDbfs);
-      if (levelPatch.plan === null) {
-        render();
-      }
       return;
     }
     if (ev.target.id === 'set-headroom') {
@@ -3509,8 +3444,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       patchActiveSpeaker({
         loading: false, action: '',
         session: result.session || activeSpeaker.session,
-        plan: result.plan || activeSpeaker.plan,
-        playback: result.playback || activeSpeaker.playback,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
@@ -3635,8 +3568,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (requestedLevel != null) body.level_dbfs = requestedLevel;
     patchActiveSpeaker({
       loading: false, action: 'Updating level',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: cfg.value
     });
@@ -3658,8 +3589,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         loading: false, action: '',
         calibrationLevel: payload,
         startupLoad: startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : cfg.value
       });
@@ -3695,8 +3624,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     activeSpeakerMicObservation = {observedDbfs: raw, clipping: clipping};
     patchActiveSpeaker({
       loading: false, action: 'Recording mic reading',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -3726,8 +3653,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         calibrationLevel: payload,
         bringup: await bringupResp.json(),
         startupLoad: startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
       });
@@ -3764,8 +3689,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     activeSpeakerMicObservation = {observedDbfs: raw, clipping: clipping};
     patchActiveSpeaker({
       loading: false, action: 'Raising test level',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -3816,8 +3739,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         loading: false, action: '',
         calibrationLevel: payload,
         startupLoad: startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
       });
@@ -3859,8 +3780,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function checkActivePathSafety() {
     patchActiveSpeaker({
       loading: false, action: 'Checking quiet test setup',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -3879,8 +3798,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         loading: false, action: '',
         payload: environment,
         startupLoad: payload.startup_load || activeSpeaker.startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
@@ -3907,8 +3824,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     patchActiveSpeaker({
       loading: false, action: 'Loading quiet test mode',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -3936,8 +3851,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           bringup: activeSpeaker.bringup,
           startupLoad: pathPayload.startup_load || activeSpeaker.startupLoad,
           rehearsal: activeSpeaker.rehearsal,
-          plan: null,
-          playback: null,
           error: '',
           levelDbfs: activeSpeaker.levelDbfs
         };
@@ -3959,8 +3872,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           state: payload.load || {},
           preflight: payload.preflight || {}
         },
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
@@ -3972,8 +3883,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
-        plan: null,
-        playback: null,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
@@ -3990,8 +3899,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     patchActiveSpeaker({
       loading: false, action: 'Exiting quiet test mode',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -4011,8 +3918,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           state: payload.rollback || {},
           preflight: activeSpeaker.startupLoad && activeSpeaker.startupLoad.preflight || {}
         },
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
@@ -4024,8 +3929,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
-        plan: null,
-        playback: null,
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
@@ -4036,8 +3939,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function refreshActiveSpeakerStatus() {
     patchActiveSpeaker({
       loading: true, action: '',
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -4066,7 +3967,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         return await resp.json();
       });
     }));
-    var patch = {loading: false, action: '', plan: null, playback: null, error: ''};
+    var patch = {loading: false, action: '', error: ''};
     var errors = [];
     results.forEach(function(result, index) {
       var key = probes[index][0];
@@ -4087,8 +3988,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function activeSpeakerPost(path, actionLabel) {
     patchActiveSpeaker({
       loading: false, action: actionLabel,
-      plan: null,
-      playback: null,
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -4113,8 +4012,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         session: nextSession,
         calibrationLevel: nextLevel,
         startupLoad: startupLoad,
-        plan: null,
-        playback: null,
         error: '',
         levelDbfs: nextLevel && nextLevel.test_signal ?
           Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
@@ -4134,84 +4031,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
-  async function activeSpeakerTonePlan(target) {
-    patchActiveSpeaker({
-      loading: false, action: 'Preparing',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var payload = Object.assign({}, target || {});
-      var resp = await fetch('./active-speaker/tone-plan', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(payload)
-      });
-      if (!resp.ok) throw new Error('tone plan failed');
-      var nextPlan = await resp.json();
-      var returnedLevel = nextPlan && nextPlan.calibration_level &&
-        nextPlan.calibration_level.test_signal ?
-        Number(nextPlan.calibration_level.test_signal.requested_level_dbfs) :
-        Number(nextPlan && nextPlan.tone && nextPlan.tone.level_dbfs);
-      patchActiveSpeaker({
-        loading: false, action: '',
-        calibrationLevel: nextPlan.calibration_level || activeSpeaker.calibrationLevel,
-        plan: nextPlan,
-        playback: null,
-        error: '',
-        levelDbfs: isFinite(returnedLevel) ? returnedLevel : activeSpeakerLevelConfig().value
-      });
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-    }
-    render();
-  }
-  async function activeSpeakerTonePlayback() {
-    var target = activeSpeaker.plan && activeSpeaker.plan.target || {};
-    patchActiveSpeaker({
-      loading: false, action: 'Verifying',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var payload = {
-        side: target.side || '',
-        driver_role: target.driver_role || ''
-      };
-      var resp = await fetch('./active-speaker/play-tone', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(payload)
-      });
-      if (!resp.ok) throw new Error('tone artifact check failed');
-      var result = await resp.json();
-      var playback = result.playback || null;
-      patchActiveSpeaker({
-        loading: false, action: '',
-        session: result.session || activeSpeaker.session,
-        calibrationLevel: result.plan && result.plan.calibration_level || activeSpeaker.calibrationLevel,
-        plan: result.plan || activeSpeaker.plan,
-        playback: playback,
-        error: '',
-        levelDbfs: playback && playback.tone && isFinite(Number(playback.tone.level_dbfs)) ?
-          Number(playback.tone.level_dbfs) : activeSpeaker.levelDbfs
-      });
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-    }
-    render();
-  }
-
   async function loadState() {
     try {
       var resp = await fetch('./state', {cache: 'no-store'});

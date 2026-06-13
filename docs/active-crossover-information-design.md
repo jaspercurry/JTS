@@ -103,8 +103,8 @@ Good language:
 
 - "Confirm outputs"
 - "Confirm output"
-- "Test this driver"
-- "JTS will start this driver quiet"
+- "Choose woofer · Output 1"
+- "JTS will start this driver at the quietest level"
 
 Avoid:
 
@@ -138,8 +138,8 @@ The backend still follows a deterministic sequence:
 9. Raise toward audible in bounded steps.
 
 Those backend steps should not be shown as a grid of product cards. The normal
-UI should show one next action at a time: prepare first quiet test, load the
-test setup, open quiet test controls, then choose a driver at the floor.
+UI should show one next action at a time: set up quiet test mode, choose the
+first driver, start at the quietest level, then record what happened.
 Detailed gate evidence belongs in diagnostics or error details, not the primary
 setup walkthrough. The UI should name the exact driver being tested before any
 sound can play, and should tell the user to press Stop if the wrong driver,
@@ -151,7 +151,7 @@ play sound, and that the first audible test starts at the quietest setting.
 Good language:
 
 - "Prepare first quiet test"
-- "Open quiet test controls"
+- "Set up quiet test mode"
 - "What did you hear?"
 - "Too loud" as an always-available operator answer
 
@@ -164,7 +164,7 @@ Avoid:
 
 ## Current Product Gaps
 
-- The driver-research card has historically conflated LLM warnings with
+- The driver-info card has historically conflated LLM warnings with
   errors. Warnings should be visually amber/review-oriented; only real safety
   blockers should read as dangerous.
 - A saved design draft can be blocked because safety evidence is incomplete,
