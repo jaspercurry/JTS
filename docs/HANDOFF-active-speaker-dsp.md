@@ -29,7 +29,7 @@
 > in `routing.subwoofer_group_ids`. Saving that speaker layout only persists
 > the output topology JSON and runs backend validation; it does not load
 > CamillaDSP or emit sound. The UI organizes this work as collapsible task
-> cards — choose layout, research drivers, confirm outputs, then run the
+> cards — choose layout, add driver info, confirm outputs, then run the
 > first quiet-test preparation. It defaults to the first unfinished task card,
 > keeps one task card open at a time, prevents opening future prerequisite-gated
 > cards, and uses only transient browser intent when the operator advances or
@@ -90,10 +90,10 @@
 > running the loaded startup config path, readiness blocks before the playback
 > backend is reached. The `/sound/` quiet-test card keeps those backend gates
 > deterministic but presents them as one user action at a time: prepare the
-> first quiet test, load the test setup, open quiet test controls, choose one
-> confirmed driver, reset to the quietest test level, then verify an artifact
-> before any audible test, confirm the selected driver was heard, then raise
-> toward audible in bounded steps. The readiness card
+> first quiet test mode, choose one confirmed driver, reset to the quietest
+> test level, then preview the signal before any audible test, confirm the
+> selected driver was heard, then raise toward audible in bounded steps. The
+> readiness card
 > also summarizes the selected target, backend, rollback state, test level, and
 > translated attention items rather than a backend checklist. For
 > tweeter/high-frequency targets it also
@@ -105,7 +105,7 @@
 > short high-passed sine intent, calibration-floor level, driver protection
 > profile, and the current deterministic auto-level decision. Unknown
 > high-frequency style defaults to a conservative 5 kHz high-pass and -65 dBFS
-> closed-loop cap until the driver style is known. The safety card now also
+> closed-loop cap until the driver style is known. The same backend also
 > includes a read-only **Commissioning rehearsal** packet from
 > `jasper.active_speaker.commissioning` and
 > `/sound/active-speaker/commissioning-rehearsal`. It rehearses the durable
@@ -113,7 +113,7 @@
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > readiness, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
-> `/sound/` also includes a driver-research helper for active-crossover
+> `/sound/` also includes a driver-info helper for active-crossover
 > planning. It generates a prompt from the current output roles and accepts a
 > pasted JSON object with kind `jts_active_crossover_driver_research`.
 > `/sound/active-speaker/design-draft` persists those operator-entered driver
@@ -171,8 +171,9 @@
 > records either physical compression-driver protection evidence or a
 > software-guarded bring-up request. The normal UI path does not expose this as
 > a separate "protection" choice; after the operator confirms a high-frequency
-> output and chooses "Test this driver," the page records the software-guard
-> request internally before checking readiness. The software-guard state is
+> output and chooses that named driver in the First quiet test card, the page
+> records the software-guard request internally before checking readiness. The
+> software-guard state is
 > deliberately still a topology/playback blocker; it only lets
 > `/sound/active-speaker/stage-config` write a no-load muted/protected
 > CamillaDSP candidate plus

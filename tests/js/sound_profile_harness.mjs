@@ -298,7 +298,7 @@ async function loadAndSetActiveState(harness) {
 
 function assertQuietTestSurfaceVisible(harness, label) {
   const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of ["Prepare first quiet test", "Test volume"]) {
+  for (const expected of ["Prepare first quiet test"]) {
     if (!html.includes(expected)) {
       fail(`${label} should keep the quiet-test surface visible`, { expected, html });
     }
@@ -405,6 +405,23 @@ async function testStaleLevelResponseDiscarded() {
   const levelPosts = [];
   const levelResponses = [];
   const fetchHandler = baseFetch({
+    "./active-speaker/playback-readiness": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      return Promise.resolve(response({
+        status: "ready",
+        preconditions_passed: true,
+        playback_allowed: false,
+        target: {
+          speaker_group_id: body.speaker_group_id,
+          role: body.role,
+          physical_output_index: 0,
+          label: "Main full range on Output 1",
+        },
+        calibration_level: levelPayload(-80),
+        required_gates: [],
+        issues: [],
+      }));
+    },
     "./active-speaker/calibration-level": (path, options = {}) => {
       if (!options.method) return Promise.resolve(response(activePayloads()[path]));
       levelPosts.push(JSON.parse(options.body || "{}"));
@@ -415,6 +432,17 @@ async function testStaleLevelResponseDiscarded() {
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
+  harness.dispatchClick({
+    "data-act": "check-output-readiness",
+    "data-group-id": "main",
+    "data-role": "full_range",
+    "data-protection-required": "false",
+    "data-protection-status": "not_required",
+    "data-label": "Main full range on Output 1",
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
 
   harness.dispatchChange({
     id: "active-speaker-level",
@@ -467,7 +495,6 @@ async function testPartialRefreshKeepsSuccessfulSections() {
   for (const expected of [
     "Partial refresh: environment probe failed",
     "Prepare first quiet test",
-    "Test volume",
     "Quiet test mode is ready",
   ]) {
     if (!html.includes(expected)) {
@@ -525,6 +552,105 @@ async function testActiveCrossoverFirstStepRender() {
   return { activeCrossoverFirstStepRendered: true };
 }
 
+async function testConfirmedOutputChoosesFirstQuietDriver() {
+  const readinessRequests = [];
+  const confirmedTopology = topologyPayload();
+  confirmedTopology.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 1,
+    verified_channel_count: 1,
+    unverified_channel_count: 0,
+    next_step: "Outputs are confirmed. Continue when you are ready.",
+    targets: [{
+      id: "main:full_range",
+      speaker_group_id: "main",
+      speaker_label: "Main speaker",
+      role: "full_range",
+      assigned: true,
+      identity_verified: true,
+      physical_output_index: 0,
+    }],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: confirmedTopology,
+      channel_identity: confirmedTopology.channel_identity,
+    })),
+    "./active-speaker/playback-readiness": (_path, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      readinessRequests.push(body);
+      return Promise.resolve(response({
+        status: "ready",
+        preconditions_passed: true,
+        playback_allowed: false,
+        target: {
+          speaker_group_id: body.speaker_group_id,
+          role: body.role,
+          physical_output_index: 0,
+          label: "Main full range on Output 1",
+        },
+        calibration_level: levelPayload(-80),
+        required_gates: [],
+        issues: [],
+        next_step: "Preview the test signal first. No sound will play.",
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  let html = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    "Choose first driver",
+    "Choose Full range",
+    "Output 1",
+  ]) {
+    if (!html.includes(expected)) {
+      fail("Confirmed output should render first quiet-driver choices", { expected, html });
+    }
+  }
+  if (html.includes("Test this driver") || html.includes("Check readiness")) {
+    fail("Confirmed output choices should not expose old readiness language", { html });
+  }
+  if (html.includes("Test volume")) {
+    fail("Volume controls should wait until a test driver is selected", { html });
+  }
+  const readinessActionCount = (html.match(/data-act="check-output-readiness"/g) || []).length;
+  if (readinessActionCount !== 1) {
+    fail("First quiet-driver choice should appear only in the First quiet test card", {
+      readinessActionCount,
+      html,
+    });
+  }
+
+  harness.dispatchClick({
+    "data-act": "check-output-readiness",
+    "data-group-id": "main",
+    "data-role": "full_range",
+    "data-protection-required": "false",
+    "data-protection-status": "not_required",
+    "data-label": "Main full range on Output 1",
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (readinessRequests.length !== 1) {
+    fail("Choosing a confirmed driver should fetch target readiness once", { readinessRequests });
+  }
+  if (JSON.stringify(readinessRequests[0]) !== JSON.stringify({ speaker_group_id: "main", role: "full_range" })) {
+    fail("Readiness request should be scoped to the chosen saved topology target", { readinessRequests });
+  }
+  html = harness.elements.get("view-body").innerHTML;
+  for (const expected of ["Selected driver", "Main full range on Output 1", "Preview test signal", "Test volume"]) {
+    if (!html.includes(expected)) {
+      fail("Chosen driver should render the readiness result without playing sound", { expected, html });
+    }
+  }
+  return { confirmedOutputChoosesFirstQuietDriver: true };
+}
+
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
@@ -532,5 +658,6 @@ results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testStaleLevelResponseDiscarded());
 results.push(await testPartialRefreshKeepsSuccessfulSections());
 results.push(await testActiveCrossoverFirstStepRender());
+results.push(await testConfirmedOutputChoosesFirstQuietDriver());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));
