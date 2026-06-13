@@ -7,7 +7,7 @@
 
 This is the **canonical reference** for writing or editing any
 LLM-facing prompt surface in JTS — the `SYSTEM_INSTRUCTION` in
-`jasper/voice_daemon.py`, tool descriptions in `jasper/tools/`,
+`jasper/voice/prompt.py`, tool descriptions in `jasper/tools/`,
 and per-tool conditional rules.
 
 **Last fetched against provider docs: 2026-05-23.** Re-check the
@@ -66,7 +66,7 @@ tool-round watchdog contract
    "Don't forget X." Verified failure mode: the previous
    negative-heavy version of our prompt produced zero tool calls
    across five voice-eval scenarios (rationale block at
-   [voice_daemon.py:74-104](../jasper/voice_daemon.py)).
+   [jasper/voice/prompt.py](../jasper/voice/prompt.py)).
 6. **ALL-CAPS imperatives work for guardrails.** Google's own
    language-pinning template uses `RESPOND IN {LANG}. YOU MUST
    RESPOND UNMISTAKABLY IN {LANG}.` Use sparingly and only for
@@ -173,7 +173,7 @@ tool's docstring (sent by `build_tool()` to the model). See
 
 `Call X when Y`, not `Don't forget X` or `Never guess`.
 
-The rationale block at [voice_daemon.py:74-104](../jasper/voice_daemon.py)
+The rationale block in [jasper/voice/prompt.py](../jasper/voice/prompt.py)
 documents a confirmed failure mode: a prior version of the
 prompt had ~15 "Do NOT" clauses and zero positive "Call the
 tool when…" instructions, and produced **zero tool calls
@@ -191,8 +191,8 @@ hallucination pattern OpenAI's docs explicitly call out:
 
 OpenAI's documented pattern is *"Do not use a preamble when…"*
 with an enumerated skip-list, **never** *"Never preamble."*
-The current `SYSTEM_INSTRUCTION` at
-[voice_daemon.py:226-240](../jasper/voice_daemon.py) follows this exactly.
+The current `SYSTEM_INSTRUCTION` in
+[jasper/voice/prompt.py](../jasper/voice/prompt.py) follows this exactly.
 
 When you add a tool fast enough that a preamble takes longer
 than the tool itself (basically every JTS tool), make sure it
@@ -244,8 +244,8 @@ xAI's [Voice Agent guide](https://docs.x.ai/docs/guides/voice/agent).
 
 ## The current JTS SYSTEM_INSTRUCTION — walk-through
 
-Lives at [voice_daemon.py:110-213](../jasper/voice_daemon.py) with
-a rationale block at lines 74-109 explaining the design.
+Lives in [jasper/voice/prompt.py](../jasper/voice/prompt.py) with
+a rationale block above the constant explaining the design.
 **Read the rationale block before editing** — it cites the OpenAI
 guide, documents the previous-version failure mode (zero tool
 calls across five scenarios with the negative-heavy prompt), and
@@ -275,7 +275,8 @@ Eight labeled sections in order:
    tool's description.
 8. **Out of scope** — sports/news/web. Minimal.
 
-Dynamic content via `_build_system_instruction` (location,
+Dynamic content via `_build_system_instruction` in
+[jasper/voice/prompt.py](../jasper/voice/prompt.py) (location,
 linked Google accounts, transit-not-configured nudge,
 ha-not-configured nudge) is appended at session-open time —
 those are conditional on speaker configuration and don't live
@@ -360,7 +361,7 @@ On an upstream failure (network error, API timeout, missing
 config, no data) a tool MUST return `{error: <short, user-facing,
 speakable string>}` — `SYSTEM_INSTRUCTION` tells the model to
 speak the `error` field ~verbatim (see
-[`jasper/voice_daemon.py`](../jasper/voice_daemon.py)
+[`jasper/voice/prompt.py`](../jasper/voice/prompt.py)
 `SYSTEM_INSTRUCTION`, the cross-tool meta-rule "When a tool
 returns an `error` field, speak it verbatim … Don't apologize at
 length; don't paraphrase"). So the **base expectation is that
@@ -429,7 +430,7 @@ After Path B (2026-05-23):
 | Long Gemini sessions break on resumption | System instruction over ~500 tokens (PLAN.md tracker) | Shorten — move per-tool rules out of system prompt (blocked today by build_tool truncation) |
 | Tool docstring "Voice answer style" sections seem ignored by the LLM (pre-2026-05-23) | `build_tool()` truncated to first paragraph | Lifted 2026-05-23; full docstring now sent. See cookbook. |
 | Conditional rule violated in spoken response (e.g. ZERO-COUNT, STATUS, STALENESS) | Conflicting rule between SYSTEM_INSTRUCTION and tool docstring | After Path B, per-tool rules live ONLY in the tool docstring; system prompt has cross-tool meta-rules only |
-| Model says preamble + tool result *and* also says result verbatim with no preamble (inconsistent across turns) | Conditional preamble rule too vague; missing "the tool call is lightweight" clause | Tighten the skip-list trigger; reference an existing precise version (current preamble block at voice_daemon.py:226-240) |
+| Model says preamble + tool result *and* also says result verbatim with no preamble (inconsistent across turns) | Conditional preamble rule too vague; missing "the tool call is lightweight" clause | Tighten the skip-list trigger; reference the existing `Tools — preambles` block in `jasper/voice/prompt.py` |
 | Model preambles AND speaks the tool's verbose `confirm` field on every call ("talks twice" — consistent across turns) | Cross-tool SYSTEM_INSTRUCTION skip-list applies in theory but the model isn't honoring it for this tool family (~33% compliance per OpenAI community thread) | Add a per-tool "Skip the preamble" sentence in the tool's docstring (Path B). Worked first try on `spotify_play` / `spotify_play_latest_by_artist` (PR #265, 2026-05-23). Don't escalate to absolute language in SYSTEM_INSTRUCTION — that's the regression path that produced "zero tool calls across five scenarios" in May 2026. |
 | Mic mishear gets confidently answered as if user said something else | No Unclear Audio rule | Add one — OpenAI's documented pattern: *"If the user's audio is not clear, ask once: 'Sorry, could you repeat that?'"* |
 
@@ -466,7 +467,7 @@ docks" / "almost full" / "tight" via the literal DOCKS RULE.
 
 ### 3. Add a Verbosity section to SYSTEM_INSTRUCTION — ✅ DONE (2026-05-23)
 
-Added at [voice_daemon.py:126](../jasper/voice_daemon.py) per
+Added in [jasper/voice/prompt.py](../jasper/voice/prompt.py) per
 OpenAI's documented per-task-type pattern:
 
 > *"Direct answers: Use 1-2 short sentences. Clarifying
@@ -480,7 +481,7 @@ voice-answer style (which lives in the tool's docstring).
 
 ### 4. Add an Unclear Audio section — ✅ DONE (2026-05-23)
 
-Added at [voice_daemon.py:186](../jasper/voice_daemon.py) per
+Added in [jasper/voice/prompt.py](../jasper/voice/prompt.py) per
 OpenAI's documented pattern:
 
 > *"If the user's audio is not clear, ask for clarification
@@ -568,7 +569,7 @@ edit (~quarterly, or whenever a model version bumps).
 
 ## See also
 
-- [voice_daemon.py:74-104](../jasper/voice_daemon.py) — inline rationale
+- [jasper/voice/prompt.py](../jasper/voice/prompt.py) — inline rationale
   block; the design decisions that motivated the current
   SYSTEM_INSTRUCTION shape. Read before editing the constant.
 - [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md) —
@@ -587,4 +588,4 @@ edit (~quarterly, or whenever a model version bumps).
 
 ---
 
-Last verified: 2026-05-23
+Last verified: 2026-06-13

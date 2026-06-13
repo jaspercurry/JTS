@@ -6,6 +6,8 @@ from pathlib import Path
 
 from jasper.audio_hardware import dac
 
+from ._voice_runtime_text import voice_runtime_text
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -251,7 +253,7 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
 def test_voice_uses_fanin_tts_and_duck_for_all_output_profiles():
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     voice_unit = (REPO / "deploy" / "systemd" / "jasper-voice.service").read_text()
-    voice_daemon = (REPO / "jasper" / "voice_daemon.py").read_text()
+    voice_runtime = voice_runtime_text()
     config_py = (REPO / "jasper" / "config.py").read_text()
     assert "TTS_ENV_FILE" not in reconcile
     assert "JASPER_TTS_OUTPUTD_SOCKET" not in reconcile
@@ -259,8 +261,8 @@ def test_voice_uses_fanin_tts_and_duck_for_all_output_profiles():
     assert 'JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock' in voice_unit
     assert 'JASPER_DUCK_TRANSPORT=fanin' in voice_unit
     assert 'duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin")' in config_py
-    assert 'cfg.duck_transport == "fanin"' in voice_daemon
-    assert "FanInDucker" in voice_daemon
+    assert 'cfg.duck_transport == "fanin"' in voice_runtime
+    assert "FanInDucker" in voice_runtime
 
 
 def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():

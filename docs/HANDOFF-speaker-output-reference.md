@@ -185,9 +185,10 @@ Rechecked against the current tree on 2026-06-01:
   assistant audio. The voice daemon expects a small operation set to keep
   its semantics: `write_segment()`/`write()`, `end_segment()`,
   `flush()`, `expected_drain_at()`, and `wait_drained()`.
-- `jasper/voice_daemon.py` + `_play_responses` races each TTS write
-  against provider interruption and calls `flush()` on interruption.
-  `_idle_watchdog` and `_end_turn` rely on `expected_drain_at()` to
+- `jasper/voice/turn_playback.py` + `_play_responses` races each TTS
+  write against provider interruption and calls `flush()` on interruption.
+  `_idle_watchdog` and `jasper/voice_daemon.py`'s `_end_turn` rely on
+  `expected_drain_at()` to
   avoid ending a turn before queued audio drains.
 - `deploy/alsa/asoundrc.jasper` defines the outputd ALSA surfaces:
   `outputd_content_playback`, `outputd_content_capture`,
@@ -988,4 +989,4 @@ datum: how much assistant audio was actually heard.
   bonded member mixes its own assistant audio in outputd after the
   snapcast round trip and before reference publication.
 
-Last verified: 2026-06-12 (solo fan-in TTS ownership and bonded-member outputd TTS ownership rechecked against rust/jasper-outputd and HANDOFF-multiroom).
+Last verified: 2026-06-13 (solo fan-in TTS ownership and bonded-member outputd TTS ownership rechecked against rust/jasper-outputd and HANDOFF-multiroom; voice playback seam path rechecked after `jasper/voice/turn_playback.py` extraction).

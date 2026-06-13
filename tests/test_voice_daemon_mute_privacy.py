@@ -42,7 +42,7 @@ _stub_if_missing("rapidfuzz", _rapidfuzz)
 def _wake_loop_for_mute(tmp_path):
     from jasper.voice_daemon import State, WakeLoop
 
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._mic_muted = False
     wl._state = State.WAKE
     wl._pre_roll = deque([b"pre1", b"pre2"], maxlen=8)
@@ -90,7 +90,7 @@ async def test_mute_idempotent_second_call_is_noop(tmp_path) -> None:
 async def test_play_cue_warns_once_when_cues_unconfigured(caplog) -> None:
     from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._cues = None
     wl._warned_cues_unconfigured = False
 

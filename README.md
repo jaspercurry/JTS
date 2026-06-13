@@ -523,7 +523,7 @@ reference. Currently:
   the `build_tool()` first-paragraph truncation, a pitfalls
   catalog with symptoms, and a "Recommended edits to current code"
   punch list. **Start here for any edit to `SYSTEM_INSTRUCTION` in
-  `jasper/voice_daemon.py` or any tool description in
+  `jasper/voice/prompt.py` or any tool description in
   `jasper/tools/`.** Refreshed against provider docs 2026-05-23.
 - [`satellites.md`](docs/satellites.md) — The home base for the
   satellite-device family. Existing dial + planned AMOLED mic

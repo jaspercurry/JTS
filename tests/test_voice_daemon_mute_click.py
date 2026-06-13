@@ -102,7 +102,7 @@ async def test_mute_click_uses_matched_cue_path():
         method="synthetic_generated",
     )
     tts = _FakeTts()
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._tts = tts
     wl._mute_click_on_pcm = b"on"
     wl._mute_click_off_pcm = b"off"
@@ -137,7 +137,7 @@ async def test_listening_chirp_uses_matched_chirp_path():
         method="synthetic_generated",
     )
     tts = _FakeTts()
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._tts = tts
     wl._chirp_on_pcm = b"wake"
     wl._chirp_off_pcm = b"end"

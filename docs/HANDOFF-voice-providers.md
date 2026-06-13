@@ -75,16 +75,17 @@ missing, unreadable, and invalid states so a permission-denied probe is
 not reported as first-time setup.
 
 The abstraction lives in [`jasper/voice/session.py`](../jasper/voice/session.py)
-as the `LiveConnection` and `LiveTurn` Protocols. Daemon code at
-[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) speaks only to
-those interfaces; the per-provider adapters are:
+as the `LiveConnection` and `LiveTurn` Protocols. WakeLoop in
+[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) and the daemon
+composition in [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py)
+speak only to those interfaces; the per-provider adapters are:
 
 - [`jasper/voice/gemini_session.py`](../jasper/voice/gemini_session.py) — `GeminiLiveConnection`
 - [`jasper/voice/openai_session.py`](../jasper/voice/openai_session.py) — `OpenAIRealtimeConnection`
 - [`jasper/voice/grok_session.py`](../jasper/voice/grok_session.py) — `GrokRealtimeConnection` (subclass of the OpenAI adapter)
 
-The single switch point is `_make_connection(cfg)` at the top of
-[`voice_daemon.py`](../jasper/voice_daemon.py). Provider session
+The single switch point is `_make_connection(cfg)` in
+[`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py). Provider session
 preprocessing is resolved through
 [`jasper/voice/input_policy.py`](../jasper/voice/input_policy.py), which
 turns the applied mic/AEC runtime config into an input-audio contract
@@ -165,7 +166,7 @@ Mode in the consumer apps and dictation in Claude Code.
 
 ```
                     ┌───────────────────────────────────────────────┐
-                    │             jasper/voice_daemon.py             │
+                    │     jasper/voice_daemon.py + voice/*.py        │
                     │  WakeLoop → acquire_turn → send_audio →        │
                     │  end_input → audio_out → release               │
                     └────────────────────┬──────────────────────────┘
@@ -391,7 +392,7 @@ should be:
    `jasper-aec-reconcile` reads that generated file. Keep the
    fail-closed parking tests green so an unset, invalid, or missing-
    manifest provider never starts voice.
-6. New branch in `_make_connection(cfg)` in `voice_daemon.py`.
+6. New branch in `_make_connection(cfg)` in `jasper/voice/daemon_main.py`.
 7. New contract test in `tests/test_<provider>_session.py` modeled on
    `tests/test_openai_session.py`. Pin: connect → tool round-trip →
    reconnect → manual-VAD payload shape → tool round advances the
@@ -411,7 +412,7 @@ place.
 ### Idle anchor + tool rounds
 
 The daemon's pre-response idle watchdog
-(`jasper/voice_daemon.py:_idle_watchdog`) reads `turn.last_activity_at()`
+(`jasper/voice/turn_playback.py:_idle_watchdog`) reads `turn.last_activity_at()`
 and abandons the turn if `idle_for > JASPER_IDLE_TIMEOUT_SEC` *and* no
 audio has been received yet. The watchdog is protocol-agnostic — all
 adapters share this one timer.
@@ -456,7 +457,8 @@ End-of-turn (the moment the daemon un-ducks music, fires the
 `TtsPlayout.expected_drain_at()` — a sample-counted deadline that
 tracks when the last queued audio sample actually exits the OS
 audio stack, not when it leaves the inter-task queue. Both
-`_play_responses` (consumer) and `_idle_watchdog` (server-said-done
+`jasper/voice/turn_playback.py`'s `_play_responses` (consumer) and
+`_idle_watchdog` (server-said-done
 path) consult this primitive, so timing is provider-agnostic and
 the two paths converge.
 
@@ -512,4 +514,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-06-12 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`)
+Last verified: 2026-06-13 (unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`)

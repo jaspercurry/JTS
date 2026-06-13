@@ -54,7 +54,7 @@ def _make_wake_loop():
     """
     from jasper.voice_daemon import State, WakeLoop
 
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._state = State.WAKE
     wl._mic_muted = False
     wl._measurement_active = asyncio.Event()

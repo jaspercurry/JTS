@@ -46,7 +46,7 @@ async def test_fire_and_forget_task_survives_gc_until_done():
     asyncio's weak task reference let it disappear mid-flight, the daemon
     would keep routing mic frames into the acquire buffer indefinitely.
     """
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._fire_and_forget = set()
 
     started = asyncio.Event()
@@ -77,7 +77,7 @@ async def test_fire_and_forget_task_survives_gc_until_done():
 
 
 async def test_fire_and_forget_shutdown_cancels_and_awaits_tasks():
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._fire_and_forget = set()
 
     started = asyncio.Event()
@@ -100,7 +100,7 @@ async def test_fire_and_forget_shutdown_cancels_and_awaits_tasks():
 
 
 async def test_run_shutdown_stops_wake_legs_before_sweeping_fire_and_forget():
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._fire_and_forget = set()
     wl._heartbeat = None
     wl._state = State.WAKE
