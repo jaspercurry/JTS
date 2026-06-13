@@ -10,6 +10,11 @@ import threading
 import time
 from typing import Any
 
+# Operational lines (listener bound, socket errors) stay under the
+# jasper-control server logger so per-logger config and journal filters
+# behave exactly as before this module was split out of server.py. The
+# dial's own mirrored messages keep their dedicated `jasper.dial` logger.
+logger = logging.getLogger("jasper.control.server")
 dial_log = logging.getLogger("jasper.dial")
 
 # Most-recent dial heartbeat. Updated by the UDP log listener every
@@ -96,29 +101,28 @@ async def _probe_dial_reachable(ip: str, *, timeout: float = 0.5) -> bool:
     emits UDP dlogs on encoder/button events. The probe takes
     ~3-10 ms on a dial running the WiFi-sleep-disabled firmware (see
     firmware/dial/src/main.cpp `WiFi.setSleep(false)`); the 500 ms
-    timeout bounds the bad WiFi/offline case."""
+    cap is the worst-case envelope for a still-sleeping dial."""
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(ip, 80),
             timeout=timeout,
         )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
     except ConnectionRefusedError:
         return True
     except (asyncio.TimeoutError, OSError):
         return False
-    try:
-        writer.close()
-        await writer.wait_closed()
-    except OSError:
-        pass
-    return True
 
 
 def run_dial_log_listener(host: str, port: int) -> threading.Thread:
-    """Listen for UDP log datagrams from the ESP32 dial and mirror them
-    into the Pi journal under logger `jasper.dial`.
-
-    The dial firmware sends diagnostics over UDP to avoid blocking the UI
+    """Listen for one-line UDP datagrams from the dial and re-emit them
+    via the Python logger (so `journalctl -u jasper-control` shows them
+    interleaved with the HTTP-side log). Fire-and-forget on the dial
     side — UDP loss is acceptable for diagnostic output, and the dial
     isn't blocked on a TCP handshake when the Pi is unreachable.
 
@@ -130,14 +134,14 @@ def run_dial_log_listener(host: str, port: int) -> threading.Thread:
     sock.settimeout(1.0)
 
     def _loop() -> None:
-        dial_log.info("dial-log UDP listener bound to %s:%d", host, port)
+        logger.info("dial-log UDP listener bound to %s:%d", host, port)
         while True:
             try:
                 data, addr = sock.recvfrom(2048)
             except socket.timeout:
                 continue
             except OSError as e:
-                dial_log.warning("dial-log socket error: %s", e)
+                logger.warning("dial-log socket error: %s", e)
                 return
             try:
                 msg = data.decode("utf-8", errors="replace").rstrip()
