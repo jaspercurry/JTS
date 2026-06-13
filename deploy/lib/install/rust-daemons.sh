@@ -4,20 +4,34 @@
 # Functions assume install.sh globals (REPO_DIR, BUILD_USER) and
 # set -euo pipefail from the sourcing shell.
 
+FANIN_BIN="/opt/jasper/bin/jasper-fanin"
+OUTPUTD_BIN="/opt/jasper/bin/jasper-outputd"
+OUTPUTD_SOURCE_MISSING_ERROR="ERROR: jasper-outputd source missing"
+
 build_install_rust_daemon() {
     local name="$1"
     local required="$2"
     local src_dir="${REPO_DIR}/rust/${name}"
     local cache_dir="/var/cache/${name}-build"
     local bin_dest="/opt/jasper/bin/${name}"
+    local missing_source_message="${name} source missing"
+    local required_reason="This tree requires ${name} as part of the audio runtime."
+
+    if [[ "${name}" == "jasper-fanin" ]]; then
+        bin_dest="${FANIN_BIN}"
+    elif [[ "${name}" == "jasper-outputd" ]]; then
+        bin_dest="${OUTPUTD_BIN}"
+        missing_source_message="${OUTPUTD_SOURCE_MISSING_ERROR}"
+        required_reason="This tree requires jasper-outputd as the final output owner."
+    fi
 
     if [[ ! -d "${src_dir}" ]]; then
         if [[ "${required}" == "1" ]]; then
-            echo "  ERROR: ${name} source missing at ${src_dir}" >&2
-            echo "  This tree requires ${name} as part of the audio runtime." >&2
+            echo "  ${missing_source_message} at ${src_dir}" >&2
+            echo "  ${required_reason}" >&2
             return 1
         fi
-        echo "  ${name} source missing at ${src_dir}; skipping build"
+        echo "  ${missing_source_message} at ${src_dir}; skipping build"
         return 0
     fi
 

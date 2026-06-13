@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.install_surface import installer_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "deploy" / "lib" / "jasper-env-file.sh"
@@ -129,6 +131,6 @@ def test_reconcilers_prefer_script_dir_sibling_lib() -> None:
 
 
 def test_install_sh_installs_env_file_lib() -> None:
-    install_sh = (ROOT / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     assert "deploy/lib/jasper-env-file.sh" in install_sh
     assert "/usr/local/lib/jasper/jasper-env-file.sh" in install_sh

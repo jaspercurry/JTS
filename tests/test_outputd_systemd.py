@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.install_surface import installer_text
+
 from ._voice_runtime_text import voice_runtime_text
 
 
@@ -90,7 +92,7 @@ def test_outputd_operator_retune_file_is_after_packaged_defaults():
 
 
 def test_install_builds_installs_and_enables_outputd():
-    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    install_sh = installer_text()
     assert "build_install_jasper_outputd" in install_sh
     assert "ERROR: jasper-outputd source missing" in install_sh
     assert "/opt/jasper/bin/jasper-outputd" in install_sh

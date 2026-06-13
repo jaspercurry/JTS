@@ -25,6 +25,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from tests.install_surface import installer_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-bootloop-guard"
 
@@ -360,7 +362,7 @@ def test_guard_unit_is_ordered_before_every_guarded_unit():
 
 
 def test_install_sh_installs_and_enables_the_guard():
-    text = (ROOT / "deploy" / "install.sh").read_text()
+    text = installer_text()
     assert "deploy/systemd/jasper-bootloop-guard.service" in text
     assert "deploy/bin/jasper-bootloop-guard" in text
     assert "systemctl enable jasper-bootloop-guard.service" in text
