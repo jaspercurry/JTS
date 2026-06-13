@@ -103,8 +103,12 @@ def test_state_resilience_wires_identity_snapshot():
     as the control-client route-table guard."""
     from pathlib import Path
 
-    server_src = (
-        Path(__file__).resolve().parents[1]
-        / "jasper" / "control" / "server.py"
+    repo = Path(__file__).resolve().parents[1]
+    server_src = (repo / "jasper" / "control" / "server.py").read_text()
+    aggregate_src = (
+        repo / "jasper" / "control" / "state_aggregate.py"
     ).read_text()
-    assert '"identity": identity_state.snapshot()' in server_src
+    assert 'from . import state_aggregate as _state_aggregate' in server_src
+    assert '"/state": "_get_state"' in server_src
+    assert "return await _state_aggregate._get_state(" in server_src
+    assert '"identity": identity_state.snapshot()' in aggregate_src

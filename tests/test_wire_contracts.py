@@ -23,6 +23,26 @@ REPO = Path(__file__).resolve().parents[1]
 FANIN_STATE_RS = REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
 FANIN_CONFIG_RS = REPO / "rust" / "jasper-fanin" / "src" / "config.rs"
 OUTPUTD_STATE_RS = REPO / "rust" / "jasper-outputd" / "src" / "state.rs"
+CONTROL_SERVER_PY = REPO / "jasper" / "control" / "server.py"
+CONTROL_SPLIT_MODULES = (
+    CONTROL_SERVER_PY,
+    REPO / "jasper" / "control" / "aec_endpoints.py",
+    REPO / "jasper" / "control" / "dial.py",
+    REPO / "jasper" / "control" / "state_aggregate.py",
+    REPO / "jasper" / "control" / "uds.py",
+    REPO / "jasper" / "control" / "volume_ops.py",
+)
+
+
+def _control_split_text() -> str:
+    return "\n".join(path.read_text() for path in CONTROL_SPLIT_MODULES)
+
+
+def _assert_state_route_delegates_to_aggregate() -> None:
+    server_src = CONTROL_SERVER_PY.read_text()
+    assert 'from . import state_aggregate as _state_aggregate' in server_src
+    assert '"/state": "_get_state"' in server_src
+    assert "return await _state_aggregate._get_state(" in server_src
 
 
 def _strip_comment_lines(text: str, *, markers: tuple[str, ...]) -> str:
@@ -162,7 +182,6 @@ def test_control_socket_paths_agree_across_processes():
     for rel in (
         "jasper/mux.py",
         "jasper/control/airplay_health.py",
-        "jasper/control/server.py",
         "jasper/cli/doctor/audio.py",
         "jasper/cli/system_soak.py",
         "jasper/correction/runtime_integrity.py",
@@ -170,18 +189,27 @@ def test_control_socket_paths_agree_across_processes():
         assert fanin_sock in (REPO / rel).read_text(), (
             f"{rel} no longer pins the fan-in control socket {fanin_sock}"
         )
+    control_src = _control_split_text()
+    _assert_state_route_delegates_to_aggregate()
+    assert f'local_status_json("{fanin_sock}")' in control_src, (
+        "jasper/control's /state aggregate no longer probes the fan-in "
+        f"control socket {fanin_sock}"
+    )
 
     unit = (REPO / "deploy" / "systemd" / "jasper-outputd.service").read_text()
     assert f'Environment="JASPER_OUTPUTD_CONTROL_SOCKET={outputd_sock}"' in unit
     for rel in (
         "jasper/audio_validation.py",
-        "jasper/control/server.py",
         "jasper/cli/doctor/audio.py",
         "jasper/cli/system_soak.py",
     ):
         assert outputd_sock in (REPO / rel).read_text(), (
             f"{rel} no longer pins the outputd control socket {outputd_sock}"
         )
+    assert f'local_status_json("{outputd_sock}")' in control_src, (
+        "jasper/control's /state aggregate no longer probes the outputd "
+        f"control socket {outputd_sock}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +350,7 @@ def _system_status_js_text() -> str:
 
 
 def _server_snapshot_region() -> str:
-    src = (REPO / "jasper" / "control" / "server.py").read_text()
+    src = CONTROL_SERVER_PY.read_text()
     start = src.index("def _get_system_snapshot")
     end = src.index("def _get_system_diagnostics")
     return src[start:end]

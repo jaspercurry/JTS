@@ -32,10 +32,8 @@ import asyncio
 import json
 import urllib.request
 import logging
-import math
 import os
 import signal
-import socket
 import subprocess
 import threading
 import time
@@ -45,62 +43,41 @@ from typing import Any, Awaitable, Callable, Optional
 
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..audio_quality import (
-    DEFAULT_CONVERTER as _default_audio_converter,
     apply_requested_converter as _apply_audio_quality,
-    converter_options as _audio_converter_options,
     normalize_converter as _normalize_audio_converter,
-    read_active_converter as _read_active_audio_converter,
-    read_state as _read_audio_quality_state,
 )
 from . import (
-    bootloop_guard_state,
     debug_control,
     grouping_supervisor,
-    mpris,
     shairport_supervisor,
     system_supervisor,
-    wifi_guardian_state,
 )
-from .. import identity_state
 from ..multiroom.config import GROUPING_ENV_FILE, validate_grouping
 from ..multiroom.state import grouping_response, read_grouping_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..transit.state import read_state as read_transit_state
-from ..volume_diagnostics import (
-    build_volume_policy_snapshot,
-    read_diagnostics as _read_volume_diagnostics,
-)
 from ..audio_profile_state import (
-    AecIntent,
-    MicProbe,
-    build_audio_profile_status,
-    infer_audio_input_profile,
     normalize_audio_input_profile,
-    parse_env_bool as _parse_audio_profile_bool,
-    profile_env_updates,
-    resolve_audio_input_intent,
-    runtime_env_from_mapping,
 )
-from ..audio_validation import (
-    current_artifact_filter_kwargs as _audio_validation_filter_kwargs,
-)
-from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..env_load import subprocess_env_with_fresh_files
-from ..atomic_io import locked_update_env_file
 from ..install_profile import (
     ENDPOINT_INSTALL_PROFILE,
     install_role_for_profile,
     is_satellite_install_profile,
     read_install_profile,
 )
-from ..wake_models import WAKE_MODEL_FILE
+from . import aec_endpoints as _aec_endpoints
+from . import dial as _dial
+from . import state_aggregate as _state_aggregate
+from . import volume_ops as _volume_ops
+from .uds import (
+    _local_status_json,
+    _mux_socket_command,
+    _voice_socket_command,
+)
 
 logger = logging.getLogger(__name__)
-dial_log = logging.getLogger("jasper.dial")
 SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
-SOURCE_AVAILABILITY_TTL_SEC = 10.0
-_source_availability_cache: tuple[float, dict[str, Any]] | None = None
-_source_availability_lock = threading.Lock()
 _peering_lock = threading.Lock()
 _peering_loop: asyncio.AbstractEventLoop | None = None
 _peering_stop_requested = threading.Event()
@@ -110,8 +87,6 @@ AUDIO_QUALITY_RENDERER_UNITS = [
     "bluealsa-aplay.service",
     "jasper-usbsink.service",
 ]
-OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
-SPOTIFY_OAUTH_CALLBACK_BASE = "https://jaspercurry.github.io/spotify-oauth-callback/"
 _ENDPOINT_ALLOWED_GET_ROUTES = frozenset({
     "/healthz",
     "/volume",
@@ -178,102 +153,6 @@ def _system_capabilities_for_profile(profile: str) -> dict[str, Any]:
     }
 
 
-def _safe_audio_quality_state() -> dict[str, Any]:
-    try:
-        return _read_audio_quality_state()
-    except Exception as e:  # noqa: BLE001
-        logger.exception("audio quality state read failed")
-        converter = _default_audio_converter
-        options = _audio_converter_options()
-        meta = next(
-            option for option in options if option["converter"] == converter
-        )
-        try:
-            active = _read_active_audio_converter()
-        except Exception:  # noqa: BLE001
-            active = None
-        return {
-            "converter": converter,
-            "active_converter": active,
-            "label": meta["label"],
-            "summary": meta["summary"],
-            "options": options,
-            "error": str(e),
-        }
-
-
-def _same_config_path(left: Any, right: Any) -> bool:
-    if not left or not right:
-        return False
-    return os.path.realpath(str(left)) == os.path.realpath(str(right))
-
-
-def _sound_apply_target(last_apply: Any) -> str | None:
-    if not isinstance(last_apply, dict):
-        return None
-    for key in ("active_config_path", "candidate_config_path"):
-        value = last_apply.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
-
-
-def _sound_runtime_status(
-    sound_profile: dict[str, Any],
-    active_config_path: str | None,
-) -> dict[str, Any]:
-    """Describe whether the desired sound profile is actually loaded.
-
-    ``sound_profile["enabled"]`` is the persisted preference. The
-    runtime truth is CamillaDSP's active config path, which can differ
-    after rollback, install repair, or a manual Camilla reload. Keep the
-    distinction explicit so status surfaces do not imply EQ is active
-    when the daemon is running the flat outputd base config.
-    """
-
-    last_apply_path = _sound_apply_target(sound_profile.get("last_dsp_apply"))
-    try:
-        filter_count = int(sound_profile.get("filter_count") or 0)
-    except (TypeError, ValueError):
-        filter_count = 0
-    desired_has_filters = bool(sound_profile.get("enabled")) and filter_count > 0
-    runtime = {
-        "active_config_path": active_config_path,
-        "last_apply_config_path": last_apply_path,
-        "matches_last_apply": None,
-        "state": "unknown",
-        "active": None,
-        "warning": None,
-    }
-    if not active_config_path:
-        return runtime
-
-    if last_apply_path:
-        runtime["matches_last_apply"] = _same_config_path(
-            active_config_path,
-            last_apply_path,
-        )
-
-    if _same_config_path(active_config_path, OUTPUTD_BASE_CAMILLA_CONFIG):
-        runtime["state"] = "base"
-        runtime["active"] = not desired_has_filters
-    elif runtime["matches_last_apply"] is True:
-        runtime["state"] = "applied"
-        runtime["active"] = True
-    elif last_apply_path:
-        runtime["state"] = "mismatch"
-        runtime["active"] = False
-    else:
-        runtime["state"] = "custom"
-        runtime["active"] = None
-
-    if desired_has_filters and runtime["active"] is not True:
-        runtime["warning"] = (
-            "Desired sound profile is not the active CamillaDSP config."
-        )
-    return runtime
-
-
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "")
     if not raw:
@@ -291,112 +170,269 @@ def _env_int(name: str, default: int) -> int:
 
 CONTROL_MAX_POST_BYTES = _env_int("JASPER_CONTROL_MAX_POST_BYTES", 4096)
 
+VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
+VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
+SPOTIFY_OAUTH_CALLBACK_BASE = _volume_ops.SPOTIFY_OAUTH_CALLBACK_BASE
+DIAL_HEARTBEAT_PATH = _dial.DIAL_HEARTBEAT_PATH
+_dial_heartbeat = _dial._dial_heartbeat
+SOURCE_AVAILABILITY_TTL_SEC = _state_aggregate.SOURCE_AVAILABILITY_TTL_SEC
+_source_availability_cache = _state_aggregate._source_availability_cache
+_source_availability_lock = _state_aggregate._source_availability_lock
+OUTPUTD_BASE_CAMILLA_CONFIG = _state_aggregate.OUTPUTD_BASE_CAMILLA_CONFIG
+_AEC_MODE_FILE = _aec_endpoints._AEC_MODE_FILE
+_WAKE_MODEL_FILE = _aec_endpoints._WAKE_MODEL_FILE
+_JASPER_ENV_FILE = _aec_endpoints._JASPER_ENV_FILE
+_TOGGLE_TO_TOKEN = _aec_endpoints._TOGGLE_TO_TOKEN
 
-# Most-recent dial heartbeat. Updated by the UDP log listener every
-# time a datagram arrives; read by GET /dial/status. Kept module-level
-# so jasper-doctor can ask "is a dial actually talking to us?" without
-# parsing the journal. Lock isn't needed — Python dict assignment is
-# atomic and a stale read is harmless for a heartbeat.
-#
-# Persisted to disk so `last_seen_ip` survives a jasper-control
-# restart. Without this, every restart (typically a deploy) leaves
-# the in-memory dict empty until the next user-initiated dlog —
-# encoder turn or button press — which makes /state.satellites.dial.online
-# briefly inaccurate for any external consumer. The file is tiny
-# (~150 B) and writes happen at dlog rate (a few per second under
-# heavy dial use), well within SD-card tolerance.
-DIAL_HEARTBEAT_PATH = os.environ.get(
-    "JASPER_DIAL_HEARTBEAT_PATH",
-    "/var/lib/jasper/dial_heartbeat.json",
-)
-MUX_CONTROL_SOCKET_PATH = os.environ.get(
-    "JASPER_MUX_CONTROL_SOCKET",
-    "/run/jasper-mux/control.sock",
-)
+_same_config_path = _state_aggregate._same_config_path
+_sound_apply_target = _state_aggregate._sound_apply_target
+_sound_runtime_status = _state_aggregate._sound_runtime_status
+_outputd_status = _state_aggregate._outputd_status
+_read_audio_quality_state = _state_aggregate._read_audio_quality_state
+_read_active_audio_converter = _state_aggregate._read_active_audio_converter
+_clamp_db = _volume_ops._clamp_db
+_db_to_percent = _volume_ops._db_to_percent
+_percent_to_db = _volume_ops._percent_to_db
+_delta_db_to_delta_percent = _volume_ops._delta_db_to_delta_percent
+_spotify_redirect_uri = _volume_ops._spotify_redirect_uri
+_audio_validation_summary = _aec_endpoints._audio_validation_summary
+
+
+def _safe_audio_quality_state() -> dict[str, Any]:
+    previous_state = _state_aggregate._read_audio_quality_state
+    previous_active = _state_aggregate._read_active_audio_converter
+    _state_aggregate._read_audio_quality_state = _read_audio_quality_state
+    _state_aggregate._read_active_audio_converter = _read_active_audio_converter
+    try:
+        return _state_aggregate._safe_audio_quality_state()
+    finally:
+        _state_aggregate._read_audio_quality_state = previous_state
+        _state_aggregate._read_active_audio_converter = previous_active
+
+
+def _sync_aec_module() -> None:
+    _aec_endpoints._AEC_MODE_FILE = _AEC_MODE_FILE
+    _aec_endpoints._WAKE_MODEL_FILE = _WAKE_MODEL_FILE
+    _aec_endpoints._JASPER_ENV_FILE = _JASPER_ENV_FILE
+
+
+def _parse_env_bool(raw: str, default: bool) -> bool:
+    return _aec_endpoints._parse_env_bool(raw, default)
+
+
+def _read_aec_state() -> dict:
+    _sync_aec_module()
+    return _aec_endpoints._read_aec_state()
+
+
+def _read_aec_mode() -> str:
+    _sync_aec_module()
+    return _aec_endpoints._read_aec_mode()
+
+
+def _write_aec_mode(mode: str) -> None:
+    _sync_aec_module()
+    _aec_endpoints._write_aec_mode(mode)
+
+
+def _write_aec_leg(leg: str, enabled: bool) -> None:
+    _sync_aec_module()
+    _aec_endpoints._write_aec_leg(leg, enabled)
+
+
+def _write_audio_input_profile(profile: str) -> None:
+    _sync_aec_module()
+    _aec_endpoints._write_audio_input_profile(profile)
+
+
+def _atomic_rewrite_env(path: str, updates: dict) -> None:
+    _aec_endpoints._atomic_rewrite_env(path, updates)
+
+
+def _read_wake_threshold() -> float:
+    _sync_aec_module()
+    return _aec_endpoints._read_wake_threshold()
+
+
+def _write_wake_threshold(value: float) -> None:
+    _sync_aec_module()
+    _aec_endpoints._write_wake_threshold(value)
+
+
+_aec_bridge_active_impl = _aec_endpoints._aec_bridge_active
+
+
+def _aec_bridge_active() -> bool:
+    return _aec_bridge_active_impl()
+
+
+_server_aec_bridge_active_wrapper = _aec_bridge_active
+
+
+def _kick_aec_reconciler() -> None:
+    _aec_endpoints._kick_aec_reconciler()
+
+
+_aec_fresh_jasper_env_impl = _aec_endpoints._fresh_jasper_env
+
+
+def _fresh_jasper_env() -> dict[str, str]:
+    _sync_aec_module()
+    return _aec_fresh_jasper_env_impl()
+
+
+_server_fresh_jasper_env_wrapper = _fresh_jasper_env
+
+
+def _read_wake_word_status() -> dict[str, Any]:
+    _sync_aec_module()
+    return _aec_endpoints._read_wake_word_status()
+
+
+def _audio_profile_status(
+    state: dict[str, Any],
+    *,
+    bridge_active: bool,
+    chip_available: bool,
+) -> dict[str, Any]:
+    _sync_aec_module()
+    return _aec_endpoints._audio_profile_status(
+        state,
+        bridge_active=bridge_active,
+        chip_available=chip_available,
+    )
+
+
+def _chip_aec_available() -> bool:
+    return _aec_endpoints._chip_aec_available()
+
+
+def _mic_status(
+    state: dict[str, Any],
+    *,
+    bridge_active: bool,
+    chip_available: bool,
+) -> dict[str, Any]:
+    _sync_aec_module()
+    return _aec_endpoints._mic_status(
+        state,
+        bridge_active=bridge_active,
+        chip_available=chip_available,
+    )
+
+
+def _aec_full_status() -> dict:
+    _sync_aec_module()
+    previous_fresh_env = _aec_endpoints._fresh_jasper_env
+    previous_bridge_active = _aec_endpoints._aec_bridge_active
+    previous_validation_summary = _aec_endpoints._audio_validation_summary
+    fresh_env_replacement = _fresh_jasper_env
+    if fresh_env_replacement is _server_fresh_jasper_env_wrapper:
+        fresh_env_replacement = _aec_fresh_jasper_env_impl
+    bridge_replacement = _aec_bridge_active
+    if bridge_replacement is _server_aec_bridge_active_wrapper:
+        bridge_replacement = _aec_bridge_active_impl
+    _aec_endpoints._fresh_jasper_env = fresh_env_replacement
+    _aec_endpoints._aec_bridge_active = bridge_replacement
+    _aec_endpoints._audio_validation_summary = _audio_validation_summary
+    try:
+        return _aec_endpoints._aec_full_status()
+    finally:
+        _aec_endpoints._fresh_jasper_env = previous_fresh_env
+        _aec_endpoints._aec_bridge_active = previous_bridge_active
+        _aec_endpoints._audio_validation_summary = previous_validation_summary
+
+
+def _sync_dial_module() -> None:
+    _dial.DIAL_HEARTBEAT_PATH = DIAL_HEARTBEAT_PATH
+    _dial._dial_heartbeat = _dial_heartbeat
 
 
 def _load_dial_heartbeat() -> dict[str, Any]:
-    """Read the persisted heartbeat dict. Returns the empty default
-    on any error (missing file, malformed JSON, wrong types) — a
-    corrupted persisted file should never block the daemon from
-    starting. Field-level type checks prevent a stale or
-    hand-edited file from injecting odd values into /state.
-    """
-    default: dict[str, Any] = {
-        "last_seen_at": None,
-        "last_seen_ip": None,
-        "last_message": None,
-    }
-    try:
-        with open(DIAL_HEARTBEAT_PATH) as f:
-            blob = json.load(f)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return default
-    if not isinstance(blob, dict):
-        return default
-    ts = blob.get("last_seen_at")
-    ip = blob.get("last_seen_ip")
-    msg = blob.get("last_message")
-    return {
-        "last_seen_at": ts if isinstance(ts, (int, float)) else None,
-        "last_seen_ip": ip if isinstance(ip, str) else None,
-        "last_message": msg if isinstance(msg, str) else None,
-    }
+    _sync_dial_module()
+    return _dial._load_dial_heartbeat()
 
 
 def _persist_dial_heartbeat(snapshot: dict[str, Any]) -> None:
-    """Atomically write the heartbeat snapshot. Fail-soft — a write
-    error logs at WARN but never raises into the UDP listener's
-    receive loop. tempfile+rename guarantees readers never see a
-    half-written file."""
-    try:
-        directory = os.path.dirname(DIAL_HEARTBEAT_PATH)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        tmp = DIAL_HEARTBEAT_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(snapshot, f)
-        os.replace(tmp, DIAL_HEARTBEAT_PATH)
-    except OSError as e:
-        dial_log.warning(
-            "dial heartbeat persistence: write to %s failed: %s",
-            DIAL_HEARTBEAT_PATH, e,
-        )
+    _sync_dial_module()
+    _dial._persist_dial_heartbeat(snapshot)
 
 
-_dial_heartbeat: dict[str, Any] = _load_dial_heartbeat()
+async def _probe_dial_reachable(ip: str, *, timeout: float = 0.5) -> bool:
+    return await _dial._probe_dial_reachable(ip, timeout=timeout)
 
 
-# Same range jasper.tools.audio uses for the voice-driven volume tools.
-# Percent↔dB is the normal attenuation curve. VolumeCoordinator layers
-# Camilla main_mute on top at 0% so content/music 0% is a real mute.
-VOLUME_MIN_DB = -50.0
-VOLUME_MAX_DB = 0.0
+def run_dial_log_listener(host: str, port: int) -> threading.Thread:
+    _sync_dial_module()
+    return _dial.run_dial_log_listener(host, port)
 
 
-def _clamp_db(db: float) -> float:
-    return max(VOLUME_MIN_DB, min(VOLUME_MAX_DB, float(db)))
+def _sync_source_availability_module() -> None:
+    _state_aggregate._source_availability_cache = _source_availability_cache
+    _state_aggregate._source_availability_lock = _source_availability_lock
 
 
-def _db_to_percent(db: float) -> int:
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    return max(0, min(100, round((float(db) - VOLUME_MIN_DB) / span * 100.0)))
+def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    global _source_availability_cache
+    _sync_source_availability_module()
+    result = _state_aggregate._augment_source_payload(payload)
+    _source_availability_cache = _state_aggregate._source_availability_cache
+    return result
 
 
-def _percent_to_db(percent: int) -> float:
-    p = max(0, min(100, int(percent)))
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    return VOLUME_MIN_DB + (span * p / 100.0)
+async def _get_state(
+    *,
+    camilla_host: str,
+    camilla_port: int,
+    voice_socket_path: str,
+) -> dict[str, Any]:
+    return await _state_aggregate._get_state(
+        camilla_host=camilla_host,
+        camilla_port=camilla_port,
+        voice_socket_path=voice_socket_path,
+        voice_socket_command=_voice_socket_command,
+        mux_socket_command=_mux_socket_command,
+        local_status_json=_local_status_json,
+        aec_full_status=_aec_full_status,
+        dial_heartbeat=_dial_heartbeat,
+        dial_probe=_probe_dial_reachable,
+        read_transit_state_func=read_transit_state,
+    )
 
 
-def _delta_db_to_delta_percent(delta_db: float) -> int:
-    """Convert a legacy-scale dB delta to a listening-level percent
-    delta. The dial firmware sends fixed deltas like ±2.5 dB per
-    encoder tick; we map those onto the 0-100 percent scale using
-    the same 50 dB span the camilla-only path used. ±5 dB == ±10pp."""
-    span = VOLUME_MAX_DB - VOLUME_MIN_DB
-    return round(float(delta_db) / span * 100.0)
+def _build_spotify_router_or_none():
+    return _volume_ops._build_spotify_router_or_none()
 
+
+async def _with_coordinator(
+    op: Callable[[Any], Any],
+    *,
+    camilla_host: str,
+    camilla_port: int,
+    duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
+) -> Any:
+    return await _volume_ops._with_coordinator(
+        op,
+        camilla_host=camilla_host,
+        camilla_port=camilla_port,
+        duck_active_probe=duck_active_probe,
+    )
+
+
+def _make_duck_active_probe(
+    voice_socket_path: str,
+) -> Callable[[], Awaitable[Optional[bool]]]:
+    return _volume_ops._make_duck_active_probe(
+        voice_socket_path,
+        voice_socket_command=_voice_socket_command,
+    )
+
+
+async def _dispatch_transport(action: str) -> dict:
+    return await _volume_ops._dispatch_transport(
+        action,
+        spotify_router_factory=_build_spotify_router_or_none,
+    )
 
 # ---------- peering daemon supervisor ----------
 
@@ -493,218 +529,6 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
         logger.warning("event=peering.thread.stop_timeout timeout=%.1f", timeout)
 
 
-_AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
-_WAKE_MODEL_FILE = WAKE_MODEL_FILE
-_JASPER_ENV_FILE = "/etc/jasper/jasper.env"
-
-# Default leg policy — must match deploy/install.sh's reconcile_aec_state
-# and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on
-# by default (~5 MB / negligible CPU, gives OR-fusion wake-rate
-# recovery), DTLN is off by default (~75 MB / ~25% one core, opt-in),
-# chip-AEC is off by default (hardware-conditional, mutually exclusive
-# with raw/DTLN — the chip-AEC promotion).
-_LEG_DEFAULT_RAW = True
-_LEG_DEFAULT_DTLN = False
-_LEG_DEFAULT_CHIP_AEC = False
-_PROFILE_DEFAULT = "custom"
-
-# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). Values
-# are tuples because one operator toggle can arm more than one leg: the
-# "chip_aec" toggle (JASPER_WAKE_LEG_CHIP_AEC) arms BOTH fixed-beam legs
-# (chip_aec_150 + chip_aec_210), with the reconciler fanning the single
-# boolean out to JASPER_MIC_DEVICE_CHIP_AEC_150/_210. The chip-direct /
-# AEC-OFF leg is exposed to operators (the /wake/ card, /aec/leg, the
-# JASPER_WAKE_LEG_RAW env var, the bash reconciler) as "raw", but its frozen
-# wire token is "off". Do NOT confuse "raw" with the "raw0" corpus-only leg
-# (chip channel 2, no toggle). This map is the single place those mappings
-# are spelled out; leg-toggle validation goes through its keys. See
-# docs/HANDOFF-mic-fusion-architecture.md.
-_TOGGLE_TO_TOKEN = {
-    "raw": ("off",),
-    "dtln": ("dtln",),
-    "chip_aec": ("chip_aec_150", "chip_aec_210"),
-}
-
-
-def _parse_env_bool(raw: str, default: bool) -> bool:
-    """Same normalization the bash reconciler does — accept yes/no/etc."""
-    return _parse_audio_profile_bool(raw, default)
-
-
-def _read_aec_state() -> dict:
-    """Full /var/lib/jasper/aec_mode.env state — mode + both leg
-    booleans. Missing keys fall back to the documented defaults so a
-    partial file from a pre-leg-toggle deploy still parses sanely.
-
-    The reconciler's ensure_mode_file appends any missing keys on its
-    next run, so this fallback is a one-pass deal — but it must be
-    correct for the GET that races that first reconcile."""
-    state = {
-        "mode": "auto",
-        "leg_raw": _LEG_DEFAULT_RAW,
-        "leg_dtln": _LEG_DEFAULT_DTLN,
-        "leg_chip_aec": _LEG_DEFAULT_CHIP_AEC,
-        "profile": "",
-    }
-    file_found = False
-    try:
-        with open(_AEC_MODE_FILE) as f:
-            file_found = True
-            for line in f:
-                line = line.strip()
-                if line.startswith("JASPER_AEC_MODE="):
-                    val = line.split("=", 1)[1].strip().strip("'\"") or "auto"
-                    state["mode"] = val
-                elif line.startswith("JASPER_WAKE_LEG_RAW="):
-                    state["leg_raw"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_RAW,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_DTLN="):
-                    state["leg_dtln"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_DTLN,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC="):
-                    state["leg_chip_aec"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC,
-                    )
-                elif line.startswith("JASPER_AUDIO_INPUT_PROFILE="):
-                    state["profile"] = normalize_audio_input_profile(
-                        line.split("=", 1)[1],
-                        default=_PROFILE_DEFAULT,
-                    )
-    except OSError:
-        pass
-    if not state["profile"]:
-        if file_found:
-            state["profile"] = infer_audio_input_profile(
-                AecIntent(
-                    mode=state["mode"],
-                    raw_enabled=bool(state["leg_raw"]),
-                    dtln_enabled=bool(state["leg_dtln"]),
-                    chip_aec_enabled=bool(state["leg_chip_aec"]),
-                ),
-            )
-        else:
-            state["profile"] = "auto"
-    return state
-
-
-def _read_aec_mode() -> str:
-    """Compatibility shim — returns just the mode string."""
-    return _read_aec_state()["mode"]
-
-
-def _write_aec_mode(mode: str) -> None:
-    """Atomic write of the AEC mode key, preserving leg keys."""
-    if mode not in ("auto", "disabled"):
-        raise ValueError(f"invalid mode: {mode!r}")
-    _atomic_rewrite_env(
-        _AEC_MODE_FILE,
-        {
-            "JASPER_AEC_MODE": mode,
-            "JASPER_AUDIO_INPUT_PROFILE": "custom",
-        },
-    )
-
-
-def _write_aec_leg(leg: str, enabled: bool) -> None:
-    """Atomic write of one wake-leg boolean, preserving every other key
-    in aec_mode.env (mode, the other leg).
-
-    Caller is responsible for kicking the reconciler — this just
-    persists the user's intent. Restart blast-radius lives in the
-    reconciler since it has the actual mode + presence context."""
-    if leg not in _TOGGLE_TO_TOKEN:
-        raise ValueError(f"invalid leg: {leg!r}")
-    key = f"JASPER_WAKE_LEG_{leg.upper()}"
-    _atomic_rewrite_env(
-        _AEC_MODE_FILE,
-        {
-            key: "1" if enabled else "0",
-            "JASPER_AUDIO_INPUT_PROFILE": "custom",
-        },
-    )
-
-
-def _write_audio_input_profile(profile: str) -> None:
-    """Write a canonical audio input profile plus rollback-safe leg keys."""
-
-    normalized = normalize_audio_input_profile(profile, default="")
-    if not normalized or normalized == "custom":
-        raise ValueError(f"invalid profile: {profile!r}")
-    _atomic_rewrite_env(_AEC_MODE_FILE, profile_env_updates(normalized))
-
-
-def _atomic_rewrite_env(path: str, updates: dict) -> None:
-    """Read-modify-write of a systemd env file. Updates the given keys,
-    preserves all others. Cooperating writers are serialized with an
-    advisory flock, and readers see atomic whole-file replacement."""
-    locked_update_env_file(path, updates, mode=0o644)
-
-
-def _read_wake_threshold() -> float:
-    """Read JASPER_WAKE_THRESHOLD from /var/lib/jasper/wake_model.env
-    (the /wake/ wizard's home) with the daemon's compiled-in default
-    (0.3) as fallback. Same precedence the daemon uses on startup."""
-    try:
-        from ..web._common import read_env_file
-        val = read_env_file(_WAKE_MODEL_FILE).get("JASPER_WAKE_THRESHOLD", "")
-    except OSError:
-        val = ""
-    if not val:
-        val = os.environ.get("JASPER_WAKE_THRESHOLD", "")
-    try:
-        # Mirror the daemon's compiled-in default (jasper/config.py:469,
-        # `wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3)`, also
-        # shipped in .env.example) so the slider + /state show what's
-        # actually live. A higher fallback here would make a Save at the
-        # displayed value silently raise the real threshold.
-        return float(val) if val else 0.3
-    except ValueError:
-        return 0.3
-
-
-def _write_wake_threshold(value: float) -> None:
-    """Atomic write of JASPER_WAKE_THRESHOLD into wake_model.env,
-    preserving JASPER_WAKE_MODEL. Both keys are wizard-managed by the
-    /wake/ page (model picker writes JASPER_WAKE_MODEL via the form
-    save; sensitivity slider posts to /wake/sensitivity which lands
-    here)."""
-    if not 0.0 <= value <= 1.0:
-        raise ValueError(f"threshold out of range: {value}")
-    locked_update_env_file(
-        _WAKE_MODEL_FILE,
-        {"JASPER_WAKE_THRESHOLD": f"{value:.2f}"},
-        mode=0o644,
-    )
-
-
-def _aec_bridge_active() -> bool:
-    """True if jasper-aec-bridge.service is currently active."""
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "jasper-aec-bridge.service"],
-            capture_output=True, text=True, timeout=2.0,
-        )
-        return result.stdout.strip() == "active"
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def _kick_aec_reconciler() -> None:
-    """Apply a persisted AEC-mode/leg change through the reconciler.
-
-    Use `restart`, not `start`: the reconciler is a Type=oneshot unit.
-    A rapid toggle can write new intent while the previous reconcile is
-    still active; `systemctl start` would be a no-op in that state and
-    leave runtime env one click behind the UI.
-    """
-    subprocess.Popen(
-        ["systemctl", "restart", "--no-block",
-         "jasper-aec-reconcile.service"],
-    )
-
-
 # Forwarded pair-volume requests carry this header; its presence stops a
 # second hop (see _maybe_forward_volume_to_leader's loop breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
@@ -788,1002 +612,9 @@ def _write_grouping(
     _atomic_rewrite_env(GROUPING_ENV_FILE, updates)
 
 
-def _fresh_jasper_env() -> dict[str, str]:
-    """Fresh view of /etc/jasper/jasper.env.
 
-    jasper-control is long-lived while the AEC reconciler mutates this
-    file when mic mode changes, so `os.environ` can be stale. Status
-    surfaces should prefer the file and fall back to process env only for
-    keys absent from the file.
-    """
-    from ..env_load import parse_env_file
-    return parse_env_file(os.environ.get("JASPER_ENV_FILE", _JASPER_ENV_FILE))
 
 
-def _read_wake_word_status() -> dict[str, Any]:
-    """Wake model label for the /wake/ status card."""
-    from .. import wake_models
-    from ..web._common import read_env_file
-    try:
-        state = read_env_file(_WAKE_MODEL_FILE)
-    except OSError:
-        state = {}
-    model = (state.get("JASPER_WAKE_MODEL") or "").strip()
-    if not model:
-        model = os.environ.get("JASPER_WAKE_MODEL", "").strip() or "hey_jarvis"
-    entry = wake_models.by_model(model)
-    return {
-        "model": model,
-        "label": entry.label if entry else model,
-        "pronunciation": entry.pronunciation if entry else "",
-        "custom": entry is None,
-    }
-
-
-def _audio_profile_status(
-    state: dict[str, Any],
-    *,
-    bridge_active: bool,
-    chip_available: bool,
-) -> dict[str, Any]:
-    """Read-only mic/profile status for the /wake/ page.
-
-    This is intentionally descriptive and side-effect-free: it reads the
-    reconciler-owned env file plus the XVF profile's firmware helpers,
-    then classifies intent vs observed runtime. It does not probe audio
-    streams or open devices on the hot polling path.
-    """
-    env = _fresh_jasper_env()
-    runtime = runtime_env_from_mapping(env, process_env=os.environ)
-    try:
-        from ..mics import xvf3800
-        xvf_present = xvf3800.is_present()
-        capture_channels = xvf3800.capture_channels()
-        recommended_channels = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
-        display_name = xvf3800.DISPLAY_NAME
-        probe_error = None
-    except Exception:  # noqa: BLE001
-        xvf_present = False
-        capture_channels = None
-        recommended_channels = 6
-        display_name = "Seeed ReSpeaker XVF3800 (USB UA)"
-        probe_error = "firmware probe failed"
-
-    return build_audio_profile_status(
-        AecIntent(
-            mode=state["mode"],
-            raw_enabled=bool(state["leg_raw"]),
-            dtln_enabled=bool(state["leg_dtln"]),
-            chip_aec_enabled=bool(state["leg_chip_aec"]),
-            profile_selection=str(state.get("profile") or ""),
-        ),
-        runtime,
-        MicProbe(
-            xvf_present=xvf_present,
-            capture_channels=capture_channels,
-            recommended_channels=recommended_channels,
-            display_name=display_name,
-            probe_error=probe_error,
-        ),
-        bridge_active=bridge_active,
-        chip_available=chip_available,
-    )
-
-
-def _chip_aec_available() -> bool:
-    """True when the XVF3800 exposes the chip-AEC beam firmware shape."""
-    try:
-        from ..mics import xvf3800
-        return xvf3800.is_recommended_firmware()
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _mic_status(
-    state: dict[str, Any],
-    *,
-    bridge_active: bool,
-    chip_available: bool,
-) -> dict[str, Any]:
-    """Compatibility wrapper for callers that only need mic status."""
-    return _audio_profile_status(
-        state,
-        bridge_active=bridge_active,
-        chip_available=chip_available,
-    )["microphone"]
-
-
-def _aec_full_status() -> dict:
-    """JSON shape returned by GET /aec — the single source of truth
-    for the /wake/ page's detection card. Includes both the configured
-    state (from aec_mode.env) and the observed bridge service state.
-
-    Per-leg observed state isn't returned separately today. A
-    configured leg is implicitly "active" when (a) AEC mode is auto,
-    (b) the bridge is active, and (c) the leg is configured on. DTLN
-    load failures surface via jasper-doctor's check_aec_bridge_dtln_engine,
-    which the /system Diagnostics disclosure runs on demand.
-
-    The chip-AEC leg also carries an `available` flag: the XVF3800 chip
-    beams only exist on the 6-channel firmware, so the /wake/ toggle stays
-    disabled (with explanatory copy) when the chip isn't on that variant."""
-    state = _read_aec_state()
-    bridge_active = _aec_bridge_active()
-    # The chip-AEC beams require the 6-channel XVF firmware.
-    # is_recommended_firmware() reads /proc/asound and returns False when the
-    # card is absent or on the 2-ch variant; wrap defensively so a probe
-    # failure can never 500 a status GET the /wake/ page polls every 3 s.
-    chip_available = _chip_aec_available()
-    effective = resolve_audio_input_intent(
-        AecIntent(
-            mode=state["mode"],
-            raw_enabled=bool(state["leg_raw"]),
-            dtln_enabled=bool(state["leg_dtln"]),
-            chip_aec_enabled=bool(state["leg_chip_aec"]),
-            profile_selection=str(state.get("profile") or ""),
-        ),
-        chip_available=chip_available,
-    )
-    profile_status = _audio_profile_status(
-        state,
-        bridge_active=bridge_active,
-        chip_available=chip_available,
-    )
-    requested_profile = profile_status["audio_profile"].get("requested")
-    validation_filters = _audio_validation_filter_kwargs(
-        requested_profile=requested_profile,
-        system_env=_fresh_jasper_env(),
-    )
-    return {
-        "mode": effective.mode,
-        "profile": state["profile"],
-        "raw_intent": {
-            "mode": state["mode"],
-            "leg_raw": state["leg_raw"],
-            "leg_dtln": state["leg_dtln"],
-            "leg_chip_aec": state["leg_chip_aec"],
-        },
-        "bridge_active": bridge_active,
-        "legs": {
-            "raw": {"configured": effective.raw_enabled},
-            "dtln": {"configured": effective.dtln_enabled},
-            "chip_aec": {
-                "configured": effective.chip_aec_enabled,
-                "available": chip_available,
-            },
-        },
-        "threshold": _read_wake_threshold(),
-        "wake_word": _read_wake_word_status(),
-        "audio_profile": profile_status["audio_profile"],
-        "microphone": profile_status["microphone"],
-        "validation": _audio_validation_summary(**validation_filters),
-    }
-
-
-def _spotify_redirect_uri() -> str:
-    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-    default_redirect_uri = f"{SPOTIFY_OAUTH_CALLBACK_BASE}?host={hostname}"
-    return os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
-
-
-def _build_spotify_router_or_none():
-    """Build a multi-account Spotify router for dial-driven volume.
-    Returns None if SPOTIFY_CLIENT_ID isn't set or no accounts have
-    been authorized — _set_spotify in the coordinator treats None as
-    "skip Spotify dispatch", logging a no-op."""
-    client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
-    if not client_id:
-        return None
-    try:
-        from ..accounts import Registry, maybe_migrate_legacy
-        from ..spotify_router import Router, build_clients
-        registry = Registry.load(os.environ.get(
-            "JASPER_SPOTIFY_ACCOUNTS_PATH",
-            "/var/lib/jasper/spotify/accounts.json",
-        ))
-        maybe_migrate_legacy(
-            registry,
-            os.environ.get(
-                "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache",
-            ),
-            default_name="default",
-        )
-        # build_clients returns BuildResult. The control daemon doesn't
-        # surface revoked-vs-needs-oauth status to the user, so we use
-        # the clients dict only — but still pass statuses through to the
-        # Router so /state can introspect them if a future endpoint adds
-        # a Spotify health probe.
-        result = build_clients(
-            registry,
-            client_id=client_id,
-            redirect_uri=_spotify_redirect_uri(),
-        )
-        if not result.clients:
-            return None
-        return Router(
-            clients=result.clients,
-            default_name=registry.default_name,
-            statuses=result.statuses,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.debug("control daemon spotify router build failed: %s", e)
-        return None
-
-
-async def _with_coordinator(
-    op: Callable[[Any], Any],
-    *,
-    camilla_host: str,
-    camilla_port: int,
-    duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
-) -> Any:
-    """Build a VolumeCoordinator for one operation, run `op(coord)`,
-    dispose. Mirrors `_dispatch_transport`'s per-request pattern — each
-    HTTP request creates and tears down its own async resources, so we
-    don't have to manage a long-lived asyncio loop in this stdlib HTTP
-    server.
-
-    `op` is an async callable taking the live coordinator and
-    returning the per-request result (dict or scalar).
-
-    `duck_active_probe` is forwarded into the coordinator. When set
-    (callers that write camilla via the dial/web path), the
-    coordinator defers its camilla write iff the probe returns True.
-    See `_make_duck_active_probe` for the wire details and
-    docs/HANDOFF-volume.md "Cross-daemon defer signal" for the why."""
-    from ..camilla import CamillaController
-    from ..renderer import RendererClient
-    from ..speaker_name import runtime_name as _speaker_runtime_name
-    from ..volume_coordinator import VolumeCoordinator
-    from ..volume_persistence import VolumePersistence
-
-    camilla = CamillaController(host=camilla_host, port=camilla_port)
-    persistence = VolumePersistence(
-        os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        ),
-    )
-    backend = RendererClient(
-        librespot_state_path=os.environ.get(
-            "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
-        ),
-    )
-    # Build a Spotify router per-request so dial volume can dispatch
-    # to Spotify via Web API (librespot 0.8.0 has no local HTTP).
-    # Best-effort: if env vars aren't set or no accounts authorized,
-    # router is None and Spotify dispatch becomes a no-op.
-    spotify_router = _build_spotify_router_or_none()
-    coord = VolumeCoordinator(
-        camilla=camilla,
-        persistence=persistence,
-        backend=backend,
-        spotify_router=spotify_router,
-        spotify_device_name=_speaker_runtime_name(),
-        duck_active_probe=duck_active_probe,
-    )
-    coord.load_persisted_level()
-    try:
-        return await op(coord)
-    finally:
-        try:
-            await coord.aclose()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("coordinator aclose warning: %s", e)
-        # RendererClient has no aclose — it's a stateless probe wrapper.
-        # CamillaController has no aclose — sync websocket reconnects
-        # on next use. GC handles cleanup of the cached client.
-
-
-def _make_duck_active_probe(
-    voice_socket_path: str,
-) -> Callable[[], Awaitable[Optional[bool]]]:
-    """Build the cross-daemon duck-active probe consumed by
-    VolumeCoordinator._set_camilla in the per-request coordinators here.
-
-    The probe asks jasper-voice over UDS whether the Ducker is
-    currently holding camilla below the canonical listening_level
-    target. True → defer the dial's camilla write (Ducker.restore
-    will land it on session end). False → write camilla normally.
-    None → unknown (UDS unreachable / voice wedged / response
-    malformed); the coordinator treats this as fail-open and writes
-    camilla — the dial must never silently stop working because of
-    an inter-daemon problem.
-
-    Tight 1 s timeout: STATUS is a synchronous attribute read in
-    voice_daemon (no I/O). If it doesn't return in 1 s the daemon
-    is wedged and we'd rather fail-open than block dial input. See
-    docs/HANDOFF-volume.md "Cross-daemon defer signal"."""
-    async def probe() -> Optional[bool]:
-        try:
-            response = await _voice_socket_command(
-                voice_socket_path, "STATUS", timeout=1.0,
-            )
-        except (
-            FileNotFoundError,
-            ConnectionRefusedError,
-            asyncio.TimeoutError,
-            OSError,
-            RuntimeError,
-            ValueError,
-        ):
-            return None
-        duck_active = response.get("duck_active")
-        if isinstance(duck_active, bool):
-            return duck_active
-        # Older jasper-voice without the field, or unexpected type —
-        # fail-open. Same effect as voice unreachable.
-        return None
-    return probe
-
-
-async def _voice_socket_command(
-    socket_path: str, cmd: str, *, timeout: float = 5.0,
-) -> dict:
-    """Send one ASCII line to voice_daemon's control socket and return
-    the parsed JSON response. Used by /session/start, /session/end,
-    and /cue/play. The default 5s timeout covers session-state
-    commands; cue playback takes longer (~6s for a 5s cue plus
-    duck/restore plus drain) and bumps timeout explicitly."""
-    reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        writer.write((cmd + "\n").encode("ascii"))
-        await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
-    if not line:
-        raise RuntimeError("voice_daemon returned no response")
-    return json.loads(line.decode("utf-8"))
-
-
-async def _mux_socket_command(
-    cmd: str,
-    *,
-    socket_path: str = MUX_CONTROL_SOCKET_PATH,
-    timeout: float = 2.0,
-) -> dict[str, Any]:
-    """Send one ASCII command to jasper-mux's local control socket.
-
-    The web frontend should not talk to fan-in directly: mux owns the
-    manual-vs-auto source policy and uses fan-in only as the low-level
-    audio gate.
-    """
-    reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        writer.write((cmd + "\n").encode("ascii"))
-        await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
-    if not line:
-        raise RuntimeError("jasper-mux returned no response")
-    payload = json.loads(line.decode("utf-8"))
-    if isinstance(payload, dict) and "error" in payload:
-        raise RuntimeError(str(payload["error"]))
-    if not isinstance(payload, dict):
-        raise RuntimeError("jasper-mux returned non-object JSON")
-    return payload
-
-
-async def _local_status_json(
-    socket_path: str,
-    *,
-    timeout: float = 2.0,
-    max_bytes: int = 8192,
-) -> dict | None:
-    """Best-effort one-shot STATUS probe for local daemon UDS sockets."""
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(socket_path),
-            timeout=timeout,
-        )
-    except (FileNotFoundError, ConnectionRefusedError,
-            asyncio.TimeoutError, OSError):
-        return None
-    try:
-        writer.write(b"STATUS\n")
-        await writer.drain()
-        body = await asyncio.wait_for(reader.read(max_bytes), timeout=timeout)
-    except (asyncio.TimeoutError, ConnectionResetError, OSError):
-        writer.close()
-        return None
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except (OSError, AssertionError):
-            pass
-    try:
-        payload = json.loads(body.decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-async def _outputd_status() -> dict | None:
-    """Probe jasper-outputd's STATUS endpoint.
-
-    Missing socket is fail-soft here so /state remains available while
-    jasper-doctor owns the actionable cutover failure.
-    """
-    return await _local_status_json("/run/jasper-outputd/control.sock")
-
-
-def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Add on/off wizard availability to mux source status.
-
-    Mux knows audio policy; `/sources/` knows whether each renderer is
-    enabled/available. The landing selector needs both, but keeping the
-    merge here avoids teaching mux about systemd/DBus source toggles.
-    """
-    sources = payload.get("sources")
-    if not isinstance(sources, dict):
-        return payload
-    global _source_availability_cache
-    now = time.monotonic()
-    with _source_availability_lock:
-        cached = _source_availability_cache
-        if cached is not None and now - cached[0] < SOURCE_AVAILABILITY_TTL_SEC:
-            wizard_state = cached[1]
-        else:
-            wizard_state = None
-    if wizard_state is None:
-        try:
-            from ..web.sources_setup import _gather_state as _sources_state
-            fresh_state = _sources_state()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("source availability read failed: %s", e)
-            return payload
-        with _source_availability_lock:
-            _source_availability_cache = (now, fresh_state)
-        wizard_state = fresh_state
-    for spec in MUSIC_SOURCE_SPECS:
-        wizard_key = spec.wizard_key
-        mux_key = spec.id.value
-        state = wizard_state.get(wizard_key)
-        if not isinstance(state, dict):
-            continue
-        slot = sources.setdefault(mux_key, {})
-        if isinstance(slot, dict):
-            slot["available"] = bool(state.get("available", True))
-            slot["enabled"] = bool(state.get("enabled", False))
-    return payload
-
-
-async def _probe_dial_reachable(ip: str, *, timeout: float = 0.5) -> bool:
-    """Fast TCP probe for dial liveness. The dial firmware doesn't run
-    a server on any TCP port, so any connect attempt resolves to:
-
-    - ConnectionRefusedError (RST from a live host): online
-    - asyncio.TimeoutError / OSError: unreachable
-
-    Port 80 is arbitrary — closed-port RST behaviour is identical on
-    any port. Replaces the prior activity-based `online` check, which
-    flagged an idle-but-healthy dial offline because the dial only
-    emits UDP dlogs on encoder/button events. The probe takes
-    ~3-10 ms on a dial running the WiFi-sleep-disabled firmware (see
-    firmware/dial/src/main.cpp `WiFi.setSleep(false)`); the 500 ms
-    cap is the worst-case envelope for a still-sleeping dial."""
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, 80),
-            timeout=timeout,
-        )
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
-        return True
-    except ConnectionRefusedError:
-        return True
-    except (asyncio.TimeoutError, OSError):
-        return False
-
-
-async def _get_state(
-    *,
-    camilla_host: str,
-    camilla_port: int,
-    voice_socket_path: str,
-) -> dict[str, Any]:
-    """Aggregate state across daemons for GET /state. Each section
-    fails soft — voice unreachable / camilla restarting / dial never
-    connected → that section reports null instead of erroring out
-    the whole response. Slow probes fan out in parallel so the call
-    completes in ~200 ms typical."""
-    from datetime import datetime, timezone
-
-    from .. import librespot_state
-    from ..camilla import CamillaController
-    from ..output_hardware import load_state as _load_output_hardware_state
-    from ..speaker_name import read_state as _read_speaker_name_state
-    from ..voice.provider_state import read_active_provider_state
-
-    # Provider + model: re-read the wizard-owned SSOT file fresh on every
-    # call. jasper-control is NOT restarted on a provider switch (only
-    # jasper-voice is), so reading os.environ here pins the value to
-    # whatever it was at this daemon's start and shows a stale provider
-    # after every switch — the /system/ bug this fixes. Same fresh-read
-    # rationale as the home_assistant block in /system/snapshot below.
-    # ("", None) when unconfigured; never a guessed default.
-    active_provider = read_active_provider_state()
-
-    listening_level: int | None = None
-    persisted_main_volume_db: float | None = None
-    try:
-        path = os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        )
-        with open(path) as f:
-            blob = json.load(f)
-        raw_level = blob.get("listening_level")
-        if isinstance(raw_level, (int, float)) and 0 <= raw_level <= 100:
-            listening_level = int(raw_level)
-        raw_db = blob.get("main_volume_db")
-        if isinstance(raw_db, (int, float)) and math.isfinite(float(raw_db)):
-            persisted_main_volume_db = round(float(raw_db), 2)
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
-
-    sound_profile: dict[str, Any] | None
-    try:
-        from ..dsp_apply import last_dsp_apply_state
-        from ..sound.profile import (
-            build_sound_filters,
-            estimate_headroom_db,
-            load_profile,
-        )
-        from ..sound.settings import load_sound_settings, output_trim_db
-
-        profile = load_profile()
-        sound_settings = load_sound_settings()
-        sound_profile = {
-            "enabled": profile.enabled,
-            "curve_id": profile.curve_id,
-            "simple_eq": profile.simple_eq.to_dict(),
-            "parametric_band_count": len(profile.parametric_bands),
-            "filter_count": len(build_sound_filters(profile)),
-            "headroom_db": estimate_headroom_db(profile),
-            # Global output settings + the effective trim they apply, so the
-            # dashboard can explain why a profile sounds quieter/level-matched.
-            "match_loudness": sound_settings.match_loudness,
-            "headroom_trim_db": sound_settings.headroom_trim_db,
-            "output_trim_db": output_trim_db(profile, sound_settings),
-            "updated_at": profile.updated_at or None,
-            "last_dsp_apply": last_dsp_apply_state(),
-        }
-    except Exception:  # noqa: BLE001
-        logger.exception("sound profile state probe failed")
-        sound_profile = None
-
-    # Slow probes — fan out in parallel.
-    def _round_db(value: float | None) -> float | None:
-        if value is None:
-            return None
-        value = float(value)
-        if not math.isfinite(value):
-            return None
-        return round(value, 2)
-
-    def _round_pair(
-        pair: tuple[float, float] | None,
-    ) -> list[float | None] | None:
-        if pair is None:
-            return None
-        return [_round_db(pair[0]), _round_db(pair[1])]
-
-    async def _camilla_status() -> dict[str, Any]:
-        status: dict[str, Any] = {
-            "main_volume_db": None,
-            "playback_rms_dbfs": None,
-            "playback_peak_dbfs": None,
-            "clipped_samples": None,
-            "active_config_path": None,
-        }
-
-        async def _no_config_path() -> None:
-            return None
-
-        try:
-            cam = CamillaController(host=camilla_host, port=camilla_port)
-            config_path_probe = (
-                cam.get_config_file_path(best_effort=True)
-                if hasattr(cam, "get_config_file_path")
-                else _no_config_path()
-            )
-            vol, rms, peak, clipped, active_config_path = await asyncio.gather(
-                cam.get_volume_db(best_effort=True),
-                cam.get_playback_rms(best_effort=True),
-                cam.get_playback_peak(best_effort=True),
-                cam.get_clipped_samples(best_effort=True),
-                config_path_probe,
-            )
-            status["main_volume_db"] = _round_db(vol)
-            status["playback_rms_dbfs"] = _round_pair(rms)
-            status["playback_peak_dbfs"] = _round_pair(peak)
-            status["clipped_samples"] = clipped
-            status["active_config_path"] = active_config_path
-            return status
-        except Exception:  # noqa: BLE001
-            return status
-
-    async def _airplay_playing() -> bool | None:
-        # Shared probe owns the subprocess hygiene (kill-on-timeout so a
-        # DBus stall can't leak one busctl per /state poll; spawn OSError
-        # → None instead of 500ing the whole fail-soft aggregate).
-        return await mpris.shairport_playing(timeout=2.0)
-
-    async def _voice_status() -> dict | None:
-        try:
-            return await _voice_socket_command(
-                voice_socket_path, "STATUS", timeout=2.0,
-            )
-        except (FileNotFoundError, OSError, asyncio.TimeoutError, RuntimeError):
-            return None
-
-    async def _ha_status() -> dict:
-        """Probe the configured HA instance for /state. Fails soft —
-        unconfigured returns {configured: false}; unreachable returns
-        {connected: false, error: ...}. Reads /var/lib/jasper/home_assistant.env
-        directly (not os.environ) so wizard saves are reflected
-        immediately rather than waiting for jasper-control to restart —
-        the wizard only restarts jasper-voice. See
-        `jasper.home_assistant.probe_status_from_env`."""
-        from .. import home_assistant
-        return await home_assistant.probe_status_from_env()
-
-    # Snapshot dial heartbeat early so the parallel reachability probe
-    # has a stable IP target even if the UDP listener mutates the dict
-    # mid-call. last_seen_ip is None until the dial has dlogged at
-    # least once — without an IP we can't probe, so online stays false.
-    dial_snapshot = dict(_dial_heartbeat)
-    dial_ip = dial_snapshot.get("last_seen_ip")
-
-    async def _dial_online() -> bool:
-        if not dial_ip:
-            return False
-        return await _probe_dial_reachable(dial_ip)
-
-    async def _fanin_status() -> dict | None:
-        """Probe the jasper-fanin daemon's UDS STATUS endpoint.
-
-        Returns None when:
-          - the daemon isn't running yet or is unhealthy
-          - the socket doesn't exist (daemon not yet bound)
-          - the probe times out (work loop wedged, ALSA blocked)
-          - the response isn't valid JSON
-
-        Fan-in is mandatory for renderer audio, but /state is fail-soft
-        like _voice_status. jasper-doctor owns the actionable failure.
-        See docs/HANDOFF-fan-in-daemon.md for the daemon design.
-        """
-        return await _local_status_json("/run/jasper-fanin/control.sock")
-
-    async def _mux_status() -> dict | None:
-        try:
-            return await _mux_socket_command("STATUS", timeout=1.0)
-        except (
-            FileNotFoundError,
-            ConnectionRefusedError,
-            asyncio.TimeoutError,
-            OSError,
-            RuntimeError,
-            ValueError,
-            json.JSONDecodeError,
-        ):
-            return None
-
-    async def _aec_status() -> dict | None:
-        """Additive mirror of GET /aec for one-shot /state consumers."""
-        try:
-            return await asyncio.to_thread(_aec_full_status)
-        except Exception:  # noqa: BLE001
-            logger.exception("AEC/profile state probe failed")
-            return None
-
-    (
-        camilla_st,
-        airplay,
-        voice_st,
-        ha_status,
-        dial_online,
-        fanin_st,
-        outputd_st,
-        mux_st,
-        aec_status,
-    ) = await asyncio.gather(
-        _camilla_status(),
-        _airplay_playing(),
-        _voice_status(),
-        _ha_status(),
-        _dial_online(),
-        _fanin_status(),
-        _outputd_status(),
-        _mux_status(),
-        _aec_status(),
-    )
-
-    spotify_blob = librespot_state.read(
-        os.environ.get("JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH),
-    )
-    if sound_profile is not None:
-        runtime = _sound_runtime_status(
-            sound_profile,
-            camilla_st.get("active_config_path"),
-        )
-        sound_profile["runtime"] = runtime
-        # Keep these top-level aliases for lightweight consumers that
-        # only need the running truth and do not want to parse the nested
-        # runtime object.
-        sound_profile["runtime_state"] = runtime["state"]
-        sound_profile["runtime_active"] = runtime["active"]
-        sound_profile["active_config_path"] = runtime["active_config_path"]
-    speaker_name_state = _read_speaker_name_state()
-    spotify = {
-        "playing": bool(spotify_blob.get("playing", False)),
-        "track_id": spotify_blob.get("track_id"),
-        "uri": spotify_blob.get("uri"),
-        "session_active": bool(spotify_blob.get("session_active", False)),
-    }
-
-    # USB sink — fourth renderer. Reads the state file the daemon
-    # publishes. Section reports None when the feature is disabled
-    # (no state file) so consumers can distinguish "off" from
-    # "on but idle".
-    usbsink_state: dict | None = None
-    try:
-        with open(
-            os.environ.get(
-                "JASPER_USBSINK_STATE_PATH",
-                "/run/jasper-usbsink/state.json",
-            ),
-        ) as f:
-            usbsink_blob = json.load(f)
-        usbsink_state = {
-            "playing": bool(usbsink_blob.get("playing", False)),
-            "preempted": bool(usbsink_blob.get("preempted", False)),
-            "host_connected": bool(
-                usbsink_blob.get("host_connected", False),
-            ),
-            "rms_dbfs": usbsink_blob.get("rms_dbfs"),
-            "updated_at": usbsink_blob.get("updated_at"),
-        }
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
-
-    voice_session = bool(voice_st) and voice_st.get("state") == "SESSION"
-    # Active-source picks. Mux owns the effective audible source in
-    # both manual and auto mode. Fall back to raw renderer probes only
-    # when mux is unavailable or has no selected winner yet.
-    mux_effective_source = None
-    if isinstance(mux_st, dict):
-        raw_selected = mux_st.get("selected_source")
-        if isinstance(raw_selected, str):
-            mux_effective_source = raw_selected
-        else:
-            raw_winner = mux_st.get("winner")
-            if isinstance(raw_winner, str):
-                mux_effective_source = raw_winner
-
-    if voice_session:
-        active_source: str = "voice"
-    elif mux_effective_source:
-        active_source = mux_effective_source
-    elif spotify["playing"]:
-        active_source = "spotify"
-    elif airplay:
-        active_source = "airplay"
-    elif usbsink_state is not None and usbsink_state.get("playing"):
-        active_source = "usbsink"
-    else:
-        active_source = "idle"
-
-    volume_policy = build_volume_policy_snapshot(
-        active_source=active_source,
-        listening_level=listening_level,
-        main_volume_db=camilla_st["main_volume_db"],
-        persisted_main_volume_db=persisted_main_volume_db,
-        mux_status=mux_st,
-        diagnostics=_read_volume_diagnostics(),
-    )
-
-    # Build the dial section from the snapshot taken before the gather
-    # so age_seconds is consistent with whatever IP the probe targeted.
-    # `online` reflects real TCP reachability (see _probe_dial_reachable),
-    # not UDP-dlog freshness — an idle dial is now correctly online
-    # rather than mislabelled offline after 30 s of no encoder activity.
-    dial = dial_snapshot
-    if dial.get("last_seen_at") is not None:
-        dial["age_seconds"] = round(time.time() - dial["last_seen_at"], 1)
-    else:
-        dial["age_seconds"] = None
-    dial["online"] = dial_online
-
-    # Multiroom grouping. Re-reads /var/lib/jasper/grouping.env fresh
-    # (never os.environ — jasper-control isn't restarted on a wizard
-    # save). read_grouping_state is itself total, but guard the section
-    # so any future read change can't take the whole /state down: a
-    # broken read leaves grouping null and the rest of /state intact.
-    # enabled=False means grouping is off (solo); enabled=True with a
-    # non-null error is the fail-LOUD "configured but broken" state.
-    try:
-        grouping_state: dict | None = read_grouping_state()
-    except Exception:  # noqa: BLE001
-        logger.exception("grouping state read failed")
-        grouping_state = None
-
-    # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
-    # os.environ — jasper-control isn't restarted on a /transit/ save, only
-    # jasper-voice is). read_transit_state is itself total, but guard the
-    # section so a future read change can't take the whole /state down: a
-    # broken read leaves transit null and the rest of /state intact.
-    try:
-        transit_state: dict | None = read_transit_state()
-    except Exception:  # noqa: BLE001
-        logger.exception("transit state read failed")
-        transit_state = None
-    try:
-        output_hardware = _load_output_hardware_state()
-        output_hardware_state = (
-            output_hardware.to_dict()
-            if output_hardware is not None
-            else None
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("output hardware state read failed")
-        output_hardware_state = None
-
-    return {
-        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-        "voice": {
-            "provider": active_provider.provider,
-            "model": active_provider.model,
-            "provider_status": active_provider.status,
-            "provider_error": active_provider.detail or None,
-            "session_active": voice_session,
-            "spend_allowed": (voice_st or {}).get("spend_allowed"),
-            "connection_paused": (voice_st or {}).get("connection_paused"),
-            "mic_muted": (voice_st or {}).get("mic_muted"),
-            "music_dbfs": (voice_st or {}).get("music_dbfs"),
-            # Runtime-armed wake-leg tokens from jasper-voice's
-            # session_status. jasper-doctor's check_wake_legs cross-checks
-            # this against the configured intent in aec_mode.env to surface
-            # a startup leg-skip; the /state aggregator curates voice
-            # fields explicitly, so a new session_status field must be
-            # pulled through here too.
-            "wake_legs": (voice_st or {}).get("wake_legs"),
-            "reachable": voice_st is not None,
-        },
-        "audio": {
-            "main_volume_db": camilla_st["main_volume_db"],
-            "listening_level_percent": listening_level,
-            "volume_policy": volume_policy,
-            "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
-            "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
-            "clipped_samples": camilla_st["clipped_samples"],
-            "camilla_active_config_path": camilla_st["active_config_path"],
-            "sound": sound_profile,
-            "output_hardware": output_hardware_state,
-        },
-        "renderers": {
-            "spotify": spotify,
-            "airplay": (
-                None if airplay is None else {"playing": airplay}
-            ),
-            # null when the feature is disabled (no state file). The
-            # /system dashboard and any other consumer can show
-            # "off" vs "idle" based on this.
-            "usbsink": usbsink_state,
-        },
-        "speaker_name": {
-            "name": speaker_name_state.name,
-            "source": speaker_name_state.source,
-        },
-        "active_source": active_source,
-        # Fan-in daemon. null only when the daemon/socket is unavailable.
-        # When running, the UDS STATUS endpoint emits a JSON snapshot
-        # with per-input frame counts, output xrun counts, and watchdog
-        # metrics — surfaced verbatim here. See
-        # docs/HANDOFF-fan-in-daemon.md.
-        "fanin": fanin_st,
-        # Final-output owner on current main. null when the daemon/socket
-        # is unavailable; jasper-doctor owns the actionable failure.
-        "outputd": outputd_st,
-        # Additive mirror of GET /aec so one-shot /state consumers can see
-        # requested intent vs observed mic/profile runtime truth without a
-        # second control-plane request. null only when the probe itself fails.
-        "aec": aec_status,
-        "source_selection": mux_st,
-        "satellites": {
-            "dial": dial,
-        },
-        "resilience": {
-            "shairport": shairport_supervisor.snapshot(),
-            # Bonded-member runtime liveness: dac_content starvation
-            # watch (kicks the grouping reconciler, rate-limited) +
-            # continuous snapcast binding read-repair on the leader.
-            # Off via JASPER_GROUPING_SUPERVISOR=disabled.
-            "grouping_supervisor": grouping_supervisor.snapshot(),
-            # T5.2 — userspace-liveness supervisor. Probes sshd / our
-            # own HTTP / /proc/loadavg every 30 s; clean-reboots after
-            # 3 consecutive failures (rate-limited 1/24h). Off via
-            # JASPER_SYSTEM_SUPERVISOR=disabled.
-            "system_supervisor": system_supervisor.snapshot(),
-            # WiFi profile guardian: self-heal of the NM keyfile after
-            # dirty shutdown. Synthesised from the on-disk stash + the
-            # most recent `event=wifi_guardian.*` journal line — there's
-            # no resident daemon to ask (the guardian is Type=oneshot).
-            # Fail-soft inside the snapshot itself; never raises.
-            "wifi_guardian": wifi_guardian_state.snapshot(),
-            # Boot-loop guard (cross-boot circuit breaker for the T5.1
-            # StartLimitAction=reboot ladder). Fresh marker read per
-            # call; {"ran": false} when the oneshot hasn't run this
-            # boot. tripped=true means reboot escalation is disarmed
-            # for this boot via runtime drop-ins — fix the failing
-            # daemon, then reboot to re-arm.
-            "bootloop_guard": bootloop_guard_state.snapshot(),
-            # Effective mDNS identity (jasper-identity-reconcile, boot
-            # + 5-min timer). status=collision means Avahi renamed us —
-            # another device owns our hostname; the management
-            # allowlist self-heals from the same file, but the
-            # household should pick a unique name. Fresh file read per
-            # call (reconciler-owned, this daemon is never restarted on
-            # identity changes); {"status": "absent"} pre-first-run.
-            "identity": identity_state.snapshot(),
-        },
-        "home_assistant": ha_status,
-        # Multiroom grouping (off by default). null only if the fresh
-        # read itself errored; otherwise a JSON-able snapshot of the
-        # wizard-owned grouping.env (enabled / role / channel / bond_id /
-        # leader_addr / buffer_ms / codec / error). See
-        # jasper/multiroom/state.py + docs/HANDOFF-multiroom.md.
-        "grouping": grouping_state,
-        # Transit city packs (which cities' transit is enabled). null only
-        # if the fresh read itself errored; otherwise {packs: [{id, label,
-        # enabled}]} read fresh from the wizard-owned transit.env. Mirrors
-        # the daemon's enabled_pack_ids on both absent (all) and
-        # present-empty (none). See jasper/transit/state.py.
-        "transit": transit_state,
-        # Runtime debug-logging toggle (the /system Debug card): which
-        # subsystems are at DEBUG + the shared auto-expiry countdown.
-        "debug": debug_control.snapshot(),
-    }
-
-
-async def _dispatch_transport(action: str) -> dict:
-    """Build renderer + Spotify-router clients in the current event
-    loop, dispatch a transport action, then close. We rebuild per
-    request because httpx's AsyncClient is loop-bound: a persistent
-    instance would be tied to the first request's loop and error on
-    every subsequent one. The cost is small (~50 ms) and dial/remote
-    presses are rare.
-
-    `action` must be one of "toggle", "next", "previous" — the
-    dispatcher's documented vocabulary."""
-    # Import inside the function so jasper-control doesn't import the
-    # full voice-daemon dependency tree at startup.
-    from ..renderer import RendererClient
-    from ..tools.transport import make_transport_dispatcher
-
-    renderer = RendererClient(
-        librespot_state_path=os.environ.get(
-            "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
-        ),
-    )
-
-    dispatch = make_transport_dispatcher(renderer, _build_spotify_router_or_none())
-    return await dispatch(action)
 
 
 def _make_handler(
@@ -3264,49 +2095,6 @@ def build_server(
         ),
     )
 
-
-def run_dial_log_listener(host: str, port: int) -> threading.Thread:
-    """Listen for one-line UDP datagrams from the dial and re-emit them
-    via the Python logger (so `journalctl -u jasper-control` shows them
-    interleaved with the HTTP-side log). Fire-and-forget on the dial
-    side — UDP loss is acceptable for diagnostic output, and the dial
-    isn't blocked on a TCP handshake when the Pi is unreachable.
-
-    The listener runs in a daemon thread so it doesn't block server
-    shutdown."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((host, port))
-    sock.settimeout(1.0)
-
-    def _loop() -> None:
-        logger.info("dial-log UDP listener bound to %s:%d", host, port)
-        while True:
-            try:
-                data, addr = sock.recvfrom(2048)
-            except socket.timeout:
-                continue
-            except OSError as e:
-                logger.warning("dial-log socket error: %s", e)
-                return
-            try:
-                msg = data.decode("utf-8", errors="replace").rstrip()
-            except Exception:  # noqa: BLE001
-                msg = repr(data)
-            # Tag with sender IP so multi-dial setups don't get confused.
-            dial_log.info("[%s] %s", addr[0], msg)
-            # Heartbeat for jasper-doctor's "is the dial talking?" check.
-            _dial_heartbeat["last_seen_at"] = time.time()
-            _dial_heartbeat["last_seen_ip"] = addr[0]
-            _dial_heartbeat["last_message"] = msg
-            # Persist so the next jasper-control restart inherits the
-            # last-known IP instead of starting empty (which would leave
-            # /state.satellites.dial.online as false until the next dlog).
-            _persist_dial_heartbeat(dict(_dial_heartbeat))
-
-    t = threading.Thread(target=_loop, name="dial-log-listener", daemon=True)
-    t.start()
-    return t
 
 
 def _install_sigterm_shutdown(server: ThreadingHTTPServer) -> Callable[[], None]:
