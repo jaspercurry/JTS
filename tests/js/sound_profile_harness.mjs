@@ -651,6 +651,65 @@ async function testConfirmedOutputChoosesFirstQuietDriver() {
   return { confirmedOutputChoosesFirstQuietDriver: true };
 }
 
+async function testQuietTestPathIssuesStayActionable() {
+  const fetchHandler = baseFetch({
+    "./active-speaker/environment": () => Promise.resolve(response({
+      status: "blocked",
+      ok_to_load_active_config: false,
+      issues: [
+        { code: "route_verified_not_verified", message: "Music renderers: route_verified is not verified" },
+        { code: "protected_by_active_baseline_not_verified", message: "Music renderers: protected_by_active_baseline is not verified" },
+        { code: "bypass_disabled_not_verified", message: "Music renderers: bypass_disabled is not verified" },
+      ],
+      warning: "This probe does not play tones, reload CamillaDSP, or authorize active-speaker audio output.",
+    })),
+    "./active-speaker/safe-playback": () => Promise.resolve(response({
+      status: "inactive",
+      issues: [],
+      quiet_start: { status: "not_started", floor_audio_confirmed: false },
+    })),
+    "./active-speaker/staged-config": () => Promise.resolve(response({
+      status: "not_staged",
+      issues: [],
+    })),
+    "./active-speaker/startup-load": () => Promise.resolve(response({
+      state: {
+        status: "not_loaded",
+        rollback_available: false,
+        current_config_matches_loaded: false,
+      },
+      preflight: { status: "blocked", load_allowed: false, issues: [] },
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const actionable = "Set up quiet test mode so JTS can route playback through the protected DSP path. No sound will play.";
+  const actionableCount = (html.match(new RegExp(actionable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+  if (actionableCount !== 1) {
+    fail("Renderer path evidence should collapse to one actionable setup item", {
+      actionableCount,
+      html,
+    });
+  }
+  for (const forbidden of [
+    "Music renderers",
+    "route_verified",
+    "protected_by_active_baseline",
+    "bypass_disabled",
+    "Check again",
+  ]) {
+    if (html.includes(forbidden)) {
+      fail("Quiet-test setup issues should not expose backend evidence labels", { forbidden, html });
+    }
+  }
+  if (!html.includes(">Set up quiet test mode</button>")) {
+    fail("Missing path-safety evidence should leave the setup action available", { html });
+  }
+  return { quietTestPathIssuesStayActionable: true };
+}
+
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
@@ -659,5 +718,6 @@ results.push(await testStaleLevelResponseDiscarded());
 results.push(await testPartialRefreshKeepsSuccessfulSections());
 results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testConfirmedOutputChoosesFirstQuietDriver());
+results.push(await testQuietTestPathIssuesStayActionable());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

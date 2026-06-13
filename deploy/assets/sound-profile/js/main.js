@@ -1662,6 +1662,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var text = String(raw || '').trim();
     if (!text) return 'One setup item needs attention.';
     var lower = text.toLowerCase();
+    if (lower.indexOf('route_verified') >= 0 ||
+        lower.indexOf('protected_by_active_baseline') >= 0 ||
+        lower.indexOf('bypass_disabled') >= 0 ||
+        lower.indexOf('path-safety evidence was not provided') >= 0 ||
+        lower.indexOf('staged protected candidate') >= 0 ||
+        lower.indexOf('active_startup_candidate') >= 0) {
+      return 'Set up quiet test mode so JTS can route playback through the protected DSP path. No sound will play.';
+    }
     if (lower.indexOf('protection') >= 0 || lower.indexOf('high_frequency') >= 0 ||
         lower.indexOf('high-frequency') >= 0) {
       return 'Choose one confirmed driver so JTS can start it quiet.';
@@ -1685,6 +1693,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function friendlySetupIssue(issue) {
     issue = issue || {};
     return friendlySetupReason(issue.message || issue.label || issue.code);
+  }
+  function issueNeedsQuietTestSetup(issue) {
+    issue = issue || {};
+    var code = String(issue.code || '').toLowerCase();
+    var message = String(issue.message || issue.label || '').toLowerCase();
+    return code.indexOf('route_verified') >= 0 ||
+      code.indexOf('protected_by_active_baseline') >= 0 ||
+      code.indexOf('bypass_disabled') >= 0 ||
+      code === 'path_safety_evidence_missing' ||
+      code === 'active_startup_candidate_required' ||
+      code === 'staged_candidate_not_ready' ||
+      code === 'staged_topology_mismatch' ||
+      message.indexOf('path-safety evidence was not provided') >= 0 ||
+      message.indexOf('staged protected candidate') >= 0;
+  }
+  function activeSpeakerCanStageFromIssues(issues) {
+    issues = Array.isArray(issues) ? issues : [];
+    return issues.some(issueNeedsQuietTestSetup);
+  }
+  function friendlySetupIssueList(envIssues, sessionIssues) {
+    var rows = (Array.isArray(envIssues) ? envIssues : [])
+      .concat(Array.isArray(sessionIssues) ? sessionIssues : []);
+    var out = [];
+    rows.forEach(function(issue) {
+      var reason = friendlySetupIssue(issue);
+      if (reason && out.indexOf(reason) < 0) out.push(reason);
+    });
+    return out;
   }
   function readinessBlockedReasons(readiness) {
     var reasons = [];
@@ -1910,15 +1946,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       !!startupState.rollback_available &&
       !!startupState.current_config_matches_loaded;
     var armed = session.status === 'armed';
+    var canStageFromIssues = activeSpeakerCanStageFromIssues(envIssues);
     var statusLabel = armed ? 'ready' :
-      (startupReady ? 'step 3 of 3' : (stagedReady ? 'step 2 of 3' : (ok ? 'step 1 of 3' : 'needs one step')));
+      (startupReady ? 'step 3 of 3' : (stagedReady ? 'step 2 of 3' : ((ok || canStageFromIssues) ? 'next' : 'needs one step')));
     var nextCopy = armed ?
       'Quiet test mode is ready. Choose one confirmed driver when you are ready to start quietly.' :
       (startupReady ?
         'One more setup step opens the quiet test controls. No sound plays yet.' :
         (stagedReady ?
           'Continue setup to load the quiet test DSP. No sound plays yet.' :
-          (ok ?
+          ((ok || canStageFromIssues) ?
             'JTS can set up quiet test mode now. This does not play sound.' :
             'JTS needs one setup item fixed before quiet test mode.')));
     return '<div class="output-card output-card--active-status active-speaker-status__stack">' +
@@ -1928,7 +1965,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           escapeHtml(statusLabel) + '</span></div>' +
       (activeSpeaker.error ? '<p class="setting-row__hint">' + escapeHtml(activeSpeaker.error) + '</p>' : '') +
       renderActiveSpeakerIssues(envIssues, sessionIssues) +
-      renderActiveSpeakerActions(ok, session) +
+      renderActiveSpeakerActions(ok, session, envIssues) +
       ((armed && activeSpeakerSelectedReadinessTarget()) ? renderActiveSpeakerLevel() : '') +
       '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'No sound plays until you explicitly start a quiet test.') + '</p>' +
     '</div>';
@@ -2060,15 +2097,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     '</div>';
   }
   function renderActiveSpeakerIssues(envIssues, sessionIssues) {
-    var rows = envIssues.concat(sessionIssues);
+    var rows = friendlySetupIssueList(envIssues, sessionIssues);
     if (!rows.length) return '';
     return '<div class="active-speaker-note">' +
       '<p class="setting-row__title">What needs attention</p>' +
-      '<ul class="active-speaker-issues active-speaker-issues--warning">' + rows.slice(0, 3).map(function(issue) {
-      return '<li>' + escapeHtml(friendlySetupIssue(issue)) + '</li>';
+      '<ul class="active-speaker-issues active-speaker-issues--warning">' + rows.slice(0, 3).map(function(reason) {
+      return '<li>' + escapeHtml(reason) + '</li>';
     }).join('') + '</ul></div>';
   }
-  function renderActiveSpeakerActions(ok, session) {
+  function renderActiveSpeakerActions(ok, session, envIssues) {
     var busy = !!activeSpeaker.action;
     var state = session || {};
     var staged = activeSpeaker.stagedConfig || {};
@@ -2085,11 +2122,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<span class="setting-row__hint">No sound plays in this step.</span>' +
       '</div>';
     }
-    if (!ok) {
-      return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="refresh-active-speaker">Check again</button>' +
-      '</div>';
-    }
     if (state.status === 'armed') {
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--danger" data-act="stop-active-speaker">Stop</button>' +
@@ -2098,6 +2130,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }
     if (!stagedReady) {
+      if (!ok && !activeSpeakerCanStageFromIssues(envIssues)) {
+        return '<div class="active-speaker-actions">' +
+          '<button type="button" class="btn btn--primary" data-act="refresh-active-speaker">Check again</button>' +
+        '</div>';
+      }
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--primary" data-act="stage-active-config"' + stageDisabled + '>Set up quiet test mode</button>' +
         '<span class="setting-row__hint">Step 1 of 3: build the quiet test setup. No sound will play.</span>' +
@@ -2107,6 +2144,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--primary" data-act="load-active-startup">Continue setup</button>' +
         '<span class="setting-row__hint">Step 2 of 3: load the quiet test setup. No sound will play.</span>' +
+      '</div>';
+    }
+    if (!ok) {
+      return '<div class="active-speaker-actions">' +
+        '<button type="button" class="btn btn--primary" data-act="refresh-active-speaker">Check again</button>' +
       '</div>';
     }
     return '<div class="active-speaker-actions">' +
