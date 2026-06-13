@@ -14,8 +14,7 @@ OR-gate semantics live here:
     `none` rather than as a misleading 3-second-old score.
 
 These tests exercise that critical section without spinning up real
-mics, real models, or the rest of the daemon. Mirrors the construction
-pattern from tests/test_voice_daemon_peering.py.
+mics, real models, or the rest of the daemon.
 """
 from __future__ import annotations
 
@@ -53,10 +52,9 @@ def _make_wake_loop(
     spend_allowed: bool = True,
     conn_paused: bool = False,
 ) -> WakeLoop:
-    """Construct a minimal WakeLoop bypassing the heavy real
-    constructor. Only the attrs `_handle_wake_frame` touches are
-    populated; everything else is mocked to detect accidental use."""
-    wl = WakeLoop.__new__(WakeLoop)
+    """Construct a WakeLoop via the test seam, then override the attrs
+    `_handle_wake_frame` touches with mocks that detect accidental use."""
+    wl = WakeLoop.for_tests()
     wl._cfg = MagicMock()
     wl._cfg.peering_enabled = False
     wl._detector = _make_detector()

@@ -9,7 +9,7 @@ added 2026-05-23. The critical regression these tests pin down:
     `peak_score_dtln_aec` (not corrupt `peak_score_aec_off`).
   - All three legs' offsets + RMSes flow to the wake_events store.
 
-Constructs WakeLoop via `__new__` (no real mic, model, or daemon),
+Constructs WakeLoop via `for_tests()` (no real mic, model, or daemon),
 mocks `_wake_event_store`, and inspects the kwargs passed to
 `begin_event`.
 """
@@ -53,13 +53,13 @@ def _make_wake_loop_triple(
     spend_allowed: bool = True,
     conn_paused: bool = False,
 ) -> WakeLoop:
-    """Multi-leg WakeLoop with a mocked wake_event_store. Bypasses
-    __init__ — only the attrs `_handle_wake_frame` touches are
-    populated, plus the telemetry store stub we assert on.
+    """Multi-leg WakeLoop with a mocked wake_event_store. Starts from
+    the test seam and overrides the attrs `_handle_wake_frame` touches,
+    plus the telemetry store stub we assert on.
 
     The chip-AEC beam legs are opt-in (pass a detector to wire one in),
     mirroring the optional off/dtln legs."""
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._cfg = MagicMock()
     wl._cfg.peering_enabled = False
     wl._cfg.wake_model = "test_model"
@@ -596,7 +596,7 @@ def _wakeloop_for_condition(music_dbfs=-30.0):
     ring makes the noise floor None."""
     from collections import deque
 
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._condition_refreshed_at = 0.0
     wl._current_condition = "quiet"
     wl._capture_ring_on = deque(maxlen=8)

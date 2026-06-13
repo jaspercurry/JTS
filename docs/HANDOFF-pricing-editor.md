@@ -174,7 +174,7 @@ can flag it. We do **not** invent a rate.
 
 ### Daemon wiring
 
-[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) `run()`:
+[`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py) `run()`:
 `pricing = pricing_for_model(_active_model(cfg), overrides=load_pricing_overrides())`.
 Log the resolved label (incl. `unpriced:`/custom). `ConnectionUptimeMeter`
 wiring is unchanged (keys off `pricing.flat_per_hour_usd > 0`).
@@ -307,7 +307,7 @@ per-provider price integrations.
   `pricing_for_model`, `load_pricing_overrides` + `sanitize_pricing_models`
   (model-ID keys); removed `pricing_for_provider`, the `*_PRICING`
   constants, `_OVERRIDE_KEYS`, the `"mini"` hack.
-- `jasper/voice_daemon.py` — calls `pricing_for_model(_active_model(cfg), …)`
+- `jasper/voice/daemon_main.py` — calls `pricing_for_model(_active_model(cfg), …)`
   + `event=pricing.unpriced` warning.
 - `jasper/cli/doctor.py` — `check_pricing` (warns if rate data fails to
   load or the active model is unpriced).
@@ -342,10 +342,11 @@ per-provider price integrations.
 - **Minor, settle during build:** `/pricing` save with an all-default form
   → **delete** `pricing.json` (lean) vs write `{}`.
 
-Last verified: 2026-05-30 (all three phases implemented and merged —
+Last verified: 2026-06-13 (all three phases implemented and merged —
 model-ID-keyed pricing in `jasper/usage.py` + dated
 `jasper/data/model_pricing.json`, the `/voice` per-model editor, and the
 chatbot research-prompt/import. Doc reflects shipped code, not a plan.
 Review-fix pass: import MERGES (was full-replace) + preserves pasted
 `as_of`; per-provider pricing metadata moved onto the catalog;
-`check_pricing` doctor probe added.)
+`check_pricing` doctor probe added; daemon pricing wiring path rechecked
+after `jasper/voice/daemon_main.py` extraction.)

@@ -89,10 +89,10 @@ def _make_wake_loop(peering_enabled: bool):
         os.environ["JASPER_PEERING"] = "on"
     cfg = Config.from_env()
 
-    # Use object.__new__ + manual init to skip the heavy constructor
-    # (which builds VAD, ducker, etc). We only test methods that touch
-    # cfg + a couple of attrs.
-    wl = WakeLoop.__new__(WakeLoop)
+    # Use the test constructor to skip hardware while still getting a
+    # fully-shaped WakeLoop. We only test methods that touch cfg + a
+    # couple of attrs.
+    wl = WakeLoop.for_tests()
     wl._cfg = cfg
     wl._peering_current_epoch = ""
     wl._turn = None

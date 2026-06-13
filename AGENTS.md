@@ -1038,7 +1038,7 @@ supervisor helpers (backoff, fingerprint, escalation cue) live at
 ## Voice prompting — read HANDOFF-prompting.md first
 
 Before editing `SYSTEM_INSTRUCTION` in
-[`jasper/voice_daemon.py`](jasper/voice_daemon.py), any tool
+[`jasper/voice/prompt.py`](jasper/voice/prompt.py), any tool
 description in [`jasper/tools/`](jasper/tools/), or any LLM-facing
 prompt surface, read
 [`docs/HANDOFF-prompting.md`](docs/HANDOFF-prompting.md). It's the
@@ -1061,7 +1061,7 @@ The rules most often violated without it:
   "Don't guess." A negative-heavy version of our prompt made
   gpt-realtime-2 skip tools across five voice-eval scenarios —
   rationale in the comment block above `SYSTEM_INSTRUCTION` in
-  [voice_daemon.py](jasper/voice_daemon.py).
+  [jasper/voice/prompt.py](jasper/voice/prompt.py).
 - **Preamble suppression is a conditional skip-list, never a
   ban.** Live version in the `Tools — preambles` section of
   `SYSTEM_INSTRUCTION`; mirrors OpenAI's documented pattern.
@@ -1522,7 +1522,7 @@ keeps your edits.
 
 **Transit nudge.** When the daemon boots with neither subway,
 bus, nor Citi Bike configured, `_build_system_instruction` in
-[`jasper/voice_daemon.py`](jasper/voice_daemon.py) appends a
+[`jasper/voice/prompt.py`](jasper/voice/prompt.py) appends a
 conditional instruction redirecting transit questions to
 `jts.local/transit`. Conditional ("if the user asks about the
 next train, say X") not absolute ("never answer transit

@@ -120,7 +120,7 @@ def _make_wakeloop(tts: _RecordingTts):
         async def restore(self):
             return None
 
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7

@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
-import signal
 import socket
-import sys
 import time
 from collections import deque
 from collections.abc import Coroutine
 from enum import Enum
+from types import SimpleNamespace
 
-from .accounts import Registry, maybe_migrate_legacy
 from .audio_buffer import (
     ACQUIRE_BUFFER_MAX_FRAMES,
     drain_acquire_buffer,
@@ -20,14 +17,9 @@ from .audio_buffer import (
 from .audio_io import (
     MicCapture,
     TtsPlayout,
-    make_mic_capture,
-    make_tts_playout,
 )
 from .assistant_loudness import (
-    AssistantLoudnessProfile,
     active_voice_identity,
-    ensure_seed_profile,
-    measure_pcm_24k_mono,
     silence_target_lufs_for_level,
 )
 from .wake_events import (
@@ -36,57 +28,63 @@ from .wake_events import (
     CAPTURE_PRE_SEC,
     CAPTURE_POST_SEC,
 )
-from .cues import AudioCueManager, build_cue_tts_backend
-from .vad import SpeechVAD, SpeechVADSetupError
-from .wake_legs import LegSpec, wake_input_legs
+from .cues import AudioCueManager
+from .vad import SpeechVAD
+from .wake_legs import LegSpec, by_token, wake_input_legs
 from .wake_condition_context import classify_condition
 from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
-from .config import Config, VoiceProviderNotConfigured
+from .config import Config
 from .watchdog import Heartbeat
-from .google_creds import GoogleClients, build_google_clients
-from .home_assistant import HAClient, build_ha_client
-from .renderer import RendererClient
-from .spotify_router import BuildResult, Router, build_clients
-from . import transit
-from .timers import Timer, TimerScheduler, announcement_text
-from .tools import ToolRegistry
-from .tools.audio import make_audio_tools
-from .tools.calendar import make_calendar_tools
-from .tools.diagnostic import make_diagnostic_tools
-from .tools.gmail import make_gmail_tools
-from .tools.spotify import make_spotify_tools
-from .tools.home_assistant import make_home_assistant_tools
-from .tools.time import make_time_tools
-from .tools.timer import make_timer_tools
-from .tools.transport import make_transport_tools
-from .tools.weather import make_weather_tools
+from .timers import Timer, announcement_text
 from .usage import (
-    ConnectionUptimeMeter,
     SpendCap,
     UsageStore,
-    load_pricing_overrides,
-    pricing_for_model,
 )
-from .voice.input_policy import (
-    EffectiveSpeechInputPolicy,
-    build_effective_speech_input_policy,
+from .voice.session import AudioOutChunk, LiveConnection, LiveTurn  # noqa: F401
+from .voice import earcons as _earcons
+from .voice.earcons import (
+    SYNTHETIC_AUDIO_PROFILE_PROVIDER,  # noqa: F401
+    SYNTHETIC_AUDIO_PROFILE_UPDATED_AT,  # noqa: F401
+    _generate_listening_chirp,
+    _generate_mute_click,
+    measure_pcm_24k_mono,
 )
-from .voice.session import AudioOutChunk, LiveConnection, LiveTurn
+from .voice.prompt import (  # noqa: F401
+    SYSTEM_INSTRUCTION,
+    _build_system_instruction,
+)
+from .voice.turn_playback import (  # noqa: F401
+    _idle_watchdog,
+    _play_responses,
+    _turn_audio_chunks,
+)
 from .volume_coordinator import VolumeCoordinator
-from .volume_observers import VolumeObserver
 from .mic_mute_persistence import read_mic_muted, write_mic_muted
-from .volume_persistence import VolumePersistence
-from .wake import WakeWordDetector
-from .weather import WeatherClient
 
 logger = logging.getLogger(__name__)
 EX_CONFIG_EXIT = 78
 VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
-SYNTHETIC_AUDIO_PROFILE_PROVIDER = "jts"
-SYNTHETIC_AUDIO_PROFILE_UPDATED_AT = "static"
+
+
+def _synthetic_audio_profile(
+    *,
+    model: str,
+    voice: str,
+    pcm: bytes,
+    fallback_source_lufs: float = -24.0,
+    fallback_peak_dbfs: float = -12.0,
+):
+    _earcons.measure_pcm_24k_mono = measure_pcm_24k_mono
+    return _earcons._synthetic_audio_profile(
+        model=model,
+        voice=voice,
+        pcm=pcm,
+        fallback_source_lufs=fallback_source_lufs,
+        fallback_peak_dbfs=fallback_peak_dbfs,
+    )
 
 
 def _track_task(
@@ -192,220 +190,6 @@ class FanInDucker:
             )
             return False
 
-
-def _synthetic_audio_profile(
-    *,
-    model: str,
-    voice: str,
-    pcm: bytes,
-    fallback_source_lufs: float = -24.0,
-    fallback_peak_dbfs: float = -12.0,
-) -> AssistantLoudnessProfile:
-    """Build source-loudness metadata for generated earcons.
-
-    These sounds are not provider TTS, so using the active assistant
-    voice profile would misdescribe their source level. Outputd still
-    owns the final gain decision; this profile only tells it what
-    loudness/peak the synthetic source PCM starts with.
-    """
-    try:
-        measurement = measure_pcm_24k_mono(pcm)
-        source_lufs = measurement.source_lufs
-        source_peak_dbfs = measurement.source_peak_dbfs
-        confidence = 1.0
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "event=audio.synthetic_profile result=fallback model=%s "
-            "voice=%s exc_type=%s err=%s",
-            model, voice, type(e).__name__, e,
-        )
-        source_lufs = fallback_source_lufs
-        source_peak_dbfs = fallback_peak_dbfs
-        confidence = 0.0
-    return AssistantLoudnessProfile(
-        provider=SYNTHETIC_AUDIO_PROFILE_PROVIDER,
-        model=model,
-        voice=voice,
-        source_lufs=round(float(source_lufs), 2),
-        source_peak_dbfs=round(float(source_peak_dbfs), 2),
-        confidence=confidence,
-        updated_at=SYNTHETIC_AUDIO_PROFILE_UPDATED_AT,
-        method="synthetic_generated",
-    )
-
-# Canonical playbook for editing this constant (and any tool
-# description in jasper/tools/) lives at docs/HANDOFF-prompting.md
-# — cross-provider principles, provider deltas, pitfalls catalog,
-# recommended edits. Read it before tuning.
-#
-# Structured per OpenAI's Realtime Prompting Guide
-# (cookbook.openai.com/examples/realtime_prompting_guide):
-#   Role & Objective → Personality & Tone → Verbosity →
-#   Tools (when to call, preambles) → Unclear audio →
-#   After a tool returns → Out of scope.
-#
-# Two design principles from that guide and the official "Using
-# realtime models" docs that we previously violated:
-#
-#   1. POSITIVE framing for tool calls — "Call X when Y", not "Don't
-#      forget X". An earlier version of this prompt had ~15 "Do NOT"
-#      clauses and zero positive "Call the tool when…" instructions,
-#      which is exactly the pattern OpenAI says causes gpt-realtime to
-#      drift from rules, skip phases, or misuse tools. Verified
-#      2026-05-21 via voice-eval: that prompt produced ZERO tool calls
-#      across 5 consecutive read-only scenarios.
-#
-#   2. CONDITIONAL framing for preamble suppression — "Skip the
-#      preamble when X, Y, Z" instead of "Never preamble". Absolute
-#      prohibitions get partially ignored (~33% compliance per the
-#      OpenAI community thread); the model has been RLHF-trained on
-#      the conditional pattern.
-#
-# Path B applied 2026-05-23: per-tool conditional rules (when to call,
-# voice-answer style, response-shape handling) now live in each
-# tool's docstring and reach the model via build_tool() sending the
-# full cleaned docstring. This system instruction keeps only
-# cross-tool meta-rules — role, persona, verbosity, preamble policy,
-# unclear-audio handling, tool-result meta-rules, and the small set
-# of cross-tool routing rules where two similar tools need
-# disambiguation.
-SYSTEM_INSTRUCTION = (
-    # ---- Role & Objective ------------------------------------------------
-    "You are Jarvis, a voice assistant in a household smart speaker. "
-    "The user's name is Jasper. Your job is to answer the user's "
-    "questions and control music, volume, timers, calendar, and email "
-    "by calling the available tools. "
-
-    # ---- Personality & Tone ----------------------------------------------
-    "Voice style is terse and factual — like Alexa or Siri. After "
-    "answering, stop: don't ask follow-up questions, don't offer "
-    "related actions, don't invite further conversation, don't "
-    "restate the question. Ask a clarifying question only when the "
-    "user's request is genuinely ambiguous and you cannot proceed "
-    "otherwise — in that case ask one specific question and nothing "
-    "else. "
-
-    # ---- Verbosity -------------------------------------------------------
-    # Per OpenAI's Realtime Prompting Guide: define verbosity per task
-    # type rather than a global "be concise."
-    "Direct answers: 1-2 short sentences. Clarifying questions: ask "
-    "one specific question and nothing else. Tool results: follow "
-    "the tool's own voice-answer style guidance in its description, "
-    "then stop — don't recap the question, don't offer related "
-    "actions. "
-
-    # ---- Tools — when to call them ---------------------------------------
-    # POSITIVE framing. Each tool's description documents WHEN to
-    # call it; only cross-tool routing rules (disambiguating between
-    # similar tools) live here.
-    "The tools have data and capabilities you do not — answering "
-    "from memory or guessing is incorrect. Each tool's description "
-    "documents when to call it and how to phrase the answer; trust "
-    "that guidance. Music control commands ('play', 'pause', 'skip', "
-    "'previous', 'resume', 'volume up', 'mute', etc.) → call the "
-    "matching tool without asking for confirmation.\n"
-    # The "home_assistant tool isn't available → tell the user
-    # smart-home isn't set up + don't misroute to other tools" guard
-    # lives in _build_system_instruction's HA addendum (only added
-    # when ha_configured=False) with the hostname-aware URL. Keeping
-    # the guidance there rather than here keeps the static prompt
-    # the same length whether HA is configured or not.
-    "Cross-tool routing rules where two similar tools need "
-    "disambiguation:\n"
-    "  - Bare 'play' / 'resume' / 'keep playing' with no song or "
-    "artist named → call resume (un-pauses paused music). Call "
-    "spotify_play only when the user names a song, artist, album, "
-    "or playlist.\n"
-    "  - When the user pairs an artist with a recency word — 'new', "
-    "'newest', 'latest', 'just dropped', 'most recent' (e.g. 'play the "
-    "new X', 'play X's latest') → call spotify_play_latest_by_artist "
-    "with `artist=X`. spotify_play has no concept of release date — it "
-    "returns whatever ranks highest in catalog search, which is usually "
-    "an older track for these requests.\n"
-    "  - 'What's playing?' / 'Who is this?' → call get_now_playing. "
-    "Do NOT call get_now_playing as a chaser after spotify_play — "
-    "Spotify's current_playback lags by several seconds and may "
-    "report the previous track.\n"
-    "  - Calendar questions about today → calendar_today_summary; "
-    "questions about a window of hours/days → calendar_upcoming "
-    "(pass `hours` appropriately — 6 for 'this afternoon', 168 for "
-    "'this week').\n"
-    "  - Email follow-up after a summary ('read me the first one' / "
-    "'open that email') → call gmail_read_thread with the "
-    "thread_id from the prior gmail_unread_summary response.\n"
-    "  - Changing an existing timer's duration ('make it 2 minutes "
-    "instead', 'change the pasta timer to 10 minutes', 'actually, "
-    "make that an hour') → call update_timer in ONE call. Do NOT "
-    "call cancel_timer followed by set_timer — the two-step "
-    "sequence prompts a spoken preamble between calls that "
-    "describes the wrong action.\n"
-
-    # ---- Tools — preambles -----------------------------------------------
-    # CONDITIONAL framing per OpenAI's documented pattern. List when
-    # to skip; don't ban absolutely.
-    "Preambles are brief spoken text before a tool call ('checking "
-    "the live arrivals now…'). Skip the preamble in these cases:\n"
-    "  - the answer can be given immediately;\n"
-    "  - the user is only confirming, correcting, or declining;\n"
-    "  - the tool call is lightweight and the user gains nothing "
-    "from a status update (every tool here returns in well under "
-    "two seconds, so this case typically applies);\n"
-    "  - the latest audio is silence, background noise, hold music, "
-    "TV audio, or side conversation.\n"
-    "When a preamble does fit, keep it to one short sentence "
-    "describing the action, not your reasoning. Skipping the "
-    "preamble does not mean skipping the tool call — call the "
-    "tool, then speak the result.\n"
-
-    # ---- Unclear audio ---------------------------------------------------
-    # Per OpenAI's Realtime Prompting Guide. Mic mishears are a real
-    # input on a voice-only device; without this rule the model
-    # confidently answers a wrong-interpreted utterance.
-    #
-    # The "fragment" and "empty-string arguments" clauses were added
-    # 2026-05-24 after the VAD test matrix surfaced a dangerous
-    # failure mode: when STT returned empty or one-word transcripts
-    # ("What?", "That's...", ""), the model would still confidently
-    # call tools — calendar_today_summary, get_subway_arrivals with
-    # `direction=''`, set_volume(60), and in one case home_assistant
-    # ("turn on the bedroom lights") which actually executed and
-    # turned the lights on while the user was asking about weather.
-    # The original "don't call any tool" rule was being interpreted
-    # too narrowly — the model didn't perceive "transcript is a
-    # fragment" as "unclear audio." Enumerating those triggers
-    # explicitly and flagging the empty-arguments anti-pattern is
-    # per the prompting playbook's "enumerate triggers; conditional
-    # rules over absolutes" guidance.
-    # See docs/HANDOFF-vad-experiments.md "Known product bug".
-    "If the user's audio is unclear — partial, garbled, talking-"
-    "over-music, side conversation, words trailing off, a short "
-    "fragment like 'What?' or 'That's', or nothing intelligible "
-    "after the wake word — ask once for clarification with a short "
-    "English phrase like 'Sorry, I didn't catch that.' Don't guess "
-    "at the request; don't call any tool; don't reason about what "
-    "was probably said. If you find yourself about to call a tool "
-    "with empty-string arguments or arguments you're inventing "
-    "without having heard them, you don't have enough information "
-    "— say the clarification line instead. One clarification "
-    "request, then wait.\n"
-
-    # ---- After a tool returns --------------------------------------------
-    # Per-tool voice-answer style lives in each tool's description.
-    # These are the cross-tool meta-rules that apply to every tool.
-    "After a tool returns, follow the tool's own voice-answer "
-    "guidance in its description. Two cross-tool meta-rules apply "
-    "to every tool:\n"
-    "  - When a tool returns an `error` field, speak it verbatim "
-    "— the message tells the user what's wrong and (often) how to "
-    "fix it. Don't apologize at length; don't paraphrase.\n"
-    "  - When a tool returns a `confirm` field, speak that sentence "
-    "verbatim. Don't substitute 'Done.' or 'OK.'.\n"
-
-    # ---- Out of scope ----------------------------------------------------
-    "You can't do sports scores, news headlines, or general web "
-    "search. Reply briefly: 'Sorry, I don't have <thing>.' Don't "
-    "apologize at length."
-)
 
 # Refractory after a turn ends before the wake detector is re-armed.
 # Strictly bounds the one transient that's a self-loop risk: TTS
@@ -649,117 +433,6 @@ class ContentActivityTracker:
                 continue
             await self.refresh_now()
 
-def _build_system_instruction(
-    location: str = "",
-    *,
-    google_accounts: list[str] | None = None,
-    default_google_account: str = "",
-    transit_configured: bool = True,
-    ha_configured: bool = True,
-    hostname: str = "jts.local",
-) -> str:
-    """Return the system instruction with current local time, the
-    user's home location, and the linked Google account names
-    injected.
-
-    Called at every connection (re)open — the persistent connection
-    lives across the 5-min context-reset window, so calling this on
-    every fresh open keeps the time accurate to within that window.
-
-    `location` should be the user's home location (a city/neighborhood
-    string the geocoder can resolve). When set, the model stops asking
-    "what city are you in?" for location-sensitive questions — both
-    inside the weather tool's scope (weather/sunset/sunrise/forecast,
-    all returned by get_weather) and outside it (nearby places,
-    traffic — for which we have no tool and the model must refuse).
-
-    `google_accounts` should be the list of household-member labels
-    that have linked Google accounts (e.g. ["jasper", "brittany"]).
-    When non-empty, the addendum tells the model which `account`
-    values are valid for the calendar/gmail tools. Account changes
-    in the wizard trigger a `systemctl restart jasper-voice`, so
-    capturing the list at startup is fine — the lambda re-reads on
-    every connection open within the same daemon lifetime, but the
-    list itself only changes across restarts."""
-    from datetime import datetime
-    now_local = datetime.now().astimezone()
-    # The session-open timestamp is provided as orienting context only —
-    # it goes stale across the session's lifetime (potentially many
-    # hours; idle context-reset is opt-in and default off). For any
-    # actual time/date question, the model is told above to call
-    # get_current_time. Don't tell the model "use this directly" for
-    # time queries — that's the staleness bug the tool exists to fix.
-    addendum = (
-        f" Session opened at {now_local.strftime('%A, %B %-d %Y, %-I:%M %p %Z')}"
-        f" ({now_local.tzname()}). For the actual current time, day, "
-        "or date, call get_current_time — the session-open timestamp "
-        "above goes stale within hours."
-    )
-    if location:
-        addendum += (
-            f" The user's home location is {location}. Use this directly "
-            "for any location-sensitive question (weather, sunset/sunrise, "
-            "nearby places, local time elsewhere) — do not ask the user "
-            "where they are."
-        )
-    if google_accounts:
-        names = ", ".join(google_accounts)
-        default = default_google_account or google_accounts[0]
-        addendum += (
-            f" Linked Google accounts on this speaker: {names} "
-            f"(default: {default}). When the user names a person whose "
-            f"calendar or email they want, pass that name as the "
-            f"`account` arg to the calendar/gmail tools. When no person "
-            f"is named, omit the `account` arg — the default ({default}) "
-            f"is used. If the user names someone who isn't in this list, "
-            f"ask which linked account to use."
-        )
-    if not transit_configured:
-        # Conditional rule (not absolute) per the provider-prompt
-        # guidance in CLAUDE.md. Models obey "in this specific case,
-        # say X" better than "never do Y". Provider-agnostic phrasing
-        # — no mention of Gemini/OpenAI/Grok.
-        # Hostname is interpolated so multi-Pi households see the
-        # right speaker URL ("jts2.local/transit") rather than the
-        # default. cfg.hostname is the canonical source.
-        # City-agnostic copy: the available transit modes/cities are
-        # data-driven (CityPacks), so don't name NYC-specific tools here —
-        # a future city would make hardcoded "subway, bus, Citi Bike" wrong.
-        addendum += (
-            " Transit tools aren't set up on this speaker yet — no transit "
-            "tool is available. If the user asks about transit (the next "
-            "train, bus, bike share, or similar), briefly say: 'Transit "
-            f"isn't set up yet — visit {hostname}/transit to configure it.' "
-            "Don't promise to check or look it up; the data source is "
-            "genuinely absent."
-        )
-    if not ha_configured:
-        # Same conditional pattern as transit above. Critical that the
-        # model also DOES NOT call any other tool in this case — we've
-        # observed (May 22 voice log) the model misrouting "turn on the
-        # bedroom lights" to get_current_time + get_now_playing when no
-        # home_assistant tool exists. The "do not call any other tool"
-        # clause prevents that misroute. The specific URL with the
-        # configured hostname lets the user actually find the wizard
-        # — multi-speaker households on the same LAN have
-        # jts2.local / jts3.local hostnames, so hardcoding "jts.local"
-        # would point the wrong way.
-        addendum += (
-            " Home Assistant smart-home control isn't set up on this "
-            "speaker yet — no home_assistant tool is available. If the "
-            "user asks to control any smart-home device (lights, switches, "
-            "thermostats, locks, blinds, scenes, scripts, household "
-            "automations) or asks about the state of devices in the home, "
-            f"say exactly: 'Smart-home control isn't set up yet — visit "
-            f"{hostname}/ha to enable it.' Do not call any other "
-            "tool in this case — not get_current_time, not get_now_playing, "
-            "not get_weather. The user's request cannot be fulfilled without "
-            "the home_assistant tool; redirecting them to the setup page is "
-            "the correct response."
-        )
-    return SYSTEM_INSTRUCTION + addendum
-
-
 def _frame_rms_dbfs(frame) -> float | None:
     """Compute waveform RMS in dBFS for a single int16 mic frame.
 
@@ -805,469 +478,6 @@ def _ring_noise_floor_dbfs(ring, *, percentile: float = 25.0) -> float | None:
     except Exception:  # noqa: BLE001
         return None
 
-
-def _active_model(cfg: Config) -> str:
-    """Return the model name for the currently selected provider — used
-    by startup-readiness logging and the silent-failure heuristic in
-    `_end_turn` so journalctl shows the actual model in flight. Resolution
-    lives on `Config.active_voice_model` (shared with jasper-doctor); the
-    `<unknown:…>` sentinel keeps log lines legible for an unset provider."""
-    return cfg.active_voice_model or f"<unknown:{cfg.voice_provider}>"
-
-
-def _active_voice(cfg: Config) -> str:
-    """Return the voice id for the currently selected provider."""
-    provider, _model, voice = active_voice_identity(cfg)
-    return voice or f"<unknown:{provider}>"
-
-
-def _tts_ready_detail(cfg: Config) -> str:
-    """Return the startup-log fields for the selected TTS transport."""
-    if cfg.tts_transport == "outputd":
-        return (
-            f"tts_transport=outputd tts_owner=fanin "
-            f"tts_socket={cfg.tts_outputd_socket}"
-        )
-    return f"tts_transport={cfg.tts_transport} unsupported=true"
-
-
-def _make_connection(
-    cfg: Config,
-    *,
-    speech_policy: EffectiveSpeechInputPolicy | None = None,
-) -> LiveConnection:
-    """Construct the long-lived voice connection for the active provider.
-
-    Single switch point — `JASPER_VOICE_PROVIDER` selects which adapter
-    runs. Daemon code above this function is provider-agnostic; daemon
-    code below it talks only to the `LiveConnection` / `LiveTurn`
-    Protocols and works equally for any provider that implements them.
-
-    Adapter modules are imported lazily inside each branch. Loading
-    `gemini_session` pulls in `google.genai` (~49 MB resident); loading
-    `openai_session`/`grok_session` skips that cost when the active
-    provider isn't Gemini. Symmetric for the OpenAI/Grok branches."""
-    if speech_policy is None:
-        speech_policy = build_effective_speech_input_policy(cfg)
-    if cfg.voice_provider == "gemini":
-        from .voice.gemini_session import GeminiLiveConnection
-        return GeminiLiveConnection(
-            api_key=cfg.gemini_api_key,
-            model=cfg.gemini_model,
-            voice=cfg.gemini_voice,
-            context_reset_sec=float(cfg.gemini_context_reset_sec),
-        )
-    if cfg.voice_provider == "openai":
-        from .voice.openai_session import OpenAIRealtimeConnection
-        return OpenAIRealtimeConnection(
-            api_key=cfg.openai_api_key,
-            model=cfg.openai_model,
-            voice=cfg.openai_voice,
-            reasoning_effort=cfg.openai_reasoning_effort,
-            noise_reduction=speech_policy.openai_noise_reduction,
-            context_reset_sec=float(cfg.openai_context_reset_sec),
-            session_max_sec=float(cfg.openai_session_max_sec),
-            proactive_buffer_sec=float(cfg.openai_proactive_buffer_sec),
-        )
-    if cfg.voice_provider == "grok":
-        from .voice.grok_session import GrokRealtimeConnection
-        return GrokRealtimeConnection(
-            api_key=cfg.grok_api_key,
-            model=cfg.grok_model,
-            voice=cfg.grok_voice,
-            context_reset_sec=float(cfg.grok_context_reset_sec),
-            session_max_sec=float(cfg.grok_session_max_sec),
-            proactive_buffer_sec=float(cfg.grok_proactive_buffer_sec),
-        )
-    raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
-
-
-def _build_cues_manager(
-    cfg: Config, tts: TtsPlayout | None = None,
-) -> AudioCueManager:
-    """Construct the audio-cue manager. Hostname for templates is
-    extracted from JASPER_MANAGEMENT_URL ("https://jts.local" →
-    "jts.local") so cues say "visit jts.local" rather than reading
-    out the full URL with scheme/path. The TTS backend is picked
-    by the shared `build_cue_tts_backend` factory so daemon and
-    `jasper-cues` CLI dispatch identically.
-
-    `tts` may be None at construction time when the daemon needs to
-    register cue-aware tools (timer pre-render) before the
-    TtsPlayout has opened. Call `attach_tts` later once it does."""
-    import urllib.parse
-    hostname = (
-        urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
-    )
-    backend, voice = build_cue_tts_backend(cfg)
-    if backend is not None:
-        logger.info(
-            "cue tts: provider=%s model=%s voice=%s",
-            cfg.voice_provider, getattr(backend, "model", "?"), voice,
-        )
-    return AudioCueManager(
-        sounds_dir=cfg.sounds_dir,
-        hostname=hostname,
-        voice=voice,
-        backend=backend,
-        tts_playout=tts,
-    )
-
-
-def _schedule_cue_regen(
-    manager: AudioCueManager,
-    task_set: set[asyncio.Task],
-) -> None:
-    """Background task: bake any missing / stale cues. Failures
-    (network down, API key wrong, quota) are logged but never raised
-    — the daemon should still come up if regeneration can't run."""
-    async def _run() -> None:
-        try:
-            written = await asyncio.to_thread(manager.regenerate)
-        except RuntimeError as e:
-            logger.warning("cue regen skipped: %s", e)
-            return
-        except Exception as e:  # noqa: BLE001
-            logger.warning("cue regen failed: %s", e)
-            return
-        if written:
-            logger.info("cue regen wrote %d new cue(s): %s", len(written), written)
-        else:
-            logger.info("cue regen: all cues already cached")
-
-    _track_task(
-        asyncio.create_task(_run(), name="jasper-cues-regen"),
-        task_set,
-        label="jasper-cues-regen",
-    )
-
-
-def _schedule_assistant_loudness_seed(
-    cfg: Config,
-    task_set: set[asyncio.Task],
-) -> None:
-    """Opt-in background silent provider test that seeds the loudness profile.
-
-    This can spend a small provider TTS request, so it never runs by
-    default. Passive live-response measurement still refines the profile
-    after real replies without extra API calls.
-    """
-    if not cfg.assistant_loudness_auto_seed:
-        return
-
-    async def _run() -> None:
-        await asyncio.sleep(2.0)
-        try:
-            profile = await asyncio.to_thread(
-                ensure_seed_profile,
-                cfg,
-                path=cfg.assistant_loudness_profile_path,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("assistant loudness seed failed: %s", e)
-            return
-        if profile is not None:
-            logger.info(
-                "assistant loudness seed ready: provider=%s model=%s "
-                "voice=%s source_lufs=%.1f confidence=%.2f",
-                profile.provider, profile.model, profile.voice,
-                profile.source_lufs, profile.confidence,
-            )
-
-    _track_task(
-        asyncio.create_task(_run(), name="assistant-loudness-seed"),
-        task_set,
-        label="assistant-loudness-seed",
-    )
-
-
-def _build_router(cfg: Config) -> Router | None:
-    """Build the multi-account spotify router, or None if Spotify
-    isn't configured at the env level.
-
-    The returned router carries a `rebuild_fn` so it can recover from
-    a startup-time revocation (or a re-link via the web wizard)
-    without a daemon restart: when `router.clients` is empty, the next
-    tool call triggers a rebuild via Router.refresh_if_empty(). The
-    rebuild also picks up a wizard-changed default account (POST
-    /default mutates registry.default_name; BuildResult carries it
-    forward; Router.refresh_if_empty updates self.default_name)."""
-    if not cfg.spotify_enabled:
-        return None
-
-    def _do_build() -> BuildResult:
-        # Re-load the registry on every build — the wizard may have
-        # added/removed accounts, written a fresh cache file, or
-        # changed the default since the daemon started.
-        # maybe_migrate_legacy is a no-op after the first call so it's
-        # safe to run each time.
-        accounts = Registry.load(cfg.spotify_accounts_path)
-        maybe_migrate_legacy(
-            accounts, cfg.spotify_cache_path, default_name="default",
-        )
-        return build_clients(
-            accounts,
-            client_id=cfg.spotify_client_id,
-            redirect_uri=cfg.spotify_redirect_uri,
-        )
-
-    result = _do_build()
-    if not result.clients:
-        # Surface the per-account reasons at startup so a "Spotify
-        # tools are silent" report has a forensic trail.
-        logger.info(
-            "event=spotify.startup_empty statuses=%s setup_url=%s",
-            [(s.name, s.state) for s in result.statuses],
-            cfg.spotify_setup_url,
-        )
-    return Router(
-        clients=result.clients,
-        default_name=result.default_name,
-        statuses=result.statuses,
-        rebuild_fn=_do_build,
-    )
-
-
-def _build_registry(
-    cfg: Config,
-    camilla: CamillaController,
-    renderer: RendererClient,
-    weather: WeatherClient,
-    transit_tools: list,
-    volume_coordinator: "VolumeCoordinator",
-    volume_persistence: VolumePersistence | None = None,
-    spotify_router: Router | None = None,
-    timer_scheduler: TimerScheduler | None = None,
-    cues_manager: AudioCueManager | None = None,
-    google_clients: GoogleClients | None = None,
-    ha: HAClient | None = None,
-    wake_event_store: "WakeEventStore | None" = None,
-) -> ToolRegistry:
-    registry = ToolRegistry()
-    for fn in make_audio_tools(volume_coordinator):
-        registry.register(fn)
-    # Reuse the router built once for the coordinator; if not passed,
-    # build it here for backward-compat with any caller that doesn't
-    # plumb the shared instance through.
-    router = spotify_router if spotify_router is not None else _build_router(cfg)
-    for fn in make_transport_tools(renderer, router):
-        registry.register(fn)
-    for fn in make_spotify_tools(
-        router, renderer, cfg.spotify_device_name, cfg.spotify_setup_url,
-    ):
-        registry.register(fn)
-    for fn in make_weather_tools(weather):
-        registry.register(fn)
-    # Transit (subway / bus / Citi Bike, and future city packs): one flat
-    # list of tools the household's ENABLED city packs produced — built by
-    # jasper.transit.active_transit. Each provider self-gates (a mode
-    # with no config, or a Citi Bike pack with no saved stations, yields no
-    # tool), so an empty list is correct, not a bug.
-    for fn in transit_tools:
-        registry.register(fn)
-    # Home Assistant — single tool surface (home_assistant) that wraps
-    # HA's /api/conversation/process endpoint. Gated on ha being non-None
-    # so the model never sees a tool whose every call would fail when
-    # HA isn't configured. See docs/HANDOFF-homeassistant.md for the
-    # architecture rationale (conversation API, not MCP).
-    for fn in make_home_assistant_tools(ha):
-        registry.register(fn)
-    for fn in make_time_tools():
-        registry.register(fn)
-    if timer_scheduler is not None:
-        for fn in make_timer_tools(timer_scheduler):
-            registry.register(fn)
-    # Calendar + Gmail are gated on (a) CLIENT_ID/SECRET being present
-    # AND (b) at least one account having an OAuth refresh token. The
-    # tool factories return [] when their accessor is unusable, but we
-    # also skip registration when there are zero accounts so the model
-    # doesn't see tools whose every call would fail with "no accounts
-    # linked". The wizard at /google triggers a daemon restart on add,
-    # so a fresh OAuth flow makes the tools appear on the next session.
-    if google_clients is not None and google_clients.list_account_names():
-        for fn in make_calendar_tools(google_clients):
-            registry.register(fn)
-        for fn in make_gmail_tools(google_clients):
-            registry.register(fn)
-    # Diagnostic tools (flag_recent_issue). Gated on the wake-event
-    # store being open — when telemetry is disabled the flag tool
-    # can't actually persist anything, so the model never sees it.
-    # See jasper/tools/diagnostic.py + jasper/wake_events.py
-    # `record_flag` for the storage semantics. Registered HERE (not
-    # later) because the LLM session sends `session.update` with the
-    # tool list immediately after WS handshake; tools registered
-    # after that point are invisible to the live session until the
-    # next reconnect.
-    for fn in make_diagnostic_tools(wake_event_store):
-        registry.register(fn)
-    return registry
-
-
-async def _turn_audio_chunks(turn: LiveTurn):
-    chunks = getattr(turn, "audio_out_chunks", None)
-    if callable(chunks):
-        async for chunk in chunks():
-            if isinstance(chunk, bytes):
-                chunk = AudioOutChunk(pcm=chunk)
-            yield chunk
-        return
-    async for pcm in turn.audio_out():
-        yield AudioOutChunk(pcm=pcm)
-
-
-async def _play_responses(
-    turn: LiveTurn,
-    tts: TtsPlayout,
-) -> None:
-    """Drain turn.audio_out() to the speaker. Barge-in handling: race
-    each write against an interrupt signal so a user-interrupted-the-model
-    event immediately cancels in-flight playback and flushes the audio
-    buffer. Without this, ALSA/sounddevice buffering causes 100-300ms of
-    overrun where the model talks over the user.
-
-    Cleanup contract: both per-iteration helpers (the interrupt waiter
-    and the in-flight write) MUST be cancelled and awaited before this
-    function returns, otherwise they leak as `Task destroyed but it is
-    pending` warnings. The waiter is held alive by a reference cycle
-    through `turn._interrupt_event`, so dropping the local without
-    explicit cleanup means GC eventually breaks the cycle and Task.__del__
-    fires. The OpenAI / Grok adapters never set `_interrupt_event` (no
-    barge-in implemented), so the waiter is always pending at turn end
-    and the leak would fire every turn without this try/finally."""
-    interrupt_task: asyncio.Task | None = None
-    write_task: asyncio.Task | None = None
-    try:
-        async for chunk in _turn_audio_chunks(turn):
-            if interrupt_task is None or interrupt_task.done():
-                interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
-            write_task = asyncio.create_task(
-                tts.write_segment(
-                    chunk.pcm,
-                    provider_item_id=chunk.provider_item_id,
-                    segment_kind=chunk.kind,
-                )
-            )
-            done, _ = await asyncio.wait(
-                {write_task, interrupt_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if interrupt_task in done:
-                write_task.cancel()
-                try:
-                    await write_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-                ack = await tts.flush()
-                flush_handler = getattr(turn, "on_tts_flush", None)
-                if callable(flush_handler):
-                    await flush_handler(ack)
-                if ack is not None:
-                    logger.info(
-                        "event=tts_flush.playout_ack max_audio_played_ms=%s "
-                        "segments=%s flushed_frames=%s",
-                        ack.get("max_audio_played_ms"),
-                        ack.get("segments"),
-                        ack.get("flushed_frames"),
-                    )
-                turn.clear_interrupted()
-                interrupt_task = None
-            elif write_task in done:
-                try:
-                    await write_task
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "event=tts_write.failed error=%s detail=%s",
-                        type(e).__name__, e,
-                    )
-                    raise
-                finally:
-                    write_task = None
-            if write_task is not None and write_task.done():
-                write_task = None
-        await tts.end_segment()
-        # Block until the last sample we wrote has cleared the OS
-        # audio stack — see TtsPlayout.wait_drained. Cheap if the ring
-        # is already empty; otherwise a single sleep for the residual.
-        # Anchors on samples queued (not network arrivals), so an
-        # OpenAI-style burst delivery and a Gemini-style real-time
-        # pacing both end the turn at the right moment.
-        await tts.wait_drained()
-    finally:
-        for t in (interrupt_task, write_task):
-            if t is None or t.done():
-                continue
-            t.cancel()
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-
-
-async def _idle_watchdog(
-    turn: LiveTurn,
-    tts: TtsPlayout,
-    timeout: float,
-    response_stall_timeout: float,
-) -> None:
-    """Close the turn based on explicit server-side signals where
-    possible, falling back to a timer when the server stays silent.
-
-    Three cases:
-      * `turn.server_turn_complete()` is True → server says "model is
-        done speaking". Defer while audio remains in flight, anchored
-        on TtsPlayout's sample-counted drain deadline (see
-        ``expected_drain_at``). Canonical clean close.
-      * No chunks received yet → model hasn't started speaking;
-        wait the full `timeout` for the first chunk to arrive (Live
-        API can take 3-5 s, sometimes longer).
-      * Chunks arriving but turn_complete hasn't fired → mid-response
-        chunk gaps can be > 1.5 s during normal speech pauses, so a
-        short timer here would race with real output. A separate,
-        generous last-resort cap handles the wedged-provider case:
-        if no new output chunk arrives for `response_stall_timeout`
-        seconds and the server never sends turn_complete, end the turn
-        through the normal teardown path.
-
-    Coordinates with ``_play_responses``: the consumer awaits
-    ``tts.wait_drained()`` after its final write, while this watchdog
-    polls ``expected_drain_at()`` cooperatively. Both consult the same
-    drain anchor, so whichever observes "drained" first triggers
-    ``_end_turn`` (via the bg-task done check at
-    ``_handle_session_frame``). End-of-turn drain timing is logged
-    by ``_end_turn`` itself so observability is symmetric across
-    whichever side wins the race."""
-    while True:
-        await asyncio.sleep(0.25)
-        if turn.turn_lost():
-            logger.warning("idle watchdog: connection lost mid-turn, ending turn")
-            return
-        now = time.monotonic()
-        idle_for = now - turn.last_activity_at()
-        if turn.server_turn_complete():
-            # Defer while chunks are still queued in the inter-task
-            # buffer — the consumer hasn't yet pushed them to TtsPlayout.
-            pending_getter = getattr(turn, "audio_chunks_pending", None)
-            if callable(pending_getter) and pending_getter() > 0:
-                continue
-            if tts.expected_drain_at() > now:
-                continue
-            return
-        any_chunk_received = turn.last_chunk_at() > 0
-        if not any_chunk_received and idle_for > timeout:
-            logger.info(
-                "idle timeout (pre-response phase, %.1fs); no chunks, ending turn",
-                float(timeout),
-            )
-            return
-        if any_chunk_received:
-            stalled_for = now - turn.last_chunk_at()
-            if stalled_for > response_stall_timeout:
-                logger.warning(
-                    "idle timeout (response stalled, %.1fs since last chunk); "
-                    "no turn_complete, ending turn",
-                    stalled_for,
-                )
-                return
 
 
 async def _server_vad_response_trigger(turn, connection) -> None:
@@ -1588,10 +798,10 @@ class WakeLoop:
         # instance state used), so caching the PCM bytes keeps hot paths
         # off any per-call cost. Same shape `TtsPlayout.write()` accepts
         # (24 kHz int16 mono).
-        self._chirp_on_pcm: bytes = self._generate_listening_chirp(
+        self._chirp_on_pcm: bytes = _generate_listening_chirp(
             going_on=True,
         )
-        self._chirp_off_pcm: bytes = self._generate_listening_chirp(
+        self._chirp_off_pcm: bytes = _generate_listening_chirp(
             going_on=False,
         )
         self._chirp_on_profile = _synthetic_audio_profile(
@@ -1604,8 +814,8 @@ class WakeLoop:
             voice="turn_end",
             pcm=self._chirp_off_pcm,
         )
-        self._mute_click_on_pcm: bytes = self._generate_mute_click(going_on=True)
-        self._mute_click_off_pcm: bytes = self._generate_mute_click(going_on=False)
+        self._mute_click_on_pcm: bytes = _generate_mute_click(going_on=True)
+        self._mute_click_off_pcm: bytes = _generate_mute_click(going_on=False)
         self._mute_click_on_profile = _synthetic_audio_profile(
             model="synthetic-mute-click",
             voice="unmute",
@@ -1698,6 +908,217 @@ class WakeLoop:
         # session" — either peering is disabled, or this is a
         # dial-driven session that didn't go through arbitration.
         self._peering_current_epoch: str = ""
+
+    @classmethod
+    def for_tests(cls, **overrides):
+        """Build a fully-shaped WakeLoop without opening hardware.
+
+        This is the supported seam for unit tests that exercise individual
+        methods. It keeps production code free of defensive probes for
+        objects constructed via ``__new__`` and manual partial init.
+        """
+
+        class _TestMic:
+            async def frames(self):
+                if False:
+                    yield None
+
+        class _TestDetector:
+            threshold = 0.5
+
+            def score_frame(self, _frame) -> float:
+                return 0.0
+
+            def reset(self) -> None:
+                return None
+
+        class _TestTts:
+            async def write_segment(self, *_args, **_kwargs) -> None:
+                return None
+
+            async def resume_content_meter(self) -> None:
+                return None
+
+            async def pause_content_meter(self) -> None:
+                return None
+
+            async def prepare_assistant_context(self, **_kwargs) -> None:
+                return None
+
+            async def end_segment(self) -> None:
+                return None
+
+            async def wait_drained(self) -> None:
+                return None
+
+            async def flush(self):
+                return None
+
+            def expected_drain_at(self) -> float:
+                return 0.0
+
+            def take_paced_sec(self) -> float:
+                return 0.0
+
+        class _TestConnection:
+            def is_paused(self) -> bool:
+                return False
+
+            def supports_server_vad(self) -> bool:
+                return False
+
+            async def acquire_turn(self):
+                raise AssertionError("WakeLoop.for_tests acquire_turn stub used")
+
+        class _TestDucker:
+            async def duck(self) -> None:
+                return None
+
+            async def restore(self) -> None:
+                return None
+
+        class _TestContentActivity:
+            music_dbfs = None
+
+            def music_is_playing(self) -> bool:
+                return False
+
+            def pause(self) -> None:
+                return None
+
+            def resume(self) -> None:
+                return None
+
+        class _TestUsageStore:
+            def open_session(self, *_args, **_kwargs) -> int:
+                return 1
+
+            def close_session(self, *_args, **_kwargs) -> float:
+                return 0.0
+
+        class _TestSpendCap:
+            def allowed(self) -> bool:
+                return True
+
+        class _TestVolumeCoordinator:
+            def get_listening_level(self) -> int:
+                return 50
+
+            def note_voice_session(self, *_args, **_kwargs) -> None:
+                return None
+
+        class _TestVad:
+            def predict(self, _frame) -> float:
+                return 0.0
+
+            def reset(self) -> None:
+                return None
+
+        self = cls.__new__(cls)
+        cfg = SimpleNamespace(
+            duck_db=0.0,
+            idle_timeout_sec=10.0,
+            mic_mute_state_path="/tmp/jasper-voice-daemon-test-mute.env",
+            peering_enabled=False,
+            peering_uds_socket="/tmp/jasper-peering-test.sock",
+            response_stall_timeout_sec=120.0,
+            server_vad_enabled=False,
+            server_vad_prefix_ms=300,
+            server_vad_silence_ms=500,
+            server_vad_threshold=0.5,
+            voice_provider="test",
+            wake_model="test_model",
+        )
+        mic = _TestMic()
+        detector = _TestDetector()
+        on_ring = deque(maxlen=CAPTURE_RING_FRAMES)
+        self._cfg = cfg
+        self._tts = _TestTts()
+        self._legs = {
+            "on": _LegRuntime(
+                by_token("on"),
+                mic,
+                detector,
+                on_ring,
+            ),
+        }
+        self._mic = mic
+        self._detector = detector
+        self._capture_ring_on = on_ring
+        self._capture_ring_off = deque(maxlen=CAPTURE_RING_FRAMES)
+        self._capture_ring_dtln = deque(maxlen=CAPTURE_RING_FRAMES)
+        self._wake_fire_lock = asyncio.Lock()
+        self._fuser = WakeFuser()
+        self._current_condition = DEFAULT_CONDITION
+        self._condition_refreshed_at = 0.0
+        self._connection = _TestConnection()
+        self._ducker = _TestDucker()
+        self._camilla = None
+        self._content_activity = _TestContentActivity()
+        self._usage_store = _TestUsageStore()
+        self._spend_cap = _TestSpendCap()
+        self._stop_event = asyncio.Event()
+        self._volume_coordinator = _TestVolumeCoordinator()
+        self._cues = None
+        self._warned_cues_unconfigured = False
+        self._heartbeat = None
+        self._vad = _TestVad()
+        self._vad_off = None
+        self._state = State.WAKE
+        self._turn = None
+        self._session_id = None
+        self._ending = False
+        self._bg_tasks = set()
+        self._fire_and_forget = set()
+        self._refractory_until = 0.0
+        self._measurement_active = asyncio.Event()
+        self._measurement_safety_task = None
+        self._mic_muted = False
+        self._chirp_on_pcm = _generate_listening_chirp(going_on=True)
+        self._chirp_off_pcm = _generate_listening_chirp(going_on=False)
+        self._chirp_on_profile = _synthetic_audio_profile(
+            model="synthetic-listening-chirp",
+            voice="wake_start",
+            pcm=self._chirp_on_pcm,
+        )
+        self._chirp_off_profile = _synthetic_audio_profile(
+            model="synthetic-listening-chirp",
+            voice="turn_end",
+            pcm=self._chirp_off_pcm,
+        )
+        self._mute_click_on_pcm = _generate_mute_click(going_on=True)
+        self._mute_click_off_pcm = _generate_mute_click(going_on=False)
+        self._mute_click_on_profile = _synthetic_audio_profile(
+            model="synthetic-mute-click",
+            voice="unmute",
+            pcm=self._mute_click_on_pcm,
+        )
+        self._mute_click_off_profile = _synthetic_audio_profile(
+            model="synthetic-mute-click",
+            voice="mute",
+            pcm=self._mute_click_off_pcm,
+        )
+        self._wake_event_at_monotonic = 0.0
+        self._user_speech_seen = False
+        self._silence_started_at = 0.0
+        self._input_ended = False
+        self._turn_started_at_loop = 0.0
+        self._max_silero_score_in_turn = 0.0
+        self._speech_run_started_at = 0.0
+        self._speech_run_max_silero = 0.0
+        self._server_vad_this_turn = False
+        self._max_silero_raw_in_turn = 0.0
+        self._silero_raw_armed_at_ms = None
+        self._silero_aec_armed_at_ms = None
+        self._pre_roll = deque(maxlen=PRE_ROLL_FRAMES)
+        self._wake_event_store = None
+        self._current_event_id = None
+        self._acquiring = False
+        self._acquire_buffer = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
+        self._peering_current_epoch = ""
+        for key, value in overrides.items():
+            setattr(self, key if key.startswith("_") else f"_{key}", value)
+        return self
 
     def _create_fire_and_forget_task(
         self,
@@ -2049,33 +1470,6 @@ class WakeLoop:
         self._measurement_safety_task = loop.create_task(_safety())
         return "ok"
 
-    def _generate_mute_click(self, *, going_on: bool) -> bytes:
-        """Synthesize a short decay-sine click as 24 kHz int16 mono PCM
-        — same shape `TtsPlayout.write()` accepts. Higher pitch on
-        unmute, lower on mute, so the user gets a directional cue.
-
-        Intentionally not a registered cue: cues are TTS-generated and
-        spoken, this is a sub-100 ms synthesized blip. Kept inline so
-        the cue cache / regen system isn't paid for two trivial WAVs.
-        """
-        import math
-        sr = 24000
-        dur_samples = int(sr * 0.06)  # 60 ms
-        freq = 900.0 if going_on else 600.0
-        peak = 0.25  # ~-12 dBFS before TtsPlayout's gain stage
-        out = bytearray(dur_samples * 2)
-        for i in range(dur_samples):
-            t = i / sr
-            env = math.exp(-t * 50.0)  # ~20 ms half-life
-            s = int(math.sin(2.0 * math.pi * freq * t) * env * peak * 32767.0)
-            if s > 32767:
-                s = 32767
-            elif s < -32768:
-                s = -32768
-            # little-endian int16
-            out[2 * i] = s & 0xFF
-            out[2 * i + 1] = (s >> 8) & 0xFF
-        return bytes(out)
 
     async def _play_mute_click(self, *, going_on: bool) -> None:
         """Best-effort. If the TTS stream isn't open or write fails,
@@ -2097,54 +1491,6 @@ class WakeLoop:
         except Exception as e:  # noqa: BLE001
             logger.warning("mic mute click failed: %s", e)
 
-    def _generate_listening_chirp(self, *, going_on: bool) -> bytes:
-        """Synthesize a two-tone listening cue as 24 kHz int16 mono PCM
-        — same shape `TtsPlayout.write()` accepts. Wake = ascending
-        musical fifth in the upper register (A5 880 Hz → E6 1320 Hz);
-        end-of-turn = descending fifth one octave lower (E5 660 Hz →
-        A4 440 Hz). Same interval shape so the pair reads as a matched
-        family; distinct registers so "starting" vs "ending" lands
-        without the listener having to think about it. End-chirp's
-        highest note (660 Hz) sits below the wake-chirp's lowest note
-        (880 Hz) so the contrast is unmistakable. Phase-continuous
-        through the note change so each pair reads as one connected
-        cue rather than two beeps.
-
-        Distinct from `_generate_mute_click`: two-note interval (vs.
-        single-tone decay) so start/stop listening is clearly
-        different from mic mute/unmute. Inline for the same reason
-        as the mute click — sub-100 ms synthesized blip, not worth
-        a TTS-cached WAV.
-        """
-        import math
-        sr = 24000
-        seg_samples = int(sr * 0.035)  # 35 ms per note → 70 ms total
-        total = seg_samples * 2
-        ramp = int(sr * 0.005)  # 5 ms cosine attack/release
-        if going_on:
-            f1, f2 = 880.0, 1320.0  # wake: upper register, ascending
-        else:
-            f1, f2 = 660.0, 440.0   # end: lower register, descending
-        peak = 0.18  # ~-15 dBFS — subtler than mute click since these fire often
-        out = bytearray(total * 2)
-        phase = 0.0
-        for i in range(total):
-            freq = f1 if i < seg_samples else f2
-            phase += 2.0 * math.pi * freq / sr
-            if i < ramp:
-                env = 0.5 * (1.0 - math.cos(math.pi * i / ramp))
-            elif i >= total - ramp:
-                env = 0.5 * (1.0 - math.cos(math.pi * (total - i) / ramp))
-            else:
-                env = 1.0
-            s = int(math.sin(phase) * env * peak * 32767.0)
-            if s > 32767:
-                s = 32767
-            elif s < -32768:
-                s = -32768
-            out[2 * i] = s & 0xFF
-            out[2 * i + 1] = (s >> 8) & 0xFF
-        return bytes(out)
 
     async def _play_listening_chirp(self, *, going_on: bool) -> None:
         """Best-effort. If the TTS stream isn't ready, the wake or
@@ -2429,10 +1775,7 @@ class WakeLoop:
         # UPDATE as the event progresses. Cheap (single SQLite INSERT
         # in WAL mode); failure is logged but does not block wake
         # response (telemetry is not a wake-blocking dependency).
-        # `getattr` so this stays safe for tests that build WakeLoop
-        # via `__new__` + manual attribute init (peering tests,
-        # dual-stream wake-handler tests).
-        store = getattr(self, "_wake_event_store", None)
+        store = self._wake_event_store
         if store is not None:
             event_id = make_event_id()
             self._current_event_id = event_id
@@ -2528,7 +1871,7 @@ class WakeLoop:
                     music_active=music_active_proxy,
                     music_volume_db=music_volume_db,
                     condition_class=condition_ctx.condition,
-                    mic_muted=getattr(self, "_mic_muted", None),
+                    mic_muted=self._mic_muted,
                     fired_legs=fired_legs,
                     # Per-leg score/offset/RMS columns, built from
                     # self._legs via _LEG_DB (configured legs only;
@@ -2645,11 +1988,10 @@ class WakeLoop:
         telemetry trouble (logged at WARN; row stays with the
         missing column NULL).
 
-        Uses `getattr` so it stays safe for callers that construct
-        WakeLoop via `__new__` + manual attribute init (the peering
-        tests do this) and don't populate the telemetry attrs."""
-        store = getattr(self, "_wake_event_store", None)
-        event_id = getattr(self, "_current_event_id", None)
+        Tests that exercise individual methods should construct via
+        WakeLoop.for_tests(), which populates these attrs."""
+        store = self._wake_event_store
+        event_id = self._current_event_id
         if store is None or event_id is None:
             return
         try:
@@ -2663,17 +2005,15 @@ class WakeLoop:
         self, outcome: str, detail: str | None = None,
     ) -> None:
         """Best-effort terminal-outcome UPDATE for the in-flight wake
-        event. Same fail-soft + `getattr`-tolerant pattern as
-        `_telemetry_stage`. Clears `_current_event_id` after the
-        write so subsequent funnel hooks for the next wake start
-        clean."""
-        store = getattr(self, "_wake_event_store", None)
-        event_id = getattr(self, "_current_event_id", None)
+        event. Same fail-soft pattern as `_telemetry_stage`. Clears
+        `_current_event_id` after the write so subsequent funnel hooks
+        for the next wake start clean."""
+        store = self._wake_event_store
+        event_id = self._current_event_id
         if store is None or event_id is None:
             # Still clear the id (if it exists) so the next wake
             # starts from a clean state.
-            if hasattr(self, "_current_event_id"):
-                self._current_event_id = None
+            self._current_event_id = None
             return
         # Clear early so subsequent stray funnel-hook calls don't keep
         # writing against a finalised row.
@@ -3458,8 +2798,8 @@ class WakeLoop:
         # which dual-stream FP analysis keys off.
         await self._telemetry_stage("turn_complete")
         # Capture event_id BEFORE _telemetry_outcome clears it.
-        session_vad_store = getattr(self, "_wake_event_store", None)
-        session_vad_eid = getattr(self, "_current_event_id", None)
+        session_vad_store = self._wake_event_store
+        session_vad_eid = self._current_event_id
         terminal_outcome = (
             "completed" if self._user_speech_seen else "no_speech"
         )
@@ -3628,602 +2968,64 @@ class WakeLoop:
         # which keeps post-turn wake responsiveness fast.
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
+def _active_model(*args, **kwargs):
+    from .voice.daemon_main import _active_model as impl
+    return impl(*args, **kwargs)
 
-async def _start_control_socket(
-    wake_loop: WakeLoop, socket_path: str,
-) -> asyncio.AbstractServer:
-    """Listen for one-line commands on a Unix domain socket so external
-    daemons (jasper-control, in particular) can drive voice-session
-    state without going through the wake word.
 
-    Wire format: line of ASCII, terminated by `\\n`. Response: a single
-    JSON object terminated by `\\n`.
+def _active_voice(*args, **kwargs):
+    from .voice.daemon_main import _active_voice as impl
+    return impl(*args, **kwargs)
 
-    Commands:
-        START               → manual_session_start  (long-press begin)
-        END                 → manual_session_end    (long-press release)
-        STATUS              → session_status        (diagnostic snapshot)
-        CUE_PLAY <slug>     → play a registered audio cue through the
-                              daemon's fan-in-backed TtsPlayout. Routed
-                              here so a standalone CLI doesn't have to
-                              recreate the output path or gain policy.
-        MEASURE_PAUSE       → open a room-correction measurement
-                              window. Drops mic frames, pauses the
-                              outputd content meter. Refuses (BUSY) if a
-                              session is active. Auto-clears in 2 min
-                              if RESUME is never sent.
-        MEASURE_RESUME      → close the measurement window.
-                              Idempotent.
-        MUTE                → user-driven mic mute. Drops mic frames
-                              at the wake-loop gate, ends any active
-                              session, plays a low-pitch click. Runtime
-                              state is persisted. Idempotent.
-        UNMUTE              → resume listening. Plays a higher-pitch
-                              click. Idempotent.
 
-    The socket lives in /run (tmpfs) so it gets created fresh each boot
-    via systemd's RuntimeDirectory=jasper. Both jasper-voice and
-    jasper-control run as root, so default 0o600 perms are fine."""
-    import json as _json
+def _tts_ready_detail(*args, **kwargs):
+    from .voice.daemon_main import _tts_ready_detail as impl
+    return impl(*args, **kwargs)
 
-    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        try:
-            raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
-            line = raw.decode("ascii", errors="replace").strip()
-            parts = line.split(maxsplit=1)
-            cmd = parts[0].upper() if parts else ""
-            arg = parts[1] if len(parts) > 1 else ""
-            if cmd == "START":
-                result = {"result": await wake_loop.manual_session_start()}
-            elif cmd == "END":
-                result = {"result": await wake_loop.manual_session_end()}
-            elif cmd == "STATUS":
-                result = wake_loop.session_status()
-            elif cmd == "CUE_PLAY":
-                result = {"result": await wake_loop.play_cue(arg)}
-            elif cmd == "MEASURE_PAUSE":
-                result = {"result": await wake_loop.measurement_pause()}
-            elif cmd == "MEASURE_RESUME":
-                result = {"result": await wake_loop.measurement_resume()}
-            elif cmd == "MUTE":
-                result = {"result": await wake_loop.mute_mic()}
-            elif cmd == "UNMUTE":
-                result = {"result": await wake_loop.unmute_mic()}
-            else:
-                result = {"result": "UNKNOWN", "command": cmd}
-            writer.write((_json.dumps(result) + "\n").encode("utf-8"))
-            await writer.drain()
-        except asyncio.TimeoutError:
-            logger.warning("voice control socket: client read timed out")
-        except Exception as e:  # noqa: BLE001
-            logger.exception("voice control socket handler failed: %s", e)
-            try:
-                writer.write(b'{"result":"ERROR"}\n')
-                await writer.drain()
-            except Exception:  # noqa: BLE001
-                pass
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:  # noqa: BLE001
-                pass
 
-    # Unix-domain-socket: stale file from a crashed prior run blocks
-    # bind(). Best-effort unlink first.
-    try:
-        os.unlink(socket_path)
-    except FileNotFoundError:
-        pass
-    os.makedirs(os.path.dirname(socket_path), exist_ok=True)
-    server = await asyncio.start_unix_server(handle, socket_path)
-    try:
-        os.chmod(socket_path, 0o660)
-    except OSError as e:
-        logger.warning("voice control socket chmod failed: %s", e)
-    logger.info("voice control socket: %s", socket_path)
-    return server
+def _make_connection(*args, **kwargs):
+    from .voice.daemon_main import _make_connection as impl
+    return impl(*args, **kwargs)
+
+
+def _build_cues_manager(*args, **kwargs):
+    from .voice.daemon_main import _build_cues_manager as impl
+    return impl(*args, **kwargs)
+
+
+def _schedule_cue_regen(*args, **kwargs):
+    from .voice.daemon_main import _schedule_cue_regen as impl
+    return impl(*args, **kwargs)
+
+
+def _schedule_assistant_loudness_seed(*args, **kwargs):
+    from .voice.daemon_main import _schedule_assistant_loudness_seed as impl
+    return impl(*args, **kwargs)
+
+
+def _build_router(*args, **kwargs):
+    from .voice.daemon_main import _build_router as impl
+    return impl(*args, **kwargs)
+
+
+def _build_registry(*args, **kwargs):
+    from .voice.daemon_main import _build_registry as impl
+    return impl(*args, **kwargs)
+
+
+async def _start_control_socket(*args, **kwargs):
+    from .voice.daemon_main import _start_control_socket as impl
+    return await impl(*args, **kwargs)
 
 
 async def run() -> None:
-    cfg = Config.from_env()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    # Log flight recorder + runtime debug toggle (/system Debug card).
-    # install() holds the jasper logger at DEBUG for the in-RAM ring,
-    # keeps the journal at INFO, and applies the debug toggle. See
-    # jasper/flight_recorder.py / docs/HANDOFF-observability.md.
-    from . import flight_recorder
-    flight_recorder.install("voice")
-
-    active_model = _active_model(cfg)
-    pricing = pricing_for_model(
-        active_model, overrides=load_pricing_overrides(),
-    )
-    speech_policy = build_effective_speech_input_policy(cfg)
-    logger.info(
-        "event=voice.input_policy provider=%s profile=%s source=%s "
-        "endpointing=%s openai_noise_reduction=%s "
-        "openai_noise_reduction_source=%s contract=%s",
-        cfg.voice_provider,
-        speech_policy.input_contract.profile,
-        speech_policy.input_contract.source,
-        speech_policy.endpointing,
-        speech_policy.openai_noise_reduction_label,
-        speech_policy.openai_noise_reduction_source,
-        speech_policy.input_contract.provenance,
-    )
-    for warning in speech_policy.warnings:
-        logger.warning("event=voice.input_policy.warning warning=%s", warning)
-    logger.info(
-        "spend cap: provider=%s model=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
-        cfg.voice_provider, active_model, pricing.label,
-        cfg.daily_spend_cap_usd, cfg.daily_spend_cap_safety_multiplier,
-    )
-    if pricing.label.startswith("unpriced:"):
-        # No rate for the active model (not in the bundled dated defaults
-        # nor the override). We do NOT invent one — cost will read $0 and
-        # the spend cap can't bound it until a rate is entered at /voice.
-        logger.warning(
-            "event=pricing.unpriced model=%s — no rate available; cost "
-            "estimates will be $0 and the spend cap cannot bound this "
-            "model until you set a rate at http://%s/voice",
-            active_model, cfg.hostname,
-        )
-    usage_store = UsageStore(cfg.usage_db, pricing=pricing)
-    spend_cap = SpendCap(
-        usage_store,
-        cfg.daily_spend_cap_usd,
-        cfg.daily_spend_cap_safety_multiplier,
-    )
-
-    camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
-    renderer = RendererClient(
-        librespot_state_path=cfg.librespot_state_path,
-    )
-    weather = WeatherClient(
-        cfg.weather_default_location,
-        cfg.weather_units,
-        default_lat=cfg.weather_default_lat,
-        default_lon=cfg.weather_default_lon,
-        default_name=cfg.weather_default_display_name,
-    )
-    # Transit (subway / bus / Citi Bike today; future city packs add more).
-    # One call builds every provider in the household's ENABLED city packs
-    # (JASPER_TRANSIT_CITIES; unset = all packs, non-breaking) and returns a
-    # managed ActiveTransit: the flat tool list, a `configured` flag for the
-    # system-prompt nudge, and an `aclose()` that releases any client owning a
-    # pool (closed in shutdown below). Each provider self-gates on its own
-    # config, so an enabled-but-unconfigured mode produces no tool —
-    # `transit_configured` is exactly "at least one transit tool registered",
-    # the same gate as before. Adding a city needs no edit here; see
-    # jasper.transit.active_transit. os.environ carries
-    # JASPER_TRANSIT_CITIES via transit.env, sourced by jasper-voice.service.
-    transit_active = transit.active_transit(os.environ)
-    transit_tools = transit_active.tools
-    transit_configured = transit_active.configured
-    logger.info(
-        "transit: packs=%s tools=%d",
-        ",".join(transit.enabled_pack_ids(os.environ)) or "(none)",
-        len(transit_tools),
-    )
-    # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
-    # is unset; the tool factory short-circuits to [] in that case so
-    # the model never sees a tool whose every call would fail. The
-    # client owns a long-lived httpx.AsyncClient for the daemon's
-    # lifetime — closed in the shutdown path below.
-    ha = build_ha_client(cfg)
-    if ha is not None:
-        logger.info("home_assistant: enabled url=%s agent_id=%s",
-                    ha.url, ha.agent_id or "(default)")
-    else:
-        logger.info(
-            "home_assistant: disabled (set JASPER_HA_URL + JASPER_HA_TOKEN, "
-            "or visit http://%s/ha to configure)",
-            cfg.hostname,
-        )
-    # Volume coordinator: owns the canonical listening_level (0-100),
-    # follows mux's effective source, and dispatches voice/dial-driven
-    # changes to the right volume carrier (Camilla-master for
-    # AirPlay/USB/idle, push-mode for Spotify/BT). Boot path applies
-    # a safety regression to extreme stale values.
-    volume_persistence = VolumePersistence(cfg.volume_state_path)
-    # Build the multi-account Spotify router once; reused by both the
-    # coordinator (for outbound volume control via Web API) and the
-    # voice tool registry (transport / spotify_play). Same instance,
-    # one OAuth refresh cycle per account.
-    volume_spotify_router = _build_router(cfg)
-    # Google Calendar + Gmail clients — built once, used by the tool
-    # registry AND captured by the system-instruction lambda so the
-    # model knows which household members have linked accounts. None
-    # if Google's CLIENT_ID/SECRET aren't configured (the tools are
-    # gated and never appear to the model in that case).
-    google_clients = build_google_clients(cfg)
-    if google_clients is not None:
-        names = google_clients.list_account_names()
-        if names:
-            logger.info(
-                "google: %d account(s) linked: %s (default: %s)",
-                len(names), ", ".join(names),
-                google_clients.default_account_name() or "(none)",
-            )
-        else:
-            logger.info(
-                "google: CLIENT_ID/SECRET configured but no accounts "
-                "linked yet — visit %s to add one",
-                cfg.google_setup_url,
-            )
-    volume_coordinator = VolumeCoordinator(
-        camilla=camilla,
-        persistence=volume_persistence,
-        backend=renderer,
-        spotify_router=volume_spotify_router,
-        spotify_device_name=cfg.spotify_device_name,
-    )
-    # Ducker built after the coordinator so restore follows the active
-    # output topology. Current production routes TTS/cues into fan-in
-    # before CamillaDSP, so ducking must also happen in fan-in; otherwise
-    # Camilla main_volume would attenuate assistant audio along with
-    # renderer/program audio.
-    if cfg.duck_transport == "fanin":
-        ducker = FanInDucker(cfg.tts_outputd_socket, cfg.duck_db)
-    else:
-        ducker = Ducker(
-            camilla, cfg.duck_db,
-            target_db_provider=volume_coordinator.get_camilla_target_db,
-        )
-    try:
-        target_level, restore_reason = await volume_coordinator.initialize(
-            stale_after_sec=cfg.volume_regress_after_sec,
-            safe_low_pct=cfg.volume_regress_safe_low_pct,
-            safe_high_pct=cfg.volume_regress_safe_high_pct,
-            first_boot_default_pct=cfg.volume_first_boot_default_pct,
-        )
-        logger.info(
-            "volume coordinator: %s → listening_level=%d%%",
-            restore_reason, target_level,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "volume coordinator: initialize failed (%s); proceeding with "
-            "in-memory default", e,
-        )
-
-    # Inbound source-volume observers: poll shairport (DBus),
-    # librespot (state file written by --onevent hook), and bluez-alsa
-    # (DBus) once per second so iPhone slider movements / Spotify app
-    # slider drags / BT volume button presses sync into the
-    # coordinator's listening_level.
-    volume_observer = VolumeObserver(
-        volume_coordinator,
-        librespot_state_path=cfg.librespot_state_path,
-    )
-    await volume_observer.start()
-
-    # Timer scheduler — owns persistence + asyncio task lifecycle for
-    # kitchen timers. Constructed BEFORE _build_registry so set_timer
-    # / list_timers / cancel_timer are visible to the model from the
-    # very first session.start. The on_fire announcement callback is
-    # wired after WakeLoop exists (it can't fire before then anyway —
-    # SQLite restore happens in scheduler.start() further down).
-    timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
-
-    # Cue manager — built early so timer tools can pre-render their
-    # fire announcements at set_timer time. The TtsPlayout isn't open
-    # yet (that lives inside the async with block below); the manager
-    # is constructed without it and `attach_tts` wires playback once
-    # the playout is up. Pre-render and regen don't need playback.
-    cues_manager = _build_cues_manager(cfg, tts=None)
-
-    # Wake-event telemetry store (HANDOFF-wake-telemetry.md PR 3).
-    # Opens the SQLite DB synchronously at startup so the daemon
-    # is "ready" only after the schema migration is applied —
-    # avoids racy "begin_event before CREATE TABLE" failures on
-    # first-ever boot. Failure to open is logged + the daemon
-    # continues with telemetry disabled (the wake / session path
-    # is unaffected; only the flag_recent_issue tool is silently
-    # withheld from the model in that mode).
-    #
-    # Created BEFORE `_build_registry` because make_diagnostic_tools
-    # gates on the store and the LLM `session.update` is sent once
-    # at WS handshake time — tools added to the registry after the
-    # connection opens are invisible to the live session until the
-    # next reconnect. Close lives in the outer finally below.
-    wake_event_store: WakeEventStore | None = None
-    try:
-        wake_event_store = WakeEventStore(
-            cfg.wake_events_dir,
-            max_audio_bytes=cfg.wake_events_max_audio_bytes,
-        )
-        wake_event_store.open()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "wake_events: failed to open store at %s: %s "
-            "(continuing with telemetry disabled)",
-            cfg.wake_events_dir, e,
-        )
-        wake_event_store = None
-
-    registry = _build_registry(
-        cfg, camilla, renderer, weather, transit_tools,
-        volume_coordinator=volume_coordinator,
-        volume_persistence=volume_persistence,
-        spotify_router=volume_spotify_router,
-        timer_scheduler=timer_scheduler,
-        cues_manager=cues_manager,
-        google_clients=google_clients,
-        ha=ha,
-        wake_event_store=wake_event_store,
-    )
-
-    # Wire the timer pre-render hook so set_timer (and start-time
-    # restore for persisted timers) synthesises + caches the
-    # fire-time announcement WAV ahead of time. Saves the user from
-    # a 1–8 s gap between duck and audio at fire time.
-    async def _prerender_timer(t: Timer) -> None:
-        await cues_manager.prerender_text(announcement_text(t))
-    timer_scheduler.set_pre_render(_prerender_timer)
-
-    startup_fire_and_forget: set[asyncio.Task] = set()
-    stop_event = asyncio.Event()
-
-    def _shutdown(*_):
-        logger.info("shutdown requested")
-        stop_event.set()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _shutdown)
-
-    logger.info(
-        "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
-        cfg.voice_provider, _active_model(cfg), cfg.wake_model,
-        cfg.mic_device, _tts_ready_detail(cfg),
-    )
-
-    # Open the persistent live connection ONCE at daemon startup and
-    # keep it open for the daemon's lifetime. Wake events acquire/release
-    # turns against this connection — they don't open new WebSockets.
-    # Pass a lambda (not the rendered string) so the time-injection
-    # inside _build_system_instruction stays accurate across context
-    # resets and reconnects — the connection re-renders on every
-    # fresh open. The location is captured at startup; if you change
-    # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
-    connection = _make_connection(cfg, speech_policy=speech_policy)
-    # Time-billed providers (Grok: flat $/hour) price their per-turn token
-    # rows to $0; their real cost is connection uptime. Wire a meter —
-    # before start() so the initial connect's interval is captured — that
-    # records connect/disconnect intervals the spend queries fold in. No
-    # meter for token-billed providers (flat_per_hour_usd == 0).
-    if pricing.flat_per_hour_usd > 0:
-        set_meter = getattr(connection, "set_uptime_meter", None)
-        if callable(set_meter):
-            set_meter(ConnectionUptimeMeter(
-                usage_store, cfg.voice_provider, pricing.flat_per_hour_usd,
-            ))
-            logger.info(
-                "connection uptime meter: enabled for %s at $%.2f/hour",
-                cfg.voice_provider, pricing.flat_per_hour_usd,
-            )
-    content_activity: ContentActivityTracker | None = None
-    try:
-        # Capture the linked-Google-accounts list at startup so the
-        # system instruction tells the model which `account` values
-        # are valid for the calendar/gmail tools. Wizard-driven account
-        # changes trigger a daemon restart, so this snapshot stays
-        # accurate for the daemon's lifetime.
-        google_account_names = (
-            google_clients.list_account_names() if google_clients else []
-        )
-        google_default_account = (
-            google_clients.default_account_name() or ""
-        ) if google_clients else ""
-        # transit_configured (computed at construction above) is true when
-        # ANY transit tool is live — the system prompt nudges the model
-        # toward /transit only when ALL transit options are absent. Partial
-        # configurations (e.g. subway set, bus/citibike not) don't need the
-        # nudge because the available tool surface still answers the modes
-        # the household has actually configured.
-        # ha_configured drives the home_assistant nudge — when HA is
-        # disabled, the model needs explicit guidance to redirect
-        # smart-home requests to the wizard rather than misrouting to
-        # unrelated tools (observed misroute: lights → get_current_time
-        # + get_now_playing on May 22 2026).
-        ha_configured = ha is not None
-        await connection.start(
-            registry,
-            lambda: _build_system_instruction(
-                cfg.weather_prompt_location,
-                google_accounts=google_account_names,
-                default_google_account=google_default_account,
-                transit_configured=transit_configured,
-                ha_configured=ha_configured,
-                hostname=cfg.hostname,
-            ),
-        )
-        # Open everything with an async lifecycle under one
-        # AsyncExitStack — each configured wake leg's mic, plus the TTS
-        # playout. `make_mic_capture` routes a `udp:PORT` device (the AEC
-        # bridge's UDP transport) to UdpMicCapture and anything else
-        # (`Array` chip-direct, a `hw:` USB mic) to the PortAudio
-        # MicCapture. Which legs to build is data-driven from
-        # jasper.wake_legs + cfg.mic_device* via _configured_wake_legs().
-        #
-        # Resilience asymmetry: the primary "on" (AEC3) leg is must-have
-        # — it carries session audio + the Tier-1 heartbeat, so a
-        # mic-open failure there is fatal (re-raised → systemd
-        # Restart=on-watchdog + the AEC reconciler's mic-presence gate
-        # recover us). Optional "off"/"dtln" legs are best-effort: a
-        # mic-open failure is logged and that leg is skipped so the
-        # speaker keeps waking on the healthy legs.
-        async with contextlib.AsyncExitStack() as stack:
-            legs: list[_LegRuntime] = []
-            for spec, device in _configured_wake_legs(cfg):
-                try:
-                    leg_mic = await stack.enter_async_context(
-                        make_mic_capture(
-                            device,
-                            capture_rate=cfg.mic_capture_rate,
-                            capture_channels=cfg.mic_capture_channels,
-                        )
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    if spec.token == "on":
-                        raise
-                    logger.warning(
-                        "event=wake.leg_skipped leg=%s device=%s "
-                        "reason=mic_open_failed err=%s",
-                        spec.token, device, exc,
-                    )
-                    continue
-                # openWakeWord's Model carries per-instance prediction
-                # state, so each leg gets its own detector — same model
-                # file + threshold, only the input stream differs. The
-                # "off" leg also gets a session shadow VAD (telemetry
-                # only; see _shadow_vad_score_raw).
-                legs.append(_LegRuntime(
-                    spec,
-                    leg_mic,
-                    WakeWordDetector(
-                        cfg.wake_model, threshold=cfg.wake_threshold,
-                    ),
-                    deque(maxlen=CAPTURE_RING_FRAMES),
-                    shadow_vad=SpeechVAD() if spec.token == "off" else None,
-                ))
-            tts = await stack.enter_async_context(make_tts_playout(
-                transport=cfg.tts_transport,
-                device=cfg.tts_device,
-                output_rate=cfg.tts_output_rate,
-                # outputd owns the final gain decision. This fallback is
-                # used only by chirps/legacy sounddevice paths.
-                gain_db=0.0,
-                drain_tail_sec=cfg.tts_drain_tail_sec,
-                outputd_socket=cfg.tts_outputd_socket,
-                provider=cfg.voice_provider,
-                model=_active_model(cfg),
-                voice=_active_voice(cfg),
-                assistant_loudness_profile_path=(
-                    cfg.assistant_loudness_profile_path
-                ),
-            ))
-            content_activity = ContentActivityTracker(camilla)
-            await content_activity.start()
-
-            # Wire the playout into the cue manager that was already
-            # constructed up top so timer tools could register with a
-            # working pre-render path. From here on cues.play() and
-            # cues.speak_text() can write audio out.
-            cues_manager.attach_tts(tts)
-            # Kick off background regen for any missing/stale cues.
-            # Doesn't block daemon "ready" — if regen fails (no
-            # internet / bad API key), cues silently won't play; the
-            # daemon's other voice paths still work.
-            _schedule_cue_regen(cues_manager, startup_fire_and_forget)
-            _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)
-
-            # Tier 1 of the resilience ladder. Bumped on every mic
-            # frame inside WakeLoop.run; pairs with `Type=notify` +
-            # `WatchdogSec=30s` in jasper-voice.service. If the
-            # async loop wedges or mic capture dies, the heartbeat
-            # stops patting and systemd revives us cleanly via
-            # `Restart=on-watchdog` before SIGKILL is needed. See
-            # jasper/watchdog.py header.
-            heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
-            heartbeat.start()
-            # `wake_event_store` was opened at the top of run() —
-            # see the comment block above `_build_registry` for the
-            # timing rationale. We just hand it to WakeLoop here.
-            wake_loop = WakeLoop(
-                cfg, tts, connection, ducker,
-                content_activity, usage_store, spend_cap, stop_event,
-                volume_coordinator=volume_coordinator,
-                legs=legs,
-                cues=cues_manager,
-                camilla=camilla,
-                heartbeat=heartbeat,
-                wake_event_store=wake_event_store,
-            )
-            # Wire the supervisor's tight-retry-loop escalation cue to
-            # the wake loop's session-aware cue play. Done here (after
-            # both connection and wake loop exist) because the
-            # connection is constructed first by _make_connection but
-            # WakeLoop.play_supervisor_cue is the right callback target.
-            if hasattr(connection, "set_failure_escalation_cb"):
-                connection.set_failure_escalation_cb(
-                    wake_loop.play_supervisor_cue,
-                )
-            # Wire timer announcements through the wake loop's
-            # session-aware playback (duck + speak_text + restore,
-            # with up-to-5s deferral if a voice turn is in flight).
-            # set_on_fire BEFORE start() — start() restores persisted
-            # timers and any whose fire_at has passed during downtime
-            # are dropped before they'd hit on_fire anyway, but timers
-            # whose fire_at is < 1s away could fire mid-restore.
-            timer_scheduler.set_on_fire(wake_loop.announce_timer)
-            await timer_scheduler.start()
-            control_socket = await _start_control_socket(
-                wake_loop, cfg.voice_control_socket,
-            )
-            try:
-                await wake_loop.run()
-            finally:
-                heartbeat.stop()
-                control_socket.close()
-                try:
-                    await control_socket.wait_closed()
-                except Exception:  # noqa: BLE001
-                    pass
-    finally:
-        await _cancel_tracked_tasks(startup_fire_and_forget)
-        # Stop the scheduler FIRST so any in-flight `_run` tasks that
-        # were about to fire get cancelled before we tear down the
-        # cue manager / TtsPlayout they'd be calling into.
-        await timer_scheduler.stop()
-        # Wake-event store close — moved out of the inner async-with
-        # block when the open was hoisted up so the diagnostic tools
-        # could land in the registry before the LLM session opened.
-        if wake_event_store is not None:
-            try:
-                wake_event_store.close()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("wake_events store close: %s", e)
-        if content_activity is not None:
-            await content_activity.stop()
-        if volume_observer is not None:
-            await volume_observer.stop()
-        await volume_coordinator.aclose()
-        await connection.stop()
-        await weather.aclose()
-        if ha is not None:
-            await ha.aclose()
-        # Release any transit client that owns a resource (today only
-        # BusClient's httpx.AsyncClient pool, whose idle connections + FDs
-        # would otherwise leak across daemon restart cycles). The managed
-        # ActiveTransit result owns that cleanup — the daemon just closes the
-        # subsystem, knowing nothing about which clients are closeable.
-        await transit_active.aclose()
+    from .voice.daemon_main import run as impl
+    await impl()
 
 
 def main() -> None:
-    try:
-        asyncio.run(run())
-    except VoiceProviderNotConfigured as e:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
-        logger.warning("event=voice.unconfigured reason=%s", e)
-        print(str(e), file=sys.stderr)
-        sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)
-    except SpeechVADSetupError as e:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
-        logger.error("event=voice.vad_setup_failed reason=%s", e)
-        print(str(e), file=sys.stderr)
-        sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)
-    except KeyboardInterrupt:
-        sys.exit(0)
+    from .voice.daemon_main import main as impl
+    impl()
 
 
 if __name__ == "__main__":

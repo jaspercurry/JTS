@@ -115,7 +115,7 @@ def _make_wakeloop():
         def take_paced_sec(self):
             return 0.0
 
-    wl = WakeLoop.__new__(WakeLoop)
+    wl = WakeLoop.for_tests()
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7
