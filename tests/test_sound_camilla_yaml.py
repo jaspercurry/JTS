@@ -338,3 +338,65 @@ def test_playback_pipe_path_and_channel_split_are_mutually_exclusive():
             channel_split=build_channel_split("left"),
             playback_pipe_path="/run/jasper-snapserver/snapfifo",
         )
+
+
+def test_channel_delays_emit_delay_filters_only_on_distinct_room_chains():
+    """Time-of-arrival correction is a room/pair axis: it uses CamillaDSP
+    Delay filters, no gain, and requires explicit L/R chains."""
+    yaml = emit_sound_config(
+        SoundProfile(enabled=False),
+        room_peqs=[],
+        room_peqs_right=[],
+        channel_delays_ms=(1.25, 0.0),
+    )
+
+    assert "room_delay_l:" in yaml
+    assert "type: Delay" in yaml
+    assert "delay: 1.2500" in yaml
+    assert "unit: ms" in yaml
+    assert "gain: 1.2500" not in yaml
+    assert "volume_limit: 0.0" in yaml
+    assert "    names: [room_delay_l, flat]" in yaml
+    assert "    names: [flat]" in yaml
+
+
+def test_channel_delays_default_and_zero_are_solo_byte_identical():
+    profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=2.0))
+    base = emit_sound_config(profile, room_peqs=[PeqFilter(freq=80, q=4, gain=-3)])
+    explicit_zero = emit_sound_config(
+        profile,
+        room_peqs=[PeqFilter(freq=80, q=4, gain=-3)],
+        channel_delays_ms=(0.0, 0.0),
+    )
+
+    assert explicit_zero == base
+    assert "room_delay_" not in base
+
+
+def test_nonzero_channel_delay_requires_leader_bake_right_chain():
+    import pytest
+
+    with pytest.raises(ValueError, match="requires room_peqs_right"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs=[],
+            channel_delays_ms=(0.0, 1.0),
+        )
+
+
+def test_channel_delays_reject_negative_or_non_finite_values():
+    import math
+    import pytest
+
+    with pytest.raises(ValueError, match="positive-only"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs_right=[],
+            channel_delays_ms=(-0.1, 0.0),
+        )
+    with pytest.raises(ValueError, match="finite"):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            room_peqs_right=[],
+            channel_delays_ms=(math.nan, 0.0),
+        )

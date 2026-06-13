@@ -26,11 +26,25 @@
 > substrate.
 >
 > Design dialogue + prior-art research: 2026-06-04. Status last reconciled with
-> code: 2026-06-11 (see §0 + the footer changelog).
+> code: 2026-06-12 (see §0 + the footer changelog).
 
 ---
 
-## 0. Implementation status (2026-06-11)
+## 0. Implementation status (2026-06-12)
+
+**Endpoint install tier software is BUILT (2026-06-12), hardware validation
+pending.** A Raspberry Pi Zero 2 W endpoint is now the same JTS package on
+`JASPER_INSTALL_PROFILE=endpoint`: base Python deps only, `jasper-control`,
+Avahi identity/discovery, grouping reconcile, and managed Snapcast units.
+The same reconciler/argv builder serves both tiers. Full speakers keep the
+`snapclient -> FIFO -> outputd` member lane; endpoint installs derive a
+direct Snapclient ALSA player (`alsa:device=default` unless
+`JASPER_ENDPOINT_SNAPCLIENT_PLAYER` overrides it) and skip outputd/voice/
+Camilla side effects. Endpoint-tier `role=leader` is a visible fail-closed
+misconfiguration: the reconciler clears snapcast args, stops both snap units,
+and `jasper-doctor` warns to reassign the member as a follower. The detailed
+operator/runbook truth lives in
+[`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md).
 
 **Increment 5 PR-1 (the bonded MUSIC dataplane) is BUILT (2026-06-11).**
 A bond now moves audio end-to-end: the leader's CamillaDSP bakes the shared
@@ -68,9 +82,12 @@ liveness signal comes from the producing daemon's OWN status surface (daemon
 truth, never a Python mirror of env intent — the removed flag's lesson). The
 **target architecture is settled** — see
 **"Canonical signal flow"** (§2, decided 2026-06-10, research-grounded): the leader
-bakes per-channel correction in its ONE CamillaDSP, streams a single stereo stream,
-and DUMB receivers channel-drop; voice stays leader-local (no second CamillaDSP —
-RAM target is a 1 GB Pi). The gating §8 spike **RAN on hardware (2026-06-10,
+bakes per-channel content correction in its ONE CamillaDSP, streams a single stereo
+stream, and transport receivers channel-drop; voice stays leader-local. Driver DSP
+is separate: a future active satellite may run local CamillaDSP for
+woofer/tweeter crossover and protection on the box that drives those DACs/amps, but
+that local graph is not room/content DSP and does not make the endpoint a brain.
+The gating §8 spike **RAN on hardware (2026-06-10,
 jts3↔jts) and passed the resource gate** — snapserver+snapclient ≈ ~15 MB Pss,
 ~0.2 % CPU, FLAC ≈ PCM; the software sync proxy was clean across every buffer/codec
 (acoustic L/R confirmation pends — it folds into Increment 2a). Still to build:
@@ -287,11 +304,15 @@ A speaker comes in two tiers:
 - **Brainy speaker** — the existing JTS unit (Raspberry Pi 5 +
   CamillaDSP + the full stack). Runs the assistant, holds the
   source connections, does DSP/room-correction.
-- **Dumb endpoint** — a cheap **Raspberry Pi Zero 2 W + I2S DAC
-  HAT** running nothing but a synchronized audio client. No
-  CamillaDSP, no voice, no renderers. Exists because a second Pi 5
+- **Transport endpoint** — a cheap **Raspberry Pi Zero 2 W + DAC**
+  running the JTS control plane and a synchronized audio client. No
+  voice, no renderers, no room/content DSP. Exists because a second Pi 5
   is too expensive to be a right-channel speaker, and because a
   wireless sub has to be cheap.
+- **Driver-DSP endpoint** — planned variant for an active satellite that
+  drives local woofer/tweeter amps. It may run local CamillaDSP for
+  crossover/protection because that is hardware safety at the DAC, but
+  the leader still owns sources, room/content DSP, grouping, and voice.
 
 **The non-negotiable UX rule: a room is one logical speaker to the
 outside world.** To an iPhone/Mac, a 2.1 living room is a *single*
@@ -418,10 +439,13 @@ see `reconcile.py`).
 
 This is the **authoritative** target. It was settled after a prior-art research
 pass (Roon, Sonos, Music Assistant, Snapcast, Squeezelite/LMS, PipeWire) plus an
-owner decision: **the brainy leader bakes ALL per-channel correction; the other
-speakers are DUMB** — channel-droppers, no DSP. The "inv-2 realization" subsection
-below is kept as design archaeology; **where it disagrees, THIS section wins.**
-RAM target: a **1 GB Pi leader with headroom — no second CamillaDSP.**
+owner decision: **the brainy leader bakes ALL per-channel content correction; the
+other speakers are transport receivers** — channel-droppers, no room/content DSP.
+Driver DSP is the local-hardware exception: an active satellite that physically
+drives woofer/tweeter amps needs its own crossover/protection graph on that box.
+The "inv-2 realization" subsection below is kept as design archaeology; **where it
+disagrees, THIS section wins.** RAM target for the transport path: a **1 GB Pi
+leader with headroom — no second content-DSP CamillaDSP.**
 
 **The shape, in one breath:** the leader's *one* CamillaDSP bakes a stereo program
 where the **left channel is corrected for the leader's seat and the right for the
@@ -445,7 +469,9 @@ LEADER (stereo pair):
                 │     → outputd  (mix leader TTS HERE, low-latency) → DAC
                 └─ follower snapclient → ALSA ttable drop→R → DAC   (no TTS)
 
-FOLLOWER (dumb): snapclient → ttable drop→its channel → DAC. No CamillaDSP.
+FOLLOWER (transport): snapclient → ttable drop→its channel → DAC.
+FOLLOWER (driver-DSP, planned): snapclient → local driver crossover/protection
+                                → DAC(s)/amps. Still no voice/source brain.
 ```
 
 **Three load-bearing decisions, each from prior art:**
@@ -459,12 +485,16 @@ FOLLOWER (dumb): snapclient → ttable drop→its channel → DAC. No CamillaDSP
    a per-player "Left/Right/Mono" toggle. The receiver is a channel-picker — **the
    entire "dumb endpoint."**
 
-2. **One CamillaDSP on the leader bakes per-channel correction; receivers have NONE.**
+2. **One content-DSP CamillaDSP on the leader bakes per-channel correction;
+   transport receivers have none.**
    CamillaDSP applies a *different* filter to L vs R natively in one config (a
    `Filter` pipeline step per `channels: [0]` / `[1]`), ~1 % of a core, a few MB.
    This is the Roon model (DSP on the Core, per-zone; dumb RAAT endpoints). It
-   **deletes the second-CamillaDSP / per-follower-DSP RAM cost entirely.** CamillaDSP
-   writes to a **pipe**, not an ALSA device — which makes decision 3 free.
+   **deletes the second content-DSP / per-follower room-DSP RAM cost entirely.**
+   CamillaDSP writes to a **pipe**, not an ALSA device — which makes decision 3
+   free. This does not prohibit the separate driver-DSP endpoint profile, whose
+   local CamillaDSP exists only to protect and route the drivers attached to that
+   endpoint's DACs.
 
 3. **Snapcast owns output rate; CamillaDSP can't fight it — by construction.**
    `enable_rate_adjust` is unsupported on CamillaDSP's `File`/pipe backend (no output
@@ -576,11 +606,15 @@ component numbers are from research, not a measured stack.
   has zero codec latency at ~1.1 Mbps stereo (trivial on home WiFi). Our spike
   measured FLAC ≈ PCM on RAM/CPU, so pick by WiFi headroom: PCM first, Opus if
   bandwidth-constrained, FLAC only with chunk_ms raised.
-- Two complementary alignment knobs, different jobs: snapclient `--latency` nulls
-  the fixed *electrical/DAC-path* offset per client; a **per-channel `Delay` baked in
-  the leader's CamillaDSP** aligns *acoustic arrival* at the seat (L and R are
-  different distances from the listener). Set the CamillaDSP delay from the measured
-  impulse arrivals; keep `--latency` for hardware-path differences.
+- Three timing concepts, two calibration knobs: Snapcast's sync loop owns the
+  distributed clock/transport problem; snapclient `--latency` / Snapcast
+  `Client.SetLatency` nulls fixed whole-client *PCM/DAC/backend/output-path*
+  latency; a **per-channel `Delay` baked in the leader's CamillaDSP** aligns
+  *acoustic arrival* at the seat (L and R can be different distances from the
+  listener). Measure first: colocated/electrical endpoint baseline belongs in
+  Snapcast client latency; listening-seat arrival delta belongs in leader-side
+  CamillaDSP channel delay. See
+  [`research/balance-sync-calibration.md`](research/balance-sync-calibration.md).
 - Pin **48 kHz / S16** end-to-end (snd-aloop locks format/rate on first open).
 
 **Solo-impact contract (hard requirement for EVERY increment — owner-stated
@@ -1089,16 +1123,16 @@ receivers are dumb channel-droppers.**
   member-model) `channel_split` weave are **mutually exclusive** — the emitter
   raises on the combination. Every generated config keeps `volume_limit: 0.0`.
 
-- **Wireless sub (dumb endpoint):** the leader computes the
+- **Wireless sub (transport endpoint):** the leader computes the
   crossover, level, and delay and bakes them into the **LFE
-  channel before streaming**. The dumb box just plays it. No
-  on-endpoint DSP. Sub sync tolerance is *loose* (bass localizes
+  channel before streaming**. The endpoint just plays it. No
+  on-endpoint content DSP. Sub sync tolerance is *loose* (bass localizes
   poorly to the ear), so a few ms of misalignment is inaudible —
-  this is why the sub is the easiest dumb endpoint.
+  this is why the sub is the easiest transport endpoint.
 
-- **Full-range satellite (dumb endpoint):** needs per-channel
+- **Full-range satellite (transport endpoint):** needs per-channel
   room correction for *its* seat, which it cannot compute (no
-  CamillaDSP). So the leader applies a **channel-specific filter
+  local content DSP). So the leader applies a **channel-specific filter
   before streaming** (the `target_channels` path). To obtain the
   filter we run a one-time calibration: the satellite plays a
   sweep, a mic at the listening position captures it (reusing the
@@ -1107,9 +1141,18 @@ receivers are dumb channel-droppers.**
   calibration is **the single genuinely-new piece V1 adds**, and it
   is leader-side. See [HANDOFF-correction.md](HANDOFF-correction.md).
 
-- **Inter-speaker time alignment** is Snapcast's job
-  (`Client.SetLatency`), not correction's. Correction flattens each
-  side's magnitude at its seat.
+- **Inter-speaker time alignment has three owners, not one.** Snapcast
+  owns dynamic distributed sync: timestamped chunks, client clock
+  tracking, and drift correction. Snapcast client latency
+  (`Client.SetLatency` / `snapclient --latency`) is a static
+  whole-client PCM/output-path offset for fixed endpoint/DAC/backend
+  latency. Leader-side CamillaDSP `Delay` is the static rendered-channel
+  acoustic offset used to align arrival at the listening seat. Do not
+  describe CamillaDSP as the sync engine, and do not use Snapcast client
+  latency as a room-geometry catch-all. Measure first: colocated or
+  electrical endpoint baseline -> Snapcast latency; listening-seat
+  arrival delta -> leader-side CamillaDSP channel delay. See
+  [`research/balance-sync-calibration.md`](research/balance-sync-calibration.md).
 
 **P1.2 (2026-06-08):** the channel-split DSP itself is now codified,
 pure and tested, in
@@ -1117,8 +1160,8 @@ pure and tested, in
 — the `channel_select` Mixer (an L/R route, or a clip-safe −6.02 dB L+R
 sum for mono/sub) plus the sub's LR4 80 Hz lowpass. It is the *same*
 recipe whether a brainy stereo-pair member applies it locally or the
-leader applies it to pre-bake a dumb endpoint's stream (the dumb box
-runs no CamillaDSP, §1). It keeps `master_gain` identity (the Ducker
+leader applies it to pre-bake a transport endpoint's stream (the transport box
+runs no content-DSP CamillaDSP, §1). It keeps `master_gain` identity (the Ducker
 contract) and `volume_limit: 0.0`, and emits no positive gain. The
 crossover and channel-select mixer are emitted through the shared
 [`jasper/camilla_emit.py`](../jasper/camilla_emit.py) primitives (the
@@ -1158,15 +1201,16 @@ V1 — a bonded set shares one level.
 
 > **REVISED 2026-06-10 after review — the canonical design moves where volume
 > lives.** §5 above assumed every member is brainy (each sets its own CamillaDSP
-> `master_gain`). Under the canonical design that breaks two ways: a **dumb follower
-> has no CamillaDSP** to set, and on the leader `master_gain` is now **pre-buffer**
+> `master_gain`). Under the canonical design that breaks two ways: a **transport
+> follower has no local content-DSP CamillaDSP** to set, and on the leader
+> `master_gain` is now **pre-buffer**
 > (CamillaDSP-A bakes the stream), so a "louder" lags ~1 buffer AND is baked
 > identically into the shared stream. Resolution: **(1)** the shared room/pair level
 > stays `master_gain` on the leader (pre-stream — every member inherits it; accept
 > the ~buffer lag, it's music, not voice); **(2)** any **per-member / per-room trim**
 > (and *all* follower volume) moves to **Snapcast per-client volume**
 > (`Client.SetVolume`, post-buffer, works for a DSP-less endpoint — §3 already wires
-> the RPC), NOT `master_gain`; **(3)** a dumb follower never receives a
+> the RPC), NOT `master_gain`; **(3)** a transport follower never receives a
 > `POST /volume/set` (no master_gain to set) — its level is Snapcast client volume
 > only. The asymmetric-room balance trim flagged below therefore lives in Snapcast
 > client volume, not Camilla. The dial's live gauge will lead the audible change by
@@ -1737,7 +1781,7 @@ front-run the complexity nor forget where it belongs.
 
 ---
 
-Last verified: 2026-06-12 (BOND ROSTER — the leader now RECORDS who its
+2026-06-12 session notes (BOND ROSTER — the leader now RECORDS who its
 pair sibling is instead of inferring membership from "who on the LAN
 claims my bond_id". Live failure that forced it: a third, foreign Pi
 (the endpoint-tier test device) transiently claiming the live bond made
@@ -2419,3 +2463,7 @@ names + identity". Hardware-free coverage: `tests/test_mdns.py`,
 Off-by-default plumbing + the read-only `/rooms/` directory previously landed
 2026-06-04; bond-forming controls and the §8 sync/RAM numbers remain
 deferred/unmeasured until the spike runs on hardware.)
+
+---
+
+Last verified: 2026-06-13

@@ -9,6 +9,7 @@ patching clocks.
 """
 
 import asyncio
+import concurrent.futures
 import os
 import threading
 import time
@@ -66,6 +67,23 @@ def loop_thread():
     t = threading.Thread(target=loop.run_forever, daemon=True)
     t.start()
     yield loop
+
+    async def _cancel_pending():
+        current = asyncio.current_task()
+        pending = [
+            task for task in asyncio.all_tasks(loop)
+            if task is not current and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    fut = asyncio.run_coroutine_threadsafe(_cancel_pending(), loop)
+    try:
+        fut.result(timeout=2)
+    except concurrent.futures.TimeoutError:
+        pass
     loop.call_soon_threadsafe(loop.stop)
     t.join(timeout=2)
 
@@ -81,7 +99,7 @@ def _reset_state():
 def pair_env(loop_thread, monkeypatch):
     """A healthy bonded pair plus fakes for every seam; returns the
     call log + the schedule/run_async bridges bound to the loop."""
-    calls = {"window_open": 0, "window_closed": 0,
+    calls = {"window_open": 0, "window_closed": 0, "futures": [],
              "spawned": [], "procs": [], "posted": []}
     monkeypatch.setattr(
         mstate, "read_grouping_state", lambda *a, **k: dict(LEADER_G))
@@ -123,12 +141,35 @@ def pair_env(loop_thread, monkeypatch):
 
     monkeypatch.setattr(rooms, "_post_grouping_to_member", fake_post)
 
-    calls["schedule"] = (
-        lambda coro: asyncio.run_coroutine_threadsafe(coro, loop_thread))
-    calls["run_async"] = (
-        lambda coro, timeout=10.0: asyncio.run_coroutine_threadsafe(
-            coro, loop_thread).result(timeout))
-    return calls
+    def schedule(coro):
+        fut = asyncio.run_coroutine_threadsafe(coro, loop_thread)
+        calls["futures"].append(fut)
+        return fut
+
+    def run_async(coro, timeout=10.0):
+        return asyncio.run_coroutine_threadsafe(
+            coro, loop_thread).result(timeout)
+
+    def drain():
+        balance_flow.handle_stop()
+        for proc in calls["procs"]:
+            proc.terminate()
+        deadline = time.monotonic() + 2.0
+        for fut in calls["futures"]:
+            remaining = max(0.01, deadline - time.monotonic())
+            try:
+                fut.result(timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                fut.cancel()
+            except Exception:
+                pass
+
+    calls["schedule"] = schedule
+    calls["run_async"] = run_async
+    try:
+        yield calls
+    finally:
+        drain()
 
 
 class FakeHandler:

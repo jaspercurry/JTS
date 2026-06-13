@@ -12,6 +12,8 @@ outputd's ``dac_content`` lane, picking its channel THERE (outputd
     output clock; snapclient's sample-stuffing is the synced chain's ONE
     rate-tracker — §2 invariant 5) + ``playback_pipe_path`` pointed at
     snapserver's FIFO. No channel_split: the pipe carries BOTH channels.
+    Optional leader-owned L/R acoustic delays travel here too; they are
+    room/pair correction state, not follower-local policy.
   - ACTIVE FOLLOWER: solo defaults. Its local CamillaDSP is OUT of the
     bonded playback path (the round-trip feeds outputd directly); it
     keeps producing the normal direct lane — which is exactly the inv-B
@@ -70,11 +72,19 @@ def member_camilla_kwargs(
     if is_active_member(cfg) and cfg.role == "leader":
         from .reconcile import SNAPFIFO
 
-        return {
+        out = {
             "enable_rate_adjust": False,
             "channel_split": None,
             "playback_pipe_path": SNAPFIFO,
         }
+        if cfg.left_delay_ms > 0.0 or cfg.right_delay_ms > 0.0:
+            # Non-zero per-channel delay requires distinct L/R room
+            # chains. If a follower room PEQ has not been measured yet,
+            # the right room segment is explicitly flat rather than an
+            # accidental duplicate of the leader's room PEQ chain.
+            out["room_peqs_right"] = []
+            out["channel_delays_ms"] = (cfg.left_delay_ms, cfg.right_delay_ms)
+        return out
     return {
         "enable_rate_adjust": True,
         "channel_split": None,

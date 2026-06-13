@@ -45,19 +45,36 @@ function applyState(state) {
     if (dirty[name]) continue; // user toggled mid-flight; don't clobber
     input.checked = !!s.enabled;
     input.disabled = parked || s.available === false;
+    const note = el(name + "-unavailable-note");
+    if (note) {
+      const unavailable = s.available === false;
+      note.style.display = unavailable ? "" : "none";
+      if (
+        unavailable &&
+        typeof s.unavailableReason === "string" &&
+        s.unavailableReason
+      ) {
+        note.textContent = s.unavailableReason;
+      }
+    }
   }
   const btUnavailable =
     state.bluetooth && state.bluetooth.available === false;
-  if (el("bt-note")) el("bt-note").style.display = btUnavailable ? "" : "none";
+  if (el("bt-note")) {
+    el("bt-note").style.display = btUnavailable ? "" : "none";
+    if (
+      btUnavailable &&
+      typeof state.bluetooth.unavailableReason === "string" &&
+      state.bluetooth.unavailableReason
+    ) {
+      el("bt-note").textContent = state.bluetooth.unavailableReason;
+    }
+  }
   // USB sink shows a "needs reboot" note when the dtoverlay is missing
-  // (install.sh hasn't been run with the gadget section, or it's been
-  // manually removed).
+  // or when the USB-sink unit is not installed in this profile.
   const usbUnavailable = state.usbsink && state.usbsink.available === false;
   if (el("usbsink-note")) {
     el("usbsink-note").style.display = usbUnavailable ? "none" : "";
-  }
-  if (el("usbsink-unavailable-note")) {
-    el("usbsink-unavailable-note").style.display = usbUnavailable ? "" : "none";
   }
 }
 

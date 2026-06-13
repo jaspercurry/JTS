@@ -444,6 +444,18 @@ put untrusted strings into generated inline JavaScript such as
 `onclick="handler('...')"`. Prefer escaped `data-*` attributes with a
 delegated click handler.
 
+Browser phone-mic measurement pages should use
+[`/assets/shared/js/measurement-audio.js`](deploy/assets/shared/js/measurement-audio.js)
+for mono mic constraints, inline AudioWorklet loading, graph cleanup,
+RMS-to-dBFS conversion, mono WAV encoding, and the invariant that mic
+nodes never feed browser speaker output. Keep feature policy in the
+owning page/module: `/balance/` owns the one-speaker ramp threshold,
+`/sync/` owns marker timing and upload, `/correction/` owns calibrated
+mic/device selection and capture-quality evidence. Do not migrate
+`/correction/` onto the shared helper without an on-device browser pass;
+its existing capture path is larger and was moved verbatim for
+hardware-verified behavior.
+
 Static regression coverage for these conventions lives in
 [`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py).
 If that test catches a new page, change the page to use the shared

@@ -25,6 +25,8 @@ CAMILLA_CONF="/etc/camilladsp"
 ENV_DIR="/etc/jasper"
 STATE_DIR="/var/lib/jasper"
 SYSTEMD_DIR="/etc/systemd/system"
+INSTALL_PROFILE_DEFAULT="full"
+INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
@@ -75,11 +77,88 @@ Options:
 
 Environment:
   JASPER_INSTALL_DRY_RUN=1   Same as --dry-run.
+  JASPER_INSTALL_PROFILE=full|endpoint|satellite
+                             Install tier. Unset/default is full speaker.
+                             endpoint/satellite is the Zero 2 W satellite role.
+  JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1
+                             Allow a persisted install-profile change.
   JASPER_HOSTNAME=<name>.local
                              Speaker identity/cert hostname for direct
                              Pi-local installs. scripts/deploy-to-pi.sh
                              forwards this automatically.
 EOF
+}
+
+normalize_install_profile() {
+    case "${1:-}" in
+        ""|full)
+            printf 'full\n'
+            ;;
+        endpoint|satellite)
+            printf 'endpoint\n'
+            ;;
+        *)
+            echo "invalid JASPER_INSTALL_PROFILE=${1:-<empty>}; use full, endpoint, or satellite" >&2
+            return 2
+            ;;
+    esac
+}
+
+read_persisted_install_profile() {
+    local marker="${1:-${INSTALL_PROFILE_MARKER}}"
+    if [[ ! -f "${marker}" ]]; then
+        return 0
+    fi
+    local raw
+    raw="$(head -n1 "${marker}" | tr -d '[:space:]')"
+    [[ -n "${raw}" ]] || return 0
+    normalize_install_profile "${raw}"
+}
+
+# Test helpers pass an alternate marker path directly; production calls use the
+# canonical marker. Shellcheck only sees the production path.
+# shellcheck disable=SC2120
+resolve_install_profile() {
+    local marker="${1:-${INSTALL_PROFILE_MARKER}}"
+    local requested="${JASPER_INSTALL_PROFILE:-}"
+    local persisted requested_profile
+
+    persisted="$(read_persisted_install_profile "${marker}")" || return $?
+    if [[ -n "${requested}" ]]; then
+        requested_profile="$(normalize_install_profile "${requested}")" || return $?
+    elif [[ -n "${persisted}" ]]; then
+        requested_profile="${persisted}"
+    else
+        requested_profile="${INSTALL_PROFILE_DEFAULT}"
+    fi
+
+    if [[ -n "${persisted}" && "${persisted}" != "${requested_profile}" ]] \
+            && ! _is_truthy "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-0}"; then
+        cat >&2 <<EOF
+ERROR: install profile mismatch.
+
+Persisted profile: ${persisted}
+Requested profile: ${requested_profile}
+
+Refusing to switch install tiers implicitly. Set
+JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 only when intentionally converting
+this Pi between full speaker and endpoint tiers.
+EOF
+        return 2
+    fi
+
+    printf '%s\n' "${requested_profile}"
+}
+
+persist_install_profile() {
+    local profile="$1"
+    local marker="${2:-${INSTALL_PROFILE_MARKER}}"
+    profile="$(normalize_install_profile "${profile}")" || return $?
+    install -d -m 0750 "$(dirname "${marker}")"
+    local tmp="${marker}.tmp.$$"
+    printf '%s\n' "${profile}" > "${tmp}"
+    chmod 0644 "${tmp}"
+    mv "${tmp}" "${marker}"
 }
 
 # Pi-generated pip constraints (scripts/generate-pi-constraints.sh).
@@ -95,7 +174,76 @@ jasper_pip_constraints_file() {
     fi
 }
 
+print_endpoint_install_plan() {
+    cat <<EOF
+==> JTS endpoint install plan (dry run)
+
+No host changes are made in this mode. This is the Raspberry Pi Zero 2 W
+install tier: the same JTS repo and control plane, but a small runtime
+profile for a timed Snapcast renderer.
+
+Run for real from a Pi-local checkout:
+  sudo JASPER_INSTALL_PROFILE=endpoint JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
+
+1. Profile guard
+   - Resolve JASPER_INSTALL_PROFILE=endpoint.
+   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
+   - Refuse later full/endpoint tier changes unless
+     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+
+2. System packages
+   - apt-get update.
+   - Minimal runtime packages:
+     python3 python3-venv libasound2 libasound2-plugins alsa-utils
+     curl ca-certificates rsync nginx-light avahi-daemon avahi-utils
+     snapclient sox.
+
+3. Runtime files and state
+   - Create/update /opt/jasper, /etc/jasper, and /var/lib/jasper.
+   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata.
+   - Copy the jasper Python package, pyproject.toml, docs, Avahi service
+     templates, endpoint web assets/nginx config, multi-room systemd
+     units, jasper-control, jasper-doctor, identity helpers, and install
+     helpers needed by the endpoint tier.
+
+4. Python runtime
+   - Create /opt/jasper/.venv.
+   - Install the base JTS Python package without the voice/wake/DSP
+     extras used by full speakers.
+
+5. Services and live actions
+   - Reload udev and systemd.
+   - Enable/start jasper-control, endpoint-scoped nginx, Avahi, and
+     identity reconciliation.
+   - Enable socket-activated endpoint web for /system/ and /sources/
+     only; leave the combined full-speaker jasper-web bundle disabled.
+   - Install the managed JTS snapserver/snapclient units disabled.
+   - Enable/start the multi-room grouping reconciler; role=follower starts
+     snapclient from the shared reconciler argv builder.
+   - Disable the distro snapclient.service if the apt package enabled it.
+   - Seed the WiFi guardian recovery stash from the active NetworkManager
+     profile when possible, matching the full install's recovery contract.
+   - Apply memory and cgroup tuning for jts-audio.slice; reboot may be
+     required for kernel boot-arg and zram changes.
+   - Run jasper-doctor in endpoint-aware mode as a final non-blocking
+     health summary.
+
+6. Explicitly out of scope for the endpoint tier
+   - Voice, wake, microphone/AEC, renderer, full setup-wizard,
+     CamillaDSP, fan-in, outputd, Bluetooth-source, AirPlay, Spotify,
+     USB-sink, correction, and accessory firmware build/install surfaces.
+
+This dry run is a planning aid for contributors; it is not a substitute
+for a real Zero 2 W install/deploy validation before release.
+EOF
+}
+
 print_install_plan() {
+    local profile="${1:-full}"
+    if [[ "${profile}" == "endpoint" ]]; then
+        print_endpoint_install_plan
+        return 0
+    fi
     cat <<EOF
 ==> JTS install plan (dry run)
 
@@ -107,6 +255,13 @@ no-op decisions.
 
 Run for real from a Pi-local checkout:
   sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
+
+Profile guard:
+  - Resolve JASPER_INSTALL_PROFILE=full unless a persisted profile marker
+    says otherwise.
+  - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
+  - Refuse later full/endpoint tier changes unless
+    JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
 
 1. System packages
    - apt-get update.
@@ -350,6 +505,17 @@ install_deps() {
         libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
         xxd \
         bluez-alsa-utils avahi-daemon avahi-utils
+}
+
+install_endpoint_deps() {
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        python3 python3-venv \
+        libasound2 libasound2-plugins alsa-utils \
+        curl ca-certificates rsync \
+        nginx-light \
+        avahi-daemon avahi-utils \
+        snapclient sox
 }
 
 build_webrtc_v2_for_aec3() {
@@ -864,6 +1030,105 @@ install_alsa() {
     echo "  Wrote /etc/asound.conf with fan-in, outputd lanes, and jasper_out rollback path"
 }
 
+write_build_manifest() {
+    # Build manifest — captures the git SHA + install timestamp at the
+    # moment install.sh ran. The /system dashboard and deploy verifier
+    # read this to show/prove which checkout is installed.
+    local git_sha="${JASPER_DEPLOY_SHA:-unknown}"
+    local git_full="${JASPER_DEPLOY_SHA_FULL:-unknown}"
+    local git_branch="${JASPER_DEPLOY_BRANCH:-unknown}"
+    if [[ "${git_sha}" == "unknown" ]] && command -v git >/dev/null 2>&1 && \
+       { [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; }; then
+        git_sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
+        git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)
+        git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+    fi
+    if [[ "${git_sha}" == "unknown" && -f "${STATE_DIR}/build.txt" ]]; then
+        local prior_sha
+        prior_sha=$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
+        if [[ -n "${prior_sha}" && "${prior_sha}" != "unknown" ]]; then
+            git_sha="${prior_sha}"
+            git_full=$(grep -E '^JASPER_GIT_SHA_FULL=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
+            git_branch=$(grep -E '^JASPER_GIT_BRANCH=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
+            echo "  preserving build manifest from prior install: ${git_sha} on ${git_branch}"
+        fi
+    fi
+    cat > "${STATE_DIR}/build.txt" <<EOF
+JASPER_GIT_SHA=${git_sha}
+JASPER_GIT_SHA_FULL=${git_full}
+JASPER_GIT_BRANCH=${git_branch}
+JASPER_INSTALL_AT=$(date -Iseconds)
+EOF
+    chmod 0644 "${STATE_DIR}/build.txt"
+    echo "  Build manifest: ${git_sha} on ${git_branch}"
+}
+
+set_endpoint_env_value() {
+    local key="$1"
+    local value="$2"
+    sed -i.bak "/^${key}=/d" "${ENV_DIR}/jasper.env"
+    rm -f "${ENV_DIR}/jasper.env.bak"
+    printf '%s=%s\n' "${key}" "${value}" >> "${ENV_DIR}/jasper.env"
+}
+
+install_endpoint_jasper() {
+    install -d -m 0755 "${INSTALL_DIR}"
+    install -d -m 0750 "${STATE_DIR}"
+    install -d -m 0750 "${ENV_DIR}"
+    install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
+
+    write_build_manifest
+
+    rsync -a --delete \
+        --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
+        --exclude='tests' --exclude='build' --exclude='*.egg-info' \
+        "${REPO_DIR}/jasper" \
+        "${REPO_DIR}/pyproject.toml" \
+        "${REPO_DIR}/README.md" \
+        "${REPO_DIR}/docs" \
+        "${INSTALL_DIR}/"
+
+    if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
+        python3 -m venv "${INSTALL_DIR}/.venv"
+    fi
+    "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip==26.1.2 wheel==0.47.0
+
+    local -a pip_constraints=()
+    local constraints_file
+    constraints_file="$(jasper_pip_constraints_file)"
+    if [[ -n "${constraints_file}" ]]; then
+        echo "  applying Pi-generated pip constraints: ${constraints_file}"
+        pip_constraints=(-c "${constraints_file}")
+    fi
+    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" -e "${INSTALL_DIR}"
+
+    local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"
+    if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
+        cat > "${ENV_DIR}/jasper.env" <<EOF
+JASPER_HOSTNAME=${hostname_value}
+JASPER_CONTROL_HOST=0.0.0.0
+JASPER_SHAIRPORT_SUPERVISOR=disabled
+JASPER_GROUPING_SUPERVISOR=disabled
+JASPER_INSTALL_PROFILE=endpoint
+EOF
+        chmod 0640 "${ENV_DIR}/jasper.env"
+        echo "  endpoint env: created ${ENV_DIR}/jasper.env"
+    else
+        set_endpoint_env_value JASPER_CONTROL_HOST "0.0.0.0"
+        set_endpoint_env_value JASPER_SHAIRPORT_SUPERVISOR "disabled"
+        set_endpoint_env_value JASPER_GROUPING_SUPERVISOR "disabled"
+        set_endpoint_env_value JASPER_INSTALL_PROFILE "endpoint"
+        chmod 0640 "${ENV_DIR}/jasper.env"
+        echo "  endpoint env: refreshed endpoint-only defaults"
+    fi
+
+    if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
+        printf 'JASPER_SPEAKER_NAME="JTS Endpoint"\n' > "${STATE_DIR}/speaker_name.env"
+        chmod 0644 "${STATE_DIR}/speaker_name.env"
+        echo "  speaker name: JTS Endpoint"
+    fi
+}
+
 # Rebuild an optional satellite firmware .bin from source if (a) it's
 # missing, or (b) any firmware input is newer than the staged .bin. This
 # is opt-in via JASPER_BUILD_OPTIONAL_FIRMWARE=1; the base speaker
@@ -969,53 +1234,7 @@ install_jasper() {
     # readiness. Writers use atomic timestamped JSON files.
     install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
 
-    # Build manifest — captures the git SHA + install timestamp at the
-    # moment install.sh ran. The /system dashboard reads this to show
-    # "version: <sha>, installed <timestamp>". Falls back to "unknown"
-    # if REPO_DIR isn't a git checkout (e.g. tarball deploy).
-    #
-    # Four sources, in priority order:
-    #   1. JASPER_DEPLOY_SHA / JASPER_DEPLOY_SHA_FULL / JASPER_DEPLOY_BRANCH
-    #      env vars — set by scripts/deploy-to-pi.sh on the laptop before
-    #      sudo-running install.sh. This is the only source that works
-    #      when the standard rsync deploy excludes .git/ (which it does).
-    #   2. Local git checkout in REPO_DIR, if git is installed — this
-    #      is a developer convenience for direct checkout installs, not
-    #      a base appliance dependency.
-    #   3. Existing build.txt — preserve a previously-correct SHA when
-    #      install.sh is re-run directly (e.g.
-    #      `sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh`
-    #      to regen the TLS cert after a hostname change) without the
-    #      DEPLOY env vars. Otherwise the manifest gets clobbered back
-    #      to "unknown" on every such re-run, surprising the dashboard.
-    #   4. "unknown" — tarball deploys with no git info available.
-    local git_sha="${JASPER_DEPLOY_SHA:-unknown}"
-    local git_full="${JASPER_DEPLOY_SHA_FULL:-unknown}"
-    local git_branch="${JASPER_DEPLOY_BRANCH:-unknown}"
-    if [[ "${git_sha}" == "unknown" ]] && command -v git >/dev/null 2>&1 && \
-       { [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; }; then
-        git_sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
-        git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)
-        git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
-    fi
-    if [[ "${git_sha}" == "unknown" && -f "${STATE_DIR}/build.txt" ]]; then
-        local prior_sha
-        prior_sha=$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-        if [[ -n "${prior_sha}" && "${prior_sha}" != "unknown" ]]; then
-            git_sha="${prior_sha}"
-            git_full=$(grep -E '^JASPER_GIT_SHA_FULL=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-            git_branch=$(grep -E '^JASPER_GIT_BRANCH=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
-            echo "  preserving build manifest from prior install: ${git_sha} on ${git_branch}"
-        fi
-    fi
-    cat > "${STATE_DIR}/build.txt" <<EOF
-JASPER_GIT_SHA=${git_sha}
-JASPER_GIT_SHA_FULL=${git_full}
-JASPER_GIT_BRANCH=${git_branch}
-JASPER_INSTALL_AT=$(date -Iseconds)
-EOF
-    chmod 0644 "${STATE_DIR}/build.txt"
-    echo "  Build manifest: ${git_sha} on ${git_branch}"
+    write_build_manifest
 
 
     # Per-account Google refresh tokens live under here at mode 0600.
@@ -1100,7 +1319,7 @@ EOF
     "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" \
         requests tqdm 'scipy>=1.3,<2' 'scikit-learn>=1,<2'
 
-    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" -e "${INSTALL_DIR}"
+    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"
 
     # jasper_aec3 — pybind11 bindings for WebRTC AEC3. Two engines:
     #   - _aec3      → links against Debian Trixie's apt-installed
@@ -1518,6 +1737,173 @@ PY
     migrate_control_host_bind_seed
 }
 
+render_endpoint_unit() {
+    local src="$1"
+    local dest="$2"
+    # Endpoint units must not order themselves behind full-speaker audio
+    # daemons that are intentionally absent from the Zero 2 W profile.
+    sed \
+        -e 's/ jasper-camilla.service//g' \
+        -e 's/jasper-camilla.service//g' \
+        -e 's/ jasper-fanin.service//g' \
+        -e 's/jasper-fanin.service//g' \
+        -e 's/^After=[[:space:]]*/After=/' \
+        -e 's/^Wants=[[:space:]]*/Wants=/' \
+        -e 's/^Requires=[[:space:]]*/Requires=/' \
+        -e '/^After=[[:space:]]*$/d' \
+        -e '/^Wants=[[:space:]]*$/d' \
+        -e '/^Requires=[[:space:]]*$/d' \
+        "$src" > "$dest"
+    chmod 0644 "$dest"
+}
+
+validate_endpoint_unit_file() {
+    local unit="$1"
+    if grep -Eq '^(After|Wants|Requires)=[[:space:]]*$' "${unit}"; then
+        echo "  ERROR: endpoint unit has an empty dependency directive: ${unit}" >&2
+        return 1
+    fi
+    if grep -Eq 'jasper-(camilla|fanin)\.service' "${unit}"; then
+        echo "  ERROR: endpoint unit still references full-speaker audio daemons: ${unit}" >&2
+        return 1
+    fi
+}
+
+validate_endpoint_systemd_units() {
+    local -a units=(
+        "${SYSTEMD_DIR}/jasper-control.service"
+        "${SYSTEMD_DIR}/jasper-snapserver.service"
+        "${SYSTEMD_DIR}/jasper-snapclient.service"
+        "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+        "${SYSTEMD_DIR}/jasper-system-web.service"
+        "${SYSTEMD_DIR}/jasper-system-web.socket"
+        "${SYSTEMD_DIR}/jasper-sources-web.service"
+        "${SYSTEMD_DIR}/jasper-sources-web.socket"
+        "${SYSTEMD_DIR}/jts-audio.slice"
+        "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
+        "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+    )
+    local unit
+    for unit in "${units[@]}"; do
+        validate_endpoint_unit_file "${unit}" || return 1
+    done
+    if command -v systemd-analyze >/dev/null 2>&1; then
+        local -a verify_units=(
+            "${SYSTEMD_DIR}/jasper-control.service"
+            "${SYSTEMD_DIR}/jasper-snapclient.service"
+            "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-system-web.service"
+            "${SYSTEMD_DIR}/jasper-system-web.socket"
+            "${SYSTEMD_DIR}/jasper-sources-web.service"
+            "${SYSTEMD_DIR}/jasper-sources-web.socket"
+            "${SYSTEMD_DIR}/jts-audio.slice"
+            "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+        )
+        if [[ -x /usr/bin/snapserver ]]; then
+            verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")
+        fi
+        systemd-analyze verify "${verify_units[@]}" || {
+            echo "  ERROR: rendered endpoint systemd units failed systemd-analyze verify" >&2
+            return 1
+        }
+    fi
+}
+
+install_endpoint_systemd_units() {
+    install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin "${SYSTEMD_DIR}"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
+        /usr/local/lib/jasper/jasper-env-file.sh
+    install -d -m 0755 /usr/local/lib/jasper/install
+    install -m 0644 \
+        "${REPO_DIR}"/deploy/lib/install/*.sh \
+        /usr/local/lib/jasper/install/
+
+    render_endpoint_unit \
+        "${REPO_DIR}/deploy/systemd/jasper-control.service" \
+        "${SYSTEMD_DIR}/jasper-control.service"
+    render_endpoint_unit \
+        "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
+        "${SYSTEMD_DIR}/jasper-snapserver.service"
+    render_endpoint_unit \
+        "${REPO_DIR}/deploy/systemd/jasper-snapclient.service" \
+        "${SYSTEMD_DIR}/jasper-snapclient.service"
+    render_endpoint_unit \
+        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-system-web.service" \
+        "${SYSTEMD_DIR}/jasper-system-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-system-web.socket" \
+        "${SYSTEMD_DIR}/jasper-system-web.socket"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-sources-web.service" \
+        "${SYSTEMD_DIR}/jasper-sources-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-sources-web.socket" \
+        "${SYSTEMD_DIR}/jasper-sources-web.socket"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jts-audio.slice" \
+        "${SYSTEMD_DIR}/jts-audio.slice"
+
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.timer" \
+        "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-identity-reconcile" \
+        /usr/local/sbin/jasper-identity-reconcile
+    install -d -m 0755 "${SYSTEMD_DIR}/ssh.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
+        "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
+
+    validate_endpoint_systemd_units
+
+    for distro_unit in snapserver.service snapclient.service; do
+        if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
+                | grep -q "^${distro_unit}"; then
+            systemctl disable --now "${distro_unit}" >/dev/null 2>&1 || true
+        fi
+    done
+
+    # A deliberate conversion from full speaker -> endpoint must leave no
+    # brain services running. Units may be absent on a fresh endpoint image;
+    # every disable is best-effort by design.
+    for brain_unit in \
+        jasper-voice.service jasper-camilla.service jasper-fanin.service \
+        jasper-outputd.service jasper-aec-bridge.service jasper-aec-init.service \
+        jasper-aec-reconcile.service jasper-audio-hardware-reconcile.service \
+        jasper-input.service shairport-sync.service nqptp.service \
+        librespot.service bt-agent.service jasper-mux.service \
+        jasper-web.socket jasper-dial-web.socket jasper-correction-web.socket \
+        jasper-bluetooth-web.socket \
+        jasper-web.service jasper-dial-web.service jasper-correction-web.service \
+        jasper-bluetooth-web.service \
+        camillagui.socket camillagui.service camillagui-proxy.service \
+        bluealsa-aplay.service bluealsa.service; do
+        systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
+    done
+
+    systemctl daemon-reload
+    systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
+    systemctl enable jasper-system-web.socket jasper-sources-web.socket
+    systemctl restart jasper-system-web.socket jasper-sources-web.socket \
+        2>/dev/null || true
+    systemctl enable jasper-control.service jasper-grouping-reconcile.service
+    systemctl enable --now avahi-daemon.service 2>/dev/null || true
+    systemctl enable --now jasper-identity-reconcile.timer
+    systemctl start jasper-identity-reconcile.service || \
+        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
+    systemctl restart jasper-control.service
+    reconcile_grouping_state
+    echo "Endpoint units enabled. jasper-control, /system/, and /sources/ are live; snapclient is managed by grouping reconcile."
+}
+
 install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
@@ -1920,6 +2306,13 @@ install_systemd_units() {
 
     systemctl daemon-reload
 
+    # Endpoint installs serve /sources/ from a tiny standalone socket on
+    # 8773. Full speakers serve /sources/ from the combined jasper-web
+    # bundle, so disable the endpoint-only socket during tier conversion
+    # before enabling jasper-web.socket on the same port.
+    systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
+        >/dev/null 2>&1 || true
+
     # Migrate the 4 wizard services from always-on to socket-activated.
     # Older installs had jasper-X-web.service enabled directly; the new
     # topology enables the .socket instead, which pulls in the .service
@@ -2259,6 +2652,37 @@ install_nginx_site() {
     fi
 }
 
+install_endpoint_nginx_site() {
+    # Small endpoint site: static / plus socket-activated /system/ and
+    # /sources/. The source page itself disables renderer rows whose
+    # units are absent from the endpoint tier.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/nginx-jasper-endpoint.conf" \
+        /etc/nginx/sites-enabled/jasper.conf
+
+    install -d -m 0755 /usr/share/jasper-web
+    install -m 0644 \
+        "${REPO_DIR}/deploy/endpoint-index.html" \
+        /usr/share/jasper-web/index.html
+
+    local app_css_ver
+    app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
+    [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
+    sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
+
+    install_web_assets
+    rm -f /etc/nginx/sites-enabled/default
+
+    if nginx -t 2>/dev/null; then
+        systemctl enable --now nginx 2>/dev/null || true
+        systemctl reload nginx
+        echo "  endpoint nginx reloaded — http://<host>/{,sources,system} are live"
+    else
+        echo "  ERROR: endpoint nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
+        return 1
+    fi
+}
+
 install_avahi_jasper_control() {
     # Advertise jasper-control over mDNS so the rotary dial can find
     # us via service discovery instead of a hardcoded hostname. See
@@ -2516,6 +2940,7 @@ run_doctor_summary() {
 
 main() {
     local dry_run="${JASPER_INSTALL_DRY_RUN:-0}"
+    local install_profile
     local arg
     for arg in "$@"; do
         case "${arg}" in
@@ -2534,8 +2959,10 @@ main() {
         esac
     done
 
+    install_profile="$(resolve_install_profile)" || return $?
+
     if _is_truthy "${dry_run}"; then
-        print_install_plan
+        print_install_plan "${install_profile}"
         return 0
     fi
     if ! _is_falsey_or_empty "${dry_run}"; then
@@ -2544,8 +2971,25 @@ main() {
         return 2
     fi
 
-    echo "==> install.sh starting"
+    echo "==> install.sh starting (profile: ${install_profile})"
+    if [[ "${install_profile}" == "endpoint" ]]; then
+        require_root
+        persist_install_profile "${install_profile}"
+        install_endpoint_deps
+        install_endpoint_jasper
+        install_endpoint_systemd_units
+        install_endpoint_nginx_site
+        migrate_wifi_guardian
+        migrate_memory_resilience
+        migrate_cgroup_memory_enabled
+        install_journald_persistent_storage
+        install_avahi_jasper_control
+        install_peering_template
+        run_doctor_summary
+        return 0
+    fi
     require_root
+    persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp

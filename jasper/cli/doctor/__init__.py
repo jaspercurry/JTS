@@ -41,9 +41,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
+from ...install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
+from ...usage import DEFAULT_USAGE_DB
 
 from ._registry import doctor_check, registered_checks
 from ._shared import (
@@ -121,6 +124,8 @@ from .audio import (
     _OUTPUTD_EXPECTED_DAC_PCM,
     _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
     _OUTPUTD_STATUS_SOCKET,
+    check_endpoint_snapclient_binary,
+    check_endpoint_alsa_playback,
     check_fanin_asound_wiring,
     check_fanin_service,
     check_fanin_tts_drops,
@@ -276,6 +281,28 @@ from .satellites import (
     check_dial_heartbeat,
 )
 
+_ENDPOINT_OMITTED_DOCTOR_GROUPS = frozenset({
+    "audio",
+    "voice",
+    "wake",
+    "renderers",
+    "integrations",
+    "correction",
+    "aec",
+    "usbsink",
+    "resilience",
+    "satellites",
+})
+
+_FULL_OMITTED_DOCTOR_GROUPS = frozenset({
+    "endpoint_audio",
+})
+
+
+def _endpoint_skip_result(entry) -> CheckResult:
+    label = entry.label or _check_name(entry.func)
+    return CheckResult(label, "ok", "not installed (endpoint tier)")
+
 __all__ = [
     "doctor_check",
     "registered_checks",
@@ -351,6 +378,8 @@ __all__ = [
     "check_tts_open",
     "check_output_hardware_state",
     "check_apple_dongle_audio",
+    "check_endpoint_snapclient_binary",
+    "check_endpoint_alsa_playback",
     "check_dongle_headphone_at_max",
     "check_fanin_binary_installed",
     "_asound_non_comment_text",
@@ -789,7 +818,24 @@ def _watch_line(results: list[CheckResult]) -> str:
         )
     return f"{ts}  {GREEN}all {len(results)} checks ok{RESET}"
 
-async def _watch_loop(cfg: Config, interval: float) -> int:
+def _endpoint_config_from_env() -> SimpleNamespace:
+    """Minimal cfg surface for endpoint-retained doctor checks.
+
+    Endpoint installs intentionally do not configure a voice provider, so
+    constructing the full speaker Config would fail before run_async can
+    skip full-speaker checks. Today the retained endpoint checks only need
+    usage_db for the shared state-dir probe.
+    """
+    return SimpleNamespace(
+        usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
+    )
+
+def _doctor_config_from_env(install_profile: str) -> Config | SimpleNamespace:
+    if install_profile == ENDPOINT_INSTALL_PROFILE:
+        return _endpoint_config_from_env()
+    return Config.from_env()
+
+async def _watch_loop(cfg: Config | SimpleNamespace, interval: float) -> int:
     """Run checks every `interval` seconds, print one line per pass.
     Returns 0 on Ctrl-C."""
     print(
@@ -834,8 +880,9 @@ def main() -> None:
     args = parser.parse_args()
     _load_env_files()
     try:
-        cfg = Config.from_env()
-    except RuntimeError as e:
+        install_profile = read_install_profile()
+        cfg = _doctor_config_from_env(install_profile)
+    except (RuntimeError, ValueError) as e:
         if args.json:
             import json as _json
             print(_json.dumps({
@@ -876,7 +923,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-async def run_async(cfg: Config) -> list[CheckResult]:
+async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
     """Run every registered check in canonical order and return the results.
 
     Rebuilds the exact ``DoctorCheck`` sequence the original hand-ordered
@@ -900,9 +947,17 @@ async def run_async(cfg: Config) -> list[CheckResult]:
     Result order therefore equals the original: the 73 synchronous checks
     in their literal order, then the CamillaDSP websocket check.
     """
+    install_profile = read_install_profile()
+    endpoint_tier = install_profile == ENDPOINT_INSTALL_PROFILE
     sync_checks: list[DoctorCheck] = []
     async_tail: list = []
     for entry in registered_checks():
+        if not endpoint_tier and entry.group in _FULL_OMITTED_DOCTOR_GROUPS:
+            continue
+        if endpoint_tier and entry.group in _ENDPOINT_OMITTED_DOCTOR_GROUPS:
+            skipped = _endpoint_skip_result(entry)
+            sync_checks.append((skipped.name, lambda skipped=skipped: skipped))
+            continue
         fn = entry.func
         if entry.is_async:
             async_tail.append((entry.label, fn))

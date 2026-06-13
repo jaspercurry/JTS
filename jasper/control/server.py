@@ -87,6 +87,12 @@ from ..audio_validation import (
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..env_load import subprocess_env_with_fresh_files
 from ..atomic_io import locked_update_env_file
+from ..install_profile import (
+    ENDPOINT_INSTALL_PROFILE,
+    install_role_for_profile,
+    is_satellite_install_profile,
+    read_install_profile,
+)
 from ..wake_models import WAKE_MODEL_FILE
 
 logger = logging.getLogger(__name__)
@@ -106,6 +112,70 @@ AUDIO_QUALITY_RENDERER_UNITS = [
 ]
 OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
 SPOTIFY_OAUTH_CALLBACK_BASE = "https://jaspercurry.github.io/spotify-oauth-callback/"
+_ENDPOINT_ALLOWED_GET_ROUTES = frozenset({
+    "/healthz",
+    "/volume",
+    "/debug",
+    "/grouping",
+    "/system/snapshot",
+    "/system/diagnostics",
+})
+_ENDPOINT_ALLOWED_POST_ROUTES = frozenset({
+    "/volume/adjust",
+    "/volume/set",
+    "/grouping/set",
+    "/volume/mute",
+    "/debug",
+    "/system/reboot",
+    "/system/poweroff",
+})
+
+
+def _control_install_profile() -> str:
+    try:
+        return read_install_profile()
+    except ValueError as e:
+        logger.warning(
+            "event=install_profile.invalid surface=jasper-control error=%r",
+            str(e),
+        )
+        return ENDPOINT_INSTALL_PROFILE
+
+
+def _control_route_allowed_for_install_profile(
+    profile: str,
+    *,
+    method: str,
+    path: str,
+) -> bool:
+    if not is_satellite_install_profile(profile):
+        return True
+    if method == "GET":
+        return path in _ENDPOINT_ALLOWED_GET_ROUTES
+    if method == "POST":
+        return path in _ENDPOINT_ALLOWED_POST_ROUTES
+    return False
+
+
+def _system_capabilities_for_profile(profile: str) -> dict[str, Any]:
+    role = install_role_for_profile(profile)
+    satellite = is_satellite_install_profile(profile)
+    reason = (
+        "Satellite endpoints do not run local voice, renderer, or audio "
+        "conversion services; those controls live on the leader."
+        if satellite else ""
+    )
+    return {
+        "install_profile": profile,
+        "role": role,
+        "audio_quality": not satellite,
+        "restart_voice": not satellite,
+        "restart_audio": not satellite,
+        "reboot": True,
+        "poweroff": True,
+        "diagnostics": True,
+        "unavailable_reason": reason,
+    }
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -674,6 +744,9 @@ def _kick_grouping_reconciler() -> None:
 def _write_grouping(
     *, enabled: bool, role: str, channel: str, bond_id: str, leader_addr: str,
     trim_db: "float | None" = None,
+    client_latency_ms: "int | None" = None,
+    left_delay_ms: "float | None" = None,
+    right_delay_ms: "float | None" = None,
     peer_addr: "str | None" = None,
     peer_name: "str | None" = None,
 ) -> None:
@@ -698,6 +771,12 @@ def _write_grouping(
         # caller omits it (bond/unbond/swap fan-outs never send trim, so
         # a calibrated balance survives role/channel changes).
         updates["JASPER_GROUPING_TRIM_DB"] = f"{trim_db:.1f}"
+    if client_latency_ms is not None:
+        updates["JASPER_GROUPING_CLIENT_LATENCY_MS"] = str(int(client_latency_ms))
+    if left_delay_ms is not None:
+        updates["JASPER_GROUPING_LEFT_DELAY_MS"] = f"{left_delay_ms:.3f}"
+    if right_delay_ms is not None:
+        updates["JASPER_GROUPING_RIGHT_DELAY_MS"] = f"{right_delay_ms:.3f}"
     # Bond roster (leader only): same preserved-when-omitted contract as
     # trim; an EXPLICIT empty string clears it (the bond flow clears the
     # roster on non-leader members so a role flip can't leave a stale
@@ -1926,6 +2005,21 @@ def _make_handler(
                 return False
             return True
 
+        def _guard_install_profile_route(self) -> bool:
+            profile = _control_install_profile()
+            if _control_route_allowed_for_install_profile(
+                profile,
+                method=self.command,
+                path=self.path,
+            ):
+                return True
+            logger.warning(
+                "event=control.route_blocked profile=%s method=%s path=%s client=%s",
+                profile, self.command, self.path, self.address_string(),
+            )
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return False
+
         def _volume_payload(self, percent: int) -> dict[str, Any]:
             # `db` is computed for back-compat with the dial firmware
             # which reads `percent` but logs `db`. The legacy 50 dB
@@ -2040,15 +2134,17 @@ def _make_handler(
         # named method, logic unchanged.
         #
         # SECURITY ORDERING IS LOAD-BEARING: the management-read /
-        # mutating-request guard runs FIRST (before the table lookup), and
-        # the unknown-path 404 happens LAST (table miss -> send_error). So
-        # an unknown path under a hostile Host/Origin is still rejected by
+        # mutating-request guard runs FIRST, then install-profile route
+        # scope, and the ordinary table lookup happens LAST. So an
+        # unknown path under a hostile Host/Origin is still rejected by
         # the guard (403/400/413) BEFORE it can 404 — the inverse of the
         # web-wizard "route-check before guard" convention, preserved here
         # on purpose. Do not reorder lookup ahead of the guard.
 
         def do_GET(self) -> None:  # noqa: N802
             if not self._guard_management_read():
+                return
+            if not self._guard_install_profile_route():
                 return
             handler_name = self._GET_ROUTES.get(self.path)
             if handler_name is None:
@@ -2232,6 +2328,7 @@ def _make_handler(
                 logger.exception("outputd status snapshot failed")
                 outputd_status = None
 
+            install_profile = _control_install_profile()
             payload: dict[str, Any] = {
                 "build": read_build_info(),
                 "metrics": (
@@ -2243,6 +2340,9 @@ def _make_handler(
                 "voice_provider": read_active_provider(),
                 "speaker_name": _read_speaker_name_state().__dict__,
                 "home_assistant": ha_status,
+                "system_capabilities": _system_capabilities_for_profile(
+                    install_profile,
+                ),
             }
             self._send_json(payload)
 
@@ -2280,6 +2380,8 @@ def _make_handler(
 
         def do_POST(self) -> None:  # noqa: N802
             if not self._guard_mutating_request():
+                return
+            if not self._guard_install_profile_route():
                 return
             handler_name = self._POST_ROUTES.get(self.path)
             if handler_name is None:
@@ -2407,6 +2509,36 @@ def _make_handler(
                         {"error": "trim_db must be a number"}, status=400,
                     )
                     return
+            client_latency_ms: int | None = None
+            if "client_latency_ms" in body:
+                try:
+                    client_latency_ms = int(body["client_latency_ms"])
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "client_latency_ms must be an integer"},
+                        status=400,
+                    )
+                    return
+            left_delay_ms: float | None = None
+            if "left_delay_ms" in body:
+                try:
+                    left_delay_ms = float(body["left_delay_ms"])
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "left_delay_ms must be a number"},
+                        status=400,
+                    )
+                    return
+            right_delay_ms: float | None = None
+            if "right_delay_ms" in body:
+                try:
+                    right_delay_ms = float(body["right_delay_ms"])
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "right_delay_ms must be a number"},
+                        status=400,
+                    )
+                    return
             peer_addr: str | None = None
             if "peer_addr" in body:
                 peer_addr = str(body.get("peer_addr") or "").strip()
@@ -2422,6 +2554,15 @@ def _make_handler(
                     role=role, channel=channel,
                     bond_id=bond_id, leader_addr=leader_addr,
                     trim_db=trim_db if trim_db is not None else 0.0,
+                    client_latency_ms=(
+                        client_latency_ms
+                        if client_latency_ms is not None
+                        else 0
+                    ),
+                    left_delay_ms=left_delay_ms if left_delay_ms is not None else 0.0,
+                    right_delay_ms=(
+                        right_delay_ms if right_delay_ms is not None else 0.0
+                    ),
                     peer_addr=peer_addr or "",
                     peer_name=peer_name or "",
                 )
@@ -2433,6 +2574,9 @@ def _make_handler(
                     enabled=enabled, role=role, channel=channel,
                     bond_id=bond_id, leader_addr=leader_addr,
                     trim_db=trim_db,
+                    client_latency_ms=client_latency_ms,
+                    left_delay_ms=left_delay_ms,
+                    right_delay_ms=right_delay_ms,
                     peer_addr=peer_addr, peer_name=peer_name,
                 )
                 _kick_grouping_reconciler()

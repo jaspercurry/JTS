@@ -132,15 +132,19 @@ def _reserve_start_slot() -> str | None:
     `/start` and the new session visibly leaving IDLE.
     """
     global _start_in_progress
-    # The pair-balance flow shares this process precisely so the two
+    # The pair-balance and pair-sync flows share this process precisely so the
     # measurement surfaces can exclude each other here (both open
     # measurement_window; concurrent windows would interleave the
-    # renderer stop/start). Lazy import: balance_flow never imports
+    # renderer stop/start). Lazy imports: these modules never import
     # this module back.
     from .balance_flow import active_phase as _balance_phase
+    from .sync_flow import active_phase as _sync_phase
     balance_active = _balance_phase()
     if balance_active is not None:
         return f"balance:{balance_active}"
+    sync_active = _sync_phase()
+    if sync_active is not None:
+        return f"sync:{sync_active}"
     with _session_lock:
         if _start_in_progress:
             return "starting"
@@ -1534,6 +1538,54 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self._send_json({"ok": False, "error": str(e)},
                                 status=500)
 
+        def _dispatch_sync(self, path: str) -> None:
+            """POST /sync/* — stereo-pair acoustic timing walkthrough."""
+            from . import sync_flow
+
+            def _schedule(coro):
+                return asyncio.run_coroutine_threadsafe(
+                    coro, _ensure_loop())
+
+            try:
+                if path == "/sync/start":
+                    with _session_lock:
+                        blocked = (
+                            "starting" if _start_in_progress
+                            else _active_state_for_session(_session)
+                        )
+                    if blocked is not None:
+                        self._send_json(
+                            {"ok": False, "error": (
+                                "a room-correction session is active "
+                                f"({blocked})"
+                            )},
+                            status=HTTPStatus.CONFLICT,
+                        )
+                        return
+                    payload, status = sync_flow.handle_start(
+                        cfg["hostname"], _schedule)
+                elif path == "/sync/play":
+                    payload, status = sync_flow.handle_play(
+                        _run_async, _schedule)
+                elif path == "/sync/analyze":
+                    try:
+                        body = _read_wav_body(self, max_bytes=2 * 1024 * 1024)
+                    except BadRequest as e:
+                        self._send_json(
+                            {"ok": False, "error": str(e)},
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    payload, status = sync_flow.handle_analyze(body)
+                elif path == "/sync/apply":
+                    payload, status = sync_flow.handle_apply()
+                else:
+                    payload, status = sync_flow.handle_stop()
+                self._send_json(payload, status=int(status))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("%s failed", path)
+                self._send_json({"ok": False, "error": str(e)}, status=500)
+
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
@@ -1547,6 +1599,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/calibration/models",
                 "/balance",
                 "/balance/status",
+                "/sync",
+                "/sync/status",
             }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -1570,6 +1624,19 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(balance_flow.handle_status())
                 except Exception as e:  # noqa: BLE001
                     logger.exception("/balance/status failed")
+                    self._send_json({"error": str(e)}, status=500)
+                return
+            if path == "/sync":
+                from . import sync_flow
+                ctx = begin_request(self)
+                self._send_html(sync_flow.render_page(ctx["csrf_token"]))
+                return
+            if path == "/sync/status":
+                from . import sync_flow
+                try:
+                    self._send_json(sync_flow.handle_status())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("/sync/status failed")
                     self._send_json({"error": str(e)}, status=500)
                 return
             if path == "/healthz":
@@ -1642,6 +1709,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/balance/stop",
                 "/balance/apply",
                 "/balance/reset",
+                "/sync/start",
+                "/sync/play",
+                "/sync/analyze",
+                "/sync/apply",
+                "/sync/stop",
+                "/sync/reset",
             }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -1650,6 +1723,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path.startswith("/balance/"):
                 self._dispatch_balance(path)
+                return
+            if path.startswith("/sync/"):
+                self._dispatch_sync(path)
                 return
             try:
                 if path == "/start":

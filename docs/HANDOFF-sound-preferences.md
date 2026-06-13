@@ -14,8 +14,11 @@ It is deliberately separate from `/correction/`:
 - `/correction/` measures the room and emits room PEQs.
 - `/sound/` applies user preference shaping after those room PEQs.
 - The combined CamillaDSP config preserves ordering:
-  room-correction PEQs first, preference EQ second, final `flat`
-  terminator last.
+  room-correction room-chain filters first, preference EQ second, final
+  `flat` terminator last. As of 2026-06-13, the room-chain segment may
+  also include gainless per-channel `Delay` filters for leader-owned
+  stereo-pair time-of-arrival calibration; that is correction/sync
+  calibration state, not a preference-EQ control.
 
 The advanced parametric editor is intentionally touch-first: users
 adjust filter type, frequency, gain, and Q/width with controls while the
@@ -666,4 +669,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-12
+Last verified: 2026-06-13

@@ -25,6 +25,7 @@ from jasper.control.server import (
     VOLUME_MAX_DB,
     VOLUME_MIN_DB,
     _clamp_db,
+    _control_route_allowed_for_install_profile,
     _db_to_percent,
     _delta_db_to_delta_percent,
     _make_handler,
@@ -281,6 +282,68 @@ def test_cross_site_get_healthz_is_allowed(server_with_coordinator):
     )
     assert status == 200
     assert body == {"ok": True}
+
+
+def test_endpoint_profile_control_route_policy():
+    assert _control_route_allowed_for_install_profile(
+        "full", method="GET", path="/state",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "endpoint", method="GET", path="/healthz",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "endpoint", method="GET", path="/system/snapshot",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "endpoint", method="GET", path="/grouping",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "endpoint", method="GET", path="/state",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "endpoint", method="GET", path="/source/state",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "endpoint", method="GET", path="/mic",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "endpoint", method="POST", path="/volume/set",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "endpoint", method="POST", path="/system/reboot",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "endpoint", method="POST", path="/source/select",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "endpoint", method="POST", path="/cue/play",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "endpoint", method="POST", path="/system/restart/audio",
+    )
+
+
+def test_endpoint_profile_blocks_brain_only_control_routes(
+    monkeypatch,
+    server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "endpoint")
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/healthz")
+    assert status == 200
+    assert body == {"ok": True}
+
+    status, _body = _get(f"{base}/mic")
+    assert status == 404
+
+    status, _body = _get(f"{base}/source/state")
+    assert status == 404
+
+    status, _body = _post(f"{base}/source/select", {"source": "airplay"})
+    assert status == 404
 
 
 def test_cross_site_get_rejects_diagnostics_before_subprocess(
@@ -741,6 +804,29 @@ def test_system_snapshot_audio_quality_fails_soft(
     assert body["converter"] == "samplerate_medium"
     assert body["active_converter"] == "samplerate_medium"
     assert "unsupported ALSA rate converter" in body["error"]
+
+
+def test_system_snapshot_reports_endpoint_capabilities(
+    monkeypatch,
+    server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "endpoint")
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/snapshot")
+
+    assert status == 200
+    caps = body["system_capabilities"]
+    assert caps["install_profile"] == "endpoint"
+    assert caps["role"] == "satellite"
+    assert caps["audio_quality"] is False
+    assert caps["restart_voice"] is False
+    assert caps["restart_audio"] is False
+    assert caps["reboot"] is True
+    assert caps["poweroff"] is True
+    assert "leader" in caps["unavailable_reason"]
 
 
 def test_post_allows_same_origin_browser_request(server_with_coordinator):
@@ -2720,6 +2806,52 @@ def test_grouping_set_trim_settable_validated_and_preserved(
     status, _ = _post(f"{base}/grouping/set", body)  # omitted
     assert status == 200
     assert "JASPER_GROUPING_TRIM_DB" not in writes[-1]
+
+
+def test_grouping_set_latency_and_delay_settable_validated_and_preserved(
+    monkeypatch, server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    writes = []
+    monkeypatch.setattr(
+        srv_mod, "_atomic_rewrite_env",
+        lambda path, updates: writes.append(dict(updates)),
+    )
+    monkeypatch.setattr(srv_mod, "_kick_grouping_reconciler", lambda: None)
+    base, _fake = server_with_coordinator
+    body = {"enabled": True, "role": "leader", "channel": "left",
+            "bond_id": "b", "leader_addr": ""}
+
+    status, _ = _post(
+        f"{base}/grouping/set",
+        {
+            **body,
+            "client_latency_ms": 11,
+            "left_delay_ms": 1.25,
+            "right_delay_ms": 0.5,
+        },
+    )
+    assert status == 200
+    assert writes[-1]["JASPER_GROUPING_CLIENT_LATENCY_MS"] == "11"
+    assert writes[-1]["JASPER_GROUPING_LEFT_DELAY_MS"] == "1.250"
+    assert writes[-1]["JASPER_GROUPING_RIGHT_DELAY_MS"] == "0.500"
+
+    status, resp = _post(
+        f"{base}/grouping/set", {**body, "client_latency_ms": "soon"},
+    )
+    assert status == 400 and "client_latency_ms must be an integer" in resp["error"]
+
+    status, resp = _post(
+        f"{base}/grouping/set", {**body, "left_delay_ms": -0.1},
+    )
+    assert status == 400 and "LEFT_DELAY_MS" in resp["error"]
+
+    status, _ = _post(f"{base}/grouping/set", body)
+    assert status == 200
+    assert "JASPER_GROUPING_CLIENT_LATENCY_MS" not in writes[-1]
+    assert "JASPER_GROUPING_LEFT_DELAY_MS" not in writes[-1]
+    assert "JASPER_GROUPING_RIGHT_DELAY_MS" not in writes[-1]
 
 
 def test_grouping_set_peer_roster_settable_preserved_and_cleared(

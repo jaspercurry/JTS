@@ -1,38 +1,120 @@
 # Dumb endpoint bring-up: Raspberry Pi Zero 2 W
 
-This is the operator runbook for bringing up a cheap JTS multi-room
-endpoint such as `jts4`: a Raspberry Pi Zero 2 W that will eventually
-play one synchronized channel for a stereo pair, wireless subwoofer, or
-multi-room group.
+This is the operator runbook for bringing up a cheap JTS endpoint such
+as `jts4`: a Raspberry Pi Zero 2 W that can be a synchronized satellite
+for a stereo pair / wireless subwoofer / multi-room group, and may later
+grow a separate "stream box" profile for standalone AirPlay / Spotify
+Connect playback.
 
 It is **not** the full JTS speaker bring-up. The architecture lives in
 [`HANDOFF-multiroom.md`](HANDOFF-multiroom.md); this file owns the
 practical hardware/software path, the endpoint install tier, and the
 working build plan for a dumb endpoint.
 
-## Current truth
+## Current Truth
 
-Today, a dumb endpoint is a lab/spike target:
+Today, a transport endpoint has two supported shapes:
 
-- Raspberry Pi OS Lite on a Zero 2 W.
-- Wi-Fi + SSH.
-- `alsa-utils`, `snapclient`, and `sox`.
-- A DAC that ALSA can see, such as an Apple USB-C to 3.5 mm adapter on
-  the Zero's USB OTG/data port.
+- **Lab/spike target:** Raspberry Pi OS Lite on a Zero 2 W, Wi-Fi + SSH,
+  `alsa-utils`, `snapclient`, `sox`, and a DAC that ALSA can see, such
+  as an Apple USB-C to 3.5 mm adapter on the Zero's USB OTG/data port.
+- **JTS endpoint install tier:** the same repo/package deployed with
+  `JASPER_INSTALL_PROFILE=endpoint`. This installs `jasper-control`,
+  Avahi identity/discovery, the grouping reconciler, and JTS-managed
+  Snapcast units; it also applies the same memory/cgroup/zram tuning
+  that makes `jts-audio.slice` enforceable. It never installs
+  `jasper-voice`, CamillaDSP, renderers, web wizards, AEC, fan-in,
+  outputd, or the Rust/AEC build toolchain.
 
-Until the endpoint install profile (Phase 2 below) lands, do **not**
-run `scripts/onboard.sh`, `scripts/deploy-to-pi.sh`, or the full JTS
-install on the Zero 2 W — the FULL install builds AEC3 and two Rust
-daemons, which a 512 MB Zero cannot do comfortably. The decided product
-path (see the decision section) makes the profile-gated deploy the
-supported route; an endpoint never runs `jasper-voice`, CamillaDSP,
-renderers, web wizards, or AEC regardless. The brainy JTS speaker
-remains the leader.
+Do **not** run a bare full install on the Zero 2 W. The full profile
+builds AEC3 and two Rust daemons, which a 512 MB Zero cannot do
+comfortably. Use the endpoint bring-up wrapper:
+
+```sh
+bash scripts/bringup-endpoint.sh jts4.local --adopt
+```
+
+If `.local` resolution is flaky but the router shows an IP, keep the
+endpoint identity explicit:
+
+```sh
+bash scripts/bringup-endpoint.sh 192.168.1.162 --adopt --speaker-hostname jts4.local
+```
+
+The wrapper reuses `scripts/onboard.sh --no-install` for SSH/laptop
+state, runs `scripts/deploy-to-pi.sh` with
+`JASPER_INSTALL_PROFILE=endpoint`, reboots once if the cgroup/zram boot
+contract needs it, and prints the final `snapclient`, ALSA DAC, Wi-Fi
+guardian, healthz, service, and doctor summary. It does **not** play an
+audible tone automatically.
+
+The brainy JTS speaker remains the leader.
 
 The product multi-room path is still in progress. The Zero can be used
 now with [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh)
 to prove Snapcast, Wi-Fi, and DAC behavior before product audio is wired
 end-to-end.
+
+## Role And Topology Axes
+
+The product shape is one JTS package with small install roles plus a
+separate output-topology capability. The install role says who owns
+sources and content policy; the topology says what hardware this box
+physically drives. Keep those separate.
+
+Compatibility note: the built satellite role still persists
+`endpoint` in `/var/lib/jasper/install_profile`. `satellite` is accepted
+as an alias and normalizes to that marker so existing JTS4-style installs
+do not need migration.
+
+| Role / profile | Status | Typical hardware | Purpose | Runs |
+|---|---|---|---|---|
+| `full` | built | Pi 5 class | Brain speaker: sources, voice, room/content DSP, grouping leader, full UI | everything |
+| `satellite` | built today as persisted `endpoint` marker | Zero 2 W | Follower for a leader-owned synchronized group | `jasper-control`, Avahi, grouping reconcile, Snapclient, endpoint-scoped `/`, `/system`, `/sources` |
+| `streambox` | planned | Zero 2 W / Pi class | Standalone AirPlay / Spotify Connect / Bluetooth output target with no mic/AI brain | renderers, local output path, `/sources`, `/system`, `/sound` |
+
+| Output topology | Status | Applies to | Meaning |
+|---|---|---|---|
+| `full_range` | built for satellite endpoint | satellite or streambox | One local full-range output; no local driver DSP required. |
+| `active_crossover` | planned | satellite or streambox | The box owns local driver routing/protection for the DACs/amps it drives, so it installs CamillaDSP and exposes `/crossover`. |
+
+In a friendly first-run product flow, a newly imaged Zero 2 W may start
+as the built satellite endpoint: quiet, safe, visible at
+`http://<host>/`, and ready to join a leader. The `/sources/` page is
+still present, but rows for source services that are not installed in the
+current role render disabled with an explicit reason. That gives the
+household one stable URL before the future `streambox` role exists,
+without pretending a satellite can enable AirPlay or Spotify by flipping
+a checkbox.
+
+The satellite `/system/` page follows the same capability contract: it
+shows health, diagnostics, and power actions, but hides local voice/audio
+restart and audio-conversion controls because those services do not run
+on the endpoint tier.
+
+Once `streambox` exists, either first-run path is valid. A Zero that is
+not joining an existing leader can be promoted into `streambox` and use
+the same `/sources/` surface to enable local renderers. Joining a strict
+stereo/sub/satellite group is then a deliberate role conversion back to
+satellite, not a runtime toggle. That conversion must disable local
+renderers and clear local source selection before the device becomes a
+synchronized follower. A satellite must not keep advertising itself as
+an independent AirPlay/Spotify target for the same room; to senders, the
+room should remain one logical speaker.
+
+The reverse conversion is also valid. A retired satellite can become a
+standalone `streambox` again, but only through an explicit install-role
+change that disables grouping first. The persisted install profile marker
+exists so a bare deploy cannot silently flip those roles.
+
+Active crossover is not a third role. It is an output-topology capability
+that can be layered onto either satellite or streambox:
+
+- Satellite + active crossover: no local content EQ; local CamillaDSP is
+  for driver crossover/protection only, and `/sound` should point to the
+  leader.
+- Streambox + active crossover: local sources and local `/sound` are
+  valid; `/crossover` remains the hardware-safety surface.
 
 ## Decision (2026-06-12) — one package, install tiers; not a parallel endpoint package
 
@@ -67,10 +149,11 @@ package, same control plane — for three reasons:
    that would never execute. The fix is an **install profile** that
    skips those entirely — not a second codebase.
 
-The boundary the package walls defended is held instead by two cheap
+The boundary the package walls defended is held instead by three cheap
 guards: an import-cost test (the daemons the endpoint tier runs must be
-importable without the voice extras) and an install-plan test (the
-endpoint profile's plan contains no brain builds). A future "smart
+importable without the voice extras), an install-plan test (the endpoint
+profile's plan contains no brain builds), and a full-profile regression
+test (the default speaker plan stays byte-identical). A future "smart
 endpoint" is a tier upgrade on the same install, not a migration.
 
 What survives from the earlier draft unchanged: the product contract,
@@ -80,43 +163,80 @@ requirements on the *role*, not on a package.
 
 ## Software boundary
 
-Think of this role as a transport appliance with a JTS control plane,
-not a second brainy speaker. The leader owns the microphone path,
-wake/AI session, DSP, grouping decisions, stream production, and
-user-facing setup. The dumb endpoint owns booting, staying on the
-network, answering the control plane (`/rooms` bond/swap/health, the
-pair-volume forward), accepting the leader's synchronized stream,
-selecting its assigned channel, and playing it to the local DAC safely.
+Think of the satellite role as a transport appliance with a JTS control
+plane, not a second brainy speaker. The leader owns the microphone path,
+wake/AI session, content DSP, grouping decisions, stream production, and
+room-level setup. The endpoint owns booting, staying on the network,
+answering the control plane (`/rooms` bond/swap/health, the pair-volume
+forward), accepting the leader's synchronized stream, selecting its
+assigned channel, and playing it to the local DAC safely.
 
-The install tiers:
+There are two DSP classes:
 
-| Tier | Hardware | Installs | Runs |
+- **Content DSP** lives on the leader: room correction, preference EQ,
+  group crossover/LFE generation, per-seat correction, and group delay /
+  trim policy.
+- **Driver DSP** lives on the box driving the DAC/amps: active
+  woofer/tweeter crossover, per-driver delay/gain, polarity, protection
+  filters, and hard safety limits.
+
+The current `endpoint` marker implements the satellite/full-range case:
+no local driver DSP. A future `active_crossover` topology capability may
+install CamillaDSP and expose `/crossover` on either satellite or
+streambox, but it is still not a brain: no wake word, no AI session, and
+no satellite-local content EQ.
+
+The install roles:
+
+| Role | Hardware | Installs | Runs |
 |---|---|---|---|
 | Full speaker | Pi 5 class | everything | role-derived: solo / leader / dumb follower (voice, AEC, renderers, mux parked while bonded) |
-| Endpoint | Zero 2 W class | core profile only: `jasper-control` + the multiroom plumbing + a managed `snapclient` unit + ALSA bits | `jasper-control` + `snapclient`; everything else was never installed |
+| Streambox | Zero 2 W class, pending validation | renderer profile only: AirPlay / Spotify Connect / Bluetooth path, mux/output path, lightweight web, local `/sound` | local music target; no voice/AI/grouping leader |
+| Satellite endpoint | Zero 2 W class | core profile only: `jasper-control` + the multiroom plumbing + a managed `snapclient` unit + ALSA bits | `jasper-control` + `snapclient`; everything else was never installed |
 
-What is NEVER installed on the endpoint tier: wake word, mic/AEC, LLM
-connections, TTS generation, renderers, CamillaDSP, jasper-outputd,
-jasper-fanin, the web wizards, and the Rust toolchain that builds them.
-The grouping reconciler's role plan treats absent units as no-ops, so
-one role engine serves both tiers.
+The output topology:
+
+| Topology | Satellite behavior | Streambox behavior |
+|---|---|---|
+| Full-range | `snapclient -> ALSA/DAC`; `/sound` points to the leader | local sources + local `/sound` -> ALSA/DAC |
+| Active crossover | `snapclient -> local driver DSP -> DACs/amps`; `/sound` points to the leader; `/crossover` is local | local sources + local `/sound` + local driver DSP -> DACs/amps; `/crossover` is local |
+
+What is NEVER installed on a satellite endpoint role: wake word, mic/AEC,
+LLM connections, TTS generation, renderers, local source selection, and
+the Rust toolchain that builds them. Local CamillaDSP is allowed only
+when the output topology requires driver crossover/protection; it must
+not become room/content DSP. The grouping reconciler's role plan treats
+absent units as no-ops, so one role engine serves both full speakers and
+small endpoints.
 
 **DSP split (see HANDOFF-multiroom §7.5):** content DSP (room
-correction, sound prefs) is leader-side, baked into the stream — an
-endpoint never needs it locally. Driver DSP (active crossover, driver
-protection) must live on the box driving the DAC; a future "crossover
-endpoint" tier variant adds the prebuilt camilladsp binary + the
-follower local driver-DSP path (crossover biquads are trivial CPU on a
-Zero 2 W; the practical risk is dual-DAC USB power on the OTG port —
-hardware-validation item). Until that increment exists, active-crossover
-hardware cannot be an endpoint: outputd's round-trip lane fail-closes on
-the dual-Apple sink by design.
+correction, sound prefs) is leader-side for satellites, baked into the
+stream. Driver DSP (active crossover, driver protection) must live on
+the box driving the DAC; the future active-crossover capability adds the
+prebuilt camilladsp binary plus the local driver-DSP path. Crossover
+biquads are trivial CPU on a Zero 2 W; the practical risk is dual-DAC
+USB power on the OTG port, so that remains a hardware-validation item.
+Until that increment exists, active-crossover hardware cannot be a
+satellite endpoint: outputd's round-trip lane fail-closes on the
+dual-Apple sink by design.
 
 Per-endpoint level trim (the heterogeneous-pair calibration) uses
 snapcast's per-client volume on this tier — a software multiply in
 snapclient with an invertible taper, persisted in the leader's
 server.json — rather than the outputd `dac_content` gain the full tier
 will use. Same leader-side calibration flow, different apply knob.
+
+Endpoint timing trim is a separate axis from level trim. Snapcast's
+sync loop keeps endpoints on the leader's playout clock; Snapcast
+client latency (`Client.SetLatency` / `snapclient --latency`) is for
+fixed whole-endpoint PCM/DAC/backend latency; leader-side CamillaDSP
+`Delay` is for rendered-channel acoustic arrival at the listening seat.
+Do not let a Zero-class endpoint invent local dynamic timing policy for
+a stereo pair or sub group. The leader measures the group and decides
+which persistent knob owns the correction: endpoint-path baseline in
+Snapcast latency, room/pair arrival delta in the leader render graph.
+The source notes live in
+[research/balance-sync-calibration.md](research/balance-sync-calibration.md).
 
 ## Product contract
 
@@ -204,31 +324,44 @@ Keep endpoint logs event-shaped and sparse. Useful events include
 `endpoint.dac_missing`, `endpoint.dac_recovered`,
 `endpoint.stream_starved`, and `endpoint.role_changed`.
 
-## Install boundary — one package, two profiles
+## Install Boundary — one package, multiple roles
 
 Endpoint code lives in the same `jasper` package and the same installer;
-the boundary is a **profile**, not a package. Target shape:
+the boundary is an **install role**, not a package. Today the live
+installer supports `full` and the satellite role via the persisted
+`endpoint` compatibility marker; `streambox` is planned. Active
+crossover is a topology capability layered on a role, not its own role.
+Target shape:
 
 - **pyproject extras split**: the base install carries what
   `jasper-control` + the multiroom plumbing import; the heavy
   voice/wake/DSP dependencies (onnxruntime, openwakeword, scipy, the
-  voice SDKs) move behind a `[voice]` extra that only the full tier
+  voice SDKs) move behind the `[full]` extra that only the full tier
   installs.
-- **`install.sh` profile gating** (e.g. `JASPER_INSTALL_PROFILE=endpoint`):
-  the endpoint path skips the shairport/nqptp source builds, the
+- **`install.sh` role gating** (e.g. `JASPER_INSTALL_PROFILE=endpoint`):
+  the satellite endpoint path skips the shairport/nqptp source builds, the
   webrtc-AEC3 build, both Rust daemon builds, renderer/web/voice unit
   installation, and installs the core Python package, the managed
-  snapclient unit, and the ALSA bits. `deploy/install.sh --dry-run`
-  must show a brain-free plan under the endpoint profile.
+  snapclient unit, and the ALSA userland bits. `deploy/install.sh --dry-run`
+  must show a brain-free plan under the endpoint profile. The future
+  `streambox` role and future `active_crossover` topology need their own
+  dry-run text and tests before live install support lands.
 - **Same deploy path**: `scripts/deploy-to-pi.sh` against an endpoint
-  works once the profile is honored end-to-end (the earlier "never run
+  works when `JASPER_INSTALL_PROFILE=endpoint` is set or the persisted
+  profile marker already says endpoint. The earlier "never run
   deploy-to-pi.sh on the Zero" rule applied to the FULL install and is
   retired with this decision; the identity/direction guards apply
-  unchanged).
+  unchanged.
 - **Managed snapclient**: the same `jasper-snapclient.service` +
   reconciler-derived argv the full tier already uses (leader address,
   stream, the round-trip player on the full tier vs direct ALSA here —
   see "Open question: outputd on endpoints" below).
+- **Audio-slice memory protection**: endpoint installs still install
+  `jts-audio.slice`, because `snapclient` is the real-time audio path.
+  The endpoint profile therefore runs the memory-resilience and cgroup
+  migrations too: vm sysctls, MGLRU, zram sizing, SSH recovery bias, and
+  memory-cgroup boot args. A reboot may be required after first install
+  before `jasper-doctor` reports `cgroup memory` as healthy.
 
 Three guard tests make the boundary loud without package walls — these
 are **load-bearing**, not optional polish; the package-wall design was
@@ -244,7 +377,8 @@ rejected on the strength of them:
   `scipy`, `sounddevice` (imports the PortAudio C library at import
   time — the classic way this breaks), `jasper_aec3` (a compiled
   module that will not exist on the endpoint), and the voice SDKs
-  (`google.genai`, `openai`, `websockets`).
+  (`google.genai`, `openai`, `websockets`), plus renderer/discovery
+  extras such as `spotipy`, `zeroconf`, `evdev`, and `dbus_next`.
 - **Install-plan guard**: the endpoint profile's `--dry-run` plan
   contains no cargo builds, no AEC3 build, no renderer source builds,
   and no voice/web units. Extend the existing dry-run plan test
@@ -255,6 +389,10 @@ rejected on the strength of them:
   is its own test, not a clause of the previous one: it is the guard
   that lets endpoint work merge continuously without re-validating
   every full speaker.
+- **Role-conversion guard**: a streambox-to-satellite conversion is
+  allowed only with explicit operator intent. The install profile marker
+  should refuse implicit tier changes; the conversion path must stop and
+  disable local renderer services before writing grouping follower state.
 
 **Open question: outputd on endpoints.** The full tier plays bonded
 audio through `snapclient → FIFO → jasper-outputd` (which carries the
@@ -264,6 +402,22 @@ Zero — accepting snapcast client volume as the trim knob and snapclient
 restart policy as the resilience story. If endpoint-side outputd ever
 earns its keep (uniform health/trim), it arrives as prebuilt artifacts,
 never as an on-Zero cargo build.
+
+**Open question: streambox role.** A Zero 2 W should be able to be a
+small standalone renderer if measurements prove it: AirPlay / Spotify
+Connect, local volume/source UI, no voice, no wake, no correction, no
+grouping leader. The risk is not the product model; it is whether
+shairport-sync, nqptp, librespot, mux/output routing, and 2.4 GHz Wi-Fi
+stay reliable inside 512 MB. Treat it as a measured role, not as a
+partial full install.
+
+**Open question: active-crossover topology.** Any role that drives
+woofer/tweeter amps needs local driver DSP. That topology should install
+a prebuilt CamillaDSP binary and a small `/crossover` surface, then feed
+the local program through the driver graph. On a satellite, Snapclient
+feeds that local graph and room/content DSP remains on the leader. On a
+streambox, local sources may also use `/sound` for content EQ before the
+driver graph.
 
 ## Implementation rails
 
@@ -275,7 +429,11 @@ a place the work will otherwise drift or wedge:
   an `endpoint` role to `grouping.env`, `validate_grouping`, or the
   bond fan-out. An endpoint is a *follower on the endpoint install
   tier*. The only runtime accommodation is the reconciler treating
-  stop/start intents for never-installed units as no-ops.
+  stop/start intents for never-installed units as no-ops. If an
+  endpoint-tier member is accidentally configured as `role=leader`, the
+  reconciler must fail closed: clear snapcast args, stop both snap units,
+  return nonzero, and let `jasper-doctor` warn that the member must be
+  reassigned as a follower.
 - **Persist the install profile on the Pi, and never switch tiers
   implicitly.** `install.sh` re-runs on every deploy; if the profile
   lives only in the invoking shell's env, the next bare
@@ -284,11 +442,18 @@ a place the work will otherwise drift or wedge:
   (e.g. `/var/lib/jasper/install_profile`); later runs read it and
   REFUSE a tier change without an explicit override flag — same
   posture as the deploy identity/downgrade guards.
-- **Deploy verification must probe what the tier has.** The deploy's
-  post-install check probes `/system/data.json` through nginx — the
-  endpoint tier installs neither. Under the endpoint profile, verify
-  against `jasper-control`'s `:8780/healthz` instead. Do not "fix" a
-  failing verification by skipping verification.
+- **Streambox-to-satellite is a role conversion, not a checkbox.** A
+  streambox can be "downgraded" into a satellite, but the conversion
+  must first stop/disable AirPlay, Spotify, Bluetooth, mux, and any
+  local source UI; only then should it accept `role=follower` grouping
+  state. A grouped satellite should expose pair volume and health, not
+  advertise itself as an independent sender target in the same room.
+- **Deploy verification must probe what the tier has.** Endpoint
+  installs now include endpoint-scoped nginx plus `/system/` and
+  `/sources/`; deploy must probe those pages through nginx with the
+  real Host header and also check `jasper-control`'s always-on
+  `:8780/healthz`. Do not "fix" a failing verification by skipping
+  verification.
 - **`/rooms` discovery needs the avahi advert.** Member discovery
   rides the `_jasper-control._tcp` service file that `install.sh`
   installs — the endpoint profile must keep avahi + that advert (and
@@ -299,13 +464,25 @@ a place the work will otherwise drift or wedge:
   that were never installed. Reuse the parked-by-role skip idiom from
   the dumb-follower work, keyed off the persisted install profile —
   "not installed (endpoint tier)" is an `ok` detail, not a warn. Do
-  not fork a second doctor.
+  not fork a second doctor. Keep endpoint-local checks for the things
+  the endpoint actually owns: `snapclient` binary/service readiness,
+  the ALSA playback device, memory/cgroup protection for `jts-audio.slice`,
+  grouping reachability, and obvious misconfiguration such as a
+  channel-specific bond still using the default stereo ALSA player.
 - **One reconciler, one argv builder.** The managed snapclient unit and
   its argv come from the existing grouping reconciler
   (`snapclient_argv`), not an endpoint-specific service or wrapper.
   If the endpoint plays `snapclient → ALSA` direct (no outputd), that
   is a *player argument* derived from the tier, not a new code path
   beside the reconciler.
+- **Endpoint web is profile-scoped.** A transport endpoint exposes `/`,
+  `/system`, and `/sources`. `/sources` is a capability surface: source
+  rows whose renderer units are absent from the install profile stay
+  disabled and say why. A satellite with `active_crossover` topology may
+  also expose `/crossover`; a streambox may expose local `/sound`. Do not
+  enable the combined full-speaker `jasper-web` bundle on a Zero endpoint.
+  The existing `/sound` page should stay a content-EQ surface: local on a
+  streambox, leader-link-only on a satellite.
 - **Work from `main`.** The superseded `codex/dumb-endpoint-plan`
   branch predates several multiroom increments; nothing on it should
   be cherry-picked except by re-reading this doc.
@@ -327,6 +504,14 @@ Done / current:
 - Install `alsa-utils`, `snapclient`, and `sox`.
 - Disable the distro `snapclient.service`.
 - SSH to the device by IP when `jts4.local` mDNS is flaky.
+- 2026-06-12 hardware verification on `jts4.local`: endpoint profile
+  deployed, `snapclient v0.31.0` installed, `jasper-control` answered
+  `:8780/healthz`, `jasper-doctor` reported `0 failed` / `2 warnings`
+  (expected low-RAM warning on the Zero 2 W and missing Wi-Fi guardian
+  stash), and the Apple USB-C to 3.5 mm adapter enumerated as ALSA card
+  `A` / USB `05ac:110a`. The Wi-Fi guardian gap from that first run is
+  now covered by the endpoint install calling the same active-profile
+  stash migration as the full install.
 
 Exit criteria:
 
@@ -362,16 +547,32 @@ Exit criteria:
 ### Phase 2 — Endpoint install tier
 
 Goal: make a Zero 2 W installable as a JTS member without ever building
-or installing the brain.
+or installing the brain. The software pieces are now implemented; the
+remaining gate is real Zero 2 W hardware validation.
 
 Build:
 
-- pyproject extras split (`[voice]` heavy deps out of the base install).
-- `install.sh` endpoint profile (skip AEC3/Rust/renderer/web/voice
-  builds and units; install core Python + managed snapclient + ALSA).
-- Reconciler role plan tolerates absent units (stop-intent on a unit
-  that was never installed is a no-op).
-- The two boundary guards: import-cost test + install-plan test.
+- pyproject extras split (`[full]` heavy deps out of the base install).
+- `install.sh` endpoint profile (skip AEC3/Rust/renderer/full-web/voice
+  builds and units; install core Python + managed snapclient + ALSA +
+  endpoint-scoped nginx with `/`, `/system`, and `/sources`).
+- `scripts/deploy-to-pi.sh` forwards the endpoint profile and verifies
+  the installed endpoint nginx surface (`/`, `/system/data.json`,
+  `/sources/state`) plus `jasper-control` directly at `:8780/healthz`.
+- `scripts/bringup-endpoint.sh` is the preferred fresh-Zero command. It
+  wraps onboard/deploy, handles the mDNS/IP split, reboots once for
+  staged cgroup/zram boot changes, and emits the endpoint-specific final
+  report.
+- The endpoint install path seeds the Wi-Fi guardian stash from the
+  active NetworkManager profile when possible, matching the full
+  speaker recovery contract without requiring the `/wifi/` wizard.
+- Reconciler derives the Snapclient player from the install tier:
+  full speakers use the outputd FIFO lane; endpoints use direct ALSA
+  (`alsa:device=default` by default).
+- Boundary guards: import-cost test, install-plan test, base-dependency
+  test, deploy-verification test, endpoint-leader fail-closed test,
+  endpoint systemd render validation, and full-profile dry-run
+  regression.
 
 Exit criteria:
 
@@ -381,6 +582,9 @@ Exit criteria:
   the full-profile byte-identical regression guard.
 - The profile is persisted on the device and a bare re-deploy cannot
   silently switch tiers.
+- Hardware run proves the endpoint starts cleanly, reports through
+  `_jasper-control._tcp`, and starts/stops JTS-managed `snapclient`
+  from the grouping reconciler.
 
 ### Phase 3 — Endpoint joins the pair like any speaker
 
@@ -481,7 +685,16 @@ ssh pi@192.168.1.162
 
 ## Install endpoint packages
 
-The endpoint only needs the Snapcast client and basic audio tools:
+This section is the **manual lab fallback**. The preferred path for a
+JTS-managed endpoint is:
+
+```sh
+bash scripts/bringup-endpoint.sh jts4.local --adopt
+```
+
+The endpoint product profile also installs `nginx-light` for the
+endpoint-scoped management surface. The raw manual lab fallback only
+needs the Snapcast client and basic audio tools:
 
 ```sh
 sudo apt update
@@ -572,11 +785,10 @@ not the complete product. The durable path (phases above) still needs:
 
 - The dumb-follower role profile on the full tier (Phase 1 — the shared
   role engine).
-- The endpoint install profile + extras split + boundary guard tests
-  (Phase 2).
-- Managed `snapclient` with channel selection for `left`, `right`,
-  `mono`, and `sub` derived by the same reconciler argv builder the
-  full tier uses.
+- Hardware validation of the endpoint install profile on the real Zero
+  2 W (Phase 2 exit).
+- Product channel selection for `left`, `right`, `mono`, and `sub`
+  beyond the current direct Snapclient player.
 - A stable leader identity/address rule, with IP fallback for flaky
   mDNS and a path toward peer-id pinning before this becomes
   user-facing.
@@ -587,8 +799,9 @@ not the complete product. The durable path (phases above) still needs:
   or network stream is unavailable.
 - Per-endpoint level trim via snapcast client volume, fed by the
   phone-mic SPL calibration flow.
-- For stereo pairs: acoustic sync confirmation and (full tier only)
-  per-side correction baked by the leader.
+- For stereo pairs: acoustic sync confirmation, with fixed endpoint-path
+  latency separated from listening-seat acoustic delay, and (full tier
+  only) per-side correction baked by the leader.
 - For 2.1: a single synchronized multi-channel stream, not a separate
   sub stream.
 - Real hardware measurements for Wi-Fi fragility, DAC hotplug, long-run
@@ -597,4 +810,4 @@ not the complete product. The durable path (phases above) still needs:
 Until those land, treat the Zero 2 W as a measured lab endpoint, not as
 a shippable wireless speaker.
 
-Last verified: 2026-06-12
+Last verified: 2026-06-13

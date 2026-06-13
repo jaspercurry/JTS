@@ -40,6 +40,10 @@ export async function postAction(path, btn, confirmLines, opts = {}) {
 }
 
 export async function setQuality(refs, converter) {
+  if (refs.systemCapabilities && refs.systemCapabilities.audio_quality === false) {
+    refs.aq.status.textContent = "Audio conversion is managed by the leader on this install role.";
+    return;
+  }
   if (!await jtsConfirm("Change audio conversion quality? Music renderers will restart briefly.")) return;
   const aq = refs.aq;
   aq.buttons.forEach((b) => { b.el.disabled = true; b.el.dataset.applying = "1"; });

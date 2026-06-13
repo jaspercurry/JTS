@@ -490,7 +490,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
-| [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up or building a Zero 2 W endpoint | Lab runbook + the one-package/install-tier decision and phased plan for a cheap Snapcast endpoint (`jts4`-style): flash OS Lite, install `snapclient`, verify the DAC, run the multi-room spike; product path = the endpoint install profile of the same JTS package |
+| [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up or building a Zero 2 W endpoint | Lab runbook + the one-package/install-role decision and phased plan for cheap Zero-class JTS roles: satellite endpoint with scoped `/`, `/system`, `/sources` today, planned streambox role and `active_crossover` output topology later |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
 | [docs/HANDOFF-observability.md](docs/HANDOFF-observability.md) | Operator + AI | Logging/observability model (heartbeat-vs-forensic split, the three steady-state verbosity hotspots, persistent-journald rationale) + the approved per-subsystem debug-mode toggle, flight-recorder, and download-diagnostics design |
@@ -548,10 +548,13 @@ reference. Currently:
 - [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) —
   Raspberry Pi Zero 2 W endpoint: today's lab runbook (OS Lite +
   `snapclient` + the multi-room spike) and the decided product path —
-  one JTS package with an endpoint install profile (no parallel
-  endpoint codebase); the endpoint runs `jasper-control` + a managed
-  snapclient and joins pairs through the same /rooms flow as any
-  speaker.
+  one JTS package with install roles, not a parallel endpoint
+  codebase. The built small role is the satellite endpoint
+  (`jasper-control` + managed snapclient + endpoint-scoped `/`,
+  `/system`, and `/sources`; source rows stay disabled when their
+  renderer units are not installed). Planned work adds a standalone
+  streambox role and an `active_crossover` topology capability with
+  local `/crossover` for either satellite or streambox.
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine choices, chip-AEC profile, software fallback)
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —
@@ -841,6 +844,12 @@ reference. Currently:
   browser audio reliability, target/preference tuning, FIR/phase room
   correction, and multi-position confidence. Treat as source material
   and research synthesis, not operational truth.
+- [`docs/research/balance-sync-calibration.md`](docs/research/balance-sync-calibration.md)
+  — 2026-06-13 prior-art synthesis for multi-speaker balance versus
+  sync calibration, including the Snapcast sync loop, Snapcast
+  per-client latency, and leader-side CamillaDSP delay ownership split.
+  Treat as source material; operational guidance lives in
+  `HANDOFF-multiroom.md` and `dumb-endpoint-bringup.md`.
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) —
   Proposal (created 2026-05-22, not yet implemented) for
   restructuring the `jts.local` management surface into a tighter
@@ -1079,6 +1088,8 @@ If the repo is already deployed and you're just pushing changes:
 bash scripts/deploy-to-pi.sh
 # or with a non-default SSH target:
 PI_HOST=192.168.1.42 JASPER_HOSTNAME=jts.local bash scripts/deploy-to-pi.sh
+# or for a Zero 2 W transport endpoint:
+PI_HOST=jts4.local JASPER_INSTALL_PROFILE=endpoint bash scripts/deploy-to-pi.sh
 ```
 
 This is a thin wrapper that captures the current git SHA + branch
@@ -1092,6 +1103,19 @@ writes the deploy metadata into `/var/lib/jasper/build.txt` so the
 instead of "unknown" (`.git/` is excluded from the rsync for speed).
 
 The install script is idempotent.
+
+The `endpoint` profile is the supported Zero 2 W satellite path today.
+It persists `/var/lib/jasper/install_profile`, installs only the
+lightweight `jasper-control` + Snapcast renderer surface plus a scoped
+nginx UI at `/`, `/system`, and `/sources`. `/sources` is capability-aware:
+source rows whose renderer units are not installed in the profile are
+disabled with an explanation. Deploys verify the endpoint UI through nginx
+(`/`, `/system/data.json`, `/sources/state`) and also check
+`jasper-control`'s always-on `:8780/healthz`.
+Future Zero-class work may add the streambox role and local driver-DSP
+for `active_crossover` topologies, but role changes must be explicit so
+a standalone streambox cannot silently become a grouped satellite. See
+[docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md).
 
 ---
 

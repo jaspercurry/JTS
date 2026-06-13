@@ -3,9 +3,17 @@
 // play that speaker's quiet-to-loud ramp, watch the phone's in-band
 // mic level, and POST /lock the moment it crosses the target. The
 // server derives the drive level from its own clock; this page never
-// uploads audio. Mic constraints mirror the proven /correction/
-// pattern (EC/NS/AGC off); the meter band-passes 500 Hz–2 kHz in the
-// worklet so HVAC rumble moves neither the stimulus nor the needle.
+// uploads audio. Shared measurement-audio primitives own mono mic
+// capture and the no-monitoring graph invariant; this page owns the
+// 500 Hz–2 kHz meter policy so HVAC rumble moves neither the stimulus
+// nor the needle.
+
+import {
+  closeAudioGraph,
+  createBandpassRmsMeter,
+  openMonoMic,
+  rmsToDbfs,
+} from '/assets/shared/js/measurement-audio.js';
 
 const csrf =
   (document.querySelector('meta[name="jts-csrf"]') || {}).content || '';
@@ -25,6 +33,7 @@ const METER_RANGE = [-80, -20]; // bar display range, dB
 
 let ctx = null;
 let workletNode = null;
+let sourceNode = null;
 let micStream = null;
 let latestDb = -120;
 let members = null;
@@ -90,67 +99,42 @@ function progressRow(text, value) {
 
 async function openMic() {
   if (workletNode) return;
-  micStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-      sampleRate: REQUIRED_SR,
-      channelCount: 1,
-    },
-    video: false,
+  try {
+    const opened = await openMonoMic({ sampleRate: REQUIRED_SR });
+    micStream = opened.stream;
+    ctx = opened.context;
+    const meter = await createBandpassRmsMeter({
+      context: ctx,
+      stream: micStream,
+      frequencyHz: 1000,
+      q: 0.67,
+      frameSize: 4800,
+    });
+    sourceNode = meter.sourceNode;
+    workletNode = meter.workletNode;
+    workletNode.port.onmessage = (ev) => {
+      if (ev.data && ev.data.type === 'rms') {
+        latestDb = rmsToDbfs(ev.data.value);
+        onMeterFrame(latestDb);
+      }
+    };
+  } catch (e) {
+    await closeMic();
+    throw e;
+  }
+}
+
+async function closeMic() {
+  await closeAudioGraph({
+    stream: micStream,
+    context: ctx,
+    sourceNode: sourceNode,
+    workletNode: workletNode,
   });
-  ctx = new (window.AudioContext || window.webkitAudioContext)(
-    { sampleRate: REQUIRED_SR });
-  // Biquad band-pass (RBJ, constant-peak): fc=1 kHz, Q≈0.67 spans
-  // roughly the 500–2000 Hz stimulus band.
-  const fc = 1000, Q = 0.67, sr = ctx.sampleRate;
-  const w0 = 2 * Math.PI * fc / sr;
-  const alpha = Math.sin(w0) / (2 * Q);
-  const a0 = 1 + alpha;
-  const coeffs = {
-    b0: alpha / a0, b1: 0, b2: -alpha / a0,
-    a1: -2 * Math.cos(w0) / a0, a2: (1 - alpha) / a0,
-  };
-  const workletSrc =
-    'class M extends AudioWorkletProcessor {' +
-      'constructor(){super();this.c=null;this.x1=0;this.x2=0;' +
-        'this.y1=0;this.y2=0;this.acc=0;this.n=0;' +
-        'this.port.onmessage=(e)=>{if(e.data&&e.data.coeffs)' +
-          'this.c=e.data.coeffs;};}' +
-      'process(inp){' +
-        'var ch=inp[0]&&inp[0][0];if(!ch||!this.c)return true;' +
-        'var c=this.c;' +
-        'for(var i=0;i<ch.length;i++){' +
-          'var x=ch[i];' +
-          'var y=c.b0*x+c.b1*this.x1+c.b2*this.x2' +
-            '-c.a1*this.y1-c.a2*this.y2;' +
-          'this.x2=this.x1;this.x1=x;this.y2=this.y1;this.y1=y;' +
-          'this.acc+=y*y;this.n++;' +
-        '}' +
-        'if(this.n>=4800){' +
-          'var rms=Math.sqrt(this.acc/this.n);' +
-          'this.port.postMessage({type:\'rms\',value:rms});' +
-          'this.acc=0;this.n=0;' +
-        '}' +
-        'return true;' +
-      '}}' +
-    'registerProcessor("m",M);';
-  const blobUrl = URL.createObjectURL(
-    new Blob([workletSrc], { type: 'application/javascript' }));
-  await ctx.audioWorklet.addModule(blobUrl);
-  const src = ctx.createMediaStreamSource(micStream);
-  workletNode = new AudioWorkletNode(ctx, 'm');
-  workletNode.port.postMessage({ coeffs: coeffs });
-  workletNode.port.onmessage = (ev) => {
-    if (ev.data && ev.data.type === 'rms') {
-      latestDb = ev.data.value > 0
-        ? 20 * Math.log10(ev.data.value) : -120;
-      onMeterFrame(latestDb);
-    }
-  };
-  src.connect(workletNode);
-  // No mic→destination connect: that would feed the speakers back.
+  ctx = null;
+  workletNode = null;
+  sourceNode = null;
+  micStream = null;
 }
 
 function onMeterFrame(db) {
@@ -380,6 +364,7 @@ window.addEventListener('pagehide', () => {
       keepalive: true,
     }).catch(() => {});
   }
+  closeMic().catch(() => {});
 });
 
 (async function init() {

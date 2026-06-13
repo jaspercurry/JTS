@@ -20,6 +20,32 @@ from unittest.mock import MagicMock, patch
 from jasper.cli import doctor
 
 
+# --- check_ram -----------------------------------------------------------
+
+
+def test_ram_warns_on_small_full_install():
+    with patch("builtins.open", return_value=_mock_meminfo({
+        "MemTotal": 426076,  # ~416 MB: too small for the full brain stack
+    })), patch.object(doctor.memory, "read_install_profile",
+                      return_value="full"):
+        r = doctor.check_ram()
+
+    assert r.status == "warn"
+    assert "recommend 2GB Pi 5" in r.detail
+
+
+def test_ram_accepts_zero_2w_endpoint_install():
+    with patch("builtins.open", return_value=_mock_meminfo({
+        "MemTotal": 426076,  # ~416 MB: expected for a Zero 2 W endpoint
+    })), patch.object(doctor.memory, "read_install_profile",
+                      return_value="endpoint"):
+        r = doctor.check_ram()
+
+    assert r.status == "ok"
+    assert "endpoint tier" in r.detail
+    assert "memory headroom" in r.detail
+
+
 # --- check_memory_headroom -----------------------------------------------
 
 
@@ -479,6 +505,42 @@ def test_oom_score_adj_all_match():
     assert "9 critical daemons protected" in r.detail
 
 
+def test_oom_score_adj_endpoint_uses_endpoint_unit_set():
+    """Endpoint tier checks the lightweight renderer units, not brain daemons."""
+    pid_map = {
+        "jasper-control": "1005",
+        "jasper-snapclient": "1010",
+        "jasper-snapserver": "0",
+        "ssh": "1009",
+    }
+    config_map = {
+        "jasper-control": "-600",
+        "jasper-snapclient": "-300",
+        "jasper-snapserver": "-300",
+        "ssh": "-250",
+    }
+
+    def fake_read(self):
+        pid_str = str(self).split("/")[2]
+        return {
+            "1005": "-600",
+            "1010": "-300",
+            "1009": "-250",
+        }.get(pid_str, "0") + "\n"
+
+    with patch.object(doctor.memory, "read_install_profile",
+                      return_value="endpoint"), \
+         patch.object(doctor._shared, "_run",
+                      side_effect=_make_oom_run(pid_map, config_map)), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_oom_score_adj()
+
+    assert r.status == "ok"
+    assert "3 daemons protected" in r.detail
+    assert "jasper-snapserver" in r.detail
+    assert "jasper-camilla" not in r.detail
+
+
 def test_oom_score_adj_warns_if_sshd_drifts():
     """sshd dropped to default 0. This is still worth surfacing because
     the configured recovery-path bias was lost, even though sshd is
@@ -499,6 +561,25 @@ def test_oom_score_adj_warns_if_sshd_drifts():
         r = doctor.check_oom_score_adj()
     assert r.status == "warn"
     assert "ssh" in r.detail
+
+
+def test_oom_score_adj_ignores_openssh_listener_self_protection():
+    """OpenSSH may keep the root listener at -1000 while sessions inherit
+    the unit's -250. If the unit file is correct, do not warn on the
+    listener's live value."""
+    def fake_read(self):
+        pid_str = str(self).split("/")[2]
+        live = dict(_LIVE_OK)
+        live["1009"] = "-1000"
+        return live.get(pid_str, "0") + "\n"
+
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_oom_score_adj()
+
+    assert r.status == "ok"
+    assert "ssh live=-1000" not in r.detail
 
 
 def test_oom_score_adj_live_drift_only():
@@ -785,6 +866,31 @@ def test_audio_path_no_swap_happy_path():
         r = doctor.check_audio_path_no_swap()
     assert r.status == "ok"
     assert "swap-free" in r.detail
+
+
+def test_audio_path_no_swap_endpoint_checks_snapcast_units():
+    def fake_run(cmd, **kwargs):
+        unit = cmd[5].rsplit(".", 1)[0]
+        result = MagicMock()
+        result.stdout = {
+            "jasper-snapclient": "2010",
+            "jasper-snapserver": "0",
+        }.get(unit, "0") + "\n"
+        return result
+
+    def fake_read(self):
+        return "Name:\tsnapclient\nVmRSS:\t10000 kB\nVmSwap:\t0 kB\n"
+
+    with patch.object(doctor.memory, "read_install_profile",
+                      return_value="endpoint"), \
+         patch.object(doctor._shared, "_run", side_effect=fake_run), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_audio_path_no_swap()
+
+    assert r.status == "ok"
+    assert "1 audio daemons running" in r.detail
+    assert "jasper-snapserver" in r.detail
+    assert "jasper-fanin" not in r.detail
 
 
 def test_audio_path_no_swap_warns_on_42mb_swap():

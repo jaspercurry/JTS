@@ -49,6 +49,39 @@ def test_provenance_check_detects_install_constant_drift() -> None:
     )
 
 
+def test_pycamilladsp_provenance_scans_optional_dependencies(
+    tmp_path: Path,
+) -> None:
+    check_provenance = _load_check_module()
+    artifact = copy.deepcopy(
+        check_provenance.artifacts_by_id(check_provenance.load_manifest())[
+            "pycamilladsp"
+        ]
+    )
+    direct_url = artifact["direct_url"]
+    (tmp_path / "pyproject.toml").write_text(
+        f"""
+[project]
+name = "probe"
+version = "0.0.0"
+dependencies = []
+
+[project.optional-dependencies]
+full = [
+    "camilladsp @ {direct_url}",
+]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    errors: list[str] = []
+    check_provenance._validate_pycamilladsp(
+        {"artifact": [artifact]}, tmp_path, errors,
+    )
+
+    assert errors == []
+
+
 def test_binary_artifacts_have_sha256s() -> None:
     check_provenance = _load_check_module()
     data = check_provenance.load_manifest()

@@ -410,6 +410,25 @@ def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
     )
 
 
+def test_nginx_serves_sync_measurement_over_https() -> None:
+    nginx = _NGINX_PATH.read_text(encoding="utf-8")
+    https_block = nginx[nginx.index("listen 443") :]
+
+    assert "location = /sync { return 308 /sync/; }" in https_block
+    assert "location /sync/" in https_block
+    sync_block = https_block[
+        https_block.index("location /sync/") :
+        https_block.index("# Static assets for the canonical look")
+    ]
+    assert "proxy_pass http://127.0.0.1:8770;" in sync_block
+    assert "client_max_body_size 2m;" in sync_block
+    assert "proxy_buffering off;" in sync_block
+    assert "proxy_read_timeout 600s;" in sync_block
+    assert https_block.index("location /sync/") < https_block.index(
+        "return 308 http://$host$request_uri;"
+    )
+
+
 def test_install_copies_correction_preflight_page() -> None:
     install = _INSTALL_PATH.read_text(encoding="utf-8")
 

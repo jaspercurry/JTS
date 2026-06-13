@@ -200,6 +200,28 @@
   also reports whether the active CamillaDSP config is JTS-managed,
   preference-only, room-corrected, or a custom advanced config that
   JTS cannot safely preserve.
+- ✅ **Phase 2.13b — pair time-of-arrival substrate.**
+  Implemented 2026-06-13. Stereo-pair acoustic sync belongs under the
+  correction/calibration umbrella, not as a local endpoint trick:
+  Snapcast remains the distributed clock/transport sync engine, while
+  measured listening-seat arrival differences are rendered by the
+  leader as static CamillaDSP `Delay` filters in the room chain. The
+  shared delay emitter is gainless; non-zero per-channel delays require
+  explicit L/R room chains, so a solo config stays byte-identical and a
+  right-channel delay can never silently apply to both channels. The
+  `/sync` flow shares the correction measurement window with
+  `/correction` and `/balance`, generates deterministic L/R markers,
+  accepts a browser-recorded WAV, estimates arrival delta by
+  correlation, and recommends positive-only channel delay. Source
+  synthesis lives in
+  [research/balance-sync-calibration.md](research/balance-sync-calibration.md).
+  Browser phone-mic plumbing that is safe to share now lives in
+  `/assets/shared/js/measurement-audio.js`; `/sync/` and `/balance/`
+  import it for mono capture, AudioWorklet setup, no-monitoring graph
+  cleanup, RMS conversion, and WAV encoding. `/correction/` intentionally
+  remains on its existing capture path until an on-device browser pass can
+  re-verify calibrated mic selection, `getSettings()` validation, capture
+  quality evidence, and bundle upload behavior together.
 - ✅ **Phase 2.14 — read-only measurement report surface + schema
   version docs.** Implemented 2026-05-28. `/correction/` now includes
   a small on-demand history panel backed by `GET /session-report?id=...`.
@@ -1573,8 +1595,11 @@ Internal:
 
 ---
 
-Last verified: 2026-06-12 (the pair-balance wizard /balance/* now
-rides this service's process and TLS origin —
+Last verified: 2026-06-13 (pair time-of-arrival calibration now lives
+under the correction umbrella: sync_measure marker/correlation core,
+gainless CamillaDSP Delay emitter, and /sync route sharing the
+measurement_window with /correction and /balance. Earlier 2026-06-12:
+the pair-balance wizard /balance/* now rides this service's process and TLS origin —
 jasper/web/balance_flow.py, dispatched from correction_setup's
 Handler. It opens the same measurement_window, so _reserve_start_slot
 consults balance_flow.active_phase() and /balance/play is gated behind

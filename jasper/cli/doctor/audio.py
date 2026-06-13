@@ -397,6 +397,106 @@ def _apple_dongle_cards_from_state(
     ]
 
 
+def _endpoint_snapclient_player() -> str:
+    from ...multiroom.reconcile import (
+        DEFAULT_ENDPOINT_SNAPCLIENT_PLAYER,
+        ENDPOINT_SNAPCLIENT_PLAYER_ENV,
+    )
+
+    return os.environ.get(
+        ENDPOINT_SNAPCLIENT_PLAYER_ENV,
+        DEFAULT_ENDPOINT_SNAPCLIENT_PLAYER,
+    )
+
+
+def _endpoint_alsa_device_from_player(player: str) -> str | None:
+    if not player.startswith("alsa:"):
+        return None
+    options = player.removeprefix("alsa:")
+    for part in options.split(","):
+        key, sep, value = part.partition("=")
+        if sep and key.strip() == "device":
+            return value.strip() or None
+    return "default"
+
+
+def _aplay_l_has_card_device(text: str, card: int, device: int) -> bool:
+    pattern = re.compile(rf"^card {card}:.*\bdevice {device}:", re.MULTILINE)
+    return bool(pattern.search(text))
+
+
+def _alsa_playback_device_present(device: str, pcm_list: str, card_list: str) -> bool:
+    if device == "default":
+        return any(line.strip() == "default" for line in pcm_list.splitlines())
+    card_match = re.search(r"CARD=([^,\s]+)", device)
+    if card_match:
+        card_name = card_match.group(1)
+        return f"CARD={card_name}" in pcm_list or f"[{card_name}]" in card_list
+    shorthand = _HW_SHORTHAND_RE.match(device)
+    if shorthand:
+        return _aplay_l_has_card_device(
+            card_list, int(shorthand.group(1)), int(shorthand.group(2)),
+        )
+    return device in pcm_list
+
+
+@doctor_check(order=20.6, group="endpoint_audio")
+def check_endpoint_snapclient_binary() -> CheckResult:
+    bin_path = shutil.which("snapclient")
+    if bin_path is None:
+        return CheckResult(
+            "endpoint snapclient",
+            "fail",
+            "snapclient not in PATH; rerun the endpoint install profile",
+        )
+    proc = _run([bin_path, "--version"], timeout=2.0)
+    if proc.returncode != 0:
+        return CheckResult(
+            "endpoint snapclient",
+            "warn",
+            f"{bin_path} exists but --version failed: "
+            f"{proc.stderr.strip() or f'rc={proc.returncode}'}",
+        )
+    version = (proc.stdout or proc.stderr).strip().splitlines()
+    return CheckResult(
+        "endpoint snapclient",
+        "ok",
+        version[0] if version else bin_path,
+    )
+
+
+@doctor_check(order=20.7, group="endpoint_audio")
+def check_endpoint_alsa_playback() -> CheckResult:
+    player = _endpoint_snapclient_player()
+    device = _endpoint_alsa_device_from_player(player)
+    if device is None:
+        return CheckResult(
+            "endpoint ALSA playback",
+            "ok",
+            f"player={player} is not ALSA; playback device check n/a",
+        )
+    if shutil.which("aplay") is None:
+        return CheckResult(
+            "endpoint ALSA playback",
+            "fail",
+            "aplay not in PATH; install alsa-utils",
+        )
+    pcm_list = _run(["aplay", "-L"]).stdout
+    card_list = _run(["aplay", "-l"]).stdout
+    if _alsa_playback_device_present(device, pcm_list, card_list):
+        return CheckResult(
+            "endpoint ALSA playback",
+            "ok",
+            f"player={player}; ALSA device {device} present",
+        )
+    return CheckResult(
+        "endpoint ALSA playback",
+        "fail",
+        f"player={player} references ALSA device {device}, but `aplay -L`/`-l` "
+        "does not show it; plug in the DAC or set JASPER_ENDPOINT_SNAPCLIENT_PLAYER",
+    )
+
+
 @doctor_check(order=21, group="audio")
 def check_apple_dongle_audio() -> CheckResult:
     """Apple's USB-C → 3.5mm Headphone Jack Adapter only exposes its

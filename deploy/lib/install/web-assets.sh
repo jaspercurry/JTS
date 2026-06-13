@@ -28,8 +28,10 @@
 #   and abort the deploy under `set -euo pipefail`.
 #   `shared` carries the cross-page ES modules (the <dialog>
 #   confirm/alert helper at shared/js/dialog.js, the HTML escaper at
-#   shared/js/escape.js, the CSRF fetch helpers at shared/js/http.js)
-#   — same copy shape as a page, no .css.
+#   shared/js/escape.js, the CSRF fetch helpers at shared/js/http.js,
+#   and the browser mic/AudioWorklet helpers at
+#   shared/js/measurement-audio.js) — same copy shape as a page,
+#   no .css.
 #
 # Page dirs are discovered dynamically: every directory under
 # deploy/assets/ (each canonical page's slug, plus `shared`) is
