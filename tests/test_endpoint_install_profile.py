@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.install_surface import installer_text
+
 
 REPO_ROOT = Path(__file__).parent.parent
 INSTALL_SH = REPO_ROOT / "deploy" / "install.sh"
@@ -286,8 +288,9 @@ def test_system_dashboard_honors_endpoint_capabilities():
 
 
 def test_endpoint_profile_installs_endpoint_web_not_combined_bundle():
-    text = INSTALL_SH.read_text()
-    endpoint_block = text.split(
+    install_sh = INSTALL_SH.read_text()
+    text = installer_text()
+    endpoint_block = install_sh.split(
         'if [[ "${install_profile}" == "endpoint" ]]; then', 1,
     )[1].split("return 0", 1)[0]
 
@@ -460,7 +463,7 @@ def test_endpoint_unit_validator_rejects_empty_dependency_directive(tmp_path: Pa
 
 
 def test_endpoint_systemd_verify_skips_absent_snapserver_binary():
-    text = INSTALL_SH.read_text()
+    text = installer_text()
 
     assert 'if [[ -x /usr/bin/snapserver ]]' in text
     assert 'verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")' in text

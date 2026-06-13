@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import stat
 import subprocess
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from pathlib import Path
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
 _INSTALL_LIB_DIR = Path(__file__).parent.parent / "deploy" / "lib" / "install"
 _RENDERERS_LIB = _INSTALL_LIB_DIR / "renderers.sh"
+_MODEL_DOWNLOADS = Path(__file__).parent.parent / "jasper" / "model_downloads.py"
 _ENV_EXAMPLE = Path(__file__).parent.parent / ".env.example"
 
 
@@ -208,11 +210,65 @@ def test_compute_rejects_negative_or_garbage_input():
     assert result == 8192
 
 
+def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
+    state_dir = tmp_path / "state"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_SH))
+            + " >/dev/null && "
+            + "STATE_DIR="
+            + shlex.quote(str(state_dir))
+            + " && ensure_state_dir",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(state_dir.stat().st_mode) == 0o750
+
+
+def _camilla_volume_limit_ok(config: str, tmp_path: Path) -> bool:
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(config, encoding="utf-8")
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_SH))
+            + " >/dev/null && camilla_config_has_safe_volume_limit "
+            + shlex.quote(str(config_path)),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return result.returncode == 0
+
+
+def test_camilla_volume_limit_accepts_unquoted_non_positive_values(tmp_path):
+    assert _camilla_volume_limit_ok("devices:\n  volume_limit: 0.0\n", tmp_path)
+    assert _camilla_volume_limit_ok("volume_limit: -3.5 # dB\n", tmp_path)
+
+
+def test_camilla_volume_limit_rejects_quoted_commented_or_positive_values(
+    tmp_path,
+):
+    assert not _camilla_volume_limit_ok('volume_limit: "0.0"\n', tmp_path)
+    assert not _camilla_volume_limit_ok("# volume_limit: 0.0\n", tmp_path)
+    assert not _camilla_volume_limit_ok("volume_limit: 0.1\n", tmp_path)
+
+
 def test_optional_firmware_builds_are_install_opt_in():
     """ESP32 satellites are optional accessories. Base speaker installs
     should stage firmware source but avoid PlatformIO builds unless the
     operator explicitly opts in."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = "\n".join(_installer_shell_texts().values())
     assert "JASPER_BUILD_OPTIONAL_FIRMWARE" in text
     assert re.search(
         r'if \[\[ "\$\{JASPER_BUILD_OPTIONAL_FIRMWARE:-0\}" == "1" \]\]; then'
@@ -229,7 +285,7 @@ def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
     assert "\nSPOTIFY_CLIENT_ID=" not in env_example
     assert "\nSPOTIFY_REDIRECT_URI=" not in env_example
 
-    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
+    install_sh = "\n".join(_installer_shell_texts().values())
     assert "/^SPOTIFY_CLIENT_ID=/d" in install_sh
     assert "/^SPOTIFY_OAUTH_MODE=/d" in install_sh
     assert "/^SPOTIFY_REDIRECT_URI=/d" in install_sh
@@ -416,19 +472,24 @@ def test_model_downloads_are_bounded_and_split_by_runtime_need():
     """Model fetches should use the shared bounded helper. Required
     openWakeWord runtime assets and the active stock fallback fail the
     install; inactive stock rows are allowed to stay unavailable."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    shell_text = "\n".join(_installer_shell_texts().values())
+    model_text = _MODEL_DOWNLOADS.read_text(encoding="utf-8")
 
-    assert "urllib.request.urlretrieve" not in text
-    assert "download_model_file(" in text
-    assert "timeout_seconds=" in text
-    assert "retries=" in text
-    assert "max_bytes" in text
-    assert "required_openwakeword_assets" in text
-    assert "fallback_openwakeword_assets" in text
-    assert "openwakeword_asset_for_model(active_wake_model())" in text
-    assert "required_failures" in text
-    assert "optional_failures" in text
-    assert "unavailable rows will be disabled in /wake/" in text
+    assert "urllib.request.urlretrieve" not in shell_text + model_text
+    assert "python\" -m jasper.model_downloads" in shell_text
+    assert "stage --registry openwakeword --required" in shell_text
+    assert "stage --registry wake --optional" in shell_text
+    assert "stage --registry dtln --optional" in shell_text
+    assert "download_model_file(" in model_text
+    assert "timeout_seconds=" in model_text
+    assert "retries=" in model_text
+    assert "max_bytes" in model_text
+    assert "required_openwakeword_assets" in model_text
+    assert "fallback_openwakeword_assets" in model_text
+    assert "openwakeword_asset_for_model(active_model)" in model_text
+    assert "required_failures" in model_text
+    assert "optional_failures" in model_text
+    assert "unavailable rows will be disabled in /wake/" in model_text
 
 
 def test_base_source_builds_use_hash_checked_archives():
@@ -624,7 +685,7 @@ def test_pip_toolchain_bootstrap_is_exact_pinned():
     """The venv's pip/wheel bootstrap must be pinned exactly — an
     unpinned `--upgrade pip wheel` re-resolved the installer toolchain
     on every deploy."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = "\n".join(_installer_shell_texts().values())
     assert re.search(
         r'pip" install --upgrade pip==\d+\.\d+(\.\d+)? wheel==\d+\.\d+(\.\d+)?',
         text,
@@ -733,6 +794,6 @@ def test_unpinned_pip_installs_carry_the_constraints_args():
     """Open-range pip installs in install_jasper must expand the
     pip_constraints array; the exact-pinned installs (pip/wheel,
     openwakeword --no-deps) intentionally don't need it."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = "\n".join(_installer_shell_texts().values())
     assert text.count('pip" install "${pip_constraints[@]}"') == 3
     assert 'install "${pip_constraints[@]}" -e "${INSTALL_DIR}"' in text

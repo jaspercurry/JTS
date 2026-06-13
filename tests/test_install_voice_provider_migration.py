@@ -22,6 +22,7 @@ def _extract_helper() -> str:
         check=True,
     ).stdout
     assert "migrate_voice_provider()" in helper
+    helper = 'ensure_state_dir() { install -d -m 0750 "${STATE_DIR}"; }\n' + helper
     return helper
 
 

@@ -159,7 +159,7 @@ install_renderers() {
     # /airplay/ if they hit DAC-specific issues. Existing env files
     # are preserved across reinstalls.
     if [[ ! -e /var/lib/jasper/airplay_mode.env ]]; then
-        install -d -m 0755 /var/lib/jasper
+        ensure_state_dir
         printf 'JASPER_AIRPLAY_FREE_RUNNING=no\n' \
             > /var/lib/jasper/airplay_mode.env
         chmod 0644 /var/lib/jasper/airplay_mode.env

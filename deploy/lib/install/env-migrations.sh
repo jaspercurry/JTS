@@ -11,12 +11,16 @@
 # stays the single source of truth, and render the voice-provider id
 # manifest. All are idempotent and safe on fresh installs.
 
+ensure_state_dir() {
+    install -d -m 0750 "${STATE_DIR}"
+}
+
 render_voice_provider_ids_manifest() {
     local provider_ids_file="${STATE_DIR}/voice_provider_ids"
     local python_bin="${JASPER_INSTALL_PYTHON:-${INSTALL_DIR}/.venv/bin/python}"
     local tmp
 
-    install -d -m 0750 "${STATE_DIR}"
+    ensure_state_dir
     tmp="$(mktemp "${STATE_DIR}/.voice_provider_ids.XXXXXX")"
     if ! "${python_bin}" - <<'PY' > "${tmp}"
 from jasper.voice.catalog import provider_ids_manifest_text
@@ -73,7 +77,7 @@ migrate_wake_legs_config() {
         return 0
     fi
 
-    install -d -m 0755 "${STATE_DIR}"
+    ensure_state_dir
 
     local raw_value dtln_value dtln_enabled_value
     local chip_150_value chip_210_value chip_enabled_value
@@ -216,7 +220,7 @@ migrate_transit_config() {
 
     [[ -f "${jasper_env}" ]] || return 0
 
-    install -d -m 0750 "${STATE_DIR}"
+    ensure_state_dir
 
     local k line stale_value
     for k in "${keys[@]}"; do
@@ -336,7 +340,7 @@ migrate_grouping() {
 
     [[ -f "${jasper_env}" ]] || return 0
 
-    install -d -m 0750 "${STATE_DIR}"
+    ensure_state_dir
 
     local k line stale_value
     for k in "${keys[@]}"; do
@@ -459,7 +463,7 @@ migrate_weather_config() {
 
     [[ -f "${jasper_env}" ]] || return 0
 
-    install -d -m 0750 "${STATE_DIR}"
+    ensure_state_dir
 
     local k line stale_value
     for k in "${keys[@]}"; do
@@ -554,7 +558,7 @@ migrate_voice_provider() {
     local stale_value="${line#JASPER_VOICE_PROVIDER=}"
     stale_value="${stale_value%[$'\r\n ']*}"
 
-    install -d -m 0750 "${STATE_DIR}"
+    ensure_state_dir
 
     # If wizard file already declares the variable, just remove the
     # stale jasper.env line — the wizard's value wins per systemd's
@@ -667,7 +671,7 @@ migrate_wifi_guardian() {
     # in bash, not Python, so no fsync — the wizard does fsync on
     # its own writes, and seeding from install.sh is a one-time event
     # whose durability matters less than its idempotency.
-    install -d -m 0750 "${STATE_DIR}"
+    ensure_state_dir
     local tmp
     tmp=$(mktemp "${STATE_DIR}/.wifi_guardian.XXXXXX")
     # umask + mode dance: write the file with the PSK never visible to
