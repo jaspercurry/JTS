@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import tempfile
 import threading
 import time
@@ -53,11 +54,19 @@ from typing import Any, Callable
 
 logger = logging.getLogger("jasper.web.balance")
 
-# Hard ceiling on one walkthrough session: the window-holder coroutine
-# self-releases after this long no matter what, so an abandoned phone
-# tab can never leave the renderers stopped. Two ~25 s ramps + floor
-# sampling + human pace fits comfortably.
-SESSION_MAX_S = 300.0
+# INACTIVITY ceiling on a held measurement window. The window-holder
+# coroutine releases this long after the LAST session activity (a ramp
+# start, a lock, or a ramp ending unheard) — never a fixed wall from
+# window-open. Two consequences, both intended: an ACTIVE walkthrough
+# keeps bumping the deadline so it is never yanked mid-use however slow
+# or retry-heavy the household is; an ABANDONED session (phone tab
+# backgrounded at a retry prompt, pagehide stop never landed) releases
+# the renderers — which `measurement_window` both stops AND pauses the
+# wake loop for — within one idle window. Must comfortably exceed one
+# ramp (~24.5 s) plus human decide-to-retry time: a ramp start bumps
+# the deadline, the next bump is the lock or the unheard transition
+# ~24.5 s later, then the user reads and decides.
+IDLE_TIMEOUT_S = 90.0
 
 # How long /start waits for the measurement window to actually open
 # (renderer stops + voice pause) before reporting failure.
@@ -78,10 +87,19 @@ _state: dict[str, Any] = {
     "ramp": None,           # {channel, t0, proc, token} while playing
     "ramp_token": 0,
     "release_window": None,  # thread-safe callable set by the holder
+    "idle_deadline": 0.0,    # monotonic; bumped by each session activity
     "recommendation": None,
     "applied": None,
     "wav_paths": {},         # channel -> cached ramp WAV path
 }
+
+
+def _bump_activity_locked() -> None:
+    """Push the inactivity deadline out one IDLE_TIMEOUT_S from now.
+    Called under ``_lock`` on every session activity (ramp start, lock,
+    ramp-ended-unheard) so an active walkthrough never times out and an
+    abandoned one releases within one idle window. See IDLE_TIMEOUT_S."""
+    _state["idle_deadline"] = time.monotonic() + IDLE_TIMEOUT_S
 
 
 def _reset_locked(error: str = "") -> None:
@@ -125,19 +143,28 @@ def _read_json(handler) -> dict:
 
 
 def _ramp_wav_path(channel: str) -> str:
-    """Build (once per process per channel) the canonical ramp WAV."""
+    """Path to this channel's ramp WAV, rendered once per process.
+
+    Fixed name under the temp dir, not a unique tempfile: each ramp WAV
+    is ~4.7 MB (24.5 s stereo 48 kHz S16) and the correction service is
+    socket-activated, so unique-per-process files would accumulate
+    multi-MB orphans in tmpfs across restarts on the 1 GB Pi. A stable
+    name bounds it to two files total, overwritten (the content is
+    deterministic) the first time each channel is needed in a process —
+    so a deploy that changes the ramp is picked up on the next start.
+    Predictable path is acceptable here: single-user appliance, sticky
+    temp dir, non-secret band-limited noise."""
     from jasper.multiroom.balance import write_ramp_wav
     with _lock:
         cached = _state["wav_paths"].get(channel)
     if cached:
         return cached
-    f = tempfile.NamedTemporaryFile(
-        prefix=f"jasper-balance-{channel}-", suffix=".wav", delete=False)
-    f.close()
-    write_ramp_wav(f.name, channel)
+    path = os.path.join(
+        tempfile.gettempdir(), f"jasper-balance-{channel}.wav")
+    write_ramp_wav(path, channel)
     with _lock:
-        _state["wav_paths"][channel] = f.name
-    return f.name
+        _state["wav_paths"][channel] = path
+    return path
 
 
 def _resolve_pair() -> tuple[dict | None, dict | None, str]:
@@ -244,28 +271,39 @@ def handle_status() -> dict:
 
 
 async def _session_window(entered: threading.Event) -> None:
-    """Hold ONE measurement window for the whole walkthrough. Installs
-    a thread-safe release callable into state; self-releases after
-    SESSION_MAX_S so an abandoned session can't keep renderers
-    stopped."""
+    """Hold ONE measurement window for the whole walkthrough, releasing
+    it on explicit release OR IDLE_TIMEOUT_S of inactivity. Installs a
+    thread-safe release callable into state. The deadline is re-checked
+    after each bounded wait, so a bump (ramp/lock/unheard) extends the
+    hold without the holder having to be signalled — an active session
+    is never yanked mid-use; an abandoned one releases within one idle
+    window (renderers + the wake loop come back)."""
     from jasper.correction.coordinator import measurement_window
     release = asyncio.Event()
     loop = asyncio.get_running_loop()
     with _lock:
         _state["release_window"] = (
             lambda: loop.call_soon_threadsafe(release.set))
+        _bump_activity_locked()
     try:
         async with measurement_window():
             entered.set()
-            try:
-                await asyncio.wait_for(release.wait(), SESSION_MAX_S)
-            except asyncio.TimeoutError:
-                logger.warning("event=balance.session_timeout")
+            while True:
                 with _lock:
-                    if _state["phase"] == "measuring":
-                        _state["release_window"] = None  # we ARE exiting
-                        _reset_locked("session timed out — renderers "
-                                      "restored")
+                    remaining = _state["idle_deadline"] - time.monotonic()
+                if remaining <= 0:
+                    with _lock:
+                        if _state["phase"] == "measuring":
+                            _state["release_window"] = None  # we ARE exiting
+                            _reset_locked("balance timed out after "
+                                          "inactivity — renderers restored")
+                    logger.warning("event=balance.idle_timeout")
+                    break
+                try:
+                    await asyncio.wait_for(release.wait(), remaining)
+                    break  # explicit release (lock-complete / stop)
+                except asyncio.TimeoutError:
+                    continue  # deadline may have been bumped — re-check
     except Exception as e:  # noqa: BLE001 — window entry/exit failure
         logger.exception("event=balance.window_failed")
         with _lock:
@@ -337,6 +375,7 @@ async def _watch_ramp(proc, channel: str, token: int) -> None:
         if ramp and ramp.get("token") == token:
             _state["ramp"] = None
             _state["locks"][channel] = {"not_heard": True}
+            _bump_activity_locked()  # the user now reads + decides to retry
             logger.info("event=balance.ramp_unheard channel=%s", channel)
 
 
@@ -375,6 +414,7 @@ def handle_ramp(
         token = _state["ramp_token"]
         _state["ramp"] = {"channel": channel, "t0": t0,
                           "proc": proc, "token": token}
+        _bump_activity_locked()  # ramp underway — the next bump is lock/unheard
     schedule(_watch_ramp(proc, channel, token))
     logger.info("event=balance.ramp_started channel=%s", channel)
     return {"ok": True, "channel": channel,
@@ -415,6 +455,7 @@ def handle_lock(handler) -> tuple[dict, int]:
         _state["ramp"] = None
         _state["locks"][channel] = {
             "offset_s": offset, "drive_dbfs": drive}
+        _bump_activity_locked()  # first-channel lock; window held for the 2nd
         locks = _state["locks"]
         members = _state["members"]
         both = all(
@@ -501,11 +542,15 @@ def handle_apply() -> tuple[dict, int]:
             break  # don't half-balance further; report what happened
 
     with _lock:
-        if all_ok:
-            _state["phase"] = "applied"
-            _state["applied"] = writes
-        else:
-            _state["error"] = "apply failed — see member detail"
+        # A concurrent /stop (or a fresh /start) during the blocking
+        # POSTs above may have moved us out of "analyzed"; honour that
+        # rather than resurrecting a dead session to "applied".
+        if _state["phase"] == "analyzed":
+            if all_ok:
+                _state["phase"] = "applied"
+                _state["applied"] = writes
+            else:
+                _state["error"] = "apply failed — see member detail"
     status = HTTPStatus.OK if all_ok else HTTPStatus.BAD_GATEWAY
     return {"ok": all_ok, "writes": writes}, status
 

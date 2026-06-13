@@ -9,6 +9,7 @@ patching clocks.
 """
 
 import asyncio
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -332,6 +333,66 @@ def test_stop_terminates_playback_and_releases_window(pair_env):
         time.sleep(0.02)
     assert pair_env["window_closed"] == 1
     assert balance_flow.handle_status()["phase"] == "idle"
+
+
+def test_activity_advances_the_idle_deadline(pair_env):
+    """S1: the held window's deadline is inactivity-based — each
+    session activity (ramp start, single-channel lock) pushes it out,
+    so an active walkthrough is never yanked mid-use. Deterministic:
+    monotonic advances between calls, no sleeping."""
+    start_ok(pair_env)
+    with balance_flow._lock:
+        d_start = balance_flow._state["idle_deadline"]
+    ramp_ok(pair_env, "left")
+    with balance_flow._lock:
+        d_ramp = balance_flow._state["idle_deadline"]
+    lock_at(pair_env, "left", 10.0)  # first-channel lock, session continues
+    with balance_flow._lock:
+        d_lock = balance_flow._state["idle_deadline"]
+    assert d_ramp > d_start
+    assert d_lock > d_ramp
+    assert pair_env["window_closed"] == 0  # still held across the bumps
+
+
+def test_inactivity_releases_the_window(pair_env, monkeypatch):
+    """S1: with no activity, the holder releases the window (renderers +
+    wake loop restored) within one idle window and resets to idle —
+    an abandoned phone tab can't hold the speaker paused indefinitely."""
+    monkeypatch.setattr(balance_flow, "IDLE_TIMEOUT_S", 0.2)
+    start_ok(pair_env)
+    deadline = time.monotonic() + 3.0
+    while (pair_env["window_closed"] != 1
+           and time.monotonic() < deadline):
+        time.sleep(0.02)
+    assert pair_env["window_closed"] == 1
+    st = balance_flow.handle_status()
+    assert st["phase"] == "idle"
+    assert "timed out" in st["error"]
+
+
+def test_ramp_wav_path_is_stable_and_bounded(monkeypatch):
+    """N4: the per-channel ramp WAV uses a stable name (no unique
+    tempfile per process), so socket-activation restarts can't strand
+    multi-MB orphans in tmpfs. Same path on repeat; both channels land
+    under the temp dir."""
+    import tempfile as _tf
+    balance_flow._state["wav_paths"].clear()
+    try:
+        p1 = balance_flow._ramp_wav_path("left")
+        p2 = balance_flow._ramp_wav_path("left")
+        pr = balance_flow._ramp_wav_path("right")
+        assert p1 == p2  # cached, one render per channel per process
+        assert p1 != pr
+        for p in (p1, pr):
+            assert p.startswith(_tf.gettempdir())
+            assert os.path.exists(p)
+    finally:
+        for p in set(balance_flow._state["wav_paths"].values()):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        balance_flow._state["wav_paths"].clear()
 
 
 # ---------------------------------------------------------------------------

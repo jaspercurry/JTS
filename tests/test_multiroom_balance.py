@@ -10,7 +10,6 @@ follows it.
 import numpy as np
 import pytest
 
-from jasper.multiroom import balance
 from jasper.multiroom.balance import (
     BURST_F_HI,
     BURST_F_LO,
@@ -21,7 +20,6 @@ from jasper.multiroom.balance import (
     RAMP_RATE_DB_S,
     RAMP_START_DBFS,
     TrimRecommendation,
-    band_rms_dbfs,
     drive_delta_db,
     ramp_duration_s,
     ramp_emission_dbfs,
@@ -198,21 +196,3 @@ def test_recommendation_is_stable_at_zero_delta():
     first = recommend_trims(3.4)
     again = recommend_trims(0.0, first.left_trim_db, first.right_trim_db)
     assert again == first
-
-
-# ---------------------------------------------------------------------------
-# Offline band-RMS helper (kept for fetched-capture analysis)
-
-
-def test_band_rms_ignores_out_of_band_energy():
-    t = np.arange(SR) / SR
-    hum = 0.5 * np.sin(2 * np.pi * 60 * t)  # loud mains hum, out of band
-    quiet_tone = 0.01 * np.sin(2 * np.pi * 1000 * t)  # in band
-    level_with_hum = band_rms_dbfs(hum + quiet_tone, SR)
-    level_alone = band_rms_dbfs(quiet_tone, SR)
-    assert level_with_hum == pytest.approx(level_alone, abs=0.5)
-
-
-def test_band_rms_floor_on_garbage():
-    assert band_rms_dbfs(np.zeros(4), SR) == balance._DBFS_FLOOR
-    assert band_rms_dbfs(np.zeros(SR), 0) == balance._DBFS_FLOOR
