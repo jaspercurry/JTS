@@ -18,6 +18,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from tests.install_surface import installer_text
+
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
 _INSTALL_LIB_DIR = Path(__file__).parent.parent / "deploy" / "lib" / "install"
@@ -797,3 +799,16 @@ def test_unpinned_pip_installs_carry_the_constraints_args():
     text = "\n".join(_installer_shell_texts().values())
     assert text.count('pip" install "${pip_constraints[@]}"') == 3
     assert 'install "${pip_constraints[@]}" -e "${INSTALL_DIR}"' in text
+
+
+def test_full_install_editable_pip_install_keeps_full_extra():
+    """Full speaker installs must pull the runtime dependency stack."""
+    text = installer_text()
+
+    assert (
+        text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"')
+        == 1
+    )
+    # The endpoint install remains base-package only; do not conflate
+    # that path with install_jasper's full-speaker runtime install.
+    assert text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}"') == 1

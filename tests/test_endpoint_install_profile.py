@@ -300,6 +300,26 @@ def test_endpoint_profile_installs_endpoint_web_not_combined_bundle():
     assert "combined full-speaker jasper-web bundle disabled" in text
 
 
+def test_full_profile_disables_endpoint_sources_socket_before_combined_web():
+    text = installer_text()
+    full_systemd = text.split("install_systemd_units() {", 1)[1].split(
+        "\n}",
+        1,
+    )[0]
+    disable = (
+        "systemctl disable --now jasper-sources-web.socket "
+        "jasper-sources-web.service"
+    )
+
+    assert disable in full_systemd
+    disable_block = full_systemd.split(disable, 1)[1].split("# Migrate", 1)[0]
+    assert ">/dev/null 2>&1 || true" in disable_block
+    assert full_systemd.index("systemctl daemon-reload") < full_systemd.index(
+        disable
+    )
+    assert full_systemd.index(disable) < full_systemd.index("# Migrate")
+
+
 def test_deploy_script_forwards_endpoint_profile_and_verifies_management_surface():
     text = DEPLOY_SH.read_text()
 

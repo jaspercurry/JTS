@@ -581,6 +581,13 @@ install_systemd_units() {
 
     systemctl daemon-reload
 
+    # Endpoint installs serve /sources/ from a tiny standalone socket on
+    # 8773. Full speakers serve /sources/ from the combined jasper-web
+    # bundle, so disable the endpoint-only socket during tier conversion
+    # before enabling jasper-web.socket on the same port.
+    systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
+        >/dev/null 2>&1 || true
+
     # Migrate the 5 wizard services from always-on to socket-activated.
     # Older installs had jasper-X-web.service enabled directly; the new
     # topology enables the .socket instead, which pulls in the .service

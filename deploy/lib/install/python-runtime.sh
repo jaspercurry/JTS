@@ -96,7 +96,7 @@ install_jasper() {
     "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" \
         requests tqdm 'scipy>=1.3,<2' 'scikit-learn>=1,<2'
 
-    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" -e "${INSTALL_DIR}"
+    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"
 
     # jasper_aec3 — pybind11 bindings for WebRTC AEC3. Two engines:
     #   - _aec3      → links against Debian Trixie's apt-installed
