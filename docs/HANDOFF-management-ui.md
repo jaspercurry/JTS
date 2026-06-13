@@ -196,17 +196,26 @@ label a field?), not a shared CSS class — which is why `/`'s eyebrow region
 headers and `/system/`'s cased card titles coexist correctly. Stat-tile labels
 ("MEMORY", "CPU USAGE") stay EYEBROW — they're field labels.
 
-**Tracked follow-up — split `/sound/`'s JS into modules (hardware-gated).**
+**Tracked follow-up — finish splitting `/sound/`'s EQ JS (hardware-gated).**
 `/system/`'s behaviour is split into layered ES modules
 (`dom`/`format`/`charts`/`components`/`sections`/`views`/`api`/`actions`/
-`main`). `/sound/`'s view/state/IO logic is still a single module — the EQ
-editor relocated verbatim from the old inline `_SOUND_JS`
-([`deploy/assets/sound-profile/js/main.js`](../deploy/assets/sound-profile/js/main.js)).
+`main`). `/sound/` is partially split: active-speaker setup now lives in
+[`active-speaker-views.js`](../deploy/assets/sound-profile/js/active-speaker-views.js)
+and
+[`active-speaker-actions.js`](../deploy/assets/sound-profile/js/active-speaker-actions.js),
+with shared state/API helpers in
+[`store.js`](../deploy/assets/sound-profile/js/store.js) and
+[`api.js`](../deploy/assets/sound-profile/js/api.js). Those files stay flat
+under `deploy/assets/sound-profile/js/` because the installer copies page
+module graphs with a `js/*.js` shape.
+
+The remaining EQ editor/profile library still lives in
+[`deploy/assets/sound-profile/js/main.js`](../deploy/assets/sound-profile/js/main.js).
 The one piece carved out is the pure, DOM-free RBJ biquad math
 ([`eq-math.js`](../deploy/assets/sound-profile/js/eq-math.js)), shared with a
 node parity check and mirrored in Python.
-Splitting the rest to match (a shared `store` + `eq`/`views`/`io`) is planned but
-was **deliberately deferred, not blind-refactored**: the editor's ~25
+Splitting that remaining EQ/profile half to match (for example `eq`/`views`/`io`)
+is planned but was **deliberately deferred, not blind-refactored**: the editor's ~25
 mutable state vars are woven through its math, `innerHTML` rendering, and
 the live-draft IO, and the live-draft path coordinates rapid edits →
 CamillaDSP via debounce + sequence guards whose correctness *and* audio
@@ -1349,7 +1358,10 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-04 (`/voice/` owns spend-cap status/settings and the
+Last verified: 2026-06-12 (`/sound/` active-speaker setup split into flat ES
+modules while the EQ/profile half remains hardware-gated in `main.js`; verified
+by the sound-profile node harness and `tests/test_sound_setup.py` static module
+graph checks. Prior pass 2026-06-04: `/voice/` owns spend-cap status/settings and the
 `/system/` Cloud activity card was removed from the dashboard; verified by
 `tests/test_voice_setup.py`, `tests/test_system_setup.py`, and the static
 web design/convention tests. Prior pass 2026-06-02: `/system/` per-service

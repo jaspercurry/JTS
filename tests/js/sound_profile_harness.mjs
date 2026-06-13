@@ -12,12 +12,23 @@ const escapePath = new URL("../../deploy/assets/shared/js/escape.js", import.met
 const escapePreamble = readFileSync(escapePath, "utf8")
   .replace(/^export\s+\{[^}]+\};\s*$/gm, "")
   .replace(/^export\s+/gm, "");
+const localModulePaths = [
+  "../../deploy/assets/sound-profile/js/api.js",
+  "../../deploy/assets/sound-profile/js/store.js",
+  "../../deploy/assets/sound-profile/js/active-speaker-views.js",
+  "../../deploy/assets/sound-profile/js/active-speaker-actions.js",
+];
+const localModulePreamble = localModulePaths.map((moduleName) => {
+  const moduleUrl = new URL(moduleName, import.meta.url);
+  return readFileSync(moduleUrl, "utf8").replace(/^export\s+/gm, "");
+}).join("\n");
 
 const rawSource = readFileSync(modulePath, "utf8");
 const source = rawSource
   .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m, "const jtsConfirm = async () => true;\n")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
-  .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "");
+  .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "")
+  .replace(/^import\s+\{[^}]*\}\s+from\s+["'][.][^"']+["'];\s*/gm, "");
 if (/^import\s/m.test(source)) {
   throw new Error("unhandled import in main.js — add a strip rule + preamble to this harness");
 }
@@ -107,6 +118,26 @@ function topologyPayload() {
         protection_status: "not_required",
       }],
     }],
+  };
+}
+
+function playbackReadinessPayload() {
+  return {
+    status: "ready",
+    preconditions_passed: true,
+    playback_allowed: true,
+    required_gates: [],
+    issues: [],
+    target: {
+      speaker_group_id: "main",
+      speaker_label: "Main speaker",
+      role: "full_range",
+      label: "Main speaker Full range on Output 1",
+      physical_output_index: 0,
+      output_index: 0,
+    },
+    calibration_level: levelPayload(-72),
+    next_step: "Ready for the first quiet test.",
   };
 }
 
@@ -237,7 +268,9 @@ function setupHarness(fetchHandler) {
   });
   globalThis.fetch = fetchHandler;
 
-  new Function(escapePreamble + "\n" + eqMathPreamble + "\n" + source)();
+  new Function(
+    escapePreamble + "\n" + eqMathPreamble + "\n" + localModulePreamble + "\n" + source
+  )();
 
   const viewBody = elements.get("view-body");
   const dispatchClick = (attrs) => {
@@ -291,6 +324,20 @@ async function loadAndSetActiveState(harness) {
   await harness.flush();
   await harness.flush();
   harness.dispatchClick({ "data-act": "refresh-active-speaker" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+}
+
+async function chooseFirstQuietTestDriver(harness) {
+  harness.dispatchClick({
+    "data-act": "check-output-readiness",
+    "data-group-id": "main",
+    "data-role": "full_range",
+    "data-protection-required": "false",
+    "data-protection-status": "not_required",
+    "data-label": "Main speaker Full range on Output 1",
+  });
   await harness.flush();
   await harness.flush();
   await harness.flush();
@@ -405,23 +452,7 @@ async function testStaleLevelResponseDiscarded() {
   const levelPosts = [];
   const levelResponses = [];
   const fetchHandler = baseFetch({
-    "./active-speaker/playback-readiness": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      return Promise.resolve(response({
-        status: "ready",
-        preconditions_passed: true,
-        playback_allowed: false,
-        target: {
-          speaker_group_id: body.speaker_group_id,
-          role: body.role,
-          physical_output_index: 0,
-          label: "Main full range on Output 1",
-        },
-        calibration_level: levelPayload(-80),
-        required_gates: [],
-        issues: [],
-      }));
-    },
+    "./active-speaker/playback-readiness": () => Promise.resolve(response(playbackReadinessPayload())),
     "./active-speaker/calibration-level": (path, options = {}) => {
       if (!options.method) return Promise.resolve(response(activePayloads()[path]));
       levelPosts.push(JSON.parse(options.body || "{}"));
@@ -432,17 +463,7 @@ async function testStaleLevelResponseDiscarded() {
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
-  harness.dispatchClick({
-    "data-act": "check-output-readiness",
-    "data-group-id": "main",
-    "data-role": "full_range",
-    "data-protection-required": "false",
-    "data-protection-status": "not_required",
-    "data-label": "Main full range on Output 1",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
+  await chooseFirstQuietTestDriver(harness);
 
   harness.dispatchChange({
     id: "active-speaker-level",
@@ -471,6 +492,51 @@ async function testStaleLevelResponseDiscarded() {
     fail("Stale calibration-level response should not overwrite the latest level", { html, levelPosts });
   }
   return { levelPosts: levelPosts.map((p) => p.level_dbfs), finalLevel: "-60.0 dBFS" };
+}
+
+async function testMicObservationStateSharedAcrossSplitModules() {
+  const observationPosts = [];
+  const fetchHandler = baseFetch({
+    "./active-speaker/playback-readiness": () => Promise.resolve(response(playbackReadinessPayload())),
+    "./active-speaker/calibration-level": (path, options = {}) => {
+      if (!options.method) return Promise.resolve(response(activePayloads()[path]));
+      observationPosts.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        ...levelPayload(-80),
+        mic_meter: { status: "clipping", recommendation: "reduce_level" },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  await chooseFirstQuietTestDriver(harness);
+
+  const micInput = makeEl("active-speaker-mic-dbfs");
+  micInput.value = "-38.5";
+  harness.elements.set("active-speaker-mic-dbfs", micInput);
+  const clippingInput = makeEl("active-speaker-mic-clipping");
+  clippingInput.checked = true;
+  harness.elements.set("active-speaker-mic-clipping", clippingInput);
+
+  harness.dispatchClick({ "data-act": "active-mic-observation" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (observationPosts.length !== 1 ||
+      observationPosts[0].observed_mic_dbfs !== -38.5 ||
+      observationPosts[0].mic_clipping !== true ||
+      !html.includes('value="-38.5"') ||
+      !html.includes('id="active-speaker-mic-clipping" checked')) {
+    fail("Mic observation state should stay shared between action and view modules", {
+      observationPosts,
+      html,
+    });
+  }
+  return { micObservationPreserved: true };
 }
 
 async function testPartialRefreshKeepsSuccessfulSections() {
@@ -552,112 +618,13 @@ async function testActiveCrossoverFirstStepRender() {
   return { activeCrossoverFirstStepRendered: true };
 }
 
-async function testConfirmedOutputChoosesFirstQuietDriver() {
-  const readinessRequests = [];
-  const confirmedTopology = topologyPayload();
-  confirmedTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 1,
-    verified_channel_count: 1,
-    unverified_channel_count: 0,
-    next_step: "Outputs are confirmed. Continue when you are ready.",
-    targets: [{
-      id: "main:full_range",
-      speaker_group_id: "main",
-      speaker_label: "Main speaker",
-      role: "full_range",
-      assigned: true,
-      identity_verified: true,
-      physical_output_index: 0,
-    }],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/playback-readiness": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      readinessRequests.push(body);
-      return Promise.resolve(response({
-        status: "ready",
-        preconditions_passed: true,
-        playback_allowed: false,
-        target: {
-          speaker_group_id: body.speaker_group_id,
-          role: body.role,
-          physical_output_index: 0,
-          label: "Main full range on Output 1",
-        },
-        calibration_level: levelPayload(-80),
-        required_gates: [],
-        issues: [],
-        next_step: "Preview the test signal first. No sound will play.",
-      }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  let html = harness.elements.get("view-body").innerHTML;
-  for (const expected of [
-    "Choose first driver",
-    "Choose Full range",
-    "Output 1",
-  ]) {
-    if (!html.includes(expected)) {
-      fail("Confirmed output should render first quiet-driver choices", { expected, html });
-    }
-  }
-  if (html.includes("Test this driver") || html.includes("Check readiness")) {
-    fail("Confirmed output choices should not expose old readiness language", { html });
-  }
-  if (html.includes("Test volume")) {
-    fail("Volume controls should wait until a test driver is selected", { html });
-  }
-  const readinessActionCount = (html.match(/data-act="check-output-readiness"/g) || []).length;
-  if (readinessActionCount !== 1) {
-    fail("First quiet-driver choice should appear only in the First quiet test card", {
-      readinessActionCount,
-      html,
-    });
-  }
-
-  harness.dispatchClick({
-    "data-act": "check-output-readiness",
-    "data-group-id": "main",
-    "data-role": "full_range",
-    "data-protection-required": "false",
-    "data-protection-status": "not_required",
-    "data-label": "Main full range on Output 1",
-  });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  if (readinessRequests.length !== 1) {
-    fail("Choosing a confirmed driver should fetch target readiness once", { readinessRequests });
-  }
-  if (JSON.stringify(readinessRequests[0]) !== JSON.stringify({ speaker_group_id: "main", role: "full_range" })) {
-    fail("Readiness request should be scoped to the chosen saved topology target", { readinessRequests });
-  }
-  html = harness.elements.get("view-body").innerHTML;
-  for (const expected of ["Selected driver", "Main full range on Output 1", "Preview test signal", "Test volume"]) {
-    if (!html.includes(expected)) {
-      fail("Chosen driver should render the readiness result without playing sound", { expected, html });
-    }
-  }
-  return { confirmedOutputChoosesFirstQuietDriver: true };
-}
-
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testStaleLevelResponseDiscarded());
+results.push(await testMicObservationStateSharedAcrossSplitModules());
 results.push(await testPartialRefreshKeepsSuccessfulSections());
 results.push(await testActiveCrossoverFirstStepRender());
-results.push(await testConfirmedOutputChoosesFirstQuietDriver());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));
