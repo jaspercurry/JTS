@@ -1,0 +1,230 @@
+"""Volume coordinator and transport-dispatch helpers for jasper-control."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from typing import Any, Awaitable, Callable, Optional
+
+from .uds import _voice_socket_command
+
+logger = logging.getLogger(__name__)
+
+# Same range jasper.tools.audio uses for the voice-driven volume tools.
+# Percent↔dB is the normal attenuation curve. VolumeCoordinator layers
+# Camilla main_mute on top at 0% so content/music 0% is a real mute.
+VOLUME_MIN_DB = -50.0
+VOLUME_MAX_DB = 0.0
+SPOTIFY_OAUTH_CALLBACK_BASE = "https://jaspercurry.github.io/spotify-oauth-callback/"
+
+
+def _clamp_db(db: float) -> float:
+    return max(VOLUME_MIN_DB, min(VOLUME_MAX_DB, float(db)))
+
+
+def _db_to_percent(db: float) -> int:
+    span = VOLUME_MAX_DB - VOLUME_MIN_DB
+    return max(0, min(100, round((float(db) - VOLUME_MIN_DB) / span * 100.0)))
+
+
+def _percent_to_db(percent: int) -> float:
+    p = max(0, min(100, int(percent)))
+    span = VOLUME_MAX_DB - VOLUME_MIN_DB
+    return VOLUME_MIN_DB + (span * p / 100.0)
+
+
+def _delta_db_to_delta_percent(delta_db: float) -> int:
+    """Convert a legacy-scale dB delta to a listening-level percent
+    delta. The dial firmware sends fixed deltas like ±2.5 dB per
+    encoder tick; we map those onto the 0-100 percent scale using
+    the same 50 dB span the camilla-only path used. ±5 dB == ±10pp."""
+    span = VOLUME_MAX_DB - VOLUME_MIN_DB
+    return round(float(delta_db) / span * 100.0)
+
+
+def _spotify_redirect_uri() -> str:
+    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
+    default_redirect_uri = f"{SPOTIFY_OAUTH_CALLBACK_BASE}?host={hostname}"
+    return os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri
+
+
+def _build_spotify_router_or_none():
+    """Build a multi-account Spotify router for dial-driven volume.
+    Returns None if SPOTIFY_CLIENT_ID isn't set or no accounts have
+    been authorized — _set_spotify in the coordinator treats None as
+    "skip Spotify dispatch", logging a no-op."""
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
+    if not client_id:
+        return None
+    try:
+        from ..accounts import Registry, maybe_migrate_legacy
+        from ..spotify_router import Router, build_clients
+        registry = Registry.load(os.environ.get(
+            "JASPER_SPOTIFY_ACCOUNTS_PATH",
+            "/var/lib/jasper/spotify/accounts.json",
+        ))
+        maybe_migrate_legacy(
+            registry,
+            os.environ.get(
+                "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache",
+            ),
+            default_name="default",
+        )
+        # build_clients returns BuildResult. The control daemon doesn't
+        # surface revoked-vs-needs-oauth status to the user, so we use
+        # the clients dict only — but still pass statuses through to the
+        # Router so /state can introspect them if a future endpoint adds
+        # a Spotify health probe.
+        result = build_clients(
+            registry,
+            client_id=client_id,
+            redirect_uri=_spotify_redirect_uri(),
+        )
+        if not result.clients:
+            return None
+        return Router(
+            clients=result.clients,
+            default_name=registry.default_name,
+            statuses=result.statuses,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("control daemon spotify router build failed: %s", e)
+        return None
+
+
+async def _with_coordinator(
+    op: Callable[[Any], Any],
+    *,
+    camilla_host: str,
+    camilla_port: int,
+    duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
+) -> Any:
+    """Build a VolumeCoordinator for one operation, run `op(coord)`,
+    dispose. Mirrors `_dispatch_transport`'s per-request pattern — each
+    HTTP request creates and tears down its own async resources, so we
+    don't have to manage a long-lived asyncio loop in this stdlib HTTP
+    server.
+
+    `op` is an async callable taking the live coordinator and
+    returning the per-request result (dict or scalar).
+
+    `duck_active_probe` is forwarded into the coordinator. When set
+    (callers that write camilla via the dial/web path), the
+    coordinator defers its camilla write iff the probe returns True.
+    See `_make_duck_active_probe` for the wire details and
+    docs/HANDOFF-volume.md "Cross-daemon defer signal" for the why."""
+    from ..camilla import CamillaController
+    from ..renderer import RendererClient
+    from ..speaker_name import runtime_name as _speaker_runtime_name
+    from ..volume_coordinator import VolumeCoordinator
+    from ..volume_persistence import VolumePersistence
+
+    camilla = CamillaController(host=camilla_host, port=camilla_port)
+    persistence = VolumePersistence(
+        os.environ.get(
+            "JASPER_VOLUME_STATE_PATH",
+            "/var/lib/jasper/speaker_volume.json",
+        ),
+    )
+    backend = RendererClient(
+        librespot_state_path=os.environ.get(
+            "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
+        ),
+    )
+    # Build a Spotify router per-request so dial volume can dispatch
+    # to Spotify via Web API (librespot 0.8.0 has no local HTTP).
+    # Best-effort: if env vars aren't set or no accounts authorized,
+    # router is None and Spotify dispatch becomes a no-op.
+    spotify_router = _build_spotify_router_or_none()
+    coord = VolumeCoordinator(
+        camilla=camilla,
+        persistence=persistence,
+        backend=backend,
+        spotify_router=spotify_router,
+        spotify_device_name=_speaker_runtime_name(),
+        duck_active_probe=duck_active_probe,
+    )
+    coord.load_persisted_level()
+    try:
+        return await op(coord)
+    finally:
+        try:
+            await coord.aclose()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("coordinator aclose warning: %s", e)
+        # RendererClient has no aclose — it's a stateless probe wrapper.
+        # CamillaController has no aclose — sync websocket reconnects
+        # on next use. GC handles cleanup of the cached client.
+
+
+def _make_duck_active_probe(
+    voice_socket_path: str,
+    *,
+    voice_socket_command: Callable[..., Awaitable[dict]] = _voice_socket_command,
+) -> Callable[[], Awaitable[Optional[bool]]]:
+    """Build the cross-daemon duck-active probe consumed by
+    VolumeCoordinator._set_camilla in the per-request coordinators here.
+
+    The probe asks jasper-voice over UDS whether the Ducker is
+    currently holding camilla below the canonical listening_level
+    target. True → defer the dial's camilla write (Ducker.restore
+    will land it on session end). False → write camilla normally.
+    None → unknown (UDS unreachable / voice wedged / response
+    malformed); the coordinator treats this as fail-open and writes
+    camilla — the dial must never silently stop working because of
+    an inter-daemon problem.
+
+    Tight 1 s timeout: STATUS is a synchronous attribute read in
+    voice_daemon (no I/O). If it doesn't return in 1 s the daemon
+    is wedged and we'd rather fail-open than block dial input. See
+    docs/HANDOFF-volume.md "Cross-daemon defer signal"."""
+    async def probe() -> Optional[bool]:
+        try:
+            response = await voice_socket_command(
+                voice_socket_path, "STATUS", timeout=1.0,
+            )
+        except (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            asyncio.TimeoutError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ):
+            return None
+        duck_active = response.get("duck_active")
+        if isinstance(duck_active, bool):
+            return duck_active
+        # Older jasper-voice without the field, or unexpected type —
+        # fail-open. Same effect as voice unreachable.
+        return None
+    return probe
+
+
+async def _dispatch_transport(
+    action: str,
+    *,
+    spotify_router_factory: Callable[[], Any] = _build_spotify_router_or_none,
+) -> dict:
+    """Build renderer + Spotify-router clients in the current event
+    loop, dispatch a transport action, then close. We rebuild per
+    request because httpx's AsyncClient is loop-bound: a persistent
+    instance would be tied to the first request's loop and error on
+    every subsequent one. The cost is small (~50 ms) and dial/remote
+    presses are rare.
+
+    `action` must be one of "toggle", "next", "previous" — the
+    dispatcher's documented vocabulary."""
+    # Import inside the function so jasper-control doesn't import the
+    # full voice-daemon dependency tree at startup.
+    from ..renderer import RendererClient
+    from ..tools.transport import make_transport_dispatcher
+
+    renderer = RendererClient(
+        librespot_state_path=os.environ.get(
+            "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
+        ),
+    )
+
+    dispatch = make_transport_dispatcher(renderer, spotify_router_factory())
+    return await dispatch(action)
