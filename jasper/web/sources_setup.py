@@ -25,6 +25,9 @@ The toggle is the only knob; there's no per-source settings on this page.
 
 State polling: clients GET /state every few seconds to reflect external
 changes (operator ran `systemctl stop shairport-sync` from SSH, etc.).
+On small endpoint installs the page can be present before the renderer
+tier exists; unavailable rows are disabled and explain which unit/profile
+is missing instead of pretending every source can be started.
 
 This page renders on the canonical design system (canonical_page); its
 behaviour ships as the static ES module deploy/assets/sources/js/main.js,
@@ -33,7 +36,7 @@ backends, and fail-soft logging are unchanged from the legacy look.
 
 URL surface (after nginx strips /sources/):
   GET  /         page render
-  GET  /state    {airplay, bluetooth, spotify_connect, usbsink} → {enabled: bool, available: bool}
+  GET  /state    {airplay, bluetooth, spotify_connect, usbsink} → {enabled: bool, available: bool, unavailableReason?: str}
   POST /set      {source, enabled} → same shape as /state on success
 """
 from __future__ import annotations
@@ -49,6 +52,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..install_profile import install_profile_allows_local_sources, read_install_profile
 from ._common import (
     bonded_follower_active,
     begin_request,
@@ -76,6 +80,25 @@ SPOTIFY_CONNECT_UNIT = "librespot.service"
 USBSINK_UNIT = "jasper-usbsink.service"
 
 VALID_SOURCES = ("airplay", "bluetooth", "spotify_connect", "usbsink")
+SOURCE_UNAVAILABLE = {
+    "airplay": (
+        "AirPlay is not installed in this profile. Convert this endpoint "
+        "to the full speaker profile to enable it."
+    ),
+    "spotify_connect": (
+        "Spotify Connect is not installed in this profile. Convert this "
+        "endpoint to the full speaker profile to enable it."
+    ),
+    "bluetooth": (
+        "Bluetooth audio is not installed in this profile. Convert this "
+        "endpoint to the full speaker profile to enable it."
+    ),
+    "usbsink": (
+        "USB Audio Input is not installed in this profile. Convert this "
+        "endpoint to the full speaker profile to enable it."
+    ),
+}
+IDLE_SHUTDOWN_SEC = 600.0
 
 # /boot/firmware/config.txt line that install.sh's set_usb_gadget_mode
 # writes. Without this, the BCM2712 OTG controller stays in host mode
@@ -120,9 +143,35 @@ def _systemctl(*args: str, timeout: int = 10) -> tuple[int, str]:
         return 1, ""
 
 
+def _unit_available(unit: str) -> bool:
+    """True iff systemd knows about this unit file.
+
+    Endpoint installs deliberately omit full-speaker renderer units. The
+    sources page still exists there, but rows for absent units must be
+    disabled and explicit rather than relying on a failing `systemctl start`.
+    """
+    rc, out = _systemctl("list-unit-files", unit, "--no-legend", timeout=5)
+    if rc != 0:
+        return False
+    for line in out.splitlines():
+        fields = line.split()
+        if fields and fields[0] == unit:
+            return True
+    return False
+
+
 def _unit_active(unit: str) -> bool:
     rc, out = _systemctl("is-active", unit, timeout=5)
     return rc == 0 and out == "active"
+
+
+def _local_sources_allowed() -> bool:
+    """True when this install role may run local source renderers."""
+    try:
+        return install_profile_allows_local_sources(read_install_profile())
+    except ValueError as e:
+        logger.warning("invalid install profile while rendering /sources: %s", e)
+        return False
 
 
 def _set_unit(unit: str, enabled: bool) -> None:
@@ -136,6 +185,27 @@ def _set_unit(unit: str, enabled: bool) -> None:
         _systemctl("enable", unit, "--now")
     else:
         _systemctl("disable", unit, "--now")
+
+
+def _source_state(
+    *, enabled: bool, available: bool, unavailable_reason: str = "",
+) -> dict[str, bool | str]:
+    state: dict[str, bool | str] = {
+        "enabled": bool(enabled and available),
+        "available": bool(available),
+    }
+    if not available and unavailable_reason:
+        state["unavailableReason"] = unavailable_reason
+    return state
+
+
+def _systemd_source_state(source: str, unit: str) -> dict[str, bool | str]:
+    available = _local_sources_allowed() and _unit_available(unit)
+    return _source_state(
+        enabled=_unit_active(unit) if available else False,
+        available=available,
+        unavailable_reason=SOURCE_UNAVAILABLE[source],
+    )
 
 
 async def _bt_state() -> tuple[bool, bool, bool]:
@@ -169,38 +239,58 @@ async def _set_bt(enabled: bool) -> None:
     await set_powered(enabled)
 
 
-def _gather_state() -> dict[str, dict[str, bool]]:
+def _gather_state() -> dict[str, dict[str, bool | str]]:
     """One-shot snapshot of all four sources. The BT branch runs an
     asyncio task because dbus-next is async-only; the rest are sync
     systemctl probes."""
     bt_available, bt_powered, bt_has_hid = asyncio.run(_bt_state())
+    local_sources_allowed = _local_sources_allowed()
+    usbsink_unit_available = (
+        local_sources_allowed and _unit_available(USBSINK_UNIT)
+    )
+    usbsink_dtoverlay_available = (
+        _usbsink_available() if usbsink_unit_available else False
+    )
+    usbsink_available = usbsink_unit_available and usbsink_dtoverlay_available
+    if not usbsink_unit_available:
+        usbsink_reason = SOURCE_UNAVAILABLE["usbsink"]
+    elif not usbsink_dtoverlay_available:
+        usbsink_reason = (
+            "USB gadget mode is not enabled in /boot/firmware/config.txt. "
+            "Re-run install.sh and reboot before enabling USB Audio Input."
+        )
+    else:
+        usbsink_reason = ""
+    bt_available_for_role = local_sources_allowed and bt_available
+    if not local_sources_allowed:
+        bt_unavailable_reason = SOURCE_UNAVAILABLE["bluetooth"]
+    elif not bt_available:
+        bt_unavailable_reason = "Bluetooth adapter not available on this device."
+    else:
+        bt_unavailable_reason = ""
     return {
         # Sibling key, not a source: the JS iterates a fixed SOURCES
         # list, so this rides alongside safely. While this speaker is a
         # bonded FOLLOWER the dumb-follower profile parks every source —
         # the page disables the toggles and explains, and POST /set 409s.
         "pair": {"parked": bonded_follower_active()},
-        "airplay": {
-            "enabled": _unit_active(AIRPLAY_UNIT),
-            "available": True,
-        },
+        "airplay": _systemd_source_state("airplay", AIRPLAY_UNIT),
         "bluetooth": {
-            "enabled": bt_powered,
-            "available": bt_available,
+            "enabled": bool(local_sources_allowed and bt_powered and bt_available),
+            "available": bt_available_for_role,
             "hasPairedHid": bt_has_hid,
+            **({} if bt_available_for_role else {
+                "unavailableReason": bt_unavailable_reason,
+            }),
         },
-        "spotify_connect": {
-            "enabled": _unit_active(SPOTIFY_CONNECT_UNIT),
-            "available": True,
-        },
-        "usbsink": {
-            "enabled": _unit_active(USBSINK_UNIT),
-            # available=False shows the toggle as disabled with a
-            # note pointing at the dtoverlay + reboot path. Once
-            # install.sh has added the dtoverlay and the user has
-            # rebooted, the row becomes interactive.
-            "available": _usbsink_available(),
-        },
+        "spotify_connect": _systemd_source_state(
+            "spotify_connect", SPOTIFY_CONNECT_UNIT,
+        ),
+        "usbsink": _source_state(
+            enabled=_unit_active(USBSINK_UNIT) if usbsink_available else False,
+            available=usbsink_available,
+            unavailable_reason=usbsink_reason,
+        ),
     }
 
 
@@ -208,12 +298,27 @@ def _apply(source: str, enabled: bool) -> None:
     """Route the toggle to the right backend. Caller has already
     validated `source` is in VALID_SOURCES."""
     if source == "airplay":
+        if not (_local_sources_allowed() and _unit_available(AIRPLAY_UNIT)):
+            raise RuntimeError(SOURCE_UNAVAILABLE["airplay"])
         _set_unit(AIRPLAY_UNIT, enabled)
     elif source == "spotify_connect":
+        if not (
+            _local_sources_allowed() and _unit_available(SPOTIFY_CONNECT_UNIT)
+        ):
+            raise RuntimeError(SOURCE_UNAVAILABLE["spotify_connect"])
         _set_unit(SPOTIFY_CONNECT_UNIT, enabled)
     elif source == "bluetooth":
+        if not _local_sources_allowed():
+            raise RuntimeError(SOURCE_UNAVAILABLE["bluetooth"])
         asyncio.run(_set_bt(enabled))
     elif source == "usbsink":
+        if not (_local_sources_allowed() and _unit_available(USBSINK_UNIT)):
+            raise RuntimeError(SOURCE_UNAVAILABLE["usbsink"])
+        if not _usbsink_available():
+            raise RuntimeError(
+                "USB gadget mode is not enabled in /boot/firmware/config.txt. "
+                "Re-run install.sh and reboot before enabling USB Audio Input."
+            )
         # jasper-usbsink.service Requires=+PartOf= the init.service, so
         # systemctl enable/disable --now propagates to both — the init
         # creates the ConfigFS gadget and loads libcomposite when on,
@@ -279,15 +384,29 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
         "</div>"
     )
     rows = "".join([
-        _source_row(name="AirPlay", input_id="t-airplay"),
+        _source_row(
+            name="AirPlay", input_id="t-airplay",
+            unavailable_html=(
+                '<div class="source-note warn" id="airplay-unavailable-note" '
+                'style="display:none">AirPlay is not installed in this '
+                "profile.</div>"
+            ),
+        ),
         _source_row(
             name="Bluetooth", input_id="t-bluetooth",
             note_html=(
-                '<div class="source-note" id="bt-note" style="display:none">'
+                '<div class="source-note warn" id="bt-note" style="display:none">'
                 "Bluetooth adapter not available on this device.</div>"
             ),
         ),
-        _source_row(name="Spotify Connect", input_id="t-spotify_connect"),
+        _source_row(
+            name="Spotify Connect", input_id="t-spotify_connect",
+            unavailable_html=(
+                '<div class="source-note warn" '
+                'id="spotify_connect-unavailable-note" style="display:none">'
+                "Spotify Connect is not installed in this profile.</div>"
+            ),
+        ),
         _source_row(
             name="USB Audio Input", input_id="t-usbsink",
             note_html=(
@@ -449,12 +568,33 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    server = make_server((args.host, args.port))
-    logger.info("jasper-sources-web listening on http://%s:%d", args.host, args.port)
+    from . import _systemd
+    sockets = _systemd.adopt_systemd_sockets()
+    target = sockets[0] if sockets else (args.host, args.port)
+    server = make_server(target)
+
+    tracker = _systemd.IdleShutdownTracker(
+        idle_threshold_sec=IDLE_SHUTDOWN_SEC,
+    )
+    _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
+    tracker.start()
+
+    if sockets:
+        logger.info(
+            "jasper-sources-web adopting systemd fd (idle=%ds)",
+            int(IDLE_SHUTDOWN_SEC),
+        )
+    else:
+        logger.info(
+            "jasper-sources-web listening on http://%s:%d",
+            args.host, args.port,
+        )
+    _systemd.notify_ready()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        return 0
+        pass
+    _systemd.notify_stopping()
     return 0
 
 

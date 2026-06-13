@@ -96,6 +96,12 @@ full = [
     "zeroconf>=0.149,<1.0",
 ]
 
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -131,6 +137,7 @@ jasper-bluetooth-agent = "jasper.bluetooth.no_code_agent:main"
 jasper-bluetooth-web = "jasper.web.bluetooth_setup:main"
 jasper-airplay-mode = "jasper.cli.airplay_mode:main"
 jasper-airplay-web = "jasper.web.airplay_setup:main"
+jasper-sources-web = "jasper.web.sources_setup:main"
 jasper-sound-web = "jasper.web.sound_setup:main"
 jasper-system-web = "jasper.web.system_setup:main"
 jasper-system-soak = "jasper.cli.system_soak:main"

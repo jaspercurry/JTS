@@ -9,6 +9,7 @@ the listener likes after that correction.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import tempfile
@@ -29,6 +30,7 @@ from jasper.camilla_config_contract import (
     ensure_volume_limit_db,
 )
 from jasper.camilla_emit import (
+    emit_delay_filter,
     emit_gain_filter,
     emit_master_gain_pipeline,
     emit_peaking_biquad,
@@ -82,6 +84,7 @@ def _emit_filter_definitions(
     *,
     room_peqs_right: Iterable[PeqFilter] | None = None,
     output_trim_db: float = 0.0,
+    channel_delays_ms: tuple[float, float] | None = None,
 ) -> tuple[str, list[str], list[str] | None, float]:
     """Returns ``(filters_yaml, chain_names, chain_names_right, trim_db)``.
 
@@ -95,8 +98,15 @@ def _emit_filter_definitions(
     lines: list[str] = []
     room_names: list[str] = []
     room_names_right: list[str] | None = None
+    left_delay_ms, right_delay_ms = (
+        (0.0, 0.0) if channel_delays_ms is None else channel_delays_ms
+    )
 
     lines.extend(emit_gain_filter("flat", 0.0))
+
+    if left_delay_ms > 0.0:
+        lines.extend(emit_delay_filter("room_delay_l", delay_ms=left_delay_ms))
+        room_names.append("room_delay_l")
 
     room_list = list(room_peqs)
     for i, peq in enumerate(room_list, start=1):
@@ -106,6 +116,9 @@ def _emit_filter_definitions(
 
     if room_peqs_right is not None:
         room_names_right = []
+        if right_delay_ms > 0.0:
+            lines.extend(emit_delay_filter("room_delay_r", delay_ms=right_delay_ms))
+            room_names_right.append("room_delay_r")
         for i, peq in enumerate(room_peqs_right, start=1):
             name = f"room_peq_r{i}"
             lines.extend(
@@ -144,6 +157,7 @@ def emit_sound_config(
     *,
     room_peqs: list[PeqFilter] | None = None,
     room_peqs_right: list[PeqFilter] | None = None,
+    channel_delays_ms: tuple[float, float] | None = None,
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     playback_device: str = DEFAULT_PLAYBACK_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
@@ -174,6 +188,14 @@ def emit_sound_config(
     the stereo-pinned config contract (HANDOFF-multiroom.md §2); do not
     pre-generalise it alone.
 
+    ``channel_delays_ms`` is the room/pair time-of-arrival axis that
+    belongs with measured correction, not Snapcast transport sync. It is
+    stereo-pinned (``(left_ms, right_ms)``), positive-only, and emitted as
+    CamillaDSP ``Delay`` filters inside the per-room chain. ``None``
+    (default — solo) and ``(0, 0)`` emit no delay filters, preserving the
+    solo byte contract. Delays are for static acoustic alignment at the
+    listening seat; Snapcast still owns distributed clock/transport sync.
+
     ``channel_split`` (a :class:`jasper.multiroom.channel_split.ChannelSplit`)
     is woven in for a bonded member that plays a single channel — the
     ``channel_select`` mixer + (for a sub) the crossover. ``None`` or a
@@ -202,6 +224,21 @@ def emit_sound_config(
     # Loud-output safety: refuse to emit a config whose master fader
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
+    if channel_delays_ms is not None:
+        if len(channel_delays_ms) != 2:
+            raise ValueError("channel_delays_ms must be a (left_ms, right_ms) pair")
+        left_delay, right_delay = channel_delays_ms
+        for label, value in (("left", left_delay), ("right", right_delay)):
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{label} channel delay must be finite")
+            if float(value) < 0.0:
+                raise ValueError(f"{label} channel delay must be positive-only")
+        channel_delays_ms = (float(left_delay), float(right_delay))
+        if channel_delays_ms != (0.0, 0.0) and room_peqs_right is None:
+            raise ValueError(
+                "channel_delays_ms requires room_peqs_right so the two "
+                "speaker channels have distinct room chains"
+            )
 
     # Contract guard (fail LOUD at the API boundary, before Increment 5
     # wires real callers): room_peqs_right is the multi-room LEADER-BAKE
@@ -249,6 +286,7 @@ def emit_sound_config(
         room_peqs or [],
         room_peqs_right=room_peqs_right,
         output_trim_db=output_trim_db,
+        channel_delays_ms=channel_delays_ms,
     )
     # Structure is the shared primitive; this module owns only which
     # names go in each chain (room L/R segments + the shared tail).

@@ -48,6 +48,12 @@ case "$cmd" in
   sudo\ cat\ /var/lib/jasper/build.txt*)
     printf 'fake-build\n'
     ;;
+  sudo\ -n\ cat\ /var/lib/jasper/install_profile*)
+    printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
+    ;;
+  sudo\ cat\ /var/lib/jasper/install_profile*)
+    printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
+    ;;
   sudo\ -n*)
     exit 0
     ;;

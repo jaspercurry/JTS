@@ -286,6 +286,43 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
     )
 
 
+def plan_for_install_profile(
+    cfg: GroupingConfig, *, install_profile: str = "full",
+) -> ReconcilePlan:
+    """Install-tier-aware snapcast unit plan.
+
+    Runtime grouping vocabulary stays ``leader``/``follower``. The endpoint
+    install tier is different: it is physically incapable of hosting the
+    stream because it installs snapclient but not snapserver/CamillaDSP. If an
+    endpoint somehow receives ``role=leader``, fail closed by stopping both
+    units and returning a non-starting plan. The caller still flips the
+    oneshot exit code so the misconfiguration is visible.
+    """
+    if (
+        install_profile == ENDPOINT_INSTALL_PROFILE
+        and cfg.enabled
+        and cfg.error is None
+        and cfg.role == "leader"
+    ):
+        return ReconcilePlan(
+            intents=(
+                UnitIntent(
+                    SNAPSERVER_UNIT, "stop",
+                    "endpoint install tier cannot host stream",
+                ),
+                UnitIntent(
+                    SNAPCLIENT_UNIT, "stop",
+                    "endpoint install tier cannot be grouping leader",
+                ),
+            ),
+            summary=(
+                "endpoint install tier cannot be grouping leader "
+                f"(bond {cfg.bond_id})"
+            ),
+        )
+    return plan(cfg)
+
+
 # ---------- Pure argv builders ----------
 
 def snapserver_argv(cfg: GroupingConfig) -> list[str]:
@@ -293,7 +330,7 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
 
     PURE: a deterministic function of `cfg`. snapserver reads the mixed
     program from the SNAPFIFO pipe source and streams it with the
-    configured codec and a buffer derived from cfg.buffer_ms.
+    configured codec and group/network buffer derived from cfg.buffer_ms.
     """
     # sampleformat is PINNED (codify, don't rely on snapserver defaults):
     # the whole chain is 48 kHz / S16 / stereo — CamillaDSP's File sink
@@ -323,8 +360,9 @@ def snapclient_argv(
 
     PURE: a deterministic function of `cfg` (+ the optional `player_fifo`).
     The host is the loopback when this speaker is the leader (it runs its own
-    server), otherwise the leader's address. The playout latency tracks
-    cfg.buffer_ms.
+    server), otherwise the leader's address. The ``--latency`` value is
+    the fixed client PCM/output-path latency compensation, not the group
+    stream buffer.
 
     Channel selection (which of L/R/sub this client plays) is a later
     CamillaDSP concern and is intentionally NOT decided here.
@@ -357,7 +395,7 @@ def snapclient_argv(
         "--host",
         host,
         "--latency",
-        str(cfg.buffer_ms),
+        str(cfg.client_latency_ms),
     ]
     if player_fifo:
         argv += ["--player", f"file:filename={player_fifo}"]
@@ -395,6 +433,8 @@ def _assemble_args(
     word-splitting would mangle it, and that is a separate quoting task.
     """
     if not cfg.enabled or cfg.error is not None:
+        return {_SERVER_ARGS_KEY: "", _CLIENT_ARGS_KEY: ""}
+    if install_profile == ENDPOINT_INSTALL_PROFILE and cfg.role == "leader":
         return {_SERVER_ARGS_KEY: "", _CLIENT_ARGS_KEY: ""}
 
     # argv[0] is the binary name (already in the unit's ExecStart); the
@@ -793,9 +833,10 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config()
     install_profile = read_install_profile()
     endpoint_tier = install_profile == ENDPOINT_INSTALL_PROFILE
-    decision = plan(cfg)
+    decision = plan_for_install_profile(cfg, install_profile=install_profile)
     active = cfg.enabled and cfg.error is None
     active_leader = active and cfg.role == "leader"
+    endpoint_leader_misconfigured = endpoint_tier and active_leader
     logger.info(
         "event=multiroom.reconcile.start reason=%s install_profile=%s enabled=%s role=%s error=%s summary=%r",
         args.reason, install_profile, cfg.enabled, cfg.role or "(none)",
@@ -817,6 +858,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if endpoint_tier:
+        if endpoint_leader_misconfigured:
+            logger.error(
+                "event=multiroom.reconcile.endpoint_role_invalid "
+                "role=leader action=stop_snapcast detail=%r",
+                "endpoint install tier must be a follower; reassign from /rooms",
+            )
+            rc = 1
         logger.info(
             "event=multiroom.reconcile.endpoint_lane "
             "player=%s outputd=skipped voice=skipped camilla=skipped",

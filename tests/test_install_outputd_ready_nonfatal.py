@@ -104,6 +104,13 @@ def test_recovery_surface_is_wired_after_systemd_units_in_main():
     assert m, "could not locate main() body in install.sh"
     body = m.group(1)
 
+    full_branch_start = body.find('if [[ "${install_profile}" == "endpoint" ]]')
+    assert full_branch_start != -1, "could not locate endpoint branch in main()"
+    body = body[full_branch_start:]
+    full_branch_start = body.find("require_build_user")
+    assert full_branch_start != -1, "could not locate full install branch in main()"
+    body = body[full_branch_start:]
+
     def call_pos(name: str) -> int:
         i = body.find(name)
         assert i != -1, f"{name} is not called in main()"

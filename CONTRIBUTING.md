@@ -39,7 +39,7 @@ just make sure your python is 3.11+:
 ```sh
 python3.11 -m venv .venv     # NOT `python3 -m venv` on macOS — Apple's default is 3.9
 source .venv/bin/activate
-pip install -e '.[dev]'
+pip install -e '.[full,dev]'
 pytest
 ```
 

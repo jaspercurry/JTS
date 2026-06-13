@@ -598,15 +598,21 @@ shipped in response. Same-day evidence → same-day fix.
 Two changes:
 
 **1. Enable the memory cgroup controller.** `install.sh`'s
-`migrate_cgroup_memory_enabled` idempotently adds three tokens to
-`/boot/firmware/cmdline.txt`:
-- `cgroup_enable=memory` — overrides the Pi 5 DTB's `cgroup_disable=memory`
+`migrate_cgroup_memory_enabled` idempotently removes an explicit
+`cgroup_disable=memory` token from `/boot/firmware/cmdline.txt` if one
+is present, then adds three tokens:
+- `cgroup_enable=memory` — overrides the Raspberry Pi boot-time
+  `cgroup_disable=memory` injection
 - `cgroup_memory=1` — paired token (legacy, harmless on current kernels)
 - `psi=1` — enables `/proc/pressure/` if `CONFIG_PSI=y` (no-op
   otherwise). Not required for Stage 2 audio but unlocks PSI
   observability for future Stage 3 work.
 
-**Reboot required** — kernel only reads cmdline at boot.
+**Reboot required** — kernel only reads cmdline at boot. On Raspberry Pi
+OS, `/proc/cmdline` may still show a DTB-injected
+`cgroup_disable=memory` alongside the enable tokens; the load-bearing
+verification is whether `/sys/fs/cgroup/cgroup.controllers` includes
+`memory`.
 
 **2. Carve audio + mic daemons into protected slices** with
 `MemorySwapMax=0`:
@@ -614,6 +620,8 @@ Two changes:
 ```
 jts-audio.slice          ← jasper-fanin, jasper-camilla, shairport-sync,
                             librespot, bluealsa-aplay
+                         ← endpoint tier: jasper-snapclient /
+                            jasper-snapserver managed units
                           MemorySwapMax=0
                           ManagedOOMPreference=avoid
 
@@ -651,9 +659,11 @@ cat /sys/fs/cgroup/jts-audio.slice/memory.swap.max  # → 0
 
 # 3. Each audio daemon is actually IN the slice
 systemctl show jasper-camilla -p Slice              # → Slice=jts-audio.slice
+# Endpoint tier example:
+systemctl show jasper-snapclient -p Slice           # → Slice=jts-audio.slice
 
 # 4. Daemons aren't swapping (this is the load-bearing one)
-for unit in jasper-camilla jasper-aec-bridge shairport-sync librespot bluealsa-aplay; do
+for unit in jasper-camilla jasper-aec-bridge shairport-sync librespot bluealsa-aplay jasper-snapclient; do
     pid=$(systemctl show -p MainPID --value ${unit}.service)
     [ "$pid" != "0" ] && echo "$unit: $(grep VmSwap /proc/$pid/status)"
 done
@@ -1184,4 +1194,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-10
+Last verified: 2026-06-12

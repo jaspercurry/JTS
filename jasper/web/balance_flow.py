@@ -167,69 +167,6 @@ def _ramp_wav_path(channel: str) -> str:
     return path
 
 
-def _resolve_pair() -> tuple[dict | None, dict | None, str]:
-    """(self_grouping, peer, error). ``peer`` is {addr, label, grouping}.
-
-    Same one-bond-sibling discovery as /rooms swap and trim — lazy
-    imports keep this module import-light and give tests one seam per
-    helper."""
-    from .rooms_setup import (
-        _discover_speakers_cached,
-        _resolve_bond_peer,
-        _self_addresses,
-    )
-    from ..multiroom.state import read_grouping_state
-
-    own = read_grouping_state()
-    bond_id = str(own.get("bond_id") or "").strip()
-    if not own.get("enabled") or not bond_id:
-        return None, None, "bond a pair first (jts.local/rooms)"
-    if str(own.get("role") or "") != "leader":
-        return None, None, "open this page on the pair leader"
-
-    # Shared roster-first resolution (see rooms_setup._resolve_bond_peer)
-    # — the household's recorded pair sibling, never an inference that a
-    # foreign bond-claimer can poison.
-    known = _self_addresses()
-    addr, pg, perr = _resolve_bond_peer(own, known)
-    if perr:
-        return None, None, f"balance {perr}"
-    label = str(own.get("peer_name") or "").strip()
-    if not label:
-        # Legacy bond (no roster name): borrow the directory's display
-        # name for the resolved address, falling back to the address.
-        label = next(
-            (str(r.get("name") or "").strip()
-             for r in _discover_speakers_cached()
-             if str(r.get("address") or "").strip() == addr
-             and str(r.get("name") or "").strip()),
-            addr,
-        )
-    return own, {"addr": addr, "label": label, "grouping": pg}, ""
-
-
-def _members_by_channel(own: dict, peer: dict, hostname: str) -> dict | None:
-    """Map the bond's channel assignment onto {left, right} member
-    records carrying address, label, and current trim."""
-    self_ch = str(own.get("channel") or "")
-    peer_ch = str(peer["grouping"].get("channel") or "")
-    if {self_ch, peer_ch} != {"left", "right"}:
-        return None
-    mine = {
-        "addr": "", "is_self": True,
-        "label": f"this speaker ({hostname})",
-        "trim_db": float(own.get("trim_db") or 0.0),
-        "grouping": own,
-    }
-    theirs = {
-        "addr": peer["addr"], "is_self": False,
-        "label": peer["label"],
-        "trim_db": float(peer["grouping"].get("trim_db") or 0.0),
-        "grouping": peer["grouping"],
-    }
-    return {self_ch: mine, peer_ch: theirs}
-
-
 def _public_members(members: dict) -> dict:
     return {
         ch: {"label": m["label"], "is_self": m["is_self"],
@@ -319,10 +256,12 @@ def handle_start(
     """POST /balance/start — gate, then open the session window.
     ``schedule`` fires a coroutine on the correction service's
     background loop without blocking."""
-    own, peer, err = _resolve_pair()
+    from .pair_flow import members_by_channel, resolve_pair
+
+    own, peer, err = resolve_pair()
     if err:
         return {"ok": False, "error": err}, HTTPStatus.CONFLICT
-    members = _members_by_channel(own, peer, hostname)
+    members = members_by_channel(own, peer, hostname)
     if members is None:
         return {"ok": False, "error": (
             "pair channels are not one left + one right — repair via "

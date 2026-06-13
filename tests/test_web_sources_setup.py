@@ -90,6 +90,13 @@ def test_usb_unavailable_note_present_but_hidden_at_render():
     assert "/boot/firmware/config.txt" in html
 
 
+def test_profile_unavailable_notes_present_but_hidden_at_render():
+    html = mod._index_html(csrf_token=CSRF).decode("utf-8")
+    assert 'id="airplay-unavailable-note"' in html
+    assert 'id="spotify_connect-unavailable-note"' in html
+    assert "not installed in this profile" in html
+
+
 def test_status_banner_severity_and_escaping():
     ok = mod._index_html(csrf_token=CSRF, status_msg="Saved.").decode("utf-8")
     assert "banner--ok" in ok
@@ -106,8 +113,25 @@ def test_status_banner_severity_and_escaping():
 @pytest.fixture
 def stub_backends(monkeypatch):
     """Stub the systemctl + DBus probes so _gather_state / _apply run pure."""
-    def _stub(*, active=(), usb_ready=True, bt=(True, True, False)):
+    def _stub(
+        *,
+        active=(),
+        available_units=None,
+        usb_ready=True,
+        bt=(True, True, False),
+    ):
         active_set = set(active)
+        if available_units is None:
+            available_units = {
+                mod.AIRPLAY_UNIT,
+                mod.SPOTIFY_CONNECT_UNIT,
+                mod.USBSINK_UNIT,
+            }
+        available_set = set(available_units)
+        monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
+        monkeypatch.setattr(
+            mod, "_unit_available", lambda unit: unit in available_set,
+        )
         monkeypatch.setattr(mod, "_unit_active", lambda unit: unit in active_set)
         monkeypatch.setattr(mod, "_usbsink_available", lambda *a, **k: usb_ready)
 
@@ -132,14 +156,64 @@ def test_gather_state_shape(stub_backends):
         "enabled": True, "available": True, "hasPairedHid": True,
     }
     # USB unavailable because the dtoverlay is absent.
-    assert state["usbsink"] == {"enabled": False, "available": False}
+    assert state["usbsink"]["enabled"] is False
+    assert state["usbsink"]["available"] is False
+    assert "config.txt" in str(state["usbsink"]["unavailableReason"])
+
+
+def test_gather_state_renderer_units_unavailable(stub_backends):
+    stub_backends(available_units=set(), usb_ready=True)
+    state = mod._gather_state()
+
+    assert state["airplay"]["enabled"] is False
+    assert state["airplay"]["available"] is False
+    assert "not installed in this profile" in str(
+        state["airplay"]["unavailableReason"]
+    )
+    assert state["spotify_connect"]["enabled"] is False
+    assert state["spotify_connect"]["available"] is False
+    assert state["usbsink"]["enabled"] is False
+    assert state["usbsink"]["available"] is False
+    unavailable = " ".join(
+        str(item.get("unavailableReason") or "")
+        for item in state.values()
+    )
+    assert "streambox" not in unavailable
+    assert "full speaker profile" in unavailable
+
+
+def test_gather_state_endpoint_profile_disables_stale_renderer_units(
+    stub_backends, monkeypatch,
+):
+    stub_backends(
+        active={mod.AIRPLAY_UNIT, mod.SPOTIFY_CONNECT_UNIT, mod.USBSINK_UNIT},
+        bt=(True, True, False),
+        usb_ready=True,
+    )
+    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
+
+    state = mod._gather_state()
+
+    assert state["airplay"]["enabled"] is False
+    assert state["airplay"]["available"] is False
+    assert state["spotify_connect"]["enabled"] is False
+    assert state["spotify_connect"]["available"] is False
+    assert state["bluetooth"]["enabled"] is False
+    assert state["bluetooth"]["available"] is False
+    assert "not installed in this profile" in str(
+        state["bluetooth"]["unavailableReason"]
+    )
+    assert state["usbsink"]["enabled"] is False
+    assert state["usbsink"]["available"] is False
 
 
 def test_gather_state_bluetooth_unavailable(stub_backends):
     stub_backends(bt=(False, False, False))
-    assert mod._gather_state()["bluetooth"] == {
-        "enabled": False, "available": False, "hasPairedHid": False,
-    }
+    state = mod._gather_state()["bluetooth"]
+    assert state["enabled"] is False
+    assert state["available"] is False
+    assert state["hasPairedHid"] is False
+    assert "Bluetooth adapter" in str(state["unavailableReason"])
 
 
 # ---- _apply routing ---------------------------------------------------------
@@ -147,6 +221,9 @@ def test_gather_state_bluetooth_unavailable(stub_backends):
 
 def test_apply_routes_each_source(monkeypatch):
     units = []
+    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(mod, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(mod, "_usbsink_available", lambda: True)
     monkeypatch.setattr(
         mod, "_set_unit", lambda unit, enabled: units.append((unit, enabled))
     )
@@ -166,6 +243,52 @@ def test_apply_routes_each_source(monkeypatch):
     assert (mod.SPOTIFY_CONNECT_UNIT, False) in units
     assert (mod.USBSINK_UNIT, True) in units
     assert bt_calls == [False]
+
+
+def test_apply_refuses_unavailable_renderer(monkeypatch):
+    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(mod, "_unit_available", lambda unit: False)
+    monkeypatch.setattr(
+        mod, "_set_unit", lambda *a: pytest.fail("must not call systemctl"),
+    )
+
+    with pytest.raises(RuntimeError, match="not installed in this profile"):
+        mod._apply("airplay", True)
+
+
+def test_apply_refuses_usbsink_without_dtoverlay(monkeypatch):
+    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(mod, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(mod, "_usbsink_available", lambda: False)
+    monkeypatch.setattr(
+        mod, "_set_unit", lambda *a: pytest.fail("must not call systemctl"),
+    )
+
+    with pytest.raises(RuntimeError, match="USB gadget mode"):
+        mod._apply("usbsink", True)
+
+
+def test_apply_refuses_renderer_when_endpoint_profile(monkeypatch):
+    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
+    monkeypatch.setattr(mod, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(
+        mod, "_set_unit", lambda *a: pytest.fail("must not call systemctl"),
+    )
+
+    with pytest.raises(RuntimeError, match="not installed in this profile"):
+        mod._apply("spotify_connect", True)
+
+
+def test_apply_refuses_bluetooth_when_endpoint_profile(monkeypatch):
+    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
+
+    async def fail_bt(_enabled):
+        pytest.fail("must not call bluetooth DBus backend")
+
+    monkeypatch.setattr(mod, "_set_bt", fail_bt)
+
+    with pytest.raises(RuntimeError, match="not installed in this profile"):
+        mod._apply("bluetooth", True)
 
 
 def test_set_unit_enable_disable_pairing(monkeypatch):

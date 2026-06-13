@@ -360,10 +360,9 @@ def _validate_pycamilladsp(
     if artifact is None:
         errors.append("deploy/provenance.toml: missing artifact pycamilladsp")
         return
-    deps = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    dep_strings = deps.get("project", {}).get("dependencies", [])
     direct_url = str(artifact.get("direct_url", ""))
-    if not any(direct_url in dep for dep in dep_strings if isinstance(dep, str)):
+    requirement_urls = pyproject_requirement_urls(root / "pyproject.toml")
+    if direct_url not in requirement_urls:
         errors.append(
             "pycamilladsp: direct_url does not match pyproject.toml dependency"
         )

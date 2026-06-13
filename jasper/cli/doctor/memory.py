@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from ...install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -24,6 +25,12 @@ def check_ram() -> CheckResult:
                 if line.startswith("MemTotal:"):
                     kb = int(line.split()[1])
                     mb = kb // 1024
+                    if read_install_profile() == ENDPOINT_INSTALL_PROFILE:
+                        return CheckResult(
+                            "RAM", "ok",
+                            f"{mb} MB total (endpoint tier; live pressure "
+                            f"covered by memory headroom)",
+                        )
                     if mb < 1500:
                         return CheckResult(
                             "RAM", "warn",
@@ -270,7 +277,18 @@ def check_sysctl_drift() -> CheckResult:
 # OOMScoreAdjust values are the canonical set from jasper._oom_adj —
 # shared with install.sh so a future tweak only touches one file.
 # See jasper/_oom_adj.py for rationale per daemon.
-from ..._oom_adj import EXPECTED as _EXPECTED_OOM_ADJ  # noqa: E402
+from ..._oom_adj import (  # noqa: E402
+    ENDPOINT_EXPECTED as _ENDPOINT_EXPECTED_OOM_ADJ,
+    EXPECTED as _EXPECTED_OOM_ADJ,
+)
+
+def _expected_oom_score_adj() -> dict[str, int]:
+    try:
+        if read_install_profile() == ENDPOINT_INSTALL_PROFILE:
+            return _ENDPOINT_EXPECTED_OOM_ADJ
+    except (TypeError, ValueError):
+        pass
+    return _EXPECTED_OOM_ADJ
 
 @doctor_check(order=38, group="memory")
 def check_oom_score_adj() -> CheckResult:
@@ -282,7 +300,8 @@ def check_oom_score_adj() -> CheckResult:
     new unit landed → next restart fixes it. Configured drift means
     the unit file itself doesn't have the directive → next restart
     *won't* fix it, so we surface both shapes separately."""
-    units = list(_EXPECTED_OOM_ADJ.keys())
+    expected = _expected_oom_score_adj()
+    units = list(expected.keys())
     # Batch both systemctl-show calls — one subprocess per property
     # instead of one per (property × unit).
     pids_raw = _systemctl_show_property("MainPID", units)
@@ -296,7 +315,7 @@ def check_oom_score_adj() -> CheckResult:
     config_drift = []  # systemctl show disagrees with expected
     missing = []
     for unit, want, pid_str, config_str in zip(
-        units, _EXPECTED_OOM_ADJ.values(), pids_raw, configs_raw,
+        units, expected.values(), pids_raw, configs_raw,
     ):
         # Parse configured value. systemd returns "0" when
         # OOMScoreAdjust= is absent from the unit (its default).
@@ -318,6 +337,13 @@ def check_oom_score_adj() -> CheckResult:
             got = int(Path(f"/proc/{pid}/oom_score_adj").read_text().strip())
         except (OSError, ValueError):
             continue
+        # OpenSSH on Raspberry Pi OS keeps the privileged listener at
+        # -1000 even when systemd's unit setting is -250; accepted SSH
+        # sessions inherit the unit's moderate value. Treat the unit-file
+        # setting as authoritative for ssh so the doctor does not warn on
+        # the listener's self-protection.
+        if unit == "ssh" and configured == want:
+            continue
         if got != want:
             live_drift.append(f"{unit} live={got} (want {want})")
     if config_drift:
@@ -338,12 +364,12 @@ def check_oom_score_adj() -> CheckResult:
     if missing:
         return CheckResult(
             "OOM score adj", "ok",
-            f"{len(_EXPECTED_OOM_ADJ) - len(missing)} daemons protected; "
+            f"{len(expected) - len(missing)} daemons protected; "
             f"{len(missing)} not running ({', '.join(missing)})",
         )
     return CheckResult(
         "OOM score adj", "ok",
-        f"all {len(_EXPECTED_OOM_ADJ)} critical daemons protected",
+        f"all {len(expected)} critical daemons protected",
     )
 
 # --- Stage 2 audio-protection checks (shipped 2026-05-24) ---
@@ -401,6 +427,19 @@ _AUDIO_PATH_UNITS = (
     "bluealsa-aplay",
 )
 
+_ENDPOINT_AUDIO_PATH_UNITS = (
+    "jasper-snapclient",
+    "jasper-snapserver",
+)
+
+def _audio_path_units() -> tuple[str, ...]:
+    try:
+        if read_install_profile() == ENDPOINT_INSTALL_PROFILE:
+            return _ENDPOINT_AUDIO_PATH_UNITS
+    except (TypeError, ValueError):
+        pass
+    return _AUDIO_PATH_UNITS
+
 # Threshold for "this daemon has meaningful pages in zram" — well above
 # the small (<100 kB) transient that's normal at startup, well below
 # the 42 MB observed on aec-bridge during the 2026-05-24 stress.
@@ -416,7 +455,8 @@ def check_audio_path_no_swap() -> CheckResult:
     quality is at risk."""
     swapped: list[str] = []
     missing: list[str] = []
-    for unit in _AUDIO_PATH_UNITS:
+    units = _audio_path_units()
+    for unit in units:
         pid = _pid_of_unit(unit)
         if pid is None:
             missing.append(unit)
@@ -444,7 +484,7 @@ def check_audio_path_no_swap() -> CheckResult:
             "under load until restored.",
         )
     if missing:
-        running = len(_AUDIO_PATH_UNITS) - len(missing)
+        running = len(units) - len(missing)
         return CheckResult(
             "audio path no-swap", "ok",
             f"{running} audio daemons running, all swap-free; "
@@ -452,5 +492,5 @@ def check_audio_path_no_swap() -> CheckResult:
         )
     return CheckResult(
         "audio path no-swap", "ok",
-        f"all {len(_AUDIO_PATH_UNITS)} audio-path daemons swap-free",
+        f"all {len(units)} audio-path daemons swap-free",
     )

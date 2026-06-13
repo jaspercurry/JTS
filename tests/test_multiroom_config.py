@@ -14,6 +14,7 @@ import pytest
 from jasper.multiroom.config import (
     ALLOWED_CODECS,
     DEFAULT_BUFFER_MS,
+    DEFAULT_CLIENT_LATENCY_MS,
     DEFAULT_CODEC,
     is_enabled,
     load_config,
@@ -98,6 +99,9 @@ def test_absent_file_is_disabled_with_defaults(tmp_path):
     assert cfg.bond_id == ""
     assert cfg.leader_addr == ""
     assert cfg.buffer_ms == DEFAULT_BUFFER_MS
+    assert cfg.client_latency_ms == DEFAULT_CLIENT_LATENCY_MS
+    assert cfg.left_delay_ms == 0.0
+    assert cfg.right_delay_ms == 0.0
     assert cfg.error is None
 
 
@@ -314,6 +318,57 @@ def test_buffer_ms_never_an_error(tmp_path):
     cfg = load_config(path)
     assert cfg.buffer_ms == 150
     assert cfg.error is None
+
+
+def test_client_latency_ms_parse_and_validation_matrix(tmp_path):
+    path = _write_env(
+        tmp_path,
+        _leader_env() + "JASPER_GROUPING_CLIENT_LATENCY_MS=12\n",
+    )
+    cfg = load_config(path)
+    assert cfg.client_latency_ms == 12
+    assert cfg.error is None
+
+    path = _write_env(
+        tmp_path,
+        _leader_env() + "JASPER_GROUPING_CLIENT_LATENCY_MS=later\n",
+    )
+    cfg = load_config(path)
+    assert "CLIENT_LATENCY_MS" in cfg.error
+
+    path = _write_env(
+        tmp_path,
+        _leader_env() + "JASPER_GROUPING_CLIENT_LATENCY_MS=-1\n",
+    )
+    cfg = load_config(path)
+    assert "must be between" in cfg.error
+
+
+def test_channel_delay_ms_parse_and_validation_matrix(tmp_path):
+    path = _write_env(
+        tmp_path,
+        _leader_env()
+        + "JASPER_GROUPING_LEFT_DELAY_MS=1.25\n"
+        + "JASPER_GROUPING_RIGHT_DELAY_MS=0.5\n",
+    )
+    cfg = load_config(path)
+    assert cfg.left_delay_ms == 1.25
+    assert cfg.right_delay_ms == 0.5
+    assert cfg.error is None
+
+    path = _write_env(
+        tmp_path,
+        _leader_env() + "JASPER_GROUPING_LEFT_DELAY_MS=fast\n",
+    )
+    cfg = load_config(path)
+    assert "LEFT_DELAY_MS" in cfg.error
+
+    path = _write_env(
+        tmp_path,
+        _leader_env() + "JASPER_GROUPING_RIGHT_DELAY_MS=-0.1\n",
+    )
+    cfg = load_config(path)
+    assert "must be between" in cfg.error
 
 
 # ---------- codec: default / valid / invalid ----------

@@ -80,6 +80,22 @@ def emit_gain_filter(
     ]
 
 
+def emit_delay_filter(name: str, *, delay_ms: float) -> list[str]:
+    """A CamillaDSP ``Delay`` filter in milliseconds.
+
+    This primitive is deliberately gainless: callers own the policy of
+    where a delay belongs, while this shared emitter owns only the YAML
+    spelling.
+    """
+    return [
+        f"  {name}:",
+        "    type: Delay",
+        "    parameters:",
+        f"      delay: {fmt(delay_ms)}",
+        "      unit: ms",
+    ]
+
+
 def emit_peaking_biquad(name: str, *, freq: float, q: float, gain: float) -> list[str]:
     """A CamillaDSP ``Biquad`` / ``Peaking`` filter (parametric EQ band).
 

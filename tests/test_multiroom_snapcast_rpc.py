@@ -11,6 +11,7 @@ from __future__ import annotations
 from jasper.multiroom.snapcast_rpc import (
     ensure_groups_on_stream,
     read_stream_clients,
+    set_client_latency,
     summarize_groups,
 )
 
@@ -23,11 +24,15 @@ def _group(gid, stream, clients):
     return {"id": gid, "stream_id": stream, "clients": clients}
 
 
-def _client(name, connected=True, muted=False, percent=100):
+def _client(name, connected=True, muted=False, percent=100, latency=0):
     return {
+        "id": f"id-{name}",
         "host": {"name": name},
         "connected": connected,
-        "config": {"volume": {"muted": muted, "percent": percent}},
+        "config": {
+            "volume": {"muted": muted, "percent": percent},
+            "latency": latency,
+        },
     }
 
 
@@ -56,9 +61,11 @@ def test_summarize_groups_flattens_and_defaults_safe():
     assert rows[0] == {
         "group_id": "g1", "stream_id": "jts", "name": "jts",
         "connected": True, "muted": False, "volume_percent": 100,
+        "client_id": "id-jts", "latency_ms": 0,
     }
     assert rows[1]["stream_id"] == "default"
     assert rows[1]["muted"] is True and rows[1]["volume_percent"] == 0
+    assert rows[1]["latency_ms"] == 0
     # Missing keys default safe, never raise.
     assert rows[2]["name"] == "" and rows[2]["connected"] is False
 
@@ -117,6 +124,23 @@ def test_read_stream_clients_fail_soft():
         transport=lambda *a, **k: _status([_group("g", "jts", [_client("jts")])]),
     )
     assert rows and rows[0]["name"] == "jts"
+
+
+def test_set_client_latency_calls_snapcast_rpc():
+    calls = []
+
+    def transport(method, params=None, *, url=None):
+        calls.append((method, params))
+        return {}
+
+    assert set_client_latency("abc", 12, transport=transport) is True
+    assert calls == [("Client.SetLatency", {"id": "abc", "latency": 12})]
+
+
+def test_set_client_latency_fail_soft_false():
+    assert set_client_latency(
+        "abc", 12, transport=lambda *a, **k: None,
+    ) is False
 
 
 # ---------- ownership-rule semantics (review polish) ----------

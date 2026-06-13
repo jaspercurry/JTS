@@ -467,6 +467,59 @@ def test_static_modules_do_not_reintroduce_json_posts_without_csrf_helper():
     assert offenders == []
 
 
+def test_sync_measurement_recorder_uses_worklet_without_mic_monitoring():
+    src = Path("deploy/assets/sync/js/main.js").read_text()
+
+    assert "/assets/shared/js/measurement-audio.js" in src
+    assert "createMonoRecorder" in src
+    assert "float32ToWavBlob" in src
+    assert "getUserMedia" not in src
+    assert "new AudioContext" not in src
+    assert "AudioWorkletProcessor" not in src
+    assert "AudioWorkletNode" not in src
+    assert "createScriptProcessor" not in src
+    assert ".destination" not in src
+
+
+def test_balance_measurement_uses_shared_audio_primitives():
+    src = Path("deploy/assets/balance/js/main.js").read_text()
+
+    assert "/assets/shared/js/measurement-audio.js" in src
+    assert "createBandpassRmsMeter" in src
+    assert "rmsToDbfs" in src
+    assert "getUserMedia" not in src
+    assert "new AudioContext" not in src
+    assert "AudioWorkletProcessor" not in src
+    assert "AudioWorkletNode" not in src
+    assert "createScriptProcessor" not in src
+    assert ".destination" not in src
+
+
+_SHARED_MEASUREMENT_AUDIO_MODULE = Path(
+    "deploy/assets/shared/js/measurement-audio.js"
+)
+
+
+def test_shared_measurement_audio_module_owns_capture_primitives():
+    src = _SHARED_MEASUREMENT_AUDIO_MODULE.read_text()
+
+    for name in (
+        "monoMicConstraints",
+        "openMonoMic",
+        "createBandpassRmsMeter",
+        "createMonoRecorder",
+        "float32ToWavBlob",
+        "closeAudioGraph",
+    ):
+        assert re.search(r"export\s+(?:async\s+)?function\s+" + name + r"\b", src)
+    assert "navigator.mediaDevices.getUserMedia" in src
+    assert "AudioWorkletProcessor" in src
+    assert "createMediaStreamSource" in src
+    assert "sourceNode.connect(workletNode)" in src
+    assert "createScriptProcessor" not in src
+    assert ".destination" not in src
+
+
 # Native browser dialogs — confirm()/alert()/prompt() — are being retired
 # across the UI in favour of the shared <dialog> helper exported from
 # /assets/shared/js/dialog.js (jtsConfirm / jtsAlert). The browser can suppress

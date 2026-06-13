@@ -119,6 +119,16 @@ _apply_jts_mglru() {
 # once at early boot and sizes the zram device. Per swap.conf(5):
 # "After modifying any swap configuration, you must reboot the
 # system for changes to take effect."
+_compute_target_zram_bytes() {
+    local memtotal_kb="$1"
+    if [[ "${memtotal_kb}" =~ ^[0-9]+$ && "${memtotal_kb}" -gt 0 ]]; then
+        echo $((memtotal_kb * 1024 / 2))
+        return 0
+    fi
+    # Fallback for unreadable /proc/meminfo: the original 1 GB Pi target.
+    echo $((520 * 1024 * 1024))
+}
+
 _apply_jts_zram_dropin() {
     if [[ ! -d /etc/rpi ]]; then
         _mem_log "zram.skip" \
@@ -137,7 +147,10 @@ _apply_jts_zram_dropin() {
     if [[ -r /sys/block/zram0/disksize ]]; then
         cur_zram_bytes=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
     fi
-    local target_zram_bytes=$((520 * 1024 * 1024))
+    local memtotal_kb target_zram_bytes target_zram_mb
+    memtotal_kb=$(awk '/MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null)
+    target_zram_bytes=$(_compute_target_zram_bytes "${memtotal_kb:-}")
+    target_zram_mb=$((target_zram_bytes / 1024 / 1024))
     local zram_diff=$((cur_zram_bytes - target_zram_bytes))
     # Within ±60 MB of target counts as "already correct."
     if [[ ${zram_diff#-} -lt 62914560 ]]; then
@@ -145,7 +158,7 @@ _apply_jts_zram_dropin() {
             "zram drop-in installed; live size already ~50% RAM"
     else
         _mem_log "zram.reboot_required" \
-            "zram drop-in installed; REBOOT REQUIRED to resize (current: $((cur_zram_bytes / 1024 / 1024)) MB → target: ~520 MB)"
+            "zram drop-in installed; REBOOT REQUIRED to resize (current: $((cur_zram_bytes / 1024 / 1024)) MB → target: ~${target_zram_mb} MB)"
     fi
     return 0
 }
@@ -223,11 +236,12 @@ migrate_memory_resilience() {
 # Stage 2 audio-protection: enable the Linux memory cgroup controller
 # so jts-audio.slice's `MemorySwapMax=0` actually enforces.
 #
-# Pi 5's device-tree blob (DTB) injects `cgroup_disable=memory` into the
-# kernel's boot arguments — RPi Foundation chose this to save ~8 MB of
-# accounting overhead. Override it by adding `cgroup_enable=memory
-# cgroup_memory=1` to /boot/firmware/cmdline.txt. The kernel honors
-# both flags and lets the explicit-enable win.
+# Raspberry Pi OS can inject `cgroup_disable=memory` into the kernel's
+# boot arguments to save accounting overhead. On real Zero 2 W hardware
+# (2026-06-12), leaving that token present still disabled the controller
+# even after appending `cgroup_enable=memory cgroup_memory=1`, so this
+# migration must actively remove the disable token and then add the
+# enable tokens.
 #
 # Also adds `psi=1` defensively. RPi 6.12.x ships CONFIG_PSI=y +
 # CONFIG_PSI_DEFAULT_DISABLED=y; the boot param turns PSI on. No-op
@@ -236,24 +250,39 @@ migrate_memory_resilience() {
 # MemorySwapMax=0, not PSI), but useful for future Stage 3 work +
 # `/system/` dashboard surface.
 #
-# IDEMPOTENT: grep guards each token. Existing cmdline.txt values
-# are preserved unchanged. Operator-added tokens (custom kernel
-# flags, etc.) survive.
+# IDEMPOTENT: existing non-conflicting cmdline.txt values are preserved
+# unchanged. Operator-added tokens (custom kernel flags, etc.) survive.
 #
 # REBOOT REQUIRED: kernel command line only re-reads at boot.
 # Function surfaces this loudly so the operator knows.
 migrate_cgroup_memory_enabled() {
-    local cmdline_file="/boot/firmware/cmdline.txt"
+    local cmdline_file="${JTS_BOOT_CMDLINE_FILE:-/boot/firmware/cmdline.txt}"
     if [[ ! -f "${cmdline_file}" ]]; then
         echo "  cgroup_memory: WARN — ${cmdline_file} missing (not RPi OS?); skipped"
         return 0
     fi
     local current
-    current=$(cat "${cmdline_file}")
+    current=$(tr '\n' ' ' < "${cmdline_file}")
     local changed=0
+    local removed_disable=0
+
+    local existing_tokens=()
+    read -r -a existing_tokens <<< "${current}"
+    local filtered_tokens=()
+    local token
+    for token in "${existing_tokens[@]}"; do
+        if [[ "${token}" == "cgroup_disable=memory" ]]; then
+            removed_disable=1
+            changed=1
+            continue
+        fi
+        filtered_tokens+=("${token}")
+    done
+    current="${filtered_tokens[*]}"
+
     local to_add=()
     for token in "cgroup_enable=memory" "cgroup_memory=1" "psi=1"; do
-        if ! grep -qE "(^|[[:space:]])${token}([[:space:]]|$)" "${cmdline_file}"; then
+        if [[ " ${current} " != *" ${token} "* ]]; then
             to_add+=("${token}")
             changed=1
         fi
@@ -272,9 +301,15 @@ migrate_cgroup_memory_enabled() {
         printf '\n'
     } > "${cmdline_file}.tmp"
     mv "${cmdline_file}.tmp" "${cmdline_file}"
-    chmod 0755 "${cmdline_file}"
-    echo "  cgroup_memory: cmdline.txt updated; added: ${to_add[*]}"
+    chmod 0644 "${cmdline_file}"
+    local added="${to_add[*]}"
+    [[ -n "${added}" ]] || added="none"
+    if (( removed_disable == 1 )); then
+        echo "  cgroup_memory: cmdline.txt updated; removed: cgroup_disable=memory; added: ${added}"
+    else
+        echo "  cgroup_memory: cmdline.txt updated; added: ${added}"
+    fi
     echo "  cgroup_memory: REBOOT REQUIRED for kernel to honor the new boot args"
-    logger -t jasper-install -- "event=cgroup_memory.cmdline_updated added=${to_add[*]}" 2>/dev/null || true
+    logger -t jasper-install -- "event=cgroup_memory.cmdline_updated removed_disable=${removed_disable} added=${added}" 2>/dev/null || true
     return 0
 }

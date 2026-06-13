@@ -61,6 +61,20 @@ DEFAULT_BUFFER_MS = 400
 BUFFER_MS_LO = 150
 BUFFER_MS_HI = 1500
 
+# Snapcast client/output-path latency (ms). Distinct from the stream
+# buffer above: buffer_ms is the group/network playout budget; client
+# latency compensates a fixed PCM/DAC/backend path offset for one
+# snapclient.
+DEFAULT_CLIENT_LATENCY_MS = 0
+CLIENT_LATENCY_MS_LO = 0
+CLIENT_LATENCY_MS_HI = 1500
+
+# Leader-owned room/pair acoustic delay (ms), baked into the rendered
+# stereo stream by CamillaDSP. Positive-only: delay the early side to
+# meet the late side.
+CHANNEL_DELAY_MS_LO = 0.0
+CHANNEL_DELAY_MS_HI = 100.0
+
 # Snapcast stream codec. "flac" is the lossless default (good drift
 # tolerance, modest CPU); "pcm" is uncompressed (lowest CPU, highest
 # bandwidth); "opus" is lossy (lowest bandwidth). A value outside this
@@ -113,6 +127,14 @@ class GroupingConfig:
     # wide existing constructor surface (tests, fan-out payload builds)
     # stays source-compatible — load_config always sets it explicitly.
     trim_db: float = 0.0
+    # Fixed snapclient PCM/DAC/backend latency compensation for this
+    # member. This is not the group buffer budget.
+    client_latency_ms: int = DEFAULT_CLIENT_LATENCY_MS
+    # Leader-owned rendered-channel acoustic delays for this room/pair.
+    # Followers persist but do not execute these; the leader's render
+    # graph consumes them when generating the shared stereo stream.
+    left_delay_ms: float = 0.0
+    right_delay_ms: float = 0.0
     # The bond roster, LEADER only: who this leader's pair sibling IS,
     # recorded at bond-forming time. peer_addr is the follower's LAN
     # IPv4 (the cross-speaker control calls are IP-only by SSRF
@@ -139,6 +161,9 @@ _DISABLED = GroupingConfig(
     buffer_ms=DEFAULT_BUFFER_MS,
     codec=DEFAULT_CODEC,
     trim_db=0.0,
+    client_latency_ms=DEFAULT_CLIENT_LATENCY_MS,
+    left_delay_ms=0.0,
+    right_delay_ms=0.0,
     error=None,
 )
 
@@ -186,6 +211,38 @@ def _parse_buffer_ms(raw: str) -> int:
     return max(BUFFER_MS_LO, min(BUFFER_MS_HI, val))
 
 
+def _parse_client_latency_ms(raw: str) -> tuple[int, str | None]:
+    if not raw.strip():
+        return DEFAULT_CLIENT_LATENCY_MS, None
+    try:
+        val = int(raw.strip())
+    except (ValueError, AttributeError):
+        return DEFAULT_CLIENT_LATENCY_MS, (
+            f"JASPER_GROUPING_CLIENT_LATENCY_MS={raw!r} is not an integer"
+        )
+    if not (CLIENT_LATENCY_MS_LO <= val <= CLIENT_LATENCY_MS_HI):
+        return val, (
+            f"JASPER_GROUPING_CLIENT_LATENCY_MS={val} must be between "
+            f"{CLIENT_LATENCY_MS_LO} and {CLIENT_LATENCY_MS_HI}"
+        )
+    return val, None
+
+
+def _parse_channel_delay_ms(raw: str, *, key: str) -> tuple[float, str | None]:
+    if not raw.strip():
+        return 0.0, None
+    try:
+        val = float(raw.strip())
+    except (ValueError, AttributeError):
+        return 0.0, f"{key}={raw!r} is not a number"
+    if not (CHANNEL_DELAY_MS_LO <= val <= CHANNEL_DELAY_MS_HI):
+        return val, (
+            f"{key}={val} must be between {CHANNEL_DELAY_MS_LO} "
+            f"and {CHANNEL_DELAY_MS_HI}"
+        )
+    return val, None
+
+
 def validate_grouping(
     *,
     role: str,
@@ -194,6 +251,9 @@ def validate_grouping(
     leader_addr: str,
     codec: str = DEFAULT_CODEC,
     trim_db: float = 0.0,
+    client_latency_ms: int = DEFAULT_CLIENT_LATENCY_MS,
+    left_delay_ms: float = 0.0,
+    right_delay_ms: float = 0.0,
     peer_addr: str = "",
     peer_name: str = "",
 ) -> str | None:
@@ -247,6 +307,20 @@ def validate_grouping(
             f"JASPER_GROUPING_TRIM_DB={trim_db} must be between "
             f"{TRIM_DB_MIN} and {TRIM_DB_MAX} (attenuate-only pair trim)"
         )
+    if not (CLIENT_LATENCY_MS_LO <= client_latency_ms <= CLIENT_LATENCY_MS_HI):
+        return (
+            f"JASPER_GROUPING_CLIENT_LATENCY_MS={client_latency_ms} must be "
+            f"between {CLIENT_LATENCY_MS_LO} and {CLIENT_LATENCY_MS_HI}"
+        )
+    for key, value in (
+        ("JASPER_GROUPING_LEFT_DELAY_MS", left_delay_ms),
+        ("JASPER_GROUPING_RIGHT_DELAY_MS", right_delay_ms),
+    ):
+        if not (CHANNEL_DELAY_MS_LO <= value <= CHANNEL_DELAY_MS_HI):
+            return (
+                f"{key}={value} must be between {CHANNEL_DELAY_MS_LO} "
+                f"and {CHANNEL_DELAY_MS_HI}"
+            )
     if peer_addr:
         try:
             ip = ipaddress.ip_address(peer_addr)
@@ -310,16 +384,36 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
             trim_parse_error = (
                 f"JASPER_GROUPING_TRIM_DB={trim_raw!r} is not a number"
             )
+    client_latency_ms, client_latency_parse_error = _parse_client_latency_ms(
+        src.get("JASPER_GROUPING_CLIENT_LATENCY_MS", "")
+    )
+    left_delay_ms, left_delay_parse_error = _parse_channel_delay_ms(
+        src.get("JASPER_GROUPING_LEFT_DELAY_MS", ""),
+        key="JASPER_GROUPING_LEFT_DELAY_MS",
+    )
+    right_delay_ms, right_delay_parse_error = _parse_channel_delay_ms(
+        src.get("JASPER_GROUPING_RIGHT_DELAY_MS", ""),
+        key="JASPER_GROUPING_RIGHT_DELAY_MS",
+    )
 
-    error = trim_parse_error or validate_grouping(
+    error = (
+        trim_parse_error
+        or client_latency_parse_error
+        or left_delay_parse_error
+        or right_delay_parse_error
+        or validate_grouping(
         role=role,
         channel=channel,
         bond_id=bond_id,
         leader_addr=leader_addr,
         codec=codec,
         trim_db=trim_db,
+        client_latency_ms=client_latency_ms,
+        left_delay_ms=left_delay_ms,
+        right_delay_ms=right_delay_ms,
         peer_addr=peer_addr,
         peer_name=peer_name,
+        )
     )
 
     return GroupingConfig(
@@ -331,6 +425,9 @@ def load_config(path: str = GROUPING_ENV_FILE) -> GroupingConfig:
         buffer_ms=buffer_ms,
         codec=codec,
         trim_db=trim_db,
+        client_latency_ms=client_latency_ms,
+        left_delay_ms=left_delay_ms,
+        right_delay_ms=right_delay_ms,
         peer_addr=peer_addr,
         peer_name=peer_name,
         error=error,

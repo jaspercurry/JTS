@@ -21,6 +21,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from email.message import Message
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -766,6 +767,26 @@ def test_e2e_correction_posts_require_csrf():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_sync_analyze_rejects_oversized_capture_before_body_read():
+    handler_cls = correction_setup._make_handler({"hostname": "jts.local"})
+    handler = handler_cls.__new__(handler_cls)
+    handler.headers = Message()
+    handler.headers["Content-Length"] = str(2 * 1024 * 1024 + 1)
+    handler.rfile = io.BytesIO(b"")
+    sent: dict = {}
+
+    def _send_json(payload, status=200):
+        sent["payload"] = payload
+        sent["status"] = int(status)
+
+    handler._send_json = _send_json
+
+    handler._dispatch_sync("/sync/analyze")
+
+    assert sent["status"] == 400
+    assert "WAV body too large" in sent["payload"]["error"]
 
 
 def test_e2e_trailing_slash_index_serves_same_html():

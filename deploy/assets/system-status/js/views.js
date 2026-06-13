@@ -58,14 +58,28 @@ export function buildPage(root, handlers) {
   // aria-live region for post-action feedback (esp. reboot/power-off, which
   // take the page offline, so the button label alone isn't enough).
   const actionsStatus = h("p.info-card__note", { "attr:aria-live": "polite" });
+  const capabilityNote = h("p.info-card__note", null, "");
+  capabilityNote.hidden = true;
+  const restartVoice = actionButton("Restart voice", {
+    variant: "default", onClick: handlers.restartVoice,
+  });
+  const restartAudio = actionButton("Restart audio", {
+    variant: "default", onClick: handlers.restartAudio,
+  });
+  // Re-enabled from /system/snapshot capabilities on the first successful
+  // poll. This avoids a tiny cold-load window where a satellite endpoint
+  // could show full-speaker actions before its profile arrives.
+  restartVoice.disabled = true;
+  restartAudio.disabled = true;
   const actions = titledCard("Actions");
   actions.body.append(
     h("p.info-card__note", null,
       "Anyone on the same Wi-Fi can trigger these. The page just spins " +
       "until the daemon comes back."),
+    capabilityNote,
     h("div.btn-row", null,
-      actionButton("Restart voice", { variant: "default", onClick: handlers.restartVoice }),
-      actionButton("Restart audio", { variant: "default", onClick: handlers.restartAudio }),
+      restartVoice,
+      restartAudio,
       actionButton("Reboot speaker", { variant: "danger", onClick: handlers.reboot }),
       actionButton("Power off", { variant: "danger", onClick: handlers.poweroff })),
     actionsStatus,
@@ -116,10 +130,40 @@ export function buildPage(root, handlers) {
     staleness: live.label,
     vitals, software: software.body, ha: ha.body,
     airplay: airplay.body, network: network.body, svc: svcBody,
-    actionsStatus,
+    actionsStatus, capabilityNote,
+    actionButtons: { restartVoice, restartAudio },
+    audioSection: audio.section,
     aq: { requested: aqRequested, active: aqActive, status: aqStatus, buttons: aqButtons },
     _memo: {},
   };
+}
+
+function capabilityAllows(caps, key) {
+  return !caps || caps[key] !== false;
+}
+
+function setActionAvailable(btn, allowed) {
+  btn.hidden = !allowed;
+  btn.disabled = !allowed;
+}
+
+function applySystemCapabilities(refs, caps) {
+  refs.systemCapabilities = caps || null;
+  const canSetAudioQuality = capabilityAllows(caps, "audio_quality");
+  const canRestartVoice = capabilityAllows(caps, "restart_voice");
+  const canRestartAudio = capabilityAllows(caps, "restart_audio");
+
+  refs.audioSection.hidden = !canSetAudioQuality;
+  refs.aq.buttons.forEach((b) => {
+    if (!canSetAudioQuality) b.el.disabled = true;
+    else if (!b.el.dataset.applying) b.el.disabled = false;
+  });
+  setActionAvailable(refs.actionButtons.restartVoice, canRestartVoice);
+  setActionAvailable(refs.actionButtons.restartAudio, canRestartAudio);
+
+  const reason = caps && caps.unavailable_reason;
+  refs.capabilityNote.hidden = !(reason && (!canSetAudioQuality || !canRestartVoice || !canRestartAudio));
+  refs.capabilityNote.textContent = reason || "";
 }
 
 // Render one section, isolated + memoised. `key` names it for memo/log; `data`
@@ -186,5 +230,10 @@ export function update(refs, snap) {
     updateAudioQuality(refs.aq, snap.audio_quality);
   } catch (e) {
     console.error("system: updating audio-quality failed", e);
+  }
+  try {
+    applySystemCapabilities(refs, snap.system_capabilities);
+  } catch (e) {
+    console.error("system: applying capabilities failed", e);
   }
 }

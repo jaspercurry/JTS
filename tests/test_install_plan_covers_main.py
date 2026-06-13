@@ -23,6 +23,7 @@ plan hard-wraps at ~72 columns mid-phrase ("memory\\n     resilience").
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -36,6 +37,11 @@ _INSTALL_LIB_DIR = _INSTALL_SH.parent / "lib" / "install"
 # --dry-run plan output (after whitespace normalization).
 _STEP_TO_PLAN_MARKER = {
     "install_deps": "apt-get update",
+    "persist_install_profile": "Persist the install profile tier",
+    "install_endpoint_deps": "Minimal runtime packages",
+    "install_endpoint_jasper": "Install the base JTS Python package",
+    "install_endpoint_systemd_units": "Enable/start jasper-control",
+    "install_endpoint_nginx_site": "endpoint-scoped nginx",
     "install_alsa": "Render /etc/asound.conf through",
     "install_camilladsp": "CamillaDSP:",
     "install_renderers": "shairport-sync source archive",
@@ -46,6 +52,7 @@ _STEP_TO_PLAN_MARKER = {
     "build_install_jasper_outputd": "jasper-outputd daemon from rust/jasper-outputd",
     "install_systemd_units": "Enable socket-activated setup wizards",
     "retire_audio_topology_switch": "stale legacy audio-topology state",
+    "migrate_wifi_guardian": "WiFi guardian recovery",
     "migrate_memory_resilience": "memory resilience",
     "migrate_cgroup_memory_enabled": "memory cgroup/PSI kernel args",
     "install_journald_persistent_storage": "journald persistence",
@@ -109,12 +116,18 @@ def _steps_called_in_main() -> list[str]:
     return steps
 
 
-def _dry_run_plan_normalized() -> str:
+def _dry_run_plan_normalized(*, profile: str | None = None) -> str:
+    env = os.environ.copy()
+    if profile is None:
+        env.pop("JASPER_INSTALL_PROFILE", None)
+    else:
+        env["JASPER_INSTALL_PROFILE"] = profile
     result = subprocess.run(
         ["bash", str(_INSTALL_SH), "--dry-run"],
         capture_output=True,
         text=True,
         timeout=5,
+        env=env,
     )
     assert result.returncode == 0, result.stderr
     return " ".join(result.stdout.split())
@@ -142,7 +155,10 @@ def test_mapping_has_no_stale_or_overlapping_entries():
 def test_every_main_step_is_described_by_the_dry_run_plan():
     """The ratchet: a step added to main() must land in the plan text
     (add a marker here) or be explicitly exempted with a reason."""
-    plan = _dry_run_plan_normalized()
+    plans = (
+        _dry_run_plan_normalized(),
+        _dry_run_plan_normalized(profile="endpoint"),
+    )
     missing_mapping = []
     missing_marker = []
     for step in _steps_called_in_main():
@@ -151,8 +167,10 @@ def test_every_main_step_is_described_by_the_dry_run_plan():
         marker = _STEP_TO_PLAN_MARKER.get(step)
         if marker is None:
             missing_mapping.append(step)
-        elif marker not in plan:
-            missing_marker.append(f"{step}: marker {marker!r} not in plan output")
+        elif not any(marker in plan for plan in plans):
+            missing_marker.append(
+                f"{step}: marker {marker!r} not in full or endpoint plan output"
+            )
     assert not missing_mapping, (
         "main() steps with no plan marker mapping (describe them in "
         "print_install_plan and add a marker here, or add a justified "

@@ -71,12 +71,20 @@ def rpc_call(
 Transport = Callable[..., "dict | None"]
 
 
+def _int_or(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def summarize_groups(status: dict) -> list[dict[str, Any]]:
     """Flatten Server.GetStatus into per-client binding rows. PURE.
 
-    Row: ``{group_id, stream_id, name, connected, muted, volume_percent}``
-    — one per client, carrying its group's stream binding. Tolerates
-    missing keys (snapcast minor-version drift) by defaulting safe."""
+    Row: ``{group_id, stream_id, client_id, name, connected, muted,
+    volume_percent, latency_ms}`` — one per client, carrying its group's
+    stream binding. Tolerates missing keys (snapcast minor-version drift)
+    by defaulting safe."""
     rows: list[dict[str, Any]] = []
     for group in status.get("server", {}).get("groups", []):
         for client in group.get("clients", []):
@@ -84,10 +92,14 @@ def summarize_groups(status: dict) -> list[dict[str, Any]]:
             rows.append({
                 "group_id": group.get("id", ""),
                 "stream_id": group.get("stream_id", ""),
+                "client_id": client.get("id", ""),
                 "name": client.get("host", {}).get("name", ""),
                 "connected": bool(client.get("connected", False)),
                 "muted": bool(volume.get("muted", False)),
-                "volume_percent": int(volume.get("percent", 100)),
+                "volume_percent": _int_or(volume.get("percent", 100), 100),
+                "latency_ms": _int_or(
+                    client.get("config", {}).get("latency", 0), 0,
+                ),
             })
     return rows
 
@@ -102,6 +114,28 @@ def read_stream_clients(
     if status is None:
         return None
     return summarize_groups(status)
+
+
+def set_client_latency(
+    client_id: str,
+    latency_ms: int,
+    *,
+    url: str = SNAPSERVER_RPC_URL,
+    transport: Transport = rpc_call,
+) -> bool:
+    """Set Snapcast's fixed whole-client PCM/output-path latency.
+
+    This is not the group/network buffer policy and not an acoustic
+    room-delay knob. It maps directly to Snapcast JSON-RPC
+    ``Client.SetLatency`` and returns a boolean so callers can fail
+    loudly without knowing RPC payload details.
+    """
+    result = transport(
+        "Client.SetLatency",
+        {"id": client_id, "latency": int(latency_ms)},
+        url=url,
+    )
+    return result is not None
 
 
 class _ProbeCache:

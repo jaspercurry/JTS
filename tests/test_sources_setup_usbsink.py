@@ -119,6 +119,8 @@ def test_usbsink_available_returns_false_on_missing_file(monkeypatch, tmp_path):
 def test_gather_state_includes_usbsink(monkeypatch):
     """Verify the usbsink key is present with `enabled` + `available`.
     Mock systemctl and the BT probe so we get deterministic output."""
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(
         sources_setup, "_systemctl",
         lambda *args, **kw: (0, "inactive"),
@@ -141,6 +143,8 @@ def test_gather_state_includes_usbsink(monkeypatch):
 def test_gather_state_usbsink_available_when_dtoverlay_set(monkeypatch):
     """When dtoverlay is present, available should be True regardless
     of unit enabled state."""
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
     monkeypatch.setattr(
         sources_setup, "_systemctl",
         lambda *args, **kw: (0, "inactive"),
@@ -161,6 +165,9 @@ def test_gather_state_usbsink_available_when_dtoverlay_set(monkeypatch):
 
 def test_apply_usbsink_enable_calls_systemctl(monkeypatch):
     calls = []
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
     monkeypatch.setattr(
         sources_setup, "_systemctl",
         lambda *args, **kw: calls.append(args) or (0, ""),
@@ -174,6 +181,9 @@ def test_apply_usbsink_enable_calls_systemctl(monkeypatch):
 
 def test_apply_usbsink_disable_calls_systemctl(monkeypatch):
     calls = []
+    monkeypatch.setattr(sources_setup, "_local_sources_allowed", lambda: True)
+    monkeypatch.setattr(sources_setup, "_unit_available", lambda unit: True)
+    monkeypatch.setattr(sources_setup, "_usbsink_available", lambda: True)
     monkeypatch.setattr(
         sources_setup, "_systemctl",
         lambda *args, **kw: calls.append(args) or (0, ""),

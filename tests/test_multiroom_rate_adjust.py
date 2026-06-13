@@ -62,6 +62,7 @@ def test_member_camilla_kwargs_active_leader_gets_the_pipe_sink():
     assert kw["enable_rate_adjust"] is False
     assert kw["channel_split"] is None
     assert kw["playback_pipe_path"] == SNAPFIFO
+    assert "channel_delays_ms" not in kw
 
 
 def test_member_camilla_kwargs_active_follower_is_solo_defaults():
@@ -96,6 +97,24 @@ def test_member_camilla_kwargs_stereo_leader_still_bakes_the_pipe():
     assert kw["enable_rate_adjust"] is False
     assert kw["channel_split"] is None
     assert kw["playback_pipe_path"] == SNAPFIFO
+
+
+def test_member_camilla_kwargs_active_leader_preserves_channel_delays():
+    from jasper.multiroom.member_config import member_camilla_kwargs
+
+    kw = member_camilla_kwargs(
+        _cfg(
+            enabled=True,
+            role="leader",
+            channel="left",
+            bond_id="b",
+            left_delay_ms=1.25,
+            right_delay_ms=0.0,
+        )
+    )
+
+    assert kw["room_peqs_right"] == []
+    assert kw["channel_delays_ms"] == (1.25, 0.0)
 
 
 def test_member_camilla_kwargs_invalid_member_unchanged():

@@ -30,6 +30,7 @@ from jasper.multiroom.reconcile import (
     desired_snapfifo_path,
     main,
     plan,
+    plan_for_install_profile,
     snapclient_argv,
     snapserver_argv,
 )
@@ -184,6 +185,14 @@ def test_plan_follower_summary_mentions_leader_addr():
     assert "10.0.0.7" in p.summary
 
 
+def test_plan_for_endpoint_profile_leader_fails_closed():
+    p = plan_for_install_profile(_leader(), install_profile="endpoint")
+
+    assert _desired(p, SNAPSERVER_UNIT) == "stop"
+    assert _desired(p, SNAPCLIENT_UNIT) == "stop"
+    assert "cannot be grouping leader" in p.summary
+
+
 # ---------- plan(): stops-before-starts ordering ----------
 
 
@@ -288,7 +297,16 @@ def test_snapclient_argv_follower_targets_leader_addr():
 
 def test_snapclient_argv_latency_from_buffer_ms():
     argv = snapclient_argv(_follower(buffer_ms=600))
-    assert "600" in argv
+    assert argv[argv.index("--latency") + 1] == "0"
+
+
+def test_snapclient_argv_latency_from_client_latency_ms():
+    cfg = _follower(buffer_ms=600)
+    cfg = GroupingConfig(
+        **{**cfg.__dict__, "client_latency_ms": 17}
+    )
+    argv = snapclient_argv(cfg)
+    assert argv[argv.index("--latency") + 1] == "17"
 
 
 def test_snapclient_argv_starts_with_snapclient():
@@ -323,7 +341,7 @@ def test_snapclient_argv_unchanged_when_player_fifo_unset():
     gated-off reroute is a true no-op."""
     cfg = _follower(leader_addr="jts3.local")
     assert snapclient_argv(cfg) == [
-        "snapclient", "--host", "jts3.local", "--latency", str(cfg.buffer_ms),
+        "snapclient", "--host", "jts3.local", "--latency", "0",
     ]
     assert snapclient_argv(cfg, player_fifo=None) == snapclient_argv(cfg)
     assert "--player" not in snapclient_argv(cfg)
@@ -414,6 +432,13 @@ def test_assemble_args_endpoint_profile_uses_direct_alsa_not_outputd_fifo():
     assert MEMBER_CONTENT_FIFO not in d[CLIENT_KEY]
 
 
+def test_assemble_args_endpoint_profile_leader_clears_both_args():
+    d = _assemble_args(_leader(), install_profile="endpoint")
+
+    assert d[SERVER_KEY] == ""
+    assert d[CLIENT_KEY] == ""
+
+
 def test_assemble_args_disabled_clears_both():
     d = _assemble_args(_disabled())
     assert d[SERVER_KEY] == ""
@@ -440,11 +465,11 @@ def test_assemble_args_codec_and_buffer_flow_into_server():
 def test_write_args_file_round_trips_keys(tmp_path, monkeypatch):
     target = tmp_path / "snapcast-args.env"
     monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
-    keys = {SERVER_KEY: "--stream.source pipe://x", CLIENT_KEY: "--host 127.0.0.1 --latency 400"}
+    keys = {SERVER_KEY: "--stream.source pipe://x", CLIENT_KEY: "--host 127.0.0.1 --latency 0"}
     assert _write_args_file(keys, path=str(target)) is True
     text = target.read_text()
     assert f"{SERVER_KEY}=--stream.source pipe://x\n" in text
-    assert f"{CLIENT_KEY}=--host 127.0.0.1 --latency 400\n" in text
+    assert f"{CLIENT_KEY}=--host 127.0.0.1 --latency 0\n" in text
 
 
 def test_write_args_file_empty_values_writes_bare_keys(tmp_path, monkeypatch):
@@ -759,6 +784,34 @@ def test_main_endpoint_profile_skips_full_speaker_audio_lanes(tmp_path, monkeypa
     assert not (tmp_path / "grouping-outputd.env").exists()
     assert not (tmp_path / "grouping-voice.env").exists()
     assert not (tmp_path / "member-content.fifo").exists()
+
+
+def test_main_endpoint_profile_leader_is_visible_fail_closed(tmp_path, monkeypatch):
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(reconcile_mod, "read_install_profile", lambda: "endpoint")
+
+    applied: list[ReconcilePlan] = []
+
+    def _capture_apply(plan_):
+        order.append("apply")
+        applied.append(plan_)
+        assert target.exists(), "args file must be written BEFORE _apply"
+        return 0
+
+    monkeypatch.setattr(reconcile_mod, "_apply", _capture_apply)
+
+    rc = main([])
+
+    assert rc == 1
+    assert order == ["write", "apply"]
+    assert applied
+    assert _desired(applied[0], SNAPSERVER_UNIT) == "stop"
+    assert _desired(applied[0], SNAPCLIENT_UNIT) == "stop"
+    text = target.read_text()
+    assert f"{SERVER_KEY}=\n" in text
+    assert f"{CLIENT_KEY}=\n" in text
+    assert not (tmp_path / "grouping-outputd.env").exists()
+    assert not (tmp_path / "grouping-voice.env").exists()
 
 
 # ---------- the leader's music-producer predicate ----------
