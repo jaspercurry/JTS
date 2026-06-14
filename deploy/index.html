@@ -463,10 +463,10 @@
           <p class="pair-banner__text" id="pair-text"></p>
           <p class="pair-banner__links">
             <a id="pair-leader-link" hidden>Open the leader's controls</a>
-            <a href="/rooms/">Manage pair</a>
+            <a id="pair-manage-link" href="/rooms/" data-requires="pair_management" hidden>Manage pair</a>
           </p>
         </section>
-        <section class="control-section" id="source-section">
+        <section class="control-section" id="source-section" data-requires="local_sources" hidden>
           <div class="control-head">
             <h2 class="eyebrow">Source</h2>
             <span class="status-val" id="source-status">Offline</span>
@@ -523,7 +523,7 @@
           </div>
         </section>
 
-        <section class="control-section">
+        <section class="control-section" data-requires="voice_brain" hidden>
           <div class="control-head">
             <h2 class="eyebrow">Microphone</h2>
             <span class="status-val" id="mic-state">Checking</span>
@@ -544,7 +544,7 @@
     </section>
 
     <nav class="groups" aria-label="Speaker settings">
-      <section class="settings-section" aria-labelledby="sources-heading">
+      <section class="settings-section" aria-labelledby="sources-heading" data-requires="local_sources" hidden>
         <h2 class="eyebrow group-title" id="sources-heading">Sources</h2>
         <div class="settings-list">
           <a class="setting-row" href="/sources/">
@@ -582,7 +582,7 @@
         </div>
       </section>
 
-      <section class="settings-section" aria-labelledby="sound-heading">
+      <section class="settings-section" aria-labelledby="sound-heading" data-requires="content_dsp" hidden>
         <h2 class="eyebrow group-title" id="sound-heading">Sound</h2>
         <div class="settings-list">
           <a class="setting-row" href="/sound/">
@@ -613,7 +613,7 @@
         </div>
       </section>
 
-      <section class="settings-section" aria-labelledby="assistant-heading">
+      <section class="settings-section" aria-labelledby="assistant-heading" data-requires="voice_brain" hidden>
         <h2 class="eyebrow group-title" id="assistant-heading">Assistant</h2>
         <div class="settings-list">
           <a class="setting-row" href="/voice/">
@@ -635,7 +635,7 @@
         </div>
       </section>
 
-      <section class="settings-section" aria-labelledby="integrations-heading">
+      <section class="settings-section" aria-labelledby="integrations-heading" data-requires="voice_brain" hidden>
         <h2 class="eyebrow group-title" id="integrations-heading">Integrations</h2>
         <div class="settings-list">
           <a class="setting-row" href="/weather/">
@@ -673,7 +673,7 @@
         </div>
       </section>
 
-      <section class="settings-section" aria-labelledby="network-heading">
+      <section class="settings-section" aria-labelledby="network-heading" data-requires="network_settings" hidden>
         <h2 class="eyebrow group-title" id="network-heading">Network</h2>
         <div class="settings-list">
           <a class="setting-row" href="/wifi/">
@@ -695,7 +695,7 @@
         </div>
       </section>
 
-      <section class="settings-section" aria-labelledby="accessories-heading">
+      <section class="settings-section" aria-labelledby="accessories-heading" data-requires="voice_brain" hidden>
         <h2 class="eyebrow group-title" id="accessories-heading">Accessories</h2>
         <div class="settings-list">
           <a class="setting-row" href="/dial/">
@@ -720,7 +720,7 @@
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
-          <a class="setting-row" href="/speaker/">
+          <a class="setting-row" href="/speaker/" data-requires="speaker_settings" hidden>
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-tag"></use></svg></span>
             <span class="setting-copy">
               <span class="setting-title">Speaker name</span>
@@ -736,7 +736,7 @@
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
-          <a class="setting-row operator" href="/wake-corpus/">
+          <a class="setting-row operator" href="/wake-corpus/" data-requires="developer_tools" hidden>
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-dev"></use></svg></span>
             <span class="setting-copy">
               <span class="setting-title">Developer tools</span>
@@ -774,6 +774,15 @@
       return String(value).slice(0, 7);
     }
 
+    function applyCapabilities(caps) {
+      if (!caps) return;
+      document.querySelectorAll('[data-requires]').forEach(function(el) {
+        var required = el.getAttribute('data-requires');
+        if (!required) return;
+        el.hidden = caps[required] !== true;
+      });
+    }
+
     // CamillaGUI runs on its own port (5005) rather than under an
     // nginx path prefix. Derive the hostname at click time so custom
     // speaker hostnames work without hard-coded jts.local links.
@@ -790,6 +799,7 @@
 
       function renderSnapshot(snap) {
         if (!snap) return;
+        applyCapabilities(snap.system_capabilities || null);
 
         var speakerName = snap.speaker_name && snap.speaker_name.name;
         if (speakerName) {
@@ -1037,7 +1047,7 @@
     // slider is relabeled — its requests are forwarded server-side by
     // jasper-control's bonded-follower proxy, so it controls the PAIR
     // volume. Untrusted grouping fields reach the DOM as text nodes
-    // only; the leader link is built only for a hostname-shaped value.
+    // only; the leader link is built only for a stable .local web host.
     (function() {
       var banner = document.getElementById('pair-banner');
       var text = document.getElementById('pair-text');
@@ -1048,6 +1058,13 @@
       if (!banner || !sourceSection) return;
       var POLL_MS = 10000;
       var HOST_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/;
+      var IPV4_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+
+      function localWebHost(value) {
+        var host = String(value || '').trim().replace(/\.$/, '');
+        if (!host || !HOST_RE.test(host) || IPV4_RE.test(host)) return '';
+        return host.endsWith('.local') ? host : host + '.local';
+      }
 
       function apply(g) {
         var bonded = !!(g && g.enabled && g.bond_id && !g.error);
@@ -1072,16 +1089,17 @@
         }
         if (!bonded) return;
         var ch = (g.channel === 'left' || g.channel === 'right') ? g.channel : '';
+        var leaderHost = localWebHost(g.leader_addr);
         channelEl.textContent = ch ? ch + ' channel' : 'paired';
         if (follower) {
           text.textContent = 'This speaker plays the ' + (ch || 'second') +
             ' channel of a stereo pair. Music is controlled on the pair ' +
             'leader' +
-            (g.leader_addr ? ' (' + g.leader_addr + ')' : '') +
-            '; voice answers locally, and the slider below sets the ' +
+            (leaderHost ? ' (' + leaderHost + ')' : '') +
+            '; voice answers on the leader, and the slider below sets the ' +
             'pair volume.';
-          if (g.leader_addr && HOST_RE.test(g.leader_addr)) {
-            leaderLink.href = 'http://' + g.leader_addr + '/';
+          if (leaderHost) {
+            leaderLink.href = 'http://' + leaderHost + '/';
             leaderLink.hidden = false;
           } else {
             leaderLink.hidden = true;

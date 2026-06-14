@@ -863,9 +863,13 @@ the same parked-failed outcome.
 Fix, part one: a udev rule on the dongle's USB IDs that triggers
 `jasper-dongle-recover.service`
 (`deploy/systemd/jasper-dongle-recover.service`) when Card A appears,
-which runs `systemctl reset-failed`, starts `jasper-camilla`, and
-then starts `jasper-aec-reconcile.service`. Idempotent — when the
-daemons are already healthy it's a no-op. The rule
+which runs `systemctl reset-failed`, starts the output graph
+(`jasper-camilla`, `jasper-outputd`, and
+`jasper-audio-hardware-reconcile.service`), and then best-effort starts
+`jasper-aec-reconcile.service` when that mic/voice policy unit is
+installed. Idempotent — when the daemons are already healthy it's a no-op.
+This shape is streambox-safe: Zero-class streamboxes have output/DSP but no
+AEC brain service. The rule
 (`deploy/udev/99-jasper-apple-dongle.rules`) uses `SYSTEMD_WANTS`
 rather than `RUN+=` so systemctl dispatches via PID 1 asynchronously
 and udev's event pipeline stays responsive.
@@ -1065,10 +1069,12 @@ For anyone touching the resilience code:
   reset-failed+starts outputd when the arrival is value-neutral, so a
   condition-parked final-output owner recovers without a full deploy.
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
-  unit that `reset-failed`s the audio daemons, starts jasper-camilla,
-  then runs the reconciler so mic/AEC/voice state matches present
-  hardware. Triggered by the udev rule above; idempotent so re-fires
-  on rapid replug are harmless.
+  unit that `reset-failed`s the audio daemons, restarts the output graph
+  (`jasper-camilla`, `jasper-outputd`, `jasper-audio-hardware-reconcile`),
+  and then best-effort starts `jasper-aec-reconcile` on full speakers so
+  mic/AEC/voice state matches present hardware. Triggered by the udev rule
+  above; idempotent so re-fires on rapid replug are harmless and
+  streambox installs without AEC do not fail the recovery.
 - `deploy/journald/50-jts-persistent-storage.conf` — Tier 5
   forensics pairing. Installed by `install.sh`'s
   `install_journald_persistent_storage()` to
@@ -1194,4 +1200,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-12
+Last verified: 2026-06-14

@@ -323,6 +323,60 @@ def test_endpoint_profile_control_route_policy():
     )
 
 
+def test_streambox_profile_control_route_policy():
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="GET", path="/healthz",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="GET", path="/state",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="GET", path="/source/state",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="GET", path="/system/snapshot",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "streambox", method="GET", path="/mic",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "streambox", method="GET", path="/aec",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/volume/set",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/source/select",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/transport/toggle",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/transport/next",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/transport/previous",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/system/audio-quality",
+    )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/system/restart/audio",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/cue/play",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/mic/mute",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/session/start",
+    )
+    assert not _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/system/restart/voice",
+    )
+
+
 def test_endpoint_profile_blocks_brain_only_control_routes(
     monkeypatch,
     server_with_coordinator,
@@ -343,6 +397,32 @@ def test_endpoint_profile_blocks_brain_only_control_routes(
     assert status == 404
 
     status, _body = _post(f"{base}/source/select", {"source": "airplay"})
+    assert status == 404
+
+
+def test_streambox_profile_blocks_voice_brain_control_routes(
+    monkeypatch,
+    server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "streambox")
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/healthz")
+    assert status == 200
+    assert body == {"ok": True}
+
+    status, _body = _get(f"{base}/mic")
+    assert status == 404
+
+    status, _body = _get(f"{base}/aec")
+    assert status == 404
+
+    status, _body = _post(f"{base}/cue/play", {"slug": "cant_connect"})
+    assert status == 404
+
+    status, _body = _post(f"{base}/system/restart/voice", {})
     assert status == 404
 
 
@@ -824,9 +904,43 @@ def test_system_snapshot_reports_endpoint_capabilities(
     assert caps["audio_quality"] is False
     assert caps["restart_voice"] is False
     assert caps["restart_audio"] is False
+    assert caps["network_settings"] is False
+    assert caps["speaker_settings"] is False
+    assert caps["pair_management"] is False
+    assert caps["developer_tools"] is False
     assert caps["reboot"] is True
     assert caps["poweroff"] is True
     assert "leader" in caps["unavailable_reason"]
+
+
+def test_system_snapshot_reports_streambox_capabilities(
+    monkeypatch,
+    server_with_coordinator,
+):
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "streambox")
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/system/snapshot")
+
+    assert status == 200
+    caps = body["system_capabilities"]
+    assert caps["install_profile"] == "streambox"
+    assert caps["role"] == "streambox"
+    assert caps["local_sources"] is True
+    assert caps["content_dsp"] is True
+    assert caps["voice_brain"] is False
+    assert caps["audio_quality"] is True
+    assert caps["restart_voice"] is False
+    assert caps["restart_audio"] is True
+    assert caps["network_settings"] is True
+    assert caps["speaker_settings"] is True
+    assert caps["pair_management"] is True
+    assert caps["developer_tools"] is False
+    assert caps["reboot"] is True
+    assert caps["poweroff"] is True
+    assert caps["unavailable_reason"] == ""
 
 
 def test_post_allows_same_origin_browser_request(server_with_coordinator):

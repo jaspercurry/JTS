@@ -45,7 +45,14 @@ from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
-from ...install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
+from ...install_profile import (
+    STREAMBOX_INSTALL_PROFILE,
+    install_profile_allows_voice_brain,
+    install_role_for_profile,
+    is_satellite_install_profile,
+    read_install_profile,
+)
+from ...speaker_name import runtime_name as _speaker_runtime_name
 from ...usage import DEFAULT_USAGE_DB
 
 from ._registry import doctor_check, registered_checks
@@ -298,10 +305,39 @@ _FULL_OMITTED_DOCTOR_GROUPS = frozenset({
     "endpoint_audio",
 })
 
+_STREAMBOX_OMITTED_DOCTOR_GROUPS = frozenset({
+    "voice",
+    "wake",
+    "integrations",
+    "aec",
+    "satellites",
+})
 
-def _endpoint_skip_result(entry) -> CheckResult:
+_STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
+    "check_mic_card_matches_config",
+    "check_mic_capture",
+    "check_tts_open",
+})
+
+
+def _profile_skip_result(entry, *, reason: str) -> CheckResult:
     label = entry.label or _check_name(entry.func)
-    return CheckResult(label, "ok", "not installed (endpoint tier)")
+    return CheckResult(label, "ok", reason)
+
+
+def _doctor_skip_reason(entry, install_profile: str) -> str:
+    role = install_role_for_profile(install_profile)
+    if (
+        is_satellite_install_profile(install_profile)
+        and entry.group in _ENDPOINT_OMITTED_DOCTOR_GROUPS
+    ):
+        return "not installed (satellite-only profile)"
+    if role == STREAMBOX_INSTALL_PROFILE and (
+        entry.group in _STREAMBOX_OMITTED_DOCTOR_GROUPS
+        or entry.func.__name__ in _STREAMBOX_OMITTED_DOCTOR_CHECKS
+    ):
+        return "not installed (streambox profile)"
+    return ""
 
 __all__ = [
     "doctor_check",
@@ -818,21 +854,62 @@ def _watch_line(results: list[CheckResult]) -> str:
         )
     return f"{ts}  {GREEN}all {len(results)} checks ok{RESET}"
 
-def _endpoint_config_from_env() -> SimpleNamespace:
-    """Minimal cfg surface for endpoint-retained doctor checks.
+def _env_int_for_doctor(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value
 
-    Endpoint installs intentionally do not configure a voice provider, so
-    constructing the full speaker Config would fail before run_async can
-    skip full-speaker checks. Today the retained endpoint checks only need
-    usage_db for the shared state-dir probe.
+
+def _local_audio_config_from_env() -> SimpleNamespace:
+    """Cfg surface for profiles that run local audio without a voice brain.
+
+    Streambox and satellite-only installs intentionally do not require a
+    voice provider. Keep this namespace to the attributes retained doctor
+    checks actually read, so jasper-doctor can still validate local audio,
+    renderer, correction, memory, network, and web health without pulling
+    the full voice Config into small-device profiles.
     """
+    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local") or "jts.local"
+    spotify_redirect_default = (
+        "https://jaspercurry.github.io/spotify-oauth-callback/"
+        f"?host={hostname}"
+    )
+    spotify_client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
     return SimpleNamespace(
         usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
+        camilla_host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
+        camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", 1234),
+        spotify_client_id=spotify_client_id,
+        spotify_redirect_uri=(
+            os.environ.get("SPOTIFY_REDIRECT_URI", spotify_redirect_default)
+            or spotify_redirect_default
+        ),
+        spotify_cache_path=os.environ.get(
+            "SPOTIFY_CACHE_PATH",
+            "/var/lib/jasper/.spotify-cache",
+        ),
+        spotify_device_name=_speaker_runtime_name(),
+        spotify_accounts_path=os.environ.get(
+            "JASPER_SPOTIFY_ACCOUNTS_PATH",
+            "/var/lib/jasper/spotify/accounts.json",
+        ),
+        spotify_setup_url=os.environ.get(
+            "JASPER_SPOTIFY_SETUP_URL",
+            f"http://{hostname}/spotify",
+        ),
+        spotify_enabled=bool(spotify_client_id),
     )
 
 def _doctor_config_from_env(install_profile: str) -> Config | SimpleNamespace:
-    if install_profile == ENDPOINT_INSTALL_PROFILE:
-        return _endpoint_config_from_env()
+    if not install_profile_allows_voice_brain(install_profile):
+        return _local_audio_config_from_env()
     return Config.from_env()
 
 async def _watch_loop(cfg: Config | SimpleNamespace, interval: float) -> int:
@@ -948,14 +1025,15 @@ async def run_async(cfg: Config | SimpleNamespace) -> list[CheckResult]:
     in their literal order, then the CamillaDSP websocket check.
     """
     install_profile = read_install_profile()
-    endpoint_tier = install_profile == ENDPOINT_INSTALL_PROFILE
+    satellite_only = is_satellite_install_profile(install_profile)
     sync_checks: list[DoctorCheck] = []
     async_tail: list = []
     for entry in registered_checks():
-        if not endpoint_tier and entry.group in _FULL_OMITTED_DOCTOR_GROUPS:
+        if not satellite_only and entry.group in _FULL_OMITTED_DOCTOR_GROUPS:
             continue
-        if endpoint_tier and entry.group in _ENDPOINT_OMITTED_DOCTOR_GROUPS:
-            skipped = _endpoint_skip_result(entry)
+        skip_reason = _doctor_skip_reason(entry, install_profile)
+        if skip_reason:
+            skipped = _profile_skip_result(entry, reason=skip_reason)
             sync_checks.append((skipped.name, lambda skipped=skipped: skipped))
             continue
         fn = entry.func

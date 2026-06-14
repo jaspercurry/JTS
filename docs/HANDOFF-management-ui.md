@@ -1,6 +1,6 @@
 # Management UI — redesign proposal + reference
 
-**Status:** Reference · created 2026-05-22 · refreshed 2026-06-12.
+**Status:** Reference · created 2026-05-22 · refreshed 2026-06-14.
 Phase 1 IA/visual reshape implemented on 2026-05-28 in
 `deploy/index.html`; the 2026-05-28 polish pass adopted the static reference
 style, local Figtree/Outfit font assets, and a quieter one-column settings
@@ -21,6 +21,31 @@ migrated on main (`b38d643`), and `/correction/` preflight plus HTTPS
 asset-serving fixes followed (`c7da1db`). See "Restyle-in-place migration"
 below. Setup wizard, conditional prompts, and fuller row-state hydration
 remain future phases.
+
+On 2026-06-14 the Zero-class `streambox` and satellite-only `endpoint`
+install tiers use the same management UI instead of bespoke endpoint
+frontends: nginx serves [`deploy/index.html`](../deploy/index.html),
+`jasper-web` filters wizard routes by install role, and the landing page
+hides cards via `system_capabilities` (`local_sources`, `content_dsp`,
+`voice_brain`, `network_settings`, `speaker_settings`, `pair_management`,
+`developer_tools`).
+The shared frontend rule does **not** mean every profile keeps the same
+systemd activation surface. Full speakers install
+[`jasper-web.service`](../deploy/jasper-web.service) plus
+[`jasper-web.socket`](../deploy/jasper-web.socket), while streamboxes
+install [`jasper-web-streambox.service`](../deploy/jasper-web-streambox.service)
+and [`jasper-web-streambox.socket`](../deploy/jasper-web-streambox.socket)
+under the same runtime unit names. That keeps the browser experience DRY
+while ensuring streamboxes never bind voice/Google/wake/transit/weather
+wizard ports or source assistant-only env files.
+The satellite-only tier keeps an intentionally small nginx route set
+(`/system/`, `/sources/`, control volume/grouping/debug) because its
+renderer/source services are absent, but its root page is the shared JTS
+landing page filtered by those capabilities. The current operator truth
+for those profiles lives in
+[`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md); this doc owns the
+shared frontend rule: profile differences are capability gates, not a second
+visual system.
 
 The first shared cross-page module is the confirm/alert dialog,
 [`deploy/assets/shared/js/dialog.js`](../deploy/assets/shared/js/dialog.js)
@@ -123,6 +148,22 @@ regression test
 `test_nginx_serves_assets_over_https_no_mixed_content` in
 [`tests/test_landing_page_html.py`](../tests/test_landing_page_html.py) pins
 the 443 block.
+
+### Install-profile capability gating
+
+The shared landing page is one artifact for full speakers, streamboxes, and
+satellite-only endpoints. The data source is `jasper-control`'s
+`/system/snapshot.system_capabilities`, proxied through the landing page's
+`/system/data.json` fetch, not frontend-local hardware guessing. Capability
+gates fail closed: every gated card/row ships with `hidden` and is shown only
+when the snapshot reports that capability as `true`. Full speakers expose
+voice, source, DSP, pair-management, network, speaker-name, and developer
+cards; streamboxes expose local source/DSP/pair-management/system/network/
+speaker surfaces but hide voice/wake/integration/developer cards;
+satellite-only endpoints serve the same landing page through the endpoint
+nginx route set and hide cards whose services are absent. This keeps the
+frontend slimmed by capability while preserving one design system and one card
+vocabulary.
 
 ### The plain-HTTP correction preflight is canonical too
 
@@ -1349,7 +1390,13 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-04 (`/voice/` owns spend-cap status/settings and the
+Last verified: 2026-06-14 (`streambox` and satellite-only `endpoint` now use
+the shared landing page filtered by `system_capabilities`; streambox installs
+a profile-scoped `jasper-web` service/socket template and endpoint keeps a
+smaller nginx route set; verified by `tests/test_endpoint_install_profile.py`,
+`tests/test_control_server.py`, `tests/test_web_main_imports.py`, and
+`tests/test_web_sources_setup.py`. Prior pass 2026-06-04: `/voice/` owns
+spend-cap status/settings and the
 `/system/` Cloud activity card was removed from the dashboard; verified by
 `tests/test_voice_setup.py`, `tests/test_system_setup.py`, and the static
 web design/convention tests. Prior pass 2026-06-02: `/system/` per-service

@@ -1,10 +1,12 @@
 """Entry point for the jasper-web systemd unit.
 
-Starts every setup wizard in a single process — one ThreadingHTTPServer
-per nginx route. They share /var/lib/jasper as their persistence
-volume and shell out to systemctl together when something changes,
-so colocating them costs nothing extra and saves a separate systemd
-unit per wizard. nginx routes:
+Starts the setup wizards for this install profile in a single process —
+one ThreadingHTTPServer per nginx route. They share /var/lib/jasper as
+their persistence volume and shell out to systemctl together when
+something changes, so colocating them costs nothing extra and saves a
+separate systemd unit per wizard. Full speakers get every wizard below;
+streambox installs keep the local-renderer/DSP surfaces and omit the
+voice/wake/assistant-only pages. nginx routes:
 
   /spotify/  →  127.0.0.1:8765  (jasper.web.spotify_setup)
   /voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
@@ -41,35 +43,26 @@ from __future__ import annotations
 
 import logging
 import os
-import secrets
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import BaseRequestHandler, StreamRequestHandler
-
-from jasper import wake_ports
-
-from . import (
-    _systemd,
-    airplay_setup,
-    google_setup,
-    home_assistant_setup,
-    peering_setup,
-    rooms_setup,
-    sound_setup,
-    speaker_setup,
-    sources_setup,
-    spotify_setup,
-    transit_setup,
-    voice_setup,
-    wake_setup,
-    weather_setup,
-    wifi_setup,
+from jasper.install_profile import (
+    FULL_INSTALL_PROFILE,
+    STREAMBOX_INSTALL_PROFILE,
+    install_role_for_profile,
+    read_install_profile,
 )
 
+from . import _systemd
+
 logger = logging.getLogger(__name__)
+_FULL_ROLE = FULL_INSTALL_PROFILE
+_STREAMBOX_ROLE = STREAMBOX_INSTALL_PROFILE
+_FULL_ONLY = frozenset({_FULL_ROLE})
+_LOCAL_AUDIO_ROLES = frozenset({_FULL_ROLE, _STREAMBOX_ROLE})
 
 
 @dataclass(frozen=True)
@@ -80,10 +73,14 @@ class WizardSpec:
     env_var: str
     default_port: int
     make_server: Callable[[object], object]
+    roles: frozenset[str] = _FULL_ONLY
     main_thread: bool = False
 
     def port(self) -> int:
         return int(os.environ.get(self.env_var, str(self.default_port)))
+
+    def available_for(self, role: str) -> bool:
+        return role in self.roles
 
 
 def _serve_forever(server, label: str) -> None:
@@ -95,6 +92,8 @@ def _serve_forever(server, label: str) -> None:
 
 def _wake_corpus_ports_from_env() -> dict[str, int]:
     """Resolve wake-corpus UDP ports for the combined jasper-web unit."""
+    from jasper import wake_ports
+
     return wake_ports.build_ports(
         aec_on_port=int(os.environ.get(
             "JASPER_WAKE_CORPUS_AEC_ON_PORT",
@@ -231,6 +230,8 @@ def _make_lazy_wake_corpus_server(
 
 
 def _make_spotify_server(target: object) -> object:
+    from . import spotify_setup
+
     return spotify_setup.make_server(
         target,
         registry_path=os.environ.get(
@@ -247,6 +248,8 @@ def _make_spotify_server(target: object) -> object:
 
 
 def _make_voice_server(target: object) -> object:
+    from . import voice_setup
+
     return voice_setup.make_server(
         target,
         state_path=os.environ.get(
@@ -257,6 +260,8 @@ def _make_voice_server(target: object) -> object:
 
 
 def _make_google_server(target: object) -> object:
+    from . import google_setup
+
     return google_setup.make_server(
         target,
         registry_path=os.environ.get(
@@ -271,6 +276,8 @@ def _make_google_server(target: object) -> object:
 
 
 def _make_airplay_server(target: object) -> object:
+    from . import airplay_setup
+
     return airplay_setup.make_server(
         target,
         state_path=os.environ.get(
@@ -281,10 +288,14 @@ def _make_airplay_server(target: object) -> object:
 
 
 def _make_sources_server(target: object) -> object:
+    from . import sources_setup
+
     return sources_setup.make_server(target)
 
 
 def _make_speaker_server(target: object) -> object:
+    from . import speaker_setup
+
     return speaker_setup.make_server(
         target,
         state_path=os.environ.get(
@@ -295,6 +306,8 @@ def _make_speaker_server(target: object) -> object:
 
 
 def _make_wake_server(target: object) -> object:
+    from . import wake_setup
+
     return wake_setup.make_server(
         target,
         state_path=os.environ.get(
@@ -309,10 +322,14 @@ def _make_wake_server(target: object) -> object:
 
 
 def _make_wifi_server(target: object) -> object:
+    from . import wifi_setup
+
     return wifi_setup.make_server(target)
 
 
 def _make_peers_server(target: object) -> object:
+    from . import peering_setup
+
     return peering_setup.make_server(
         target,
         state_path=os.environ.get(
@@ -323,6 +340,8 @@ def _make_peers_server(target: object) -> object:
 
 
 def _make_rooms_server(target: object) -> object:
+    from . import rooms_setup
+
     # Read-only speaker directory + grouping status (no env file /
     # POST this increment), so unlike /peers/ there is no state_path
     # to thread through. See jasper/web/rooms_setup.py.
@@ -330,14 +349,20 @@ def _make_rooms_server(target: object) -> object:
 
 
 def _transit_state_path() -> str:
+    from . import transit_setup
+
     return os.environ.get("JASPER_TRANSIT_FILE", transit_setup.TRANSIT_FILE)
 
 
 def _weather_state_path() -> str:
+    from . import weather_setup
+
     return os.environ.get("JASPER_WEATHER_FILE", weather_setup.WEATHER_FILE)
 
 
 def _make_transit_server(target: object) -> object:
+    from . import transit_setup
+
     return transit_setup.make_server(
         target,
         state_path=_transit_state_path(),
@@ -346,6 +371,8 @@ def _make_transit_server(target: object) -> object:
 
 
 def _make_ha_server(target: object) -> object:
+    from . import home_assistant_setup
+
     return home_assistant_setup.make_server(
         target,
         state_path=os.environ.get(
@@ -356,6 +383,8 @@ def _make_ha_server(target: object) -> object:
 
 
 def _make_weather_server(target: object) -> object:
+    from . import weather_setup
+
     return weather_setup.make_server(
         target,
         state_path=_weather_state_path(),
@@ -364,6 +393,8 @@ def _make_weather_server(target: object) -> object:
 
 
 def _make_sound_server(target: object) -> object:
+    from . import sound_setup
+
     return sound_setup.make_server(
         target,
         profile_path=os.environ.get(
@@ -378,6 +409,8 @@ def _make_sound_server(target: object) -> object:
 
 
 def _make_wake_corpus_server(target: object) -> object:
+    import secrets
+
     return _make_lazy_wake_corpus_server(
         target,
         output_dir=Path(
@@ -394,19 +427,27 @@ def _make_wake_corpus_server(target: object) -> object:
 WIZARD_SPECS: tuple[WizardSpec, ...] = (
     WizardSpec(
         "/spotify", "JASPER_SPOTIFY_WEB_PORT", 8765,
-        _make_spotify_server, main_thread=True,
+        _make_spotify_server, roles=_LOCAL_AUDIO_ROLES, main_thread=True,
     ),
     WizardSpec("/voice", "JASPER_VOICE_WEB_PORT", 8767, _make_voice_server),
     WizardSpec("/google", "JASPER_GOOGLE_WEB_PORT", 8768, _make_google_server),
     WizardSpec(
         "/airplay", "JASPER_AIRPLAY_WEB_PORT", 8771, _make_airplay_server,
+        roles=_LOCAL_AUDIO_ROLES,
     ),
     WizardSpec(
         "/sources", "JASPER_SOURCES_WEB_PORT", 8773, _make_sources_server,
+        roles=_LOCAL_AUDIO_ROLES,
     ),
     WizardSpec("/wake", "JASPER_WAKE_WEB_PORT", 8774, _make_wake_server),
-    WizardSpec("/wifi", "JASPER_WIFI_WEB_PORT", 8775, _make_wifi_server),
-    WizardSpec("/peers", "JASPER_PEERS_WEB_PORT", 8776, _make_peers_server),
+    WizardSpec(
+        "/wifi", "JASPER_WIFI_WEB_PORT", 8775, _make_wifi_server,
+        roles=_LOCAL_AUDIO_ROLES,
+    ),
+    WizardSpec(
+        "/peers", "JASPER_PEERS_WEB_PORT", 8776, _make_peers_server,
+        roles=_LOCAL_AUDIO_ROLES,
+    ),
     WizardSpec(
         "/transit", "JASPER_TRANSIT_WEB_PORT", 8777, _make_transit_server,
     ),
@@ -418,10 +459,42 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
         "/wake-corpus", "JASPER_WAKE_CORPUS_WEB_PORT", 8782,
         _make_wake_corpus_server,
     ),
-    WizardSpec("/speaker", "JASPER_SPEAKER_WEB_PORT", 8783, _make_speaker_server),
-    WizardSpec("/sound", "JASPER_SOUND_WEB_PORT", 8784, _make_sound_server),
-    WizardSpec("/rooms", "JASPER_ROOMS_WEB_PORT", 8785, _make_rooms_server),
+    WizardSpec(
+        "/speaker", "JASPER_SPEAKER_WEB_PORT", 8783, _make_speaker_server,
+        roles=_LOCAL_AUDIO_ROLES,
+    ),
+    WizardSpec(
+        "/sound", "JASPER_SOUND_WEB_PORT", 8784, _make_sound_server,
+        roles=_LOCAL_AUDIO_ROLES,
+    ),
+    WizardSpec(
+        "/rooms", "JASPER_ROOMS_WEB_PORT", 8785, _make_rooms_server,
+        roles=_LOCAL_AUDIO_ROLES,
+    ),
 )
+
+
+def _active_install_role() -> str:
+    try:
+        return install_role_for_profile(read_install_profile())
+    except ValueError as e:
+        logger.error(
+            "event=jasper_web.install_profile_invalid error=%r "
+            "action=fail_closed",
+            str(e),
+        )
+        return "invalid"
+
+
+def _specs_for_role(role: str) -> tuple[WizardSpec, ...]:
+    specs = tuple(spec for spec in WIZARD_SPECS if spec.available_for(role))
+    if specs:
+        return specs
+    logger.error(
+        "event=jasper_web.no_wizards_for_role role=%s action=fail_closed",
+        role,
+    )
+    return ()
 
 
 def main() -> int:
@@ -447,8 +520,16 @@ def main() -> int:
 
     host_default = "127.0.0.1"  # only used for logging if no systemd fd
 
+    role = _active_install_role()
+    specs = _specs_for_role(role)
+    logger.info(
+        "event=jasper_web.profile role=%s wizards=%s",
+        role,
+        ",".join(spec.label for spec in specs),
+    )
+
     servers: list[tuple[WizardSpec, int, object]] = []
-    for spec in WIZARD_SPECS:
+    for spec in specs:
         port = spec.port()
         servers.append((spec, port, spec.make_server(target_for(port))))
 
@@ -476,18 +557,30 @@ def main() -> int:
                 port,
             )
 
-    # Worker-thread wizards + Spotify on the main thread.
-    # Spotify is the older / busier surface so we leave its
-    # serve_forever on the main thread — keeps SIGTERM delivery
-    # behavior the same as before (KeyboardInterrupt path returns 0).
+    # Worker-thread wizards plus one foreground server. Full speakers keep
+    # Spotify in the foreground for parity with the older topology; profiles
+    # that do not host Spotify use the first role-available wizard instead.
+    # Signal handling stays in the main thread either way.
     main_servers = [
         (spec, server) for spec, _, server in servers if spec.main_thread
     ]
-    if len(main_servers) != 1:
-        logger.error("jasper-web expected exactly one main-thread wizard")
+    if len(main_servers) > 1:
+        logger.error("jasper-web expected at most one main-thread wizard")
+        return 1
+    if main_servers:
+        main_spec, main_server = main_servers[0]
+    elif servers:
+        main_spec, _, main_server = servers[0]
+        logger.info(
+            "event=jasper_web.main_thread_fallback role=%s wizard=%s",
+            role,
+            main_spec.label,
+        )
+    else:
+        logger.error("jasper-web no wizards available for role=%s", role)
         return 1
     for spec, _, server in servers:
-        if spec.main_thread:
+        if server is main_server:
             continue
         threading.Thread(
             target=_serve_forever,
@@ -498,7 +591,7 @@ def main() -> int:
 
     _systemd.notify_ready()
     try:
-        main_servers[0][1].serve_forever()
+        main_server.serve_forever()
     except KeyboardInterrupt:
         pass
     _systemd.notify_stopping()

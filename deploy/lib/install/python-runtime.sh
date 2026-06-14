@@ -260,3 +260,59 @@ install_jasper() {
     migrate_speaker_room
     migrate_control_host_bind_seed
 }
+
+install_streambox_jasper() {
+    install -d -m 0755 "${INSTALL_DIR}"
+    install -d -m 0750 "${STATE_DIR}"
+    install -d -m 0750 "${ENV_DIR}"
+    install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
+
+    write_build_manifest
+
+    rsync -a --delete \
+        --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
+        --exclude='tests' --exclude='deploy' \
+        --exclude='build' --exclude='*.egg-info' \
+        "${REPO_DIR}/jasper" \
+        "${REPO_DIR}/pyproject.toml" \
+        "${REPO_DIR}/README.md" \
+        "${REPO_DIR}/docs" \
+        "${INSTALL_DIR}/"
+
+    if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
+        python3 -m venv "${INSTALL_DIR}/.venv"
+    fi
+    "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip==26.1.2 wheel==0.47.0
+
+    local -a pip_constraints=()
+    local constraints_file
+    constraints_file="$(jasper_pip_constraints_file)"
+    if [[ -n "${constraints_file}" ]]; then
+        echo "  applying Pi-generated pip constraints: ${constraints_file}"
+        pip_constraints=(-c "${constraints_file}")
+    fi
+    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" \
+        -e "${INSTALL_DIR}[streambox]"
+
+    local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"
+    if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
+        cat > "${ENV_DIR}/jasper.env" <<EOF
+JASPER_HOSTNAME=${hostname_value}
+JASPER_CONTROL_HOST=0.0.0.0
+JASPER_INSTALL_PROFILE=streambox
+EOF
+        chmod 0640 "${ENV_DIR}/jasper.env"
+        echo "  streambox env: created ${ENV_DIR}/jasper.env"
+    else
+        set_endpoint_env_value JASPER_CONTROL_HOST "0.0.0.0"
+        set_endpoint_env_value JASPER_INSTALL_PROFILE "streambox"
+        chmod 0640 "${ENV_DIR}/jasper.env"
+        echo "  streambox env: refreshed streambox defaults"
+    fi
+
+    if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
+        printf 'JASPER_SPEAKER_NAME="JTS"\n' > "${STATE_DIR}/speaker_name.env"
+        chmod 0644 "${STATE_DIR}/speaker_name.env"
+        echo "  speaker name: JTS"
+    fi
+}

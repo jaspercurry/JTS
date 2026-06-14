@@ -11,6 +11,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+streambox = [
+    # Streambox = local renderers + local CamillaDSP content/driver DSP,
+    # without voice/wake/mic/AEC/provider integrations. Keep this list
+    # deliberately narrower than [full] so Zero-class installs do not
+    # pull assistant-only SDKs or wake-word runtimes just to play music.
+    "camilladsp @ https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz#sha256=d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087",
+    "sounddevice==0.5.5",
+    "numpy>=1.26,<3",
+    "scipy>=1.13,<2",
+    "spotipy==2.26.0",
+    "httpx==0.28.1",
+    "rapidfuzz>=3.6,<4",
+    "dbus-next>=0.2.3",
+    "zeroconf>=0.149,<1.0",
+]
+
 full = [
     "google-genai==2.8.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for

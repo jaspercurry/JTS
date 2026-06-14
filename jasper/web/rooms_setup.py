@@ -77,6 +77,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -219,6 +220,27 @@ def _hostname_label(server: str) -> str:
     return host.strip()
 
 
+_LOCAL_HOST_LABEL_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
+
+
+def _local_web_host(hostname: str) -> str:
+    """Browser-safe management host for a discovered peer.
+
+    The peer `address` remains the IP used by server-side grouping fan-out
+    through the SSRF guard. User-facing click-through URLs should instead use
+    the stable mDNS hostname so DHCP churn does not make the UI teach people
+    raw IPs. Empty/invalid hostnames fail closed to no link.
+    """
+    host = (hostname or "").strip().rstrip(".")
+    if host.endswith(".local"):
+        host = host[: -len(".local")]
+    if not _LOCAL_HOST_LABEL_RE.match(host):
+        return ""
+    return f"{host}.local"
+
+
 def _peer_label(props: dict, server: str, full_name: str) -> str:
     """Pick the directory label for a discovered speaker, best-first:
       1. an explicit `name=` TXT record (none on `_jasper-control._tcp`
@@ -352,6 +374,10 @@ def _build_rooms_payload() -> dict:
                  peering: {enabled, primary}},
         "peers": [{name, room, address, home_url, system_url}, ...]
       }
+
+    Peer `address` stays raw LAN IP for POST /bond / /swap / /trim control
+    calls. Peer `home_url` / `system_url` are derived from the advertised
+    hostname and end in `.local`, never from the IP address.
     """
     me = identity.read_identity()
     own = _self_addresses()
@@ -381,13 +407,14 @@ def _build_rooms_payload() -> dict:
         peer_host = (s.get("hostname") or "").casefold()
         if self_hostname_label and peer_host == self_hostname_label:
             continue
+        web_host = _local_web_host(s.get("hostname") or "")
         peers.append(
             {
                 "name": s.get("name") or "",
                 "room": s.get("room") or "",
                 "address": addr,
-                "home_url": f"http://{addr}/" if addr else "",
-                "system_url": f"http://{addr}/system/" if addr else "",
+                "home_url": f"http://{web_host}/" if web_host else "",
+                "system_url": f"http://{web_host}/system/" if web_host else "",
             }
         )
     # Stable, human-friendly ordering for the directory.

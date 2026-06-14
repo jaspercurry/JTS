@@ -42,6 +42,10 @@ _STEP_TO_PLAN_MARKER = {
     "install_endpoint_jasper": "Install the base JTS Python package",
     "install_endpoint_systemd_units": "Enable/start jasper-control",
     "install_endpoint_nginx_site": "endpoint-scoped nginx",
+    "install_streambox_deps": "renderer/DSP stack",
+    "install_streambox_jasper": "Python runtime dependencies from pyproject.toml [streambox]",
+    "install_streambox_systemd_units": "Enable socket-activated streambox-safe web surfaces",
+    "install_streambox_nginx_site": "streambox nginx",
     "install_alsa": "Render /etc/asound.conf through",
     "install_camilladsp": "CamillaDSP:",
     "install_renderers": "shairport-sync source archive",
@@ -157,6 +161,7 @@ def test_every_main_step_is_described_by_the_dry_run_plan():
     (add a marker here) or be explicitly exempted with a reason."""
     plans = (
         _dry_run_plan_normalized(),
+        _dry_run_plan_normalized(profile="streambox"),
         _dry_run_plan_normalized(profile="endpoint"),
     )
     missing_mapping = []

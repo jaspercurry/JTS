@@ -62,6 +62,11 @@ from ..audio_profile_state import (
 from ..env_load import subprocess_env_with_fresh_files
 from ..install_profile import (
     ENDPOINT_INSTALL_PROFILE,
+    FULL_INSTALL_PROFILE,
+    STREAMBOX_INSTALL_PROFILE,
+    install_profile_allows_content_dsp,
+    install_profile_allows_local_sources,
+    install_profile_allows_voice_brain,
     install_role_for_profile,
     is_satellite_install_profile,
     read_install_profile,
@@ -104,6 +109,18 @@ _ENDPOINT_ALLOWED_POST_ROUTES = frozenset({
     "/system/reboot",
     "/system/poweroff",
 })
+_STREAMBOX_ALLOWED_GET_ROUTES = _ENDPOINT_ALLOWED_GET_ROUTES | frozenset({
+    "/source/state",
+    "/state",
+})
+_STREAMBOX_ALLOWED_POST_ROUTES = _ENDPOINT_ALLOWED_POST_ROUTES | frozenset({
+    "/source/select",
+    "/system/audio-quality",
+    "/system/restart/audio",
+    "/transport/next",
+    "/transport/previous",
+    "/transport/toggle",
+})
 
 
 def _control_install_profile() -> str:
@@ -123,6 +140,13 @@ def _control_route_allowed_for_install_profile(
     method: str,
     path: str,
 ) -> bool:
+    role = install_role_for_profile(profile)
+    if role == STREAMBOX_INSTALL_PROFILE:
+        if method == "GET":
+            return path in _STREAMBOX_ALLOWED_GET_ROUTES
+        if method == "POST":
+            return path in _STREAMBOX_ALLOWED_POST_ROUTES
+        return False
     if not is_satellite_install_profile(profile):
         return True
     if method == "GET":
@@ -135,6 +159,11 @@ def _control_route_allowed_for_install_profile(
 def _system_capabilities_for_profile(profile: str) -> dict[str, Any]:
     role = install_role_for_profile(profile)
     satellite = is_satellite_install_profile(profile)
+    full = role == FULL_INSTALL_PROFILE
+    local_management = not satellite
+    local_dsp = install_profile_allows_content_dsp(profile)
+    local_sources = install_profile_allows_local_sources(profile)
+    voice_brain = install_profile_allows_voice_brain(profile)
     reason = (
         "Satellite endpoints do not run local voice, renderer, or audio "
         "conversion services; those controls live on the leader."
@@ -143,9 +172,16 @@ def _system_capabilities_for_profile(profile: str) -> dict[str, Any]:
     return {
         "install_profile": profile,
         "role": role,
-        "audio_quality": not satellite,
-        "restart_voice": not satellite,
-        "restart_audio": not satellite,
+        "local_sources": local_sources,
+        "content_dsp": local_dsp,
+        "voice_brain": voice_brain,
+        "network_settings": local_management,
+        "speaker_settings": local_management,
+        "pair_management": local_management,
+        "developer_tools": full,
+        "audio_quality": local_dsp,
+        "restart_voice": voice_brain,
+        "restart_audio": local_dsp,
         "reboot": True,
         "poweroff": True,
         "diagnostics": True,

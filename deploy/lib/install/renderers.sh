@@ -177,11 +177,11 @@ install_renderers() {
 }
 
 set_usb_gadget_mode() {
-    # Add the dtoverlay that puts the Pi 5's BCM2712 OTG controller
-    # (the USB-C port) into peripheral mode so it can present as a USB
-    # gadget to a connected host. This is the precondition for the
-    # jasper-usbsink feature — a fourth music source where a computer
-    # plugged into the Pi via the 8086 splitter sees the configured
+    # Add the dtoverlay that puts the board's OTG-capable USB controller
+    # into peripheral mode so it can present as a USB gadget to a
+    # connected host. This is the precondition for the jasper-usbsink
+    # feature — a fourth music source where a computer plugged into the
+    # Pi via an appropriate power/data splitter sees the configured
     # speaker name as a USB audio output device.
     #
     # We only set the dtoverlay. We do NOT load libcomposite at boot,
@@ -193,10 +193,13 @@ set_usb_gadget_mode() {
     # the kernel via the dtoverlay at boot. Subsequent runs of
     # install.sh are no-ops once the line is present.
     #
-    # Side effect to document: the Pi 5 USB-C port is no longer
-    # available for plugging USB host devices (e.g. flash drives).
-    # The four USB-A ports remain in host mode unchanged.
-    local cfg="/boot/firmware/config.txt"
+    # Side effect to document: the OTG data port is no longer available
+    # for ordinary USB host devices while this overlay is active. On a
+    # Pi 5 the USB-A ports remain host-mode outputs; on a Zero-class
+    # board this can conflict with using the same OTG port for a USB DAC
+    # unless the operator has a powered/split-role hardware topology that
+    # proves both legs work.
+    local cfg="${JTS_BOOT_CONFIG_FILE:-/boot/firmware/config.txt}"
     if [[ ! -f "$cfg" ]]; then
         echo "  $cfg not present; skipping USB gadget dtoverlay."
         return 0
@@ -205,25 +208,20 @@ set_usb_gadget_mode() {
         echo "  USB gadget dtoverlay already present in $cfg."
         return 0
     fi
-    # Prefer to append under an existing [pi5] section so the override
-    # is cleanly scoped to Pi 5. If [pi5] isn't present, append a
-    # fresh tagged block at the end.
-    if grep -qE '^\[pi5\]' "$cfg"; then
-        # GNU sed: insert after the [pi5] line.
-        sed -i '/^\[pi5\]/a dtoverlay=dwc2,dr_mode=peripheral' "$cfg"
-    else
-        cat >> "$cfg" <<'EOF'
+    cat >> "$cfg" <<'EOF'
 
 # JTS install — required for jasper-usbsink (USB audio gadget source).
-# Puts the BCM2712 OTG controller into peripheral mode so a connected
-# host can see the speaker as a USB audio output device. libcomposite is NOT
-# loaded at boot; the jasper-usbsink-init.service modprobes it on
-# demand, so RAM stays at baseline when the USB sink is disabled.
+# Puts the board's OTG-capable USB controller into peripheral mode so a
+# connected host can see the speaker as a USB audio output device.
+# libcomposite is NOT loaded at boot; jasper-usbsink-init.service
+# modprobes it on demand, so RAM stays at baseline when the USB sink is
+# disabled. On Zero-class streamboxes this is intentionally allowed for
+# powered splitter validation, but the same OTG port may be needed for
+# the DAC unless the hardware topology proves both roles can coexist.
 # Reboot required to take effect. See docs/HANDOFF-usbsink.md.
-[pi5]
+[all]
 dtoverlay=dwc2,dr_mode=peripheral
 EOF
-    fi
     echo "  USB gadget dtoverlay added to $cfg (reboot required to apply)."
 }
 

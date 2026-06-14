@@ -184,6 +184,18 @@ def test_get_root_links_page_css_and_loads_es_module(monkeypatch):
     assert 'id="app"' in out
 
 
+def test_rooms_module_keeps_pair_hosts_local_not_raw_ip():
+    js = (_REPO / "deploy" / "assets" / "rooms" / "js" / "main.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function localWebHost" in js
+    assert "IPV4_RE" in js
+    assert 'defRow("Leader", leaderHost || "leader")' in js
+    assert 'h("code.bond-current__addr", null, leaderHost)' in js
+    assert 'h("code.bond-current__addr", null, g.leader_addr)' not in js
+
+
 def test_get_root_shell_interpolates_no_discovered_data(monkeypatch):
     """The server-rendered HTML carries NO peer/grouping data — every untrusted
     field is delivered over /rooms.json for the module to render with DOM/text
@@ -246,7 +258,8 @@ def test_rooms_json_shape(monkeypatch):
         monkeypatch,
         speakers=[
             {"name": "jts-bedroom", "room": "bedroom",
-             "address": "192.168.1.9", "port": 8780},
+             "hostname": "jts-bedroom", "address": "192.168.1.9",
+             "port": 8780},
         ],
         grouping=dict(_OFF_GROUPING),
     )
@@ -267,15 +280,32 @@ def test_rooms_json_shape(monkeypatch):
     # peering defaults to off/off when no peering.env exists (patched empty here).
     assert s["peering"] == {"enabled": False, "primary": False}
 
-    # peers: name / room / address / home_url / system_url, derived from address.
+    # peers: name / room / address / home_url / system_url. Raw address stays
+    # for backend control fan-out; browser links use the stable .local host.
     assert len(data["peers"]) == 1
     p = data["peers"][0]
     assert sorted(p.keys()) == ["address", "home_url", "name", "room", "system_url"]
     assert p["name"] == "jts-bedroom"
     assert p["room"] == "bedroom"
     assert p["address"] == "192.168.1.9"
-    assert p["home_url"] == "http://192.168.1.9/"
-    assert p["system_url"] == "http://192.168.1.9/system/"
+    assert p["home_url"] == "http://jts-bedroom.local/"
+    assert p["system_url"] == "http://jts-bedroom.local/system/"
+
+
+def test_rooms_json_peer_links_never_fall_back_to_raw_ip(monkeypatch):
+    _patch_discovery(
+        monkeypatch,
+        speakers=[
+            {"name": "Kitchen", "room": "kitchen", "hostname": "",
+             "address": "192.168.1.9", "port": 8780},
+        ],
+    )
+
+    data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
+    p = data["peers"][0]
+    assert p["address"] == "192.168.1.9"
+    assert p["home_url"] == ""
+    assert p["system_url"] == ""
 
 
 def test_self_exclusion_uses_exact_hostname_not_substring(monkeypatch):

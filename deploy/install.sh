@@ -81,9 +81,10 @@ Options:
 
 Environment:
   JASPER_INSTALL_DRY_RUN=1   Same as --dry-run.
-  JASPER_INSTALL_PROFILE=full|endpoint|satellite
+  JASPER_INSTALL_PROFILE=full|streambox|endpoint|satellite
                              Install tier. Unset/default is full speaker.
-                             endpoint/satellite is the Zero 2 W satellite role.
+                             streambox is the Zero-class local renderer tier.
+                             endpoint/satellite is the satellite-only role.
   JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1
                              Allow a persisted install-profile change.
   JASPER_HOSTNAME=<name>.local
@@ -98,11 +99,14 @@ normalize_install_profile() {
         ""|full)
             printf 'full\n'
             ;;
+        streambox)
+            printf 'streambox\n'
+            ;;
         endpoint|satellite)
             printf 'endpoint\n'
             ;;
         *)
-            echo "invalid JASPER_INSTALL_PROFILE=${1:-<empty>}; use full, endpoint, or satellite" >&2
+            echo "invalid JASPER_INSTALL_PROFILE=${1:-<empty>}; use full, streambox, endpoint, or satellite" >&2
             return 2
             ;;
     esac
@@ -119,6 +123,22 @@ read_persisted_install_profile() {
     normalize_install_profile "${raw}"
 }
 
+detect_default_install_profile() {
+    local model_file="${JASPER_PI_MODEL_FILE:-/proc/device-tree/model}"
+    local model=""
+    if [[ -r "${model_file}" ]]; then
+        model="$(tr -d '\000' < "${model_file}" | tr -d '\r\n')"
+    fi
+    case "${model}" in
+        *"Raspberry Pi Zero 2 W"*|*"Raspberry Pi Zero 2"*)
+            printf 'streambox\n'
+            ;;
+        *)
+            printf '%s\n' "${INSTALL_PROFILE_DEFAULT}"
+            ;;
+    esac
+}
+
 # Test helpers pass an alternate marker path directly; production calls use the
 # canonical marker. Shellcheck only sees the production path.
 # shellcheck disable=SC2120
@@ -133,7 +153,7 @@ resolve_install_profile() {
     elif [[ -n "${persisted}" ]]; then
         requested_profile="${persisted}"
     else
-        requested_profile="${INSTALL_PROFILE_DEFAULT}"
+        requested_profile="$(detect_default_install_profile)" || return $?
     fi
 
     if [[ -n "${persisted}" && "${persisted}" != "${requested_profile}" ]] \
@@ -146,7 +166,7 @@ Requested profile: ${requested_profile}
 
 Refusing to switch install tiers implicitly. Set
 JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 only when intentionally converting
-this Pi between full speaker and endpoint tiers.
+this Pi between full speaker, streambox, and endpoint tiers.
 EOF
         return 2
     fi
@@ -178,6 +198,95 @@ jasper_pip_constraints_file() {
     fi
 }
 
+print_streambox_install_plan() {
+    cat <<EOF
+==> JTS streambox install plan (dry run)
+
+No host changes are made in this mode. This is the Raspberry Pi Zero-class
+local-renderer tier: AirPlay, Spotify Connect, Bluetooth, and USB Audio Input,
+CamillaDSP sound/EQ/correction, and the same grouping reconciler as full
+speakers — without voice, wake-word, mic/AEC, assistant providers, or
+accessory firmware surfaces.
+
+Run for real from a Pi-local checkout:
+  sudo JASPER_INSTALL_PROFILE=streambox JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
+
+1. Profile guard
+   - Resolve JASPER_INSTALL_PROFILE=streambox.
+   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
+   - Refuse later full/streambox/endpoint tier changes unless
+     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+
+2. System packages
+   - apt-get update.
+   - Streambox renderer/DSP stack runtime/build packages:
+     python3 python3-venv python3-dev build-essential rustc cargo
+     libasound2-dev libasound2 libasound2-plugins portaudio19-dev
+     libsndfile1 curl ca-certificates rsync pkg-config nginx-light
+     openssl snapclient snapserver.
+   - Renderer/Bluetooth/AirPlay packages and build inputs:
+     autoconf automake libtool libpopt-dev libconfig-dev
+     libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
+     libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
+     libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
+     libswresample-dev xxd bluez-alsa-utils avahi-daemon avahi-utils.
+
+3. Downloaded or built inputs
+   - CamillaDSP: ${CAMILLA_URL}
+     sha256=${CAMILLA_SHA256}
+   - Raspotify/librespot deb: ${RASPOTIFY_URL}
+     sha256=${RASPOTIFY_SHA256}
+   - nqptp source archive: ${NQPTP_ARCHIVE_URL}
+     commit=${NQPTP_COMMIT}
+     sha256=${NQPTP_SHA256}
+   - shairport-sync source archive: ${SHAIRPORT_SYNC_ARCHIVE_URL}
+     ref=${SHAIRPORT_SYNC_VERSION}, commit=${SHAIRPORT_SYNC_COMMIT}
+     sha256=${SHAIRPORT_SYNC_SHA256}
+   - Python runtime dependencies from pyproject.toml [streambox].
+   - jasper-fanin Rust daemon from rust/jasper-fanin with
+     cargo build --release --locked.
+   - jasper-outputd daemon from rust/jasper-outputd with
+     cargo build --release --locked.
+
+4. Runtime files and state
+   - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
+     /opt/camilladsp, /etc/camilladsp, /var/lib/camilladsp,
+     /usr/share/jasper-web, and feature-specific state directories.
+   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata.
+   - Copy the jasper Python package, pyproject.toml, landing pages,
+     docs, Avahi service templates, systemd units, renderer configs,
+     udev rules, ALSA templates, and helper binaries.
+   - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
+
+5. Services and live actions
+   - Enable/start jasper-control, jasper-camilla, jasper-fanin,
+     jasper-outputd, jasper-audio-hardware-reconcile, jasper-mux,
+     renderer services, nginx, Avahi, identity reconciliation, and the
+     multi-room grouping reconciler.
+   - Enable socket-activated streambox-safe web surfaces:
+     /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/, /peers/,
+     /bluetooth/, /system/, and HTTPS /correction/.
+   - Install the streambox nginx route set with the shared JTS landing
+     page and capability-gated cards.
+   - Reuse the existing grouping reconciler parking contract: when this
+     box is bonded as a follower it stops local source renderers without
+     disabling the household's /sources/ intent, and restores them after
+     unpairing.
+   - Seed WiFi guardian recovery, memory/cgroup tuning, journald
+     persistence, Avahi identity, correction TLS, and jasper-doctor.
+
+6. Explicitly out of scope for the streambox tier
+   - Voice, wake-word, microphone/AEC, assistant provider SDKs, Google
+     account tools, transit/weather voice tools, local TTS/cues, HID
+     accessory bridge, dial/satellite firmware, wake corpus tooling, and
+     CamillaGUI.
+
+This dry run is a planning aid for contributors; it is not a substitute
+for real Zero 2 W validation of first-run Rust build cost, memory pressure,
+and simultaneous renderer/DSP behavior.
+EOF
+}
+
 print_endpoint_install_plan() {
     cat <<EOF
 ==> JTS endpoint install plan (dry run)
@@ -192,7 +301,7 @@ Run for real from a Pi-local checkout:
 1. Profile guard
    - Resolve JASPER_INSTALL_PROFILE=endpoint.
    - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
-   - Refuse later full/endpoint tier changes unless
+   - Refuse later full/streambox/endpoint tier changes unless
      JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
 
 2. System packages
@@ -206,9 +315,9 @@ Run for real from a Pi-local checkout:
    - Create/update /opt/jasper, /etc/jasper, and /var/lib/jasper.
    - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata.
    - Copy the jasper Python package, pyproject.toml, docs, Avahi service
-     templates, endpoint web assets/nginx config, multi-room systemd
-     units, jasper-control, jasper-doctor, identity helpers, and install
-     helpers needed by the endpoint tier.
+     templates, shared landing page/assets, endpoint nginx route set,
+     multi-room systemd units, jasper-control, jasper-doctor, identity
+     helpers, and install helpers needed by the endpoint tier.
 
 4. Python runtime
    - Create /opt/jasper/.venv.
@@ -219,7 +328,8 @@ Run for real from a Pi-local checkout:
    - Reload udev and systemd.
    - Enable/start jasper-control, endpoint-scoped nginx, Avahi, and
      identity reconciliation.
-   - Enable socket-activated endpoint web for /system/ and /sources/
+   - Serve the shared JTS landing page with satellite capabilities and
+     enable socket-activated endpoint web for /system/ and /sources/
      only; leave the combined full-speaker jasper-web bundle disabled.
    - Install the managed JTS snapserver/snapclient units disabled.
    - Enable/start the multi-room grouping reconciler; role=follower starts
@@ -244,6 +354,10 @@ EOF
 
 print_install_plan() {
     local profile="${1:-full}"
+    if [[ "${profile}" == "streambox" ]]; then
+        print_streambox_install_plan
+        return 0
+    fi
     if [[ "${profile}" == "endpoint" ]]; then
         print_endpoint_install_plan
         return 0
@@ -261,10 +375,11 @@ Run for real from a Pi-local checkout:
   sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
 
 Profile guard:
-  - Resolve JASPER_INSTALL_PROFILE=full unless a persisted profile marker
-    says otherwise.
+  - Resolve JASPER_INSTALL_PROFILE=full on unknown/Pi-5-class hardware
+    unless a persisted profile marker says otherwise. Fresh Raspberry Pi
+    Zero 2 W installs resolve to streambox instead of full.
   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
-  - Refuse later full/endpoint tier changes unless
+  - Refuse later full/streambox/endpoint tier changes unless
     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
 
 1. System packages
@@ -520,6 +635,27 @@ install_endpoint_deps() {
         nginx-light \
         avahi-daemon avahi-utils \
         snapclient sox
+}
+
+install_streambox_deps() {
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        python3 python3-venv python3-dev \
+        build-essential rustc cargo \
+        libasound2-dev libasound2 portaudio19-dev \
+        libasound2-plugins libsndfile1 \
+        curl ca-certificates rsync pkg-config \
+        nginx-light openssl \
+        snapclient snapserver
+
+    apt-get install -y --no-install-recommends \
+        autoconf automake libtool pkg-config \
+        libpopt-dev libconfig-dev libavahi-client-dev \
+        libssl-dev libsoxr-dev libplist-dev libsodium-dev \
+        libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
+        libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
+        xxd \
+        bluez-alsa-utils avahi-daemon avahi-utils
 }
 
 build_webrtc_v2_for_aec3() {
@@ -1024,6 +1160,7 @@ EOF
     fi
 }
 
+
 # Rebuild an optional satellite firmware .bin from source if (a) it's
 # missing, or (b) any firmware input is newer than the staged .bin. This
 # is opt-in via JASPER_BUILD_OPTIONAL_FIRMWARE=1; the base speaker
@@ -1120,7 +1257,6 @@ _build_firmware_if_stale() {
         echo "==> ${fw_dir} firmware: build FAILED — wizard will skip flash until next deploy"
     fi
 }
-
 
 
 install_journald_persistent_storage() {
@@ -1276,6 +1412,55 @@ EOF
     echo "  /correction/ TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
 }
 
+install_management_static_assets() {
+    local index_src="$1"
+    local include_correction_preflight="${2:-0}"
+    local app_css_ver
+
+    # Static landing page served at /. Plain HTML, no daemon — nginx
+    # reads it directly via the `location = /` block in jasper.conf.
+    # Updates require an `nginx -s reload` (handled by the caller)
+    # but no service restart.
+    install -d -m 0755 /usr/share/jasper-web
+    install -m 0644 "${index_src}" /usr/share/jasper-web/index.html
+    # Stamp the app.css cache-bust version (mirrors the wizards' build-SHA
+    # query string) so a deploy busts the year-immutable /assets cache.
+    # The landing page is static HTML, so we substitute at install time;
+    # build.txt was written earlier in this run.
+    app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
+    [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
+    sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
+    # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
+    # the .install-manifest the doctor verifies — see
+    # deploy/lib/install/web-assets.sh for the copy shape and the
+    # manifest contract.
+    install_web_assets
+
+    if [[ "${include_correction_preflight}" == "1" ]]; then
+        # Plain-HTTP preflight before the HTTPS-only room-correction UI.
+        # This gives the user context before the browser's self-signed-cert
+        # interstitial while keeping the entry point on the normal HTTP
+        # surface.
+        install -m 0644 \
+            "${REPO_DIR}/deploy/correction-preflight.html" \
+            /usr/share/jasper-web/correction-preflight.html
+        # Stamp the same app.css cache-bust version as the landing page —
+        # the preflight is static HTML and links /assets/app.css directly,
+        # so it needs the build-SHA query string to bust the immutable
+        # /assets cache.
+        sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" \
+            /usr/share/jasper-web/correction-preflight.html
+    else
+        rm -f /usr/share/jasper-web/correction-preflight.html
+    fi
+
+    # Prune the retired /integrations page from prior installs. Its nginx
+    # route and install copy are gone (the landing page's inline Integrations
+    # section replaced it); remove the orphaned file so a previously-deployed
+    # Pi does not keep an unreachable page on disk.
+    rm -f /usr/share/jasper-web/integrations.html
+}
+
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow), /voice/ (voice-provider config wizard), and /dial/
@@ -1294,43 +1479,7 @@ install_nginx_site() {
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
 
-    # Static landing page served at /. Plain HTML, no daemon — nginx
-    # reads it directly via the `location = /` block in jasper.conf.
-    # Updates require an `nginx -s reload` (handled by the reload below)
-    # but no service restart.
-    install -d -m 0755 /usr/share/jasper-web
-    install -m 0644 \
-        "${REPO_DIR}/deploy/index.html" \
-        /usr/share/jasper-web/index.html
-    # Stamp the app.css cache-bust version (mirrors the wizards' build-SHA
-    # query string) so a deploy busts the year-immutable /assets cache.
-    # The landing page is static HTML, so we substitute at install time;
-    # build.txt was written earlier in this run.
-    app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
-    [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
-    sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
-    # All /assets/ content (app.css, fonts, per-page CSS + ES modules) +
-    # the .install-manifest the doctor verifies — see
-    # deploy/lib/install/web-assets.sh for the copy shape and the
-    # manifest contract.
-    install_web_assets
-    # Plain-HTTP preflight before the HTTPS-only room-correction UI.
-    # This gives the user context before the browser's self-signed-cert
-    # interstitial while keeping the entry point on the normal HTTP
-    # surface.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/correction-preflight.html" \
-        /usr/share/jasper-web/correction-preflight.html
-    # Stamp the same app.css cache-bust version as the landing page — the
-    # preflight is static HTML and links /assets/app.css directly, so it
-    # needs the build-SHA query string to bust the immutable /assets cache.
-    sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" \
-        /usr/share/jasper-web/correction-preflight.html
-    # Prune the retired /integrations page from prior installs. Its nginx route
-    # and install copy are gone (the landing page's inline Integrations section
-    # replaced it); remove the orphaned file so a previously-deployed Pi does
-    # not keep an unreachable page on disk. `-f` no-ops on fresh installs.
-    rm -f /usr/share/jasper-web/integrations.html
+    install_management_static_assets "${REPO_DIR}/deploy/index.html" 1
 
     # Disable Debian's default site so it doesn't clash with our
     # default_server directives. nginx-light installs an enabled
@@ -1346,25 +1495,38 @@ install_nginx_site() {
     fi
 }
 
+install_streambox_nginx_site() {
+    # Streambox uses the normal JTS landing page with capability-gated cards,
+    # plus an nginx route set limited to local sources, DSP, grouping, and
+    # system health. That keeps the frontend shared while omitting voice/wake
+    # surfaces whose daemons are intentionally absent from this profile.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" \
+        /etc/nginx/sites-enabled/jasper.conf
+
+    install_management_static_assets "${REPO_DIR}/deploy/index.html" 1
+    rm -f /etc/nginx/sites-enabled/default
+
+    if nginx -t 2>/dev/null; then
+        systemctl enable --now nginx 2>/dev/null || true
+        systemctl reload nginx
+        echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system} + https://<host>/{correction,balance,sync} are live"
+    else
+        echo "  ERROR: streambox nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
+        return 1
+    fi
+}
+
 install_endpoint_nginx_site() {
-    # Small endpoint site: static / plus socket-activated /system/ and
-    # /sources/. The source page itself disables renderer rows whose
-    # units are absent from the endpoint tier.
+    # Satellite endpoints use the normal JTS landing page with
+    # capability-gated cards, plus a deliberately small nginx route set.
+    # Unsupported links are hidden by /system/data.json capabilities
+    # instead of a bespoke endpoint-only HTML shell.
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper-endpoint.conf" \
         /etc/nginx/sites-enabled/jasper.conf
 
-    install -d -m 0755 /usr/share/jasper-web
-    install -m 0644 \
-        "${REPO_DIR}/deploy/endpoint-index.html" \
-        /usr/share/jasper-web/index.html
-
-    local app_css_ver
-    app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
-    [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
-    sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
-
-    install_web_assets
+    install_management_static_assets "${REPO_DIR}/deploy/index.html" 0
     rm -f /etc/nginx/sites-enabled/default
 
     if nginx -t 2>/dev/null; then
@@ -1666,6 +1828,33 @@ main() {
     fi
 
     echo "==> install.sh starting (profile: ${install_profile})"
+    if [[ "${install_profile}" == "streambox" ]]; then
+        require_root
+        persist_install_profile "${install_profile}"
+        require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
+        install_streambox_deps
+        install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
+        install_camilladsp
+        install_renderers
+        set_usb_gadget_mode
+        tune_wifi_for_airplay
+        install_streambox_jasper
+        build_install_jasper_fanin
+        build_install_jasper_outputd
+        install_streambox_systemd_units
+        retire_audio_topology_switch
+        migrate_wifi_guardian
+        migrate_memory_resilience
+        migrate_cgroup_memory_enabled
+        install_journald_persistent_storage
+        install_avahi_jasper_control
+        install_peering_template
+        remove_legacy_https_artifacts
+        provision_correction_tls
+        install_streambox_nginx_site
+        run_doctor_summary
+        return 0
+    fi
     if [[ "${install_profile}" == "endpoint" ]]; then
         require_root
         persist_install_profile "${install_profile}"

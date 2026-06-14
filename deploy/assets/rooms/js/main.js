@@ -11,9 +11,9 @@
 //     is on. Changes POST /peering (CSRF via http.js) and the card reflects
 //     the returned state. This is the ONE working write surface on this page.
 //   * one row per sibling speaker (self excluded by the server), each a real
-//     click-through <a> to that speaker's OWN /system/ page on its own
-//     address. The value of the directory is discovery + click-through, not
-//     config aggregation — see docs/HANDOFF-multiroom.md §6.
+//     click-through <a> to that speaker's OWN /system/ page on its stable
+//     .local web host. The value of the directory is discovery +
+//     click-through, not config aggregation — see docs/HANDOFF-multiroom.md §6.
 //
 // The poll loop self-schedules (setTimeout after each completes) so a slow
 // response can't overlap the next tick, and it separates a transport failure
@@ -23,16 +23,17 @@
 // save — that a per-poll rebuild would stomp); the poll only reconciles its
 // controls to the latest /rooms.json when no save is in flight.
 //
-// Security: every peer field (name, room, address) and every grouping value
-// is untrusted — it arrives over mDNS / from a config file. This module builds
-// DOM exclusively through the h()/svg() helpers below, whose text children
-// become document.createTextNode (escaped by construction). There is NO
-// innerHTML path and NO inline onclick with interpolated strings. The peer
-// click-through href is additionally scheme-guarded (http/https only) as
-// defense-in-depth against a poisoned mDNS address. The wake-response toggle
-// needs no confirm; the bond card's destructive "Dissolve pair" action uses
-// jtsConfirm (the styled <dialog>, never native confirm/alert — a static test
-// forbids the natives). A save error surfaces inline in the card's status line.
+// Security: every peer field (name, room, address, hostname-derived URL) and
+// every grouping value is untrusted — it arrives over mDNS / from a config
+// file. This module builds DOM exclusively through the h()/svg() helpers
+// below, whose text children become document.createTextNode (escaped by
+// construction). There is NO innerHTML path and NO inline onclick with
+// interpolated strings. The peer click-through href is additionally
+// scheme-guarded (http/https only) as defense-in-depth against a poisoned
+// mDNS address. The wake-response toggle needs no confirm; the bond card's
+// destructive "Dissolve pair" action uses jtsConfirm (the styled <dialog>,
+// never native confirm/alert — a static test forbids the natives). A save
+// error surfaces inline in the card's status line.
 
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
@@ -160,6 +161,15 @@ function safeHttpUrl(value) {
   }
 }
 
+const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/;
+const IPV4_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+
+function localWebHost(value) {
+  const host = String(value || "").trim().replace(/\.$/, "");
+  if (!host || !HOST_RE.test(host) || IPV4_RE.test(host)) return "";
+  return host.endsWith(".local") ? host : host + ".local";
+}
+
 function defRow(label, value) {
   return [h("dt", null, label), h("dd", null, value)];
 }
@@ -197,7 +207,8 @@ function groupingBody(g) {
     defRow("Bond", g.bond_id || "—"),
   ];
   if (g.role === "follower" && g.leader_addr) {
-    rows.push(defRow("Leader", g.leader_addr));
+    const leaderHost = localWebHost(g.leader_addr);
+    rows.push(defRow("Leader", leaderHost || "leader"));
   }
   if (g.buffer_ms != null) rows.push(defRow("Buffer", g.buffer_ms + " ms"));
   if (g.codec) rows.push(defRow("Codec", g.codec));
@@ -548,17 +559,21 @@ function makeBondCard() {
   }
 
   // One-line legible summary of the current bond. Untrusted channel/leader_addr
-  // are passed as h() text-node children (escaped). Returns child nodes/strings.
+  // are passed as h() text-node children (escaped). Raw IP leader handles are
+  // intentionally not shown as browser-facing hosts.
   function summarize(g) {
     const channel = g.channel || "";
     if (g.role === "follower") {
+      const leaderHost = localWebHost(g.leader_addr);
       const parts = [
         "Paired — this speaker plays the ",
         h("strong", null, channel || "second"),
         " channel.",
       ];
-      if (g.leader_addr) {
-        parts.push(" Following ", h("code.bond-current__addr", null, g.leader_addr), ".");
+      if (leaderHost) {
+        parts.push(" Following ", h("code.bond-current__addr", null, leaderHost), ".");
+      } else if (g.leader_addr) {
+        parts.push(" Following the leader.");
       }
       return parts;
     }

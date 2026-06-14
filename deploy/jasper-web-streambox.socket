@@ -1,0 +1,23 @@
+[Unit]
+Description=Jasper streambox web setup wizards (Spotify, AirPlay, Sources, Speaker, Wi-Fi, Peers, Sound, Rooms) — socket
+# Streambox installs use the shared jasper-web Python entrypoint, but the
+# socket contract is profile-scoped: no voice, Google, wake, transit, Home
+# Assistant, weather, or wake-corpus ports are bound on this tier.
+
+[Socket]
+# Order is undefined per systemd issue #16647, so the Python side matches by
+# getsockname()[1] (port) rather than by fd index.
+ListenStream=127.0.0.1:8765
+ListenStream=127.0.0.1:8771
+ListenStream=127.0.0.1:8773
+ListenStream=127.0.0.1:8775
+ListenStream=127.0.0.1:8776
+ListenStream=127.0.0.1:8783
+ListenStream=127.0.0.1:8784
+ListenStream=127.0.0.1:8785
+Accept=no
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=100
+
+[Install]
+WantedBy=sockets.target
