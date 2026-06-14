@@ -160,6 +160,42 @@ def test_crossover_preview_blocks_missing_research() -> None:
     assert "driver_research_missing" in {issue["code"] for issue in payload["issues"]}
 
 
+def test_crossover_preview_prefers_manual_settings_over_imported_research() -> None:
+    payload = build_crossover_preview(
+        build_design_draft(
+            _topology(),
+            driver_research=_research(),
+            manual_settings={
+                "drivers": [
+                    {"role": "woofer", "model": "Manual woofer"},
+                    {
+                        "role": "tweeter",
+                        "model": "Manual tweeter",
+                        "do_not_test_below_hz": 1800,
+                    },
+                ],
+                "crossover_candidates": [
+                    {
+                        "between_roles": ["woofer", "tweeter"],
+                        "frequency_hz": 3200,
+                        "filter_type": "Linkwitz-Riley",
+                        "slope_db_per_octave": 24,
+                        "confidence": "medium",
+                    }
+                ],
+            },
+            created_at="2026-06-10T12:00:00Z",
+        ),
+        created_at="2026-06-10T12:30:00Z",
+    )
+    crossover = payload["groups"][0]["crossovers"][0]
+
+    assert payload["status"] == "ready_for_protected_staging"
+    assert payload["drivers"]["tweeter"]["model"] == "Manual tweeter"
+    assert crossover["source"] == "manual_settings"
+    assert crossover["proposed_frequency_hz"] == 3200
+
+
 def test_crossover_preview_raises_frequency_to_driver_floor() -> None:
     research = _research()
     research["crossover_candidates"][0]["frequency_hz"] = 1800

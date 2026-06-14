@@ -15,13 +15,14 @@ more speakers safely. They may be building a passive speaker, a bi-amped
 active 2-way speaker, a tri-amped active 3-way speaker, and optionally a
 subwoofer. They may know the driver data, or they may need help collecting it.
 
-The page should help them answer five questions, in order:
+The page should help them answer six questions, in order:
 
 1. What am I building?
 2. What drivers am I using?
 3. What DAC output goes to each driver?
-4. Is JTS ready to start quietly?
-5. Can I try one driver at the quietest possible level?
+4. Can I measure each driver safely?
+5. Does the crossover blend when drivers are summed?
+6. Is this ready to become my active speaker profile?
 
 The page should not feel like a lab console. It should feel like a calm setup
 walkthrough where the system is conservative, specific, and honest about what
@@ -54,13 +55,26 @@ Avoid:
 - "Blocked" before the user has done anything wrong
 - large hardware/status CTAs before the user understands the layout task
 
-### 2. Add Driver Info
+### 2. Add Crossover Settings
 
-This card should be optional but valuable. Users can enter driver names, copy
-a precise research prompt, paste JSON from an external assistant, and save a
-design draft. The important distinction:
+This card is where the user sees the actual values JTS will use for the
+no-audio crossover preview. It should not hide the plan inside an AI import.
+Users can type the values directly, or they can open the optional AI helper to
+fill the same visible fields for review.
 
-- **driver research warnings** are review notes, not errors
+Visible settings should include the practical starting values:
+
+- driver name/model for each role
+- sensitivity, when known
+- safe low test limit for high-frequency drivers
+- per-driver level trim for large sensitivity mismatches
+- crossover point, filter family, and slope for each active split
+- build notes that help interpret the setup
+
+The important distinction:
+
+- **AI research warnings** are review notes, not errors
+- **visible manual settings** are the source of truth for preview/staging input
 - **backend safety gates** can prevent staging or playback, but should not prevent a
   no-audio crossover preview from being shown
 
@@ -69,6 +83,9 @@ even while the system still refuses to stage or play sound.
 
 Good language:
 
+- "Crossover settings"
+- "Save crossover settings"
+- "Use AI to fill these settings"
 - "Review notes"
 - "No filters are applied"
 - "Prepare no-audio preview"
@@ -76,16 +93,17 @@ Good language:
 Avoid:
 
 - painting LLM warnings red
-- saying only "blocked" when the real action is "confirm output" or "test
-  this driver"
-- making the user wonder whether their pasted JSON was accepted
+- making the AI JSON the only way to set crossover values
+- saving hidden imported values over user-edited visible fields
+- making the user wonder whether imported JSON filled the visible settings
 
 ### 3. Confirm Outputs
 
 This card should connect the abstract layout to the physical world. The user
 needs to know:
 
-- which DAC output is assigned to each role
+- which DAC output or amp channel is assigned to each role
+- which physical driver that output feeds
 - whether the user has confirmed the wire for each output
 - which confirmed driver they are about to test first
 
@@ -119,7 +137,7 @@ Avoid:
   with a future continuous ramp only after the playback backend is cancellable
   mid-tone
 
-### 4. First Quiet Test
+### 4. Measure Drivers
 
 This card should not read like a safety audit. It is where the backend enforces
 the real gates, but the visible interface should explain the next action
@@ -128,9 +146,9 @@ instead of reporting machine states.
 The backend still follows a deterministic sequence:
 
 1. Check the saved setup.
-2. Build the quiet test DSP setup.
-3. Check the quiet test path.
-4. Load the quiet test setup.
+2. Build the safe test DSP setup.
+3. Check the safe test path.
+4. Load the safe test setup.
 5. Open a bounded test session.
 6. Check a target.
 7. Start at the quietest setting.
@@ -138,20 +156,28 @@ The backend still follows a deterministic sequence:
 9. Raise toward audible in bounded steps.
 
 Those backend steps should not be shown as a grid of product cards. The normal
-UI should show one next action at a time: set up quiet test mode, choose the
-first driver, start at the quietest level, then record what happened.
+UI should show one next action at a time: choose the first driver, let JTS get
+the safe audio path ready behind the scenes, start at the quietest level, then
+record what happened.
 Detailed gate evidence belongs in diagnostics or error details, not the primary
 setup walkthrough. The UI should name the exact driver being tested before any
 sound can play, and should tell the user to press Stop if the wrong driver,
 silence, or too much level appears.
 
-The user should understand that loading the test setup reloads DSP but does not
-play sound, and that the first audible test starts at the quietest setting.
+The user does not need to understand "quiet test mode" as a separate setup
+task. Once outputs are confirmed, driver choices should be visible. Clicking
+one should record the normal software guard for any missing high-frequency
+outputs in the saved active graph, refresh any stale no-audio crossover preview
+when saved settings can produce one, then run the backend setup sequence; if
+JTS cannot get the safe audio path ready, the card should explain the
+product-level problem and confirm that no sound played. A user should not be
+asked to click "set up test mode," "prepare preview," or interpret backend
+evidence labels before choosing the driver they want to hear.
 
 Good language:
 
-- "Prepare first quiet test"
-- "Set up quiet test mode"
+- "Measure drivers"
+- "Start very quiet woofer tone"
 - "What did you hear?"
 - "Too loud" as an always-available operator answer
 
@@ -161,6 +187,62 @@ Avoid:
 - exposing machine status names without translating them
 - presenting "playback allowed: no" before explaining what unlocks it
 - showing backend checklists or grids in the primary flow
+
+### 5. Validate Crossover Blend
+
+After each driver has been measured on its own, the user needs one summed check
+per active speaker group. This is still a guided setup action, not a lab report:
+the UI should say which drivers will be heard together and ask whether the
+blend sounds coherent at the crossover region. Polarity and delay are technical
+implementation details, but they can be captured as simple outcomes when the
+user hears a problem.
+
+Good language:
+
+- "Check the crossover blend"
+- "Blend sounds right"
+- "Sounds hollow or weak"
+- "Needs level or delay adjustment"
+
+Avoid:
+
+- "in-phase sum" as the primary button label
+- asking the user to choose a delay before they know what problem they heard
+- treating this as a replacement for future acoustic measurement automation
+
+### 6. Validate And Apply
+
+The final card should make the handoff explicit: JTS has a measured setup,
+checked the combined speaker, compiled the baseline speaker profile, and the
+user is choosing whether to make it active. The card owns three separate user
+actions:
+
+- **Play combined test** runs a short, quiet combined-driver test from the
+  saved crossover setup.
+- **Blend sounds right** records the user's combined crossover validation; it
+  must be tied to the latest audible combined test.
+- **Save active profile** writes the candidate CamillaDSP YAML and durable
+  profile state, but does not load it.
+- **Apply active profile** loads that profile through the normal DSP apply
+  transaction when this hardware path supports it.
+
+If apply is not supported for the current hardware path, the card should say
+that plainly: the profile can be saved for review, but JTS cannot switch normal
+playback to it from this page yet.
+
+Good language:
+
+- "Validate and apply"
+- "Play combined test"
+- "Save active profile"
+- "Apply active profile"
+- "This is now your active speaker profile"
+
+Avoid:
+
+- "baseline candidate" as primary product copy
+- implying that a saved draft or preview is already live
+- hiding which values will be compiled into the speaker profile
 
 ## Current Product Gaps
 
@@ -172,23 +254,30 @@ Avoid:
   no-audio crossover preview so the user can see what JTS is thinking.
 - The copy should prefer human tasks over backend nouns:
   "speaker layout" over "output map"; "confirm outputs" over
-  "verification evidence"; "first quiet test" over "stage/load/startup"
-  unless the detailed backend state is being inspected.
+  "verification evidence"; "measure drivers" over "stage/load/startup" or
+  "quiet test mode" unless the detailed backend state is being inspected.
 - Saved state should advance the walkthrough. If layout, driver research, or
   output identity evidence already exists from an earlier session, the cards
   should show that work as complete and open the first unfinished card. The
   user should not have to re-click saved choices to make the UI believe them.
 - Backend `blocked` is a safety decision, not default product copy. In early
   cards, translate it to the relevant human task ("test this driver",
-  "save driver research", "choose one driver"). Reserve stronger
+  "save crossover settings", "choose one driver"). Reserve stronger
   failure language for an explicit unsafe action attempt or a failed probe.
-- The microphone path should become more explicit before audible testing:
-  "mic recommended for guided level" with a conservative manual path for users
-  who are intentionally proceeding without mic feedback.
+- Driver measurement should stay explicit: recording a correct-driver result
+  with mic/calibration evidence is what lets the flow move from individual
+  driver setup to summed crossover validation. That evidence must be tied to
+  the exact saved output target that was tested; if the user changes the speaker
+  layout or DAC assignment, the old measurement can remain visible as history
+  but should no longer satisfy the current step.
 - "Raise toward audible" should be product language for one backend-bounded
   step. A true 5-15 second rising tone needs a playback backend that owns the
   running process and can stop immediately; do not fake that interaction with
   the current synchronous one-shot tone backend.
+- The profile compiler should surface the user-owned values it consumed:
+  crossover settings, trims/attenuation, measured driver evidence, and summed
+  validation. Hidden JSON import or backend safety evidence must not be the only
+  explanation of why a profile was accepted or rejected.
 
 ## Design Principles
 
@@ -204,5 +293,16 @@ Avoid:
 - Safety gates should remain backend-owned and deterministic.
 - The UI should never imply that an LLM response, a saved draft, or a
   crossover preview applies filters or authorizes sound.
+- Measurement evidence, combined-driver test evidence, summed validation,
+  compile, and apply are distinct product states. Do not collapse them into
+  one "done" flag.
+- Summed validation must be tied to the current combined-driver test for that
+  speaker group; a free-floating "sounds good" click should never unlock the
+  active profile.
+- The final apply step should use product language, but the backend must still
+  write through the shared DSP transaction, retain rollback visibility, and
+  respect outputd ownership. Direct single-DAC hardware baselines can be
+  compiled for inspection, but should not be applied until the outputd handoff
+  exists.
 
-Last verified: 2026-06-12
+Last verified: 2026-06-14

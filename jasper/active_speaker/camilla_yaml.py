@@ -45,6 +45,8 @@ ACTIVE_STARTUP_CONFIG_NAME = "active_speaker_startup.yml"
 STARTUP_HEADROOM_DB = 40.0
 STARTUP_MUTE_GAIN_DB = -120.0
 STARTUP_LIMITER_CLIP_LIMIT_DB = -12.0
+BASELINE_HEADROOM_DB = 12.0
+BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
 PROTECTIVE_TWEETER_HP_MULTIPLIER = 2.0
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
@@ -227,6 +229,14 @@ def _driver_limiter_name(role: str) -> str:
     return f"as_{_name_token(role)}_startup_limiter"
 
 
+def _driver_baseline_gain_name(role: str) -> str:
+    return f"as_{_name_token(role)}_baseline_gain"
+
+
+def _driver_baseline_limiter_name(role: str) -> str:
+    return f"as_{_name_token(role)}_baseline_limiter"
+
+
 def _protective_tweeter_hp_name(role: str) -> str:
     return f"as_{_name_token(role)}_protective_hp"
 
@@ -260,6 +270,19 @@ def _driver_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:
     names.append(_driver_delay_name(role))
     names.append(_driver_mute_name(role))
     names.append(_driver_limiter_name(role))
+    return names
+
+
+def _driver_baseline_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:
+    names: list[str] = []
+    for region in _ordered_regions(preset):
+        if region.lower_driver == role:
+            names.append(_crossover_filter_name(role, region, highpass=False))
+        if region.upper_driver == role:
+            names.append(_crossover_filter_name(role, region, highpass=True))
+    names.append(_driver_delay_name(role))
+    names.append(_driver_baseline_gain_name(role))
+    names.append(_driver_baseline_limiter_name(role))
     return names
 
 
@@ -307,6 +330,70 @@ def _emit_filter_definitions(
     return "\n".join(lines)
 
 
+def _correction_value(
+    corrections: dict[str, dict[str, float | bool]],
+    role: str,
+    field: str,
+    default: float,
+) -> float:
+    value = corrections.get(role, {}).get(field)
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(out):
+        return default
+    return out
+
+
+def _correction_bool(
+    corrections: dict[str, dict[str, float | bool]],
+    role: str,
+    field: str,
+) -> bool:
+    return bool(corrections.get(role, {}).get(field))
+
+
+def _emit_baseline_filter_definitions(
+    preset: ActiveSpeakerPreset,
+    *,
+    baseline_headroom_db: float,
+    limiter_clip_limit_db: float,
+    corrections: dict[str, dict[str, float | bool]],
+) -> str:
+    lines: list[str] = []
+    lines.extend(emit_gain_filter("active_baseline_headroom", -baseline_headroom_db))
+    for region in _ordered_regions(preset):
+        lines.extend(emit_linkwitz_riley(
+            _crossover_filter_name(region.lower_driver, region, highpass=False),
+            highpass=False,
+            freq_hz=region.fc_hz,
+            order=region.order,
+        ))
+        lines.extend(emit_linkwitz_riley(
+            _crossover_filter_name(region.upper_driver, region, highpass=True),
+            highpass=True,
+            freq_hz=region.fc_hz,
+            order=region.order,
+        ))
+    for role in required_driver_roles(preset.way_count):
+        delay_ms = _correction_value(corrections, role, "delay_ms", 0.0)
+        gain_db = _correction_value(corrections, role, "gain_db", 0.0)
+        inverted = _correction_bool(corrections, role, "inverted")
+        lines.extend(_emit_delay_filter(_driver_delay_name(role), delay_ms=delay_ms))
+        lines.extend(emit_gain_filter(
+            _driver_baseline_gain_name(role),
+            gain_db,
+            inverted=inverted,
+        ))
+        lines.extend(_emit_limiter_filter(
+            _driver_baseline_limiter_name(role),
+            clip_limit_db=limiter_clip_limit_db,
+            soft_clip=True,
+        ))
+    return "\n".join(lines)
+
+
 def _emit_pipeline(preset: ActiveSpeakerPreset) -> str:
     lines = [
         "  - type: Filter",
@@ -318,6 +405,25 @@ def _emit_pipeline(preset: ActiveSpeakerPreset) -> str:
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
         chain = ", ".join(_driver_filter_chain(preset, role))
+        lines.extend([
+            "  - type: Filter",
+            f"    channels: [{', '.join(str(ch) for ch in channels)}]",
+            f"    names: [{chain}]",
+        ])
+    return "\n".join(lines)
+
+
+def _emit_baseline_pipeline(preset: ActiveSpeakerPreset) -> str:
+    lines = [
+        "  - type: Filter",
+        "    channels: [0, 1]",
+        "    names: [active_baseline_headroom]",
+        "  - type: Mixer",
+        f"    name: split_active_{preset.way_count}way",
+    ]
+    for role in required_driver_roles(preset.way_count):
+        channels = _channels_for_role(preset, role)
+        chain = ", ".join(_driver_baseline_filter_chain(preset, role))
         lines.extend([
             "  - type: Filter",
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
@@ -443,6 +549,151 @@ pipeline:
         _atomic_write_text(out_path, yaml)
         logger.info(
             "event=active_speaker_startup_config_written "
+            "path=%s preset_id=%s way_count=%d outputs=%d",
+            out_path,
+            preset.preset_id,
+            preset.way_count,
+            output_count,
+        )
+    return yaml
+
+
+def emit_active_speaker_baseline_config(
+    preset: ActiveSpeakerPreset,
+    *,
+    playback_device: str,
+    corrections: dict[str, dict[str, float | bool]] | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    playback_format: str = DEFAULT_PLAYBACK_FORMAT,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    chunksize: int = DEFAULT_CHUNKSIZE,
+    target_level: int = DEFAULT_TARGET_LEVEL,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
+    baseline_headroom_db: float = BASELINE_HEADROOM_DB,
+    limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
+    out_path: str | Path | None = None,
+    baseline_id: str | None = None,
+) -> str:
+    """Build an accepted active-speaker baseline candidate.
+
+    Unlike the startup template, this YAML is not muted. It still preserves
+    the JTS 0 dB volume ceiling, includes conservative headroom, keeps
+    per-driver limiters, and refuses positive per-driver correction gain.
+    Callers own the acceptance evidence and explicit CamillaDSP apply step.
+    """
+
+    preset.validate()
+    playback_device = _yaml_string(playback_device, "playback_device")
+    forbidden_token = _forbidden_playback_token(playback_device)
+    if forbidden_token:
+        raise ActiveSpeakerConfigError(
+            "active-speaker baselines require an explicit active playback "
+            f"device, not the existing {forbidden_token} lane"
+        )
+    capture_device = _yaml_string(capture_device, "capture_device")
+    capture_format = _yaml_string(capture_format, "capture_format")
+    playback_format = _yaml_string(playback_format, "playback_format")
+    sample_rate = _positive_int(sample_rate, "sample_rate")
+    chunksize = _positive_int(chunksize, "chunksize")
+    target_level = _positive_int(target_level, "target_level")
+    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
+    baseline_headroom_db = _finite_float(baseline_headroom_db, "baseline_headroom_db")
+    limiter_clip_limit_db = _finite_float(
+        limiter_clip_limit_db,
+        "limiter_clip_limit_db",
+    )
+    if volume_limit_db > 0:
+        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    if baseline_headroom_db < 0 or baseline_headroom_db > 40:
+        raise ActiveSpeakerConfigError("baseline_headroom_db must be between 0 and 40")
+    if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
+        raise ActiveSpeakerConfigError(
+            "limiter_clip_limit_db must be between -120 and 0 dB"
+        )
+
+    safe_corrections: dict[str, dict[str, float | bool]] = {}
+    for role, values in (corrections or {}).items():
+        if role not in required_driver_roles(preset.way_count):
+            continue
+        if not isinstance(values, dict):
+            continue
+        gain_db = _correction_value({role: values}, role, "gain_db", 0.0)
+        delay_ms = _correction_value({role: values}, role, "delay_ms", 0.0)
+        if gain_db > 0:
+            raise ActiveSpeakerConfigError(
+                f"baseline correction gain for {role} must not be positive"
+            )
+        if delay_ms < 0 or delay_ms > 20:
+            raise ActiveSpeakerConfigError(
+                f"baseline delay for {role} must be between 0 and 20 ms"
+            )
+        safe_corrections[role] = {
+            "gain_db": gain_db,
+            "delay_ms": delay_ms,
+            "inverted": bool(values.get("inverted")),
+        }
+
+    output_count = _output_count(preset)
+    filter_yaml = _emit_baseline_filter_definitions(
+        preset,
+        baseline_headroom_db=baseline_headroom_db,
+        limiter_clip_limit_db=limiter_clip_limit_db,
+        corrections=safe_corrections,
+    )
+    mixer_yaml = _emit_split_mixer(preset)
+    pipeline_yaml = _emit_baseline_pipeline(preset)
+    metadata_comments = [f"# preset_id={preset.preset_id}"]
+    if baseline_id:
+        baseline_id = _yaml_string(baseline_id, "baseline_id")
+        metadata_comments.append(f"# baseline_id={baseline_id}")
+    metadata_yaml = "\n".join(metadata_comments)
+
+    yaml = f"""---
+# Auto-generated active-speaker baseline config.
+# Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config
+{metadata_yaml}
+# This is a candidate speaker baseline: crossover filters are active, outputs
+# are not startup-muted, per-driver correction gain is non-positive, and the
+# software volume ceiling remains 0 dB.
+
+devices:
+  samplerate: {sample_rate}
+  chunksize: {chunksize}
+  queuelimit: 4
+  target_level: {target_level}
+  volume_limit: {volume_limit_db:.1f}
+  enable_rate_adjust: true
+  capture:
+    type: Alsa
+    channels: 2
+    device: "{capture_device}"
+    format: {capture_format}
+  playback:
+    type: Alsa
+    channels: {output_count}
+    device: "{playback_device}"
+    format: {playback_format}
+
+filters:
+{filter_yaml}
+
+mixers:
+{mixer_yaml}
+
+pipeline:
+{pipeline_yaml}
+"""
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        if not out_path.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {out_path.parent}"
+            )
+        _atomic_write_text(out_path, yaml)
+        logger.info(
+            "event=active_speaker_baseline_config_written "
             "path=%s preset_id=%s way_count=%d outputs=%d",
             out_path,
             preset.preset_id,

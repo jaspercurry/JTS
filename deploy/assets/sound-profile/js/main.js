@@ -61,7 +61,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var activeSpeaker = {
     loading: false, action: '', payload: null, session: null, targets: null,
     stagedConfig: null, calibrationLevel: null,
-    bringup: null, startupLoad: null, rehearsal: null, error: '', levelDbfs: null
+    bringup: null, startupLoad: null, rehearsal: null, measurements: null,
+    baselineProfile: null, error: '', levelDbfs: null
   };
   var activeSpeakerLevelSeq = 0;
   var activeSpeakerMicObservation = {observedDbfs: '', clipping: false};
@@ -77,6 +78,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var outputTemplateDraftAxes = {layout: '', speakerMode: ''};
   var driverResearch = {
     inputs: {full_range: '', woofer: '', mid: '', tweeter: '', subwoofer: '', notes: ''},
+    settings: {drivers: {}, crossovers: {}},
     importText: '',
     parsed: null,
     designDraft: null,
@@ -697,6 +699,136 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       subwoofer: 'Subwoofer'
     }[role] || humanRole(role);
   }
+  function activeCrossoverPairs(topology) {
+    var pairs = [];
+    var seen = {};
+    outputGroups(topology).forEach(function(group) {
+      var groupPairs = group.mode === 'active_3_way'
+        ? [['woofer', 'mid'], ['mid', 'tweeter']]
+        : (group.mode === 'active_2_way' ? [['woofer', 'tweeter']] : []);
+      groupPairs.forEach(function(pair) {
+        var key = pair.join(':');
+        if (!seen[key]) {
+          seen[key] = true;
+          pairs.push(pair);
+        }
+      });
+    });
+    return pairs;
+  }
+  function crossoverSettingKey(pair) {
+    return String(pair[0] || '') + ':' + String(pair[1] || '');
+  }
+  function driverSetting(role) {
+    if (!driverResearch.settings.drivers) driverResearch.settings.drivers = {};
+    var drivers = driverResearch.settings.drivers;
+    if (!drivers[role]) drivers[role] = {};
+    return drivers[role];
+  }
+  function crossoverSetting(pair) {
+    if (!driverResearch.settings.crossovers) driverResearch.settings.crossovers = {};
+    var crossovers = driverResearch.settings.crossovers;
+    var key = crossoverSettingKey(pair);
+    if (!crossovers[key]) crossovers[key] = {};
+    return crossovers[key];
+  }
+  function manualNumberValue(raw) {
+    if (raw === '' || raw == null) return null;
+    var value = Number(raw);
+    return isFinite(value) ? value : null;
+  }
+  function setManualDriverField(role, field, value) {
+    driverSetting(role)[field] = value;
+    driverResearch.error = '';
+    driverResearch.dirty = true;
+  }
+  function setManualCrossoverField(pairKey, field, value) {
+    if (!driverResearch.settings.crossovers[pairKey]) {
+      driverResearch.settings.crossovers[pairKey] = {};
+    }
+    driverResearch.settings.crossovers[pairKey][field] = value;
+    driverResearch.error = '';
+    driverResearch.dirty = true;
+  }
+  function manualSettingsPayload(topology) {
+    var drivers = outputRoleSummary(topology).map(function(role) {
+      var setting = driverSetting(role);
+      var out = {
+        role: role,
+        model: (driverResearch.inputs[role] || '').trim()
+      };
+      [
+        'sensitivity_db_2v83_1m',
+        'nominal_impedance_ohm',
+        'recommended_highpass_hz',
+        'recommended_lowpass_hz',
+        'do_not_test_below_hz',
+        'gain_offset_db'
+      ].forEach(function(field) {
+        var value = manualNumberValue(setting[field]);
+        if (value != null) out[field] = value;
+      });
+      if ((setting.notes || '').trim()) out.notes = String(setting.notes).trim();
+      return out;
+    }).filter(function(driver) {
+      return driver.model ||
+        driver.sensitivity_db_2v83_1m != null ||
+        driver.nominal_impedance_ohm != null ||
+        driver.recommended_highpass_hz != null ||
+        driver.recommended_lowpass_hz != null ||
+        driver.do_not_test_below_hz != null ||
+        driver.gain_offset_db != null ||
+        driver.notes;
+    });
+    var candidates = activeCrossoverPairs(topology).map(function(pair) {
+      var setting = crossoverSetting(pair);
+      var frequency = manualNumberValue(setting.frequency_hz);
+      if (frequency == null) return null;
+      return {
+        between_roles: pair,
+        frequency_hz: frequency,
+        filter_type: setting.filter_type || 'Linkwitz-Riley',
+        slope_db_per_octave: manualNumberValue(setting.slope_db_per_octave) || 24,
+        confidence: 'medium',
+        rationale: 'Operator-entered crossover setting.'
+      };
+    }).filter(Boolean);
+    return drivers.length || candidates.length
+      ? {drivers: drivers, crossover_candidates: candidates}
+      : null;
+  }
+  function applyDriverResearchToManualSettings(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    (Array.isArray(payload.drivers) ? payload.drivers : []).forEach(function(driver) {
+      if (!driver || !driver.role) return;
+      var role = String(driver.role);
+      if (driver.model && !driverResearch.inputs[role]) {
+        driverResearch.inputs[role] = String(driver.model);
+      }
+      [
+        'sensitivity_db_2v83_1m',
+        'nominal_impedance_ohm',
+        'recommended_highpass_hz',
+        'recommended_lowpass_hz',
+        'do_not_test_below_hz',
+        'gain_offset_db'
+      ].forEach(function(field) {
+        if (driver[field] != null) driverSetting(role)[field] = driver[field];
+      });
+    });
+    (Array.isArray(payload.crossover_candidates) ? payload.crossover_candidates : [])
+      .forEach(function(candidate) {
+        if (!candidate || !Array.isArray(candidate.between_roles) ||
+            candidate.between_roles.length !== 2) return;
+        var pair = candidate.between_roles.map(String);
+        var setting = crossoverSetting(pair);
+        if (candidate.frequency_hz != null) setting.frequency_hz = candidate.frequency_hz;
+        if (candidate.filter_type) setting.filter_type = String(candidate.filter_type);
+        if (candidate.slope_db_per_octave != null) {
+          setting.slope_db_per_octave = candidate.slope_db_per_octave;
+        }
+      });
+  }
   function driverResearchPrompt(topology) {
     var roles = outputRoleSummary(topology);
     var lines = roles.map(function(role) {
@@ -730,6 +862,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '      "recommended_highpass_hz": 80,',
       '      "recommended_lowpass_hz": 2200,',
       '      "do_not_test_below_hz": 1200,',
+      '      "gain_offset_db": -6,',
       '      "notes": "short safety-relevant notes",',
       '      "sources": ["https://..."]',
       '    }',
@@ -786,9 +919,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var savedStatus = draftPayload.status || '';
     var summary = draftPayload.summary || {};
     return savedStatus && savedStatus !== 'not_saved' && savedStatus !== 'unreadable' &&
-      Number(summary.driver_count || 0) > 0 &&
-      Number(summary.crossover_candidate_count || 0) > 0 &&
+      (Number(summary.driver_count || 0) + Number(summary.manual_driver_count || 0)) > 0 &&
+      (Number(summary.crossover_candidate_count || 0) +
+        Number(summary.manual_crossover_candidate_count || 0)) > 0 &&
       !driverResearch.dirty;
+  }
+  function crossoverPreviewReadyForProtectedStaging(payload) {
+    payload = payload || {};
+    var permissions = payload.permissions || {};
+    return payload.kind === 'jts_active_speaker_crossover_preview' &&
+      payload.status === 'ready_for_protected_staging' &&
+      permissions.may_prepare_protected_startup_config === true;
   }
   function driverResearchStepSatisfied() {
     var draftPayload = driverResearch.designDraft || {};
@@ -798,10 +939,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function driverResearchSavedStatusLabel(status, summary) {
     summary = summary || {};
-    if (status === 'ready_for_review') return 'saved design draft';
-    if (status === 'needs_research') return 'research skipped';
+    if (status === 'ready_for_review') return 'saved settings';
+    if (status === 'needs_research') return 'saved partial settings';
     if (status === 'blocked' && Number(summary.driver_count || 0) > 0) {
-      return 'saved driver research';
+      return 'saved driver info';
     }
     if (status === 'blocked') return 'saved: needs layout';
     if (status === 'unreadable') return 'saved draft unreadable';
@@ -817,6 +958,31 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ['full_range', 'woofer', 'mid', 'tweeter', 'subwoofer', 'notes'].forEach(function(key) {
       driverResearch.inputs[key] = inputs[key] || '';
     });
+    driverResearch.settings = {drivers: {}, crossovers: {}};
+    var manual = payload.manual_settings || {};
+    (Array.isArray(manual.drivers) ? manual.drivers : []).forEach(function(driver) {
+      if (!driver || !driver.role) return;
+      var role = String(driver.role);
+      if (driver.model && !driverResearch.inputs[role]) {
+        driverResearch.inputs[role] = String(driver.model);
+      }
+      driverResearch.settings.drivers[role] = Object.assign(
+        {},
+        driverResearch.settings.drivers[role] || {},
+        driver
+      );
+    });
+    (Array.isArray(manual.crossover_candidates) ? manual.crossover_candidates : [])
+      .forEach(function(candidate) {
+        if (!candidate || !Array.isArray(candidate.between_roles) ||
+            candidate.between_roles.length !== 2) return;
+        var key = crossoverSettingKey(candidate.between_roles.map(String));
+        driverResearch.settings.crossovers[key] = Object.assign(
+          {},
+          driverResearch.settings.crossovers[key] || {},
+          candidate
+        );
+      });
     if (payload.driver_research) {
       driverResearch.importText = JSON.stringify(payload.driver_research, null, 2);
       try {
@@ -872,24 +1038,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function outputRoleStatusText(channel) {
     if (!channel || channel.physical_output_index == null) return 'No DAC output assigned yet.';
     if (!channel.identity_verified) {
-      return 'Confirm this wire before choosing it for a quiet test.';
+      return 'Confirm this wire before testing the driver.';
     }
     if (!outputChannelGuardReady(channel)) {
-      return 'Confirmed. Continue to First quiet test; JTS will start it at the quietest level.';
+      return 'Confirmed. Continue to Measure drivers; JTS will start it very quiet.';
     }
     if (channel.protection_required) {
       return channel.protection_status === 'present' ?
-        'Confirmed. Extra protection noted; quiet tests still start low.' :
-        'Confirmed. Continue to First quiet test; JTS will start it at the quietest level.';
+        'Confirmed. Extra protection noted; tests still start very quiet.' :
+        'Confirmed. Continue to Measure drivers; JTS will start it very quiet.';
     }
-    return 'Confirmed. Continue to First quiet test when ready.';
+    return 'Confirmed. Continue to Measure drivers when ready.';
   }
   function renderOutputTopologySetup() {
     return '<div class="setting-row setting-row--stack output-setup">' +
       '<div class="output-setup__head">' +
         '<div class="setting-row__text">' +
           '<p class="setting-row__title">Active crossover setup</p>' +
-          '<p class="setting-row__hint">Build the speaker layout, add driver info, confirm DAC outputs, then start with one quiet driver test.</p>' +
+          '<p class="setting-row__hint">Build the speaker layout, add crossover info, confirm DAC outputs, measure each driver, then validate and apply the profile.</p>' +
         '</div></div>' +
       renderOutputTopologyBody() +
     '</div>';
@@ -913,6 +1079,38 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var state = startup.state || {};
     return state.status === 'loaded';
   }
+  function quietTestControlsOpen() {
+    var session = activeSpeaker.session || {};
+    return session.status === 'armed';
+  }
+  function quietTestStartupReady(load) {
+    load = load || activeSpeaker.startupLoad || {};
+    var state = load.state || {};
+    return state.status === 'loaded' &&
+      !!state.rollback_available &&
+      !!state.current_config_matches_loaded;
+  }
+  function quietTestStagedReady(staged) {
+    staged = staged || activeSpeaker.stagedConfig || {};
+    return staged.status === 'staged';
+  }
+  function activeOutputGroups(topology) {
+    return outputGroups(topology).filter(function(group) {
+      return group && (group.mode === 'active_2_way' || group.mode === 'active_3_way');
+    });
+  }
+  function measurementSummary() {
+    return activeSpeaker.measurements && activeSpeaker.measurements.summary || {};
+  }
+  function driverMeasurementsComplete() {
+    return measurementSummary().driver_measurements_complete === true;
+  }
+  function summedValidationComplete() {
+    return measurementSummary().summed_validation_complete === true;
+  }
+  function baselineProfileApplied() {
+    return activeSpeaker.baselineProfile && activeSpeaker.baselineProfile.status === 'applied';
+  }
   function outputStepState(step, topology) {
     var groups = outputGroups(topology);
     var hasLayout = groups.length > 0;
@@ -921,8 +1119,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (driverResearchStepSatisfied() ? 'done' : 'active') : 'todo';
     if (step === 'map') return outputIdentityComplete() ? 'done' :
       (hasLayout && !outputTopology.dirty ? 'active' : 'todo');
-    if (step === 'safety') return outputStartupLoaded() ? 'done' :
+    if (step === 'safety') return driverMeasurementsComplete() ? 'done' :
       (outputIdentityComplete() ? 'active' : 'todo');
+    if (step === 'profile') return baselineProfileApplied() ? 'done' :
+      (driverMeasurementsComplete() ? 'active' : 'todo');
     return 'todo';
   }
   function defaultOutputStep() {
@@ -930,7 +1130,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!topology || !outputGroups(topology).length || outputTopology.dirty) return 'layout';
     if (!driverResearchStepSatisfied()) return 'research';
     if (!outputIdentityComplete()) return 'map';
-    return 'safety';
+    if (!driverMeasurementsComplete()) return 'safety';
+    return 'profile';
   }
   function outputStepIsOpen(step, topology) {
     return (outputStepOverride || defaultOutputStep()) === step;
@@ -938,9 +1139,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function outputStepTitle(step) {
     return {
       layout: 'Choose speaker layout',
-      research: 'Add driver info',
+      research: 'Add driver and crossover info',
       map: 'Confirm outputs',
-      safety: 'First quiet test'
+      safety: 'Measure drivers',
+      profile: 'Validate and apply'
     }[step] || 'this card';
   }
   function outputStepCanOpen(step, topology) {
@@ -1126,7 +1328,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         escapeHtml(hasSub ? 'Remove subwoofer' : 'Add subwoofer') + '</button>' +
     '</div>';
   }
-  function renderDriverResearchSummary() {
+  function renderDriverResearchSummary(options) {
+    options = options || {};
     var saved = driverResearch.designDraft || {};
     var savedStatus = saved.status || '';
     var savedSummary = saved.summary || {};
@@ -1135,11 +1338,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<span class="status-pill' + (savedStatus === 'ready_for_review' ? ' status-pill--ready' : '') + '">' +
           escapeHtml(driverResearchSavedStatusLabel(savedStatus, savedSummary)) + '</span>' +
         '<p class="setting-row__hint">' + escapeHtml(
-          String(savedSummary.driver_count || 0) + ' saved driver' +
-          (Number(savedSummary.driver_count || 0) === 1 ? '' : 's') +
-          ', ' + String(savedSummary.crossover_candidate_count || 0) +
-          ' crossover candidate' +
-          (Number(savedSummary.crossover_candidate_count || 0) === 1 ? '' : 's') +
+          String(Number(savedSummary.driver_count || 0) + Number(savedSummary.manual_driver_count || 0)) +
+          ' saved driver' +
+          ((Number(savedSummary.driver_count || 0) + Number(savedSummary.manual_driver_count || 0)) === 1 ? '' : 's') +
+          ', ' + String(
+            Number(savedSummary.crossover_candidate_count || 0) +
+            Number(savedSummary.manual_crossover_candidate_count || 0)
+          ) +
+          ' crossover setting' +
+          ((Number(savedSummary.crossover_candidate_count || 0) +
+            Number(savedSummary.manual_crossover_candidate_count || 0)) === 1 ? '' : 's') +
           '. No filters are applied.'
         ) + '</p>' +
       '</div>'
@@ -1149,6 +1357,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<p class="setting-row__hint driver-research__error">' +
         escapeHtml(driverResearch.error) + '</p>';
     }
+    if (options.savedOnly) return savedHtml;
     if (!driverResearch.parsed) {
       return savedHtml +
         '<p class="setting-row__hint">Paste JSON from the assistant to sanity-check the shape. JTS will not apply it automatically.</p>';
@@ -1168,29 +1377,84 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         }).join('') + '</ul></div>' : '') +
     '</div>';
   }
-  function renderDriverResearchCard(topology) {
+  function renderManualDriverSettings(topology) {
     var roles = outputRoleSummary(topology);
-    var saveDisabled = driverResearch.saving || outputTopology.dirty ||
-      !currentOutputTopology();
-    var fields = roles.map(function(role) {
-      return '<label class="driver-research__field">' +
-        '<span>' + escapeHtml(driverResearchRoleLabel(role)) + '</span>' +
-        '<input type="text" data-driver-field="' + escapeHtml(role) + '" value="' +
-          escapeHtml(driverResearch.inputs[role] || '') + '" placeholder="Manufacturer and model">' +
-      '</label>';
-    }).join('');
-    return '<div class="output-card output-card--driver-research">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Driver info helper</p>' +
-        '<p class="setting-row__hint">Optional. Copy the prompt, paste JSON back, then save before previewing crossover ideas.</p></div></div>' +
-      '<div class="driver-research__grid">' +
-        '<div class="driver-research__fields">' +
-          fields +
-          '<label class="driver-research__field driver-research__field--wide">' +
-            '<span>Build notes</span>' +
-            '<textarea rows="3" data-driver-field="notes" placeholder="Waveguide, baffle, enclosure, amplifier, measurement constraints">' +
-              escapeHtml(driverResearch.inputs.notes || '') + '</textarea>' +
-          '</label>' +
+    return '<div class="driver-settings">' + roles.map(function(role) {
+      var setting = driverSetting(role);
+      return '<div class="driver-settings__row">' +
+        '<label class="driver-research__field">' +
+          '<span>' + escapeHtml(driverResearchRoleLabel(role)) + '</span>' +
+          '<input type="text" data-driver-field="' + escapeHtml(role) + '" value="' +
+            escapeHtml(driverResearch.inputs[role] || '') + '" placeholder="Manufacturer and model">' +
+        '</label>' +
+        '<label class="driver-research__field">' +
+          '<span>Sensitivity</span>' +
+          '<input type="number" inputmode="decimal" data-manual-driver="' + escapeHtml(role) + '" ' +
+            'data-manual-field="sensitivity_db_2v83_1m" value="' +
+            escapeHtml(setting.sensitivity_db_2v83_1m == null ? '' : String(setting.sensitivity_db_2v83_1m)) +
+            '" placeholder="dB">' +
+        '</label>' +
+        '<label class="driver-research__field">' +
+          '<span>Safe low limit</span>' +
+          '<input type="number" inputmode="numeric" min="1" data-manual-driver="' + escapeHtml(role) + '" ' +
+            'data-manual-field="do_not_test_below_hz" value="' +
+            escapeHtml(setting.do_not_test_below_hz == null ? '' : String(setting.do_not_test_below_hz)) +
+            '" placeholder="Hz">' +
+        '</label>' +
+        '<label class="driver-research__field">' +
+          '<span>Level trim</span>' +
+          '<input type="number" inputmode="decimal" data-manual-driver="' + escapeHtml(role) + '" ' +
+            'data-manual-field="gain_offset_db" value="' +
+            escapeHtml(setting.gain_offset_db == null ? '' : String(setting.gain_offset_db)) +
+            '" placeholder="dB">' +
+        '</label>' +
+      '</div>';
+    }).join('') + '</div>';
+  }
+  function renderManualCrossoverSettings(topology) {
+    var pairs = activeCrossoverPairs(topology);
+    if (!pairs.length) {
+      return '<p class="setting-row__hint">This speaker layout does not need an active crossover point.</p>';
+    }
+    return '<div class="driver-settings driver-settings--crossovers">' + pairs.map(function(pair) {
+      var setting = crossoverSetting(pair);
+      var key = crossoverSettingKey(pair);
+      return '<div class="driver-settings__row driver-settings__row--crossover">' +
+        '<div class="driver-settings__pair">' +
+          '<strong>' + escapeHtml(humanRole(pair[0]) + ' / ' + humanRole(pair[1])) + '</strong>' +
+          '<span>Starting crossover</span>' +
         '</div>' +
+        '<label class="driver-research__field">' +
+          '<span>Crossover point</span>' +
+          '<input type="number" inputmode="numeric" min="1" data-manual-crossover="' + escapeHtml(key) + '" ' +
+            'data-manual-field="frequency_hz" value="' +
+            escapeHtml(setting.frequency_hz == null ? '' : String(setting.frequency_hz)) +
+            '" placeholder="Hz">' +
+        '</label>' +
+        '<label class="driver-research__field">' +
+          '<span>Slope</span>' +
+          '<input type="number" inputmode="numeric" min="6" step="6" data-manual-crossover="' + escapeHtml(key) + '" ' +
+            'data-manual-field="slope_db_per_octave" value="' +
+            escapeHtml(setting.slope_db_per_octave == null ? '24' : String(setting.slope_db_per_octave)) +
+            '" placeholder="24">' +
+        '</label>' +
+        '<label class="driver-research__field">' +
+          '<span>Filter</span>' +
+          '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="filter_type">' +
+            ['Linkwitz-Riley', 'Butterworth'].map(function(value) {
+              return '<option value="' + escapeHtml(value) + '"' +
+                ((setting.filter_type || 'Linkwitz-Riley') === value ? ' selected' : '') +
+                '>' + escapeHtml(value) + '</option>';
+            }).join('') +
+          '</select>' +
+        '</label>' +
+      '</div>';
+    }).join('') + '</div>';
+  }
+  function renderDriverResearchAiHelper(topology) {
+    return '<details class="driver-research__ai">' +
+      '<summary>Use AI to fill these settings</summary>' +
+      '<div class="driver-research__grid driver-research__grid--ai">' +
         '<div class="driver-research__panel">' +
           '<div class="row-between active-speaker-level__head">' +
             '<p class="setting-row__title">Research prompt</p>' +
@@ -1204,19 +1468,44 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<div class="row-between active-speaker-level__head">' +
             '<p class="setting-row__title">Paste JSON result</p>' +
             '<div class="driver-research__actions">' +
-              '<button type="button" class="btn btn--ghost" data-act="parse-driver-research">Check JSON</button>' +
-              '<button type="button" class="btn btn--primary" data-act="save-driver-design"' +
-                (saveDisabled ? ' disabled' : '') + '>' +
-                escapeHtml(driverResearch.saving ? 'Saving' : 'Save driver info') +
-              '</button>' +
+              '<button type="button" class="btn btn--ghost" data-act="parse-driver-research">Use imported values</button>' +
             '</div>' +
           '</div>' +
           '<textarea id="driver-research-import" class="driver-research__textarea" data-driver-import ' +
             'rows="7" placeholder="{...}" aria-label="Driver research JSON result">' +
             escapeHtml(driverResearch.importText || '') + '</textarea>' +
-          '<div id="driver-research-summary">' + renderDriverResearchSummary() + '</div>' +
+          '<div id="driver-research-import-summary">' + renderDriverResearchSummary() + '</div>' +
         '</div>' +
       '</div>' +
+    '</details>';
+  }
+  function renderDriverResearchCard(topology) {
+    var saveDisabled = driverResearch.saving || outputTopology.dirty ||
+      !currentOutputTopology();
+    return '<div class="output-card output-card--driver-research">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Crossover settings</p>' +
+        '<p class="setting-row__hint">Enter the values JTS should use for the no-audio crossover preview. The AI helper below can fill these in for review.</p></div></div>' +
+      '<div class="driver-research__section">' +
+        '<p class="setting-row__title">Drivers</p>' +
+        renderManualDriverSettings(topology) +
+      '</div>' +
+      '<div class="driver-research__section">' +
+        '<p class="setting-row__title">Crossover points</p>' +
+        renderManualCrossoverSettings(topology) +
+      '</div>' +
+      '<label class="driver-research__field driver-research__field--wide">' +
+        '<span>Build notes</span>' +
+        '<textarea rows="3" data-driver-field="notes" placeholder="Waveguide, baffle, enclosure, amplifier, measurement constraints">' +
+          escapeHtml(driverResearch.inputs.notes || '') + '</textarea>' +
+      '</label>' +
+      '<div class="driver-research__actions driver-research__actions--save">' +
+        '<button type="button" class="btn btn--primary" data-act="save-driver-design"' +
+          (saveDisabled ? ' disabled' : '') + '>' +
+          escapeHtml(driverResearch.saving ? 'Saving' : 'Save crossover settings') +
+        '</button>' +
+      '</div>' +
+      '<div class="driver-research__saved-summary">' + renderDriverResearchSummary({savedOnly: true}) + '</div>' +
+      renderDriverResearchAiHelper(topology) +
     '</div>';
   }
   function previewStatusClass(value) {
@@ -1297,13 +1586,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var draftStatus = (driverResearch.designDraft || {}).status || '';
     var hint = canPrepare ?
       (draftStatus === 'blocked'
-        ? 'Builds a no-audio preview from saved research. Wiring and quiet test checks happen before any sound.'
+        ? 'Builds a no-audio preview from saved research. Wiring and driver-test checks happen before any sound.'
         : 'Builds bounded filter intent from the saved draft. No YAML, no Camilla load, no sound.') :
       (outputTopology.dirty
         ? 'Save the speaker layout before preparing a crossover preview.'
         : (hasSavedResearch
-          ? 'Save the latest driver research edits before preparing a crossover preview.'
-          : 'Save driver research before preparing a crossover preview.'));
+          ? 'Save the latest crossover setting edits before preparing a preview.'
+          : 'Save crossover settings before preparing a preview.'));
     if (crossoverPreview.error) hint = crossoverPreview.error;
     return '<div class="output-card output-card--crossover-preview">' +
       '<div class="output-card__head"><div><p class="output-card__title">Crossover preview</p>' +
@@ -1354,13 +1643,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           renderOutputHardwareCard(topology, layoutStatusValue),
         renderOutputHardwareRefresh() +
           renderOutputStepButton('layout',
-          outputTopology.dirty ? 'Save and continue' : 'Next: add driver info',
+          outputTopology.dirty ? 'Save and continue' : 'Next: add crossover info',
           true)
       ) +
       renderOutputStepCard(
         'research',
-        'Add driver info',
-        'Optional helper: collect driver facts and preview crossover ideas.',
+        'Add driver and crossover info',
+        'Enter the starting crossover settings. The AI helper is optional.',
         topology,
         renderDriverResearchCard(topology) +
           renderCrossoverPreviewCard(),
@@ -1374,15 +1663,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         renderOutputStageCard(topology) +
           renderOutputGroupsCard(topology) +
           renderOutputIdentityCard(),
-        renderOutputStepButton('map', 'Next: first quiet test', true)
+        renderOutputStepButton('map', 'Next: measure drivers', true)
       ) +
       renderOutputStepCard(
         'safety',
-        'First quiet test',
-        'Start with one driver at the quietest test level, then raise toward audible in bounded steps.',
+        'Measure drivers',
+        'Choose one driver at a time, start very quiet, and record what the mic saw.',
         topology,
         renderActiveSpeakerStatus() +
-        renderOutputReadinessCard(),
+        renderOutputReadinessCard() +
+        renderDriverMeasurementProgressCard(topology),
+        ''
+      ) +
+      renderOutputStepCard(
+        'profile',
+        'Validate and apply',
+        'Test the combined speaker, save the active profile, then apply it if this hardware supports it.',
+        topology,
+        renderSummedValidationCard(topology) +
+        renderBaselineProfileCard(),
         ''
       ) +
     '</div>';
@@ -1466,28 +1765,28 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     '</div>';
   }
   function renderOutputGroupsCard(topology) {
-    var groups = outputGroups(topology);
-    if (!groups.length) {
+    var assignments = [];
+    outputGroups(topology).forEach(function(group) {
+      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
+        if (channel.physical_output_index == null) return;
+        assignments.push({group: group, channel: channel});
+      });
+    });
+    assignments.sort(function(a, b) {
+      return Number(a.channel.physical_output_index) - Number(b.channel.physical_output_index);
+    });
+    if (!assignments.length) {
       return '<div class="output-card output-card--groups">' +
-        '<p class="output-card__title">Speaker groups</p>' +
-        '<p class="setting-row__hint">Choose a setup template above. JTS keeps it as a draft until you verify channels safely.</p>' +
+        '<p class="output-card__title">DAC output assignments</p>' +
+        '<p class="setting-row__hint">Choose a speaker layout first. JTS keeps it as a draft until you confirm the wires.</p>' +
       '</div>';
     }
     return '<div class="output-card output-card--groups">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Speaker groups</p>' +
-        '<p class="setting-row__hint">Driver roles and assigned DAC outputs.</p></div></div>' +
-      '<div class="output-groups">' + groups.map(renderOutputGroup).join('') + '</div>' +
-    '</div>';
-  }
-  function renderOutputGroup(group) {
-    var channels = Array.isArray(group.channels) ? group.channels : [];
-    return '<div class="output-group">' +
-      '<div class="output-group__head">' +
-        '<div><p class="output-group__title">' + escapeHtml(group.label || group.id) + '</p>' +
-        '<p class="setting-row__hint">' + escapeHtml(humanMode(group.mode)) + '</p></div>' +
-        '<span class="output-group__badge">' + escapeHtml(group.kind || 'speaker') + '</span>' +
-      '</div>' +
-      '<div class="output-roles">' + channels.map(function(channel) {
+      '<div class="output-card__head"><div><p class="output-card__title">DAC output assignments</p>' +
+        '<p class="setting-row__hint">Confirm which physical driver is connected to each DAC output. No sound plays here.</p></div></div>' +
+      '<div class="output-roles output-roles--flat">' + assignments.map(function(item) {
+        var group = item.group;
+        var channel = item.channel;
         var label = channel.human_output_label ||
           (channel.physical_output_index == null ? 'No output assigned' : 'Output ' + (Number(channel.physical_output_index) + 1));
         var target = identityTargetFor(group.id, channel.role) || {};
@@ -1496,10 +1795,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         var readinessBusy = outputTopology.readinessChecking === targetId;
         var disabled = outputTopology.dirty || busy || readinessBusy ||
           channel.physical_output_index == null;
+        var model = (driverResearch.inputs && driverResearch.inputs[channel.role]) || '';
+        var hardwareLabel = (group.label || group.id) + ' · ' + humanRole(channel.role) +
+          (model ? ' · ' + model : '');
         return '<div class="output-role">' +
           '<div class="output-role__text">' +
-            '<span>' + escapeHtml(humanRole(channel.role)) + '</span>' +
-            '<strong>' + escapeHtml(label) + '</strong>' +
+            '<span>' + escapeHtml(label) + '</span>' +
+            '<strong>' + escapeHtml(hardwareLabel) + '</strong>' +
             '<small>' + escapeHtml(outputRoleStatusText(channel)) + '</small>' +
           '</div>' +
           '<div class="output-role__actions">' +
@@ -1603,7 +1905,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var playbackId = playback && playback.playback_id || '';
     if (!outputFloorAudioPendingForPlayback(playback)) {
       if (!lastResult || !lastResult.outcome || lastResult.playback_id !== playbackId) return '';
-      return '<p class="setting-row__hint">Last quiet-test result: ' +
+      return '<p class="setting-row__hint">Last driver-test result: ' +
         escapeHtml(String(lastResult.outcome).replace(/_/g, ' ')) + '</p>';
     }
     var buttons = [
@@ -1623,6 +1925,179 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }).join('') + '</div>' +
     '</div>';
   }
+  function measurementTargetId(groupId, role) {
+    return String(groupId || '') + ':' + String(role || '').trim().toLowerCase();
+  }
+  function latestDriverMeasurement(groupId, role) {
+    var latest = measurementSummary().latest_driver_measurements || {};
+    return latest[measurementTargetId(groupId, role)] || null;
+  }
+  function latestSummedValidation(groupId) {
+    var latest = measurementSummary().latest_summed_validations || {};
+    return latest[String(groupId || '')] || null;
+  }
+  function latestSummedTest(groupId) {
+    var latest = measurementSummary().latest_summed_tests || {};
+    return latest[String(groupId || '')] || null;
+  }
+  function driverTargetLabel(group, channel) {
+    var output = channel && channel.human_output_label ||
+      (channel && channel.physical_output_index != null ?
+        'DAC output ' + (Number(channel.physical_output_index) + 1) : 'unassigned output');
+    return (group.label || group.id || 'Speaker') + ' · ' +
+      humanRole(channel && channel.role) + ' · ' + output;
+  }
+  function renderDriverMeasurementProgressCard(topology) {
+    var targets = [];
+    activeOutputGroups(topology).forEach(function(group) {
+      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
+        targets.push({group: group, channel: channel});
+      });
+    });
+    if (!targets.length) return '';
+    var summary = measurementSummary();
+    var captured = Number(summary.captured_driver_count || 0);
+    var required = Number(summary.required_driver_count || targets.length);
+    var rows = targets.map(function(target) {
+      var group = target.group;
+      var channel = target.channel;
+      var latest = latestDriverMeasurement(group.id, channel.role);
+      var measured = latest && latest.captured === true;
+      var note = measured ? 'Measured with mic evidence' :
+        (latest && latest.outcome ?
+          'Last result: ' + String(latest.outcome).replace(/_/g, ' ') :
+          'Needs one mic-backed driver test');
+      return '<div class="active-speaker-progress__row">' +
+        '<div><strong>' + escapeHtml(driverTargetLabel(group, channel)) + '</strong>' +
+          '<span>' + escapeHtml(note) + '</span></div>' +
+        '<span class="status-pill' + (measured ? ' status-pill--ready' : '') + '">' +
+          escapeHtml(measured ? 'measured' : 'remaining') + '</span>' +
+      '</div>';
+    }).join('');
+    return '<div class="output-card output-card--measurements">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Driver measurements</p>' +
+        '<p class="setting-row__hint">Each active driver needs one correct-driver result with a usable mic reading.</p></div>' +
+        '<span class="status-pill' + (captured >= required && required > 0 ? ' status-pill--ready' : '') + '">' +
+          escapeHtml(captured + '/' + required) + '</span></div>' +
+      '<div class="active-speaker-progress">' + rows + '</div>' +
+    '</div>';
+  }
+  function renderSummedValidationCard(topology) {
+    var groups = activeOutputGroups(topology);
+    if (!groups.length) return '';
+    var canRecord = driverMeasurementsComplete();
+    var rows = groups.map(function(group) {
+      var latest = latestSummedValidation(group.id);
+      var latestTest = latestSummedTest(group.id);
+      var ok = latest && latest.validated === true;
+      var hasAudibleTest = latestTest && latestTest.captured === true &&
+        latestTest.audio_emitted === true;
+      var statusText = ok ? 'validated' :
+        (hasAudibleTest ? 'ready to record' : 'not tested');
+      var testButton = '<button type="button" class="btn btn--primary" ' +
+        'data-act="prepare-summed-test" data-group-id="' + escapeHtml(group.id) + '"' +
+        ' data-label="' + escapeHtml(group.label || group.id || 'speaker') + '"' +
+        (canRecord ? '' : ' disabled') + '>Play combined test</button>';
+      var buttons = [
+        ['blend_ok', 'Blend sounds right', 'btn--primary'],
+        ['needs_adjustment', 'Needs adjustment', 'btn--ghost'],
+        ['polarity_or_delay_problem', 'Polarity or delay issue', 'btn--ghost'],
+        ['too_loud', 'Too loud', 'btn--danger']
+      ].map(function(item) {
+        return '<button type="button" class="btn ' + escapeHtml(item[2]) +
+          '" data-act="record-summed-validation" data-group-id="' + escapeHtml(group.id) +
+          '" data-summed-test-id="' + escapeHtml(
+            latestTest && (latestTest.summed_test_id || latestTest.playback_id) || ''
+          ) +
+          '" data-outcome="' + escapeHtml(item[0]) + '"' +
+          (hasAudibleTest ? '' : ' disabled') + '>' + escapeHtml(item[1]) + '</button>';
+      }).join('');
+      var hint = hasAudibleTest ?
+        'After the combined test, record whether the drivers blend.' :
+        (canRecord ?
+          'Run the combined speaker test first. It uses the saved crossover setup and starts at the quiet test level.' :
+          'Measure each driver first, then test the combined speaker.');
+      return '<div class="active-speaker-validation__group">' +
+        '<div class="row-between">' +
+          '<div><p class="setting-row__title">' + escapeHtml(group.label || group.id || 'Speaker') + '</p>' +
+          '<p class="setting-row__hint">' + escapeHtml(hint) + '</p></div>' +
+          '<span class="status-pill' + (ok ? ' status-pill--ready' : '') + '">' +
+            escapeHtml(statusText) + '</span>' +
+        '</div>' +
+        '<div class="active-speaker-actions">' + testButton + buttons + '</div>' +
+      '</div>';
+    }).join('');
+    return '<div class="output-card output-card--summed-validation">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Combined crossover check</p>' +
+        '<p class="setting-row__hint">' + escapeHtml(canRecord ?
+          'Use the same mic reading field and your listening check for the combined speaker.' :
+          'Measure each driver first, then validate the combined crossover.') + '</p></div>' +
+        '<span class="status-pill' + (summedValidationComplete() ? ' status-pill--ready' : '') + '">' +
+          escapeHtml(summedValidationComplete() ? 'ready' : (canRecord ? 'next' : 'after measurements')) + '</span></div>' +
+      '<div class="active-speaker-validation">' + rows + '</div>' +
+    '</div>';
+  }
+  function baselineProfileApplyBlocked(profile) {
+    var issues = Array.isArray(profile && profile.issues) ? profile.issues : [];
+    return (profile && profile.status) === 'compiled_apply_blocked' ||
+      issues.some(function(issue) {
+        return issue && issue.code === 'baseline_output_handoff_not_supported';
+      });
+  }
+  function baselineProfileIssueMessage(issue) {
+    if (!issue) return 'Profile is not ready yet.';
+    if (issue.code === 'baseline_output_handoff_not_supported') {
+      return 'This output hardware can save the active profile, but JTS cannot switch normal playback to it from here yet.';
+    }
+    if (issue.code === 'baseline_subwoofer_not_supported') {
+      return 'Subwoofer groups are not included in the active profile compiler yet.';
+    }
+    return issue.message || issue.code || 'Profile is not ready yet.';
+  }
+  function renderBaselineProfileCard() {
+    var profile = activeSpeaker.baselineProfile || {};
+    var statusValue = profile.status || 'not_saved';
+    var config = profile.config || {};
+    var permissions = profile.permissions || {};
+    var applied = statusValue === 'applied';
+    var readyToApply = permissions.may_apply === true;
+    var mayCompile = summedValidationComplete();
+    var applyBlocked = baselineProfileApplyBlocked(profile);
+    var issues = Array.isArray(profile.issues) ? profile.issues : [];
+    var issueRows = issues.filter(function(issue) {
+      return issue && issue.severity === 'blocker';
+    }).slice(0, 3).map(function(issue) {
+      return '<li>' + escapeHtml(baselineProfileIssueMessage(issue)) + '</li>';
+    }).join('');
+    var body = applied ?
+      '<p class="setting-row__hint">This is now your active speaker profile: ' +
+        escapeHtml(config.basename || config.path || 'active speaker baseline') + '.</p>' :
+      (applyBlocked ?
+        '<p class="setting-row__hint">The active profile was saved for review, but this hardware path cannot be applied from this page yet.</p>' :
+      (readyToApply ?
+        '<p class="setting-row__hint">The baseline YAML is saved. Apply it to make it the active CamillaDSP profile.</p>' :
+        '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
+          'Compile the measured crossover into a durable CamillaDSP baseline YAML. No sound plays during compile.' :
+          'Finish the combined crossover check before saving the active profile.') + '</p>'));
+    var actions = applied ? '' :
+      '<div class="active-speaker-actions active-speaker-profile-actions">' +
+        '<button type="button" class="btn btn--primary" data-act="compile-baseline-profile"' +
+          (mayCompile ? '' : ' disabled') + '>' + escapeHtml(
+            readyToApply || applyBlocked ? 'Rebuild profile' : 'Save active profile'
+          ) + '</button>' +
+        '<button type="button" class="btn btn--danger" data-act="apply-baseline-profile"' +
+          (readyToApply ? '' : ' disabled') + '>Apply active profile</button>' +
+      '</div>';
+    return '<div class="output-card output-card--baseline-profile">' +
+      '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
+        '<p class="setting-row__hint">A durable CamillaDSP baseline built from the saved crossover and measurements.</p></div>' +
+        '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
+          escapeHtml(applied ? 'active' : (readyToApply ? 'saved' : (applyBlocked ? 'saved for review' : 'not saved'))) + '</span></div>' +
+      body +
+      (issueRows && mayCompile ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
+      actions +
+    '</div>';
+  }
   function quietStartTargetLabel(target) {
     target = target || {};
     var pieces = [];
@@ -1635,16 +2110,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function quietStartLabel(session) {
     var quiet = session && session.quiet_start || {};
-    if (session && session.status !== 'armed') return 'Not armed';
+    if (session && session.status !== 'armed') return 'Getting ready';
     if (quiet.status === 'floor_confirmed' && quiet.floor_audio_confirmed) {
       var targetLabel = quietStartTargetLabel(quiet.current_target);
-      return targetLabel ? 'Quiet test confirmed for ' + targetLabel : 'Quiet test confirmed';
+      return targetLabel ? 'Heard ' + targetLabel : 'Heard at the starting level';
     }
     if (quiet.status === 'floor_pending_operator') {
       var pendingTargetLabel = quietStartTargetLabel(quiet.current_target);
       return pendingTargetLabel ? 'Waiting on what you heard for ' + pendingTargetLabel : 'Waiting on what you heard';
     }
-    return 'Start quiet';
+    return 'Ready to start';
   }
   function readinessTargetLockReason(readiness) {
     var target = readiness && readiness.target || {};
@@ -1668,25 +2143,32 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         lower.indexOf('path-safety evidence was not provided') >= 0 ||
         lower.indexOf('staged protected candidate') >= 0 ||
         lower.indexOf('active_startup_candidate') >= 0) {
-      return 'Set up quiet test mode so JTS can route playback through the protected DSP path. No sound will play.';
+      return 'JTS could not confirm the safe audio path yet. Check that the speaker layout and crossover settings are saved, then choose the driver again.';
     }
     if (lower.indexOf('protection') >= 0 || lower.indexOf('high_frequency') >= 0 ||
         lower.indexOf('high-frequency') >= 0) {
-      return 'Choose one confirmed driver so JTS can start it quiet.';
+      return 'JTS could not prepare the quiet safety limit for the high-frequency output. No sound was played. Save the crossover settings, then choose the driver again.';
     }
     if (lower.indexOf('path_safety') >= 0 || lower.indexOf('safety evidence') >= 0 ||
         lower.indexOf('evidence') >= 0 || lower.indexOf('protected path') >= 0) {
-      return 'Continue preparing the quiet test setup.';
+      return 'JTS could not confirm the safe audio path yet. No sound was played.';
+    }
+    if (lower.indexOf('crossover_preview') >= 0 || lower.indexOf('crossover preview') >= 0) {
+      return 'Save the crossover settings, then choose this driver again. No sound was played.';
     }
     if (lower.indexOf('startup') >= 0 || lower.indexOf('staged') >= 0 ||
         lower.indexOf('camilla') >= 0) {
-      return 'Load the quiet test setup before testing.';
+      return 'JTS could not load the safe test setup. No sound was played.';
     }
     if (lower.indexOf('floor') >= 0 || lower.indexOf('calibration') >= 0) {
       return 'Return test volume to the quietest level before trying again.';
     }
-    if (lower.indexOf('target') >= 0 || lower.indexOf('channel') >= 0) {
-      return 'Choose one confirmed driver for the first quiet test.';
+    if (lower.indexOf('target requires speaker_group_id') >= 0 ||
+        lower.indexOf('target requires') >= 0) {
+      return 'Choose the driver you want to test first.';
+    }
+    if (lower.indexOf('channel') >= 0 || lower.indexOf('target') >= 0) {
+      return 'Confirm which DAC output goes to each driver, then choose the driver again.';
     }
     return text.replace(/_/g, ' ');
   }
@@ -1748,7 +2230,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var rows = [
       ['Driver', target.label || target.role || 'unknown'],
       ['DAC output', target.physical_output_index == null ? 'unknown' : 'Output ' + (Number(target.physical_output_index) + 1)],
-      ['Quiet test', quietStartLabel(activeSpeaker.session)],
+      ['Sound test', quietStartLabel(activeSpeaker.session)],
       ['Test level', level.requested_level_dbfs == null ? fmtDbfs(activeSpeakerLevelConfig().value) : fmtDbfs(level.requested_level_dbfs)]
     ];
     return '<dl class="active-speaker-facts output-readiness-summary">' + rows.map(function(row) {
@@ -1772,7 +2254,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           'data-protection-required="' + (channel.protection_required ? 'true' : 'false') + '" ' +
           'data-protection-status="' + escapeHtml(channel.protection_status || 'unknown') + '" ' +
           'data-label="' + escapeHtml(targetLabel) + '">' +
-          'Choose ' + escapeHtml(humanRole(channel.role)) +
+          'Test ' + escapeHtml(humanRole(channel.role)) +
           ' · ' + escapeHtml(label) + '</button>');
       });
     });
@@ -1785,14 +2267,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var reasons = readinessBlockedReasons(readiness);
     if (!reasons.length) {
       return '<p class="setting-row__hint">' + escapeHtml(readiness.playback_allowed ?
-        'This driver is ready for a quiet test.' :
+        'This driver is ready for a test.' :
         'JTS can preview the test signal, but this install is not enabled to play it yet.') + '</p>';
     }
     return '<div class="output-readiness-blockers">' +
-      '<p class="setting-row__title">What to do next</p>' +
+      '<p class="setting-row__title">How to continue</p>' +
       '<ul class="active-speaker-issues active-speaker-issues--warning">' + reasons.map(function(reason) {
         return '<li>' + escapeHtml(reason) + '</li>';
       }).join('') + '</ul>' +
+    '</div>';
+  }
+  function renderQuietTestSessionActions() {
+    if (!quietTestControlsOpen()) return '';
+    return '<div class="active-speaker-actions">' +
+      '<button type="button" class="btn btn--danger" data-act="stop-active-speaker">Stop</button>' +
+      '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup">Exit test setup</button>' +
+      '<span class="setting-row__hint">Test controls are open for this driver. Stop immediately if anything sounds wrong.</span>' +
     '</div>';
   }
   function renderOutputReadinessCard() {
@@ -1805,17 +2295,18 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (outputTopology.readinessChecking) {
       return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Selected driver</p>' +
-        '<p class="setting-row__hint">Preparing the selected driver. No sound will play.</p></div>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Getting the test ready</p>' +
+        '<p class="setting-row__hint">JTS is checking the saved setup for the selected driver. No sound is playing.</p></div>' +
         '<span class="status-pill">preparing</span></div>' +
       '</div>';
     }
     if (outputTopology.readinessError) {
       return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Selected driver</p>' +
-        '<p class="setting-row__hint">JTS could not prepare that driver. The saved speaker layout is still available.</p></div>' +
-        '<span class="status-pill status-pill--blocked">check failed</span></div>' +
+        '<div class="output-card__head"><div><p class="output-card__title">One setup step is needed</p>' +
+        '<p class="setting-row__hint">No sound played. Follow the message below, then choose the driver again.</p></div>' +
+        '<span class="status-pill">not ready yet</span></div>' +
         '<p class="setting-row__hint">' + escapeHtml(outputTopology.readinessError) + '</p>' +
+        renderQuietTestTargetChoices() +
       '</div>';
     }
     var readiness = outputTopology.readiness;
@@ -1824,14 +2315,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return '<div class="output-card output-card--readiness">' +
         '<div class="output-card__head"><div><p class="output-card__title">Choose first driver</p>' +
         '<p class="setting-row__hint">' + escapeHtml(choices ?
-          'Choose one confirmed driver. JTS will prepare it, but no sound plays yet.' :
-          'Confirm outputs first, then choose one driver for the first quiet test.') + '</p></div>' +
+          'Choose the driver you want to hear first. JTS will check the safe audio path before any sound can play.' :
+          'Confirm outputs first, then choose one driver to test.') + '</p></div>' +
         '<span class="status-pill">' + escapeHtml(choices ? 'next' : 'confirm outputs') + '</span></div>' +
         choices +
       '</div>';
     }
     var target = readiness.target || {};
-    var statusValue = readiness.preconditions_passed ? 'ready' : 'needs one step';
+    var statusValue = readiness.preconditions_passed ? 'ready' : 'not ready yet';
     return '<div class="output-card output-card--readiness">' +
       '<div class="output-card__head"><div><p class="output-card__title">Selected driver</p>' +
         '<p class="setting-row__hint">' + escapeHtml(target.label || 'Selected channel') + '</p></div>' +
@@ -1842,6 +2333,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<p class="setting-row__hint">' + escapeHtml(readiness.next_step || 'No sound was played.') + '</p>' +
       renderOutputReadinessActions(readiness) +
       renderOutputReadinessPlayback(outputTopology.readinessPlayback) +
+      ((quietTestControlsOpen() && activeSpeakerSelectedReadinessTarget()) ? renderActiveSpeakerLevel() : '') +
+      renderQuietTestSessionActions() +
     '</div>';
   }
   function renderOutputReadinessActions(readiness) {
@@ -1858,7 +2351,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'Preparing' : 'Preview test signal';
     var roleLabel = humanRole(target.role || 'channel').toLowerCase();
     var playLabel = outputTopology.readinessPlaybackChecking === 'audio' ?
-      'Playing' : 'Start quiet ' + roleLabel + ' test';
+      'Playing' : 'Start very quiet ' + roleLabel + ' tone';
     var hints = [];
     if (lockReason) hints.push(lockReason);
     if (readiness && readiness.preconditions_passed && !atFloor && !floorConfirmed) {
@@ -1906,7 +2399,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderActiveSpeakerStatus() {
     if (activeSpeaker.loading) {
       return '<div class="output-card output-card--active-status">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Prepare first quiet test</p>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Measure drivers</p>' +
         '<p class="setting-row__hint">Checking the saved setup. No sound will play.</p></div>' +
         '<span class="status-pill">checking</span></div>' +
       '</div>';
@@ -1914,7 +2407,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (activeSpeaker.error && !activeSpeaker.payload) {
       return '<div class="output-card output-card--active-status active-speaker-status__stack">' +
         '<div class="row-between active-speaker-status__head">' +
-          '<div><p class="output-card__title">Prepare first quiet test</p>' +
+          '<div><p class="output-card__title">Measure drivers</p>' +
           '<p class="setting-row__hint">JTS could not check the saved setup. No sound was played.</p></div>' +
           '<span class="status-pill status-pill--blocked">check failed</span>' +
         '</div>' +
@@ -1923,14 +2416,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }
     if (!activeSpeaker.payload) {
-      return '<div class="output-card output-card--active-status active-speaker-status__stack">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Prepare first quiet test</p>' +
-          '<p class="setting-row__hint">JTS checks the saved setup, keeps test volume at its quietest setting, and will not play sound yet.</p></div>' +
-        '<span class="status-pill">next</span></div>' +
-        '<div class="active-speaker-actions">' +
-          '<button type="button" class="btn btn--primary" data-act="refresh-active-speaker">Prepare first quiet test</button>' +
-        '</div>' +
-      '</div>';
+      return '';
     }
     var p = activeSpeaker.payload || {};
     var safe = p.safe_playback || {};
@@ -1941,33 +2427,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var ok = !!p.ok_to_load_active_config;
     var envIssues = Array.isArray(p.issues) ? p.issues.slice(0, 4) : [];
     var sessionIssues = Array.isArray(session.issues) ? session.issues.slice(0, 4) : [];
-    var stagedReady = staged.status === 'staged';
-    var startupReady = startupState.status === 'loaded' &&
-      !!startupState.rollback_available &&
-      !!startupState.current_config_matches_loaded;
+    var stagedReady = quietTestStagedReady(staged);
+    var startupReady = quietTestStartupReady(startup);
     var armed = session.status === 'armed';
     var canStageFromIssues = activeSpeakerCanStageFromIssues(envIssues);
+    if (!activeSpeaker.error && (armed || stagedReady || startupReady || ok || canStageFromIssues)) {
+      return '';
+    }
     var statusLabel = armed ? 'ready' :
-      (startupReady ? 'step 3 of 3' : (stagedReady ? 'step 2 of 3' : ((ok || canStageFromIssues) ? 'next' : 'needs one step')));
+      (startupReady ? 'open controls' : (stagedReady ? 'continue setup' : ((ok || canStageFromIssues) ? 'next' : 'check setup')));
     var nextCopy = armed ?
-      'Quiet test mode is ready. Choose one confirmed driver when you are ready to start quietly.' :
+      'Choose a confirmed driver when you are ready to start very quietly.' :
       (startupReady ?
-        'One more setup step opens the quiet test controls. No sound plays yet.' :
+        'One more setup step opens the driver test controls. No sound plays yet.' :
         (stagedReady ?
-          'Continue setup to load the quiet test DSP. No sound plays yet.' :
+          'Continue setup to load the driver test DSP. No sound plays yet.' :
           ((ok || canStageFromIssues) ?
-            'JTS can set up quiet test mode now. This does not play sound.' :
-            'JTS needs one setup item fixed before quiet test mode.')));
+            'Choose a driver to start the first safe test.' :
+            'JTS needs one setup item fixed before it can test a driver.')));
     return '<div class="output-card output-card--active-status active-speaker-status__stack">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Prepare first quiet test</p>' +
+      '<div class="output-card__head"><div><p class="output-card__title">Measure drivers</p>' +
         '<p class="setting-row__hint">' + escapeHtml(nextCopy) + '</p></div>' +
         '<span class="status-pill' + (armed ? ' status-pill--ready' : '') + '">' +
           escapeHtml(statusLabel) + '</span></div>' +
       (activeSpeaker.error ? '<p class="setting-row__hint">' + escapeHtml(activeSpeaker.error) + '</p>' : '') +
-      renderActiveSpeakerIssues(envIssues, sessionIssues) +
+      ((!stagedReady && (ok || canStageFromIssues)) ? '' : renderActiveSpeakerIssues(envIssues, sessionIssues)) +
       renderActiveSpeakerActions(ok, session, envIssues) +
       ((armed && activeSpeakerSelectedReadinessTarget()) ? renderActiveSpeakerLevel() : '') +
-      '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'No sound plays until you explicitly start a quiet test.') + '</p>' +
+      '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'No sound plays until you explicitly start a driver test.') + '</p>' +
     '</div>';
   }
   function activeSpeakerLevelConfig() {
@@ -2002,7 +2489,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return target;
   }
   function activeSpeakerTargetLabel(target) {
-    if (!target) return 'Choose a driver for the first quiet test first';
+    if (!target) return 'Choose a driver to test first';
     return target.label || [
       target.speaker_label || target.speaker_group_id || 'Speaker',
       humanRole(target.role || target.driver_role || 'channel'),
@@ -2012,7 +2499,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ].filter(Boolean).join(' · ');
   }
   function activeSpeakerAutoLevelLabel(autoLevel) {
-    if (!autoLevel || !autoLevel.kind) return 'Choose a driver, play a quiet test, then adjust.';
+    if (!autoLevel || !autoLevel.kind) return 'Choose a driver, play the starting tone, then adjust.';
     return autoLevel.reason || (autoLevel.status || 'hold').replace(/_/g, ' ');
   }
   function renderActiveSpeakerLevel() {
@@ -2089,7 +2576,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<button type="button" class="btn btn--ghost" data-act="active-mic-observation">Record reading</button>' +
         '</div>' +
         '<p class="setting-row__hint">' + escapeHtml(activeSpeakerMicRecommendation(meter.recommendation)) + '</p>' +
-        '<p class="setting-row__hint">The mic reading helps JTS decide whether to hold, lower, or raise the next quiet test.</p>' +
+        '<p class="setting-row__hint">The mic reading helps JTS decide whether to hold, lower, or raise the next driver test.</p>' +
       '</div>' +
       (issues.length ? '<ul class="active-speaker-issues">' + issues.slice(0, 3).map(function(issue) {
         return '<li>' + escapeHtml('Test volume: ' + (issue.code || 'issue')) + '</li>';
@@ -2100,7 +2587,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var rows = friendlySetupIssueList(envIssues, sessionIssues);
     if (!rows.length) return '';
     return '<div class="active-speaker-note">' +
-      '<p class="setting-row__title">What needs attention</p>' +
+      '<p class="setting-row__title">Finish this first</p>' +
       '<ul class="active-speaker-issues active-speaker-issues--warning">' + rows.slice(0, 3).map(function(reason) {
       return '<li>' + escapeHtml(reason) + '</li>';
     }).join('') + '</ul></div>';
@@ -2126,7 +2613,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--danger" data-act="stop-active-speaker">Stop</button>' +
         '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup">Exit quiet mode</button>' +
-        '<span class="setting-row__hint">Quiet test mode is ready. Choose a driver below, then start at the quietest level.</span>' +
+        '<span class="setting-row__hint">Choose a driver below, then start at the quietest level.</span>' +
       '</div>';
     }
     if (!stagedReady) {
@@ -2136,14 +2623,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</div>';
       }
       return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="stage-active-config"' + stageDisabled + '>Set up quiet test mode</button>' +
-        '<span class="setting-row__hint">Step 1 of 3: build the quiet test setup. No sound will play.</span>' +
+        '<button type="button" class="btn btn--primary" data-act="stage-active-config"' + stageDisabled + '>Prepare driver test</button>' +
+        '<span class="setting-row__hint">JTS checks the safe audio path before any driver test.</span>' +
       '</div>';
     }
     if (!startupReady) {
       return '<div class="active-speaker-actions">' +
         '<button type="button" class="btn btn--primary" data-act="load-active-startup">Continue setup</button>' +
-        '<span class="setting-row__hint">Step 2 of 3: load the quiet test setup. No sound will play.</span>' +
+        '<span class="setting-row__hint">JTS is getting the safe audio path ready. No sound will play.</span>' +
       '</div>';
     }
     if (!ok) {
@@ -2152,9 +2639,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>';
     }
     return '<div class="active-speaker-actions">' +
-      '<button type="button" class="btn btn--primary" data-act="arm-active-speaker">Open test controls</button>' +
+      '<button type="button" class="btn btn--primary" data-act="arm-active-speaker">Continue</button>' +
       '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup">Exit quiet mode</button>' +
-      '<span class="setting-row__hint">Step 3 of 3: open controls at the quietest setting. It does not play sound by itself.</span>' +
+      '<span class="setting-row__hint">This opens the driver test controls at the quietest setting.</span>' +
     '</div>';
   }
   function rangeRow(label, value, min, max, opts) {
@@ -2560,10 +3047,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'check-output-readiness') { checkOutputPlaybackReadiness(t); }
     else if (act === 'play-output-readiness-tone') { playOutputReadinessTone(t); }
     else if (act === 'active-floor-result') { recordFloorAudioResult(t); }
+    else if (act === 'prepare-summed-test') { prepareSummedTest(t); }
+    else if (act === 'record-summed-validation') { recordSummedValidation(t); }
+    else if (act === 'compile-baseline-profile') { compileBaselineProfile(); }
+    else if (act === 'apply-baseline-profile') { applyBaselineProfile(); }
     else if (act === 'stage-active-config') { stageActiveSpeakerConfig(); }
     else if (act === 'load-active-startup') { loadActiveStartupConfig(); }
     else if (act === 'rollback-active-startup') { rollbackActiveStartupConfig(); }
-    else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Starting quiet test mode'); }
+    else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Opening test controls'); }
     else if (act === 'stop-active-speaker') { activeSpeakerPost('./active-speaker/stop', 'Stopping'); }
     else if (act === 'active-level') {
       updateActiveSpeakerLevel(t.getAttribute('data-level-action') || 'set');
@@ -2620,6 +3111,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       driverResearch.parsed = null;
       driverResearch.dirty = true;
       updateDriverResearchImportSummary();
+      return;
+    }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-manual-driver')) {
+      setManualDriverField(
+        ev.target.getAttribute('data-manual-driver') || '',
+        ev.target.getAttribute('data-manual-field') || '',
+        ev.target.value
+      );
+      return;
+    }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-manual-crossover')) {
+      setManualCrossoverField(
+        ev.target.getAttribute('data-manual-crossover') || '',
+        ev.target.getAttribute('data-manual-field') || '',
+        ev.target.value
+      );
       return;
     }
     var field = ev.target.getAttribute('data-field');
@@ -2684,6 +3191,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (ev.target.id === 'active-speaker-mic-clipping') {
       activeSpeakerMicObservation.clipping = ev.target.checked;
+      return;
+    }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-manual-crossover')) {
+      setManualCrossoverField(
+        ev.target.getAttribute('data-manual-crossover') || '',
+        ev.target.getAttribute('data-manual-field') || '',
+        ev.target.value
+      );
       return;
     }
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
@@ -2872,6 +3387,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       } catch (previewError) {
         crossoverPreview.payload = null;
         crossoverPreview.error = previewError.message;
+      }
+      try {
+        patchActiveSpeaker({measurements: await fetchActiveSpeakerMeasurements()});
+      } catch (measurementError) {
+        patchActiveSpeaker({measurements: activeSpeaker.measurements || null});
+      }
+      try {
+        patchActiveSpeaker({baselineProfile: await fetchActiveSpeakerBaselineProfile()});
+      } catch (profileError) {
+        patchActiveSpeaker({baselineProfile: activeSpeaker.baselineProfile || null});
       }
     } catch (e) {
       outputTopology.loading = false;
@@ -3132,7 +3657,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (prompt) prompt.value = driverResearchPrompt(currentOutputTopology());
   }
   function updateDriverResearchImportSummary() {
-    var summary = el('driver-research-summary');
+    var summary = el('driver-research-import-summary');
     if (summary) summary.innerHTML = renderDriverResearchSummary();
   }
   async function copyDriverResearchPrompt() {
@@ -3157,13 +3682,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     try {
       var payload = JSON.parse(driverResearch.importText || '');
       driverResearch.parsed = summarizeDriverResearchPayload(payload);
+      applyDriverResearchToManualSettings(payload);
       driverResearch.error = '';
       driverResearch.dirty = true;
-      status('Driver research JSON parsed. Review it before using any values.');
+      status('Imported driver research. Review the visible crossover settings before saving.');
     } catch (e) {
       driverResearch.parsed = null;
       driverResearch.error = e.message;
-      status('Driver research JSON needs review: ' + e.message, true);
+      status('Imported JSON needs review: ' + e.message, true);
     }
     render();
   }
@@ -3172,20 +3698,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!driverResearch.dirty && driverResearchStepSatisfied() && options.nextStep) {
       outputStepOverride = options.nextStep;
       status(driverResearchCanPreparePreview() ?
-        'Driver research is already saved. Continue with output mapping.' :
-        'Driver research is skipped for now. Continue with output mapping.');
+        'Crossover settings are already saved. Continue with output mapping.' :
+        'Driver details are optional for now. Continue with output mapping.');
       render();
       return true;
     }
     if (outputTopology.dirty) {
-      status('Save the speaker layout before saving driver research.', true);
+      status('Save the speaker layout before saving crossover settings.', true);
       return false;
     }
     if (!currentOutputTopology()) {
       status('Load output hardware before saving a speaker design draft.', true);
       return false;
     }
+    var manualPayload = manualSettingsPayload(currentOutputTopology());
     var researchPayload = null;
+    var importWarning = '';
     if ((driverResearch.importText || '').trim()) {
       try {
         researchPayload = JSON.parse(driverResearch.importText);
@@ -3193,10 +3721,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         driverResearch.error = '';
       } catch (e) {
         driverResearch.parsed = null;
-        driverResearch.error = e.message;
-        status('Driver research JSON needs review: ' + e.message, true);
-        render();
-        return false;
+        researchPayload = null;
+        importWarning = e.message;
+        driverResearch.error = manualPayload
+          ? 'Imported JSON was not saved: ' + e.message
+          : e.message;
+        if (!manualPayload) {
+          status('Imported JSON needs review: ' + e.message, true);
+          render();
+          return false;
+        }
       }
     }
     driverResearch.saving = true;
@@ -3208,6 +3742,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         headers: jsonHeaders(),
         body: JSON.stringify({
           operator_inputs: driverResearch.inputs,
+          manual_settings: manualPayload,
           driver_research: researchPayload
         })
       });
@@ -3217,9 +3752,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       crossoverPreview.payload = null;
       crossoverPreview.error = '';
       if (options.nextStep) outputStepOverride = options.nextStep;
-      status(payload.status === 'blocked' && payload.driver_research ?
-        'Saved driver research. No filters were applied and no sound was played.' :
-        'Saved speaker design draft. No filters were applied and no sound was played.');
+      status(importWarning
+        ? 'Saved visible crossover settings. Imported JSON was not saved.'
+        : 'Saved crossover settings. No filters were applied and no sound was played.');
       render();
       return true;
     } catch (e) {
@@ -3236,7 +3771,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return false;
     }
     if (!driverResearchCanPreparePreview()) {
-      status('Save driver research before preparing the crossover preview.', true);
+      status('Save crossover settings before preparing the preview.', true);
       return false;
     }
     crossoverPreview.preparing = true;
@@ -3260,6 +3795,72 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Could not prepare crossover preview: ' + e.message, true);
       render();
       return false;
+    }
+  }
+  function missingSoftwareGuardTargets() {
+    var out = [];
+    var topology = currentOutputTopology();
+    outputGroups(topology).forEach(function(group) {
+      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
+        var statusValue = channel.protection_status || 'unknown';
+        if (!channel.protection_required ||
+            statusValue === 'present' ||
+            statusValue === 'software_guard_requested') return;
+        out.push({
+          groupId: group.id,
+          role: channel.role,
+          label: (group.label || group.id) + ' ' + humanRole(channel.role)
+        });
+      });
+    });
+    return out;
+  }
+  async function ensureSoftwareGuardsForDriverTest() {
+    var missing = missingSoftwareGuardTargets();
+    if (!missing.length) return;
+    status('Setting the software guard for high-frequency outputs. No sound will play.');
+    outputTopology.protectionSaving = missing[0].groupId + ':' + missing[0].role;
+    render();
+    for (var i = 0; i < missing.length; i += 1) {
+      ingestOutputTopology(await saveOutputChannelProtectionState(
+        missing[i].groupId,
+        missing[i].role,
+        'software_guard_requested'
+      ));
+    }
+    if (!await saveDriverResearchDraft({internal: true})) {
+      throw new Error('Save crossover settings before testing this driver. No sound was played.');
+    }
+  }
+  async function ensureFreshCrossoverPreviewForDriverTest() {
+    if (crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload)) return;
+    if (!driverResearchCanPreparePreview()) return;
+    crossoverPreview.preparing = true;
+    crossoverPreview.error = '';
+    status('Refreshing the crossover preview for this driver test. No sound will play.');
+    render();
+    try {
+      var resp = await fetch('./active-speaker/crossover-preview', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({})
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
+      ingestCrossoverPreview(payload);
+      if (!crossoverPreviewReadyForProtectedStaging(payload)) {
+        throw new Error(setupFailureMessage(
+          payload,
+          'Save crossover settings before testing this driver. No sound was played.'
+        ));
+      }
+    } catch (e) {
+      crossoverPreview.preparing = false;
+      crossoverPreview.error = e.message;
+      throw new Error(setupFailureMessage(
+        {error: e.message},
+        'JTS could not refresh the crossover preview. No sound was played.'
+      ));
     }
   }
   async function advanceOutputStep(step) {
@@ -3301,12 +3902,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         return;
       }
       openOutputStep('safety');
-      status('Outputs are confirmed. Continue with the first quiet test.');
+      status('Outputs are confirmed. Continue with driver measurements.');
       return;
     }
     if (step === 'safety') {
+      if (driverMeasurementsComplete()) {
+        openOutputStep('profile');
+        status('Driver measurements are saved. Continue with the combined crossover check.');
+        return;
+      }
       outputStepOverride = 'safety';
-      status('Use this card to start quiet, listen to one driver, and raise only in bounded steps.');
+      status('Measure each active driver before saving the active profile.');
+      render();
+      return;
+    }
+    if (step === 'profile') {
+      outputStepOverride = 'profile';
+      status(baselineProfileApplied() ?
+        'The active speaker profile is applied.' :
+        'Finish the combined crossover check, then save and apply the active profile.');
       render();
     }
   }
@@ -3389,7 +4003,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       })
     });
     var payload = await resp.json();
-    if (!resp.ok) throw new Error(payload.error || 'channel quiet test setup update failed');
+    if (!resp.ok) throw new Error(payload.error || 'channel driver-test setup update failed');
     return payload;
   }
   async function fetchOutputPlaybackReadiness(groupId, role) {
@@ -3405,9 +4019,124 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!resp.ok) throw new Error(payload.error || 'playback readiness failed');
     return payload;
   }
+  async function postActiveSpeakerSetup(path, fallback) {
+    var resp = await fetch(path, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: '{}'
+    });
+    var payload = await resp.json();
+    if (!resp.ok) throw new Error(setupFailureMessage(payload, fallback));
+    return payload;
+  }
+  function setupFailureMessage(payload, fallback) {
+    payload = payload || {};
+    var candidates = [];
+    if (payload.error) candidates.push(payload.error);
+    if (payload.message) candidates.push(payload.message);
+    var report = payload.report || {};
+    if (report.message) candidates.push(report.message);
+    if (payload.load && payload.load.message) candidates.push(payload.load.message);
+    [payload.issues, report.issues, payload.blockers].forEach(function(items) {
+      if (!Array.isArray(items)) return;
+      items.forEach(function(issue) {
+        if (!issue) return;
+        candidates.push(issue.message || issue.label || issue.code);
+      });
+    });
+    var friendly = candidates.map(friendlySetupReason).filter(Boolean);
+    return friendly[0] || fallback ||
+      'JTS could not get the safe audio path ready. No sound was played.';
+  }
+  async function ensureQuietTestControlsOpen(label) {
+    if (quietTestControlsOpen()) return;
+    if (outputTopology.dirty) {
+      throw new Error('Save the speaker layout before starting a driver test.');
+    }
+    patchActiveSpeaker({
+      loading: false,
+      action: 'Getting safe test ready',
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    });
+    render();
+
+    if (!quietTestStagedReady()) {
+      await ensureSoftwareGuardsForDriverTest();
+      await ensureFreshCrossoverPreviewForDriverTest();
+      var staged = await postActiveSpeakerSetup(
+        './active-speaker/stage-config',
+        'Save crossover settings and confirm outputs before starting a driver test.'
+      );
+      if (staged.status !== 'staged') {
+        throw new Error(setupFailureMessage(
+          staged,
+          'JTS could not prepare the saved speaker layout for testing. No sound was played.'
+        ));
+      }
+      patchActiveSpeaker({stagedConfig: staged});
+    }
+
+    var startupLoad = await fetchActiveSpeakerStartupLoad();
+    patchActiveSpeaker({startupLoad: startupLoad});
+    if (!quietTestStartupReady(startupLoad)) {
+      var pathPayload = await postActiveSpeakerSetup(
+        './active-speaker/check-path-safety',
+        'JTS could not verify the safe audio path. No sound was played.'
+      );
+      var pathReport = pathPayload.report || {};
+      if (pathPayload.startup_load) {
+        startupLoad = pathPayload.startup_load;
+        patchActiveSpeaker({startupLoad: startupLoad});
+      }
+      if (pathReport.load_gate && pathReport.load_gate !== 'ready') {
+        throw new Error(setupFailureMessage(
+          pathPayload,
+          'JTS could not verify the safe audio path. No sound was played.'
+        ));
+      }
+      var loaded = await postActiveSpeakerSetup(
+        './active-speaker/load-startup-config',
+        'JTS could not load the safe test setup. No sound was played.'
+      );
+      startupLoad = {
+        state: loaded.load || {},
+        preflight: loaded.preflight || {}
+      };
+      patchActiveSpeaker({startupLoad: startupLoad});
+      if (!quietTestStartupReady(startupLoad)) {
+        throw new Error(setupFailureMessage(
+          loaded,
+          'JTS could not load the safe test setup. No sound was played.'
+        ));
+      }
+    }
+
+    if (!quietTestControlsOpen()) {
+      var session = await postActiveSpeakerSetup(
+        './active-speaker/arm',
+        'JTS could not open the test controls. No sound was played.'
+      );
+      if (session.status !== 'armed') {
+        throw new Error(setupFailureMessage(
+          session,
+          'JTS could not open the test controls. No sound was played.'
+        ));
+      }
+      var nextLevel = session.calibration_level || activeSpeaker.calibrationLevel;
+      patchActiveSpeaker({
+        session: session,
+        calibrationLevel: nextLevel,
+        levelDbfs: nextLevel && nextLevel.test_signal ?
+          Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
+      });
+      await refreshActiveSpeakerRehearsal();
+    }
+    status('Ready to test ' + label + '. No sound has played yet.');
+  }
   async function checkOutputPlaybackReadiness(button) {
     if (outputTopology.dirty) {
-      status('Save the speaker layout before choosing the first quiet test channel.', true);
+      status('Save the speaker layout before choosing a driver to test.', true);
       return;
     }
     var groupId = button.getAttribute('data-group-id') || '';
@@ -3428,9 +4157,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.readinessPlaybackChecking = '';
     outputTopology.touched = true;
     activeSpeaker.stagedConfig = null;
-    if (needsSoftwareGuard) {
-      status('Preparing ' + label + ' for a quiet first test. No sound will play.');
-    }
+    status('Getting ' + label + ' ready. No sound will play yet.');
     render();
     try {
       if (needsSoftwareGuard) {
@@ -3441,14 +4168,27 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         ));
         outputTopology.protectionSaving = '';
       }
+      await ensureQuietTestControlsOpen(label);
       outputTopology.readiness = await fetchOutputPlaybackReadiness(groupId, role);
       outputTopology.readinessChecking = '';
-      status('Selected ' + label + ' for the first quiet test. No sound was played.');
+      patchActiveSpeaker({
+        loading: false,
+        action: '',
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status('Ready to test ' + label + '. Start at the quietest level.');
     } catch (e) {
       outputTopology.protectionSaving = '';
       outputTopology.readinessChecking = '';
       outputTopology.readinessError = e.message;
-      status('Could not prepare that driver for a quiet test: ' + e.message, true);
+      patchActiveSpeaker({
+        loading: false,
+        action: '',
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status('No sound played. ' + e.message);
     }
     render();
   }
@@ -3459,7 +4199,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var audio = button.getAttribute('data-audio') === 'true';
     if (audio && !await jtsConfirm(
       'Play one short quiet ' + humanRole(role).toLowerCase() + ' test on "' +
-        label + '"? JTS will use the quiet test setup, bounded test level, and Stop gate for this target.',
+        label + '"? JTS will use the safe test setup, bounded test level, and Stop gate for this target.',
       {danger: true}
     )) {
       return;
@@ -3521,7 +4261,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         })
       });
       var result = await resp.json();
-      if (!resp.ok) throw new Error(result.error || 'quiet-test result failed');
+      if (!resp.ok) throw new Error(result.error || 'driver-test result failed');
+      var measurementPayload = null;
+      var measurementWarning = '';
+      if (target && target.speaker_group_id && target.role) {
+        try {
+          measurementPayload = await postDriverMeasurement(target, outcome, playbackId);
+          patchActiveSpeaker({measurements: measurementPayload});
+        } catch (measurementErr) {
+          measurementWarning = measurementErr.message || 'measurement save failed';
+        }
+      }
       patchActiveSpeaker({
         loading: false, action: '',
         session: result,
@@ -3541,32 +4291,266 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
       await refreshActiveSpeakerRehearsal();
       var quiet = result.quiet_start || {};
-      status(quiet.floor_audio_confirmed ?
-        'Quiet test confirmed for this driver.' :
-        'Quiet test was not confirmed; return to the quietest setting before continuing.');
+      var latest = target && measurementPayload ?
+        (measurementPayload.summary || {}).latest_driver_measurements || {} : {};
+      var measured = target && latest[measurementTargetId(target.speaker_group_id, target.role)] &&
+        latest[measurementTargetId(target.speaker_group_id, target.role)].captured === true;
+      if (measured && driverMeasurementsComplete()) {
+        outputStepOverride = 'profile';
+      }
+      status(measurementWarning ?
+        'Driver result saved, but measurement evidence was not saved: ' + measurementWarning :
+        (measured ?
+          'Driver measurement saved.' :
+          (quiet.floor_audio_confirmed ?
+            'Driver result saved. Record a usable mic reading and test this driver again before saving the active profile.' :
+            'Driver result saved. Return to the quietest setting before continuing.')));
     } catch (e) {
       patchActiveSpeaker({
         loading: false, action: '',
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not record quiet-test result: ' + e.message, true);
+      status('Could not record driver-test result: ' + e.message, true);
+    }
+    render();
+  }
+  function currentMicObservationPayload() {
+    var out = {mic_clipping: !!activeSpeakerMicObservation.clipping};
+    var observed = Number(activeSpeakerMicObservation.observedDbfs);
+    if (isFinite(observed)) out.observed_mic_dbfs = observed;
+    return out;
+  }
+  async function postDriverMeasurement(target, outcome, playbackId) {
+    var body = Object.assign({
+      speaker_group_id: target.speaker_group_id,
+      role: target.role,
+      outcome: outcome,
+      playback_id: playbackId,
+      test_level_dbfs: activeSpeaker.levelDbfs
+    }, currentMicObservationPayload());
+    var resp = await fetch('./active-speaker/driver-measurement', {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify(body)
+    });
+    var payload = await resp.json();
+    if (!resp.ok) throw new Error(payload.error || 'driver measurement save failed');
+    return payload;
+  }
+  async function prepareSummedTest(button) {
+    var groupId = button.getAttribute('data-group-id') || '';
+    var label = button.getAttribute('data-label') || groupId || 'speaker';
+    if (!groupId) {
+      status('Choose the speaker group to test.', true);
+      return;
+    }
+    if (!await jtsConfirm(
+      'Play a short quiet combined test for "' + label +
+        '"? JTS uses the saved crossover and the same bounded test level.',
+      {danger: true}
+    )) {
+      return;
+    }
+    patchActiveSpeaker({
+      loading: false, action: 'Starting combined test',
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    });
+    render();
+    try {
+      var resp = await fetch('./active-speaker/summed-test', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          speaker_group_id: groupId,
+          audio: true,
+          duration_ms: 500
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'combined speaker test failed');
+      patchActiveSpeaker({
+        loading: false,
+        action: '',
+        session: payload.session || activeSpeaker.session,
+        measurements: payload.measurements || activeSpeaker.measurements,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      var playback = payload.playback || {};
+      var emitted = playback.audio_emitted === true;
+      status(emitted ?
+        'Combined speaker test played. Record what you heard.' :
+        'Combined speaker test did not play. Review the message in this card.',
+        !emitted);
+    } catch (e) {
+      patchActiveSpeaker({
+        loading: false, action: '',
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status('Could not start the combined speaker test: ' + e.message, true);
+    }
+    render();
+  }
+  async function recordSummedValidation(button) {
+    var groupId = button.getAttribute('data-group-id') || '';
+    var outcome = button.getAttribute('data-outcome') || '';
+    var summedTestId = button.getAttribute('data-summed-test-id') || '';
+    if (!groupId || !outcome) {
+      status('Choose a speaker group and validation result before saving the combined check.', true);
+      return;
+    }
+    if (!summedTestId) {
+      status('Run the combined speaker test first, then record what you heard.', true);
+      return;
+    }
+    patchActiveSpeaker({
+      loading: false, action: 'Saving combined check',
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    });
+    render();
+    try {
+      var body = Object.assign({
+        speaker_group_id: groupId,
+        outcome: outcome,
+        summed_test_id: summedTestId,
+        polarity: outcome === 'polarity_or_delay_problem' ? 'needs_review' : 'normal'
+      }, currentMicObservationPayload());
+      var resp = await fetch('./active-speaker/summed-validation', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(body)
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'combined crossover check failed');
+      patchActiveSpeaker({
+        loading: false,
+        action: '',
+        measurements: payload,
+        baselineProfile: activeSpeaker.baselineProfile,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      if (summedValidationComplete()) outputStepOverride = 'profile';
+      status(outcome === 'blend_ok' ?
+        'Combined crossover check saved.' :
+        'Combined crossover result saved; adjust the crossover before applying a profile.');
+    } catch (e) {
+      patchActiveSpeaker({
+        loading: false, action: '',
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status('Could not save combined crossover check: ' + e.message, true);
+    }
+    render();
+  }
+  async function compileBaselineProfile() {
+    if (!summedValidationComplete()) {
+      status('Measure each driver and save the combined crossover check before saving the active profile.', true);
+      return;
+    }
+    patchActiveSpeaker({
+      loading: false, action: 'Saving active profile',
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    });
+    render();
+    try {
+      var resp = await fetch('./active-speaker/baseline-profile', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: '{}'
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'active profile save failed');
+      patchActiveSpeaker({
+        loading: false, action: '',
+        baselineProfile: payload,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status(payload.permissions && payload.permissions.may_apply ?
+        'Active profile saved. Apply it when you are ready.' :
+        (baselineProfileApplyBlocked(payload) ?
+          'Active profile saved for review. This hardware path cannot be applied from here yet.' :
+          'Active profile could not be saved yet; review the message in this card.'),
+        !(payload.permissions && payload.permissions.may_apply) &&
+          !baselineProfileApplyBlocked(payload));
+    } catch (e) {
+      patchActiveSpeaker({
+        loading: false, action: '',
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status('Could not save active profile: ' + e.message, true);
+    }
+    render();
+  }
+  async function applyBaselineProfile() {
+    var profile = activeSpeaker.baselineProfile || {};
+    var config = profile.config || {};
+    if (!(profile.permissions || {}).may_apply) {
+      status('Save a ready active profile before applying it.', true);
+      return;
+    }
+    if (!await jtsConfirm(
+      'Apply the active speaker profile "' + (config.basename || 'active speaker baseline') +
+        '"? This reloads CamillaDSP and makes it the normal speaker profile.',
+      {danger: true}
+    )) {
+      return;
+    }
+    patchActiveSpeaker({
+      loading: false, action: 'Applying active profile',
+      error: '',
+      levelDbfs: activeSpeaker.levelDbfs
+    });
+    render();
+    try {
+      var resp = await fetch('./active-speaker/baseline-profile/apply', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: '{}'
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'active profile apply failed');
+      patchActiveSpeaker({
+        loading: false, action: '',
+        baselineProfile: payload.profile || payload,
+        error: '',
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status(payload.status === 'applied' ?
+        'Active speaker profile applied.' :
+        'Active speaker profile was not applied; review the message in this card.',
+        payload.status !== 'applied');
+    } catch (e) {
+      patchActiveSpeaker({
+        loading: false, action: '',
+        error: e.message,
+        levelDbfs: activeSpeaker.levelDbfs
+      });
+      status('Could not apply active profile: ' + e.message, true);
     }
     render();
   }
   async function stageActiveSpeakerConfig() {
     if (outputTopology.dirty) {
-      status('Save the speaker layout before preparing quiet test mode.', true);
+      status('Save the speaker layout before testing a driver.', true);
       return;
     }
     if (!await jtsConfirm(
-      'Prepare the first quiet test from the saved speaker layout? JTS will build the quiet test setup, but it will not load CamillaDSP or play sound yet.',
+      'Check the saved speaker layout before testing a driver? No sound will play yet.',
       {danger: false}
     )) {
       return;
     }
     patchActiveSpeaker({
-      loading: false, action: 'Preparing quiet test mode',
+      loading: false, action: 'Preparing driver test',
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -3588,8 +4572,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: activeSpeaker.levelDbfs
       });
       status(payload.status === 'staged' ?
-        'Quiet test mode is prepared. Continue when you are ready; no sound was played.' :
-        'Quiet test mode needs one more setup step before it can continue.',
+        'Setup checked. Continue when you are ready; no sound was played.' :
+        'JTS could not get the driver test ready yet. Review the message in this card; no sound was played.',
         payload.status !== 'staged');
     } catch (e) {
       patchActiveSpeaker({
@@ -3597,7 +4581,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not prepare quiet test mode: ' + e.message, true);
+      status('Could not get the driver test ready: ' + e.message, true);
     }
     render();
   }
@@ -3715,7 +4699,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   async function applyActiveSpeakerAutoLevel() {
     var target = activeSpeakerSelectedReadinessTarget();
     if (!target) {
-      status('Choose one confirmed driver for the first quiet test before applying a guided level step.', true);
+      status('Choose a confirmed driver before applying a guided level step.', true);
       return;
     }
     var input = el('active-speaker-mic-dbfs');
@@ -3807,6 +4791,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!resp.ok) throw new Error('commissioning rehearsal failed');
     return await resp.json();
   }
+  async function fetchActiveSpeakerMeasurements() {
+    var resp = await fetch('./active-speaker/measurements', {cache: 'no-store'});
+    if (!resp.ok) throw new Error('active-speaker measurements failed');
+    return await resp.json();
+  }
+  async function fetchActiveSpeakerBaselineProfile() {
+    var resp = await fetch('./active-speaker/baseline-profile', {cache: 'no-store'});
+    if (!resp.ok) throw new Error('active-speaker baseline profile failed');
+    return await resp.json();
+  }
   async function refreshActiveSpeakerRehearsal() {
     try {
       patchActiveSpeaker({rehearsal: await fetchActiveSpeakerCommissioningRehearsal()});
@@ -3821,7 +4815,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   async function checkActivePathSafety() {
     patchActiveSpeaker({
-      loading: false, action: 'Checking quiet test setup',
+      loading: false, action: 'Checking driver test setup',
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -3833,7 +4827,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         body: '{}'
       });
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'quiet-test setup check failed');
+      if (!resp.ok) throw new Error(payload.error || 'driver-test setup check failed');
       var ready = payload.report && payload.report.ok_to_load_active_config;
       var environment = await fetchActiveSpeakerEnvironment();
       patchActiveSpeaker({
@@ -3844,8 +4838,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: activeSpeaker.levelDbfs
       });
       status(ready ?
-        'Quiet test setup check passed. No sound was played.' :
-        'Quiet test setup needs one more step. No sound was played.',
+        'Setup check passed. No sound was played.' :
+        'Setup needs one more step. No sound was played.',
         !ready);
     } catch (e) {
       patchActiveSpeaker({
@@ -3853,19 +4847,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not check quiet test setup: ' + e.message, true);
+      status('Could not check driver test setup: ' + e.message, true);
     }
     render();
   }
   async function loadActiveStartupConfig() {
     if (!await jtsConfirm(
-      'Continue preparing the first quiet test? This reloads the quiet test setup but does not play sound or change the test level.',
+      'Continue preparing the driver test? This reloads the safe test setup but does not play sound or change the test level.',
       {danger: false}
     )) {
       return;
     }
     patchActiveSpeaker({
-      loading: false, action: 'Loading quiet test mode',
+      loading: false, action: 'Loading test setup',
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -3877,7 +4871,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         body: '{}'
       });
       var pathPayload = await pathResp.json();
-      if (!pathResp.ok) throw new Error(pathPayload.error || 'quiet-test path check failed');
+      if (!pathResp.ok) throw new Error(pathPayload.error || 'driver-test path check failed');
       var pathReport = pathPayload.report || {};
       if (pathPayload.startup_load) {
         activeSpeaker.startupLoad = pathPayload.startup_load;
@@ -3893,11 +4887,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           bringup: activeSpeaker.bringup,
           startupLoad: pathPayload.startup_load || activeSpeaker.startupLoad,
           rehearsal: activeSpeaker.rehearsal,
+          measurements: activeSpeaker.measurements,
+          baselineProfile: activeSpeaker.baselineProfile,
           error: '',
           levelDbfs: activeSpeaker.levelDbfs
         };
         status(pathReport.message ||
-          'Quiet test mode needs one more setup step before it can continue.', true);
+          'Continue setup is not ready yet. Review the message in this card; no sound was played.', true);
         render();
         return;
       }
@@ -3919,8 +4915,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var loaded = payload.load && payload.load.status === 'loaded';
       status(loaded ?
-        'Quiet test mode is loaded. No sound was played.' :
-        'Quiet test mode needs one more setup step before it can continue.',
+        'Driver test setup is loaded. No sound was played.' :
+        'Continue setup did not finish. Review the message in this card; no sound was played.',
         !loaded);
     } catch (e) {
       patchActiveSpeaker({
@@ -3928,19 +4924,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not load quiet test mode: ' + e.message, true);
+      status('Could not load the driver test setup: ' + e.message, true);
     }
     render();
   }
   async function rollbackActiveStartupConfig() {
     if (!await jtsConfirm(
-      'Exit quiet test mode and restore the previous DSP setup? This reloads CamillaDSP but does not play sound.',
+      'Exit driver test setup and restore the previous DSP setup? This reloads CamillaDSP but does not play sound.',
       {danger: false}
     )) {
       return;
     }
     patchActiveSpeaker({
-      loading: false, action: 'Exiting quiet test mode',
+      loading: false, action: 'Exiting test setup',
       error: '',
       levelDbfs: activeSpeaker.levelDbfs
     });
@@ -3965,8 +4961,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
       var rolledBack = payload.rollback && payload.rollback.status === 'rolled_back';
       status(rolledBack ?
-        'Exited quiet test mode. No sound was played.' :
-        'Could not exit quiet test mode yet; review the setup state.',
+        'Exited driver test setup. No sound was played.' :
+        'Could not exit driver test setup yet; review the setup state.',
         !rolledBack);
     } catch (e) {
       patchActiveSpeaker({
@@ -3974,7 +4970,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: e.message,
         levelDbfs: activeSpeaker.levelDbfs
       });
-      status('Could not exit quiet test mode: ' + e.message, true);
+      status('Could not exit driver test setup: ' + e.message, true);
     }
     render();
   }
@@ -4001,7 +4997,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       ['rehearsal', function() { return fetch('./active-speaker/commissioning-rehearsal', {cache: 'no-store'}); },
         'commissioning rehearsal failed'],
       ['targets', function() { return fetch('./active-speaker/tone-targets', {cache: 'no-store'}); },
-        'tone targets failed']
+        'tone targets failed'],
+      ['measurements', function() { return fetch('./active-speaker/measurements', {cache: 'no-store'}); },
+        'active-speaker measurements failed'],
+      ['baselineProfile', function() { return fetch('./active-speaker/baseline-profile', {cache: 'no-store'}); },
+        'active-speaker baseline profile failed']
     ];
     var results = await Promise.allSettled(probes.map(function(probe) {
       return probe[1]().then(async function(resp) {

@@ -23,8 +23,11 @@ from .profile import (
 )
 from .camilla_yaml import (
     ACTIVE_STARTUP_CONFIG_NAME,
+    BASELINE_HEADROOM_DB,
+    BASELINE_LIMITER_CLIP_LIMIT_DB,
     STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
+    emit_active_speaker_baseline_config,
     emit_active_speaker_startup_config,
 )
 from .path_safety import (
@@ -94,13 +97,15 @@ from .playback import (
     stop_tone_playback,
     tone_backend_status,
 )
-from .topology_tone import build_topology_tone_plan
+from .topology_tone import build_summed_topology_tone_plan, build_topology_tone_plan
 from .staging import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     STAGED_CONFIG_PATH_ENV,
     STAGED_METADATA_PATH_ENV,
     STAGED_STARTUP_CONFIG_KIND,
+    compile_preset_from_crossover_preview,
     load_staged_startup_config,
+    resolve_active_playback_device,
     stage_protected_startup_config,
 )
 from .bringup import BRINGUP_PREFLIGHT_KIND, build_bringup_preflight
@@ -116,6 +121,7 @@ from .design_draft import (
     build_design_draft,
     load_design_draft,
     normalise_driver_research,
+    normalise_manual_settings,
     normalise_operator_inputs,
     save_design_draft,
 )
@@ -135,11 +141,31 @@ from .startup_load import (
     load_startup_load_state,
     rollback_protected_startup_config,
 )
+from .measurement import (
+    MEASUREMENT_STATE_KIND,
+    active_driver_targets,
+    active_summed_targets,
+    load_measurement_state,
+    measurement_state_path,
+    record_driver_measurement,
+    record_summed_test_artifact,
+    record_summed_validation,
+)
+from .baseline_profile import (
+    BASELINE_PROFILE_KIND,
+    build_baseline_profile_candidate,
+    apply_baseline_profile,
+    baseline_config_path,
+    baseline_profile_state_path,
+)
 
 __all__ = [
     "ACTIVE_STARTUP_CONFIG_NAME",
     "ACTIVE_BASELINE_KIND",
     "ACTIVE_PRESET_KIND",
+    "BASELINE_HEADROOM_DB",
+    "BASELINE_LIMITER_CLIP_LIMIT_DB",
+    "BASELINE_PROFILE_KIND",
     "CALIBRATION_LEVEL_KIND",
     "DEFAULT_PRESET_RESOURCE",
     "DEFAULT_PATH_SAFETY_EVIDENCE_PATH",
@@ -154,6 +180,7 @@ __all__ = [
     "ENVIRONMENT_REPORT_KIND",
     "HARDWARE_PROBE_EVIDENCE_SOURCE",
     "MAX_TEST_LEVEL_DBFS",
+    "MEASUREMENT_STATE_KIND",
     "MIN_TEST_LEVEL_DBFS",
     "OPERATOR_EVIDENCE_SOURCE",
     "PATH_SAFETY_EVIDENCE_ENV",
@@ -196,7 +223,12 @@ __all__ = [
     "calibration_level_payload",
     "clamp_test_level_dbfs",
     "classify_mic_meter",
+    "active_driver_targets",
+    "active_summed_targets",
+    "apply_baseline_profile",
     "auto_level_decision",
+    "baseline_config_path",
+    "baseline_profile_state_path",
     "driver_protection_payload",
     "driver_protection_profile",
     "load_calibration_level_state",
@@ -207,13 +239,19 @@ __all__ = [
     "build_commissioning_rehearsal",
     "build_design_draft",
     "build_crossover_preview",
+    "build_baseline_profile_candidate",
     "build_startup_load_preflight",
     "build_startup_load_path_safety_evidence",
+    "build_summed_topology_tone_plan",
     "build_topology_tone_plan",
+    "compile_preset_from_crossover_preview",
     "enabled_audio_backend",
+    "emit_active_speaker_baseline_config",
     "load_active_speaker_preset",
     "load_design_draft",
     "load_crossover_preview",
+    "load_measurement_state",
+    "measurement_state_path",
     "path_safety_evidence_path",
     "load_protected_startup_config",
     "load_startup_load_state",
@@ -222,12 +260,17 @@ __all__ = [
     "parse_camilla_statefile_config_path",
     "probe_active_speaker_environment",
     "normalise_driver_research",
+    "normalise_manual_settings",
     "normalise_operator_inputs",
     "required_driver_roles",
     "requirements_payload",
     "arm_safe_playback_session",
     "load_safe_playback_state",
     "record_safe_playback_result",
+    "record_driver_measurement",
+    "record_summed_test_artifact",
+    "record_summed_validation",
+    "resolve_active_playback_device",
     "rollback_protected_startup_config",
     "save_design_draft",
     "save_crossover_preview",

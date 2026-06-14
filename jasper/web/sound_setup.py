@@ -13,6 +13,8 @@ URL surface (after nginx strips /sound/):
   GET  /active-speaker/startup-load guarded startup-load/rollback state
   GET  /active-speaker/design-draft saved speaker design/research evidence
   GET  /active-speaker/crossover-preview saved no-audio crossover preview
+  GET  /active-speaker/measurements saved driver and summed validation evidence
+  GET  /active-speaker/baseline-profile active baseline compile/apply state
   GET  /active-speaker/tone-targets    preset-derived channel-test targets
   POST /preview  preview a draft profile's response without touching live audio
   POST /live-draft apply a draft to live audio without persisting
@@ -27,6 +29,11 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/rollback-startup-config restore pre-load config, no sound
   POST /active-speaker/design-draft persist speaker design/research evidence
   POST /active-speaker/crossover-preview persist no-audio crossover preview
+  POST /active-speaker/driver-measurement record one measured driver result
+  POST /active-speaker/summed-test run combined-driver test artifact/playback
+  POST /active-speaker/summed-validation record summed crossover validation
+  POST /active-speaker/baseline-profile compile active baseline YAML
+  POST /active-speaker/baseline-profile/apply explicitly apply active baseline
   POST /active-speaker/tone-plan prepare a bounded no-audio channel-test plan
   POST /active-speaker/play-tone run a bounded artifact/audio-gated tone test
   POST /active-speaker/floor-audio-result record operator result for floor tone
@@ -1298,15 +1305,19 @@ def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, 
     payload = save_design_draft(
         topology,
         driver_research=raw.get("driver_research"),
+        manual_settings=raw.get("manual_settings"),
         operator_inputs=raw.get("operator_inputs"),
     )
     logger.info(
         "event=sound.active_speaker_design_draft_save status=%s "
-        "topology_id=%s driver_count=%s candidate_count=%s issues=%d",
+        "topology_id=%s driver_count=%s candidate_count=%s "
+        "manual_driver_count=%s manual_candidate_count=%s issues=%d",
         payload.get("status"),
         topology.topology_id,
         (payload.get("summary") or {}).get("driver_count"),
         (payload.get("summary") or {}).get("crossover_candidate_count"),
+        (payload.get("summary") or {}).get("manual_driver_count"),
+        (payload.get("summary") or {}).get("manual_crossover_candidate_count"),
         len(payload.get("issues") or []),
     )
     return payload
@@ -1681,6 +1692,319 @@ def _active_speaker_floor_audio_result_payload(raw: dict[str, Any]) -> dict[str,
     return state
 
 
+def _active_speaker_measurements_payload() -> dict[str, Any]:
+    """Return active-speaker measurement evidence for the saved topology."""
+
+    from jasper.active_speaker.measurement import load_measurement_state
+
+    topology = load_output_topology()
+    payload = load_measurement_state(topology)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    logger.info(
+        "event=sound.active_speaker_measurements status=%s drivers=%s/%s "
+        "summed=%s/%s",
+        payload.get("status"),
+        summary.get("captured_driver_count"),
+        summary.get("required_driver_count"),
+        summary.get("validated_summed_group_count"),
+        summary.get("required_summed_group_count"),
+    )
+    return payload
+
+
+def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Record one operator/mic-backed driver measurement result."""
+
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.measurement import record_driver_measurement
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
+
+    if not isinstance(raw, dict):
+        raise ValueError("driver measurement request must be an object")
+    topology = load_output_topology()
+    payload = record_driver_measurement(
+        topology,
+        raw,
+        calibration_level=load_calibration_level_state(),
+        safe_session=load_safe_playback_state(),
+    )
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    logger.info(
+        "event=sound.active_speaker_driver_measurement status=%s "
+        "group_id=%s role=%s outcome=%s captured=%s drivers=%s/%s",
+        payload.get("status"),
+        raw.get("speaker_group_id"),
+        raw.get("role"),
+        raw.get("outcome"),
+        bool(
+            (summary.get("latest_driver_measurements") or {})
+            .get(f"{raw.get('speaker_group_id')}:{raw.get('role')}", {})
+            .get("captured")
+        )
+        if isinstance(summary.get("latest_driver_measurements"), dict)
+        else False,
+        summary.get("captured_driver_count"),
+        summary.get("required_driver_count"),
+    )
+    return payload
+
+
+def _active_speaker_crossover_frequency_for_group(
+    preview: dict[str, Any],
+    speaker_group_id: str,
+) -> float | None:
+    groups = preview.get("groups") if isinstance(preview.get("groups"), list) else []
+    for group in groups:
+        if not isinstance(group, dict) or group.get("group_id") != speaker_group_id:
+            continue
+        crossovers = (
+            group.get("crossovers")
+            if isinstance(group.get("crossovers"), list)
+            else []
+        )
+        for crossover in crossovers:
+            if not isinstance(crossover, dict):
+                continue
+            try:
+                frequency = float(crossover.get("proposed_frequency_hz"))
+            except (TypeError, ValueError):
+                continue
+            if frequency > 0:
+                return frequency
+    return None
+
+
+def _active_speaker_summed_test_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Run and record one bounded combined-driver test for validation."""
+
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import (
+        load_measurement_state,
+        record_summed_test_artifact,
+    )
+    from jasper.active_speaker.playback import enabled_audio_backend, start_tone_playback
+    from jasper.active_speaker.safe_playback import (
+        load_safe_playback_state,
+        record_safe_playback_result,
+    )
+    from jasper.active_speaker.startup_load import load_startup_load_state
+    from jasper.active_speaker.topology_tone import build_summed_topology_tone_plan
+
+    if not isinstance(raw, dict):
+        raise ValueError("summed test request must be an object")
+    topology = load_output_topology()
+    speaker_group_id = str(raw.get("speaker_group_id") or "").strip()
+    design_draft = load_design_draft()
+    preview = load_crossover_preview(current_design_draft=design_draft)
+    calibration_level = load_calibration_level_state()
+    measurements = load_measurement_state(topology)
+    safe_session = load_safe_playback_state()
+    startup_load = load_startup_load_state()
+    protected_loaded = bool(
+        startup_load.get("loaded")
+        and startup_load.get("rollback_available")
+        and startup_load.get("current_config_matches_loaded")
+    )
+    wants_audio = bool(raw.get("audio"))
+    plan = build_summed_topology_tone_plan(
+        topology,
+        speaker_group_id=speaker_group_id,
+        requested_frequency_hz=(
+            raw.get("frequency_hz")
+            or _active_speaker_crossover_frequency_for_group(preview, speaker_group_id)
+        ),
+        requested_level_dbfs=calibration_level.get("test_signal", {}).get(
+            "requested_level_dbfs"
+        ),
+        requested_duration_ms=raw.get("duration_ms"),
+        playback_allowed=(
+            wants_audio
+            and safe_session.get("status") == "armed"
+            and protected_loaded
+        ),
+        safe_session_id=safe_session.get("session_id"),
+        protected_startup_loaded=protected_loaded,
+    )
+    summary = (
+        measurements.get("summary")
+        if isinstance(measurements.get("summary"), dict)
+        else {}
+    )
+    if not summary.get("driver_measurements_complete"):
+        plan = {
+            **plan,
+            "status": "blocked",
+            "playback_allowed": False,
+            "would_play": False,
+            "issues": [
+                *(plan.get("issues") if isinstance(plan.get("issues"), list) else []),
+                {
+                    "severity": "blocker",
+                    "code": "summed_test_driver_measurements_missing",
+                    "message": "measure each driver before running the combined test",
+                },
+            ],
+        }
+    backend = enabled_audio_backend() if wants_audio else None
+    if wants_audio and backend is None:
+        plan = {
+            **plan,
+            "status": "blocked",
+            "playback_allowed": False,
+            "would_play": False,
+            "issues": [
+                *(plan.get("issues") if isinstance(plan.get("issues"), list) else []),
+                {
+                    "severity": "blocker",
+                    "code": "audio_backend_not_enabled",
+                    "message": (
+                        "audible combined-driver tests require explicit lab "
+                        "backend enablement"
+                    ),
+                },
+            ],
+        }
+    playback = start_tone_playback(
+        plan,
+        safe_session=safe_session,
+        backend=backend,
+        allow_audio=wants_audio,
+    )
+    session = record_safe_playback_result(playback)
+    measurement_payload = record_summed_test_artifact(
+        topology,
+        {
+            "speaker_group_id": speaker_group_id,
+            "playback": playback,
+            "plan": plan,
+        },
+    )
+    logger.info(
+        "event=sound.active_speaker_summed_test status=%s group_id=%s "
+        "level_dbfs=%s audio_requested=%s audio_emitted=%s blockers=%d "
+        "artifact=%s",
+        playback.get("status"),
+        speaker_group_id,
+        playback.get("tone", {}).get("level_dbfs"),
+        wants_audio,
+        bool(playback.get("audio_emitted")),
+        len(playback.get("issues") or []),
+        (playback.get("artifact") or {}).get("wav_basename"),
+    )
+    return {
+        "plan": plan,
+        "playback": playback,
+        "session": session,
+        "measurements": measurement_payload,
+    }
+
+
+def _active_speaker_summed_validation_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Record one summed crossover blend validation result."""
+
+    from jasper.active_speaker.calibration_level import load_calibration_level_state
+    from jasper.active_speaker.measurement import record_summed_validation
+
+    if not isinstance(raw, dict):
+        raise ValueError("summed validation request must be an object")
+    topology = load_output_topology()
+    payload = record_summed_validation(
+        topology,
+        raw,
+        calibration_level=load_calibration_level_state(),
+    )
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    logger.info(
+        "event=sound.active_speaker_summed_validation status=%s "
+        "group_id=%s outcome=%s validated=%s summed=%s/%s",
+        payload.get("status"),
+        raw.get("speaker_group_id"),
+        raw.get("outcome"),
+        bool(
+            (summary.get("latest_summed_validations") or {})
+            .get(str(raw.get("speaker_group_id") or ""), {})
+            .get("validated")
+        )
+        if isinstance(summary.get("latest_summed_validations"), dict)
+        else False,
+        summary.get("validated_summed_group_count"),
+        summary.get("required_summed_group_count"),
+    )
+    return payload
+
+
+def _active_speaker_baseline_profile_payload(
+    *,
+    write: bool = False,
+) -> dict[str, Any]:
+    """Return or compile the active-speaker baseline profile candidate."""
+
+    from jasper.active_speaker.baseline_profile import (
+        build_baseline_profile_candidate,
+    )
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import load_measurement_state
+
+    topology = load_output_topology()
+    design_draft = load_design_draft()
+    preview = load_crossover_preview(current_design_draft=design_draft)
+    measurements = load_measurement_state(topology)
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=write,
+    )
+    logger.info(
+        "event=sound.active_speaker_baseline_profile action=%s status=%s "
+        "may_apply=%s issue_count=%d config=%s",
+        "compile" if write else "status",
+        payload.get("status"),
+        bool((payload.get("permissions") or {}).get("may_apply")),
+        len(payload.get("issues") or []),
+        (payload.get("config") or {}).get("basename"),
+    )
+    return payload
+
+
+async def _active_speaker_baseline_profile_apply_payload(
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Apply the active-speaker baseline profile through DSP apply."""
+
+    from jasper.active_speaker.baseline_profile import apply_baseline_profile
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.measurement import load_measurement_state
+
+    topology = load_output_topology()
+    design_draft = load_design_draft()
+    preview = load_crossover_preview(current_design_draft=design_draft)
+    measurements = load_measurement_state(topology)
+    cam = camilla_factory()
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=design_draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
+        get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
+    )
+    logger.info(
+        "event=sound.active_speaker_baseline_profile action=apply status=%s "
+        "apply_result=%s issue_count=%d",
+        payload.get("status"),
+        (payload.get("apply") or {}).get("result"),
+        len(payload.get("issues") or []),
+    )
+    return payload
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -1720,6 +2044,8 @@ def _make_handler(
                 "/output-topology",
                 "/active-speaker/design-draft",
                 "/active-speaker/crossover-preview",
+                "/active-speaker/measurements",
+                "/active-speaker/baseline-profile",
                 "/active-speaker/environment",
                 "/active-speaker/safe-playback",
                 "/active-speaker/calibration-level",
@@ -1769,6 +2095,24 @@ def _make_handler(
                 except Exception as e:  # noqa: BLE001
                     logger.exception(
                         "event=sound.active_speaker_crossover_preview result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
+            if path == "/active-speaker/measurements":
+                try:
+                    self._send_json(_active_speaker_measurements_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_measurements result=error"
+                    )
+                    self._send_json({"error": str(e)}, status=502)
+                return
+            if path == "/active-speaker/baseline-profile":
+                try:
+                    self._send_json(_active_speaker_baseline_profile_payload())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "event=sound.active_speaker_baseline_profile result=error"
                     )
                     self._send_json({"error": str(e)}, status=502)
                 return
@@ -1876,6 +2220,11 @@ def _make_handler(
                 "/active-speaker/check-path-safety",
                 "/active-speaker/load-startup-config",
                 "/active-speaker/rollback-startup-config",
+                "/active-speaker/driver-measurement",
+                "/active-speaker/summed-test",
+                "/active-speaker/summed-validation",
+                "/active-speaker/baseline-profile",
+                "/active-speaker/baseline-profile/apply",
                 "/active-speaker/tone-plan",
                 "/active-speaker/play-tone",
                 "/active-speaker/floor-audio-result",
@@ -1953,6 +2302,61 @@ def _make_handler(
                             type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/driver-measurement":
+                    try:
+                        self._send_json(_active_speaker_driver_measurement_payload(raw))
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_driver_measurement "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/summed-test":
+                    try:
+                        self._send_json(_active_speaker_summed_test_payload(raw))
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_summed_test "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/summed-validation":
+                    try:
+                        self._send_json(_active_speaker_summed_validation_payload(raw))
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_summed_validation "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/baseline-profile":
+                    try:
+                        self._send_json(
+                            _active_speaker_baseline_profile_payload(write=True)
+                        )
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_baseline_profile "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/baseline-profile/apply":
+                    self._send_json(
+                        asyncio.run(
+                            _active_speaker_baseline_profile_apply_payload(
+                                camilla_factory=camilla_factory,
+                            )
+                        )
+                    )
                     return
                 if path == "/active-speaker/check-path-safety":
                     self._send_json(

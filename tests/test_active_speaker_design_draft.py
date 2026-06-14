@@ -76,6 +76,7 @@ def _research() -> dict:
                 "nominal_impedance_ohm": 8,
                 "recommended_highpass_hz": 2500,
                 "do_not_test_below_hz": 1200,
+                "gain_offset_db": -18.5,
                 "sources": ["https://example.test/tweeter"],
             },
         ],
@@ -120,6 +121,7 @@ def test_design_draft_persists_research_without_authorizing_audio(tmp_path: Path
     assert payload["summary"]["driver_count"] == 2
     assert payload["summary"]["crossover_candidate_count"] == 1
     assert payload["summary"]["missing_research_roles"] == []
+    assert payload["driver_research"]["drivers"][1]["gain_offset_db"] == -18.5
     assert payload["permissions"]["may_not_load_camilla"] is True
     assert payload["permissions"]["may_not_emit_audio"] is True
     assert payload["safety"]["no_audio"] is True
@@ -145,6 +147,45 @@ def test_driver_research_cannot_weaken_human_review_requirements():
     }
 
 
+def test_manual_crossover_settings_can_replace_ai_research():
+    payload = build_design_draft(
+        _topology(),
+        manual_settings={
+            "drivers": [
+                {
+                    "role": "woofer",
+                    "model": "Epique E150HE-44",
+                    "sensitivity_db_2v83_1m": 83.3,
+                },
+                {
+                    "role": "tweeter",
+                    "model": "Eminence F110M-8",
+                    "sensitivity_db_2v83_1m": 108.0,
+                    "do_not_test_below_hz": 1800,
+                    "gain_offset_db": -24.7,
+                },
+            ],
+            "crossover_candidates": [
+                {
+                    "between_roles": ["woofer", "tweeter"],
+                    "frequency_hz": 2200,
+                    "filter_type": "Linkwitz-Riley",
+                    "slope_db_per_octave": 24,
+                    "confidence": "medium",
+                }
+            ],
+        },
+    )
+
+    assert payload["status"] == "ready_for_review"
+    assert payload["driver_research"] is None
+    assert payload["summary"]["manual_driver_count"] == 2
+    assert payload["summary"]["manual_crossover_candidate_count"] == 1
+    assert payload["summary"]["missing_driver_info_roles"] == []
+    assert payload["summary"]["missing_crossover_candidate_pairs"] == []
+    assert "driver_research_missing" in {issue["code"] for issue in payload["issues"]}
+
+
 def test_design_draft_without_research_is_honest_needs_research():
     payload = build_design_draft(
         _topology(),
@@ -154,7 +195,7 @@ def test_design_draft_without_research_is_honest_needs_research():
 
     assert payload["status"] == "needs_research"
     assert payload["driver_research"] is None
-    assert payload["summary"]["missing_research_roles"] == ["woofer", "tweeter"]
+    assert payload["summary"]["missing_driver_info_roles"] == ["woofer", "tweeter"]
     assert "driver_research_missing" in {issue["code"] for issue in payload["issues"]}
 
 
