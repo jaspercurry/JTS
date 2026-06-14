@@ -195,14 +195,13 @@ can choose a driver. Driver-choice buttons appear after outputs are confirmed;
 clicking one records the normal software guard for any missing high-frequency
 outputs in the saved active graph, refreshes a stale no-audio crossover preview
 when the saved crossover settings can produce one, then stages/checks/loads/arms
-the safe path before target readiness is shown. If that internal setup fails,
+the safe path before the selected-driver test controls appear. If that internal setup fails,
 the card explains the product-level issue and confirms no sound played. The card
 still does not play tones, start sweeps, or authorize playback just because a
-setup check passed. The same step can
-open and stop a bounded test session through `/sound/active-speaker/arm` and
-`/sound/active-speaker/stop`; arming only persists the current safety state
-when the environment load gate passes, and Stop is a normal-sized, idempotent
-control that records the session as stopped. The armed state exposes a
+setup check passed. The backend still uses the safe-playback session substrate,
+but the UI no longer asks users to understand or click separate arm/stage/path
+controls. Stop remains a normal-sized, idempotent control that records the
+session as stopped. A prepared driver exposes a
 **Test volume** control backed by
 `jasper.active_speaker.calibration_level`: it defaults to the minimum
 `-80 dBFS`, persists at
@@ -290,53 +289,48 @@ visible manual settings as first-class draft input and may also preserve the
 bounded research JSON as evidence. Hidden imported values never override
 user-edited visible settings, and the draft still does not apply filters,
 reload CamillaDSP, or authorize sound.
-Choosing a confirmed driver in **Measure drivers** checks readiness through
-`/sound/active-speaker/playback-readiness`. That route returns a versioned,
-no-audio checklist for one selected topology target by combining safe-session
-state, output topology, channel identity, tweeter protection, clock-domain
-status, active-config/path safety, calibration-level bounds, protected
-startup-load state, and Stop availability. It reports `preconditions_passed`
-separately from
-`playback_allowed`. Default installs still return `playback_allowed: false`
-and can preview artifacts only; explicit lab enablement
-(`JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
+Choosing a confirmed driver in **Measure drivers** now calls the product-level
+`/sound/active-speaker/prepare-driver-test` endpoint. That endpoint owns the
+old multi-step setup sequence internally: save any needed software quiet guard,
+prepare a fresh crossover preview, stage the protected startup config, write
+path-safety evidence, load the protected startup config, and arm the safe
+session. The browser does not expose those implementation steps as separate
+buttons or status grids. It either gets `ready: true` for the selected target,
+or one user-facing message explaining the next action; no sound has played in
+either case.
+
+The audible boundary is still `/sound/active-speaker/play-tone`. It recomputes
+the driver-protection policy, requires the selected saved topology target,
+confirmed DAC output identity, an armed safe session, rollback-capable protected
+startup-load state, calibration-level bounds, and explicit lab audio backend
+enablement (`JASPER_ACTIVE_SPEAKER_TONE_BACKEND=aplay`,
 `JASPER_ACTIVE_SPEAKER_ALLOW_AUDIO=1`, and
-`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`) can make saved topology targets
-eligible for a short quiet audible test only after the protected startup DSP is
-loaded, current, rollbackable, and the selected driver role/style passes the
-driver-protection policy. The UI labels that action as a quiet role-specific
-test, confirms the selected target before the POST, and records the shared
-`driver_protection_auto_level_v1` policy in the returned evidence. Tweeter/
-high-frequency targets are no longer horn-specific: they require accepted
-physical or software-guarded protection, a protective high-pass, the
-driver-specific closed-loop cap, Stop/session gates, and the same floor-first
-driver-test lifecycle. The playback endpoint recomputes that protection
-envelope from policy code and refuses missing high-pass evidence or
-plan-provided cap/allow overrides. When the selected target is a high-frequency
-driver, the readiness card shows a **High-frequency bring-up readiness** section
-with the protection profile, mic status, floor-test preview, and deterministic
-auto-level decision. Unknown high-frequency style defaults to a conservative
-5 kHz high-pass and -65 dBFS cap until the style is known. The safe session now
-also records floor-start evidence:
-every armed session starts at
-`floor_required`; the backend rejects raised audible tests until a successful
-floor-level audible result has been operator-confirmed as the correct driver
-for the same saved target and session; artifact-only results and unconfirmed
-audio do not unlock raised playback; Stop, expiry, wrong-driver, silent, or
-too-loud outcomes reset the phase. The card now renders that intended operator
-sequence directly in `/sound/`: choose one confirmed driver, let JTS run the
-safe setup internally, reset/lower to the test-level floor, preview the signal,
-start a very quiet role-specific test when the backend is explicitly enabled
-for audio, confirm floor audio, then raise slowly. The readiness result
-summarizes the selected DAC output, role policy, backend, rollback state, test
-level, plus an explicit "How to continue" list; internal setup evidence stays
-out of the normal product path unless a setup attempt fails.
-The same backend still provides a read-only
-**Commissioning rehearsal** card from
-`/sound/active-speaker/commissioning-rehearsal`. That packet is derived from
-existing durable evidence only; it does not store wizard progress, play audio,
-or reload CamillaDSP, and it explicitly hands off target readiness/artifact
-verification/floor-audio confirmation to operator-selected channel actions.
+`JASPER_ACTIVE_SPEAKER_TEST_PCM=<pcm>`). Tweeter/high-frequency targets are not
+horn-specific: the backend auto-records a software-guarded bring-up request when
+no physical protection evidence is present, then the generated startup graph
+must prove startup mute, protective high-pass, startup headroom, limiter, and
+no-playback evidence before any audible tone can be requested. The playback
+endpoint refuses missing high-pass evidence or plan-provided cap/allow
+overrides.
+
+The card renders the operator sequence directly: choose one confirmed driver,
+let JTS get the safe test setup ready, preview the signal, start a very quiet
+role-specific test when the backend is explicitly enabled for audio, confirm the
+correct driver was heard at the floor, then raise slowly with the mic reading in
+view. Every armed session starts at `floor_required`; the backend rejects raised
+audible tests until a successful floor-level result has been operator-confirmed
+as the correct driver for the same saved target and session. Artifact-only
+results and unconfirmed audio do not unlock raised playback; Stop, expiry,
+wrong-driver, silent, or too-loud outcomes reset the phase.
+
+Lower-level diagnostics still exist for tests and operator debugging:
+`/sound/active-speaker/playback-readiness` returns the no-audio readiness
+packet, `/sound/active-speaker/commissioning-rehearsal` derives a no-audio
+sequence from durable evidence, `/sound/active-speaker/stage-config` stages the
+protected startup candidate, `/sound/active-speaker/check-path-safety` writes
+the path-safety evidence, and `/sound/active-speaker/load-startup-config` loads
+the protected graph. The normal product UI does not require a user to understand
+or click those controls.
 The same walkthrough then opens **Validate and apply**. That card first runs a
 short combined-speaker test through `/sound/active-speaker/summed-test`; the
 summed crossover validation POST at
@@ -354,30 +348,15 @@ shared DSP apply transaction. It is currently enabled only for the outputd-owned
 active output lane; other hardware paths can save the profile for review, but
 the UI keeps Apply disabled until that handoff is supported. After apply
 succeeds the UI can truthfully say this is now the active speaker profile.
-For Jasper's immediate mono 2-way build, the same row can now record
-compression-driver protection evidence through
-`/sound/active-speaker/channel-protection`, and the card can **Stage protected
-config** through `/sound/active-speaker/stage-config`. The staged config binds
-the saved output topology to the Epique E150HE-44 + Eminence F110M-8 safe
-bring-up preset, writes a muted/protected CamillaDSP candidate, and persists
-readable evidence at `/var/lib/jasper/active_speaker_staged_config.json`. It
-accepts either physical compression-driver protection evidence or an explicit
-software-guarded bring-up request. Software guard is still a topology/playback
-blocker; it only allows no-load staging after the generated candidate proves
-startup mute, protective high-pass, startup headroom, limiter, and no-playback
-evidence. The route refuses unsupported output assignments and still does not
-load CamillaDSP, reload the graph, emit sound, or authorize playback.
-The same card can now run **Check protected path** through
-`/sound/active-speaker/check-path-safety`. That POST writes
-`active_speaker_path_safety.json` with hardware-probe-backed, no-audio
-startup-load evidence from the saved topology, staged protected candidate,
-calibration-level guard, and current CamillaDSP config path. It is intentionally
-load-scoped only: it can unblock the guarded startup-load gate, but it does not
-authorize tones or normal playback. The loader treats the saved artifact as
-stale if the topology, staged candidate, or rollback config path/hash changes
-after the check. If the current rollback target is raw stereo or an unknown
-custom config, the check stays blocked rather than silently blessing an unsafe
-rollback path.
+The guarded startup substrate still persists readable evidence at
+`/var/lib/jasper/active_speaker_staged_config.json` and
+`active_speaker_path_safety.json`. The loader treats saved path-safety evidence
+as stale if the topology, staged candidate, or rollback config path/hash changes
+after the check. A normal bounded JTS stereo profile can be the first-run
+rollback target because the staged muted/protected candidate owns driver
+protection before any tone can play; missing rollback files, unreadable rollback
+files, unknown/custom DSP, or rollback configs with unsafe positive gain still
+fail closed.
 The active-speaker runtime substrate starts in
 `jasper.active_speaker`, the physical topology substrate starts in
 `jasper.output_topology`, and the canonical safety/design plan lives in

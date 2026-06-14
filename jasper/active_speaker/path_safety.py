@@ -102,11 +102,12 @@ REQUIRED_PATHS: tuple[PathSafetyRequirement, ...] = (
         checks=(
             "route_verified",
             "protected_by_active_baseline",
-            "rollback_target_protected",
+            "rollback_target_available",
+            "rollback_target_restore_limited",
         ),
         why=(
-            "Resetting to a stereo identity config can send full-range "
-            "content to a tweeter."
+            "Loading a protected startup graph must keep a readable, "
+            "bounded previous config to restore if the graph transition fails."
         ),
     ),
     PathSafetyRequirement(
@@ -500,6 +501,7 @@ def _current_config_summary(current_config_path: str | Path | None) -> dict[str,
         "readable": False,
         "classification": "missing",
         "protected": False,
+        "restore_available": False,
         "issues": [],
     }
     if not current_config_path:
@@ -550,13 +552,29 @@ def _current_config_summary(current_config_path: str | Path | None) -> dict[str,
             for issue in summary["issues"]
         )
     )
+    restore_classifications = {
+        "active_startup_candidate",
+        "jts_generated_stereo",
+        "jts_outputd_stereo",
+        "jts_legacy_stereo",
+    }
+    summary["restore_available"] = (
+        bool(summary["readable"])
+        and classification.get("classification") in restore_classifications
+        and bool(classification.get("volume_limit_ok"))
+        and not any(
+            issue.get("severity") == "blocker"
+            for issue in summary["issues"]
+        )
+    )
     if not summary["protected"]:
         summary["issues"].append(_issue(
-            "blocker",
-            "rollback_target_not_protected",
+            "warning",
+            "rollback_target_restores_previous_profile",
             (
-                "current CamillaDSP config is not a protected active-speaker "
-                "baseline; rollback could restore a full-range path"
+                "current CamillaDSP config is a rollback target only; the "
+                "staged active-speaker config owns driver protection before "
+                "any tone can play"
             ),
         ))
     return summary
@@ -655,8 +673,13 @@ def build_startup_load_path_safety_evidence(
         "rollback_configs": {
             "route_verified": route_verified,
             "protected_by_active_baseline": protected_by_candidate,
+            "rollback_target_available": bool(rollback.get("restore_available")),
+            "rollback_target_restore_limited": bool(rollback.get("volume_limit_ok")),
             "rollback_target_protected": bool(rollback.get("protected")),
-            "notes": "rollback target must already be a protected active baseline",
+            "notes": (
+                "rollback restores the previous bounded config; it does not "
+                "authorize active-speaker test tones"
+            ),
         },
         "startup_reload": {
             "active_outputs_muted": active_outputs_muted,
@@ -726,6 +749,7 @@ def build_startup_load_path_safety_evidence(
                 current_config_path=current_config_path,
             ),
             "rollback_classification": rollback.get("classification"),
+            "rollback_restore_available": rollback.get("restore_available"),
             "assigned_channel_count": assigned,
             "unverified_channel_count": unverified,
             "software_guard_ready": software_guard_ready,

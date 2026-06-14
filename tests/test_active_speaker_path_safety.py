@@ -222,17 +222,18 @@ def test_startup_load_path_probe_passes_with_protected_rollback(
     assert report["load_gate"] == "ready"
 
 
-def test_startup_load_path_probe_blocks_unprotected_rollback_target(
+def test_startup_load_path_probe_allows_bounded_normal_rollback_target(
     tmp_path: Path,
 ) -> None:
     staged = _staged(tmp_path)
     prior = tmp_path / "prior_stereo.yml"
     prior.write_text(
+        "# Source: jasper.sound.camilla_yaml.emit_sound_config\n"
         "devices:\n"
         "  volume_limit: 0\n"
         "  playback:\n"
         "    type: Alsa\n"
-        "    device: default:CARD=JasperOut\n"
+        "    device: outputd_content_playback\n"
         "    channels: 2\n",
         encoding="utf-8",
     )
@@ -245,14 +246,14 @@ def test_startup_load_path_probe_blocks_unprotected_rollback_target(
     )
     report = evaluate_path_safety_evidence(evidence)
 
-    assert report["status"] == "blocked"
-    assert report["ok_to_load_active_config"] is False
+    assert report["status"] == "pass"
+    assert report["ok_to_load_active_config"] is True
+    rollback = evidence["paths"]["rollback_configs"]
+    assert rollback["rollback_target_available"] is True
+    assert rollback["rollback_target_restore_limited"] is True
+    assert rollback["rollback_target_protected"] is False
     assert any(
-        issue["code"] == "rollback_target_protected_not_verified"
-        for issue in report["issues"]
-    )
-    assert any(
-        issue["code"] == "rollback_target_not_protected"
+        issue["code"] == "rollback_target_restores_previous_profile"
         for issue in evidence["observed_issues"]
     )
 

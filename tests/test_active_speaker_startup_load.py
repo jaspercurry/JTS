@@ -112,6 +112,21 @@ def _protected_prior(tmp_path: Path, staged: dict, name: str = "prior_active.yml
     return prior
 
 
+def _normal_prior(tmp_path: Path, name: str = "prior_stereo.yml") -> Path:
+    prior = tmp_path / name
+    prior.write_text(
+        "# Source: jasper.sound.camilla_yaml.emit_sound_config\n"
+        "devices:\n"
+        "  volume_limit: 0\n"
+        "  playback:\n"
+        "    type: Alsa\n"
+        "    device: outputd_content_playback\n"
+        "    channels: 2\n",
+        encoding="utf-8",
+    )
+    return prior
+
+
 def _write_path_safety(
     path: Path,
     *,
@@ -253,16 +268,16 @@ def test_startup_load_blocks_when_rollback_anchor_is_missing(
     assert result["preflight"]["load_allowed"] is False
     assert result["load"]["status"] == "blocked"
     assert fake.loaded_paths == []
-    assert "rollback_target_protected_not_verified" in {
+    assert "rollback_target_available_not_verified" in {
         issue["code"] for issue in result["preflight"]["issues"]
     }
     assert state["status"] == "blocked"
     assert state["rollback_available"] is False
 
 
-def test_startup_load_records_rollback_state(monkeypatch, tmp_path: Path) -> None:
+def test_startup_load_records_normal_rollback_state(monkeypatch, tmp_path: Path) -> None:
     stage = _staged(tmp_path)
-    prior = _protected_prior(tmp_path, stage)
+    prior = _normal_prior(tmp_path)
     fake = FakeCamilla(str(prior))
     state_path = tmp_path / "startup_load.json"
     monkeypatch.setenv(

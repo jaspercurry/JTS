@@ -22,6 +22,7 @@ URL surface (after nginx strips /sound/):
   POST /active-speaker/arm       arm a no-audio active-speaker safety session
   POST /active-speaker/stop      stop the no-audio active-speaker session
   POST /active-speaker/calibration-level update backend-owned level guard
+  POST /active-speaker/prepare-driver-test backend-owned quiet test setup
   POST /active-speaker/playback-readiness no-audio target readiness checklist
   POST /active-speaker/stage-config stage protected startup config
   POST /active-speaker/check-path-safety inspect and persist no-audio path evidence
@@ -912,6 +913,204 @@ def _active_speaker_stage_config_payload(raw: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _prepare_driver_test_message(
+    *payloads: dict[str, Any] | None,
+    fallback: str,
+) -> str:
+    """Return one user-facing next action from backend setup evidence."""
+
+    candidates: list[str] = []
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key in ("message", "next_step", "error"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+        report = payload.get("report")
+        if isinstance(report, dict):
+            for key in ("message", "next_step", "error"):
+                value = report.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value.strip())
+        for issue in payload.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            value = issue.get("message") or issue.get("label") or issue.get("code")
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+    return candidates[0] if candidates else fallback
+
+
+def _prepare_driver_test_status(
+    status: str,
+    *,
+    target: dict[str, Any] | None = None,
+    message: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_driver_test_prepare",
+        "status": status,
+        "ready": status == "ready",
+        "target": target,
+        "message": message,
+        **extra,
+    }
+
+
+async def _active_speaker_prepare_driver_test_payload(
+    raw: dict[str, Any],
+    *,
+    camilla_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Prepare one saved topology target for a quiet driver test.
+
+    This is the product-facing setup path. It keeps the individual staging,
+    path-safety, startup-load, and safe-session helpers as backend-owned
+    implementation details instead of exposing them as separate browser steps.
+    """
+
+    if not isinstance(raw, dict):
+        raise ValueError("driver test prepare request must be an object")
+    try:
+        _, channel, target = _active_speaker_saved_target(raw)
+    except ValueError as exc:
+        return _prepare_driver_test_status(
+            "needs_action",
+            message=str(exc),
+        )
+
+    speaker_group_id = str(target.get("speaker_group_id") or "")
+    role = str(target.get("role") or "")
+    if not channel.identity_verified:
+        return _prepare_driver_test_status(
+            "needs_action",
+            target=target,
+            message="Confirm which DAC output goes to this driver before testing.",
+        )
+
+    if (
+        channel.protection_required
+        and channel.protection_status not in {"present", "software_guard_requested"}
+    ):
+        updated = set_channel_protection_status(
+            load_output_topology(),
+            speaker_group_id=speaker_group_id,
+            role=role,
+            protection_status="software_guard_requested",
+        )
+        save_output_topology(updated)
+        _, channel, target = _active_speaker_saved_target(raw)
+
+    preview = _active_speaker_crossover_preview_save_payload()
+    stage = _active_speaker_stage_config_payload({})
+    if stage.get("status") != "staged":
+        return _prepare_driver_test_status(
+            "needs_action",
+            target=target,
+            message=_prepare_driver_test_message(
+                stage,
+                preview,
+                fallback="Save the speaker layout and crossover settings before testing.",
+            ),
+            preview=preview,
+            staged_config=stage,
+            output_topology=load_output_topology().to_dict(include_evaluation=True),
+            channel_identity=channel_identity_report(load_output_topology()),
+            clock_domain=clock_domain_report(load_output_topology()),
+        )
+
+    path_payload = await _active_speaker_check_path_safety_payload(
+        camilla_factory=camilla_factory,
+    )
+    path_report = path_payload.get("report") if isinstance(path_payload, dict) else {}
+    if not isinstance(path_report, dict) or path_report.get("load_gate") != "ready":
+        return _prepare_driver_test_status(
+            "needs_action",
+            target=target,
+            message=_prepare_driver_test_message(
+                path_payload,
+                fallback="JTS could not verify the safe audio path. No sound was played.",
+            ),
+            preview=preview,
+            staged_config=stage,
+            path_safety=path_payload,
+            output_topology=load_output_topology().to_dict(include_evaluation=True),
+            channel_identity=channel_identity_report(load_output_topology()),
+            clock_domain=clock_domain_report(load_output_topology()),
+        )
+
+    load_payload = await _active_speaker_load_startup_config_payload(
+        camilla_factory=camilla_factory,
+    )
+    load_state = (
+        load_payload.get("load")
+        if isinstance(load_payload.get("load"), dict)
+        else {}
+    )
+    if load_state.get("status") != "loaded" or not load_state.get("rollback_available"):
+        return _prepare_driver_test_status(
+            "needs_action",
+            target=target,
+            message=_prepare_driver_test_message(
+                load_payload,
+                fallback="JTS could not load the safe test setup. No sound was played.",
+            ),
+            preview=preview,
+            staged_config=stage,
+            path_safety=path_payload,
+            startup_load=load_payload,
+            output_topology=load_output_topology().to_dict(include_evaluation=True),
+            channel_identity=channel_identity_report(load_output_topology()),
+            clock_domain=clock_domain_report(load_output_topology()),
+        )
+
+    session = _active_speaker_arm_payload()
+    if session.get("status") != "armed":
+        return _prepare_driver_test_status(
+            "needs_action",
+            target=target,
+            message=_prepare_driver_test_message(
+                session,
+                fallback="JTS could not open the test controls. No sound was played.",
+            ),
+            preview=preview,
+            staged_config=stage,
+            path_safety=path_payload,
+            startup_load=load_payload,
+            session=session,
+            output_topology=load_output_topology().to_dict(include_evaluation=True),
+            channel_identity=channel_identity_report(load_output_topology()),
+            clock_domain=clock_domain_report(load_output_topology()),
+        )
+
+    topology = load_output_topology()
+    payload = _prepare_driver_test_status(
+        "ready",
+        target=target,
+        message="Ready to start at the quietest test level.",
+        preview=preview,
+        staged_config=stage,
+        path_safety=path_payload,
+        startup_load=load_payload,
+        session=session,
+        calibration_level=_active_speaker_calibration_level_payload(),
+        output_topology=topology.to_dict(include_evaluation=True),
+        channel_identity=channel_identity_report(topology),
+        clock_domain=clock_domain_report(topology),
+    )
+    logger.info(
+        "event=sound.active_speaker_prepare_driver_test status=ready "
+        "group_id=%s role=%s output=%s",
+        speaker_group_id,
+        role,
+        target.get("physical_output_index"),
+    )
+    return payload
+
+
 def _active_speaker_safe_playback_payload() -> dict[str, Any]:
     """Return the current no-audio active-speaker safety session."""
 
@@ -1570,6 +1769,7 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
         load_safe_playback_state,
         record_safe_playback_result,
     )
+    from jasper.active_speaker.startup_load import load_startup_load_state
     from jasper.active_speaker.topology_tone import build_topology_tone_plan
 
     target = raw.get("target") if isinstance(raw.get("target"), dict) else {}
@@ -1579,13 +1779,13 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
         or target.get("speaker_group_id")
         or target.get("role")
     )
+    safe_session = load_safe_playback_state()
     if topology_target:
         topology = load_output_topology()
-        readiness = _active_speaker_playback_readiness_payload(raw)
         level = _active_speaker_calibration_level_payload()
+        startup_load = load_startup_load_state()
         plan = build_topology_tone_plan(
             topology,
-            readiness_report=readiness,
             speaker_group_id=raw.get("speaker_group_id")
             or target.get("speaker_group_id"),
             role=(
@@ -1598,10 +1798,13 @@ def _active_speaker_tone_playback_payload(raw: dict[str, Any]) -> dict[str, Any]
                 "requested_level_dbfs"
             ),
             requested_duration_ms=raw.get("duration_ms"),
+            safe_session=safe_session,
+            startup_load_state=startup_load,
+            playback_allowed=bool(raw.get("audio")),
+            tone_playback_implemented=True,
         )
     else:
         plan = _active_speaker_tone_plan_payload(raw)
-    safe_session = load_safe_playback_state()
     wants_audio = bool(raw.get("audio"))
     backend = enabled_audio_backend() if wants_audio else None
     if wants_audio and backend is None:
@@ -1805,7 +2008,7 @@ def _active_speaker_summed_test_payload(raw: dict[str, Any]) -> dict[str, Any]:
     protected_loaded = bool(
         startup_load.get("loaded")
         and startup_load.get("rollback_available")
-        and startup_load.get("current_config_matches_loaded")
+        and startup_load.get("current_config_matches_loaded") is not False
     )
     wants_audio = bool(raw.get("audio"))
     plan = build_summed_topology_tone_plan(
@@ -2215,6 +2418,7 @@ def _make_handler(
                 "/active-speaker/calibration-level",
                 "/active-speaker/channel-identity",
                 "/active-speaker/channel-protection",
+                "/active-speaker/prepare-driver-test",
                 "/active-speaker/playback-readiness",
                 "/active-speaker/stage-config",
                 "/active-speaker/check-path-safety",
@@ -2270,6 +2474,24 @@ def _make_handler(
                     except OSError as e:
                         logger.exception(
                             "event=sound.active_speaker_channel_protection "
+                            "result=error error=%s",
+                            type(e).__name__,
+                        )
+                        self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/prepare-driver-test":
+                    try:
+                        self._send_json(
+                            asyncio.run(
+                                _active_speaker_prepare_driver_test_payload(
+                                    raw,
+                                    camilla_factory=camilla_factory,
+                                )
+                            )
+                        )
+                    except OSError as e:
+                        logger.exception(
+                            "event=sound.active_speaker_prepare_driver_test "
                             "result=error error=%s",
                             type(e).__name__,
                         )
