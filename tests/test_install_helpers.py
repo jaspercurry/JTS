@@ -793,12 +793,13 @@ def test_pip_constraints_file_present_is_echoed(tmp_path):
 
 
 def test_unpinned_pip_installs_carry_the_constraints_args():
-    """Open-range pip installs in install_jasper must expand the
+    """Open-range pip installs in full/streambox installs must expand the
     pip_constraints array; the exact-pinned installs (pip/wheel,
     openwakeword --no-deps) intentionally don't need it."""
     text = "\n".join(_installer_shell_texts().values())
-    assert text.count('pip" install "${pip_constraints[@]}"') == 3
+    assert text.count('pip" install "${pip_constraints[@]}"') == 4
     assert 'install "${pip_constraints[@]}" -e "${INSTALL_DIR}"' in text
+    assert 'install "${pip_constraints[@]}" \\\n        -e "${INSTALL_DIR}[streambox]"' in text
 
 
 def test_full_install_editable_pip_install_keeps_full_extra():

@@ -1265,9 +1265,105 @@ def test_endpoint_profile_doctor_skips_brain_only_groups(monkeypatch):
     assert ran == ["env", "web", "endpoint_audio"]
     assert [(r.name, r.status, r.detail) for r in results] == [
         ("env file", "ok", "ran"),
-        ("provider key", "ok", "not installed (endpoint tier)"),
+        ("provider key", "ok", "not installed (satellite-only profile)"),
         ("management surface", "ok", "ran"),
         ("endpoint snapclient", "ok", "ran"),
+    ]
+
+
+def test_streambox_doctor_config_does_not_require_voice_provider(monkeypatch):
+    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts4.local")
+    monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS4")
+
+    cfg = doctor._doctor_config_from_env("streambox")
+
+    assert cfg.usage_db
+    assert cfg.camilla_host == "127.0.0.1"
+    assert cfg.camilla_port == 1234
+    assert cfg.spotify_enabled is False
+    assert cfg.spotify_device_name == "JTS4"
+    assert cfg.spotify_setup_url == "http://jts4.local/spotify"
+
+
+def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
+    by_name = {entry.func.__name__: entry for entry in doctor.registered_checks()}
+
+    assert (
+        doctor._doctor_skip_reason(by_name["check_provider_key"], "streambox")
+        == "not installed (streambox profile)"
+    )
+    assert doctor._doctor_skip_reason(
+        by_name["check_openwakeword_model"], "streambox",
+    )
+    assert doctor._doctor_skip_reason(
+        by_name["check_aec_bridge_running"], "streambox",
+    )
+    assert doctor._doctor_skip_reason(by_name["check_mic_capture"], "streambox")
+    assert doctor._doctor_skip_reason(by_name["check_tts_open"], "streambox")
+    assert not doctor._doctor_skip_reason(
+        by_name["check_camilla_websocket"], "streambox",
+    )
+    assert not doctor._doctor_skip_reason(
+        by_name["check_librespot_running"], "streambox",
+    )
+    assert not doctor._doctor_skip_reason(
+        by_name["check_correction_web_service"], "streambox",
+    )
+
+
+def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
+    from jasper.cli.doctor._registry import RegisteredCheck
+
+    ran: list[str] = []
+
+    def voice_check(_cfg):
+        ran.append("voice")
+        return doctor.CheckResult("provider key", "fail", "should not run")
+
+    def check_mic_capture(_cfg):
+        ran.append("mic")
+        return doctor.CheckResult("mic capture", "fail", "should not run")
+
+    def renderer_check(_cfg):
+        ran.append("renderers")
+        return doctor.CheckResult("librespot.service", "ok", "ran")
+
+    def correction_check():
+        ran.append("correction")
+        return doctor.CheckResult("room correction service", "ok", "ran")
+
+    def endpoint_audio_check():
+        ran.append("endpoint_audio")
+        return doctor.CheckResult("endpoint snapclient", "fail", "should not run")
+
+    monkeypatch.setattr(doctor, "read_install_profile", lambda: "streambox")
+    monkeypatch.setattr(doctor, "registered_checks", lambda: [
+        RegisteredCheck(
+            order=0, group="voice", func=voice_check,
+            needs_cfg=True, label="provider key",
+        ),
+        RegisteredCheck(
+            order=1, group="audio", func=check_mic_capture,
+            needs_cfg=True, label="mic capture",
+        ),
+        RegisteredCheck(
+            order=2, group="renderers", func=renderer_check,
+            needs_cfg=True, label="librespot.service",
+        ),
+        RegisteredCheck(order=3, group="correction", func=correction_check),
+        RegisteredCheck(order=4, group="endpoint_audio", func=endpoint_audio_check),
+    ])
+
+    results = asyncio.run(doctor.run_async(SimpleNamespace()))
+
+    assert ran == ["renderers", "correction"]
+    assert [(r.name, r.status, r.detail) for r in results] == [
+        ("provider key", "ok", "not installed (streambox profile)"),
+        ("mic capture", "ok", "not installed (streambox profile)"),
+        ("librespot.service", "ok", "ran"),
+        ("room correction service", "ok", "ran"),
     ]
 
 

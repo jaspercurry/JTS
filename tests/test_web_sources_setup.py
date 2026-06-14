@@ -167,7 +167,7 @@ def test_gather_state_renderer_units_unavailable(stub_backends):
 
     assert state["airplay"]["enabled"] is False
     assert state["airplay"]["available"] is False
-    assert "not installed in this profile" in str(
+    assert "not installed in this satellite-only profile" in str(
         state["airplay"]["unavailableReason"]
     )
     assert state["spotify_connect"]["enabled"] is False
@@ -178,8 +178,8 @@ def test_gather_state_renderer_units_unavailable(stub_backends):
         str(item.get("unavailableReason") or "")
         for item in state.values()
     )
-    assert "streambox" not in unavailable
-    assert "full speaker profile" in unavailable
+    assert "streambox" in unavailable
+    assert "full speaker" in unavailable
 
 
 def test_gather_state_endpoint_profile_disables_stale_renderer_units(
@@ -200,7 +200,7 @@ def test_gather_state_endpoint_profile_disables_stale_renderer_units(
     assert state["spotify_connect"]["available"] is False
     assert state["bluetooth"]["enabled"] is False
     assert state["bluetooth"]["available"] is False
-    assert "not installed in this profile" in str(
+    assert "not installed in this satellite-only profile" in str(
         state["bluetooth"]["unavailableReason"]
     )
     assert state["usbsink"]["enabled"] is False
@@ -252,7 +252,7 @@ def test_apply_refuses_unavailable_renderer(monkeypatch):
         mod, "_set_unit", lambda *a: pytest.fail("must not call systemctl"),
     )
 
-    with pytest.raises(RuntimeError, match="not installed in this profile"):
+    with pytest.raises(RuntimeError, match="satellite-only profile"):
         mod._apply("airplay", True)
 
 
@@ -275,7 +275,7 @@ def test_apply_refuses_renderer_when_endpoint_profile(monkeypatch):
         mod, "_set_unit", lambda *a: pytest.fail("must not call systemctl"),
     )
 
-    with pytest.raises(RuntimeError, match="not installed in this profile"):
+    with pytest.raises(RuntimeError, match="satellite-only profile"):
         mod._apply("spotify_connect", True)
 
 
@@ -287,7 +287,7 @@ def test_apply_refuses_bluetooth_when_endpoint_profile(monkeypatch):
 
     monkeypatch.setattr(mod, "_set_bt", fail_bt)
 
-    with pytest.raises(RuntimeError, match="not installed in this profile"):
+    with pytest.raises(RuntimeError, match="satellite-only profile"):
         mod._apply("bluetooth", True)
 
 

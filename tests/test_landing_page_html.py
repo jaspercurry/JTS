@@ -271,6 +271,15 @@ def test_landing_page_uses_grouped_settings_rows() -> None:
     assert "snap.satellites" not in html
 
 
+def test_landing_page_capability_gates_fail_closed() -> None:
+    html = _index_html()
+
+    assert "caps[required] !== true" in html
+    for line in html.splitlines():
+        if "data-requires=" in line and line.lstrip().startswith("<"):
+            assert "hidden" in line, line.strip()
+
+
 def test_landing_page_tracks_static_reference_visual_tokens() -> None:
     # Tokens and the .page container now live in the shared stylesheet
     # (the landing page links it); only landing-specific bits stay inline.
@@ -500,9 +509,15 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     assert '<section class="control-section pair-banner" id="pair-banner" hidden>' in html
     assert 'id="source-section"' in html
     assert 'id="volume-eyebrow"' in html
+    assert 'id="pair-manage-link" href="/rooms/" data-requires="pair_management" hidden' in html
     assert "fetch('/grouping')" in html
     assert "'Pair volume'" in html
     assert "HOST_RE" in html
+    assert "IPV4_RE" in html
+    assert "function localWebHost" in html
+    assert "host + '.local'" in html
+    assert "leaderLink.href = 'http://' + leaderHost + '/';" in html
+    assert "leaderLink.href = 'http://' + g.leader_addr" not in html
     # The banner script writes text, never markup.
     pair_js = html.split("Stereo-pair banner", 1)[1].split("Source selector", 1)[0]
     assert "innerHTML" not in pair_js

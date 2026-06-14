@@ -33,7 +33,7 @@ const el = (id) => document.getElementById(id);
 
 function applyState(state) {
   latestState = state;
-  // Dumb-follower profile: every source is parked while this speaker
+  // Satellite-only profile: every source is parked while this speaker
   // is a bonded follower — toggles read disabled and the pair note
   // explains (POST /set 409s server-side regardless).
   const parked = !!(state.pair && state.pair.parked);

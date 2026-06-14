@@ -6,11 +6,12 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-> ### Current operational truth (updated 2026-06-04)
+> ### Current operational truth (updated 2026-06-14)
 >
-> USB Audio Input is shipped and off by default. Enabling it from
-> `/sources/` writes the gadget overlay/config and requires reboot for
-> the host-facing UAC2 device to appear. At runtime, `jasper-usbsink`
+> USB Audio Input is shipped and off by default. The installer writes
+> the gadget overlay/config and requires reboot for the host-facing
+> UAC2 device to appear; `/sources/` toggles the disabled-by-default
+> usbsink units. At runtime, `jasper-usbsink`
 > is a peer music renderer: it bridges the gadget capture endpoint into
 > `usbsink_substream`, and `jasper-fanin` sums that lane with AirPlay,
 > Spotify, Bluetooth, and correction audio into substream 7 for
@@ -43,6 +44,17 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > `docs/audio-paths.md#adding-a-new-music-source` as the canonical
 > checklist. This document's phase plan below is retained for
 > historical implementation context.
+>
+> `deploy/lib/install/renderers.sh` writes
+> `dtoverlay=dwc2,dr_mode=peripheral` under `[all]`, not `[pi5]`.
+> That is deliberate: streambox installs expose USB Audio Input on
+> Zero-class hardware so JTS4 can validate a powered USB splitter plus
+> DAC topology. The Pi 5 splitter-backed path remains the proven path;
+> the Zero 2 W path is an allowed hardware experiment because the same
+> OTG controller may also be needed for the DAC. If the powered splitter
+> cannot keep the host-facing gadget and Apple DAC stable at the same
+> time, remove or gate USB Audio Input for Zero-class streamboxes rather
+> than letting it silently compromise playback.
 >
 > Two other Tier 1 fixes applied at rebase time:
 >
@@ -1071,27 +1083,21 @@ pattern.
 
 ### 4.10 install.sh additions
 
-**Modified file**: `deploy/install.sh`.
+**Modified file**: `deploy/lib/install/renderers.sh`.
 
 One section adding the dtoverlay (idempotent, sandboxed under a
 function like `set_usb_gadget_mode()`):
 
 ```bash
 set_usb_gadget_mode() {
-  local cfg="/boot/firmware/config.txt"
-  local line='dtoverlay=dwc2,dr_mode=peripheral'
+  local cfg="${JTS_BOOT_CONFIG_FILE:-/boot/firmware/config.txt}"
   if grep -qE '^dtoverlay=dwc2,dr_mode=peripheral' "$cfg"; then
     return 0
   fi
-  log "Adding dtoverlay=dwc2,dr_mode=peripheral to $cfg (requires reboot)"
-  # Append under the [pi5] section to keep things tidy. If [pi5] isn't
-  # present yet, append to end of file with a fresh [pi5] header.
-  if grep -q '^\[pi5\]' "$cfg"; then
-    sed -i '/^\[pi5\]/a '"$line" "$cfg"
-  else
-    printf '\n[pi5]\n%s\n' "$line" >> "$cfg"
-  fi
-  REBOOT_REQUIRED=1
+  # Append under [all] so streambox installs can validate Zero-class
+  # powered-splitter USB Audio Input alongside the DAC.
+  printf '\n[all]\ndtoverlay=dwc2,dr_mode=peripheral\n' >> "$cfg"
+  echo "USB gadget dtoverlay added to $cfg (reboot required to apply)."
 }
 ```
 
@@ -1700,4 +1706,4 @@ Rejected: violates ducker semantics.
 lives at the top of this file; the canonical "add another music source"
 checklist lives in `docs/audio-paths.md#adding-a-new-music-source`.
 
-Last verified: 2026-06-09
+Last verified: 2026-06-14

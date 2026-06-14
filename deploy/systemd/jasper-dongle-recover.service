@@ -5,9 +5,9 @@ Description=Recover audio daemons after the Apple dongle re-enumerates
 # hw:CARD=A exit at startup if the dongle is absent and trip
 # systemd's StartLimitBurst after ~5 retries. By the time the dongle
 # comes back, systemd has parked them as failed and stops watching.
-# This unit resets Camilla and then delegates mic/AEC/voice policy to
-# jasper-aec-reconcile so a missing mic array does not leave voice
-# pointed at a stale, unfed UDP socket.
+# This unit resets Camilla/outputd and then delegates mic/AEC/voice policy
+# to jasper-aec-reconcile when that profile exists. Streambox installs do
+# not run local mic/AEC/voice, so the aec-reconcile leg is best-effort.
 #
 # Why a separate unit instead of inline RUN+= in the udev rule: systemctl
 # from udev's RUN+= can race with D-Bus and udev's event pipeline is
@@ -22,8 +22,10 @@ Type=oneshot
 # `reset-failed` clears the StartLimitBurst counter so subsequent
 # `start` calls aren't no-ops. Both commands are idempotent against
 # already-active or non-failed units.
-ExecStart=/bin/systemctl reset-failed jasper-camilla.service jasper-aec-bridge.service jasper-voice.service
+ExecStart=/bin/systemctl reset-failed jasper-camilla.service jasper-outputd.service jasper-aec-bridge.service jasper-voice.service
 ExecStart=/bin/systemctl start jasper-camilla.service
-ExecStart=/bin/systemctl start jasper-aec-reconcile.service
+ExecStart=/bin/systemctl start jasper-outputd.service
+ExecStart=/bin/systemctl start jasper-audio-hardware-reconcile.service
+ExecStart=-/bin/systemctl start jasper-aec-reconcile.service
 StandardOutput=journal
 StandardError=journal

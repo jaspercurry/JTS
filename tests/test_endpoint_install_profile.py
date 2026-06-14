@@ -133,20 +133,32 @@ def test_full_install_plan_is_unchanged_when_profile_is_unset():
 
 def test_endpoint_marker_maps_to_satellite_role():
     from jasper.install_profile import (
+        install_profile_allows_content_dsp,
         install_profile_allows_local_sources,
+        install_profile_allows_voice_brain,
         install_role_for_profile,
         is_satellite_install_profile,
+        is_streambox_install_profile,
     )
 
     assert install_role_for_profile("endpoint") == "satellite"
     assert install_role_for_profile("satellite") == "satellite"
+    assert install_role_for_profile("streambox") == "streambox"
     assert is_satellite_install_profile("endpoint")
     assert is_satellite_install_profile("satellite")
+    assert not is_satellite_install_profile("streambox")
+    assert is_streambox_install_profile("streambox")
     assert not install_profile_allows_local_sources("endpoint")
     assert not install_profile_allows_local_sources("satellite")
+    assert install_profile_allows_local_sources("streambox")
     assert install_profile_allows_local_sources("full")
+    assert not install_profile_allows_content_dsp("endpoint")
+    assert install_profile_allows_content_dsp("streambox")
+    assert install_profile_allows_content_dsp("full")
+    assert not install_profile_allows_voice_brain("streambox")
+    assert install_profile_allows_voice_brain("full")
     with pytest.raises(ValueError, match="invalid install profile"):
-        install_profile_allows_local_sources("streambox")
+        install_profile_allows_local_sources("bogus")
 
 
 def test_endpoint_install_plan_excludes_brain_build_surfaces():
@@ -164,6 +176,7 @@ def test_endpoint_install_plan_excludes_brain_build_surfaces():
         "jasper-control",
         "managed JTS snapserver/snapclient units",
         "endpoint-scoped nginx",
+        "shared JTS landing page with satellite capabilities",
         "socket-activated endpoint web for /system/ and /sources/",
         "memory and cgroup tuning",
         "voice/wake/DSP",
@@ -182,10 +195,44 @@ def test_endpoint_install_plan_excludes_brain_build_surfaces():
         assert forbidden not in result.stdout
 
 
+def test_streambox_install_plan_includes_audio_graph_not_voice_brain():
+    result = _run_install_plan(profile="streambox")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("==> JTS streambox install plan (dry run)\n")
+    for expected in [
+        "Resolve JASPER_INSTALL_PROFILE=streambox",
+        "renderer/DSP stack",
+        "jasper-fanin Rust daemon",
+        "jasper-outputd daemon",
+        "CamillaDSP:",
+        "AirPlay, Spotify Connect, Bluetooth, and USB Audio Input",
+        "socket-activated streambox-safe web surfaces",
+        "voice, wake-word, mic/AEC",
+    ]:
+        assert expected in result.stdout
+    for route in [
+        "/spotify/",
+        "/sources/",
+        "/sound/",
+        "/system/",
+        "/correction/",
+    ]:
+        assert route in result.stdout
+    for forbidden in [
+        "openWakeWord ONNX assets",
+        "jasper-aec3",
+        "Enable socket-activated setup wizards",
+    ]:
+        assert forbidden not in result.stdout
+    assert "CamillaGUI" in result.stdout
+
+
 def test_pyproject_base_install_is_endpoint_light():
     data = tomllib.loads(PYPROJECT.read_text())
     base = data["project"]["dependencies"]
     full = data["project"]["optional-dependencies"]["full"]
+    streambox = data["project"]["optional-dependencies"]["streambox"]
 
     assert base == ["sdnotify>=0.3.2"]
     for dep_prefix in [
@@ -200,6 +247,19 @@ def test_pyproject_base_install_is_endpoint_light():
     ]:
         assert not any(dep.startswith(dep_prefix) for dep in base)
         assert any(dep.startswith(dep_prefix) for dep in full)
+    for dep_prefix in [
+        "camilladsp",
+        "dbus-next",
+        "httpx",
+        "numpy",
+        "scipy",
+        "sounddevice",
+        "spotipy",
+        "zeroconf",
+    ]:
+        assert any(dep.startswith(dep_prefix) for dep in streambox)
+    for voice_only in ["google-genai", "openai", "onnxruntime", "websockets"]:
+        assert not any(dep.startswith(voice_only) for dep in streambox)
 
 
 def test_install_profile_marker_is_reused_when_env_is_unset(tmp_path: Path):
@@ -213,6 +273,39 @@ def test_install_profile_marker_is_reused_when_env_is_unset(tmp_path: Path):
     )
 
     assert write.returncode == 0, write.stderr
+    assert read.returncode == 0, read.stderr
+    assert read.stdout.strip() == "endpoint"
+
+
+def test_fresh_zero2w_defaults_to_streambox(tmp_path: Path):
+    marker = tmp_path / "missing_profile_marker"
+    model = tmp_path / "model"
+    model.write_bytes(b"Raspberry Pi Zero 2 W Rev 1.0\\0")
+
+    result = _run_install_helper(
+        "unset JASPER_INSTALL_PROFILE; "
+        f"JASPER_PI_MODEL_FILE={shlex.quote(str(model))} "
+        f"resolve_install_profile {shlex.quote(str(marker))}"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "streambox"
+
+
+def test_persisted_profile_wins_over_zero2w_hardware_default(tmp_path: Path):
+    marker = tmp_path / "install_profile"
+    model = tmp_path / "model"
+    model.write_bytes(b"Raspberry Pi Zero 2 W Rev 1.0\\0")
+    setup = _run_install_helper(
+        f"persist_install_profile endpoint {shlex.quote(str(marker))}"
+    )
+    read = _run_install_helper(
+        "unset JASPER_INSTALL_PROFILE; "
+        f"JASPER_PI_MODEL_FILE={shlex.quote(str(model))} "
+        f"resolve_install_profile {shlex.quote(str(marker))}"
+    )
+
+    assert setup.returncode == 0, setup.stderr
     assert read.returncode == 0, read.stderr
     assert read.stdout.strip() == "endpoint"
 
@@ -240,8 +333,10 @@ def test_install_profile_refuses_implicit_tier_change(tmp_path: Path):
 
 def test_live_endpoint_profile_has_real_installer_branch():
     text = INSTALL_SH.read_text()
+    install_surface = installer_text()
 
     assert "endpoint is not implemented for live installs yet" not in text
+    assert "install_jasper() {" in install_surface
     assert "install_endpoint_deps" in text
     assert "install_endpoint_jasper" in text
     assert "install_endpoint_systemd_units" in text
@@ -249,8 +344,42 @@ def test_live_endpoint_profile_has_real_installer_branch():
     assert '"${install_profile}" == "endpoint"' in text
 
 
+def test_live_streambox_profile_has_real_installer_branch():
+    text = INSTALL_SH.read_text()
+    streambox_block = text.split(
+        'if [[ "${install_profile}" == "streambox" ]]; then', 1,
+    )[1].split("return 0", 1)[0]
+
+    for expected in [
+        "install_streambox_deps",
+        "install_alsa",
+        "install_camilladsp",
+        "install_renderers",
+        "install_streambox_jasper",
+        "build_install_jasper_fanin",
+        "build_install_jasper_outputd",
+        "install_streambox_systemd_units",
+        "install_streambox_nginx_site",
+    ]:
+        assert expected in streambox_block
+    for forbidden in [
+        "\n        install_jasper\n",
+        "\n        install_systemd_units\n",
+        "\n        install_camillagui\n",
+        "\n        regenerate_audio_cues\n",
+    ]:
+        assert forbidden not in streambox_block
+
+
 def test_endpoint_nginx_site_exposes_only_endpoint_safe_routes():
     conf = (REPO_ROOT / "deploy/nginx-jasper-endpoint.conf").read_text()
+    install_sh = INSTALL_SH.read_text()
+
+    endpoint_install = install_sh.split(
+        "install_endpoint_nginx_site() {", 1,
+    )[1].split("\n}", 1)[0]
+    assert "deploy/index.html" in endpoint_install
+    assert "endpoint-index.html" not in endpoint_install
 
     for expected in [
         "location = /",
@@ -273,6 +402,117 @@ def test_endpoint_nginx_site_exposes_only_endpoint_safe_routes():
         "location /rooms/",
     ]:
         assert forbidden not in conf
+
+
+def test_streambox_nginx_site_uses_shared_landing_and_hides_voice_routes():
+    conf = (REPO_ROOT / "deploy/nginx-jasper-streambox.conf").read_text()
+    install_sh = INSTALL_SH.read_text()
+    landing = (REPO_ROOT / "deploy/index.html").read_text()
+
+    assert "deploy/index.html" in install_sh.split(
+        "install_streambox_nginx_site() {", 1
+    )[1].split("\n}", 1)[0]
+    for expected in [
+        "location = /",
+        "location /assets/",
+        "location /sources/",
+        "location /sound/",
+        "location /system/",
+        "location /spotify/",
+        "location /airplay/",
+        "location /bluetooth/",
+        "location /rooms/",
+        "location /correction/",
+        "location /balance/",
+        "location /sync/",
+        "location /volume",
+        "location = /grouping",
+    ]:
+        assert expected in conf
+    for forbidden in [
+        "location /voice/",
+        "location /wake/",
+        "location /google/",
+        "location /ha/",
+        "location /weather/",
+        "location /transit/",
+        "location /dial/",
+        "camillagui",
+    ]:
+        assert forbidden not in conf
+    assert 'data-requires="local_sources"' in landing
+    assert 'data-requires="content_dsp"' in landing
+    assert 'data-requires="voice_brain"' in landing
+    assert 'data-requires="network_settings"' in landing
+    assert 'data-requires="speaker_settings"' in landing
+    assert 'data-requires="pair_management"' in landing
+    assert 'data-requires="developer_tools"' in landing
+    assert "applyCapabilities" in landing
+    assert "caps[required] !== true" in landing
+    assert re.search(
+        r'id="pair-manage-link"[^>]*data-requires="pair_management"[^>]*hidden',
+        landing,
+    )
+    volume_section = landing.split('id="volume-eyebrow"', 1)[0].rsplit(
+        "<section", 1,
+    )[1].split(">", 1)[0]
+    mic_section = landing.split('id="mic-state"', 1)[0].rsplit(
+        "<section", 1,
+    )[1].split(">", 1)[0]
+    assert "data-requires" not in volume_section
+    assert 'data-requires="voice_brain"' in mic_section
+    assert "hidden" in mic_section
+
+
+def test_streambox_web_bundle_filters_wizards_without_brain_imports():
+    modules = ["jasper.web.__main__"]
+    blocked = [
+        "google.genai",
+        "openai",
+        "onnxruntime",
+        "openwakeword",
+        "spotipy",
+        "websockets",
+        "jasper_aec3",
+    ]
+    code = f"""
+import importlib
+import importlib.abc
+import sys
+
+blocked = {blocked!r}
+
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        for name in blocked:
+            if fullname == name or fullname.startswith(name + "."):
+                raise ImportError(f"blocked streambox-web dependency: {{fullname}}")
+        return None
+
+sys.meta_path.insert(0, Blocker())
+for module in {modules!r}:
+    mod = importlib.import_module(module)
+labels = [spec.label for spec in mod._specs_for_role("streambox")]
+assert "/sources" in labels
+assert "/sound" in labels
+assert "/airplay" in labels
+assert "/spotify" in labels
+assert "/rooms" in labels
+assert "/voice" not in labels
+assert "/wake" not in labels
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_system_dashboard_honors_endpoint_capabilities():
@@ -298,6 +538,180 @@ def test_endpoint_profile_installs_endpoint_web_not_combined_bundle():
     assert "jasper-system-web.socket jasper-sources-web.socket" in text
     assert "jasper-web.socket" in text
     assert "combined full-speaker jasper-web bundle disabled" in text
+
+
+def test_streambox_profile_installs_combined_web_not_endpoint_sources_socket():
+    install_sh = INSTALL_SH.read_text()
+    install_surface = installer_text()
+    streambox_block = install_sh.split(
+        'if [[ "${install_profile}" == "streambox" ]]; then', 1,
+    )[1].split("return 0", 1)[0]
+    streambox_units = install_surface.split(
+        "install_streambox_systemd_units() {", 1,
+    )[1].split("\n}", 1)[0]
+    streambox_web_units = install_surface.split(
+        "install_streambox_web_unit_files() {", 1,
+    )[1].split("\n}", 1)[0]
+    streambox_parking = install_surface.split(
+        "park_streambox_brain_units() {", 1,
+    )[1].split("\n}", 1)[0]
+
+    assert "install_streambox_nginx_site" in streambox_block
+    assert "jasper-web-streambox.service" in streambox_web_units
+    assert "jasper-web-streambox.socket" in streambox_web_units
+    assert "deploy/jasper-web.service" not in streambox_web_units
+    assert "deploy/jasper-web.socket" not in streambox_web_units
+    assert "jasper-sources-web.socket" in streambox_parking
+    assert "systemctl disable --now jasper-sources-web.socket" in streambox_parking
+    assert "jasper-voice.service" in streambox_parking
+    assert "systemctl disable --now" in streambox_parking
+    for helper in [
+        "install_jasper_support_files",
+        "install_local_audio_graph_unit_files",
+        "install_streambox_web_unit_files",
+        "install_resilience_identity_unit_files",
+        "install_usbsink_unit_files",
+        "install_grouping_unit_files",
+        "install_renderer_source_unit_files",
+        "install_streambox_audio_slices",
+        "install_audio_output_recovery_unit_files",
+        "park_streambox_brain_units",
+        "validate_streambox_systemd_units",
+        "enable_streambox_web_sockets",
+        "start_streambox_runtime_units",
+    ]:
+        assert helper in streambox_units
+
+
+def test_streambox_web_units_bind_only_streambox_wizard_ports():
+    from jasper.web import __main__ as web_main
+
+    full_socket = (REPO_ROOT / "deploy/jasper-web.socket").read_text()
+    streambox_socket = (REPO_ROOT / "deploy/jasper-web-streambox.socket").read_text()
+    streambox_service = (REPO_ROOT / "deploy/jasper-web-streambox.service").read_text()
+    streambox_ports = {
+        spec.default_port for spec in web_main._specs_for_role("streambox")
+    }
+    full_only_ports = {
+        spec.default_port
+        for spec in web_main.WIZARD_SPECS
+        if spec.default_port not in streambox_ports
+    }
+
+    assert streambox_ports
+    for port in streambox_ports:
+        assert f"ListenStream=127.0.0.1:{port}" in full_socket
+        assert f"ListenStream=127.0.0.1:{port}" in streambox_socket
+    for port in full_only_ports:
+        assert f"ListenStream=127.0.0.1:{port}" in full_socket
+        assert f"ListenStream=127.0.0.1:{port}" not in streambox_socket
+
+    assert "spotify_credentials.env" in streambox_service
+    for brain_env in [
+        "voice_provider.env",
+        "google_credentials.env",
+        "wake_model.env",
+        "weather.env",
+        "transit.env",
+    ]:
+        assert brain_env not in streambox_service
+
+
+def test_streambox_python_runtime_does_not_seed_brain_secret_dirs():
+    python_runtime = (REPO_ROOT / "deploy/lib/install/python-runtime.sh").read_text()
+    streambox_runtime = python_runtime.split(
+        "install_streambox_jasper() {", 1,
+    )[1].split("\n}", 1)[0]
+
+    assert "google/tokens" not in streambox_runtime
+    assert "spotify_credentials.env" not in streambox_runtime
+
+
+def test_streambox_systemd_helpers_stay_at_owned_boundaries():
+    install_surface = installer_text()
+    grouping_units = install_surface.split(
+        "install_grouping_unit_files() {", 1,
+    )[1].split("\n}", 1)[0]
+    renderer_units = install_surface.split(
+        "install_renderer_source_unit_files() {", 1,
+    )[1].split("\n}", 1)[0]
+    recovery_units = install_surface.split(
+        "install_audio_output_recovery_unit_files() {", 1,
+    )[1].split("\n}", 1)[0]
+
+    assert "jasper-snapserver.service" in grouping_units
+    assert "jasper-snapclient.service" in grouping_units
+    assert "jasper-grouping-reconcile.service" in grouping_units
+    assert "shairport-sync.service" not in grouping_units
+    assert "librespot.service" not in grouping_units
+    assert "jasper-dongle-recover.service" not in grouping_units
+
+    assert "shairport-sync.service" in renderer_units
+    assert "librespot.service" in renderer_units
+    assert "jasper-mux.service" in renderer_units
+    assert "jasper-snapserver.service" not in renderer_units
+    assert "jasper-dongle-recover.service" not in renderer_units
+
+    assert "jasper-dongle-recover.service" in recovery_units
+    assert "99-jasper-apple-dongle.rules" in recovery_units
+    assert "shairport-sync.service" not in recovery_units
+    assert "jasper-snapserver.service" not in recovery_units
+
+
+def test_profile_helpers_live_at_their_owner_boundaries():
+    install_sh = INSTALL_SH.read_text()
+    python_runtime = (REPO_ROOT / "deploy/lib/install/python-runtime.sh").read_text()
+    systemd_units = (REPO_ROOT / "deploy/lib/install/systemd-units.sh").read_text()
+
+    for runtime_helper in ["install_jasper", "install_streambox_jasper"]:
+        assert f"{runtime_helper}() {{" not in install_sh
+        assert python_runtime.count(f"{runtime_helper}() {{") == 1
+
+    for service_helper in [
+        "render_endpoint_unit",
+        "install_endpoint_systemd_units",
+        "install_jasper_support_files",
+        "install_local_audio_graph_unit_files",
+        "install_streambox_web_unit_files",
+        "install_resilience_identity_unit_files",
+        "install_usbsink_unit_files",
+        "install_grouping_unit_files",
+        "install_renderer_source_unit_files",
+        "install_audio_output_recovery_unit_files",
+        "install_streambox_audio_slices",
+        "validate_streambox_web_socket",
+        "validate_streambox_systemd_units",
+        "park_streambox_brain_units",
+        "enable_streambox_web_sockets",
+        "start_streambox_runtime_units",
+        "install_streambox_systemd_units",
+        "install_systemd_units",
+    ]:
+        assert f"{service_helper}() {{" not in install_sh
+        assert systemd_units.count(f"{service_helper}() {{") == 1
+
+
+def test_usb_gadget_mode_uses_all_boot_section_for_zero_class_validation(
+    tmp_path: Path,
+):
+    config = tmp_path / "config.txt"
+    config.write_text("# existing boot config\n[pi5]\n# pi5-only content\n")
+
+    result = _run_install_helper(
+        f"JTS_BOOT_CONFIG_FILE={shlex.quote(str(config))} set_usb_gadget_mode",
+    )
+
+    assert result.returncode == 0, result.stderr
+    text = config.read_text()
+    assert "[all]" in text
+    assert "dtoverlay=dwc2,dr_mode=peripheral" in text
+    assert "On Zero-class streamboxes this is intentionally allowed" in text
+
+    second = _run_install_helper(
+        f"JTS_BOOT_CONFIG_FILE={shlex.quote(str(config))} set_usb_gadget_mode",
+    )
+    assert second.returncode == 0, second.stderr
+    assert config.read_text().count("dtoverlay=dwc2,dr_mode=peripheral") == 1
 
 
 def test_full_profile_disables_endpoint_sources_socket_before_combined_web():
@@ -329,13 +743,19 @@ def test_deploy_script_forwards_endpoint_profile_and_verifies_management_surface
     assert "cat /var/lib/jasper/install_profile' \\" in text
     assert "cat /var/lib/jasper/install_profile 2>/dev/null || echo full" not in text
     assert "invalid installed profile" in text
+    assert "full|streambox|endpoint" in text
+    assert "Expected 'full', 'streambox', or 'endpoint'" in text
     assert "systemctl restart jasper-grouping-reconcile.service" in text
     assert "http://127.0.0.1:8780/healthz" in text
     assert "jasper-aec-reconcile.service" in text
     assert "endpoint management surface" in text
+    assert "streambox management surface" in text
     assert "/system/data.json" in text
     assert "/sources/state" in text
+    assert "/sound/" in text
+    assert "/spotify/" in text
     assert "endpoint probes failed" in text
+    assert "streambox probes failed" in text
 
 
 def test_endpoint_nginx_config_failure_is_fatal():

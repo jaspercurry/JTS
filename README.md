@@ -490,7 +490,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
-| [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up or building a Zero 2 W endpoint | Lab runbook + the one-package/install-role decision and phased plan for cheap Zero-class JTS roles: satellite endpoint with scoped `/`, `/system`, `/sources` today, planned streambox role and `active_crossover` output topology later |
+| [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md) | Operator bringing up or building a Zero 2 W endpoint | Lab runbook + the one-package/install-role decision and phased plan for cheap Zero-class JTS roles: satellite endpoint with shared capability-gated `/` plus scoped `/system`, `/sources`; streambox with local renderers, DSP, and the same shared capability-gated UI; planned `active_crossover` output topology later |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
 | [docs/HANDOFF-observability.md](docs/HANDOFF-observability.md) | Operator + AI | Logging/observability model (heartbeat-vs-forensic split, the three steady-state verbosity hotspots, persistent-journald rationale) + the approved per-subsystem debug-mode toggle, flight-recorder, and download-diagnostics design |
@@ -549,12 +549,14 @@ reference. Currently:
   Raspberry Pi Zero 2 W endpoint: today's lab runbook (OS Lite +
   `snapclient` + the multi-room spike) and the decided product path —
   one JTS package with install roles, not a parallel endpoint
-  codebase. The built small role is the satellite endpoint
-  (`jasper-control` + managed snapclient + endpoint-scoped `/`,
-  `/system`, and `/sources`; source rows stay disabled when their
-  renderer units are not installed). Planned work adds a standalone
-  streambox role and an `active_crossover` topology capability with
-  local `/crossover` for either satellite or streambox.
+  codebase. The built small roles are the satellite endpoint
+  (`jasper-control` + managed snapclient + shared JTS landing page
+  filtered by capabilities plus endpoint-scoped `/system` and
+  `/sources`; source rows stay disabled when their renderer units are
+  not installed) and the streambox role (local renderers +
+  outputd/CamillaDSP + the same shared JTS landing page filtered by
+  capabilities). Planned work adds an `active_crossover` topology
+  capability with local `/crossover` for either satellite or streambox.
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine choices, chip-AEC profile, software fallback)
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —
@@ -1090,6 +1092,8 @@ bash scripts/deploy-to-pi.sh
 PI_HOST=192.168.1.42 JASPER_HOSTNAME=jts.local bash scripts/deploy-to-pi.sh
 # or for a Zero 2 W transport endpoint:
 PI_HOST=jts4.local JASPER_INSTALL_PROFILE=endpoint bash scripts/deploy-to-pi.sh
+# or for a Zero 2 W standalone streambox:
+PI_HOST=jts4.local JASPER_INSTALL_PROFILE=streambox bash scripts/deploy-to-pi.sh
 ```
 
 This is a thin wrapper that captures the current git SHA + branch
@@ -1104,17 +1108,27 @@ instead of "unknown" (`.git/` is excluded from the rsync for speed).
 
 The install script is idempotent.
 
-The `endpoint` profile is the supported Zero 2 W satellite path today.
-It persists `/var/lib/jasper/install_profile`, installs only the
-lightweight `jasper-control` + Snapcast renderer surface plus a scoped
-nginx UI at `/`, `/system`, and `/sources`. `/sources` is capability-aware:
-source rows whose renderer units are not installed in the profile are
-disabled with an explanation. Deploys verify the endpoint UI through nginx
-(`/`, `/system/data.json`, `/sources/state`) and also check
-`jasper-control`'s always-on `:8780/healthz`.
-Future Zero-class work may add the streambox role and local driver-DSP
-for `active_crossover` topologies, but role changes must be explicit so
-a standalone streambox cannot silently become a grouped satellite. See
+Zero-class installs have two small profiles. On a fresh Raspberry Pi Zero
+2 W with no persisted marker and no explicit `JASPER_INSTALL_PROFILE`, the
+installer resolves to `streambox` so a tiny board does not accidentally run
+the full brain profile. `endpoint` is the
+satellite-only path: it persists `/var/lib/jasper/install_profile`,
+installs lightweight `jasper-control` + Snapcast renderer plumbing, and
+serves a scoped UI at `/`, `/system`, and `/sources`. `streambox` is the
+standalone renderer path: local AirPlay / Spotify Connect / Bluetooth /
+USB Audio Input, outputd/CamillaDSP, `/spotify`, `/sources`, `/sound`,
+`/system`, `/rooms`, and correction/balance/sync surfaces, but no local
+voice, wake word, mic/AEC, assistant providers, or CamillaGUI. It reuses
+the shared landing UI with profile capabilities but installs a scoped
+`jasper-web` service/socket template, so it does not bind full-brain
+wizard ports. Both
+profiles use the same repo and deploy path; deploy verifies the relevant
+nginx surface plus `jasper-control`'s always-on `:8780/healthz`.
+
+Role changes are explicit. Converting an existing JTS4-style endpoint to
+streambox requires deliberate profile-change acceptance, and a standalone
+streambox must not silently become a grouped satellite. Active-crossover
+driver-DSP remains a separate topology capability. See
 [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md).
 
 ---

@@ -209,8 +209,9 @@ Increment 6 (per-follower calibration). What exists:
   household concern). Lists every JTS speaker on the LAN via the always-on
   `_jasper-control._tcp` mDNS service (NOT the wake-peering-gated
   `_jasper-peer._udp`, so it works regardless of peering state), each a
-  click-through to that speaker's own `http://<addr>/system/`, plus this
-  speaker's grouping status (off/solo, or role/channel/bond/buffer/codec,
+  click-through to that speaker's own hostname-derived
+  `http://<hostname>.local/system/` URL, plus this speaker's grouping status
+  (off/solo, or role/channel/bond/buffer/codec,
   fail-loud `error` when on-but-invalid). `GET /` is a static
   `canonical_page()` shell + ES module; `GET /rooms.json` carries the data
   (self block now includes a `peering: {enabled, primary}` wake-response
@@ -1508,13 +1509,17 @@ page. It is rendered with `canonical_page()` (page title "Speakers";
 page CSS in `/assets/rooms/`, never `app.css`), shared icon sprite,
 CSRF meta. For the **directory** part it is a **directory, not a config
 aggregator**: each sibling row links to that peer's own
-`http://<address>/system/`, so you configure each speaker on its own UI
-(sidesteps cross-Pi write/auth; home-LAN trust). Live refresh ships as a
+hostname-derived `http://<hostname>.local/system/` URL, so you configure
+each speaker on its own UI (sidesteps cross-Pi write/auth; home-LAN trust).
+The peer's raw LAN `address` remains in `/rooms.json` for server-side bond /
+swap / trim control calls, where `_lan_target` applies the SSRF guard; browser
+click-through URLs never fall back to raw IPs. Live refresh ships as a
 static ES module polling `GET /rooms.json` (mirror `system_setup.py`'s
 `/data.json`). Escape all untrusted strings (`room`, mDNS names,
-`address`): on the server they never enter the HTML at all (the shell is
-data-free), and the module renders every value via DOM/text APIs — never
-`innerHTML`, never inline `onclick` with interpolated strings. New wizard
+`address`, hostname-derived URLs): on the server they never enter the HTML at
+all (the shell is data-free), and the module renders every value via DOM/text
+APIs — never `innerHTML`, never inline `onclick` with interpolated strings.
+New wizard
 socket port → `install.sh` must `systemctl restart` (not `start`) the
 wizard socket (PR #118 502 failure mode).
 
@@ -2466,4 +2471,4 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-06-13
+Last verified: 2026-06-14

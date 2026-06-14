@@ -179,6 +179,354 @@ install_endpoint_systemd_units() {
     echo "Endpoint units enabled. jasper-control, /system/, and /sources/ are live; snapclient is managed by grouping reconcile."
 }
 
+install_jasper_support_files() {
+    install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
+        "${SYSTEMD_DIR}"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
+        /usr/local/lib/jasper/jasper-asound-render.sh
+    install -m 0644 \
+        "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
+        /usr/local/lib/jasper/jasper-env-file.sh
+    install -d -m 0755 /usr/local/lib/jasper/install
+    install -m 0644 \
+        "${REPO_DIR}"/deploy/lib/install/*.sh \
+        /usr/local/lib/jasper/install/
+}
+
+install_local_audio_graph_unit_files() {
+    install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
+        "${SYSTEMD_DIR}"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
+        "${SYSTEMD_DIR}/jasper-camilla.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
+        "${SYSTEMD_DIR}/jasper-fanin.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-outputd.service" \
+        "${SYSTEMD_DIR}/jasper-outputd.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-control.service" \
+        "${SYSTEMD_DIR}/jasper-control.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-audio-hardware-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-audio-hardware-reconcile" \
+        /usr/local/sbin/jasper-audio-hardware-reconcile
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-camilla-pipe-guard" \
+        /usr/local/sbin/jasper-camilla-pipe-guard
+}
+
+install_streambox_web_unit_files() {
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-web-streambox.service" \
+        "${SYSTEMD_DIR}/jasper-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-web-streambox.socket" \
+        "${SYSTEMD_DIR}/jasper-web.socket"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-bluetooth-web.service" \
+        "${SYSTEMD_DIR}/jasper-bluetooth-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-bluetooth-web.socket" \
+        "${SYSTEMD_DIR}/jasper-bluetooth-web.socket"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-correction-web.service" \
+        "${SYSTEMD_DIR}/jasper-correction-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-correction-web.socket" \
+        "${SYSTEMD_DIR}/jasper-correction-web.socket"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-system-web.service" \
+        "${SYSTEMD_DIR}/jasper-system-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-system-web.socket" \
+        "${SYSTEMD_DIR}/jasper-system-web.socket"
+}
+
+validate_streambox_web_socket() {
+    local socket="${SYSTEMD_DIR}/jasper-web.socket"
+    local -a expected_ports=(8765 8771 8773 8775 8776 8783 8784 8785)
+    local -a forbidden_ports=(8767 8768 8774 8777 8778 8779 8782)
+    local port
+    for port in "${expected_ports[@]}"; do
+        if ! grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
+            echo "  ERROR: streambox jasper-web.socket missing port ${port}" >&2
+            return 1
+        fi
+    done
+    for port in "${forbidden_ports[@]}"; do
+        if grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
+            echo "  ERROR: streambox jasper-web.socket still binds full-brain port ${port}" >&2
+            return 1
+        fi
+    done
+}
+
+validate_streambox_systemd_units() {
+    validate_streambox_web_socket || return 1
+    if command -v systemd-analyze >/dev/null 2>&1; then
+        local -a verify_units=(
+            "${SYSTEMD_DIR}/jasper-control.service"
+            "${SYSTEMD_DIR}/jasper-camilla.service"
+            "${SYSTEMD_DIR}/jasper-fanin.service"
+            "${SYSTEMD_DIR}/jasper-outputd.service"
+            "${SYSTEMD_DIR}/jasper-audio-hardware-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-snapclient.service"
+            "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-web.service"
+            "${SYSTEMD_DIR}/jasper-web.socket"
+            "${SYSTEMD_DIR}/jasper-bluetooth-web.service"
+            "${SYSTEMD_DIR}/jasper-bluetooth-web.socket"
+            "${SYSTEMD_DIR}/jasper-correction-web.service"
+            "${SYSTEMD_DIR}/jasper-correction-web.socket"
+            "${SYSTEMD_DIR}/jasper-system-web.service"
+            "${SYSTEMD_DIR}/jasper-system-web.socket"
+            "${SYSTEMD_DIR}/librespot.service"
+            "${SYSTEMD_DIR}/shairport-sync.service"
+            "${SYSTEMD_DIR}/nqptp.service"
+            "${SYSTEMD_DIR}/bt-agent.service"
+            "${SYSTEMD_DIR}/jasper-mux.service"
+            "${SYSTEMD_DIR}/jasper-usbsink-init.service"
+            "${SYSTEMD_DIR}/jasper-usbsink.service"
+            "${SYSTEMD_DIR}/jts-audio.slice"
+            "${SYSTEMD_DIR}/jasper-dongle-recover.service"
+            "${SYSTEMD_DIR}/jasper-dac-init.service"
+            "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+            "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
+            "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
+            "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+        )
+        if [[ -x /usr/bin/snapserver ]]; then
+            verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")
+        fi
+        systemd-analyze verify "${verify_units[@]}" || {
+            echo "  ERROR: streambox systemd units failed systemd-analyze verify" >&2
+            return 1
+        }
+    fi
+}
+
+install_resilience_identity_unit_files() {
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-guardian.service" \
+        "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
+        /usr/local/sbin/jasper-wifi-guardian
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.timer" \
+        "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-identity-reconcile" \
+        /usr/local/sbin/jasper-identity-reconcile
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-bootloop-guard.service" \
+        "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-bootloop-guard" \
+        /usr/local/sbin/jasper-bootloop-guard
+}
+
+install_usbsink_unit_files() {
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbsink-init.service" \
+        "${SYSTEMD_DIR}/jasper-usbsink-init.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
+        "${SYSTEMD_DIR}/jasper-usbsink.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-up" \
+        /usr/local/sbin/jasper-usbsink-gadget-up
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-down" \
+        /usr/local/sbin/jasper-usbsink-gadget-down
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-wait-card" \
+        /usr/local/sbin/jasper-usbsink-wait-card
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-name-patch" \
+        /usr/local/sbin/jasper-usbsink-name-patch
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/uac2_name_patch.py" \
+        /usr/local/sbin/uac2_name_patch.py
+}
+
+install_grouping_unit_files() {
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
+        "${SYSTEMD_DIR}/jasper-snapserver.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-snapclient.service" \
+        "${SYSTEMD_DIR}/jasper-snapclient.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
+
+    for distro_unit in snapserver.service snapclient.service; do
+        if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
+                | grep -q "^${distro_unit}"; then
+            systemctl disable --now "${distro_unit}" >/dev/null 2>&1 || true
+        fi
+    done
+}
+
+install_renderer_source_unit_files() {
+    if [[ -e "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf" ]]; then
+        rm -f "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
+        rmdir "${SYSTEMD_DIR}/shairport-sync.service.d" 2>/dev/null || true
+        echo "  removed stale shairport drop-in from a previous install"
+    fi
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/librespot.service" \
+        "${SYSTEMD_DIR}/librespot.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/shairport-sync.service" \
+        "${SYSTEMD_DIR}/shairport-sync.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/nqptp.service" \
+        "${SYSTEMD_DIR}/nqptp.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bt-agent.service" \
+        "${SYSTEMD_DIR}/bt-agent.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-mux.service" \
+        "${SYSTEMD_DIR}/jasper-mux.service"
+    install -d -m 0755 "${SYSTEMD_DIR}/bluealsa-aplay.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-output.conf" \
+        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-output.conf"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-slice.conf" \
+        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
+    install -d -m 0755 "${SYSTEMD_DIR}/bluealsa.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bluealsa.service.d/jts-restart.conf" \
+        "${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
+}
+
+install_audio_output_recovery_unit_files() {
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-dongle-recover.service" \
+        "${SYSTEMD_DIR}/jasper-dongle-recover.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-dac-init" \
+        /usr/local/bin/jasper-dac-init
+    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
+        "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
+        > "${SYSTEMD_DIR}/jasper-dac-init.service"
+    chmod 0644 "${SYSTEMD_DIR}/jasper-dac-init.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-headphone-monitor" \
+        /usr/local/bin/jasper-headphone-monitor
+    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
+        "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
+        > "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+    chmod 0644 "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+    install -d -m 0755 /etc/udev/rules.d
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-apple-dongle.rules" \
+        /etc/udev/rules.d/99-jasper-apple-dongle.rules
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
+        /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
+    udevadm control --reload-rules
+    udevadm trigger --action=add --subsystem-match=sound 2>/dev/null || true
+    udevadm trigger --action=add --subsystem-match=usb 2>/dev/null || true
+}
+
+install_streambox_audio_slices() {
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jts-audio.slice" \
+        "${SYSTEMD_DIR}/jts-audio.slice"
+    install -d -m 0755 "${SYSTEMD_DIR}/ssh.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
+        "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
+}
+
+park_streambox_brain_units() {
+    # Converting from a full speaker to streambox must park local brain
+    # surfaces while keeping renderer/DSP/source surfaces alive.
+    for brain_unit in \
+        jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
+        jasper-aec-reconcile.service jasper-input.service \
+        jasper-dial-web.socket jasper-dial-web.service \
+        camillagui.socket camillagui.service camillagui-proxy.service; do
+        systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
+    done
+    systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
+        >/dev/null 2>&1 || true
+}
+
+enable_streambox_web_sockets() {
+    local unit
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
+        systemctl stop "${unit}.service" 2>/dev/null || true
+        if systemctl is-enabled "${unit}.service" --quiet 2>/dev/null; then
+            systemctl disable "${unit}.service" 2>/dev/null || true
+        fi
+        systemctl enable "${unit}.socket"
+        systemctl restart "${unit}.socket" 2>/dev/null || true
+    done
+}
+
+start_streambox_runtime_units() {
+    systemctl enable jasper-camilla.service jasper-fanin.service \
+        jasper-outputd.service jasper-audio-hardware-reconcile.service \
+        jasper-control.service
+    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
+        echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
+    systemctl restart jasper-fanin.service 2>/dev/null || true
+    systemctl try-restart jasper-camilla.service 2>/dev/null || true
+    require_outputd_ready || \
+        echo "  WARN: jasper-outputd is not ready. Check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing so the web UI and doctor remain available."
+
+    systemctl enable nqptp.service shairport-sync.service \
+        librespot.service bt-agent.service jasper-mux.service
+    systemctl restart bluealsa-aplay.service 2>/dev/null || true
+    systemctl restart nqptp.service shairport-sync.service \
+        librespot.service bt-agent.service jasper-mux.service \
+        2>/dev/null || true
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
+        systemctl stop "${unit}.service" 2>/dev/null || true
+    done
+    reconcile_grouping_state
+    systemctl enable jasper-wifi-guardian.service
+    systemctl enable jasper-bootloop-guard.service
+    systemctl enable --now jasper-identity-reconcile.timer
+    systemctl start jasper-identity-reconcile.service || \
+        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
+    systemctl restart jasper-control.service
+}
+
+install_streambox_systemd_units() {
+    install_jasper_support_files
+    install_local_audio_graph_unit_files
+    install_streambox_web_unit_files
+    install_resilience_identity_unit_files
+    install_usbsink_unit_files
+    install_grouping_unit_files
+    install_renderer_source_unit_files
+    install_streambox_audio_slices
+    install_audio_output_recovery_unit_files
+    park_streambox_brain_units
+
+    validate_streambox_systemd_units
+    systemctl daemon-reload
+    systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
+    enable_streambox_web_sockets
+    start_streambox_runtime_units
+    echo "Streambox units enabled. Local sources, DSP, /sound/, /system/, and grouping reconcile are live; voice/AEC remain parked."
+}
+
 install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \

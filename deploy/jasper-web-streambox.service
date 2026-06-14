@@ -1,0 +1,32 @@
+[Unit]
+Description=Jasper streambox web setup service (Spotify + AirPlay + Sources + Speaker + Wi-Fi + Peers + Sound + Rooms)
+# Socket-activated by the profile-scoped jasper-web.socket installed from
+# deploy/jasper-web-streambox.socket. The service exits after 10 min idle.
+Requires=jasper-web.socket
+After=jasper-web.socket network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=notify
+WatchdogSec=30s
+EnvironmentFile=/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/speaker_name.env
+# Optional file written by the Spotify setup wizard when the user pastes their
+# Spotify Developer App credentials. Sourced after jasper.env so wizard-written
+# values win. Streambox does not source voice/Google/wake/transit/weather envs.
+EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
+ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
+Restart=on-failure
+RestartSec=2
+
+# Needs /var/lib/jasper for wizard state, generated CamillaDSP configs for
+# /sound/, BlueZ's local name for Bluetooth, and systemd-passed loopback fds.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs /etc/bluetooth
+
+[Install]
+# WantedBy left out intentionally — enabling the .socket pulls in the service
+# on demand. `systemctl enable jasper-web.socket`.

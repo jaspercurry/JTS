@@ -432,6 +432,16 @@ def test_assemble_args_endpoint_profile_uses_direct_alsa_not_outputd_fifo():
     assert MEMBER_CONTENT_FIFO not in d[CLIENT_KEY]
 
 
+def test_assemble_args_streambox_profile_uses_outputd_fifo_not_direct_alsa():
+    from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
+
+    d = _assemble_args(_follower(), install_profile="streambox")
+
+    assert d[SERVER_KEY] == ""
+    assert f"--player file:filename={MEMBER_CONTENT_FIFO}" in d[CLIENT_KEY]
+    assert "alsa:device=default" not in d[CLIENT_KEY]
+
+
 def test_assemble_args_endpoint_profile_leader_clears_both_args():
     d = _assemble_args(_leader(), install_profile="endpoint")
 

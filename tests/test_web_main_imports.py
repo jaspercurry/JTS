@@ -102,6 +102,30 @@ def test_registered_wizard_default_ports_are_socket_backed():
         )
 
 
+def test_streambox_socket_backs_only_streambox_wizards():
+    """The streambox install overwrites jasper-web.socket with this smaller
+    socket file, so its ports must match the profile-filtered registry exactly.
+    """
+    from jasper.web import __main__ as web_main
+
+    socket_text = (_REPO / "deploy" / "jasper-web-streambox.socket").read_text()
+    listen_ports = {
+        int(m.group(1))
+        for m in re.finditer(r"^ListenStream=127\.0\.0\.1:(\d+)$", socket_text, re.M)
+    }
+    expected_ports = {
+        spec.default_port for spec in web_main._specs_for_role("streambox")
+    }
+
+    assert listen_ports == expected_ports
+
+
+def test_invalid_web_profile_fails_closed():
+    from jasper.web import __main__ as web_main
+
+    assert web_main._specs_for_role("invalid") == ()
+
+
 # ----------------------------------------------------------------------
 # Layer 2 — ruff F821 across the peering surface
 # ----------------------------------------------------------------------

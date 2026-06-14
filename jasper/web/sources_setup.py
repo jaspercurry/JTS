@@ -82,20 +82,20 @@ USBSINK_UNIT = "jasper-usbsink.service"
 VALID_SOURCES = ("airplay", "bluetooth", "spotify_connect", "usbsink")
 SOURCE_UNAVAILABLE = {
     "airplay": (
-        "AirPlay is not installed in this profile. Convert this endpoint "
-        "to the full speaker profile to enable it."
+        "AirPlay is not installed in this satellite-only profile. Install "
+        "the streambox or full speaker profile to enable local sources."
     ),
     "spotify_connect": (
-        "Spotify Connect is not installed in this profile. Convert this "
-        "endpoint to the full speaker profile to enable it."
+        "Spotify Connect is not installed in this satellite-only profile. "
+        "Install the streambox or full speaker profile to enable local sources."
     ),
     "bluetooth": (
-        "Bluetooth audio is not installed in this profile. Convert this "
-        "endpoint to the full speaker profile to enable it."
+        "Bluetooth audio is not installed in this satellite-only profile. "
+        "Install the streambox or full speaker profile to enable local sources."
     ),
     "usbsink": (
-        "USB Audio Input is not installed in this profile. Convert this "
-        "endpoint to the full speaker profile to enable it."
+        "USB Audio Input is not installed in this satellite-only profile. "
+        "Install the streambox or full speaker profile to enable local sources."
     ),
 }
 IDLE_SHUTDOWN_SEC = 600.0
@@ -269,10 +269,11 @@ def _gather_state() -> dict[str, dict[str, bool | str]]:
     else:
         bt_unavailable_reason = ""
     return {
-        # Sibling key, not a source: the JS iterates a fixed SOURCES
-        # list, so this rides alongside safely. While this speaker is a
-        # bonded FOLLOWER the dumb-follower profile parks every source —
-        # the page disables the toggles and explains, and POST /set 409s.
+        # Sibling key, not a source: the JS iterates a fixed SOURCES list,
+        # so this rides alongside safely. Satellite-only installs park every
+        # local source; bonded followers on full/streambox installs are parked
+        # by the grouping reconciler. The page disables toggles and explains;
+        # POST /set 409s.
         "pair": {"parked": bonded_follower_active()},
         "airplay": _systemd_source_state("airplay", AIRPLAY_UNIT),
         "bluetooth": {
@@ -389,7 +390,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
             unavailable_html=(
                 '<div class="source-note warn" id="airplay-unavailable-note" '
                 'style="display:none">AirPlay is not installed in this '
-                "profile.</div>"
+                "profile. Install streambox or full speaker to enable it.</div>"
             ),
         ),
         _source_row(
@@ -404,7 +405,8 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
             unavailable_html=(
                 '<div class="source-note warn" '
                 'id="spotify_connect-unavailable-note" style="display:none">'
-                "Spotify Connect is not installed in this profile.</div>"
+                "Spotify Connect is not installed in this profile. Install "
+                "streambox or full speaker to enable it.</div>"
             ),
         ),
         _source_row(

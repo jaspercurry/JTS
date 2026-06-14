@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
+from ...install_profile import is_satellite_install_profile, read_install_profile
 from ._registry import doctor_check
 from ._shared import CheckResult, _camilla_block_field, _run
 
 
 def _endpoint_tier() -> bool:
-    return read_install_profile() == ENDPOINT_INSTALL_PROFILE
+    return is_satellite_install_profile(read_install_profile())
 
 
 def _endpoint_player() -> str:
@@ -73,7 +73,7 @@ def check_grouping() -> CheckResult:
     if cfg.error is not None:
         return CheckResult(label, "warn", cfg.error)
     install_profile = read_install_profile()
-    endpoint_tier = install_profile == ENDPOINT_INSTALL_PROFILE
+    endpoint_tier = is_satellite_install_profile(install_profile)
     if endpoint_tier and cfg.role == "leader":
         return CheckResult(
             label,

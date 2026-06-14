@@ -35,7 +35,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
+from ..install_profile import is_satellite_install_profile, read_install_profile
 from .. import atomic_io
 from .config import GroupingConfig, load_config
 
@@ -299,7 +299,7 @@ def plan_for_install_profile(
     oneshot exit code so the misconfiguration is visible.
     """
     if (
-        install_profile == ENDPOINT_INSTALL_PROFILE
+        is_satellite_install_profile(install_profile)
         and cfg.enabled
         and cfg.error is None
         and cfg.role == "leader"
@@ -434,7 +434,8 @@ def _assemble_args(
     """
     if not cfg.enabled or cfg.error is not None:
         return {_SERVER_ARGS_KEY: "", _CLIENT_ARGS_KEY: ""}
-    if install_profile == ENDPOINT_INSTALL_PROFILE and cfg.role == "leader":
+    satellite_only = is_satellite_install_profile(install_profile)
+    if satellite_only and cfg.role == "leader":
         return {_SERVER_ARGS_KEY: "", _CLIENT_ARGS_KEY: ""}
 
     # argv[0] is the binary name (already in the unit's ExecStart); the
@@ -445,7 +446,7 @@ def _assemble_args(
     # pre-Increment-5 bond). outputd reads the FIFO via its dac_content
     # lane (Increment 3) and picks this member's channel there.
     server = "" if cfg.role != "leader" else _join_args(snapserver_argv(cfg))
-    if install_profile == ENDPOINT_INSTALL_PROFILE:
+    if satellite_only:
         client = _join_args(snapclient_argv(
             cfg,
             player=endpoint_player or DEFAULT_ENDPOINT_SNAPCLIENT_PLAYER,
@@ -832,11 +833,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     cfg = load_config()
     install_profile = read_install_profile()
-    endpoint_tier = install_profile == ENDPOINT_INSTALL_PROFILE
+    satellite_only = is_satellite_install_profile(install_profile)
     decision = plan_for_install_profile(cfg, install_profile=install_profile)
     active = cfg.enabled and cfg.error is None
     active_leader = active and cfg.role == "leader"
-    endpoint_leader_misconfigured = endpoint_tier and active_leader
+    endpoint_leader_misconfigured = satellite_only and active_leader
     logger.info(
         "event=multiroom.reconcile.start reason=%s install_profile=%s enabled=%s role=%s error=%s summary=%r",
         args.reason, install_profile, cfg.enabled, cfg.role or "(none)",
@@ -857,7 +858,7 @@ def main(argv: list[str] | None = None) -> int:
         ARGS_FILE, wrote, ",".join(set_keys) or "(none)",
     )
 
-    if endpoint_tier:
+    if satellite_only:
         if endpoint_leader_misconfigured:
             logger.error(
                 "event=multiroom.reconcile.endpoint_role_invalid "
