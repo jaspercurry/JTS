@@ -1090,10 +1090,12 @@ If the repo is already deployed and you're just pushing changes:
 bash scripts/deploy-to-pi.sh
 # or with a non-default SSH target:
 PI_HOST=192.168.1.42 JASPER_HOSTNAME=jts.local bash scripts/deploy-to-pi.sh
-# or for a Zero 2 W transport endpoint:
-PI_HOST=jts4.local JASPER_INSTALL_PROFILE=endpoint bash scripts/deploy-to-pi.sh
-# or for a Zero 2 W standalone streambox:
+# or for a Zero 2 W streambox; fresh/unpaired Zeros auto-resolve this way:
+PI_HOST=jts4.local bash scripts/deploy-to-pi.sh
+# or make the streambox intent explicit in the deploy log:
 PI_HOST=jts4.local JASPER_INSTALL_PROFILE=streambox bash scripts/deploy-to-pi.sh
+# or deliberately install the tiny satellite-only profile:
+PI_HOST=jts4.local JASPER_INSTALL_PROFILE=endpoint bash scripts/deploy-to-pi.sh
 ```
 
 This is a thin wrapper that captures the current git SHA + branch
@@ -1111,24 +1113,28 @@ The install script is idempotent.
 Zero-class installs have two small profiles. On a fresh Raspberry Pi Zero
 2 W with no persisted marker and no explicit `JASPER_INSTALL_PROFILE`, the
 installer resolves to `streambox` so a tiny board does not accidentally run
-the full brain profile. `endpoint` is the
+the full brain profile. A legacy unpaired Zero with a persisted `endpoint`
+marker also upgrades to `streambox` on the next deploy; an actively bonded
+follower or an explicit `JASPER_INSTALL_PROFILE=endpoint` / `satellite`
+request stays satellite-only. `endpoint` is the deliberately tiny
 satellite-only path: it persists `/var/lib/jasper/install_profile`,
 installs lightweight `jasper-control` + Snapcast renderer plumbing, and
 serves a scoped UI at `/`, `/system`, and `/sources`. `streambox` is the
-standalone renderer path: local AirPlay / Spotify Connect / Bluetooth /
+normal Zero capability set: local AirPlay / Spotify Connect / Bluetooth /
 USB Audio Input, outputd/CamillaDSP, `/spotify`, `/sources`, `/sound`,
 `/system`, `/rooms`, and correction/balance/sync surfaces, but no local
 voice, wake word, mic/AEC, assistant providers, or CamillaGUI. It reuses
 the shared landing UI with profile capabilities but installs a scoped
 `jasper-web` service/socket template, so it does not bind full-brain
-wizard ports. Both
-profiles use the same repo and deploy path; deploy verifies the relevant
-nginx surface plus `jasper-control`'s always-on `:8780/healthz`.
+wizard ports. Both profiles use the same repo and deploy path; deploy
+verifies the relevant nginx surface plus `jasper-control`'s always-on
+`:8780/healthz`.
 
-Role changes are explicit. Converting an existing JTS4-style endpoint to
-streambox requires deliberate profile-change acceptance, and a standalone
-streambox must not silently become a grouped satellite. Active-crossover
-driver-DSP remains a separate topology capability. See
+Pairing is a runtime role, not a second frontend or a surprise package
+rewrite. A streambox that joins a pair parks local source renderers through
+the grouping reconciler and exposes the stripped paired-follower UI; when
+unpaired, the streambox source/EQ/room-correction surfaces come back.
+Active-crossover driver-DSP remains a separate topology capability. See
 [docs/dumb-endpoint-bringup.md](docs/dumb-endpoint-bringup.md).
 
 ---

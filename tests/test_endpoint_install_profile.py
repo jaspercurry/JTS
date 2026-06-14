@@ -292,7 +292,57 @@ def test_fresh_zero2w_defaults_to_streambox(tmp_path: Path):
     assert result.stdout.strip() == "streambox"
 
 
-def test_persisted_profile_wins_over_zero2w_hardware_default(tmp_path: Path):
+def test_zero_class_rust_build_uses_low_memory_cargo_profile(tmp_path: Path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:         425984 kB\n")
+
+    detected = _run_install_helper(
+        f"JASPER_RUST_MEMINFO_FILE={shlex.quote(str(meminfo))} "
+        "rust_low_memory_build_enabled"
+    )
+    env = _run_install_helper(
+        f"JASPER_RUST_MEMINFO_FILE={shlex.quote(str(meminfo))} "
+        "rust_cargo_build_env"
+    )
+
+    assert detected.returncode == 0, detected.stderr
+    assert "CARGO_BUILD_JOBS=1" in env.stdout
+    assert "CARGO_PROFILE_RELEASE_LTO=false" in env.stdout
+    assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in env.stdout
+    assert "CARGO_PROFILE_RELEASE_OPT_LEVEL=2" in env.stdout
+
+
+def test_full_speaker_rust_build_keeps_release_profile(tmp_path: Path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:        1014768 kB\n")
+
+    detected = _run_install_helper(
+        f"JASPER_RUST_MEMINFO_FILE={shlex.quote(str(meminfo))} "
+        "rust_low_memory_build_enabled"
+    )
+    env = _run_install_helper(
+        f"JASPER_RUST_MEMINFO_FILE={shlex.quote(str(meminfo))} "
+        "rust_cargo_build_env"
+    )
+
+    assert detected.returncode == 1
+    assert env.returncode == 0, env.stderr
+    assert env.stdout == ""
+
+
+def test_rust_low_memory_build_can_be_forced_for_recovery(tmp_path: Path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:        1014768 kB\n")
+
+    forced = _run_install_helper(
+        f"JASPER_RUST_MEMINFO_FILE={shlex.quote(str(meminfo))} "
+        "JASPER_RUST_LOW_MEMORY_BUILD=1 rust_low_memory_build_enabled"
+    )
+
+    assert forced.returncode == 0, forced.stderr
+
+
+def test_unpaired_legacy_zero_endpoint_defaults_back_to_streambox(tmp_path: Path):
     marker = tmp_path / "install_profile"
     model = tmp_path / "model"
     model.write_bytes(b"Raspberry Pi Zero 2 W Rev 1.0\\0")
@@ -301,6 +351,51 @@ def test_persisted_profile_wins_over_zero2w_hardware_default(tmp_path: Path):
     )
     read = _run_install_helper(
         "unset JASPER_INSTALL_PROFILE; "
+        f"JASPER_PI_MODEL_FILE={shlex.quote(str(model))} "
+        f"resolve_install_profile {shlex.quote(str(marker))}"
+    )
+
+    assert setup.returncode == 0, setup.stderr
+    assert read.returncode == 0, read.stderr
+    assert read.stdout.strip() == "streambox"
+
+
+def test_paired_zero_endpoint_stays_satellite_only(tmp_path: Path):
+    marker = tmp_path / "install_profile"
+    model = tmp_path / "model"
+    grouping = tmp_path / "grouping.env"
+    model.write_bytes(b"Raspberry Pi Zero 2 W Rev 1.0\\0")
+    grouping.write_text(
+        "JASPER_GROUPING=on\n"
+        "JASPER_GROUPING_ROLE=follower\n"
+        "JASPER_GROUPING_CHANNEL=right\n"
+        "JASPER_GROUPING_BOND_ID=living-room\n"
+        "JASPER_GROUPING_LEADER_ADDR=jts3.local\n"
+    )
+    setup = _run_install_helper(
+        f"persist_install_profile endpoint {shlex.quote(str(marker))}"
+    )
+    read = _run_install_helper(
+        "unset JASPER_INSTALL_PROFILE; "
+        f"JASPER_PI_MODEL_FILE={shlex.quote(str(model))} "
+        f"JASPER_GROUPING_ENV_FILE={shlex.quote(str(grouping))} "
+        f"resolve_install_profile {shlex.quote(str(marker))}"
+    )
+
+    assert setup.returncode == 0, setup.stderr
+    assert read.returncode == 0, read.stderr
+    assert read.stdout.strip() == "endpoint"
+
+
+def test_explicit_endpoint_request_keeps_satellite_profile_on_zero(tmp_path: Path):
+    marker = tmp_path / "install_profile"
+    model = tmp_path / "model"
+    model.write_bytes(b"Raspberry Pi Zero 2 W Rev 1.0\\0")
+    setup = _run_install_helper(
+        f"persist_install_profile endpoint {shlex.quote(str(marker))}"
+    )
+    read = _run_install_helper(
+        "JASPER_INSTALL_PROFILE=endpoint "
         f"JASPER_PI_MODEL_FILE={shlex.quote(str(model))} "
         f"resolve_install_profile {shlex.quote(str(marker))}"
     )
@@ -797,7 +892,9 @@ def test_endpoint_bringup_script_wraps_paved_path():
 
     assert 'bash "${SCRIPT_DIR}/onboard.sh" "${onboard_args[@]}"' in text
     assert 'onboard_args=("$HOST" "--no-install")' in text
-    assert "JASPER_INSTALL_PROFILE=endpoint" in text
+    assert 'INSTALL_PROFILE_ARG="${JASPER_INSTALL_PROFILE:-}"' in text
+    assert '--satellite-only) INSTALL_PROFILE_ARG="endpoint"' in text
+    assert "JASPER_INSTALL_PROFILE=\"$INSTALL_PROFILE_ARG\"" in text
     assert 'bash "${SCRIPT_DIR}/deploy-to-pi.sh"' in text
     assert "--no-reboot" in text
     assert "/sys/fs/cgroup/cgroup.controllers" in text

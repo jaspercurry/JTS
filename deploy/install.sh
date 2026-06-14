@@ -139,24 +139,56 @@ detect_default_install_profile() {
     esac
 }
 
+install_profile_env_value() {
+    local file="$1"
+    local key="$2"
+    [[ -r "${file}" ]] || return 0
+    awk -F= -v key="${key}" '
+        $1 == key {
+            sub(/^[^=]*=/, "")
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            print
+            exit
+        }
+    ' "${file}" 2>/dev/null || true
+}
+
+install_profile_bonded_follower_active() {
+    local grouping_file="${JASPER_GROUPING_ENV_FILE:-${STATE_DIR}/grouping.env}"
+    local enabled role leader enabled_lc
+    enabled="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING")"
+    role="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING_ROLE")"
+    leader="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING_LEADER_ADDR")"
+    enabled_lc="$(printf '%s' "${enabled}" | tr '[:upper:]' '[:lower:]')"
+    [[ "${enabled_lc}" == "on" && "${role}" == "follower" && -n "${leader}" ]]
+}
+
 # Test helpers pass an alternate marker path directly; production calls use the
 # canonical marker. Shellcheck only sees the production path.
 # shellcheck disable=SC2120
 resolve_install_profile() {
     local marker="${1:-${INSTALL_PROFILE_MARKER}}"
     local requested="${JASPER_INSTALL_PROFILE:-}"
-    local persisted requested_profile
+    local persisted requested_profile detected_profile auto_streambox_upgrade=0
 
     persisted="$(read_persisted_install_profile "${marker}")" || return $?
     if [[ -n "${requested}" ]]; then
         requested_profile="$(normalize_install_profile "${requested}")" || return $?
     elif [[ -n "${persisted}" ]]; then
-        requested_profile="${persisted}"
+        detected_profile="$(detect_default_install_profile)" || return $?
+        if [[ "${persisted}" == "endpoint" && "${detected_profile}" == "streambox" ]] \
+                && ! install_profile_bonded_follower_active; then
+            requested_profile="streambox"
+            auto_streambox_upgrade=1
+        else
+            requested_profile="${persisted}"
+        fi
     else
         requested_profile="$(detect_default_install_profile)" || return $?
     fi
 
     if [[ -n "${persisted}" && "${persisted}" != "${requested_profile}" ]] \
+            && [[ "${auto_streambox_upgrade}" != "1" ]] \
             && ! _is_truthy "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-0}"; then
         cat >&2 <<EOF
 ERROR: install profile mismatch.
@@ -216,6 +248,9 @@ Run for real from a Pi-local checkout:
    - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
    - Refuse later full/streambox/endpoint tier changes unless
      JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+   - Legacy unpaired Zero endpoints with a persisted endpoint marker
+     auto-upgrade to streambox; active bonded followers and explicit
+     endpoint requests stay satellite-only.
 
 2. System packages
    - apt-get update.
@@ -244,9 +279,11 @@ Run for real from a Pi-local checkout:
      sha256=${SHAIRPORT_SYNC_SHA256}
    - Python runtime dependencies from pyproject.toml [streambox].
    - jasper-fanin Rust daemon from rust/jasper-fanin with
-     cargo build --release --locked.
+     cargo build --release --locked; Zero-class RAM uses the installer
+     low-memory Cargo release overrides.
    - jasper-outputd daemon from rust/jasper-outputd with
-     cargo build --release --locked.
+     cargo build --release --locked; Zero-class RAM uses the installer
+     low-memory Cargo release overrides.
 
 4. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,

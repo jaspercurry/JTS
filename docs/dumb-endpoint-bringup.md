@@ -18,20 +18,22 @@ Today, a transport endpoint has three supported shapes:
   `alsa-utils`, `snapclient`, `sox`, and a DAC that ALSA can see, such
   as an Apple USB-C to 3.5 mm adapter on the Zero's USB OTG/data port.
 - **JTS endpoint install tier:** the same repo/package deployed with
-  `JASPER_INSTALL_PROFILE=endpoint`. This installs `jasper-control`,
-  Avahi identity/discovery, the grouping reconciler, and JTS-managed
-  Snapcast units; it also applies the same memory/cgroup/zram tuning
-  that makes `jts-audio.slice` enforceable. It never installs
-  `jasper-voice`, CamillaDSP, renderers, web wizards, AEC, fan-in,
-  outputd, or the Rust/AEC build toolchain.
+  `JASPER_INSTALL_PROFILE=endpoint` or `satellite`. This is now the
+  explicit satellite-only profile, not the default Zero experience. It
+  installs `jasper-control`, Avahi identity/discovery, the grouping
+  reconciler, and JTS-managed Snapcast units; it also applies the same
+  memory/cgroup/zram tuning that makes `jts-audio.slice` enforceable.
+  It never installs `jasper-voice`, CamillaDSP, renderers, web wizards,
+  AEC, fan-in, outputd, or the Rust/AEC build toolchain.
 - **JTS streambox install tier:** the same repo/package deployed with
   `JASPER_INSTALL_PROFILE=streambox`. This installs the local renderer
   and DSP graph (`shairport-sync`, Spotify Connect/librespot, Bluetooth,
   USB Audio Input, fan-in, outputd, CamillaDSP, `/sources`, `/sound`,
   `/spotify`, `/system`, `/rooms`, and correction/balance/sync web
   surfaces) while deliberately omitting wake word, mic/AEC, assistant
-  providers, TTS/cues, CamillaGUI, and accessory firmware. This software
-  path is built; real Zero 2 W hardware validation is still required.
+  providers, TTS/cues, CamillaGUI, and accessory firmware. This is the
+  default Zero 2 W install when the box is not already an active bonded
+  follower.
   USB Audio Input is intentionally visible on streambox installs,
   including Zero-class hardware, so powered USB splitter experiments can
   validate whether the OTG data role and the USB DAC can coexist. If
@@ -39,8 +41,10 @@ Today, a transport endpoint has three supported shapes:
   from the Zero-class profile rather than quietly degrading DAC output.
 
 Do **not** run a bare full install on the Zero 2 W. The full profile
-builds AEC3 and two Rust daemons, which a 512 MB Zero cannot do
-comfortably. Use the endpoint bring-up wrapper:
+builds AEC3 and installs the voice/assistant stack, which does not fit
+the product role or memory envelope. Use the endpoint bring-up wrapper;
+it lets the installer auto-resolve the correct Zero role, which is
+`streambox` unless the Pi is already configured as a bonded follower:
 
 ```sh
 bash scripts/bringup-endpoint.sh jts4.local --adopt
@@ -54,24 +58,28 @@ bash scripts/bringup-endpoint.sh 192.168.1.162 --adopt --speaker-hostname jts4.l
 ```
 
 The wrapper reuses `scripts/onboard.sh --no-install` for SSH/laptop
-state, runs `scripts/deploy-to-pi.sh` with
-`JASPER_INSTALL_PROFILE=endpoint`, reboots once if the cgroup/zram boot
-contract needs it, and prints the final `snapclient`, ALSA DAC, Wi-Fi
-guardian, healthz, service, and doctor summary. It does **not** play an
-audible tone automatically.
+state, runs `scripts/deploy-to-pi.sh`, reboots once if the cgroup/zram
+boot contract needs it, and prints the final `snapclient`, ALSA DAC,
+Wi-Fi guardian, healthz, service, and doctor summary. It does **not**
+play an audible tone automatically. Pass `--satellite-only` only when
+you intentionally want the smallest follower image instead of the
+default streambox capability set.
 
-For the standalone streambox profile, use the normal deploy path. On a
-fresh Raspberry Pi Zero 2 W with no persisted profile marker, the installer
-auto-resolves to `streambox`; passing the profile explicitly is still
-recommended when you want the deploy log and shell history to show intent:
+For manual deploys, the normal deploy path is still valid. On a fresh
+Raspberry Pi Zero 2 W with no persisted profile marker, the installer
+auto-resolves to `streambox`; passing the profile explicitly is useful
+when you want the deploy log and shell history to show intent:
 
 ```sh
 PI_HOST=jts4.local JASPER_INSTALL_PROFILE=streambox bash scripts/deploy-to-pi.sh
 ```
 
-If the Pi already has a persisted `endpoint` marker, the installer will
-refuse that profile change unless the operator deliberately also sets
-`JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1`.
+If a legacy Zero already has a persisted `endpoint` marker and is not an
+active bonded follower, the installer now treats that as an old
+satellite-only bring-up and upgrades it to `streambox` on the next
+deploy. An actively bonded follower stays satellite-only. An explicit
+`JASPER_INSTALL_PROFILE=endpoint` or `--satellite-only` also keeps the
+minimal follower profile.
 
 The brainy JTS speaker remains the leader.
 
@@ -103,14 +111,13 @@ do not need migration.
 | `full_range` | built for satellite endpoint | satellite or streambox | One local full-range output; no local driver DSP required. |
 | `active_crossover` | planned | satellite or streambox | The box owns local driver routing/protection for the DACs/amps it drives, so it installs CamillaDSP and exposes `/crossover`. |
 
-In a friendly first-run product flow, a newly imaged Zero 2 W may start
-as the built satellite endpoint: quiet, safe, visible at
-`http://<host>/`, and ready to join a leader. The `/sources/` page is
-still present, but rows for source services that are not installed in the
-current role render disabled with an explicit reason. If the box is meant
-to be a standalone music target, install or convert it to `streambox`
-instead of pretending a satellite can enable AirPlay or Spotify by
-flipping a checkbox.
+In the friendly first-run product flow, a newly imaged Zero 2 W starts as
+the streambox-capable endpoint: quiet, safe, visible at `http://<host>/`,
+and able to run local sources and local content DSP without becoming a
+voice/AI brain. If another speaker bonds it as a follower, the grouping
+reconciler changes the runtime role: local source renderers are parked,
+the paired leader owns content DSP, and the shared UI hides or redirects
+the controls that no longer apply while paired.
 
 The satellite landing page and `/system/` page follow the same
 capability contract as the full and streambox UI. The shared landing
@@ -120,20 +127,12 @@ endpoint tier; `/system/` shows health, diagnostics, and power actions,
 but hides local voice/audio restart and audio-conversion controls
 because those services do not run on the endpoint tier.
 
-With `streambox`, either first-run path is valid. A Zero that is not
-joining an existing leader can run `streambox` and use the same
-`/sources/` surface to enable local renderers. Joining a strict
-stereo/sub/satellite group is then a deliberate role conversion back to
-satellite, not a runtime toggle. That conversion must disable local
-renderers and clear local source selection before the device becomes a
-synchronized follower. A satellite must not keep advertising itself as
-an independent AirPlay/Spotify target for the same room; to senders, the
-room should remain one logical speaker.
-
-The reverse conversion is also valid. A retired satellite can become a
-standalone `streambox` again, but only through an explicit install-role
-change that disables grouping first. The persisted install profile marker
-exists so a bare deploy cannot silently flip those roles.
+The satellite-only install profile remains useful for lab validation and
+for a deliberately tiny follower image, but it is no longer the default
+way to bring a Zero online. In normal product operation, streambox is the
+capability set and grouping is the runtime role switch: pair it and local
+sources park; unpair it and the source/EQ/room-correction surfaces are
+available again.
 
 Active crossover is not a third role. It is an output-topology capability
 that can be layered onto either satellite or streambox:
@@ -382,8 +381,10 @@ Target shape:
   normal runtime unit names, so the shared landing page and local-audio
   wizards reuse the same code without binding full-brain wizard ports or
   sourcing assistant-only env files. A fresh Zero 2 W with no persisted
-  marker defaults to `streambox`; explicit env and the persisted marker
-  still win.
+  marker defaults to `streambox`; a legacy unpaired Zero with a persisted
+  `endpoint` marker is also upgraded to `streambox`. The satellite-only
+  marker still wins when the box is already an active bonded follower, or
+  when the operator explicitly requests `endpoint` / `satellite`.
 - **Same deploy path**: `scripts/deploy-to-pi.sh` works when
   `JASPER_INSTALL_PROFILE=endpoint` or `JASPER_INSTALL_PROFILE=streambox`
   is set, or when the persisted profile marker already says one of
@@ -471,27 +472,31 @@ a place the work will otherwise drift or wedge:
 - **Tier is install-time; role is runtime. Never conflate them.** The
   grouping vocabulary stays exactly `{leader, follower}` — do NOT add
   an `endpoint` role to `grouping.env`, `validate_grouping`, or the
-  bond fan-out. An endpoint is a *follower on the endpoint install
-  tier*. The only runtime accommodation is the reconciler treating
-  stop/start intents for never-installed units as no-ops. If an
-  endpoint-tier member is accidentally configured as `role=leader`, the
-  reconciler must fail closed: clear snapcast args, stop both snap units,
-  return nonzero, and let `jasper-doctor` warn that the member must be
-  reassigned as a follower.
-- **Persist the install profile on the Pi, and never switch tiers
-  implicitly.** `install.sh` re-runs on every deploy; if the profile
-  lives only in the invoking shell's env, the next bare
-  `deploy-to-pi.sh` full-installs onto the Zero (hours of compiles,
-  OOM risk). First install writes the profile to a root-owned marker
-  (e.g. `/var/lib/jasper/install_profile`); later runs read it and
-  REFUSE a tier change without an explicit override flag — same
-  posture as the deploy identity/downgrade guards.
-- **Streambox-to-satellite is a role conversion, not a checkbox.** A
-  streambox can be "downgraded" into a satellite, but the conversion
-  must first stop/disable AirPlay, Spotify, Bluetooth, mux, and any
-  local source UI; only then should it accept `role=follower` grouping
-  state. A grouped satellite should expose pair volume and health, not
-  advertise itself as an independent sender target in the same room.
+  bond fan-out. The normal Zero tier is `streambox`; when it becomes a
+  bonded follower, the grouping reconciler parks local source renderers
+  and the shared UI hides/redirects leader-owned controls. The
+  satellite-only `endpoint` tier is reserved for the deliberately tiny
+  follower image, where stop/start intents for never-installed units are
+  no-ops. If an endpoint-tier member is accidentally configured as
+  `role=leader`, the reconciler must fail closed: clear snapcast args,
+  stop both snap units, return nonzero, and let `jasper-doctor` warn
+  that the member must be reassigned as a follower.
+- **Persist the install profile on the Pi, but default unpaired Zeros to
+  streambox.** `install.sh` re-runs on every deploy; if the profile lives
+  only in the invoking shell's env, the next bare `deploy-to-pi.sh` could
+  pick the wrong tier. First install writes the profile to a root-owned
+  marker (e.g. `/var/lib/jasper/install_profile`). Later runs still
+  refuse surprising full/streambox/endpoint changes, except for the
+  intentional legacy migration: an unpaired Zero with a persisted
+  `endpoint` marker upgrades to `streambox`; an active bonded follower or
+  explicit `JASPER_INSTALL_PROFILE=endpoint` stays satellite-only.
+- **Pairing is not a package conversion.** A streambox that joins a pair
+  should not reinstall itself as `endpoint`; it should accept
+  `role=follower` grouping state, park local AirPlay/Spotify/Bluetooth/
+  USB input through the reconciler, and expose pair volume/health rather
+  than advertising independent sender targets in the same room. Unpairing
+  removes that runtime state, so the streambox source and DSP surfaces
+  return without another install.
 - **Deploy verification must probe what the tier has.** Satellite-only
   endpoint installs include the shared capability-gated landing page plus
   endpoint-scoped nginx routes for `/system/` and `/sources/`; streambox
