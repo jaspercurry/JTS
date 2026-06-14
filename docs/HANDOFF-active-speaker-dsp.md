@@ -29,14 +29,16 @@
 > in `routing.subwoofer_group_ids`. Saving that speaker layout only persists
 > the output topology JSON and runs backend validation; it does not load
 > CamillaDSP or emit sound. The UI organizes this work as collapsible task
-> cards — choose layout, add driver info, confirm outputs, then run the
-> first quiet-test preparation. It defaults to the first unfinished task card,
+> cards — choose layout, add driver info, confirm outputs, measure drivers,
+> validate the summed crossover, then save/apply the active profile. It
+> defaults to the first unfinished task card,
 > keeps one task card open at a time, prevents opening future prerequisite-gated
 > cards, and uses only transient browser intent when the operator advances or
 > reopens a card; it does not create a separate persisted wizard-progress source
-> of truth, and earlier cards remain editable. Quiet-test preparation still
-> calls `/sound/active-speaker/environment` and displays translated setup issues
-> without touching live audio.
+> of truth, and earlier cards remain editable. The driver-test card still calls
+> `/sound/active-speaker/environment` and related setup endpoints, but
+> stage/check/load/arm are hidden behind the chosen-driver action unless they
+> fail; no setup probe touches live audio.
 > `/sound/active-speaker/channel-identity` now exposes and updates
 > operator-confirmed physical channel identity evidence for the saved
 > topology. The UI can mark or clear an assigned channel as physically
@@ -88,12 +90,12 @@
 > enablement plus a loaded/current protected startup config can turn it true.
 > If CamillaDSP is no longer
 > running the loaded startup config path, readiness blocks before the playback
-> backend is reached. The `/sound/` quiet-test card keeps those backend gates
-> deterministic but presents them as one user action at a time: prepare the
-> first quiet test mode, choose one confirmed driver, reset to the quietest
-> test level, then preview the signal before any audible test, confirm the
-> selected driver was heard, then raise toward audible in bounded steps. The
-> readiness card
+> backend is reached. The `/sound/` **Measure drivers** card keeps those backend
+> gates deterministic but presents them as one user action at a time: choose one
+> confirmed driver, let JTS stage/check/load/arm the safe path internally, start
+> from the quietest test level, preview the signal before any audible test,
+> confirm the selected driver was heard, then raise toward audible in bounded
+> steps. The readiness card
 > also summarizes the selected target, backend, rollback state, test level, and
 > translated attention items rather than a backend checklist. For
 > tweeter/high-frequency targets it also
@@ -113,19 +115,42 @@
 > playing sound, reloading CamillaDSP, or storing wizard progress; target
 > readiness, artifact verification, and floor-audio confirmation remain
 > explicit operator-selected actions.
-> `/sound/` also includes a driver-info helper for active-crossover
-> planning. It generates a prompt from the current output roles and accepts a
-> pasted JSON object with kind `jts_active_crossover_driver_research`.
+> `/sound/active-speaker/driver-measurement` and
+> `/sound/active-speaker/summed-validation` now persist the first product-grade
+> measurement evidence through `jasper.active_speaker.measurement` at
+> `/var/lib/jasper/active_speaker_measurements.json` with kind
+> `jts_active_speaker_measurements`. Driver evidence is bound to the current
+> saved physical target fingerprint: topology id, detected hardware, active
+> speaker group/mode, driver role, assigned DAC output, and current identity
+> confirmation. It also requires a matching accepted floor-level safe-playback
+> result, a non-clipping mic/calibration observation, and an operator outcome
+> that the correct driver was heard. If the saved speaker layout or output
+> assignment changes, old records stay in the file for audit but stop counting
+> toward readiness. Summed validation is speaker-group-specific and bound to the
+> current set of driver target fingerprints; it requires all drivers in that
+> active group to have current measurement evidence, stores the operator/mic
+> blend outcome plus optional polarity and delay notes, and never captures audio,
+> emits sound, reloads CamillaDSP, or treats imported research as measurement
+> truth. The UI presents this as the next human task after confirming outputs:
+> measure each driver, then validate that the combined crossover blends.
+> `/sound/` also includes manual crossover settings for active-crossover
+> planning. The visible fields are the product source of truth: driver
+> names, sensitivity, safe low test limits, per-driver level trim, and active
+> crossover point/filter/slope. The optional AI helper generates a prompt
+> from the current output roles and accepts a pasted JSON object with kind
+> `jts_active_crossover_driver_research`, but using that helper only fills
+> visible values for operator review; saving never lets hidden imported JSON
+> overwrite user-edited fields.
 > `/sound/active-speaker/design-draft` persists those operator-entered driver
-> names, notes, the bounded research JSON, and a snapshot of the saved output
-> topology as `/var/lib/jasper/active_speaker_design_draft.json` with kind
+> names, manual crossover settings, notes, the bounded research JSON when
+> present, and a snapshot of the saved output topology as
+> `/var/lib/jasper/active_speaker_design_draft.json` with kind
 > `jts_active_speaker_design_draft`. The draft is intentionally
 > non-authoritative: it does not emit sound, load CamillaDSP, authorize
-> playback, trust the research as measurement evidence, translate it into
+> playback, trust imported research as measurement evidence, translate it into
 > filters, or apply anything. Its purpose is to carry the user's intended
-> build and externally researched starting points into the future crossover
-> compiler/review step without making the LLM or browser rummage through
-> topology internals.
+> build and visible starting points into the crossover compiler/review
+> step without making the LLM or browser rummage through topology internals.
 > `jasper.active_speaker.crossover_preview` and
 > `/sound/active-speaker/crossover-preview` now turn that saved design draft
 > into a persisted, versioned, no-audio crossover preview at
@@ -133,8 +158,10 @@
 > `jts_active_speaker_crossover_preview`. The preview proposes bounded
 > low-pass/high-pass filter intent for active 2-way and 3-way speaker groups,
 > raises candidate frequencies to driver high-pass / do-not-test-below floors,
-> surfaces missing research and low-confidence candidates as evidence, and
-> records whether a later protected-staging step may consume it. It now also
+> prefers operator-entered manual settings over imported research when both are
+> present, surfaces missing crossover settings and low-confidence candidates as
+> evidence, and records whether a later protected-staging step may consume it.
+> It now also
 > carries the curated driver facts needed to compile a protected staging preset
 > without re-parsing the design draft or trusting browser internals. The preview
 > source carries a design-draft fingerprint; loading the saved preview against
@@ -143,6 +170,31 @@
 > driver research, or operator inputs after preparation. It still does not emit
 > CamillaDSP YAML, load CamillaDSP, apply filters, authorize playback, or treat
 > external research as measurement truth.
+> `jasper.active_speaker.baseline_profile` and
+> `/sound/active-speaker/baseline-profile` now compile that saved topology,
+> design draft, fresh/ready crossover preview, driver measurements, and summed
+> validation into a durable active-speaker baseline candidate at
+> `/var/lib/camilladsp/configs/active_speaker_baseline.yml`. Compilation is
+> explicit and no-audio: it writes YAML plus
+> `/var/lib/jasper/active_speaker_baseline_profile.json`, but does not load
+> CamillaDSP. The emitter
+> (`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`)
+> requires an explicit active playback device, keeps `devices.volume_limit`
+> non-positive, inserts baseline headroom and per-driver limiters, rejects
+> positive correction gain, bounds delay/polarity corrections, and records a
+> source comment in the YAML. Summed validation must reference the latest
+> combined-driver test record for the same speaker-group fingerprint; artifact
+> generation alone is not enough to unlock the durable baseline because the
+> accepted result must come from an audible combined-driver test plus mic/user
+> observation. `/sound/active-speaker/baseline-profile/apply`
+> is the first user-facing "this is now your active speaker profile" step, but
+> it is currently enabled only when the generated baseline targets an
+> outputd-owned active lane. Single-device direct-DAC baselines can be compiled
+> and inspected, but apply is blocked until outputd owns that DAC handoff. Ready
+> candidates apply through the shared `dsp_apply` transaction and record applied
+> state. Optional subwoofer groups and multi-group
+> group-specific delay correction still fail closed or warn until later slices
+> add a verified compiler path for them.
 > The clock-domain gate now distinguishes the normal single-device
 > path from the dual-Apple USB-C DAC 4-channel pair. The latter is the
 > `dual_apple_usb_c_dac_4ch` hardware profile: exactly two Apple child
@@ -171,7 +223,7 @@
 > records either physical compression-driver protection evidence or a
 > software-guarded bring-up request. The normal UI path does not expose this as
 > a separate "protection" choice; after the operator confirms a high-frequency
-> output and chooses that named driver in the First quiet test card, the page
+> output and chooses that named driver in the Measure drivers card, the page
 > records the software-guard request internally before checking readiness. The
 > software-guard state is
 > deliberately still a topology/playback blocker; it only lets
@@ -1059,4 +1111,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-06-12
+Last verified: 2026-06-14

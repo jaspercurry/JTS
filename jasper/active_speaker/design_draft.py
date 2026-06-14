@@ -29,6 +29,10 @@ _SUPPORTED_CONFIDENCE = {"low", "medium", "high", "unknown"}
 _MAX_DRIVERS = 16
 _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
+_CROSSOVER_ROLE_PAIRS = {
+    "active_2_way": (("woofer", "tweeter"),),
+    "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
+}
 
 
 class ActiveSpeakerDesignDraftError(ValueError):
@@ -160,8 +164,55 @@ def _normalise_driver(raw: Any) -> dict[str, Any]:
             raw.get("do_not_test_below_hz"),
             "driver.do_not_test_below_hz",
         ),
+        "gain_offset_db": _finite_float(
+            raw.get("gain_offset_db"),
+            "driver.gain_offset_db",
+        ),
         "notes": _text(raw.get("notes"), "driver.notes", max_chars=1000),
         "sources": _string_list(raw.get("sources"), "driver.sources"),
+    }
+    return {key: value for key, value in driver.items() if value not in (None, [])}
+
+
+def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
+    raw = _mapping(raw, "manual_settings.driver")
+    driver: dict[str, Any] = {
+        "role": _role(raw.get("role"), "manual_settings.driver.role"),
+        "model": _text(raw.get("model"), "manual_settings.driver.model", max_chars=120),
+        "manufacturer": _text(
+            raw.get("manufacturer"),
+            "manual_settings.driver.manufacturer",
+            max_chars=120,
+        ),
+        "nominal_impedance_ohm": _positive_float(
+            raw.get("nominal_impedance_ohm"),
+            "manual_settings.driver.nominal_impedance_ohm",
+        ),
+        "sensitivity_db_2v83_1m": _finite_float(
+            raw.get("sensitivity_db_2v83_1m"),
+            "manual_settings.driver.sensitivity_db_2v83_1m",
+        ),
+        "usable_frequency_range_hz": _frequency_range(
+            raw.get("usable_frequency_range_hz"),
+            "manual_settings.driver.usable_frequency_range_hz",
+        ),
+        "recommended_highpass_hz": _positive_float(
+            raw.get("recommended_highpass_hz"),
+            "manual_settings.driver.recommended_highpass_hz",
+        ),
+        "recommended_lowpass_hz": _positive_float(
+            raw.get("recommended_lowpass_hz"),
+            "manual_settings.driver.recommended_lowpass_hz",
+        ),
+        "do_not_test_below_hz": _positive_float(
+            raw.get("do_not_test_below_hz"),
+            "manual_settings.driver.do_not_test_below_hz",
+        ),
+        "gain_offset_db": _finite_float(
+            raw.get("gain_offset_db"),
+            "manual_settings.driver.gain_offset_db",
+        ),
+        "notes": _text(raw.get("notes"), "manual_settings.driver.notes", max_chars=1000),
     }
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
@@ -260,6 +311,46 @@ def normalise_driver_research(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
+    """Return bounded operator-entered crossover settings, or ``None`` when absent."""
+
+    if raw is None or raw == "":
+        return None
+    raw = _mapping(raw, "manual_settings")
+    drivers = [
+        _normalise_manual_driver(item)
+        for item in _sequence(raw.get("drivers"), "manual_settings.drivers", limit=_MAX_DRIVERS)
+    ]
+    candidates = [
+        _normalise_candidate(item)
+        for item in _sequence(
+            raw.get("crossover_candidates"),
+            "manual_settings.crossover_candidates",
+            limit=_MAX_CANDIDATES,
+        )
+    ]
+    drivers = [
+        {**driver, "source": "manual_settings"}
+        for driver in drivers
+        if len(driver) > 1
+    ]
+    candidates = [
+        {
+            **candidate,
+            "source": "manual_settings",
+            "confidence": candidate.get("confidence") or "medium",
+        }
+        for candidate in candidates
+        if candidate.get("frequency_hz") is not None
+    ]
+    if not drivers and not candidates:
+        return None
+    return {
+        "drivers": drivers,
+        "crossover_candidates": candidates,
+    }
+
+
 def normalise_operator_inputs(raw: Any) -> dict[str, str]:
     raw = raw if isinstance(raw, Mapping) else {}
     out: dict[str, str] = {}
@@ -280,9 +371,28 @@ def _topology_roles(topology: OutputTopology) -> list[str]:
     return sorted(roles, key=lambda role: order.get(role, 99))
 
 
+def _candidate_roles(candidates: list[dict[str, Any]]) -> set[frozenset[str]]:
+    out: set[frozenset[str]] = set()
+    for candidate in candidates:
+        roles = candidate.get("between_roles")
+        if isinstance(roles, list) and len(roles) == 2:
+            out.add(frozenset(str(role) for role in roles))
+    return out
+
+
+def _active_crossover_pairs(topology: OutputTopology) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for group in topology.speaker_groups:
+        for pair in _CROSSOVER_ROLE_PAIRS.get(group.mode, ()):
+            if pair not in pairs:
+                pairs.append(pair)
+    return pairs
+
+
 def _summary(
     topology: OutputTopology,
     driver_research: dict[str, Any] | None,
+    manual_settings: dict[str, Any] | None,
 ) -> dict[str, Any]:
     topology_roles = _topology_roles(topology)
     research_roles = []
@@ -292,6 +402,22 @@ def _summary(
             if role and role not in research_roles:
                 research_roles.append(role)
     candidates = driver_research.get("crossover_candidates", []) if driver_research else []
+    manual_drivers = manual_settings.get("drivers", []) if manual_settings else []
+    manual_candidates = (
+        manual_settings.get("crossover_candidates", []) if manual_settings else []
+    )
+    manual_roles = []
+    for driver in manual_drivers:
+        role = driver.get("role")
+        if role and role not in manual_roles:
+            manual_roles.append(role)
+    combined_roles = set(research_roles) | set(manual_roles)
+    combined_candidate_roles = _candidate_roles(candidates) | _candidate_roles(manual_candidates)
+    missing_candidate_pairs = [
+        list(pair)
+        for pair in _active_crossover_pairs(topology)
+        if frozenset(pair) not in combined_candidate_roles
+    ]
     return {
         "speaker_group_count": len(topology.speaker_groups),
         "topology_roles": topology_roles,
@@ -304,14 +430,21 @@ def _summary(
             role for role in research_roles if role not in topology_roles
         ],
         "crossover_candidate_count": len(candidates),
+        "manual_driver_count": len(manual_drivers),
+        "manual_crossover_candidate_count": len(manual_candidates),
+        "manual_roles": manual_roles,
+        "missing_driver_info_roles": [
+            role for role in topology_roles if role not in combined_roles
+        ],
+        "missing_crossover_candidate_pairs": missing_candidate_pairs,
         "candidate_frequencies_hz": [
             candidate.get("frequency_hz")
-            for candidate in candidates
+            for candidate in [*candidates, *manual_candidates]
             if candidate.get("frequency_hz") is not None
         ],
         "warning_count": sum(
             len(candidate.get("warnings", []))
-            for candidate in candidates
+            for candidate in [*candidates, *manual_candidates]
             if isinstance(candidate, Mapping)
         ),
     }
@@ -321,15 +454,17 @@ def build_design_draft(
     topology: OutputTopology,
     *,
     driver_research: Any = None,
+    manual_settings: Any = None,
     operator_inputs: Any = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     """Build a versioned, non-authoritative speaker design draft."""
 
     research = normalise_driver_research(driver_research)
+    manual = normalise_manual_settings(manual_settings)
     inputs = normalise_operator_inputs(operator_inputs)
     evaluation = topology.evaluation()
-    summary = _summary(topology, research)
+    summary = _summary(topology, research, manual)
     issues: list[dict[str, str]] = []
     if not topology.speaker_groups:
         issues.append(_issue("blocker", "output_topology_empty", "choose and save a speaker layout"))
@@ -347,20 +482,28 @@ def build_design_draft(
             _issue(
                 "warning",
                 "driver_research_missing",
-                "driver research is not saved yet",
+                "AI driver research is not saved; manual crossover settings may still be used",
             )
         )
-    for role in summary["missing_research_roles"]:
+    for role in summary["missing_driver_info_roles"]:
         issues.append(
             _issue(
                 "warning",
-                "driver_role_research_missing",
-                f"no driver research saved for {role}",
+                "driver_role_info_missing",
+                f"no driver info saved for {role}",
+            )
+        )
+    for pair in summary["missing_crossover_candidate_pairs"]:
+        issues.append(
+            _issue(
+                "warning",
+                "crossover_setting_missing",
+                f"no crossover point saved for {'/'.join(pair)}",
             )
         )
     if any(issue["severity"] == "blocker" for issue in issues):
         status = "blocked"
-    elif research is None or summary["missing_research_roles"]:
+    elif summary["missing_driver_info_roles"] or summary["missing_crossover_candidate_pairs"]:
         status = "needs_research"
     else:
         status = "ready_for_review"
@@ -374,6 +517,7 @@ def build_design_draft(
         "topology": topology.to_dict(include_evaluation=True),
         "operator_inputs": inputs,
         "driver_research": research,
+        "manual_settings": manual,
         "summary": summary,
         "permissions": {
             "may_explain": True,
@@ -394,9 +538,9 @@ def build_design_draft(
         "next_step": (
             "Resolve output-map blockers before using this draft."
             if status == "blocked"
-            else "Add or review driver research before compiling a speaker preset."
+            else "Add or review crossover settings before compiling a speaker preset."
             if status == "needs_research"
-            else "Review driver facts and pick a conservative starting crossover."
+            else "Review the crossover settings before preparing a no-audio preview."
         ),
     }
 
@@ -414,6 +558,7 @@ def load_design_draft(path: str | Path | None = None) -> dict[str, Any]:
             "status": "not_saved",
             "path": str(target),
             "driver_research": None,
+            "manual_settings": None,
             "operator_inputs": {},
             "summary": {},
             "issues": [],
@@ -426,6 +571,7 @@ def load_design_draft(path: str | Path | None = None) -> dict[str, Any]:
             "status": "unreadable",
             "path": str(target),
             "driver_research": None,
+            "manual_settings": None,
             "operator_inputs": {},
             "summary": {},
             "issues": [
@@ -444,6 +590,7 @@ def load_design_draft(path: str | Path | None = None) -> dict[str, Any]:
             "status": "unreadable",
             "path": str(target),
             "driver_research": None,
+            "manual_settings": None,
             "operator_inputs": {},
             "summary": {},
             "issues": [
@@ -462,6 +609,7 @@ def load_design_draft(path: str | Path | None = None) -> dict[str, Any]:
             "status": "unreadable",
             "path": str(target),
             "driver_research": None,
+            "manual_settings": None,
             "operator_inputs": {},
             "summary": {},
             "issues": [
@@ -480,6 +628,7 @@ def save_design_draft(
     topology: OutputTopology,
     *,
     driver_research: Any = None,
+    manual_settings: Any = None,
     operator_inputs: Any = None,
     path: str | Path | None = None,
     created_at: str | None = None,
@@ -491,6 +640,7 @@ def save_design_draft(
     draft = build_design_draft(
         topology,
         driver_research=driver_research,
+        manual_settings=manual_settings,
         operator_inputs=operator_inputs,
         created_at=created_at or (
             prior.get("created_at") if prior.get("status") != "not_saved" else None

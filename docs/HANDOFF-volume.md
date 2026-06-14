@@ -429,8 +429,8 @@ Multiple guardrails sit on top:
   `MAX_TTS_GAIN_DB = -6 dB` hardware ceiling on the TTS path
   independent of any volume math.
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
-  room-correction, and sound-preference configs all cap the main fader
-  at full scale.
+  room-correction, sound-preference, and active-speaker baseline configs
+  all cap the main fader at full scale.
 - `CamillaController.set_volume_db` validates every Python write and
   clamps positive gain to 0 dB as runtime defense in depth.
 - `VolumeCoordinator` treats 0% as Camilla `main_mute=true` plus the
@@ -588,4 +588,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-06-08 (0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path rechecked)
+Last verified: 2026-06-14 (active-speaker baseline `volume_limit` guard rechecked against `camilla_yaml.py`; prior 2026-06-08 pass covered 0% content mute, USB observed-carrier sync, push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and fan-in TTS ceiling path)

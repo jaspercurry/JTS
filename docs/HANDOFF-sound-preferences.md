@@ -176,26 +176,34 @@ As of 2026-06-02, `/sound/` also shows a collapsed **Advanced speaker
 setup** entry point for active crossover commissioning. Opening it shows one
 primary **Active crossover setup** walkthrough, not a separate environment
 card. The walkthrough keeps one task card open at a time: choose speaker
-layout, add driver info, confirm outputs, then run the first quiet test.
-Layout and driver-info steps do not play sound, load CamillaDSP, or touch
-live audio; detected hardware is supporting context and the hardware refresh
-control is a small utility inside the layout step.
+layout, add crossover settings, confirm outputs, measure each driver, validate
+the summed crossover, then save the active profile. Layout and
+crossover-settings steps do not play sound, load CamillaDSP, or touch live
+audio; detected hardware is supporting context and the hardware refresh control
+is a small utility inside the layout step.
 
-The **First quiet test** card owns the read-only preflight and quiet-test
-session controls. Its first action fetches `/sound/active-speaker/environment`
-and related status endpoints, which run read-only probes for the saved setup,
-current CamillaDSP state, startup-load gate, calibration bounds, and quiet-test
-session state. The primary UI translates those probes into one next action at a
-time: set up quiet test mode, choose the first confirmed driver, start at the
-quietest level, and record what happened. It does not expose the old backend
-checklist/grid as the normal user path. The card still does not play tones,
-start sweeps, reload CamillaDSP without an explicit setup action, or authorize
-playback just because a setup check passed. The same step can open and stop a
-bounded quiet-test session through `/sound/active-speaker/arm` and
+The **Measure drivers** card owns the read-only preflight and guarded
+driver-measurement controls. Its status refresh fetches
+`/sound/active-speaker/environment` and related endpoints, which run read-only
+probes for the saved setup, current CamillaDSP state, startup-load gate,
+calibration bounds, and test-session state. The primary UI translates those
+probes into one user action at a time: choose the driver to test, let JTS run
+the safe setup path internally, start at the quietest level, and record what
+happened. It does not expose the old backend checklist/grid as the normal user
+path, and it no longer asks the user to "set up quiet test mode" before they
+can choose a driver. Driver-choice buttons appear after outputs are confirmed;
+clicking one records the normal software guard for any missing high-frequency
+outputs in the saved active graph, refreshes a stale no-audio crossover preview
+when the saved crossover settings can produce one, then stages/checks/loads/arms
+the safe path before target readiness is shown. If that internal setup fails,
+the card explains the product-level issue and confirms no sound played. The card
+still does not play tones, start sweeps, or authorize playback just because a
+setup check passed. The same step can
+open and stop a bounded test session through `/sound/active-speaker/arm` and
 `/sound/active-speaker/stop`; arming only persists the current safety state
-when the environment load gate passes, and Stop is a normal-sized,
-idempotent control that records the session as stopped. The armed state exposes
-a **Test volume** control backed by
+when the environment load gate passes, and Stop is a normal-sized, idempotent
+control that records the session as stopped. The armed state exposes a
+**Test volume** control backed by
 `jasper.active_speaker.calibration_level`: it defaults to the minimum
 `-80 dBFS`, persists at
 `/var/lib/jasper/active_speaker_calibration_level.json`, is clamped by
@@ -216,14 +224,25 @@ readiness, and artifact routes consume the accepted
 persisted level rather than a caller-supplied `level_dbfs`. This is still only
 the software guard substrate: it does not write live CamillaDSP volume, emit
 samples, read the microphone directly, or claim calibrated SPL.
-After a driver is selected for the first quiet test, the card can preview the
+After a driver is selected in **Measure drivers**, the card can preview the
 test signal through `/sound/active-speaker/play-tone`: this validates the
 selected logical output target and writes a bounded multi-channel WAV artifact
 with only that output channel populated. The default backend records
 `audio_emitted: false`; it does not open ALSA, reload CamillaDSP, or change
 volume. The writer enforces its own caps (48 kHz max, 16 channels max, 100-500
 ms, -80..-45 dBFS) and prunes old generated tone artifacts, keeping the newest
-24 sets by default. Physical DAC lane assignment, speaker grouping, left/right
+24 sets by default. When the operator records a correct-driver result after an
+accepted floor-level test for that same target, with a valid mic/calibration
+observation, `/sound/active-speaker/driver-measurement` persists
+target-specific measurement evidence in
+`/var/lib/jasper/active_speaker_measurements.json`. That evidence is bound to
+the current saved physical target fingerprint, including DAC output assignment
+and identity confirmation, so changing the speaker layout makes old measurement
+records informational rather than ready-state proof. Driver measurement is not
+playback permission; it is the durable proof needed before the active baseline
+compiler can proceed.
+
+Physical DAC lane assignment, speaker grouping, left/right
 swaps, active driver roles, passive speakers, and subwoofer outputs now have a
 no-audio backend contract:
 `/sound/output-topology` reads/saves the complete
@@ -231,9 +250,10 @@ no-audio backend contract:
 `/var/lib/jasper/output_topology.json`. That model evaluates identity and
 tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
 tones, or authorizes playback; the audible safe-session path remains separate.
-The same `/sound/` card renders a lightweight **Active crossover setup** surface over
-that endpoint as collapsible task cards: **Choose speaker layout**, **Add
-driver info**, **Confirm outputs**, and **First quiet test**.
+The same `/sound/` card renders a lightweight **Active crossover setup**
+surface over that endpoint as collapsible task cards: **Choose speaker
+layout**, **Add driver and crossover info**, **Confirm outputs**, **Measure
+drivers**, and **Validate and apply**.
 The layout card opens by default on page load. Explicit Next/manual-open
 actions use transient browser intent only; no persisted wizard-progress state
 exists. The UI keeps one card open at a time, prevents opening future
@@ -249,23 +269,28 @@ Saving a speaker-layout draft is a complete topology JSON
 replacement and only runs backend validation; it does not play sound or change
 the live DSP graph. The same payload carries a clock-domain report that records
 the current single final-output device assumption; aggregating multiple USB DACs
-is explicitly not enabled for product active-crossover playback yet. The map
-card shows a top-down speaker sketch, assigned and unassigned physical outputs,
-speaker groups, and **Confirmation progress** from
-`/sound/active-speaker/channel-identity`;
-users can mark or clear an assigned output as physically verified only after
-external wiring inspection, dummy-load/DMM checks, or a future low-level
-channel test confirms the driver. Identity evidence is stored in the topology
-contract, but it is not playback permission and it does not satisfy tweeter
-protection or path-safety blockers by itself.
-The same card includes a **Driver info helper** for active-crossover
-planning. It derives the expected driver-role fields from the current output
-map, generates a precise prompt for an external assistant, and accepts a
-bounded JSON response with kind
-`jts_active_crossover_driver_research`. The browser only shape-checks and
-summarizes the pasted JSON; JTS does not persist, apply, or translate those
-values into filters in this slice.
-Choosing a confirmed driver for the first quiet test checks readiness through
+is explicitly not enabled for product active-crossover playback yet. The
+confirm-outputs card shows a top-down speaker sketch plus flat **DAC output
+assignments**: each assigned physical output names the speaker/driver role it
+feeds and whether the operator has confirmed the wire. Users can mark or clear
+an assigned output as physically verified only after external wiring
+inspection, dummy-load/DMM checks, or a future low-level channel test confirms
+the driver. Identity evidence is stored in the topology contract, but it is
+not playback permission and it does not satisfy tweeter protection or
+path-safety blockers by itself.
+The crossover-settings card stores the product-visible starting values for
+active-crossover planning: driver names, sensitivity, safe low test limits,
+per-driver level trim, crossover point, filter family, slope, and build notes.
+It also offers an optional **Use AI to fill these settings** helper. That
+helper derives the expected driver-role fields from the current output map,
+generates a precise prompt for an external assistant, and accepts a bounded
+JSON response with kind `jts_active_crossover_driver_research`. Importing
+that JSON fills the visible fields for operator review; saving persists the
+visible manual settings as first-class draft input and may also preserve the
+bounded research JSON as evidence. Hidden imported values never override
+user-edited visible settings, and the draft still does not apply filters,
+reload CamillaDSP, or authorize sound.
+Choosing a confirmed driver in **Measure drivers** checks readiness through
 `/sound/active-speaker/playback-readiness`. That route returns a versioned,
 no-audio checklist for one selected topology target by combining safe-session
 state, output topology, channel identity, tweeter protection, clock-domain
@@ -285,33 +310,50 @@ test, confirms the selected target before the POST, and records the shared
 high-frequency targets are no longer horn-specific: they require accepted
 physical or software-guarded protection, a protective high-pass, the
 driver-specific closed-loop cap, Stop/session gates, and the same floor-first
-quiet-start lifecycle. The playback endpoint recomputes that protection
+driver-test lifecycle. The playback endpoint recomputes that protection
 envelope from policy code and refuses missing high-pass evidence or
 plan-provided cap/allow overrides. When the selected target is a high-frequency
 driver, the readiness card shows a **High-frequency bring-up readiness** section
 with the protection profile, mic status, floor-test preview, and deterministic
 auto-level decision. Unknown high-frequency style defaults to a conservative
 5 kHz high-pass and -65 dBFS cap until the style is known. The safe session now
-also records quiet-start evidence:
+also records floor-start evidence:
 every armed session starts at
 `floor_required`; the backend rejects raised audible tests until a successful
 floor-level audible result has been operator-confirmed as the correct driver
 for the same saved target and session; artifact-only results and unconfirmed
 audio do not unlock raised playback; Stop, expiry, wrong-driver, silent, or
 too-loud outcomes reset the phase. The card now renders that intended operator
-sequence directly in `/sound/`: set up quiet test mode, choose one confirmed
-driver, reset/lower to the test-level floor, preview the signal, start a quiet
-role-specific test when the backend is explicitly enabled for audio, confirm
-floor audio, then raise slowly. The readiness result summarizes the selected
-DAC output, role policy, backend, rollback state, test level, plus an explicit
-"What to do next" list; the adjacent quiet-test status shows the quiet-start
-phase so the user does not have to infer missing gates from raw evidence rows.
+sequence directly in `/sound/`: choose one confirmed driver, let JTS run the
+safe setup internally, reset/lower to the test-level floor, preview the signal,
+start a very quiet role-specific test when the backend is explicitly enabled
+for audio, confirm floor audio, then raise slowly. The readiness result
+summarizes the selected DAC output, role policy, backend, rollback state, test
+level, plus an explicit "How to continue" list; internal setup evidence stays
+out of the normal product path unless a setup attempt fails.
 The same backend still provides a read-only
 **Commissioning rehearsal** card from
 `/sound/active-speaker/commissioning-rehearsal`. That packet is derived from
 existing durable evidence only; it does not store wizard progress, play audio,
 or reload CamillaDSP, and it explicitly hands off target readiness/artifact
 verification/floor-audio confirmation to operator-selected channel actions.
+The same walkthrough then opens **Validate and apply**. That card first runs a
+short combined-speaker test through `/sound/active-speaker/summed-test`; the
+summed crossover validation POST at
+`/sound/active-speaker/summed-validation` must reference the latest audible
+combined-test record for that group. Artifact-only or stale summed-test records
+cannot unlock the active profile. After summed validation,
+`/sound/active-speaker/baseline-profile` compiles the saved topology, visible
+crossover settings, fresh crossover preview, driver measurements, and summed
+validation into
+`/var/lib/camilladsp/configs/active_speaker_baseline.yml` plus
+`/var/lib/jasper/active_speaker_baseline_profile.json`. Compile is still
+no-audio and does not load CamillaDSP. Applying the profile is a separate,
+explicit `/sound/active-speaker/baseline-profile/apply` action that uses the
+shared DSP apply transaction. It is currently enabled only for the outputd-owned
+active output lane; other hardware paths can save the profile for review, but
+the UI keeps Apply disabled until that handoff is supported. After apply
+succeeds the UI can truthfully say this is now the active speaker profile.
 For Jasper's immediate mono 2-way build, the same row can now record
 compression-driver protection evidence through
 `/sound/active-speaker/channel-protection`, and the card can **Stage protected
@@ -669,4 +711,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-13
+Last verified: 2026-06-14

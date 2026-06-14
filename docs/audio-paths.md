@@ -478,8 +478,23 @@ that target evidence with safe-session, active-config/path-safety,
 clock-domain, calibration-level, Stop-control, and tone-backend checks.
 The topology itself still grants no playback authority; the separate
 active-speaker lab tone backend can emit only after explicit env enablement,
-passed readiness, and a non-tweeter target. Software never touches downstream
-amp gain. The amp gain is a physical knob set at install time.
+passed readiness, and the driver-protection policy for the selected target.
+`/sound/active-speaker/driver-measurement`,
+`/sound/active-speaker/summed-test`, and
+`/sound/active-speaker/summed-validation` persist commissioning evidence only;
+they do not change routing. Driver evidence is accepted only for the current
+saved physical target and matching safe-session floor result, so changing the
+speaker layout or DAC output assignment invalidates old evidence for readiness.
+Summed validation must reference the latest current combined-driver test for
+that speaker group, and only an audible combined test can satisfy the baseline
+compiler. `/sound/active-speaker/baseline-profile/apply` is the active-speaker
+handoff into normal playback, but it is currently enabled only for an
+outputd-owned active playback lane. Single-device direct-DAC baselines compile
+to inspectable YAML but cannot be applied from the UI until outputd owns that
+handoff. When apply is enabled, it still goes through the shared DSP apply
+transaction before CamillaDSP runs the generated baseline profile. Software
+never touches downstream amp gain. The amp gain is a physical knob set at
+install time.
 The same topology surface reports the detected output clock domain. Supported
 topology hardware IDs include one Apple dongle, HiFiBerry DAC8x/DAC8x Studio,
 and the special `dual_apple_usb_c_dac_4ch` pair. The dual-Apple option is valid
@@ -536,4 +551,4 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-06-11 (assistant loudness matching flow — TTS write pacing, passive profile finalization at segment end/turn teardown — re-traced against jasper/audio_io.py, jasper/voice_daemon.py, and rust/jasper-fanin on JTS3 hardware; prior 2026-06-09 pass covered output topology clock-domain report, DAC profile registry consumer, and dual Apple graph-gated runtime activation)
+Last verified: 2026-06-14 (active-speaker topology/readiness/measurement/baseline handoff paragraph rechecked against `sound_setup.py`, `measurement.py`, and `baseline_profile.py`; prior 2026-06-11 pass covered assistant loudness matching flow on JTS3 hardware)

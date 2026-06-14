@@ -123,6 +123,8 @@ def _candidate_map(
             continue
         confidence = candidate.get("confidence", "unknown")
         rank = _CONFIDENCE_RANK.get(str(confidence), 0)
+        if candidate.get("source") == "manual_settings":
+            rank += 10
         has_frequency = 1 if _finite_positive(candidate.get("frequency_hz")) else 0
         existing = ranked.get(key)
         if existing is None or (has_frequency, rank, -index) > (
@@ -132,6 +134,35 @@ def _candidate_map(
         ):
             ranked[key] = (has_frequency, rank, index, candidate)
     return {key: item[3] for key, item in ranked.items()}
+
+
+def _merged_design_inputs(design_draft: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return research-shaped inputs with operator settings taking precedence."""
+
+    research = _as_mapping(design_draft.get("driver_research"))
+    manual = _as_mapping(design_draft.get("manual_settings"))
+    if research is None and manual is None:
+        return None
+
+    drivers_by_role: dict[str, Mapping[str, Any]] = {}
+    for source in (research, manual):
+        for item in source.get("drivers", []) if source else []:
+            driver = _as_mapping(item)
+            role = driver.get("role") if driver else None
+            if isinstance(role, str) and role:
+                drivers_by_role[role] = driver
+
+    candidates = []
+    for source in (research, manual):
+        for item in source.get("crossover_candidates", []) if source else []:
+            candidate = _as_mapping(item)
+            if candidate:
+                candidates.append(candidate)
+
+    return {
+        "drivers": list(drivers_by_role.values()),
+        "crossover_candidates": candidates,
+    }
 
 
 def _range_floor(driver: Mapping[str, Any] | None) -> float | None:
@@ -317,7 +348,7 @@ def _build_crossover(
             if any(issue["severity"] == "blocker" for issue in issues)
             else "ready_for_review"
         ),
-        "source": "driver_research",
+        "source": str((candidate or {}).get("source") or "driver_research"),
         "candidate": dict(candidate or {}),
         "proposed_frequency_hz": (
             round(proposed_frequency, 2) if proposed_frequency is not None else None
@@ -377,18 +408,18 @@ def build_crossover_preview(
             )
         )
 
-    research = _as_mapping(design_draft.get("driver_research"))
-    if research is None:
+    design_inputs = _merged_design_inputs(design_draft)
+    if design_inputs is None:
         issues.append(
             _issue(
                 "blocker",
                 "driver_research_missing",
-                "driver research is not saved",
+                "crossover settings are not saved",
             )
         )
-    drivers, driver_issues = _driver_map(research)
+    drivers, driver_issues = _driver_map(design_inputs)
     issues.extend(driver_issues)
-    candidates = _candidate_map(research)
+    candidates = _candidate_map(design_inputs)
 
     groups: list[dict[str, Any]] = []
     active_crossover_count = 0

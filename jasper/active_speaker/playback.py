@@ -300,18 +300,41 @@ def _target_output_index(plan: dict[str, Any]) -> int | None:
     return out if out >= 0 else None
 
 
-def _channel_count(plan: dict[str, Any], output_index: int) -> int:
+def _target_output_indices(plan: dict[str, Any]) -> list[int]:
+    indices: list[int] = []
+    targets = plan.get("targets") if isinstance(plan.get("targets"), list) else []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        try:
+            output_index = int(target.get("output_index"))
+        except (TypeError, ValueError):
+            continue
+        if output_index >= 0:
+            indices.append(output_index)
+    if not indices:
+        output_index = _target_output_index(plan)
+        if output_index is not None:
+            indices.append(output_index)
+    return sorted(set(indices))
+
+
+def _channel_count(plan: dict[str, Any], output_indices: list[int]) -> int:
+    highest_output = max(output_indices)
     channel_map = (
         plan.get("channel_map")
         if isinstance(plan.get("channel_map"), dict)
         else {}
     )
-    declared = _positive_int(channel_map.get("output_count"), default=output_index + 1)
-    return max(declared, output_index + 1)
+    declared = _positive_int(
+        channel_map.get("output_count"),
+        default=highest_output + 1,
+    )
+    return max(declared, highest_output + 1)
 
 
-def _bounded_channel_count(plan: dict[str, Any], output_index: int) -> int:
-    channel_count = _channel_count(plan, output_index)
+def _bounded_channel_count(plan: dict[str, Any], output_indices: list[int]) -> int:
+    channel_count = _channel_count(plan, output_indices)
     if channel_count > MAX_ARTIFACT_CHANNELS:
         raise ValueError(
             f"tone artifact channel count {channel_count} exceeds "
@@ -346,8 +369,8 @@ def _validate_plan_for_dry_backend(
         issues.append(
             _issue("blocker", "tone_plan_not_ready", "tone plan is not ready")
         )
-    output_index = _target_output_index(plan)
-    if output_index is None:
+    output_indices = _target_output_indices(plan)
+    if not output_indices:
         issues.append(
             _issue(
                 "blocker",
@@ -356,7 +379,7 @@ def _validate_plan_for_dry_backend(
             )
         )
         return issues
-    channel_count = _channel_count(plan, output_index)
+    channel_count = _channel_count(plan, output_indices)
     if channel_count > MAX_ARTIFACT_CHANNELS:
         issues.append(
             _issue(
@@ -433,6 +456,12 @@ def _driver_protection_for_plan(plan: dict[str, Any]) -> dict[str, Any]:
         )
         else None
     )
+    if (
+        normalise_driver_role(driver_role) == "summed"
+        and matching_plan_protection
+        and "audio_allowed" in matching_plan_protection
+    ):
+        return dict(matching_plan_protection)
     driver_style = target.get("driver_style")
     if driver_style is None and matching_plan_protection:
         driver_style = matching_plan_protection.get("driver_style")
@@ -494,10 +523,10 @@ def _write_multichannel_wav(
         lo=MIN_ARTIFACT_SAMPLE_RATE_HZ,
         hi=MAX_ARTIFACT_SAMPLE_RATE_HZ,
     )
-    output_index = _target_output_index(plan)
-    if output_index is None:
+    output_indices = _target_output_indices(plan)
+    if not output_indices:
         raise ValueError("target output index is required")
-    channel_count = _bounded_channel_count(plan, output_index)
+    channel_count = _bounded_channel_count(plan, output_indices)
     tone = _tone_fields(plan)
     duration_ms = tone["duration_ms"]
     sample_count = max(1, int(round(sample_rate_hz * duration_ms / 1000.0)))
@@ -524,7 +553,8 @@ def _write_multichannel_wav(
             )
             peak = max(peak, abs(target_sample))
             frame = [0] * channel_count
-            frame[output_index] = target_sample
+            for output_index in output_indices:
+                frame[output_index] = target_sample
             wav.writeframesraw(struct.pack("<" + "h" * channel_count, *frame))
 
     peak_dbfs = -120.0 if peak <= 0 else 20.0 * math.log10(peak / INT16_PEAK)
@@ -534,7 +564,8 @@ def _write_multichannel_wav(
         "sample_rate_hz": sample_rate_hz,
         "sample_format": "pcm_s16le",
         "channel_count": channel_count,
-        "target_output_index": output_index,
+        "target_output_index": output_indices[0],
+        "target_output_indices": output_indices,
         "frame_count": sample_count,
         "duration_ms": duration_ms,
         "peak_dbfs": round(peak_dbfs, 1),
@@ -590,6 +621,7 @@ def _metadata_for_result(
     created_at: str,
 ) -> dict[str, Any]:
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
+    targets = plan.get("targets") if isinstance(plan.get("targets"), list) else []
     tone = _tone_fields(plan)
     safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
     driver_protection = _driver_protection_for_plan(plan)
@@ -605,6 +637,7 @@ def _metadata_for_result(
             "output_index": target.get("output_index"),
             "label": target.get("label"),
         },
+        "targets": [target for target in targets if isinstance(target, dict)],
         "tone": tone,
         "audible_test": audible_policy_payload(
             target.get("driver_role") or target.get("role"),
@@ -720,6 +753,7 @@ class WavArtifactTonePlaybackBackend:
                 "sample_format": wav["sample_format"],
                 "channel_count": wav["channel_count"],
                 "target_output_index": wav["target_output_index"],
+                "target_output_indices": wav["target_output_indices"],
                 "frame_count": wav["frame_count"],
                 "duration_ms": wav["duration_ms"],
                 "peak_dbfs": wav["peak_dbfs"],
@@ -857,6 +891,7 @@ def start_tone_playback(
     selected = backend or WavArtifactTonePlaybackBackend()
     issues = _validate_plan_for_dry_backend(plan, safe_session=safe_session)
     target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
+    targets = plan.get("targets") if isinstance(plan.get("targets"), list) else []
     safety = plan.get("safety") if isinstance(plan.get("safety"), dict) else {}
     tone = _tone_fields(plan)
     bounded_plan = _plan_with_bounded_tone(plan, tone)
@@ -955,6 +990,7 @@ def start_tone_playback(
                 "output_index": target.get("output_index"),
                 "label": target.get("label"),
             },
+            "targets": [item for item in targets if isinstance(item, dict)],
             "tone": tone,
             "audible_test": audible_policy,
             "driver_protection": driver_protection,
@@ -985,6 +1021,7 @@ def start_tone_playback(
                 "output_index": target.get("output_index"),
                 "label": target.get("label"),
             },
+            "targets": [item for item in targets if isinstance(item, dict)],
             "tone": tone,
             "audible_test": audible_policy,
             "driver_protection": driver_protection,
@@ -1016,6 +1053,7 @@ def start_tone_playback(
             "output_index": target.get("output_index"),
             "label": target.get("label"),
         },
+        "targets": [item for item in targets if isinstance(item, dict)],
         "tone": tone,
         "audible_test": audible_policy,
         "driver_protection": driver_protection,

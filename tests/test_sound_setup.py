@@ -167,14 +167,19 @@ def test_sound_module_preserves_editor_behaviour():
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
     assert "Active crossover setup" in js
     assert "./active-speaker/environment" in js
+    assert "./active-speaker/measurements" in js
+    assert "./active-speaker/baseline-profile" in js
     assert "./output-topology" in js
-    assert "Prepare first quiet test" in js
+    assert "Measure drivers" in js
+    assert "Validate and apply" in js
+    assert "Save active profile" in js
     assert "safe_playback" in js
-    assert "Build the speaker layout, add driver info, confirm DAC outputs" in js
+    assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
     assert "function defaultOutputStep()" in js
     assert "if (!driverResearchStepSatisfied()) return 'research';" in js
     assert "if (!outputIdentityComplete()) return 'map';" in js
-    assert "return 'safety';" in js
+    assert "if (!driverMeasurementsComplete()) return 'safety';" in js
+    assert "return 'profile';" in js
     assert "Finish the current card before opening" in js
     assert "output-step__chevron" in js
     assert "querySelectorAll('.output-step[open]')" in js
@@ -196,24 +201,29 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "fetch('./active-speaker/check-path-safety'" in js
     assert "fetch('./active-speaker/load-startup-config'" in js
     assert "fetch('./active-speaker/rollback-startup-config'" in js
-    assert "activeSpeakerPost('./active-speaker/arm', 'Starting quiet test mode')" in js
+    assert "activeSpeakerPost('./active-speaker/arm', 'Opening test controls')" in js
     assert "activeSpeakerPost('./active-speaker/stop', 'Stopping')" in js
     assert "fetch('./active-speaker/play-tone'" in js
     assert "fetch('./active-speaker/floor-audio-result'" in js
+    assert "fetch('./active-speaker/driver-measurement'" in js
+    assert "fetch('./active-speaker/summed-test'" in js
+    assert "fetch('./active-speaker/summed-validation'" in js
     assert "fetch('./active-speaker/design-draft'" in js
     assert "fetch('./active-speaker/crossover-preview'" in js
+    assert "fetch('./active-speaker/measurements'" in js
+    assert "fetch('./active-speaker/baseline-profile'" in js
     assert "data-act=\"refresh-active-speaker\"" in js
     assert "data-act=\"save-driver-design\"" in js
     assert "data-act=\"prepare-crossover-preview\"" in js
-    assert "Save driver info" in js
+    assert "Save crossover settings" in js
     assert "Prepare crossover preview" in js
     assert "savedStatus === 'ready_for_review' && !driverResearch.dirty" in js
     assert "function driverResearchCanPreparePreview()" in js
     assert "function driverResearchStepSatisfied()" in js
     assert "if (!driverResearchStepSatisfied()) return 'research';" in js
-    assert "Driver research is skipped for now. Continue with output mapping." in js
-    assert "saved driver research" in js
-    assert "Wiring and quiet test checks happen before any sound." in js
+    assert "Driver details are optional for now. Continue with output mapping." in js
+    assert "saved driver info" in js
+    assert "Wiring and driver-test checks happen before any sound." in js
     assert "data-act=\"arm-active-speaker\"" in js
     assert "data-act=\"stop-active-speaker\"" in js
     assert "data-act=\"stage-active-config\"" in js
@@ -228,7 +238,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "var activeSpeakerSetupOpen = false;" in js
     assert "'<details class=\"advanced\" data-active-speaker-setup' + (open ? ' open' : '')" in js
     assert "activeSpeakerSetupOpen = !!ev.target.open;" in js
-    assert "No sound plays until you explicitly start a quiet test." in js
+    assert "No sound plays until you explicitly start a driver test." in js
     assert "Test volume" in js
     assert "activeSpeakerLevelConfig()" in js
     assert "active-speaker-level" in js
@@ -253,24 +263,25 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "levelDbfs: isFinite(accepted) ? accepted" in js
     assert "function renderActiveSpeakerIssues(envIssues, sessionIssues)" in js
     assert "friendlySetupIssue(issue)" in js
-    assert "Prepare first quiet test" in js
-    assert "Set up quiet test mode" in js
-    assert "Continue setup" in js
-    assert "Open test controls" in js
+    assert "Measure drivers" in js
+    assert "ensureQuietTestControlsOpen(label)" in js
+    assert "Getting safe test ready" in js
+    assert "Opening test controls" in js
     assert "Choose first driver" in js
-    assert "Choose one confirmed driver. JTS will prepare it, but no sound plays yet." in js
+    assert "Choose the driver you want to hear first. JTS will check the safe audio path before any sound can play." in js
     assert "Selected driver" in js
-    assert "Exit quiet mode" in js
-    assert "quiet-test path check failed" in js
-    assert "Prepare the first quiet test from the saved speaker layout?" in js
+    assert "Exit test setup" in js
+    assert "driver-test path check failed" in js
     assert "What did you hear?" in js
     assert "data-act=\"active-floor-result\"" in js
+    assert "data-act=\"record-summed-validation\"" in js
+    assert "data-act=\"compile-baseline-profile\"" in js
+    assert "data-act=\"apply-baseline-profile\"" in js
     assert "Heard correct driver" in js
-    assert "quiet-test result" in js
+    assert "driver-test result" in js
     assert "Use Raise toward audible" in js
     assert "active-speaker/check-path-safety" in js
-    assert "Continue preparing the first quiet test?" in js
-    assert "Exit quiet test mode and restore the previous DSP setup?" in js
+    assert "Exit driver test setup and restore the previous DSP setup?" in js
     assert "function renderActiveSpeakerPlan(plan)" not in js
     assert "function renderActiveSpeakerPlayback(playback)" not in js
     assert "Would play" not in js
@@ -278,9 +289,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "No audio was emitted by this backend." not in js
     assert "No preset channel targets available." not in js
     assert ">Prepare channel test</button>" not in js
-    assert "Step 3 of 3: open controls at the quietest setting." in js
-    assert "load CamillaDSP" in js
-    assert "No sound will play" in js
+    assert "No sound is playing" in js
 
 
 def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
@@ -310,9 +319,9 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "needs attention" in js
     assert "not enabled" in js
     assert "Confirm output" in js
-    assert "Choose ' + escapeHtml(humanRole(channel.role))" in js
-    assert "Continue to First quiet test; JTS will start it at the quietest level" in js
-    assert "Preparing ' + label + ' for a quiet first test. No sound will play." in js
+    assert "Test ' + escapeHtml(humanRole(channel.role))" in js
+    assert "Continue to Measure drivers; JTS will start it very quiet" in js
+    assert "Getting ' + label + ' ready. No sound will play yet." in js
     assert "Hardware protected" not in js
     assert "Use software guard" not in js
     assert "software_guard_requested" in js
@@ -331,17 +340,17 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "function outputFloorAudioConfirmedForReadiness(readiness)" in js
     assert "function quietStartTargetLabel(target)" in js
     assert "function readinessTargetLockReason(readiness)" in js
-    assert "What to do next" in js
+    assert "How to continue" in js
     assert "Choose this driver again so JTS can start it quiet." in js
     assert "Audible tests are limited to woofer, mid, and subwoofer targets in this slice." in js
     assert "Return test volume to the quietest level before starting this driver." in js
-    assert "Quiet test confirmed for " in js
-    assert "Quiet test" in js
+    assert "Heard ' + targetLabel" in js
+    assert "Sound test" in js
     assert "Role policy" not in js
     assert "Preconditions passed" not in js
     assert "Preview test signal" in js
-    assert "Start quiet " in js
-    assert "JTS could not prepare that driver" in js
+    assert "Start very quiet " in js
+    assert "JTS could not load the safe test setup" in js
     assert "Save this speaker layout draft before confirming outputs." in js
     assert "Main speakers" in js
     assert "Speaker count" in js
@@ -351,7 +360,7 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Choose passive, active 2-way, or active 3-way to continue." in js
     assert "Refresh hardware to start a speaker layout." in js
     assert "renderOutputHardwareRefresh() +" in js
-    assert "First quiet test" in js
+    assert "Measure drivers" in js
     assert "data-act=\"output-template-axis\"" in js
     assert "output-template-grid" not in js
     assert "Save output map" not in js
@@ -1161,6 +1170,97 @@ def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> di
         ),
     })
     return sound_setup._active_speaker_crossover_preview_save_payload()
+
+
+def test_active_speaker_summed_test_records_current_artifact(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from jasper.active_speaker.measurement import record_driver_measurement
+    from jasper.active_speaker.safe_playback import arm_safe_playback_session
+    from jasper.output_topology import load_output_topology
+
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
+        str(tmp_path / "measurements.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
+        str(tmp_path / "tone-artifacts"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
+        str(tmp_path / "safe-playback.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "design_draft.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "crossover_preview.json"),
+    )
+    sound_setup._save_output_topology_payload(
+        _active_speaker_mono_topology_payload(protection_status="present")
+    )
+    _save_active_speaker_design_and_preview()
+    arm_safe_playback_session({
+        "status": "pass",
+        "load_gate": "ready",
+        "ok_to_load_active_config": True,
+        "camilla_config": {"classification": "active_startup_candidate"},
+        "safe_playback": {"playback_allowed": False},
+        "issues": [],
+    })
+    topology = load_output_topology()
+    for role, output_index in (("woofer", 0), ("tweeter", 1)):
+        playback_id = f"playback-{role}"
+        target = {
+            "speaker_group_id": "mono",
+            "role": role,
+            "driver_role": role,
+            "output_index": output_index,
+        }
+        record_driver_measurement(
+            topology,
+            {
+                "speaker_group_id": "mono",
+                "role": role,
+                "outcome": "heard_correct_driver",
+                "observed_mic_dbfs": -42,
+                "playback_id": playback_id,
+            },
+            safe_session={
+                "status": "armed",
+                "quiet_start": {
+                    "status": "floor_confirmed",
+                    "floor_audio_confirmed": True,
+                    "last_operator_result": {
+                        "accepted": True,
+                        "outcome": "heard_correct_driver",
+                        "playback_id": playback_id,
+                        "target": target,
+                    },
+                },
+            },
+        )
+
+    payload = sound_setup._active_speaker_summed_test_payload({
+        "speaker_group_id": "mono",
+        "audio": False,
+    })
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+
+    assert payload["playback"]["status"] == "completed"
+    assert payload["playback"]["audio_emitted"] is False
+    assert payload["playback"]["artifact"]["target_output_indices"] == [0, 1]
+    assert latest["captured"] is True
+    assert latest["audio_emitted"] is False
+    assert latest["target_output_indices"] == [0, 1]
 
 
 def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
@@ -2013,6 +2113,57 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         )
         post_payload = json.loads(post_resp.read().decode("utf-8"))
         assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH",
+        str(tmp_path / "output_topology.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
+        str(tmp_path / "measurements.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
+        str(tmp_path / "baseline_profile.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
+        str(tmp_path / "active_speaker_baseline.yml"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "design_draft.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "crossover_preview.json"),
+    )
+    monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        measurement_resp = urllib.request.urlopen(
+            f"{base}/active-speaker/measurements"
+        )
+        measurement_payload = json.loads(measurement_resp.read().decode("utf-8"))
+        profile_resp = urllib.request.urlopen(
+            f"{base}/active-speaker/baseline-profile"
+        )
+        profile_payload = json.loads(profile_resp.read().decode("utf-8"))
+
+        assert measurement_payload["permissions"]["may_not_play_audio"] is True
+        assert profile_payload["kind"] == "jts_active_speaker_baseline_profile_candidate"
+        assert profile_payload["permissions"]["may_apply"] is False
     finally:
         server.shutdown()
         server.server_close()

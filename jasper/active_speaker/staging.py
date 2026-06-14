@@ -382,6 +382,16 @@ def _resolve_playback_device(
     return None, "missing"
 
 
+def resolve_active_playback_device(
+    topology: OutputTopology,
+    *,
+    playback_device: str | None = None,
+) -> tuple[str | None, str]:
+    """Return the explicit active-speaker playback device for DSP emitters."""
+
+    return _resolve_playback_device(topology, playback_device=playback_device)
+
+
 def _protective_hp_hz(preset: ActiveSpeakerPreset) -> float | None:
     fc_values = [
         region.fc_hz
@@ -855,6 +865,20 @@ def _preset_from_crossover_preview(
         message="Preview-derived crossover can be staged through the protected emitter",
     ))
     return preset, issues, gates
+
+
+def compile_preset_from_crossover_preview(
+    topology: OutputTopology,
+    preview: dict[str, Any],
+) -> tuple[ActiveSpeakerPreset | None, list[dict[str, str]], list[dict[str, Any]]]:
+    """Compile a saved crossover preview into active-speaker preset intent.
+
+    This is the shared no-side-effect bridge used by protected startup staging
+    and final baseline candidate compilation. It does not write YAML, load
+    CamillaDSP, or authorize playback.
+    """
+
+    return _preset_from_crossover_preview(topology, preview)
 
 
 def _bind_preset_to_topology(
