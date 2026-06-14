@@ -87,7 +87,7 @@ def _finite_level(value: Any) -> float:
 
 
 def _target_label(
-    readiness: dict[str, Any],
+    readiness: dict[str, Any] | None,
     group: SpeakerGroup | None,
     channel: SpeakerChannel | None,
 ) -> str | None:
@@ -106,33 +106,41 @@ def _target_label(
 def build_topology_tone_plan(
     topology: OutputTopology,
     *,
-    readiness_report: dict[str, Any],
+    readiness_report: dict[str, Any] | None = None,
     speaker_group_id: str,
     role: str,
     requested_level_dbfs: Any = None,
     requested_duration_ms: Any = DEFAULT_TONE_DURATION_MS,
+    safe_session: dict[str, Any] | None = None,
+    startup_load_state: dict[str, Any] | None = None,
+    playback_allowed: bool = False,
+    tone_playback_implemented: bool = False,
 ) -> dict[str, Any]:
     """Build a bounded plan for one saved topology channel."""
 
+    readiness = readiness_report if isinstance(readiness_report, dict) else None
     group_id = str(speaker_group_id or "")
     role_id = str(role or "")
     match = _target(topology, speaker_group_id=group_id, role=role_id)
     group = match[0] if match else None
     channel = match[1] if match else None
     ready_target = (
-        readiness_report.get("target")
-        if isinstance(readiness_report.get("target"), dict)
+        readiness.get("target")
+        if readiness and isinstance(readiness.get("target"), dict)
         else {}
     )
     startup_load = (
-        readiness_report.get("startup_load")
-        if isinstance(readiness_report.get("startup_load"), dict)
-        else {}
+        readiness.get("startup_load")
+        if readiness and isinstance(readiness.get("startup_load"), dict)
+        else startup_load_state if isinstance(startup_load_state, dict) else {}
+    )
+    session = (
+        readiness.get("safe_session")
+        if readiness and isinstance(readiness.get("safe_session"), dict)
+        else safe_session if isinstance(safe_session, dict) else {}
     )
     issues: list[dict[str, str]] = []
-    if not isinstance(readiness_report, dict):
-        issues.append(_issue("blocker", "readiness_required", "readiness report is required"))
-    elif (
+    if readiness and (
         str(ready_target.get("speaker_group_id") or "") != group_id
         or str(ready_target.get("role") or "") != role_id
     ):
@@ -153,12 +161,28 @@ def build_topology_tone_plan(
                 "speaker channel has no assigned physical output",
             )
         )
-    if not readiness_report.get("preconditions_passed"):
+    elif channel and not channel.identity_verified:
+        issues.append(
+            _issue(
+                "blocker",
+                "target_identity_unverified",
+                "confirm the DAC output for this driver before testing",
+            )
+        )
+    if readiness and not readiness.get("preconditions_passed"):
         issues.append(
             _issue(
                 "blocker",
                 "readiness_blocked",
                 "playback readiness preconditions have not passed",
+            )
+        )
+    if not readiness and session.get("status") != "armed":
+        issues.append(
+            _issue(
+                "blocker",
+                "safe_session_not_armed",
+                "safe test controls are not open for this driver",
             )
         )
 
@@ -179,8 +203,24 @@ def build_topology_tone_plan(
         lo=MIN_TONE_DURATION_MS,
         hi=MAX_TONE_DURATION_MS,
     )
-    playback_allowed = bool(readiness_report.get("playback_allowed")) and not issues
-    label = _target_label(readiness_report, group, channel)
+    current_matches_loaded = startup_load.get("current_config_matches_loaded")
+    protected_startup_loaded = bool(
+        startup_load.get("loaded")
+        and startup_load.get("rollback_available")
+        and current_matches_loaded is not False
+    )
+    if not readiness and not protected_startup_loaded:
+        issues.append(
+            _issue(
+                "blocker",
+                "protected_startup_config_not_loaded",
+                "JTS needs to finish opening the safe test setup for this driver",
+            )
+        )
+    playback_allowed = (
+        bool(readiness.get("playback_allowed")) if readiness else bool(playback_allowed)
+    ) and protected_startup_loaded and session.get("status") == "armed" and not issues
+    label = _target_label(readiness, group, channel)
     output_count = max(0, int(topology.hardware.physical_output_count or 0))
 
     return {
@@ -191,7 +231,7 @@ def build_topology_tone_plan(
         "would_play": playback_allowed,
         "playback_allowed": playback_allowed,
         "tone_playback_implemented": bool(
-            readiness_report.get("tone_playback_implemented")
+            readiness.get("tone_playback_implemented") if readiness else tone_playback_implemented
         ),
         "topology": {
             "topology_id": topology.topology_id,
@@ -229,16 +269,13 @@ def build_topology_tone_plan(
         },
         "safety": {
             "safe_session_id": (
-                readiness_report.get("safe_session", {}).get("session_id")
-                if isinstance(readiness_report.get("safe_session"), dict)
-                else None
+                session.get("session_id")
             ),
-            "readiness_status": readiness_report.get("status"),
-            "protected_startup_loaded": bool(
-                startup_load.get("loaded")
-                and startup_load.get("rollback_available")
-                and startup_load.get("current_config_matches_loaded")
+            "readiness_status": (
+                readiness.get("status")
+                if readiness else "preconditions_passed" if not issues else "blocked"
             ),
+            "protected_startup_loaded": protected_startup_loaded,
             "startup_load_status": startup_load.get("status"),
             "requires_emergency_stop": True,
             "artifact_verification_available": True,

@@ -1088,7 +1088,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var state = load.state || {};
     return state.status === 'loaded' &&
       !!state.rollback_available &&
-      !!state.current_config_matches_loaded;
+      state.current_config_matches_loaded !== false;
   }
   function quietTestStagedReady(staged) {
     staged = staged || activeSpeaker.stagedConfig || {};
@@ -1670,7 +1670,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'Measure drivers',
         'Choose one driver at a time, start very quiet, and record what the mic saw.',
         topology,
-        renderActiveSpeakerStatus() +
         renderOutputReadinessCard() +
         renderDriverMeasurementProgressCard(topology),
         ''
@@ -1693,8 +1692,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var compositeClock = clockStatus.indexOf('dual_apple_composite_clock') === 0;
     var clockSupportLabel = compositeClock ? 'Composite clock' : 'Multi-DAC aggregate';
     var clockSupportValue = compositeClock
-      ? (clock && clock.composite_clock_supported ? 'supported' : 'needs attention')
-      : (clock && clock.multi_device_aggregate_supported ? 'supported' : 'not enabled');
+      ? (clock && clock.composite_clock_supported ? 'supported' : 'check setup')
+      : (clock && clock.multi_device_aggregate_supported ? 'supported' : 'not configured');
     var rows = [
       ['Device', hardware.device_id || 'unknown'],
       ['Outputs', String(hardware.physical_output_count || 0) + ' physical'],
@@ -2135,19 +2134,31 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function friendlySetupReason(raw) {
     var text = String(raw || '').trim();
-    if (!text) return 'One setup item needs attention.';
+    if (!text) return 'One setup item needs to be finished.';
     var lower = text.toLowerCase();
+    if (lower.indexOf('rollback_target_available') >= 0 ||
+        lower.indexOf('current_config_missing') >= 0 ||
+        lower.indexOf('current_config_unreadable') >= 0 ||
+        lower.indexOf('current config path') >= 0) {
+      return 'JTS could not find the current audio profile it needs to restore after testing. Refresh the page, then choose the driver again.';
+    }
+    if (lower.indexOf('rollback_target_restore_limited') >= 0 ||
+        lower.indexOf('volume_limit_missing') >= 0 ||
+        lower.indexOf('volume_limit_positive') >= 0 ||
+        lower.indexOf('unknown_custom_camilla_config') >= 0) {
+      return 'The current DSP profile is not safe for the guided test. Save a normal JTS sound profile, then choose the driver again.';
+    }
     if (lower.indexOf('route_verified') >= 0 ||
         lower.indexOf('protected_by_active_baseline') >= 0 ||
         lower.indexOf('bypass_disabled') >= 0 ||
         lower.indexOf('path-safety evidence was not provided') >= 0 ||
         lower.indexOf('staged protected candidate') >= 0 ||
         lower.indexOf('active_startup_candidate') >= 0) {
-      return 'JTS could not confirm the safe audio path yet. Check that the speaker layout and crossover settings are saved, then choose the driver again.';
+      return 'JTS could not prepare the protected test setup. Save the speaker layout and crossover settings, then choose the driver again.';
     }
     if (lower.indexOf('protection') >= 0 || lower.indexOf('high_frequency') >= 0 ||
         lower.indexOf('high-frequency') >= 0) {
-      return 'JTS could not prepare the quiet safety limit for the high-frequency output. No sound was played. Save the crossover settings, then choose the driver again.';
+      return 'JTS needs to save the quiet limit for that high-frequency driver before any tone can play. Save the crossover settings, then choose the driver again.';
     }
     if (lower.indexOf('path_safety') >= 0 || lower.indexOf('safety evidence') >= 0 ||
         lower.indexOf('evidence') >= 0 || lower.indexOf('protected path') >= 0) {
@@ -2167,7 +2178,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         lower.indexOf('target requires') >= 0) {
       return 'Choose the driver you want to test first.';
     }
-    if (lower.indexOf('channel') >= 0 || lower.indexOf('target') >= 0) {
+    if (lower.indexOf('physical output') >= 0 ||
+        lower.indexOf('output identity') >= 0 ||
+        lower.indexOf('unverified') >= 0) {
       return 'Confirm which DAC output goes to each driver, then choose the driver again.';
     }
     return text.replace(/_/g, ' ');
@@ -2175,34 +2188,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function friendlySetupIssue(issue) {
     issue = issue || {};
     return friendlySetupReason(issue.message || issue.label || issue.code);
-  }
-  function issueNeedsQuietTestSetup(issue) {
-    issue = issue || {};
-    var code = String(issue.code || '').toLowerCase();
-    var message = String(issue.message || issue.label || '').toLowerCase();
-    return code.indexOf('route_verified') >= 0 ||
-      code.indexOf('protected_by_active_baseline') >= 0 ||
-      code.indexOf('bypass_disabled') >= 0 ||
-      code === 'path_safety_evidence_missing' ||
-      code === 'active_startup_candidate_required' ||
-      code === 'staged_candidate_not_ready' ||
-      code === 'staged_topology_mismatch' ||
-      message.indexOf('path-safety evidence was not provided') >= 0 ||
-      message.indexOf('staged protected candidate') >= 0;
-  }
-  function activeSpeakerCanStageFromIssues(issues) {
-    issues = Array.isArray(issues) ? issues : [];
-    return issues.some(issueNeedsQuietTestSetup);
-  }
-  function friendlySetupIssueList(envIssues, sessionIssues) {
-    var rows = (Array.isArray(envIssues) ? envIssues : [])
-      .concat(Array.isArray(sessionIssues) ? sessionIssues : []);
-    var out = [];
-    rows.forEach(function(issue) {
-      var reason = friendlySetupIssue(issue);
-      if (reason && out.indexOf(reason) < 0) out.push(reason);
-    });
-    return out;
   }
   function readinessBlockedReasons(readiness) {
     var reasons = [];
@@ -2251,8 +2236,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         buttons.push('<button type="button" class="btn btn--ghost" data-act="check-output-readiness" ' +
           'data-group-id="' + escapeHtml(group.id) + '" ' +
           'data-role="' + escapeHtml(channel.role) + '" ' +
-          'data-protection-required="' + (channel.protection_required ? 'true' : 'false') + '" ' +
-          'data-protection-status="' + escapeHtml(channel.protection_status || 'unknown') + '" ' +
+          'data-output-index="' + escapeHtml(channel.physical_output_index == null ? '' : String(channel.physical_output_index)) + '" ' +
+          'data-speaker-label="' + escapeHtml(group.label || group.id) + '" ' +
           'data-label="' + escapeHtml(targetLabel) + '">' +
           'Test ' + escapeHtml(humanRole(channel.role)) +
           ' · ' + escapeHtml(label) + '</button>');
@@ -2266,9 +2251,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderOutputReadinessBlockers(readiness) {
     var reasons = readinessBlockedReasons(readiness);
     if (!reasons.length) {
-      return '<p class="setting-row__hint">' + escapeHtml(readiness.playback_allowed ?
-        'This driver is ready for a test.' :
-        'JTS can preview the test signal, but this install is not enabled to play it yet.') + '</p>';
+      return '<p class="setting-row__hint">Ready to start at the quietest test level. Press Stop immediately if anything sounds wrong.</p>';
     }
     return '<div class="output-readiness-blockers">' +
       '<p class="setting-row__title">How to continue</p>' +
@@ -2302,8 +2285,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (outputTopology.readinessError) {
       return '<div class="output-card output-card--readiness">' +
-        '<div class="output-card__head"><div><p class="output-card__title">One setup step is needed</p>' +
-        '<p class="setting-row__hint">No sound played. Follow the message below, then choose the driver again.</p></div>' +
+        '<div class="output-card__head"><div><p class="output-card__title">Finish setup before testing</p>' +
+        '<p class="setting-row__hint">No sound played. Use the message below, then choose the driver again.</p></div>' +
         '<span class="status-pill">not ready yet</span></div>' +
         '<p class="setting-row__hint">' + escapeHtml(outputTopology.readinessError) + '</p>' +
         renderQuietTestTargetChoices() +
@@ -2367,9 +2350,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<button type="button" class="btn btn--ghost" data-act="play-output-readiness-tone" ' +
         attrs + ' data-audio="false"' + (disabled ? ' disabled' : '') + '>' +
         escapeHtml(artifactLabel) + '</button>' +
-      (readiness && readiness.playback_allowed ? '<button type="button" class="btn btn--danger" ' +
+      '<button type="button" class="btn btn--danger" ' +
         'data-act="play-output-readiness-tone" ' + attrs + ' data-audio="true"' +
-        (disabled ? ' disabled' : '') + '>' + escapeHtml(playLabel) + '</button>' : '') +
+        (disabled ? ' disabled' : '') + '>' + escapeHtml(playLabel) + '</button>' +
     '</div>';
   }
   function renderOutputReadinessPlayback(playback) {
@@ -2394,67 +2377,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         return '<li>' + escapeHtml('Playback: ' + (issue.code || 'issue')) + '</li>';
       }).join('') + '</ul>' : '') +
       renderOutputFloorAudioResultActions(playback) +
-    '</div>';
-  }
-  function renderActiveSpeakerStatus() {
-    if (activeSpeaker.loading) {
-      return '<div class="output-card output-card--active-status">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Measure drivers</p>' +
-        '<p class="setting-row__hint">Checking the saved setup. No sound will play.</p></div>' +
-        '<span class="status-pill">checking</span></div>' +
-      '</div>';
-    }
-    if (activeSpeaker.error && !activeSpeaker.payload) {
-      return '<div class="output-card output-card--active-status active-speaker-status__stack">' +
-        '<div class="row-between active-speaker-status__head">' +
-          '<div><p class="output-card__title">Measure drivers</p>' +
-          '<p class="setting-row__hint">JTS could not check the saved setup. No sound was played.</p></div>' +
-          '<span class="status-pill status-pill--blocked">check failed</span>' +
-        '</div>' +
-        '<p class="setting-row__hint">' + escapeHtml(activeSpeaker.error) + '</p>' +
-        '<div class="active-speaker-actions"><button type="button" class="btn btn--primary" data-act="refresh-active-speaker">Try again</button></div>' +
-      '</div>';
-    }
-    if (!activeSpeaker.payload) {
-      return '';
-    }
-    var p = activeSpeaker.payload || {};
-    var safe = p.safe_playback || {};
-    var session = activeSpeaker.session || {};
-    var staged = activeSpeaker.stagedConfig || {};
-    var startup = activeSpeaker.startupLoad || {};
-    var startupState = startup.state || {};
-    var ok = !!p.ok_to_load_active_config;
-    var envIssues = Array.isArray(p.issues) ? p.issues.slice(0, 4) : [];
-    var sessionIssues = Array.isArray(session.issues) ? session.issues.slice(0, 4) : [];
-    var stagedReady = quietTestStagedReady(staged);
-    var startupReady = quietTestStartupReady(startup);
-    var armed = session.status === 'armed';
-    var canStageFromIssues = activeSpeakerCanStageFromIssues(envIssues);
-    if (!activeSpeaker.error && (armed || stagedReady || startupReady || ok || canStageFromIssues)) {
-      return '';
-    }
-    var statusLabel = armed ? 'ready' :
-      (startupReady ? 'open controls' : (stagedReady ? 'continue setup' : ((ok || canStageFromIssues) ? 'next' : 'check setup')));
-    var nextCopy = armed ?
-      'Choose a confirmed driver when you are ready to start very quietly.' :
-      (startupReady ?
-        'One more setup step opens the driver test controls. No sound plays yet.' :
-        (stagedReady ?
-          'Continue setup to load the driver test DSP. No sound plays yet.' :
-          ((ok || canStageFromIssues) ?
-            'Choose a driver to start the first safe test.' :
-            'JTS needs one setup item fixed before it can test a driver.')));
-    return '<div class="output-card output-card--active-status active-speaker-status__stack">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Measure drivers</p>' +
-        '<p class="setting-row__hint">' + escapeHtml(nextCopy) + '</p></div>' +
-        '<span class="status-pill' + (armed ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(statusLabel) + '</span></div>' +
-      (activeSpeaker.error ? '<p class="setting-row__hint">' + escapeHtml(activeSpeaker.error) + '</p>' : '') +
-      ((!stagedReady && (ok || canStageFromIssues)) ? '' : renderActiveSpeakerIssues(envIssues, sessionIssues)) +
-      renderActiveSpeakerActions(ok, session, envIssues) +
-      ((armed && activeSpeakerSelectedReadinessTarget()) ? renderActiveSpeakerLevel() : '') +
-      '<p class="setting-row__hint">' + escapeHtml(safe.warning || 'No sound plays until you explicitly start a driver test.') + '</p>' +
     '</div>';
   }
   function activeSpeakerLevelConfig() {
@@ -2581,67 +2503,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (issues.length ? '<ul class="active-speaker-issues">' + issues.slice(0, 3).map(function(issue) {
         return '<li>' + escapeHtml('Test volume: ' + (issue.code || 'issue')) + '</li>';
       }).join('') + '</ul>' : '') +
-    '</div>';
-  }
-  function renderActiveSpeakerIssues(envIssues, sessionIssues) {
-    var rows = friendlySetupIssueList(envIssues, sessionIssues);
-    if (!rows.length) return '';
-    return '<div class="active-speaker-note">' +
-      '<p class="setting-row__title">Finish this first</p>' +
-      '<ul class="active-speaker-issues active-speaker-issues--warning">' + rows.slice(0, 3).map(function(reason) {
-      return '<li>' + escapeHtml(reason) + '</li>';
-    }).join('') + '</ul></div>';
-  }
-  function renderActiveSpeakerActions(ok, session, envIssues) {
-    var busy = !!activeSpeaker.action;
-    var state = session || {};
-    var staged = activeSpeaker.stagedConfig || {};
-    var startup = activeSpeaker.startupLoad || {};
-    var startupState = startup.state || {};
-    var stagedReady = staged.status === 'staged';
-    var startupReady = startupState.status === 'loaded' &&
-      !!startupState.rollback_available &&
-      !!startupState.current_config_matches_loaded;
-    var stageDisabled = outputTopology.dirty ? ' disabled' : '';
-    if (busy) {
-      return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--ghost" disabled>' + escapeHtml(activeSpeaker.action) + '</button>' +
-        '<span class="setting-row__hint">No sound plays in this step.</span>' +
-      '</div>';
-    }
-    if (state.status === 'armed') {
-      return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--danger" data-act="stop-active-speaker">Stop</button>' +
-        '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup">Exit quiet mode</button>' +
-        '<span class="setting-row__hint">Choose a driver below, then start at the quietest level.</span>' +
-      '</div>';
-    }
-    if (!stagedReady) {
-      if (!ok && !activeSpeakerCanStageFromIssues(envIssues)) {
-        return '<div class="active-speaker-actions">' +
-          '<button type="button" class="btn btn--primary" data-act="refresh-active-speaker">Check again</button>' +
-        '</div>';
-      }
-      return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="stage-active-config"' + stageDisabled + '>Prepare driver test</button>' +
-        '<span class="setting-row__hint">JTS checks the safe audio path before any driver test.</span>' +
-      '</div>';
-    }
-    if (!startupReady) {
-      return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="load-active-startup">Continue setup</button>' +
-        '<span class="setting-row__hint">JTS is getting the safe audio path ready. No sound will play.</span>' +
-      '</div>';
-    }
-    if (!ok) {
-      return '<div class="active-speaker-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="refresh-active-speaker">Check again</button>' +
-      '</div>';
-    }
-    return '<div class="active-speaker-actions">' +
-      '<button type="button" class="btn btn--primary" data-act="arm-active-speaker">Continue</button>' +
-      '<button type="button" class="btn btn--ghost" data-act="rollback-active-startup">Exit quiet mode</button>' +
-      '<span class="setting-row__hint">This opens the driver test controls at the quietest setting.</span>' +
     '</div>';
   }
   function rangeRow(label, value, min, max, opts) {
@@ -3051,10 +2912,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'record-summed-validation') { recordSummedValidation(t); }
     else if (act === 'compile-baseline-profile') { compileBaselineProfile(); }
     else if (act === 'apply-baseline-profile') { applyBaselineProfile(); }
-    else if (act === 'stage-active-config') { stageActiveSpeakerConfig(); }
-    else if (act === 'load-active-startup') { loadActiveStartupConfig(); }
     else if (act === 'rollback-active-startup') { rollbackActiveStartupConfig(); }
-    else if (act === 'arm-active-speaker') { activeSpeakerPost('./active-speaker/arm', 'Opening test controls'); }
     else if (act === 'stop-active-speaker') { activeSpeakerPost('./active-speaker/stop', 'Stopping'); }
     else if (act === 'active-level') {
       updateActiveSpeakerLevel(t.getAttribute('data-level-action') || 'set');
@@ -3797,72 +3655,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return false;
     }
   }
-  function missingSoftwareGuardTargets() {
-    var out = [];
-    var topology = currentOutputTopology();
-    outputGroups(topology).forEach(function(group) {
-      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
-        var statusValue = channel.protection_status || 'unknown';
-        if (!channel.protection_required ||
-            statusValue === 'present' ||
-            statusValue === 'software_guard_requested') return;
-        out.push({
-          groupId: group.id,
-          role: channel.role,
-          label: (group.label || group.id) + ' ' + humanRole(channel.role)
-        });
-      });
-    });
-    return out;
-  }
-  async function ensureSoftwareGuardsForDriverTest() {
-    var missing = missingSoftwareGuardTargets();
-    if (!missing.length) return;
-    status('Setting the software guard for high-frequency outputs. No sound will play.');
-    outputTopology.protectionSaving = missing[0].groupId + ':' + missing[0].role;
-    render();
-    for (var i = 0; i < missing.length; i += 1) {
-      ingestOutputTopology(await saveOutputChannelProtectionState(
-        missing[i].groupId,
-        missing[i].role,
-        'software_guard_requested'
-      ));
-    }
-    if (!await saveDriverResearchDraft({internal: true})) {
-      throw new Error('Save crossover settings before testing this driver. No sound was played.');
-    }
-  }
-  async function ensureFreshCrossoverPreviewForDriverTest() {
-    if (crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload)) return;
-    if (!driverResearchCanPreparePreview()) return;
-    crossoverPreview.preparing = true;
-    crossoverPreview.error = '';
-    status('Refreshing the crossover preview for this driver test. No sound will play.');
-    render();
-    try {
-      var resp = await fetch('./active-speaker/crossover-preview', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({})
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
-      ingestCrossoverPreview(payload);
-      if (!crossoverPreviewReadyForProtectedStaging(payload)) {
-        throw new Error(setupFailureMessage(
-          payload,
-          'Save crossover settings before testing this driver. No sound was played.'
-        ));
-      }
-    } catch (e) {
-      crossoverPreview.preparing = false;
-      crossoverPreview.error = e.message;
-      throw new Error(setupFailureMessage(
-        {error: e.message},
-        'JTS could not refresh the crossover preview. No sound was played.'
-      ));
-    }
-  }
   async function advanceOutputStep(step) {
     var topology = currentOutputTopology();
     if (step === 'layout') {
@@ -3992,42 +3784,66 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
-  async function saveOutputChannelProtectionState(groupId, role, nextStatus) {
-    var resp = await fetch('./active-speaker/channel-protection', {
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: JSON.stringify({
-        speaker_group_id: groupId,
-        role: role,
-        protection_status: nextStatus
-      })
-    });
-    var payload = await resp.json();
-    if (!resp.ok) throw new Error(payload.error || 'channel driver-test setup update failed');
-    return payload;
+  function syncPreparedOutputTopology(payload) {
+    if (!payload || !payload.output_topology) return;
+    outputTopology.payload = clone(payload.output_topology);
+    outputTopology.draft = clone(payload.output_topology);
+    outputTopology.identity = payload.channel_identity || outputTopology.identity || null;
+    outputTopology.clockDomain = payload.clock_domain || outputTopology.clockDomain || null;
+    outputTopology.error = '';
+    outputTopology.dirty = false;
+    outputTopology.saving = false;
+    outputTopology.loading = false;
+    outputTopology.identitySaving = '';
+    outputTopology.protectionSaving = '';
   }
-  async function fetchOutputPlaybackReadiness(groupId, role) {
-    var resp = await fetch('./active-speaker/playback-readiness', {
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: JSON.stringify({
-        speaker_group_id: groupId,
-        role: role
-      })
-    });
-    var payload = await resp.json();
-    if (!resp.ok) throw new Error(payload.error || 'playback readiness failed');
-    return payload;
+  function outputReadinessFromPreparedDriver(payload, button) {
+    payload = payload || {};
+    var preparedTarget = payload.target || {};
+    var groupId = button.getAttribute('data-group-id') || '';
+    var role = button.getAttribute('data-role') || '';
+    var outputIndex = Number(button.getAttribute('data-output-index'));
+    var target = {
+      speaker_group_id: preparedTarget.speaker_group_id || groupId,
+      speaker_label: preparedTarget.speaker_label || button.getAttribute('data-speaker-label') || groupId,
+      role: preparedTarget.role || preparedTarget.driver_role || role,
+      physical_output_index: preparedTarget.physical_output_index != null ?
+        preparedTarget.physical_output_index : (isFinite(outputIndex) ? outputIndex : null),
+      label: preparedTarget.label || button.getAttribute('data-label') || (groupId + ' ' + role)
+    };
+    return {
+      artifact_schema_version: 1,
+      kind: 'jts_active_speaker_playback_readiness',
+      status: 'preconditions_passed',
+      preconditions_passed: true,
+      playback_allowed: true,
+      would_play: false,
+      tone_playback_implemented: true,
+      target: target,
+      calibration_level: payload.calibration_level || activeSpeaker.calibrationLevel || {},
+      safe_session: payload.session || activeSpeaker.session || {},
+      startup_load: (payload.startup_load && payload.startup_load.load) ||
+        (activeSpeaker.startupLoad || {}).state ||
+        activeSpeaker.startupLoad ||
+        {},
+      required_gates: [],
+      issues: [],
+      next_step: payload.message ||
+        'Start at the quietest level. Press Stop immediately if anything sounds wrong.'
+    };
   }
-  async function postActiveSpeakerSetup(path, fallback) {
-    var resp = await fetch(path, {
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: '{}'
+  function refreshSelectedOutputReadiness(nextStep) {
+    if (!outputTopology.readiness || !outputTopology.readiness.target) return;
+    outputTopology.readiness = Object.assign({}, outputTopology.readiness, {
+      calibration_level: activeSpeaker.calibrationLevel || outputTopology.readiness.calibration_level || {},
+      safe_session: activeSpeaker.session || outputTopology.readiness.safe_session || {},
+      startup_load: (activeSpeaker.startupLoad || {}).state ||
+        activeSpeaker.startupLoad ||
+        outputTopology.readiness.startup_load ||
+        {},
+      next_step: nextStep || outputTopology.readiness.next_step ||
+        'Start at the quietest level. Press Stop immediately if anything sounds wrong.'
     });
-    var payload = await resp.json();
-    if (!resp.ok) throw new Error(setupFailureMessage(payload, fallback));
-    return payload;
   }
   function setupFailureMessage(payload, fallback) {
     payload = payload || {};
@@ -4048,92 +3864,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return friendly[0] || fallback ||
       'JTS could not get the safe audio path ready. No sound was played.';
   }
-  async function ensureQuietTestControlsOpen(label) {
-    if (quietTestControlsOpen()) return;
-    if (outputTopology.dirty) {
-      throw new Error('Save the speaker layout before starting a driver test.');
-    }
-    patchActiveSpeaker({
-      loading: false,
-      action: 'Getting safe test ready',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-
-    if (!quietTestStagedReady()) {
-      await ensureSoftwareGuardsForDriverTest();
-      await ensureFreshCrossoverPreviewForDriverTest();
-      var staged = await postActiveSpeakerSetup(
-        './active-speaker/stage-config',
-        'Save crossover settings and confirm outputs before starting a driver test.'
-      );
-      if (staged.status !== 'staged') {
-        throw new Error(setupFailureMessage(
-          staged,
-          'JTS could not prepare the saved speaker layout for testing. No sound was played.'
-        ));
-      }
-      patchActiveSpeaker({stagedConfig: staged});
-    }
-
-    var startupLoad = await fetchActiveSpeakerStartupLoad();
-    patchActiveSpeaker({startupLoad: startupLoad});
-    if (!quietTestStartupReady(startupLoad)) {
-      var pathPayload = await postActiveSpeakerSetup(
-        './active-speaker/check-path-safety',
-        'JTS could not verify the safe audio path. No sound was played.'
-      );
-      var pathReport = pathPayload.report || {};
-      if (pathPayload.startup_load) {
-        startupLoad = pathPayload.startup_load;
-        patchActiveSpeaker({startupLoad: startupLoad});
-      }
-      if (pathReport.load_gate && pathReport.load_gate !== 'ready') {
-        throw new Error(setupFailureMessage(
-          pathPayload,
-          'JTS could not verify the safe audio path. No sound was played.'
-        ));
-      }
-      var loaded = await postActiveSpeakerSetup(
-        './active-speaker/load-startup-config',
-        'JTS could not load the safe test setup. No sound was played.'
-      );
-      startupLoad = {
-        state: loaded.load || {},
-        preflight: loaded.preflight || {}
-      };
-      patchActiveSpeaker({startupLoad: startupLoad});
-      if (!quietTestStartupReady(startupLoad)) {
-        throw new Error(setupFailureMessage(
-          loaded,
-          'JTS could not load the safe test setup. No sound was played.'
-        ));
-      }
-    }
-
-    if (!quietTestControlsOpen()) {
-      var session = await postActiveSpeakerSetup(
-        './active-speaker/arm',
-        'JTS could not open the test controls. No sound was played.'
-      );
-      if (session.status !== 'armed') {
-        throw new Error(setupFailureMessage(
-          session,
-          'JTS could not open the test controls. No sound was played.'
-        ));
-      }
-      var nextLevel = session.calibration_level || activeSpeaker.calibrationLevel;
-      patchActiveSpeaker({
-        session: session,
-        calibrationLevel: nextLevel,
-        levelDbfs: nextLevel && nextLevel.test_signal ?
-          Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
-      });
-      await refreshActiveSpeakerRehearsal();
-    }
-    status('Ready to test ' + label + '. No sound has played yet.');
-  }
   async function checkOutputPlaybackReadiness(button) {
     if (outputTopology.dirty) {
       status('Save the speaker layout before choosing a driver to test.', true);
@@ -4142,14 +3872,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var groupId = button.getAttribute('data-group-id') || '';
     var role = button.getAttribute('data-role') || '';
     var label = button.getAttribute('data-label') || (groupId + ' ' + role);
-    var protectionRequired = button.getAttribute('data-protection-required') === 'true';
-    var protectionStatus = button.getAttribute('data-protection-status') || 'unknown';
     var targetId = groupId + ':' + role;
-    var needsSoftwareGuard = protectionRequired &&
-      protectionStatus !== 'present' &&
-      protectionStatus !== 'software_guard_requested';
     outputTopology.readinessChecking = targetId;
-    outputTopology.protectionSaving = needsSoftwareGuard ? targetId : '';
+    outputTopology.protectionSaving = '';
     outputTopology.error = '';
     outputTopology.readinessError = '';
     outputTopology.readiness = null;
@@ -4160,23 +3885,41 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     status('Getting ' + label + ' ready. No sound will play yet.');
     render();
     try {
-      if (needsSoftwareGuard) {
-        ingestOutputTopology(await saveOutputChannelProtectionState(
-          groupId,
-          role,
-          'software_guard_requested'
+      var resp = await fetch('./active-speaker/prepare-driver-test', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          speaker_group_id: groupId,
+          role: role
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(setupFailureMessage(
+        payload,
+        'JTS could not prepare this driver for testing. No sound was played.'
+      ));
+      syncPreparedOutputTopology(payload);
+      if (!payload.ready) {
+        throw new Error(setupFailureMessage(
+          payload,
+          'Finish the setup item shown here, then choose this driver again.'
         ));
-        outputTopology.protectionSaving = '';
       }
-      await ensureQuietTestControlsOpen(label);
-      outputTopology.readiness = await fetchOutputPlaybackReadiness(groupId, role);
-      outputTopology.readinessChecking = '';
+      var nextLevel = payload.calibration_level || activeSpeaker.calibrationLevel;
       patchActiveSpeaker({
         loading: false,
         action: '',
         error: '',
-        levelDbfs: activeSpeaker.levelDbfs
+        session: payload.session || activeSpeaker.session,
+        calibrationLevel: nextLevel,
+        stagedConfig: payload.staged_config || activeSpeaker.stagedConfig,
+        startupLoad: payload.startup_load || activeSpeaker.startupLoad,
+        levelDbfs: nextLevel && nextLevel.test_signal ?
+          Number(nextLevel.test_signal.requested_level_dbfs) : activeSpeaker.levelDbfs
       });
+      outputTopology.readiness = outputReadinessFromPreparedDriver(payload, button);
+      outputTopology.readinessChecking = '';
+      await refreshActiveSpeakerRehearsal();
       status('Ready to test ' + label + '. Start at the quietest level.');
     } catch (e) {
       outputTopology.protectionSaving = '';
@@ -4229,6 +3972,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: activeSpeaker.levelDbfs
       });
+      refreshSelectedOutputReadiness(audio ?
+        'Record what you heard, then use the mic-backed measurement before moving to the next driver.' :
+        'The test signal preview is ready. No sound was played.');
       status(audio ? 'Played quiet channel test.' : 'Verified channel test artifact. No sound was played.');
     } catch (e) {
       outputTopology.readinessPlaybackChecking = '';
@@ -4279,15 +4025,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         levelDbfs: activeSpeaker.levelDbfs
       });
       if (target && target.speaker_group_id && target.role) {
-        try {
-          outputTopology.readiness = await fetchOutputPlaybackReadiness(
-            target.speaker_group_id,
-            target.role
-          );
-          outputTopology.readinessError = '';
-        } catch (refreshErr) {
-          outputTopology.readinessError = refreshErr.message;
-        }
+        refreshSelectedOutputReadiness('Use the guided level controls if this driver is still too quiet, then test the next driver.');
+        outputTopology.readinessError = '';
       }
       await refreshActiveSpeakerRehearsal();
       var quiet = result.quiet_start || {};
@@ -4538,53 +4277,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
-  async function stageActiveSpeakerConfig() {
-    if (outputTopology.dirty) {
-      status('Save the speaker layout before testing a driver.', true);
-      return;
-    }
-    if (!await jtsConfirm(
-      'Check the saved speaker layout before testing a driver? No sound will play yet.',
-      {danger: false}
-    )) {
-      return;
-    }
-    patchActiveSpeaker({
-      loading: false, action: 'Preparing driver test',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var resp = await fetch('./active-speaker/stage-config', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: '{}'
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'protected config staging failed');
-      var startupLoad = await fetchActiveSpeakerStartupLoad();
-      patchActiveSpeaker({
-        loading: false, action: '',
-        stagedConfig: payload,
-        startupLoad: startupLoad,
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status(payload.status === 'staged' ?
-        'Setup checked. Continue when you are ready; no sound was played.' :
-        'JTS could not get the driver test ready yet. Review the message in this card; no sound was played.',
-        payload.status !== 'staged');
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not get the driver test ready: ' + e.message, true);
-    }
-    render();
-  }
   async function updateActiveSpeakerLevel(action, requestedLevel) {
     var seq = activeSpeakerLevelSeq += 1;
     var cfg = activeSpeakerLevelConfig();
@@ -4751,16 +4443,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       } catch (refreshErr) {
         refreshWarning = refreshErr.message || 'startup status refresh failed';
       }
-      try {
-        outputTopology.readiness = await fetchOutputPlaybackReadiness(
-          target.speaker_group_id,
-          target.role
-        );
-        outputTopology.readinessError = '';
-      } catch (refreshErr2) {
-        outputTopology.readinessError = refreshErr2.message;
-        refreshWarning = refreshWarning || refreshErr2.message;
-      }
       patchActiveSpeaker({
         loading: false, action: '',
         calibrationLevel: payload,
@@ -4768,6 +4450,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         error: '',
         levelDbfs: isFinite(accepted) ? accepted : activeSpeaker.levelDbfs
       });
+      refreshSelectedOutputReadiness('Test again at the updated level, then record what you heard.');
+      outputTopology.readinessError = '';
       await refreshActiveSpeakerRehearsal();
       status('Test volume: ' + (decision.reason || decision.status || 'level held') +
         (refreshWarning ? ' Refresh warning: ' + refreshWarning + '.' : '.'));
@@ -4807,126 +4491,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     } catch (e) {
       patchActiveSpeaker({rehearsal: activeSpeaker.rehearsal || null});
     }
-  }
-  async function fetchActiveSpeakerEnvironment() {
-    var resp = await fetch('./active-speaker/environment', {cache: 'no-store'});
-    if (!resp.ok) throw new Error('environment probe failed');
-    return await resp.json();
-  }
-  async function checkActivePathSafety() {
-    patchActiveSpeaker({
-      loading: false, action: 'Checking driver test setup',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var resp = await fetch('./active-speaker/check-path-safety', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: '{}'
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'driver-test setup check failed');
-      var ready = payload.report && payload.report.ok_to_load_active_config;
-      var environment = await fetchActiveSpeakerEnvironment();
-      patchActiveSpeaker({
-        loading: false, action: '',
-        payload: environment,
-        startupLoad: payload.startup_load || activeSpeaker.startupLoad,
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status(ready ?
-        'Setup check passed. No sound was played.' :
-        'Setup needs one more step. No sound was played.',
-        !ready);
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not check driver test setup: ' + e.message, true);
-    }
-    render();
-  }
-  async function loadActiveStartupConfig() {
-    if (!await jtsConfirm(
-      'Continue preparing the driver test? This reloads the safe test setup but does not play sound or change the test level.',
-      {danger: false}
-    )) {
-      return;
-    }
-    patchActiveSpeaker({
-      loading: false, action: 'Loading test setup',
-      error: '',
-      levelDbfs: activeSpeaker.levelDbfs
-    });
-    render();
-    try {
-      var pathResp = await fetch('./active-speaker/check-path-safety', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: '{}'
-      });
-      var pathPayload = await pathResp.json();
-      if (!pathResp.ok) throw new Error(pathPayload.error || 'driver-test path check failed');
-      var pathReport = pathPayload.report || {};
-      if (pathPayload.startup_load) {
-        activeSpeaker.startupLoad = pathPayload.startup_load;
-      }
-      if (pathReport.load_gate && pathReport.load_gate !== 'ready') {
-        activeSpeaker = {
-          loading: false, action: '',
-          payload: activeSpeaker.payload,
-          session: activeSpeaker.session,
-          targets: activeSpeaker.targets,
-          stagedConfig: activeSpeaker.stagedConfig,
-          calibrationLevel: activeSpeaker.calibrationLevel,
-          bringup: activeSpeaker.bringup,
-          startupLoad: pathPayload.startup_load || activeSpeaker.startupLoad,
-          rehearsal: activeSpeaker.rehearsal,
-          measurements: activeSpeaker.measurements,
-          baselineProfile: activeSpeaker.baselineProfile,
-          error: '',
-          levelDbfs: activeSpeaker.levelDbfs
-        };
-        status(pathReport.message ||
-          'Continue setup is not ready yet. Review the message in this card; no sound was played.', true);
-        render();
-        return;
-      }
-      var resp = await fetch('./active-speaker/load-startup-config', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: '{}'
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'startup load failed');
-      patchActiveSpeaker({
-        loading: false, action: '',
-        startupLoad: {
-          state: payload.load || {},
-          preflight: payload.preflight || {}
-        },
-        error: '',
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      var loaded = payload.load && payload.load.status === 'loaded';
-      status(loaded ?
-        'Driver test setup is loaded. No sound was played.' :
-        'Continue setup did not finish. Review the message in this card; no sound was played.',
-        !loaded);
-    } catch (e) {
-      patchActiveSpeaker({
-        loading: false, action: '',
-        error: e.message,
-        levelDbfs: activeSpeaker.levelDbfs
-      });
-      status('Could not load the driver test setup: ' + e.message, true);
-    }
-    render();
   }
   async function rollbackActiveStartupConfig() {
     if (!await jtsConfirm(
