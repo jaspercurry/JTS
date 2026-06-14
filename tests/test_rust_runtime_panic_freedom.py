@@ -1,12 +1,16 @@
 """Pin the audited panic-freedom of the Rust audio daemons' runtime paths.
 
 A 2026-06 audit manually verified that every ``.unwrap()`` / ``.expect(``
-/ ``panic!`` in ``rust/jasper-fanin`` and ``rust/jasper-outputd`` lives
-either in ``#[cfg(test)]`` code or at one of a handful of documented
-invariant sites. These daemons are the speaker's always-on audio path on
-a production Pi — an unguarded panic in runtime code kills audio output
-until systemd restarts the unit, so "no new panics outside test code"
-is a safety invariant worth pinning, not a style preference.
+/ ``panic!`` in ``rust/jasper-fanin``, ``rust/jasper-outputd``, and the
+shared ``rust/jasper-tts-protocol`` crate lives either in ``#[cfg(test)]``
+code or at one of a handful of documented invariant sites. The two
+daemons are the speaker's always-on audio path on a production Pi, and
+``jasper-tts-protocol`` is a library compiled *into both* of them (the
+TTS wire protocol + the shared loudness engine), so a panic there is a
+panic in the audio runtime just the same — an unguarded panic in runtime
+code kills audio output until systemd restarts the unit, so "no new
+panics outside test code" is a safety invariant worth pinning, not a
+style preference.
 
 CI builds and ``cargo test``s these crates, but cargo cannot run in
 every dev environment and nothing in cargo's gate distinguishes a
@@ -31,7 +35,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-RUNTIME_CRATES = ("jasper-fanin", "jasper-outputd")
+RUNTIME_CRATES = ("jasper-fanin", "jasper-outputd", "jasper-tts-protocol")
 
 # Audited runtime ``.expect("...")`` sites, keyed by
 # (path relative to rust/, exact message). Each entry carries the
