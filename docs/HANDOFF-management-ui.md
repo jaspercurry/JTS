@@ -240,12 +240,14 @@ headers and `/system/`'s cased card titles coexist correctly. Stat-tile labels
 **Tracked follow-up — split `/sound/`'s JS into modules (hardware-gated).**
 `/system/`'s behaviour is split into layered ES modules
 (`dom`/`format`/`charts`/`components`/`sections`/`views`/`api`/`actions`/
-`main`). `/sound/`'s view/state/IO logic is still a single module — the EQ
-editor relocated verbatim from the old inline `_SOUND_JS`
+`main`). `/sound/`'s render/state/IO logic is still mostly a single module —
+the EQ editor relocated verbatim from the old inline `_SOUND_JS`
 ([`deploy/assets/sound-profile/js/main.js`](../deploy/assets/sound-profile/js/main.js)).
-The one piece carved out is the pure, DOM-free RBJ biquad math
+Two pure, DOM-free pieces are carved out: RBJ biquad math
 ([`eq-math.js`](../deploy/assets/sound-profile/js/eq-math.js)), shared with a
-node parity check and mirrored in Python.
+node parity check and mirrored in Python, and active-speaker setup vocabulary /
+step-state policy
+([`active-speaker-ui.js`](../deploy/assets/sound-profile/js/active-speaker-ui.js)).
 Splitting the rest to match (a shared `store` + `eq`/`views`/`io`) is planned but
 was **deliberately deferred, not blind-refactored**: the editor's ~25
 mutable state vars are woven through its math, `innerHTML` rendering, and
@@ -1390,12 +1392,16 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-06-14 (`streambox` and satellite-only `endpoint` now use
-the shared landing page filtered by `system_capabilities`; streambox installs
-a profile-scoped `jasper-web` service/socket template and endpoint keeps a
-smaller nginx route set; verified by `tests/test_endpoint_install_profile.py`,
-`tests/test_control_server.py`, `tests/test_web_main_imports.py`, and
-`tests/test_web_sources_setup.py`. Prior pass 2026-06-04: `/voice/` owns
+Last verified: 2026-06-14 (`/sound/` now splits pure active-speaker setup
+vocabulary/step policy into `active-speaker-ui.js` while leaving render/IO in
+`main.js`; verified by `tests/test_sound_setup.py` and
+`tests/js/sound_profile_harness.mjs`. Prior pass 2026-06-14: `streambox` and
+satellite-only `endpoint` now use the shared landing page filtered by
+`system_capabilities`; streambox installs a profile-scoped `jasper-web`
+service/socket template and endpoint keeps a smaller nginx route set; verified
+by `tests/test_endpoint_install_profile.py`, `tests/test_control_server.py`,
+`tests/test_web_main_imports.py`, and `tests/test_web_sources_setup.py`. Prior
+pass 2026-06-04: `/voice/` owns
 spend-cap status/settings and the
 `/system/` Cloud activity card was removed from the dashboard; verified by
 `tests/test_voice_setup.py`, `tests/test_system_setup.py`, and the static

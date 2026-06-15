@@ -67,6 +67,7 @@ def _startup_load() -> dict:
         "active_config_path": "/tmp/active.yml",
         "previous_config_path": "/tmp/prior.yml",
         "rollback_available": True,
+        "current_config_matches_loaded": True,
     }
 
 
@@ -151,6 +152,53 @@ def test_topology_tone_plan_can_prepare_artifact_without_audio_authority() -> No
     assert plan["next_step"] == (
         "Ready for artifact verification; audible playback is still gated."
     )
+
+
+def test_topology_tone_plan_accepts_guarded_frontend_selection_without_readiness_report() -> None:
+    topology = _topology()
+    startup_load = _startup_load()
+    startup_load.pop("current_config_matches_loaded")
+
+    plan = build_topology_tone_plan(
+        topology,
+        speaker_group_id="left",
+        role="woofer",
+        safe_session=_session(),
+        startup_load_state=startup_load,
+        playback_allowed=True,
+        tone_playback_implemented=True,
+    )
+
+    assert plan["source"] == "output_topology"
+    assert plan["status"] == "ready"
+    assert plan["would_play"] is True
+    assert plan["playback_allowed"] is True
+    assert plan["target"]["speaker_group_id"] == "left"
+    assert plan["target"]["driver_role"] == "woofer"
+    assert plan["target"]["output_index"] == 0
+    assert plan["safety"]["safe_session_id"] == "safe-1"
+    assert plan["safety"]["readiness_status"] == "preconditions_passed"
+    assert plan["safety"]["protected_startup_loaded"] is True
+
+
+def test_topology_tone_plan_blocks_guarded_frontend_selection_without_loaded_startup() -> None:
+    topology = _topology()
+
+    plan = build_topology_tone_plan(
+        topology,
+        speaker_group_id="left",
+        role="woofer",
+        safe_session=_session(),
+        startup_load_state={"status": "not_loaded"},
+        playback_allowed=True,
+        tone_playback_implemented=True,
+    )
+
+    assert plan["status"] == "blocked"
+    assert plan["would_play"] is False
+    assert "protected_startup_config_not_loaded" in {
+        issue["code"] for issue in plan["issues"]
+    }
 
 
 def test_topology_tone_plan_uses_conservative_high_frequency_floor_tone() -> None:
