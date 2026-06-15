@@ -8,6 +8,7 @@ turning CI red. See the 2026-06 OSS due-diligence finding
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,10 @@ def test_launch_blocker_doc_exists_and_nonempty(name: str) -> None:
 
 def test_privacy_doc_is_linked_from_readme_atlas() -> None:
     """PRIVACY.md must be linked from README's documentation map — README is the
-    doc atlas and ships no orphan docs."""
+    doc atlas and ships no orphan docs. Match any markdown link whose target is
+    PRIVACY.md so a reword of the link text doesn't false-fail."""
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "[PRIVACY.md](PRIVACY.md)" in readme
+    assert re.search(r"\]\(PRIVACY\.md\)", readme), (
+        "README documentation map must link to PRIVACY.md"
+    )

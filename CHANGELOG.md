@@ -9,10 +9,10 @@ release tags.
 ## [Unreleased]
 
 First public release candidate. JTS is a voice-controlled smart speaker that
-runs entirely on a single 1 GB Raspberry Pi 5: a swappable real-time voice
-assistant, multi-source music playback, CamillaDSP room correction, and a local
-web management UI — designed to keep working unattended for months and to
-self-heal across crashes, power loss, and missing hardware.
+runs entirely on a single 1 GB Raspberry Pi 5 — voice assistant, multi-source
+music, CamillaDSP room correction, and a local management UI — built to run
+unattended for months and self-heal across crashes, power loss, and missing
+hardware.
 
 > Draft release notes. A maintainer tags `v0.1.0` at OSS launch; rename this
 > section to `[0.1.0] - YYYY-MM-DD` at that point.

@@ -60,9 +60,21 @@ def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
     finding, which regressed once because only one surface was fixed).
     """
 
-    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
-    assert "uv sync --extra full --extra streambox" in contributing
+    # Token-based, not an exact-substring match, so a future reformat of the
+    # command (line wraps, flag reordering) doesn't false-fail as long as it
+    # still invokes `uv sync` with both extras. The behavioural end-to-end check
+    # (run the documented command and collect) belongs in CI; it's omitted here
+    # only to avoid editing a workflow file from a non-`workflow`-scoped token.
+    surfaces = {
+        "CONTRIBUTING.md": (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8"),
+        "tests/conftest.py": (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8"),
+    }
+    for name, text in surfaces.items():
+        assert "uv sync" in text, f"{name} should document `uv sync`"
+        assert "--extra full" in text, f"{name} `uv sync` must include `--extra full`"
+        assert "--extra streambox" in text, (
+            f"{name} `uv sync` must include `--extra streambox`"
+        )
 
-    conftest = (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
-    assert "uv sync --extra full --extra streambox" in conftest
-    assert "'.[full,dev]'" in conftest
+    # The conftest pip fallback must also pull the extras (`.[full,dev]`, not `.[dev]`).
+    assert "'.[full,dev]'" in surfaces["tests/conftest.py"]
