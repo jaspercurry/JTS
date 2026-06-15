@@ -266,8 +266,8 @@ nothing surfaced it before a write failed. `/state.resilience.disk`
 (`jasper/control/state_aggregate.py:_disk_snapshot`) is the
 always-visible dashboard number — `{path, percent_used, free_gib,
 total_gib}`, fail-soft (`null` on a non-POSIX host or statvfs error,
-like every other resilience section). The actionable warn (>85%) /
-fail (>95%) thresholds are owned by jasper-doctor's `check_disk_space`
+like every other resilience section). The actionable warn (≥85%) /
+fail (≥95%) thresholds are owned by jasper-doctor's `check_disk_space`
 (`jasper/cli/doctor/memory.py`), keeping the dashboard number and the
 graded check from drifting.
 

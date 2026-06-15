@@ -98,7 +98,7 @@ def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
             "free_gib": round(free / gib, 1),
             "total_gib": round(total / gib, 1),
         }
-    except OSError:
+    except Exception:
         logger.debug("disk snapshot read failed", exc_info=True)
         return None
 
@@ -691,7 +691,7 @@ async def _get_state(
             # whole resilience ladder exists to survive, yet nothing made
             # it observable until writes failed. Fail-soft: null on a
             # non-POSIX host or statvfs error. jasper-doctor's
-            # check_disk_space owns the warn(>85%)/fail(>95%) thresholds.
+            # check_disk_space owns the warn(≥85%)/fail(≥95%) thresholds.
             "disk": _disk_snapshot(),
         },
         "home_assistant": ha_status,
