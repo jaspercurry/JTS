@@ -8,7 +8,8 @@
 
 ## Contents
 
-This file is long. Jump to a section:
+This file is long. Jump to a section (grouped by theme, not
+document order):
 
 **Conventions & quality bars**
 - [Agent behavior baseline](#agent-behavior-baseline)
