@@ -181,8 +181,13 @@ It is a recent-health view, not a full diagnostics runner:
 - Shairport and CamillaDSP journals are scanned incrementally every
   30 s and classified into the same patterns this document uses:
   packet drops / packet order, large sync corrections, shairport ALSA
-  underruns, Camilla capture short reads, and Camilla playback
-  underruns.
+  underruns, material Camilla capture short reads, and Camilla playback
+  underruns. The dashboard ignores tiny recovered Camilla partial reads
+  (for example 1016-1023 frames returned for a 1024-frame request):
+  CamillaDSP immediately loops to fill the rest of the chunk, and these
+  sub-1% partials appear on the healthy plug/dsnoop/rate-adjust path
+  without shairport, fan-in, outputd, or playback underruns. Use the
+  fast log scan above when you need raw Camilla journal counts.
 - MPRIS and CamillaDSP live probes run at the slower 30 s cadence.
   Camilla context includes buffer level, rate adjust, active config
   basename, and the active config's target/chunk values when the YAML is
@@ -205,7 +210,7 @@ Status meanings:
 |---|---|
 | `ok` | Fan-in is reachable, buffer contract is intact, and the 5 m/30 m windows have no AirPlay-path recovery events. |
 | `inactive` | Fan-in is reachable but the AirPlay lane is not receiving frames. |
-| `watch` | Non-fatal evidence appeared, usually Camilla short reads or older 30 m shairport/fan-in events. Treat it as "keep listening and correlate," not "change config immediately." |
+| `watch` | Non-fatal evidence appeared, usually material Camilla short reads or older 30 m shairport/fan-in events. Treat it as "keep listening and correlate," not "change config immediately." |
 | `issue` | Recent recovery event in the last 5 m, fan-in input buffer below 4096, stale fan-in watchdog, shairport sync/drop/underrun event, fan-in xrun, or Camilla playback underrun. |
 | `unknown` | The sampler cannot read fan-in state, `/system/snapshot` caught an AirPlay-health sampler failure, or the sampler is still waiting for its first fan-in frame-rate baseline after startup. If it persists beyond one sample interval, check `jasper-fanin.service` and the control socket before interpreting higher-level AirPlay symptoms. |
 

@@ -49,6 +49,15 @@ MIN_AIRPLAY_INPUT_BUFFER_FRAMES = 4096
 
 SHAIRPORT_UNIT = "shairport-sync"
 CAMILLA_UNIT = "jasper-camilla"
+CAMILLA_SHORT_READ_RE = re.compile(
+    r"Capture read (?P<read>\d+) frames instead of the requested (?P<requested>\d+)",
+)
+
+# CamillaDSP logs a warning for any partial ALSA read, then immediately loops to
+# read the remaining frames before emitting the chunk. Tiny recovered partials
+# are normal with the plug/dsnoop/rate-adjust path and do not indicate an
+# audio-path recovery event by themselves.
+BENIGN_CAMILLA_SHORT_READ_DEFICIT_RATIO = 0.01
 
 
 def _empty_bucket(t: float) -> dict[str, Any]:
@@ -160,13 +169,29 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
         return None
 
     if unit == CAMILLA_UNIT:
-        if re.search(r"Capture read \d+ frames instead of", line):
+        m = CAMILLA_SHORT_READ_RE.search(line)
+        if m:
+            frames_read = _as_int(m.group("read"))
+            frames_requested = _as_int(m.group("requested"))
+            deficit = max(0, frames_requested - frames_read)
+            if frames_requested > 0:
+                benign_deficit = math.ceil(
+                    frames_requested * BENIGN_CAMILLA_SHORT_READ_DEFICIT_RATIO,
+                )
+                if deficit <= benign_deficit:
+                    return None
             return {
                 "type": "camilla_short_read",
                 "subsystem": "camilla",
                 "severity": "watch",
                 "title": "Camilla short read",
-                "detail": "capture delivered fewer frames than requested",
+                "detail": (
+                    f"capture delivered {frames_read}/{frames_requested} "
+                    "frames"
+                ),
+                "frames_read": frames_read,
+                "frames_requested": frames_requested,
+                "deficit_frames": deficit,
             }
         if (
             "Prepare playback after buffer underrun" in line

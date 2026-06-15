@@ -96,6 +96,7 @@ def test_classify_journal_lines_for_documented_airplay_patterns() -> None:
     assert short is not None
     assert short["type"] == "camilla_short_read"
     assert short["severity"] == "watch"
+    assert short["deficit_frames"] == 256
 
     underrun = classify_journal_line(
         "jasper-camilla",
@@ -104,6 +105,32 @@ def test_classify_journal_lines_for_documented_airplay_patterns() -> None:
     assert underrun is not None
     assert underrun["type"] == "camilla_playback_underrun"
     assert underrun["severity"] == "issue"
+
+
+def test_tiny_camilla_short_reads_are_ignored_as_recovered_partials() -> None:
+    assert (
+        classify_journal_line(
+            "jasper-camilla",
+            "Capture read 1023 frames instead of the requested 1024",
+        )
+        is None
+    )
+    assert (
+        classify_journal_line(
+            "jasper-camilla",
+            "Capture read 1016 frames instead of the requested 1024",
+        )
+        is None
+    )
+
+    material = classify_journal_line(
+        "jasper-camilla",
+        "Capture read 1008 frames instead of the requested 1024",
+    )
+
+    assert material is not None
+    assert material["type"] == "camilla_short_read"
+    assert material["deficit_frames"] == 16
 
 
 def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
