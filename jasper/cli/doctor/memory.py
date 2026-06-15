@@ -13,9 +13,8 @@ slow-burn resource exhaustion as a full zram device, and a full SD
 card on an unclean power-cut is the corruption hazard the whole
 resilience ladder (Tier 5 watchdog, persistent journal, OOM ladder)
 exists to survive — yet nothing warned before the write failed. They
-reuse the endpoint-tier idiom (``read_install_profile``) and the
-percentage-with-floor / skip-on-not-applicable conventions the RAM
-and zram checks already established."""
+follow the percentage-with-floor / skip-on-not-applicable conventions
+the RAM and zram checks already established."""
 from __future__ import annotations
 
 import os

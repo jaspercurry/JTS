@@ -259,6 +259,18 @@ not the SD card, so OOM events don't actually thrash the card —
 the wear protection RPi OS's volatile default was hedging
 against turned out to be the wrong threat for our topology.
 
+**Disk-pressure observability.** A filling root filesystem is the
+slow-burn companion to SD-card *wear*: an unclean power-cut on a full
+card is the corruption hazard the whole ladder exists to survive, yet
+nothing surfaced it before a write failed. `/state.resilience.disk`
+(`jasper/control/state_aggregate.py:_disk_snapshot`) is the
+always-visible dashboard number — `{path, percent_used, free_gib,
+total_gib}`, fail-soft (`null` on a non-POSIX host or statvfs error,
+like every other resilience section). The actionable warn (>85%) /
+fail (>95%) thresholds are owned by jasper-doctor's `check_disk_space`
+(`jasper/cli/doctor/memory.py`), keeping the dashboard number and the
+graded check from drifting.
+
 What this Tier covers that Tiers 1–4 don't:
 - Kernel panic (Tiers 1–2 require PID 1 to still be scheduling
   the heartbeat thread).
@@ -1200,4 +1212,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-06-14
+Last verified: 2026-06-15
