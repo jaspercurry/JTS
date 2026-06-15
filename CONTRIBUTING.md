@@ -144,8 +144,9 @@ Two operational notes:
 - Web setup pages follow AGENTS.md "Web wizard conventions" — shared
   CSRF helpers, checkbox-based toggles, and no generated inline JS for
   untrusted device/network metadata.
-- See AGENTS.md "Behavioral rules for working in this codebase" —
-  that's the authoritative style guide for both humans and AI agents.
+- See the [Agent behavior baseline](AGENTS.md#agent-behavior-baseline)
+  in AGENTS.md — that's the authoritative style guide for both humans
+  and AI agents.
 
 ## Documentation
 

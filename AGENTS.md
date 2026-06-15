@@ -6,6 +6,56 @@
 > `@AGENTS.md`. Any operational content added to CLAUDE.md will
 > be lost or ignored — make changes here instead.
 
+## Contents
+
+This file is long. Jump to a section:
+
+**Conventions & quality bars**
+- [Agent behavior baseline](#agent-behavior-baseline)
+- [COAH quality bar](#coah-quality-bar)
+- [Config ownership — which pattern for a new DAC / mic / provider / city](#config-ownership--which-pattern-for-a-new-dac--mic--provider--city)
+- [Documentation paradigm](#documentation-paradigm)
+- [Web wizard conventions](#web-wizard-conventions)
+
+**Deploy, identity & laptop state**
+- [Deploying code changes to the Pi](#deploying-code-changes-to-the-pi)
+- [Speaker hostname — single source of truth](#speaker-hostname--single-source-of-truth)
+- [Laptop-side state — `.env.local` and `CLAUDE.local.md`](#laptop-side-state--envlocal-and-claudelocalmd)
+
+**Audio output & renderers**
+- [Renderer architecture — file map](#renderer-architecture--file-map)
+- [librespot — one-time OAuth claim for cold-start voice](#librespot--one-time-oauth-claim-for-cold-start-voice)
+- [USB Audio Input (`jasper-usbsink`) — read first](#usb-audio-input-jasper-usbsink--read-first)
+
+**Voice, wake & mic**
+- [Voice provider switching — read first](#voice-provider-switching--read-first)
+- [Voice prompting — read HANDOFF-prompting.md first](#voice-prompting--read-handoff-promptingmd-first)
+- [Gemini model switching — read first](#gemini-model-switching--read-first)
+- [Wake-word switching — read first](#wake-word-switching--read-first)
+- [AEC bridge — input profile and reconciler](#aec-bridge--input-profile-and-reconciler)
+- [Wake-event telemetry — capture + labeling](#wake-event-telemetry--capture--labeling)
+- [Mic mute — persists across restarts](#mic-mute--persists-across-restarts)
+
+**Integrations & connectivity**
+- [Wi-Fi switching — read first](#wi-fi-switching--read-first)
+- [Transit configuration — read first](#transit-configuration--read-first)
+- [Home Assistant integration — read first](#home-assistant-integration--read-first)
+
+**Resilience & recovery**
+- [shairport-sync AP2 wedge — auto-recovers](#shairport-sync-ap2-wedge--auto-recovers)
+- [T5.2 — userspace-liveness SystemSupervisor — read first](#t52--userspace-liveness-systemsupervisor--read-first)
+
+**Hardware accessories**
+- [Satellite devices — opt-in hardware](#satellite-devices--opt-in-hardware)
+
+**Debugging, testing & PR workflow**
+- [Debugging — fetch evidence before guessing](#debugging--fetch-evidence-before-guessing)
+- [Testing](#testing)
+- [Branch and remote](#branch-and-remote)
+- [PR workflow on a fast-moving `main` — read before you push](#pr-workflow-on-a-fast-moving-main--read-before-you-push)
+
+---
+
 **Read [README.md](README.md) first** — it has the project context
 (architecture, hardware, repo layout, subsystem overview,
 deployment, debugging entry points). This file adds AI-specific
