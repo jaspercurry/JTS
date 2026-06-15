@@ -614,9 +614,11 @@ docs = [
   "docs/HANDOFF-volume-control-redesign.md",
   "docs/HANDOFF-persistent-live-session.md",
   "docs/PROPOSAL-dac-profile-registry.md",
+  "docs/tool-platform-plan.md",
 ]
 requires_docs_when = [
   "A roadmap item becomes implementation work, a future integration lands, or a historical transition brief is superseded by shipped behavior.",
+  "The tool-platform vision, trust-gradient phasing, or the first-version tool-modularization plan changes.",
 ]
 verification = [
   "bash scripts/doc-freshness.sh 90 --all",
