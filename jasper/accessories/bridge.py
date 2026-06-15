@@ -23,6 +23,7 @@ import logging
 from typing import Awaitable, Callable, Optional
 
 from jasper.control.client import AsyncControlClient, ControlError, ControlResponse
+from jasper.log_event import log_event
 
 # pyudev is Linux-only (Pi runtime). Imported lazily inside _supervise
 # so the rest of the module (registry types, _TapCounter, _Coalescer)
@@ -89,14 +90,21 @@ class _Coalescer:
             resp = await self._post(
                 "POST", self._path, {"delta_percent": delta},
             )
-            logger.info(
-                "event=knob.adjust device=%s delta=%+d status=%d",
-                self._device_name, delta, resp.status,
+            log_event(
+                logger,
+                "knob.adjust",
+                device=self._device_name,
+                delta=f"{delta:+d}",
+                status=resp.status,
             )
         except ControlError as e:
-            logger.warning(
-                "event=knob.adjust.failed device=%s delta=%+d err=%s",
-                self._device_name, delta, e,
+            log_event(
+                logger,
+                "knob.adjust.failed",
+                level=logging.WARNING,
+                device=self._device_name,
+                delta=f"{delta:+d}",
+                err=str(e),
             )
 
 
@@ -113,14 +121,22 @@ async def _post_once(
             action.path,
             action.body or None,
         )
-        logger.info(
-            "event=knob.action device=%s key=%s path=%s status=%d",
-            device_name, key_name, action.path, resp.status,
+        log_event(
+            logger,
+            "knob.action",
+            device=device_name,
+            key=key_name,
+            path=action.path,
+            status=resp.status,
         )
     except ControlError as e:
-        logger.warning(
-            "event=knob.action.failed device=%s key=%s err=%s",
-            device_name, key_name, e,
+        log_event(
+            logger,
+            "knob.action.failed",
+            level=logging.WARNING,
+            device=device_name,
+            key=key_name,
+            err=str(e),
         )
 
 
@@ -202,9 +218,12 @@ class _TapCounter:
             # Tap-count has no mapping — silently drop with a log so
             # the operator can confirm taps are registering but the
             # gesture isn't defined for this device.
-            logger.info(
-                "event=knob.tap.unmapped device=%s key=%s count=%d",
-                self._device_name, self._key_name, count,
+            log_event(
+                logger,
+                "knob.tap.unmapped",
+                device=self._device_name,
+                key=self._key_name,
+                count=count,
             )
             return
         try:
@@ -213,15 +232,25 @@ class _TapCounter:
                 target.path,
                 target.body or None,
             )
-            logger.info(
-                "event=knob.tap device=%s key=%s count=%d path=%s status=%d",
-                self._device_name, self._key_name, count, target.path,
-                resp.status,
+            log_event(
+                logger,
+                "knob.tap",
+                device=self._device_name,
+                key=self._key_name,
+                count=count,
+                path=target.path,
+                status=resp.status,
             )
         except ControlError as e:
-            logger.warning(
-                "event=knob.tap.failed device=%s key=%s count=%d path=%s err=%s",
-                self._device_name, self._key_name, count, target.path, e,
+            log_event(
+                logger,
+                "knob.tap.failed",
+                level=logging.WARNING,
+                device=self._device_name,
+                key=self._key_name,
+                count=count,
+                path=target.path,
+                err=str(e),
             )
 
 
@@ -247,9 +276,13 @@ async def _read_device(
     try:
         dev = InputDevice(device_path)
     except OSError as e:
-        logger.warning(
-            "event=knob.open.failed device=%s path=%s err=%s",
-            device.name, device_path, e,
+        log_event(
+            logger,
+            "knob.open.failed",
+            level=logging.WARNING,
+            device=device.name,
+            path=device_path,
+            err=str(e),
         )
         return
 
@@ -259,10 +292,14 @@ async def _read_device(
     # is confusing when troubleshooting "is this plugged in over USB
     # or BT?". bustype: 3=USB, 5=BLUETOOTH.
     transport = {3: "usb", 5: "bt"}.get(dev.info.bustype, f"bus={dev.info.bustype:#x}")
-    logger.info(
-        "event=knob.open device=%s path=%s transport=%s vid=%04x pid=%04x",
-        device.name, device_path, transport,
-        dev.info.vendor, dev.info.product,
+    log_event(
+        logger,
+        "knob.open",
+        device=device.name,
+        path=device_path,
+        transport=transport,
+        vid=f"{dev.info.vendor:04x}",
+        pid=f"{dev.info.product:04x}",
     )
 
     coalescers: dict[int, _Coalescer] = {}
@@ -301,8 +338,11 @@ async def _read_device(
     except OSError as e:
         # Device unplugged / BT out of range — reader exits, supervisor
         # rediscovers on the next "add" udev event.
-        logger.info(
-            "event=knob.close device=%s reason=%s", device.name, e,
+        log_event(
+            logger,
+            "knob.close",
+            device=device.name,
+            reason=str(e),
         )
     finally:
         try:
@@ -353,10 +393,11 @@ async def _supervise(control_url: str) -> None:
         _maybe_start(path)
 
     if not active:
-        logger.info(
-            "event=knob.bridge.idle (no known accessories attached; "
-            "waiting for hot-plug; known=%s)",
-            ", ".join(d.name for d in KNOWN_DEVICES),
+        log_event(
+            logger,
+            "knob.bridge.idle",
+            note="no known accessories attached; waiting for hot-plug",
+            known=", ".join(d.name for d in KNOWN_DEVICES),
         )
 
     loop = asyncio.get_running_loop()

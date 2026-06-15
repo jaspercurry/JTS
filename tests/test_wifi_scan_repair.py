@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from jasper import wifi_scan_repair
 
@@ -89,7 +90,7 @@ def test_maybe_repair_skips_non_brcmfmac_driver(tmp_path, monkeypatch):
     assert result.driver == "iwlwifi"
 
 
-def test_maybe_repair_attempt_success_writes_cooldown(tmp_path, monkeypatch):
+def test_maybe_repair_attempt_success_writes_cooldown(tmp_path, monkeypatch, caplog):
     state_path = tmp_path / "repair.json"
     monkeypatch.setattr(
         wifi_scan_repair,
@@ -102,18 +103,30 @@ def test_maybe_repair_attempt_success_writes_cooldown(tmp_path, monkeypatch):
         lambda iface: {"iface": iface, "ack": True},
     )
 
-    result = wifi_scan_repair.maybe_repair_scan_suppression(
-        "wlan0",
-        state_path=state_path,
-        now=100.0,
-        attempt_cooldown_s=15.0,
-    )
+    with caplog.at_level(logging.INFO, logger="jasper.wifi_scan_repair"):
+        result = wifi_scan_repair.maybe_repair_scan_suppression(
+            "wlan0",
+            state_path=state_path,
+            now=100.0,
+            attempt_cooldown_s=15.0,
+        )
 
     assert result.attempted is True
     assert result.ack is True
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["lastAck"] is True
     assert state["nextAllowedAt"] == 115.0
+    # Pin the migrated emit: the bool ack renders as lowercase logfmt
+    # (`true`), not Python's `True`. This is the intentional, more-correct
+    # on-the-wire change the canonical helper makes.
+    attempt_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("event=wifi_scan_repair.attempt ")
+    ]
+    assert attempt_lines == [
+        "event=wifi_scan_repair.attempt iface=wlan0 driver=brcmfmac ack=true"
+    ]
 
 
 def test_maybe_repair_error_uses_failure_cooldown(tmp_path, monkeypatch):

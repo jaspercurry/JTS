@@ -25,6 +25,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -145,10 +147,12 @@ def _maybe_repair_scan_suppression_locked(
             reason="cooldown",
             cooldown_remaining=round(remaining, 3),
         )
-        logger.info(
-            "event=wifi_scan_repair.skip iface=%s reason=cooldown remaining=%.3f",
-            iface,
-            remaining,
+        log_event(
+            logger,
+            "wifi_scan_repair.skip",
+            iface=iface,
+            reason="cooldown",
+            remaining=round(remaining, 3),
         )
         return result
 
@@ -161,11 +165,12 @@ def _maybe_repair_scan_suppression_locked(
             reason=reason,
             driver=driver,
         )
-        logger.info(
-            "event=wifi_scan_repair.skip iface=%s reason=%s driver=%s",
-            iface,
-            reason,
-            driver,
+        log_event(
+            logger,
+            "wifi_scan_repair.skip",
+            iface=iface,
+            reason=reason,
+            driver=driver,
         )
         return result
 
@@ -188,11 +193,12 @@ def _maybe_repair_scan_suppression_locked(
             driver=driver,
             detail=detail,
         )
-        logger.info(
-            "event=wifi_scan_repair.attempt iface=%s driver=%s ack=%s",
-            iface,
-            driver,
-            ack,
+        log_event(
+            logger,
+            "wifi_scan_repair.attempt",
+            iface=iface,
+            driver=driver,
+            ack=ack,
         )
         return result
     except Exception as e:  # noqa: BLE001
@@ -212,11 +218,13 @@ def _maybe_repair_scan_suppression_locked(
             driver=driver,
             error=repr(e),
         )
-        logger.warning(
-            "event=wifi_scan_repair.attempt_failed iface=%s driver=%s err=%r",
-            iface,
-            driver,
-            e,
+        log_event(
+            logger,
+            "wifi_scan_repair.attempt_failed",
+            level=logging.WARNING,
+            iface=iface,
+            driver=driver,
+            err=repr(e),
         )
         return result
 
@@ -236,10 +244,12 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
         tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(tmp, path)
     except OSError as e:
-        logger.warning(
-            "event=wifi_scan_repair.state_write_failed path=%s err=%r",
-            path,
-            e,
+        log_event(
+            logger,
+            "wifi_scan_repair.state_write_failed",
+            level=logging.WARNING,
+            path=path,
+            err=repr(e),
         )
 
 
