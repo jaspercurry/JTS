@@ -1,9 +1,8 @@
 // format.js — value humanisation + status-tone helpers.
 //
-// Ported verbatim from the previous inline /system/ script: same
-// formatting and the same warn/danger thresholds, so the rebuilt page
-// reads identically to the one it replaces. Tones are "ok" | "warn" |
-// "danger", matching the --status-* tokens in app.css.
+// Tones are "ok" | "warn" | "danger", matching the --status-* tokens in
+// app.css. Threshold helpers live here so the dashboard's colour semantics
+// are named, testable, and easy to compare with jasper-doctor.
 
 export function fmtBytes(n) {
   if (n == null) return "—";
@@ -78,8 +77,7 @@ export function fmtUSD(n) {
 
 // Derive a tone from a percentage, given the warn + danger break points.
 // Kept as explicit thresholds (not a single table) because different
-// metrics flag at different levels — the previous page's values are
-// preserved at each call site.
+// metrics flag at different levels.
 export function toneForPercent(pct, warnAt, failAt) {
   if (pct >= failAt) return "danger";
   if (pct >= warnAt) return "warn";
@@ -89,6 +87,63 @@ export function toneForPercent(pct, warnAt, failAt) {
 export function capacityPercent(totalPct, coreCount) {
   if (!coreCount) return 0;
   return totalPct / coreCount;
+}
+
+// Memory pressure uses MemAvailable, not "used", because Linux keeps caches
+// in RAM on purpose. Use percentage-of-capacity as the scalable rule, with
+// low-RAM absolute floors so tiny boards don't wait until single-digit MB:
+// warn below max(100 MB, 10% total), danger below max(30 MB, 3% total).
+export function memoryHeadroomLimits(totalMb) {
+  const total = Math.max(0, Number(totalMb) || 0);
+  return {
+    warnMb: Math.max(100, Math.floor(total * 0.10)),
+    dangerMb: Math.max(30, Math.floor(total * 0.03)),
+  };
+}
+
+export function toneForMemoryHeadroom(availableMb, totalMb) {
+  const available = Math.max(0, Number(availableMb) || 0);
+  const limits = memoryHeadroomLimits(totalMb);
+  if (available < limits.dangerMb) return "danger";
+  if (available < limits.warnMb) return "warn";
+  return "ok";
+}
+
+// /proc/loadavg counts jobs running/runnable or waiting in uninterruptible
+// I/O. Above the core count means real queueing; 75% is a calmer "busy soon"
+// warning point for the 1-minute average.
+export function loadPressureInfo(load, coreCount) {
+  const capacity = Math.max(1, Number(coreCount) || 1);
+  const value = Math.max(0, Number(load) || 0);
+  if (value > capacity) return { tone: "danger", label: "Queueing", capacity };
+  if (value >= capacity * 0.75) return { tone: "warn", label: "Busy", capacity };
+  return { tone: "ok", label: "Low demand", capacity };
+}
+
+export function cpuUsageInfo(cores) {
+  const values = cores || [];
+  if (!values.length) return { tone: "ok", value: "—" };
+  const totalCpu = values.reduce((a, b) => a + b, 0);
+  const avgCpu = capacityPercent(totalCpu, values.length);
+  const maxCore = Math.max(...values);
+  let tone = "ok";
+  if (avgCpu >= 95 || maxCore >= 98) tone = "danger";
+  else if (avgCpu >= 75 || maxCore >= 90) tone = "warn";
+  return { tone, value: Math.round(avgCpu) + "%" };
+}
+
+// Raspberry Pi firmware progressively throttles Arm cores from 80-85C, so
+// warn before that band and go red when current throttling or 80C appears.
+export function temperatureInfo(tempC, throttledNow, throttledHistory) {
+  const temp = Number(tempC) || 0;
+  let tone = "ok";
+  if (temp >= 80 || throttledNow) tone = "danger";
+  else if (temp >= 75 || throttledHistory) tone = "warn";
+  return { tone };
+}
+
+export function toneForDiskUse(pct) {
+  return toneForPercent(Number(pct) || 0, 85, 95);
 }
 
 // Pi 5 pwm-fan cooling levels. The fan card stays intentionally terse;
