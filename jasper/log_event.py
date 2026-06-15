@@ -96,7 +96,7 @@ def render_json(name: str, fields: dict[str, Any]) -> str:
     """Render one JSON object: ``{"event": name, ...fields}``.
 
     Non-JSON-native values (e.g. an exception) fall back to ``str``
-    so a stray object can never make the emitter raise. ``event`` is
+    so a non-JSON-serializable object does not raise. ``event`` is
     always the first key.
     """
     payload: dict[str, Any] = {"event": name}

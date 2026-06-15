@@ -15,11 +15,12 @@ whole point of the gesture.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import List, Optional
 
 import pytest
 
-from jasper.accessories.bridge import _TapCounter
+from jasper.accessories.bridge import _post_once, _TapCounter
 from jasper.accessories.registry import KeyAction, TapAction
 from jasper.control.client import ControlError, ControlResponse
 
@@ -208,3 +209,21 @@ async def test_http_error_does_not_break_subsequent_taps():
     tc.hit()
     await asyncio.sleep(WINDOW_SEC * 2)
     assert calls == ["/transport/toggle", "/transport/toggle"]
+
+
+@pytest.mark.asyncio
+async def test_post_once_failure_emits_canonical_event(caplog):
+    """Pin the migrated knob.action.failed emit: the canonical
+    log_event helper must render the device/key/err fields in logfmt,
+    quoting the free-text error (spaces + colon force quoting)."""
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        raise ControlError("simulated: jasper-control down")
+
+    action = KeyAction("POST", "/mic/mute", {})
+    with caplog.at_level(logging.WARNING, logger="jasper.accessories.bridge"):
+        await _post_once(post, action, "fake", "KEY_MUTE")
+    assert caplog.records[-1].getMessage() == (
+        'event=knob.action.failed device=fake key=KEY_MUTE '
+        'err="simulated: jasper-control down"'
+    )
