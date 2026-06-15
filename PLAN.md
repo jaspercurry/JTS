@@ -612,8 +612,25 @@ operator is in the loop.
   48 kHz / S32LE on the capture side, S16LE on the dongle output
   side. shairport-sync uses `plughw:Loopback,0,0` (not raw `hw:`)
   to absorb the 44.1 → 48k conversion.
-- **Long Gemini system prompt breaks session resumption** on the
-  3.1 Flash Live preview. Keep system instruction under ~500 tokens.
+- **Gemini system-prompt size vs. session resumption — unverified
+  folklore (re-checked 2026-06-15, incl. a web sweep).** The v1 plan
+  flagged "keep the system instruction under ~500 tokens or long-
+  session resumption breaks on 3.1 Flash Live"; that line was carried
+  forward verbatim. The likely seed is one unconfirmed dev-forum post
+  (still in Google triage) that actually says **~200 tokens, not 500**
+  — and "500" looks conflated with the documented ~300–500-token
+  per-turn billing overhead. No Google doc ties instruction size to
+  resumption; the documented resumption breakers are audio+video
+  state, tool-call races, and handle expiry — not prompt length. As of
+  2026-06-15 the static `SYSTEM_INSTRUCTION` is ~1,000–1,150 tokens
+  (~2× the figure) and the deployment runs there with resumption
+  working. So don't trim to chase a resumption ceiling. The real
+  sourced reasons our prompt is above-norm are instruction-following
+  dilution on Gemini 3 and per-turn cost — an adherence/cost win, not
+  a resumption fix, and a paid voice-eval-validated change that can
+  regress tool-calling. Full treatment + citations:
+  `docs/HANDOFF-prompting.md` § "Length and structure are inversely
+  valued."
 - **`SetVolume`, not `Reload`, for ducking.** Reload reparses YAML
   and glitches audio mid-stream.
 - **Idle billing on Gemini Live**: don't keep the session open
