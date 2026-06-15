@@ -5,14 +5,16 @@
 // sections.js — data → view builders, one per dashboard card. Each takes a
 // slice of the /system/snapshot and returns DOM (or, for the in-place audio
 // toggle, mutates its refs). Pure: no fetching, no polling — views.js owns
-// orchestration. The formatting + thresholds are a faithful port of the
-// previous inline /system/ script.
+// orchestration. Status tones use the named helpers in format.js so the
+// colour thresholds stay aligned with the researched Pi/Linux semantics.
 
 import { h } from "./dom.js";
 import { sparkline, cpuBars } from "./charts.js";
 import {
   fmtBytes, fmtAgo, fmtEpochAgo, fmtDur, fmtMsAge, fmtRatePerHour,
-  baseName, toneForPercent, capacityPercent, fanStepInfo, FAN_STEPS,
+  baseName, capacityPercent, fanStepInfo, FAN_STEPS,
+  toneForMemoryHeadroom, loadPressureInfo, cpuUsageInfo, temperatureInfo,
+  toneForDiskUse,
 } from "./format.js";
 import { statCard, defList, badge } from "./components.js";
 
@@ -52,9 +54,7 @@ export function vitalsCards(cur, hist, cores) {
   const memUsed = memTotal - memAvail;
   const swapHist = hist.swap_used_mb || [];
   const swap = swapHist[swapHist.length - 1] || 0;
-  let memTone = "ok";
-  if (memAvail < 150) memTone = "danger";
-  else if (memAvail < 250 || swap > 150) memTone = "warn";
+  const memTone = toneForMemoryHeadroom(memAvail, memTotal);
   cards.push(statCard({
     label: "Memory",
     value: Math.round(memUsed) + " / " + Math.round(memTotal) + " MB",
@@ -68,30 +68,20 @@ export function vitalsCards(cur, hist, cores) {
   // Load pressure
   const loadHist = hist.load_1m || [];
   const load = loadHist[loadHist.length - 1] || 0;
-  const loadCapacity = Math.max(1, cores.length || 4);
-  const busyLoad = loadCapacity * 0.625;
-  let loadTone = "ok", loadLabel = "Low demand";
-  if (load > loadCapacity) { loadTone = "danger"; loadLabel = "Queueing"; }
-  else if (load >= busyLoad) { loadTone = "warn"; loadLabel = "Busy"; }
+  const loadInfo = loadPressureInfo(load, cores.length || 4);
+  const loadCapacity = loadInfo.capacity;
   cards.push(statCard({
     label: "Load pressure",
     value: load.toFixed(2) + " / " + loadCapacity.toFixed(1),
-    sub: loadLabel,
-    tone: loadTone,
-    chart: sparkline(loadHist, { min: 0, max: Math.max(loadCapacity, ...loadHist), tone: loadTone, fill: true }),
+    sub: loadInfo.label,
+    tone: loadInfo.tone,
+    chart: sparkline(loadHist, { min: 0, max: Math.max(loadCapacity, ...loadHist), tone: loadInfo.tone, fill: true }),
   }));
 
   // CPU usage (per-core bars)
-  let cpuTone = "ok", cpuValue = "—";
-  if (cores.length) {
-    const totalCpu = cores.reduce((a, b) => a + b, 0);
-    const maxCore = Math.max(...cores);
-    cpuValue = Math.round(capacityPercent(totalCpu, cores.length)) + "%";
-    if (totalCpu > 380 || maxCore >= 98) cpuTone = "danger";
-    else if (totalCpu > 300 || maxCore >= 90) cpuTone = "warn";
-  }
+  const cpuInfo = cpuUsageInfo(cores);
   cards.push(statCard({
-    label: "CPU usage", value: cpuValue, tone: cpuTone, chart: cpuBars(cores),
+    label: "CPU usage", value: cpuInfo.value, tone: cpuInfo.tone, chart: cpuBars(cores),
   }));
 
   // Temperature
@@ -99,9 +89,7 @@ export function vitalsCards(cur, hist, cores) {
   const tempF = temp * 9 / 5 + 32;
   const throttledNow = cur.throttled_now || 0;
   const throttledHist = cur.throttled_history || 0;
-  let tempTone = "ok";
-  if (temp >= 80 || throttledNow) tempTone = "danger";
-  else if (temp >= 75 || throttledHist) tempTone = "warn";
+  const tempTone = temperatureInfo(temp, throttledNow, throttledHist).tone;
   let tempSub = temp.toFixed(1) + "°C";
   if (throttledNow) tempSub += " · throttling now";
   else if (throttledHist) tempSub += " · throttled since boot";
@@ -132,9 +120,7 @@ export function vitalsCards(cur, hist, cores) {
   // Disk
   const diskPct = cur.disk_used_pct || 0;
   const diskTotal = cur.disk_total_gb || 0;
-  let diskTone = "ok";
-  if (diskPct > 90) diskTone = "danger";
-  else if (diskPct > 75) diskTone = "warn";
+  const diskTone = toneForDiskUse(diskPct);
   cards.push(statCard({
     label: "Disk", value: diskPct.toFixed(1) + "%", sub: "of " + diskTotal.toFixed(0) + " GB",
     tone: diskTone,

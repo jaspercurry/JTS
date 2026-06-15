@@ -77,6 +77,25 @@ def check_ram() -> CheckResult:
         pass
     return CheckResult("RAM", "warn", "couldn't read /proc/meminfo")
 
+def memory_headroom_thresholds(total_mb: int) -> tuple[int, int]:
+    """The ``(warn_mb, fail_mb)`` MemAvailable floors for a box with
+    ``total_mb`` of RAM — the single source of truth for memory-pressure
+    thresholds.
+
+    Percentage-of-RAM with absolute MB floors (the Prometheus node_exporter /
+    Pop!_OS ``pop-os/default-settings#163`` convention): warn below
+    ``max(100 MB, 10%)``, fail below ``max(30 MB, 3%)``. The ``/system/``
+    dashboard mirrors these exact numbers in
+    ``deploy/assets/system-status/js/format.js`` (``memoryHeadroomLimits``);
+    ``tests/test_system_status_thresholds.py`` pins the two together so the
+    memory tile's colour can never again disagree with this check — the drift
+    (dashboard fixed-150 MB vs this check) was the original bug."""
+    return (
+        max(100, total_mb * 10 // 100),
+        max(30, total_mb * 3 // 100),
+    )
+
+
 @doctor_check(order=34, group="memory")
 def check_memory_headroom() -> CheckResult:
     """Live memory pressure check: WARN if MemAvailable is so low that
@@ -105,10 +124,7 @@ def check_memory_headroom() -> CheckResult:
     avail_mb = avail_kb // 1024
     total_mb = total_kb // 1024
     pct = (avail_kb * 100) // total_kb if total_kb else 0
-    # Percentage-with-floor pattern — see Prometheus node_exporter
-    # alert conventions and Pop!_OS pop-os/default-settings#163.
-    fail_mb = max(30, total_mb * 3 // 100)
-    warn_mb = max(100, total_mb * 10 // 100)
+    warn_mb, fail_mb = memory_headroom_thresholds(total_mb)
     if avail_mb < fail_mb:
         return CheckResult(
             "memory headroom", "fail",
