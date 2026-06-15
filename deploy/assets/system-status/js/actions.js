@@ -7,6 +7,19 @@ import { csrfHeaders, jsonHeaders } from "./api.js";
 import { updateAudioQuality } from "./sections.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
+const QUALITY_CONFIRM =
+  "Change audio conversion quality? Music renderers will restart briefly.";
+
+const BEST_QUALITY_CONFIRM =
+  "Switch to Best audio conversion? Music renderers will restart briefly.\n\n" +
+  "Best uses more CPU. On lower-powered hardware, especially with synced " +
+  "AirPlay, it can cause packet drops or underruns. Medium is recommended " +
+  "unless this hardware has been verified.";
+
+function qualityConfirmMessage(converter) {
+  return converter === "samplerate_best" ? BEST_QUALITY_CONFIRM : QUALITY_CONFIRM;
+}
+
 // confirm (one or two prompts) → POST → reflect Working…/Sent/Failed → restore.
 // opts.statusEl + opts.sentMessage: on a successful POST, write a contextual
 // note (e.g. "Rebooting — unreachable for ~60 s") into an aria-live region —
@@ -44,7 +57,7 @@ export async function setQuality(refs, converter) {
     refs.aq.status.textContent = "Audio conversion is managed by the leader on this install role.";
     return;
   }
-  if (!await jtsConfirm("Change audio conversion quality? Music renderers will restart briefly.")) return;
+  if (!await jtsConfirm(qualityConfirmMessage(converter))) return;
   const aq = refs.aq;
   aq.buttons.forEach((b) => { b.el.disabled = true; b.el.dataset.applying = "1"; });
   aq.status.textContent = "Applying…";

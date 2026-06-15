@@ -47,9 +47,9 @@ export function buildPage(root, handlers) {
       h("dt", null, "Requested"), aqRequested,
       h("dt", null, "Active"), aqActive),
     h("p.info-card__note", null,
-      "Medium saves CPU and keeps the speech/AEC band clean. Best keeps " +
-      "the extreme top edge of hearing for critical listening. Changing " +
-      "this restarts music renderers briefly."),
+      "Medium is recommended for most hardware and keeps the speech/AEC " +
+      "band clean. Best preserves the extreme top edge of hearing but " +
+      "uses more CPU. Changing this restarts music renderers briefly."),
     h("div.choice-grid", null, aqButtons.map((b) => b.el)),
     aqStatus,
   );

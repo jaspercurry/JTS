@@ -404,6 +404,18 @@ def test_modules_preserve_metric_logic() -> None:
     assert "tts dropped" in js
 
 
+def test_modules_warn_before_best_audio_quality() -> None:
+    """Best audio conversion is hardware-sensitive. Keep the warning in the
+    existing setting-change modal so users can still try it intentionally."""
+    js = _system_js()
+    assert "Switch to Best audio conversion" in js
+    assert "lower-powered hardware" in js
+    assert "especially with synced " in js
+    assert "AirPlay" in js
+    assert "packet drops or underruns" in js
+    assert "Medium is recommended" in js
+
+
 def test_unknown_route_404(dashboard_server) -> None:
     base, _, _ = dashboard_server
     status, _ = _http_get(f"{base}/nope")
