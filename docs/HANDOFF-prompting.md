@@ -323,6 +323,33 @@ Gemini's
 and [Live API best practices](https://ai.google.dev/gemini-api/docs/live-api/best-practices),
 xAI's [Voice Agent guide](https://docs.x.ai/docs/guides/voice/agent).
 
+### Per-provider augmentation (shared base + delta)
+
+The single `SYSTEM_INSTRUCTION` is the **shared base**; a thin
+per-provider delta is appended by `_build_system_instruction(…,
+provider=…)` via the `_PROVIDER_AUGMENTATION` map in
+[jasper/voice/prompt.py](../jasper/voice/prompt.py) (landed 2026-06-15).
+The daemon passes `cfg.voice_provider`; the voice-eval harness mirrors
+it so a per-provider eval exercises the real delta. This is the
+shared-base-plus-delta pattern (not separate prompts) — the
+maintenance-cheap shape that avoids prompt drift.
+
+- **OpenAI / Grok get NO delta** — the base is OpenAI-shaped and Grok
+  is OpenAI-Realtime-compatible, so their effective prompt is
+  byte-identical to the shared base. Pinned by
+  [tests/test_system_prompt_provider_augmentation.py](../tests/test_system_prompt_provider_augmentation.py)
+  so tuning the Gemini delta can never silently regress the live
+  provider.
+- **Gemini gets a small, additive delta** for its documented audio
+  quirks (prefers terse/direct phrasing; can read prompt structure
+  aloud). Keep it additive — a delta that removes base rules, touches
+  tool-call framing, or imposes a hard length cap is the
+  zero-tool-calls / truncation regression path.
+- **Changing any provider's delta is a behavioral change → validate
+  with a per-provider voice-eval pass first** (cheap on Gemini,
+  ~$0.075/scenario). OpenAI/Grok need no re-validation (byte-identical
+  base). Tune the delta's content by editing only `_PROVIDER_AUGMENTATION`.
+
 ---
 
 ## The current JTS SYSTEM_INSTRUCTION — walk-through
@@ -582,19 +609,22 @@ OpenAI's documented pattern:
 JTS variant: single clarification request, no tools, no
 reasoning, then wait.
 
-### 5. Optional: investigate Gemini-specific system instruction
+### 5. Per-provider system-instruction shim — ✅ mechanism landed (2026-06-15)
 
-The forum evidence that Gemini 3.1 audio ignores conditional
-rules deserves an A/B test before we paper over with caveats.
-If 3.1 needs absolute rules where OpenAI needs conditionals,
-that's a real provider divergence — and would justify a future
-per-provider `system_instruction` shim. For now: status quo
-(single shared instruction), document the risk.
+The "future per-provider `system_instruction` shim" is now in place:
+shared base + per-provider delta via `_build_system_instruction(…,
+provider=…)` (see "Per-provider augmentation" under Provider deltas
+above). OpenAI/Grok use the base verbatim; Gemini carries a small,
+conservative, additive delta. Decision rationale (shared-base-plus-delta
+is the industry middle path; the divergence is Gemini-concentrated since
+Grok is OpenAI-compatible) was a 2026-06-15 web-research pass.
 
-Workflow if pursued: pick one well-understood conditional rule
-(e.g., a preamble skip-case), write the absolute-rule variant,
-run a small voice-eval scenario on both providers, compare
-adherence rates. ~$0.30 of OpenAI + ~$0.075 of Gemini per pass.
+Remaining (eval-gated): tune the Gemini delta's *content*. The forum
+evidence that 3.1 audio ignores conditional rules deserves an A/B test —
+pick one well-understood conditional rule, write the absolute-rule
+Gemini variant in `_PROVIDER_AUGMENTATION`, run a small Gemini voice-eval
+pass (~$0.075/scenario), compare adherence. The mechanism makes this a
+data-only edit; OpenAI/Grok need no re-validation (byte-identical base).
 
 ### 6. Add prompt-adherence voice-eval scenarios
 

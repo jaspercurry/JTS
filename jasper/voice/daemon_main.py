@@ -773,6 +773,7 @@ async def run() -> None:
                 transit_configured=transit_configured,
                 ha_configured=ha_configured,
                 hostname=cfg.hostname,
+                provider=cfg.voice_provider,
             ),
         )
         # Open everything with an async lifecycle under one

@@ -603,7 +603,13 @@ class VoiceEvalHarness:
             connection = _make_connection(self.cfg)
             await connection.start(
                 wrapped,
-                lambda: _build_system_instruction(self.cfg.weather_prompt_location),
+                # Mirror the daemon: pass the active provider so a per-provider
+                # eval (e.g. Gemini) actually exercises that provider's
+                # augmentation, not just the shared base.
+                lambda: _build_system_instruction(
+                    self.cfg.weather_prompt_location,
+                    provider=self.cfg.voice_provider,
+                ),
             )
             self._connection = connection
             logger.info(
