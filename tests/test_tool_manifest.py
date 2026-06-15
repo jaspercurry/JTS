@@ -1,0 +1,93 @@
+"""Slice 3 — the derived manifest is no-loss over every shipped tool.
+
+`Tool.to_manifest_entry()` / `ToolRegistry.to_manifest()` build a stable,
+provider-neutral record straight from existing Tool fields. This pins:
+field-by-field equality with the source Tool, deterministic `providers`
+ordering (frozenset has none), and that the manifest is in registration
+order. Pure-additive — it must not change dispatch or the provider
+serializers.
+"""
+from __future__ import annotations
+
+import types
+
+from jasper.tools import MANIFEST_SCHEMA_VERSION, ToolRegistry
+from jasper.tools.bus import make_bus_tools
+from jasper.tools.citibike import make_citibike_tools
+from jasper.tools.packs import ToolDeps, register_packs
+from jasper.tools.subway import make_subway_tools
+
+
+def _full_registry() -> ToolRegistry:
+    transit = []
+    transit += list(make_subway_tools(object()))
+    transit += list(make_bus_tools(types.SimpleNamespace(enabled=True)))
+    transit += list(make_citibike_tools(types.SimpleNamespace(enabled=True)))
+    deps = ToolDeps(
+        volume_coordinator=None,
+        renderer=None,
+        router=None,
+        weather=None,
+        spotify_device_name="JTS",
+        spotify_setup_url="",
+        transit_tools=transit,
+        ha=object(),
+        timer_scheduler=object(),
+        google_clients=types.SimpleNamespace(list_account_names=lambda: ["jasper"]),
+        wake_event_store=object(),
+    )
+    reg = ToolRegistry()
+    register_packs(reg, deps)
+    return reg
+
+
+def test_manifest_covers_every_tool_in_order():
+    reg = _full_registry()
+    manifest = reg.to_manifest()
+    assert len(manifest) == len(reg.tools) == 28
+    assert [e["name"] for e in manifest] == list(reg.tools.keys())
+
+
+def test_manifest_entries_are_no_loss():
+    reg = _full_registry()
+    by_name = {e["name"]: e for e in reg.to_manifest()}
+
+    for name, t in reg.tools.items():
+        entry = by_name[name]
+        assert entry["schema_version"] == MANIFEST_SCHEMA_VERSION
+        assert entry["name"] == t.name
+        assert entry["description"] == t.model_facing_description()
+        assert entry["input_schema"] == t.parameters
+        expected_providers = sorted(t.providers) if t.providers else None
+        assert entry["compatibility"]["providers"] == expected_providers
+        assert entry["timeout"] == t.timeout
+
+
+def test_manifest_providers_are_sorted_deterministically():
+    """frozenset has no stable order; the manifest must sort providers so
+    two runs produce identical output."""
+    from jasper.tools import tool
+
+    @tool(providers={"openai", "grok", "gemini"})
+    def restricted() -> dict:
+        """A provider-scoped tool."""
+        return {}
+
+    reg = ToolRegistry()
+    reg.register(restricted)
+    entry = reg.to_manifest()[0]
+    assert entry["compatibility"]["providers"] == ["gemini", "grok", "openai"]
+
+
+def test_manifest_providers_none_for_universal_tool():
+    from jasper.tools import tool
+
+    @tool()
+    def universal() -> dict:
+        """Visible to every provider."""
+        return {}
+
+    reg = ToolRegistry()
+    reg.register(universal)
+    entry = reg.to_manifest()[0]
+    assert entry["compatibility"]["providers"] is None
