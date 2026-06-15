@@ -45,3 +45,19 @@ def test_linux_only_c_extensions_have_platform_markers() -> None:
     for package, requirement in expected.items():
         matches = [dep for dep in dependencies if dep.startswith(f"{package}>=")]
         assert matches == [requirement]
+
+
+def test_contributing_documents_uv_command_with_test_runtime_extras() -> None:
+    """The `uv` first-PR command in CONTRIBUTING.md must install the runtime
+    extras the hardware-free suite imports (numpy, httpx, scipy, ...).
+
+    A bare `uv sync` installs only the base deps + the `dev` group, so pytest
+    dies with dozens of ModuleNotFoundError on a clean checkout. uv 0.11 has no
+    `[tool.uv] default-extras` knob to fix that from config, so CONTRIBUTING.md
+    documents the explicit `--extra full --extra streambox` flags. Pin the
+    command so the contributor front door can't silently re-break (the 2026-06
+    OSS due-diligence finding that this regressed once already).
+    """
+
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    assert "uv sync --extra full --extra streambox" in contributing

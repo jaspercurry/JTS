@@ -24,14 +24,20 @@ errors deep in `jasper/peering/`.)
 ```sh
 git clone https://github.com/jaspercurry/JTS.git
 cd JTS
-uv sync
+uv sync --extra full --extra streambox
 .venv/bin/pytest
 ```
 
 `uv.lock` is the canonical lockfile for contributor development
-environments. `uv sync` installs the default `dev` dependency group, so
-the fresh venv has `pytest`, `pytest-asyncio`, and `ruff` without an
-extra flag.
+environments. The `--extra full --extra streambox` flags pull in the
+runtime packages the hardware-free suite imports (`numpy`, `httpx`,
+`scipy`, `spotipy`, …) alongside the default `dev` group
+(`pytest`/`pytest-asyncio`/`ruff`). A bare `uv sync` installs only the
+`dev` group, so pytest would fail collection with missing-module errors —
+the extras carry the code under test. (uv 0.11 has no `default-extras`
+setting to fold these into a bare sync, so the flags are explicit; a
+regression test pins this command.) `.venv/bin/pytest` then runs the
+whole suite.
 
 If you'd rather not install a new tool, stock pip + venv works too —
 just make sure your python is 3.11+:
