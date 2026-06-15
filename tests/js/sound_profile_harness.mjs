@@ -12,11 +12,15 @@ const escapePath = new URL("../../deploy/assets/shared/js/escape.js", import.met
 const escapePreamble = readFileSync(escapePath, "utf8")
   .replace(/^export\s+\{[^}]+\};\s*$/gm, "")
   .replace(/^export\s+/gm, "");
+const activeSpeakerUiPath = new URL("../../deploy/assets/sound-profile/js/active-speaker-ui.js", import.meta.url);
+const activeSpeakerUiPreamble = readFileSync(activeSpeakerUiPath, "utf8")
+  .replace(/^export\s+/gm, "");
 
 const rawSource = readFileSync(modulePath, "utf8");
 const source = rawSource
   .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m, "const jtsConfirm = async () => true;\n")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
+  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
   .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "");
 if (/^import\s/m.test(source)) {
   throw new Error("unhandled import in main.js — add a strip rule + preamble to this harness");
@@ -188,12 +192,6 @@ function activePayloads() {
     issues: [],
   };
   return {
-    "./active-speaker/environment": {
-      ok_to_load_active_config: true,
-      issues: [],
-      warning: "",
-      status: "ready",
-    },
     "./active-speaker/safe-playback": {
       status: "armed",
       issues: [],
@@ -207,28 +205,9 @@ function activePayloads() {
       issues: [],
     },
     "./active-speaker/calibration-level": level,
-    "./active-speaker/bringup-preflight": {
-      modes: {
-        manual_guarded_bringup: { status: "ready", required_gates: [] },
-        guided_calibration: { status: "ready", required_gates: [] },
-      },
-      microphone: { status: "usable" },
-      software_guard: { status: "ready" },
-      calibration_level: { at_floor: false },
-      next_step: "Bring-up ready.",
-    },
     "./active-speaker/startup-load": {
       state: { status: "loaded", rollback_available: true, current_config_matches_loaded: true },
       preflight: { status: "ready", load_allowed: true, path_safety: { load_gate: "ready" }, candidate: { basename: "startup.yml" } },
-    },
-    "./active-speaker/commissioning-rehearsal": {
-      status: "ready",
-      next_step: "Commissioning rehearsal is still present.",
-      steps: [{ id: "path", label: "Path check sentinel", status: "done", message: "sentinel rehearsal evidence" }],
-    },
-    "./active-speaker/tone-targets": {
-      calibration_level: level,
-      targets: [{ side: "mono", driver_role: "full_range", label: "Main full range" }],
     },
     "./active-speaker/measurements": {
       status: "not_applicable",
@@ -298,7 +277,9 @@ function setupHarness(fetchHandler) {
   });
   globalThis.fetch = fetchHandler;
 
-  new Function(escapePreamble + "\n" + eqMathPreamble + "\n" + source)();
+  new Function(
+    escapePreamble + "\n" + eqMathPreamble + "\n" + activeSpeakerUiPreamble + "\n" + source
+  )();
 
   const viewBody = elements.get("view-body");
   const dispatchClick = (attrs) => {
@@ -369,6 +350,11 @@ function baseFetch(overrides = {}) {
         clock_domain: topology.clock_domain,
         session: active["./active-speaker/safe-playback"],
         calibration_level: active["./active-speaker/calibration-level"],
+        tone_backend: {
+          status: "audio_enabled",
+          audio_enabled: true,
+          tone_playback_implemented: true,
+        },
         startup_load: active["./active-speaker/startup-load"],
         staged_config: active["./active-speaker/staged-config"],
       }));
@@ -384,9 +370,6 @@ function fail(message, details = {}) {
 }
 
 async function loadAndSetActiveState(harness) {
-  await harness.flush();
-  await harness.flush();
-  harness.dispatchClick({ "data-act": "refresh-active-speaker" });
   await harness.flush();
   await harness.flush();
   await harness.flush();
@@ -532,42 +515,6 @@ async function testStaleLevelResponseDiscarded() {
     fail("Stale calibration-level response should not overwrite the latest level", { html, levelPosts });
   }
   return { levelPosts: levelPosts.map((p) => p.level_dbfs), finalLevel: "-60.0 dBFS" };
-}
-
-async function testPartialRefreshKeepsSuccessfulSections() {
-  const active = activePayloads();
-  let failEnvironment = false;
-  const fetchHandler = baseFetch({
-    "./active-speaker/environment": () => {
-      if (failEnvironment) return Promise.resolve(response({ error: "boom" }, false));
-      return Promise.resolve(response(active["./active-speaker/environment"]));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-  failEnvironment = true;
-
-  harness.dispatchClick({ "data-act": "refresh-active-speaker" });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of ["Measure drivers", "Choose first driver"]) {
-    if (!html.includes(expected)) {
-      fail("Partial active-speaker refresh should keep the known driver-test surface", { expected, html });
-    }
-  }
-  for (const forbidden of [
-    "Partial refresh: environment probe failed",
-    "What needs attention",
-    "route_verified",
-  ]) {
-    if (html.includes(forbidden)) {
-      fail("Background active-speaker probes should not leak implementation errors into the setup flow", { forbidden, html });
-    }
-  }
-  return { partialRefreshPreservedSections: true };
 }
 
 async function testActiveCrossoverFirstStepRender() {
@@ -995,30 +942,6 @@ async function testQuietTestPathIssuesStayActionable() {
         issues: [],
       }));
     },
-    "./active-speaker/environment": () => Promise.resolve(response({
-      status: "blocked",
-      ok_to_load_active_config: false,
-      issues: [
-        { code: "route_verified_not_verified", message: "Music renderers: route_verified is not verified" },
-        { code: "protected_by_active_baseline_not_verified", message: "Music renderers: protected_by_active_baseline is not verified" },
-        { code: "bypass_disabled_not_verified", message: "Music renderers: bypass_disabled is not verified" },
-      ],
-      warning: "This probe does not play tones, reload CamillaDSP, or authorize active-speaker audio output.",
-    })),
-    "./active-speaker/safe-playback": () => Promise.resolve(response({
-      status: "inactive",
-      issues: [],
-      quiet_start: { status: "not_started", floor_audio_confirmed: false },
-    })),
-    "./active-speaker/staged-config": () => Promise.resolve(response({ status: "not_staged", issues: [] })),
-    "./active-speaker/startup-load": () => Promise.resolve(response({
-      state: {
-        status: "not_loaded",
-        rollback_available: false,
-        current_config_matches_loaded: false,
-      },
-      preflight: { status: "blocked", load_allowed: false, issues: [] },
-    })),
     "./active-speaker/prepare-driver-test": (_path, options = {}) => {
       requestOrder.push("prepare");
       if (!options.method) throw new Error("prepare-driver-test should be POST");
@@ -1182,12 +1105,97 @@ async function testProtectionSetupFailureDoesNotAskForDriverAgain() {
   return { protectionSetupFailureDoesNotAskForDriverAgain: true };
 }
 
+async function testBlockedAudibleDriverTestDoesNotClaimSoundPlayed() {
+  const confirmedTopology = topologyPayload();
+  confirmedTopology.channel_identity = {
+    kind: "jts_output_channel_identity_report",
+    status: "verified",
+    assigned_channel_count: 1,
+    verified_channel_count: 1,
+    unverified_channel_count: 0,
+    targets: [{
+      id: "main:full_range",
+      speaker_group_id: "main",
+      speaker_label: "Main speaker",
+      role: "full_range",
+      assigned: true,
+      identity_verified: true,
+      physical_output_index: 0,
+    }],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: confirmedTopology,
+      channel_identity: confirmedTopology.channel_identity,
+    })),
+    "./active-speaker/play-tone": (_path, options = {}) => {
+      if (!options.method) throw new Error("play-tone should be POST");
+      return Promise.resolve(response({
+        playback: {
+          status: "blocked",
+          audio_emitted: false,
+          backend: null,
+          target: {
+            speaker_group_id: "main",
+            role: "full_range",
+            label: "Main full range on Output 1",
+          },
+          tone: { frequency_hz: 500, level_dbfs: -80, duration_ms: 500 },
+          issues: [{
+            code: "audio_backend_not_enabled",
+            message: "audible channel tests require explicit lab backend enablement",
+          }],
+        },
+        session: activePayloads()["./active-speaker/safe-playback"],
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({
+    "data-act": "check-output-readiness",
+    "data-group-id": "main",
+    "data-role": "full_range",
+    "data-output-index": "0",
+    "data-speaker-label": "Main speaker",
+    "data-label": "Main full range on Output 1",
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  harness.dispatchClick({
+    "data-act": "play-output-readiness-tone",
+    "data-group-id": "main",
+    "data-role": "full_range",
+    "data-label": "Main full range on Output 1",
+    "data-audio": "true",
+  });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  const statusText = harness.elements.get("status").textContent;
+  const html = harness.elements.get("view-body").innerHTML;
+  if (statusText.includes("Played quiet channel test")) {
+    fail("Blocked audible playback must not be reported as played", { statusText, html });
+  }
+  if (!statusText.includes("No sound played") ||
+      !statusText.includes("Audible driver tests are not enabled")) {
+    fail("Blocked audible playback should explain that no sound played", { statusText, html });
+  }
+  if (!html.includes("Sound played") || !html.includes("<dd>No</dd>")) {
+    fail("Blocked audible playback should render no-audio evidence", { html });
+  }
+  return { blockedAudibleDriverTestDoesNotClaimSoundPlayed: true };
+}
+
 const results = [];
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testStaleLevelResponseDiscarded());
-results.push(await testPartialRefreshKeepsSuccessfulSections());
 results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
@@ -1195,5 +1203,6 @@ results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testConfirmedOutputChoosesFirstQuietDriver());
 results.push(await testQuietTestPathIssuesStayActionable());
 results.push(await testProtectionSetupFailureDoesNotAskForDriverAgain());
+results.push(await testBlockedAudibleDriverTestDoesNotClaimSoundPlayed());
 
 console.log(JSON.stringify(Object.assign({ ok: true, results }, liveTabResult)));

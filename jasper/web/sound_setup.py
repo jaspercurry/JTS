@@ -972,6 +972,8 @@ async def _active_speaker_prepare_driver_test_payload(
     implementation details instead of exposing them as separate browser steps.
     """
 
+    from jasper.active_speaker.playback import tone_backend_status
+
     if not isinstance(raw, dict):
         raise ValueError("driver test prepare request must be an object")
     try:
@@ -1097,6 +1099,7 @@ async def _active_speaker_prepare_driver_test_payload(
         startup_load=load_payload,
         session=session,
         calibration_level=_active_speaker_calibration_level_payload(),
+        tone_backend=tone_backend_status(),
         output_topology=topology.to_dict(include_evaluation=True),
         channel_identity=channel_identity_report(topology),
         clock_domain=clock_domain_report(topology),
