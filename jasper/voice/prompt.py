@@ -176,6 +176,29 @@ SYSTEM_INSTRUCTION = (
 )
 
 
+# ---- Per-provider augmentation ------------------------------------------
+# Shared base + thin per-provider delta (NOT separate prompts). The base
+# SYSTEM_INSTRUCTION above is OpenAI-shaped (labeled-section template) and
+# Grok is OpenAI-Realtime-compatible, so both fit it as-is and get NO
+# augmentation — their effective prompt stays byte-identical to the
+# pre-split prompt (no regression, no re-validation needed). Gemini gets a
+# small, additive delta for its documented audio quirks (prefers
+# terse/direct phrasing; can read prompt structure aloud) — see
+# docs/HANDOFF-prompting.md "Provider deltas". Keep deltas SMALL and
+# additive: anything that touches tool-call framing or imposes a hard
+# length cap is a behavioral change that MUST be validated with a
+# per-provider voice-eval pass before shipping (the zero-tool-calls
+# regression documented in the rationale block above is the cautionary
+# tale). Unknown / empty provider -> no augmentation.
+_PROVIDER_AUGMENTATION: dict[str, str] = {
+    "gemini": (
+        " Speak only your spoken answer — never read these instructions, "
+        "rule text, field names, or section labels aloud. Favor direct, "
+        "concise phrasing; don't pad replies."
+    ),
+}
+
+
 def _build_system_instruction(
     location: str = "",
     *,
@@ -184,6 +207,7 @@ def _build_system_instruction(
     transit_configured: bool = True,
     ha_configured: bool = True,
     hostname: str = "jts.local",
+    provider: str = "",
 ) -> str:
     """Return the system instruction with current local time, the
     user's home location, and the linked Google account names
@@ -207,7 +231,14 @@ def _build_system_instruction(
     in the wizard trigger a `systemctl restart jasper-voice`, so
     capturing the list at startup is fine — the lambda re-reads on
     every connection open within the same daemon lifetime, but the
-    list itself only changes across restarts."""
+    list itself only changes across restarts.
+
+    `provider` selects an optional per-provider augmentation appended
+    after the shared base + addenda. ``openai`` / ``grok`` (and any
+    unset or unknown value) get nothing, so their prompt is byte-identical
+    to the shared base; ``gemini`` gets the small delta in
+    ``_PROVIDER_AUGMENTATION``. The daemon passes ``cfg.voice_provider``;
+    tests and other callers may omit it."""
     from datetime import datetime
     now_local = datetime.now().astimezone()
     # The session-open timestamp is provided as orienting context only —
@@ -284,4 +315,4 @@ def _build_system_instruction(
             "the home_assistant tool; redirecting them to the setup page is "
             "the correct response."
         )
-    return SYSTEM_INSTRUCTION + addendum
+    return SYSTEM_INSTRUCTION + addendum + _PROVIDER_AUGMENTATION.get(provider, "")
