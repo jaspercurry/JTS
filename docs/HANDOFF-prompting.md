@@ -15,10 +15,15 @@ linked sources every ~3 months or when a model version bumps.
 
 **Path B applied 2026-05-23.** `build_tool()` now sends the full
 cleaned docstring to the LLM; per-tool conditional rules live in
-each tool's docstring under `jasper/tools/`. `SYSTEM_INSTRUCTION`
-trimmed from ~265 lines to ~100 lines (well below Gemini's ~500-
-token soft ceiling). The "Recommended edits to current code"
-section at the bottom records what landed.
+each tool's docstring under `jasper/tools/`. Path B moved per-tool
+rules out of `SYSTEM_INSTRUCTION` into tool docstrings. **It did
+not bring the constant under Gemini's oft-cited ~500-token figure:**
+the static constant measures ~720 words ≈ ~1,000–1,150 tokens
+(2026-06-15), ~2× that figure — and that figure is now flagged as
+an unverified heuristic, not a hard ceiling (see
+["Length and structure"](#2-length-and-structure-are-inversely-valued)).
+The "Recommended edits to current code" section at the bottom
+records what landed.
 
 ## Scope
 
@@ -136,11 +141,89 @@ Gemini's guidance is the opposite:
 > *"The model may over-analyze verbose or complex prompt
 > engineering techniques from older versions."*
 
-And there's a measured ceiling: [PLAN.md](../PLAN.md) "Risks
-worth re-flagging" tracks that *"Long Gemini system prompt
-breaks session resumption on the 3.1 Flash Live preview. Keep
-system instruction under ~500 tokens."* Our current
-`SYSTEM_INSTRUCTION` is ~265 lines, well over that ceiling.
+And there's a long-standing size flag — but read it with care.
+[PLAN.md](../PLAN.md) "Risks worth re-flagging" tracks: *"Long
+Gemini system prompt breaks session resumption on the 3.1 Flash
+Live preview. Keep system instruction under ~500 tokens."*
+
+**Status of that ~500-token figure (re-checked 2026-06-15, incl. a
+web sweep of community reports): unverified folklore — and the
+number is almost certainly wrong.** It entered the v1 master plan on
+2026-05-03 and has been carried forward verbatim since.
+
+*Where it came from.* The likely seed is a single
+[Google AI dev-forum post (2026-03-28)](https://discuss.ai.google.dev/t/session-resumption-for-gemini-3-1-flash-live-preview-does-not-seem-to-work-with-long-systeminstructions/136654)
+claiming resumption "stops working with a systemInstruction of about
+**200 tokens**" on this exact model — but with no repro, no error
+code, no corroborating report, and still in Google triage (a
+moderator asked for a repro) months later. Note it says ~200, not
+~500; the "500" most likely got conflated with the documented
+~300–500-token *per-turn overhead*
+([python-genai #1917](https://github.com/googleapis/python-genai/issues/1917):
+`promptTokenCount` ≈ 334 for "hello"), a billing artifact, not a
+system-instruction budget.
+
+*What weighs against a size→resumption link:*
+
+- **No documentary basis.** Neither Google's
+  [Live API capabilities](https://ai.google.dev/gemini-api/docs/live-api/capabilities)
+  nor the
+  [session-management / resumption guide](https://ai.google.dev/gemini-api/docs/live-session)
+  document any system-instruction token limit, or any statement
+  that a long instruction breaks or degrades resumption. The only
+  documented resumption fact is the 2-hour handle validity; the
+  context window is 128k (native-audio) / 32k (others), so a
+  ~1,000-token instruction is ~1 % of budget.
+- **The documented resumption breakers are not size.** Community +
+  SDK reports pin resumption failures on prior **audio+video** session
+  state ([python-genai #2290](https://github.com/googleapis/python-genai/issues/2290)
+  — JTS is audio-only, so N/A), tool-call races (1008), generic 1011
+  (reported *uncorrelated* with prompts), and handle expiry/non-
+  emission. JTS's own
+  [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md)
+  catalogs the same modes (handle-drop-on-first-failure, 1008 "session
+  expired", audio+video breakage, 409 races, silent-session-2) and
+  never blames instruction size.
+- **Production runs ~2× over it.** The static `SYSTEM_INSTRUCTION`
+  is ~720 words ≈ **~1,000–1,150 tokens** today — measure with
+  `python -c "from jasper.voice.prompt import SYSTEM_INSTRUCTION as S; print(len(S), len(S.split()))"`
+  — and the runtime-built instruction (home location + linked Google
+  accounts appended by `_build_system_instruction`) is larger still
+  (~1,300 tokens). Session resumption is listed as a *working*
+  capability of that deployment in
+  [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md).
+
+**So: don't trim `SYSTEM_INSTRUCTION` to chase a resumption ceiling —
+that specific claim is unsubstantiated.** But the web sweep surfaced
+two *real, sourced* reasons the prompt is above-norm on 3.1 Flash
+Live, neither being resumption:
+- **Instruction-following dilution.** Gemini 3 "may over-analyze
+  verbose or complex prompt engineering techniques from older
+  versions" ([Gemini 3 guide](https://ai.google.dev/gemini-api/docs/gemini-3)),
+  and real-world Live system instructions are *short* — the official
+  cookbook quickstart sets none, LiveKit's example is one line,
+  Pipecat's is ~3 sentences. At ~1,000–1,300 tokens JTS is a major
+  outlier — same axis as the "3.1 audio ignores conditional rules"
+  caveat above.
+- **Cost.** The Live API re-bills the whole context window — the SI
+  included — every turn, so a verbose SI inflates per-turn cost as a
+  session grows
+  ([Live API best practices](https://ai.google.dev/gemini-api/docs/live-api/best-practices)).
+  Small in absolute terms for JTS, but real.
+
+Latency is a weaker third signal: cold-start time "scales with system
+instruction size" ([cookbook #1197](https://github.com/google-gemini/cookbook/issues/1197)),
+though that report is at 14K–33K chars, far above our prompt.
+
+**If we ever trim, it's an adherence/cost win, not a resumption fix —
+and still a paid voice-eval-validated change** (trimming risks the
+documented zero-tool-calls regression; see "Positive framing for tool
+calls" below). For the resumption question specifically, voice-eval is
+the wrong instrument: confirm from production reconnect logs
+(`journalctl -u jasper-voice | grep -E "connect ok in|resumption=|session expired"`
+on a Gemini-active speaker), or A/B the full vs. trimmed prompt across
+a reconnect + `sessionResumption` cycle and watch whether the handle
+still restores context.
 
 **Practical posture for JTS:** we optimize for OpenAI's style
 (labeled sections, explicit per-tool rules) because OpenAI is
@@ -290,8 +373,12 @@ What's working:
   preambles.
 - Rationale block makes the design legible to the next
   maintainer.
-- ~100-line constant is comfortably below Gemini's ~500-token
-  soft ceiling.
+- Size caveat (not a win): the static constant is ~720 words ≈
+  ~1,000–1,150 tokens (2026-06-15), ~2× the ~500-token figure
+  PLAN.md tracks. That figure is an unverified heuristic, not a
+  confirmed ceiling — see
+  ["Length and structure"](#2-length-and-structure-are-inversely-valued).
+  Not a known problem today, but don't grow the constant casually.
 
 Gaps relative to OpenAI's 12-section template (still
 nice-to-have):
@@ -427,7 +514,7 @@ After Path B (2026-05-23):
 | Model answers from memory without calling a tool ("Jarvis tells me train times without ever calling the subway tool") | Negative framing in tool-call section ("Do not guess") | POSITIVE framing — "Call X when Y" |
 | Model preambles every tool call ("Checking that…") despite system prompt | Absolute "never preamble" rule | Conditional framing — enumerate skip-cases per OpenAI's documented pattern |
 | Gemini 3.1 ignores rules that 2.5 honored | 3.1 audio-mode conditional-rule degradation ([forum thread](https://discuss.ai.google.dev/t/gemini-3-1-flash-live-preview-not-following-system-instructions/144659)) | Document and live with it for now; A/B test absolute language for Gemini-only before adding a per-provider shim |
-| Long Gemini sessions break on resumption | System instruction over ~500 tokens (PLAN.md tracker) | Shorten — move per-tool rules out of system prompt (blocked today by build_tool truncation) |
+| Long Gemini sessions break on resumption | Suspected: system instruction over the ~500-token figure (PLAN.md tracker) — but that figure is an unverified heuristic; see ["Length and structure"](#2-length-and-structure-are-inversely-valued) | First confirm prompt size is the cause from production reconnect logs (`journalctl -u jasper-voice \| grep "connect ok in"`). Per-tool rules already moved out of the system prompt (Path B 2026-05-23); further trimming is a paid voice-eval-validated change — don't regress tool-calling |
 | Tool docstring "Voice answer style" sections seem ignored by the LLM (pre-2026-05-23) | `build_tool()` truncated to first paragraph | Lifted 2026-05-23; full docstring now sent. See cookbook. |
 | Conditional rule violated in spoken response (e.g. ZERO-COUNT, STATUS, STALENESS) | Conflicting rule between SYSTEM_INSTRUCTION and tool docstring | After Path B, per-tool rules live ONLY in the tool docstring; system prompt has cross-tool meta-rules only |
 | Model says preamble + tool result *and* also says result verbatim with no preamble (inconsistent across turns) | Conditional preamble rule too vague; missing "the tool call is lightweight" clause | Tighten the skip-list trigger; reference the existing `Tools — preambles` block in `jasper/voice/prompt.py` |
@@ -584,8 +671,9 @@ edit (~quarterly, or whenever a model version bumps).
 - [CLAUDE.md](../CLAUDE.md) "Voice system prompt" section —
   the short pointer that lives alongside daily-driver rules
 - [PLAN.md](../PLAN.md) "Risks worth re-flagging" —
-  ~500-token Gemini ceiling, sequential tool calls
+  ~500-token Gemini figure (flagged unverified; see "Length and
+  structure" above), sequential tool calls
 
 ---
 
-Last verified: 2026-06-13
+Last verified: 2026-06-15
