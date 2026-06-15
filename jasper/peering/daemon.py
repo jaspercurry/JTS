@@ -15,7 +15,7 @@ real time / real sockets / real OS calls happen.
 
 When PeeringConfig.mode is OFF, `run()` is a fast no-op — no sockets
 opened, no zeroconf imported, no Avahi file written. The user opts
-in via the /peers/ wizard, which restarts jasper-control and picks
+in via the /rooms/ Speakers page, which restarts jasper-control and picks
 up the new config.
 """
 from __future__ import annotations

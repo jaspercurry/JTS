@@ -360,6 +360,40 @@ def test_unpaired_legacy_zero_endpoint_defaults_back_to_streambox(tmp_path: Path
     assert read.stdout.strip() == "streambox"
 
 
+def test_unpaired_legacy_zero_streambox_upgrade_log_guard_executes_helper(
+    tmp_path: Path,
+):
+    marker = tmp_path / "install_profile"
+    model = tmp_path / "model"
+    model.write_bytes(b"Raspberry Pi Zero 2 W Rev 1.0\\0")
+    text = INSTALL_SH.read_text()
+    setup = _run_install_helper(
+        f"persist_install_profile endpoint {shlex.quote(str(marker))}"
+    )
+    active = _run_install_helper(
+        "unset JASPER_INSTALL_PROFILE; "
+        f"export JASPER_PI_MODEL_FILE={shlex.quote(str(model))}; "
+        "if install_profile_auto_streambox_upgrade_active "
+        f"streambox {shlex.quote(str(marker))}; then echo active; "
+        "else echo inactive; fi"
+    )
+    explicit_endpoint = _run_install_helper(
+        "JASPER_INSTALL_PROFILE=endpoint "
+        f"JASPER_PI_MODEL_FILE={shlex.quote(str(model))}; "
+        "if install_profile_auto_streambox_upgrade_active "
+        f"streambox {shlex.quote(str(marker))}; then echo active; "
+        "else echo inactive; fi"
+    )
+
+    assert setup.returncode == 0, setup.stderr
+    assert active.returncode == 0, active.stderr
+    assert active.stdout.strip() == "active"
+    assert explicit_endpoint.returncode == 0, explicit_endpoint.stderr
+    assert explicit_endpoint.stdout.strip() == "inactive"
+    assert "event=install_profile.auto_streambox_upgrade" in text
+    assert "previous=endpoint profile=streambox reason=unpaired_zero" in text
+
+
 def test_paired_zero_endpoint_stays_satellite_only(tmp_path: Path):
     marker = tmp_path / "install_profile"
     model = tmp_path / "model"
@@ -544,6 +578,9 @@ def test_streambox_nginx_site_uses_shared_landing_and_hides_voice_routes():
     assert 'data-requires="developer_tools"' in landing
     assert "applyCapabilities" in landing
     assert "caps[required] !== true" in landing
+    assert 'id="sound-section"' in landing
+    assert "var soundSection = document.getElementById('sound-section');" in landing
+    assert "soundSection.style.display = follower ? 'none' : '';" in landing
     assert re.search(
         r'id="pair-manage-link"[^>]*data-requires="pair_management"[^>]*hidden',
         landing,

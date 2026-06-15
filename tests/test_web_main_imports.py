@@ -1,12 +1,11 @@
 """Regression tests for the 'lost edit' bug class.
 
-PR #146 (multi-device peering) added a new wizard but lost two lines
-during an edit-merge race: `peering_setup` never made it into the
-`from . import (...)` tuple, and `peers_port` was referenced inside
-`main()` without ever being defined. The module compiles fine —
-Python only resolves the names at call time — so the bug only
-surfaced when systemd started the daemon, at which point ALL eight
-wizards went down.
+PR #146 (multi-device peering) added a new wizard but lost two lines during an
+edit-merge race: a setup module never made it into the import wiring, and a
+port local was referenced inside `main()` without ever being defined. The
+module compiled fine — Python only resolves the names at call time — so the
+bug only surfaced when systemd started the daemon, at which point all wizards
+went down.
 
 Three layers of defense here:
 
@@ -15,13 +14,12 @@ Three layers of defense here:
    a matching import; every registered wizard has a unique socket-
    backed port).
 
-2. **ruff F821 across every peering-touched file** — catches the
-   same lost-edit pattern (undefined name) anywhere else in the
-   package. ruff is already in our dev dependencies and is the
-   battle-tested implementation of pyflakes-style undefined-name
-   detection (handles match/case patterns, comprehensions, walrus,
-   nested scopes, etc.). If ruff isn't available locally the test
-   skips rather than flakes.
+2. **ruff F821 across peering-touched code** — catches the same lost-edit
+   pattern (undefined name) anywhere else in the package. ruff is already in
+   our dev dependencies and is the battle-tested implementation of
+   pyflakes-style undefined-name detection (handles match/case patterns,
+   comprehensions, walrus, nested scopes, etc.). If ruff isn't available
+   locally the test skips rather than flakes.
 
 3. **Import-cost check for the combined settings host** — proves
    the socket-activated `jasper.web.__main__` entrypoint doesn't pull
@@ -135,7 +133,7 @@ def test_invalid_web_profile_fails_closed():
 # the bug class. Adding a new file? Add it here.
 _PEERING_FILES = [
     "jasper/peering/",  # whole subtree
-    "jasper/web/peering_setup.py",
+    "jasper/web/rooms_setup.py",
     "jasper/web/__main__.py",
     "jasper/voice_daemon.py",
     "jasper/control/server.py",
@@ -146,8 +144,8 @@ _PEERING_FILES = [
 def test_peering_surface_has_no_undefined_names():
     """Run ruff F821 (undefined-name) over every peering-touched file.
 
-    The bug that motivated this would have shown up as
-    `peering_setup` reported as undefined in jasper/web/__main__.py.
+    The bug that motivated this would have shown up as a setup module
+    reported as undefined in jasper/web/__main__.py.
     """
     ruff = shutil.which("ruff")
     if ruff is None:

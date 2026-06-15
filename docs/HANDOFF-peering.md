@@ -113,10 +113,10 @@ Separated by I/O profile so each piece is independently testable.
 | [jasper/voice_daemon.py](../jasper/voice_daemon.py) | New helpers: `_peer_arbitrate`, `_peering_send`, `_notify_peering_session_started/_ended`, `_wake_late_cancelled`, `_frame_rms_dbfs`. Restructured `_handle_wake_frame` to spawn `_arbitrate_acquire_drain` as a background task. |
 | [jasper/control/server.py](../jasper/control/server.py) | `start_peering_daemon_if_enabled()` — spawns a background thread with its own asyncio loop iff `JASPER_PEERING=on`. No-op when off. |
 | [jasper/cli/doctor/](../jasper/cli/doctor/__init__.py) | Two new checks: `check_peering_mode` (env-file sanity) and `check_peering_discovery` (sibling-peer count via `avahi-browse`). |
-| [jasper/web/peering_setup.py](../jasper/web/peering_setup.py) | New `/peers/` wizard on port 8776. Toggle + room label + primary flag. Writes `/var/lib/jasper/peering.env`, restarts both voice + control daemons. |
+| [jasper/web/rooms_setup.py](../jasper/web/rooms_setup.py) | Canonical user-facing peering toggle on `/rooms/`. `POST /peering` writes `/var/lib/jasper/peering.env` through `jasper.peering.config` and restarts both voice + control daemons. There is no `/peers/` page, redirect, socket, or page CSS. |
 | [deploy/avahi/jasper-peer.service.template](../deploy/avahi/jasper-peer.service.template) | mDNS service-file template with `__PEER_ID__` / `__ROOM__` / `__PRIMARY__` placeholders, rendered at runtime. |
 | [deploy/install.sh:install_peering_template()](../deploy/install.sh) | Installs the template, generates a stable `peer_id` UUID at `/var/lib/jasper/peer_id`. |
-| [deploy/systemd/jasper-voice.service](../deploy/systemd/jasper-voice.service) + [jasper-control.service](../deploy/systemd/jasper-control.service) | **Both** units must source `EnvironmentFile=-/var/lib/jasper/peering.env` so `JASPER_PEERING` reaches each daemon's `Config`. jasper-voice was missing the line — peering stayed off on the wake-arbitration side even when the wizard enabled it. Guarded by `tests/test_peering_plumbing.py`. |
+| [deploy/systemd/jasper-voice.service](../deploy/systemd/jasper-voice.service) + [jasper-control.service](../deploy/systemd/jasper-control.service) | **Both** units must source `EnvironmentFile=-/var/lib/jasper/peering.env` so `JASPER_PEERING` reaches each daemon's `Config`. `jasper-control.service` must also grant `ReadWritePaths=/etc/avahi/services` because peering renders `/etc/avahi/services/jasper-peer.service` under `ProtectSystem=full`. Guarded by `tests/test_peering_plumbing.py` and `tests/test_control_systemd.py`. |
 
 ---
 
@@ -320,14 +320,14 @@ doesn't interrupt the active conversation.
 | `/var/lib/jasper/peering.env` | (absent) | wizard-managed. Absent → `JASPER_PEERING=off` resolves. |
 | `/var/lib/jasper/peer_id` | UUID generated at install | stable per-Pi identity, persists across reboots and re-installs. **Never user-edited.** |
 | `/etc/jasper/avahi-templates/jasper-peer.service` | installed by `install.sh` | template with `__PEER_ID__` / `__ROOM__` / `__PRIMARY__` placeholders. |
-| `/etc/avahi/services/jasper-peer.service` | (absent until mode=on) | rendered file. **Its presence is what makes this Pi visible to siblings.** |
+| `/etc/avahi/services/jasper-peer.service` | (absent until mode=on) | rendered file. **Its presence is what makes this Pi visible to siblings.** Written by `jasper-control` when peering starts; the unit's `ReadWritePaths` must include `/etc/avahi/services`. |
 
 Env vars (all `JASPER_PEER*` namespace):
 
 - `JASPER_PEERING` — `off` (default) or `on`. Anything else parses
   to `off` (fail-safe).
-- `JASPER_PEER_ROOM` — human label shown to siblings in their
-  `/peers/` UI. Defaults to derived-from-hostname (`jts-bedroom`
+- `JASPER_PEER_ROOM` — legacy peering-room label kept as a data
+  compatibility fallback. Defaults to derived-from-hostname (`jts-bedroom`
   → `bedroom`; bare `jts` → `default`).
 - `JASPER_PEER_PRIMARY` — `1` if this Pi is the household primary;
   small bias in ranking (see Tier 3 in §4).
@@ -336,9 +336,11 @@ Env vars (all `JASPER_PEER*` namespace):
 - `JASPER_PEER_BREAK_THRESHOLD` — local wake score required to
   break suppression mid-session. Default 0.85, clamped to [0.5, 0.99].
 
-The wizard at `/peers/` writes the first three. The latter two are
-operator-managed (edit the env file by hand); the wizard preserves
-them across saves.
+The `/rooms/` Speakers page writes `JASPER_PEERING` and
+`JASPER_PEER_PRIMARY` through `POST /peering`; the `/speaker/` identity
+page owns the room label in current builds, with `JASPER_PEER_ROOM`
+kept as a legacy fallback. The latter two tuning vars are
+operator-managed (edit the env file by hand); web saves preserve them.
 
 ---
 
@@ -346,11 +348,12 @@ them across saves.
 
 ### Turning peering on
 
-Visit `http://jts.local/peers/`. Single toggle, plus a room name
-field and a primary checkbox. Save triggers `systemctl restart
---no-block jasper-voice jasper-control` so both daemons pick up
-the new mode. Allow ~3-5 s before peers see this Pi appear in
-their `/peers/` lists.
+Visit `http://jts.local/rooms/`. The Wake response card has the peering
+toggle and primary checkbox. Save triggers `systemctl restart --no-block
+jasper-voice jasper-control` so both daemons pick up the new mode. Allow
+~3-5 s before peers see this Pi appear in their `/rooms/` directory.
+`/peers/` is intentionally not routed; stale bookmarks should fail rather
+than keeping a second peering surface alive.
 
 ### Verifying
 
@@ -381,8 +384,8 @@ The doctor's two checks:
 
 Once we have a second Pi:
 
-1. Toggle peering on at both via `/peers/`.
-2. Each wizard should show the other peer within ~30 s.
+1. Toggle peering on at both via `/rooms/`.
+2. Each speaker should show the other peer within ~30 s.
 3. Stand between them. Say "Hey Jarvis, what time is it?"
 4. **Exactly one** should respond.
 5. `journalctl -u jasper-voice | grep peering` shows
@@ -483,27 +486,29 @@ eero, Google Wifi) drop or rate-limit multicast packets. We don't
 currently have a unicast-UDP fallback wired up — the design hooks
 are in `transport.py` but the per-peer multicast-health detector
 isn't implemented. Mentioned as a follow-up in PR #142's risk
-register. Watch for: peers visible in `/peers/` (mDNS works) but
+register. Watch for: peers visible in `/rooms/` (mDNS works) but
 no arbitration messages ever exchanged (multicast doesn't).
 
 ---
 
-## 11. The lost-edit incident (PR #146 retrospective)
+## 11. Retired `/peers/` page and the lost-edit incident
 
-Worth recording so the same bug class doesn't recur silently.
+The original implementation had a standalone `/peers/` wizard on port
+8776. That page is now deleted: `/rooms/` owns the household "Speakers"
+surface, peering writes through `jasper.peering.config`, nginx has no
+`/peers/` redirect, and the web sockets no longer bind 8776.
+
+The historical incident is still worth recording because it produced the
+guard tests that protect the current wizard registry.
 
 **What happened:** PR #146 wired the `/peers/` wizard into
-`jasper/web/__main__.py`. Two of my edits — adding `peering_setup`
-to the `from . import (...)` tuple and adding `peers_port = int(...)`
-to the port-var block — got dropped during the edit. The wiring
-code that *references* both names landed; the declarations didn't.
+`jasper/web/__main__.py`. Two required edits got dropped during the edit:
+adding the setup module import and adding the matching port variable. The
+wiring code that referenced both names landed; the declarations didn't.
 Python compiled the file fine because it doesn't resolve function-
 body names at module-load time. The bug only surfaced when systemd
-tried to start `jasper-web` post-deploy, at which point all eight
-web wizards (`/spotify`, `/voice`, `/wake`, `/wifi`, `/airplay`,
-`/sources`, `/google`, `/bluetooth` — wait, /bluetooth is a
-separate daemon — so the seven wizards on jasper-web) went down
-crash-looping.
+tried to start `jasper-web` post-deploy, at which point the socket-activated
+wizard process went down crash-looping.
 
 **Defense in depth, added afterward** ([tests/test_web_main_imports.py](../tests/test_web_main_imports.py)):
 
@@ -515,7 +520,7 @@ crash-looping.
   assignment.
 - `test_peering_surface_has_no_undefined_names` — invokes `ruff
   check --select=F821` over the whole peering surface
-  (`jasper/peering/`, `voice_daemon.py`, `peering_setup.py`,
+  (`jasper/peering/`, `voice_daemon.py`, `rooms_setup.py`,
   `__main__.py`, `control/server.py`, `cli/doctor.py`). Catches
   the general "name referenced but not defined" pattern.
 
@@ -538,8 +543,8 @@ surface. Either test would have caught PR #146's bug pre-merge.
   module overview docstring + public exports.
 - [jasper/voice_daemon.py:_arbitrate_acquire_drain](../jasper/voice_daemon.py)
   — the wake-handler integration point.
-- [jasper/web/peering_setup.py](../jasper/web/peering_setup.py) —
-  the `/peers/` wizard.
+- [jasper/web/rooms_setup.py](../jasper/web/rooms_setup.py) —
+  the `/rooms/` Speakers page and peering toggle.
 
 **External design references** (consulted during the original
 research):
@@ -557,9 +562,9 @@ research):
 **PRs that shaped this subsystem:**
 
 - #142 — `peering: add multi-device wake arbitration plumbing (OFF by default)`
-- #146 — `peering: wire WakeLoop + add /peers/ wizard`
-- #148 — `web: restore missing peering_setup import + peers_port var`
-  (the hotfix retrospective above)
+- #146 — `peering: wire WakeLoop + add original peering wizard`
+- #148 — `web: restore missing peering wizard import + port var`
+  (the historical hotfix retrospective above)
 - #149 — `test: ruff F821 across the peering surface`
 
 ---
@@ -569,7 +574,7 @@ research):
 If you are a fresh Claude or LLM landing here:
 
 1. Peering is OFF by default. A solo speaker pays nothing.
-2. The user flips it on at `http://jts.local/peers/`. Both
+2. The user flips it on at `http://jts.local/rooms/`. Both
    `jasper-voice` and `jasper-control` restart.
 3. With peering on, peers discover each other via mDNS-SD
    (`_jasper-peer._udp`) and arbitrate every wake event over
@@ -586,7 +591,9 @@ If you are a fresh Claude or LLM landing here:
    the multi-mic-around-one-Pi case. This doc is the multi-Pi
    variant.
 
-Last verified: 2026-06-10 (env-sourcing contract re-verified against code:
-jasper-voice.service was NOT sourcing peering.env, so Config.peering_enabled
-was pinned off on the wake-arbitration side; fixed + guarded by
-tests/test_peering_plumbing.py. Other peering code paths unchanged.)
+Last verified: 2026-06-14 (JTS4 streambox peering enable re-verified:
+`/rooms/peering` writes `JASPER_PEERING=on`, `jasper-control` starts the
+peering daemon, and `jasper-control.service` now explicitly allows
+`/etc/avahi/services` writes for the peer advert under `ProtectSystem=full`.
+The retired `/peers/` page, redirect, port 8776 socket, and page CSS are
+deleted; `/rooms/` is the only user-facing peering surface.)

@@ -217,10 +217,7 @@ def test_udev_systemd_wants_units_are_shipped():
 # ----------------------------------------------------------------------
 
 # Socket-backed ports with deliberately no nginx route. Stale entries fail.
-_SOCKET_ONLY_PORTS = {
-    8776: "peering_setup backend kept for rooms_setup helpers; "
-          "nginx 301s /peers/ to /rooms/ (see nginx-jasper.conf)",
-}
+_SOCKET_ONLY_PORTS: dict[int, str] = {}
 
 # nginx 127.0.0.1 upstreams deliberately not socket-activated. Stale entries fail.
 _NGINX_ONLY_PORTS = {

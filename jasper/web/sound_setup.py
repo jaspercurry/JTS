@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import logging
 import os
@@ -112,16 +113,27 @@ from jasper.sound.settings import (
 )
 
 from ._common import (
-    pair_banner_html,
     begin_request,
+    bonded_follower_active,
+    bonded_follower_leader_web_url,
     canonical_page,
+    guard_mutating_request,
+    guard_read_request,
     reject_csrf,
     send_html_response,
-    guard_read_request,
-    guard_mutating_request,
 )
 
 logger = logging.getLogger(__name__)
+
+_FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
+    "/apply",
+    "/audition",
+    "/live-draft",
+    "/settings",
+    "/profiles/save",
+    "/profiles/rename",
+    "/profiles/delete",
+})
 
 DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
 MAX_JSON_BYTES = 64 * 1024
@@ -789,7 +801,44 @@ async def _load_profile_config(
     return apply_state, out_path, profile
 
 
+def _follower_sound_html(csrf_token: str = "") -> bytes:
+    leader_sound_url = bonded_follower_leader_web_url("/sound/")
+    leader_link = (
+        '<a class="btn btn--primary" href="'
+        + html.escape(leader_sound_url)
+        + '">Open leader sound</a>'
+        if leader_sound_url else ""
+    )
+    body = f"""
+<header class="app-header">
+  <div class="app-header__row">
+    <a class="icon-button" id="back" href="/" aria-label="Home">
+      <svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>
+    </a>
+    <h1 class="app-header__title">Sound profile</h1>
+    <span></span>
+  </div>
+</header>
+<main class="page">
+  <section class="info-card info-card--accent" role="note">
+    <h2 class="section__title">Sound is controlled by the pair leader</h2>
+    <p class="form-hint">This speaker is an active follower, so content EQ,
+    room correction, and volume shaping are rendered by the leader while the
+    pair is active. Local crossover and driver-protection work stays with the
+    speaker that owns the DAC path.</p>
+    <div class="actions">
+      {leader_link}
+      <a class="btn" href="/rooms/">Manage pair</a>
+    </div>
+  </section>
+</main>
+"""
+    return canonical_page("Sound profile", body, csrf_token=csrf_token)
+
+
 def _index_html(csrf_token: str = "") -> bytes:
+    if bonded_follower_active():
+        return _follower_sound_html(csrf_token)
     body = (
         """
 <header class="app-header">
@@ -811,9 +860,6 @@ def _index_html(csrf_token: str = "") -> bytes:
   </div>
 </header>
 <main class="page">
-"""
-        + pair_banner_html()
-        + """
   <section class="now-playing">
     <div class="row-between">
       <h2 class="eyebrow">Now playing</h2>
@@ -2237,6 +2283,21 @@ def _make_handler(
                 return
             if not guard_mutating_request(self):
                 reject_csrf(self)
+                return
+            if path in _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS and bonded_follower_active():
+                logger.info(
+                    "event=sound.follower_content_dsp_blocked path=%s",
+                    path,
+                )
+                self._send_json(
+                    {
+                        "error": (
+                            "sound profile is controlled on the pair leader "
+                            "while this speaker is a follower"
+                        ),
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
                 return
             try:
                 raw = self._read_json()

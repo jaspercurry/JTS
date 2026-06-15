@@ -10,7 +10,7 @@ def test_peering_env_file_is_sourced_by_voice_and_control_units():
     """Both jasper-voice and jasper-control must source peering.env.
 
     `Config.peering_enabled` is parsed from `JASPER_PEERING`, which the
-    `/peers/` wizard writes to `/var/lib/jasper/peering.env`. jasper-control
+    `/rooms/` writes to `/var/lib/jasper/peering.env`. jasper-control
     runs the peering daemon; jasper-voice is its UDS client and short-circuits
     every wake-arbitration call when `peering_enabled` is False
     (`_peering_send` in `jasper/voice_daemon.py`). If either unit fails to

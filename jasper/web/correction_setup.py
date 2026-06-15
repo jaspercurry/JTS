@@ -56,14 +56,15 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ._common import (
-    pair_banner_html,
     begin_request,
+    bonded_follower_active,
+    bonded_follower_leader_web_url,
     canonical_header,
     canonical_page,
+    guard_mutating_request,
+    guard_read_request,
     reject_csrf,
     send_html_response,
-    guard_read_request,
-    guard_mutating_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 # process.
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
+_FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/balance", "/sync"})
 
 
 class BadRequest(ValueError):
@@ -458,7 +460,43 @@ __HEADER__
 """
 
 
+def _render_follower_page(hostname: str, csrf_token: str = "") -> bytes:
+    leader_url = bonded_follower_leader_web_url("/correction/")
+    leader_link = (
+        '<a class="btn btn--primary" href="'
+        + html.escape(leader_url)
+        + '">Open leader correction</a>'
+        if leader_url else ""
+    )
+    header = canonical_header(
+        "Room correction",
+        back_href="http://{host}/".format(host=hostname),
+    )
+    body = f"""
+{header}
+<main class="page">
+  <section class="info-card info-card--accent" role="note">
+    <h2 class="section__title">Room correction is controlled by the pair leader</h2>
+    <p class="form-hint">This speaker is an active follower. Room correction,
+    balance, and sync measurements are content calibration for the paired
+    playback image, so run them from the leader while the pair is active.</p>
+    <div class="actions">
+      {leader_link}
+      <a class="btn" href="/rooms/">Manage pair</a>
+    </div>
+  </section>
+</main>
+"""
+    return canonical_page(
+        "Room correction — JTS speaker",
+        body,
+        csrf_token=csrf_token,
+    )
+
+
 def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
+    if bonded_follower_active():
+        return _render_follower_page(hostname, csrf_token)
     from jasper.correction.calibration import (
         SUPPORTED_MODELS,
         model_label_aliases,
@@ -512,10 +550,6 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         "Room correction",
         back_href="http://{host}/".format(host=hostname),
     )
-    # Bonded follower: measurements would play into outputd's DRAINED
-    # direct lane (inaudible — the round-trip FIFO owns the DAC), so the
-    # shared pair banner warns to run correction from the leader.
-    header += pair_banner_html()
     body = (
         _PAGE_BODY
         .replace("__HEADER__", header)
@@ -1606,6 +1640,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if not guard_read_request(self):
                 return
+            if bonded_follower_active() and path in _FOLLOWER_DELEGATED_PAGE_PATHS:
+                ctx = begin_request(self)
+                self._send_html(_render_follower_page(
+                    cfg["hostname"], ctx["csrf_token"],
+                ))
+                return
             if path == "/":
                 ctx = begin_request(self)
                 self._send_html(_render_page(
@@ -1720,6 +1760,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if not guard_mutating_request(self):
                 reject_csrf(self)
+                return
+            if bonded_follower_active():
+                logger.info(
+                    "event=correction.follower_content_dsp_blocked path=%s",
+                    path,
+                )
+                self._send_json(
+                    {
+                        "error": (
+                            "room correction is controlled on the pair "
+                            "leader while this speaker is a follower"
+                        ),
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
                 return
             if path.startswith("/balance/"):
                 self._dispatch_balance(path)

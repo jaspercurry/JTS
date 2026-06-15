@@ -206,6 +206,22 @@ EOF
     printf '%s\n' "${requested_profile}"
 }
 
+install_profile_auto_streambox_upgrade_active() {
+    local resolved_profile="$1"
+    local marker="${2:-${INSTALL_PROFILE_MARKER}}"
+    local persisted requested detected_profile
+    requested="${JASPER_INSTALL_PROFILE:-}"
+    [[ -z "${requested}" ]] || return 1
+    [[ "${resolved_profile}" == "streambox" ]] || return 1
+
+    persisted="$(read_persisted_install_profile "${marker}")" || return 1
+    [[ "${persisted}" == "endpoint" ]] || return 1
+
+    detected_profile="$(detect_default_install_profile)" || return 1
+    [[ "${detected_profile}" == "streambox" ]] || return 1
+    ! install_profile_bonded_follower_active
+}
+
 persist_install_profile() {
     local profile="$1"
     local marker="${2:-${INSTALL_PROFILE_MARKER}}"
@@ -301,7 +317,7 @@ Run for real from a Pi-local checkout:
      renderer services, nginx, Avahi, identity reconciliation, and the
      multi-room grouping reconciler.
    - Enable socket-activated streambox-safe web surfaces:
-     /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/, /peers/,
+     /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/,
      /bluetooth/, /system/, and HTTPS /correction/.
    - Install the streambox nginx route set with the shared JTS landing
      page and capability-gated cards.
@@ -1651,8 +1667,8 @@ install_peering_template() {
     #
     # jasper-control's peering daemon renders this template into
     # /etc/avahi/services/jasper-peer.service when JASPER_PEERING=on
-    # is set in /var/lib/jasper/peering.env (via the /peers/ web
-    # wizard, in PR 2). When peering is off (the default), no
+    # is set in /var/lib/jasper/peering.env (via the /rooms/ Speakers
+    # page). When peering is off (the default), no
     # rendered file exists and this Pi is invisible to siblings —
     # the goal property of "zero cost when alone".
     #
@@ -1680,7 +1696,7 @@ install_peering_template() {
         chmod 0644 /var/lib/jasper/peer_id
         echo "  Generated stable peer_id at /var/lib/jasper/peer_id"
     fi
-    echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/peers/"
+    echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/rooms/"
 }
 
 regenerate_audio_cues() {
@@ -1865,6 +1881,9 @@ main() {
     fi
 
     echo "==> install.sh starting (profile: ${install_profile})"
+    if install_profile_auto_streambox_upgrade_active "${install_profile}"; then
+        echo "event=install_profile.auto_streambox_upgrade previous=endpoint profile=streambox reason=unpaired_zero"
+    fi
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
         persist_install_profile "${install_profile}"

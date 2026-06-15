@@ -18,7 +18,7 @@ body. This module is the single extracted implementation; the two
 callers route through ``render_service`` and the shared ``reload_avahi``.
 
 ``render_service`` is FAIL-SOFT and NEVER raises into the caller. The
-callers run on hot paths (/speaker save, /peers save, deploy/install.sh)
+callers run on hot paths (/speaker save, /rooms peering save, deploy/install.sh)
 that must not break because mDNS could not be re-rendered. Every handled
 failure — missing/unreadable template, a stray ``__FOO__`` placeholder,
 a write failure — logs and returns ``False``; the backstop is the next

@@ -204,7 +204,7 @@ Increment 6 (per-follower calibration). What exists:
   `multiroom-spike-measure.py` (§8 P0; run on hardware).
 - **`/rooms/` — the combined "Speakers" surface** —
   `jasper/web/rooms_setup.py` + `deploy/assets/rooms/` (port 8785,
-  `JASPER_ROOMS_WEB_PORT`, route `/rooms/`; `/peers/` 301-redirects here).
+  `JASPER_ROOMS_WEB_PORT`, route `/rooms/`; no legacy `/peers/` route).
   Directory + wake-response toggle on one page ("my other speakers" is one
   household concern). Lists every JTS speaker on the LAN via the always-on
   `_jasper-control._tcp` mDNS service (NOT the wake-peering-gated
@@ -215,10 +215,10 @@ Increment 6 (per-follower calibration). What exists:
   fail-loud `error` when on-but-invalid). `GET /` is a static
   `canonical_page()` shell + ES module; `GET /rooms.json` carries the data
   (self block now includes a `peering: {enabled, primary}` wake-response
-  block, read fresh via the reused `peering_setup` readers); self is
+  block, read fresh via `jasper.peering.config`); self is
   excluded from `peers`. **Four POSTs.** (1) `/peering`, the wake-response
   toggle (CSRF via `X-CSRF-Token`; read-modify-writes `peering.env` through
-  the reused `peering_setup` constant, preserving `JASPER_PEER_ROOM`;
+  `jasper.peering.config.PEERING_ENV_FILE`, preserving `JASPER_PEER_ROOM`;
   restarts voice + control). (2) `/bond`, **the Sonos-style one-flow
   stereo-pair setup**: the browser sends the member list, the server mints a
   `bond_id` and fans the grouping config out SERVER-side to each member's
@@ -266,9 +266,8 @@ Increment 6 (per-follower calibration). What exists:
   used by both control_advert and peering). **The room label now lives in the
   speaker-identity home** (`jasper/speaker_name.py`, `JASPER_SPEAKER_ROOM`;
   `/speaker` writes it; `install.sh migrate_speaker_room` seeds it from the
-  legacy peering room) — peering still reads its own `JASPER_PEER_ROOM` for
-  wake-arb, with full consolidation flagged as a follow-up. See §8 "Friendly
-  names + identity".
+  legacy peering room) — `JASPER_PEER_ROOM` remains only as a compatibility
+  fallback for older peering env files. See §8 "Friendly names + identity".
 
 Not yet built (P1+, post-spike): the `BondedSet` entity, satellite
 calibration, **2.1 / sub / >2-member bond setup on `/rooms/`** (the
@@ -1523,16 +1522,10 @@ New wizard
 socket port → `install.sh` must `systemctl restart` (not `start`) the
 wizard socket (PR #118 502 failure mode).
 
-**`/peers/` 301-redirects here; `/rooms` is canonical.** The wake-response
-toggle folded out of the old `/peers/` page into this surface. nginx
-replaces the `/peers/` `proxy_pass` with `return 301 /rooms/;` (the old
-URL keeps working). The `/peers/` `peering_setup` module + its `:8776`
-socket stay wired — `rooms_setup` now **reuses** its readers/writers
-(`_load_state`/`_is_on`/`_primary`, `PEERING_ENV_FILE`) and restart
-helpers (`restart_voice_daemon` + `_restart_jasper_control`) rather than
-re-deriving the env parse, and the peering daemon still serves its
-helpers/status — we only stop routing *users* to its page. This is reuse,
-not retirement.
+**`/rooms` is the only peering UI.** The old `/peers/` page, redirect,
+socket port 8776, and page CSS have been retired. `rooms_setup` now imports
+the non-web peering helpers from `jasper.peering.config` so peering env
+ownership lives with the peering package, not in a dead wizard module.
 
 **Room stays in the identity home — NOT edited here.** Room lives at
 `/speaker/` (the identity home; `JASPER_SPEAKER_ROOM`). The self card
@@ -1552,7 +1545,7 @@ sourcing siblings from the always-on `_jasper-control._tcp` service so it
 works whether or not wake-peering is on (see §0). The page now carries
 **two write cards**. The **wake-response** card: `POST /peering`
 (CSRF-verified via the `X-CSRF-Token` header) read-modify-writes
-`/var/lib/jasper/peering.env` through the reused `peering_setup` constant —
+`/var/lib/jasper/peering.env` through `jasper.peering.config.PEERING_ENV_FILE` —
 flipping `JASPER_PEERING` on/off and setting/clearing `JASPER_PEER_PRIMARY`
 while **preserving** `JASPER_PEER_ROOM` (owned by `/speaker/`) and operator
 tuning knobs — then restarts voice + `jasper-control` and returns `{ok,
@@ -1607,8 +1600,8 @@ and `write_state(name)` preserves the stored room (back-compat). The
   precedence is the point: the **identity home wins**
   (`speaker_name.runtime_room()`), then a legacy fallback to peering's
   `JASPER_PEER_ROOM`, then `peering.config.default_room()` — so older
-  `/peers/`-configured installs still surface a room while the identity home
-  becomes the source of truth. `/rooms/`'s self block (`_self_name` /
+  peering env files still surface a room while the identity home becomes
+  the source of truth. `/rooms/`'s self block (`_self_name` /
   `_self_hostname` / `_self_room`) now resolves through this reader, so the
   directory agrees with `control_advert` and the rest of the speaker on "who
   is this speaker." (control_advert and future bond/grouping code are meant
@@ -1644,14 +1637,10 @@ reads the same identity directly (`_self_name()` →
 `identity.read_identity()`), so it shows the same name peers see;
 `/rooms.json`'s `self` block carries `name` / `hostname` / `room`.
 
-> **Follow-up (flagged, NOT this change): peering → identity room
-> consolidation.** Peering still reads its **own** `JASPER_PEER_ROOM` for
-> wake-arbitration display, and `identity.read_identity()` keeps the legacy
-> fallback so `/rooms/` stays consistent across both. The full consolidation
-> — peering reading the identity room instead of its own var, and the
-> `/peers/` room field being removed — is deliberately deferred. The scope
-> guard here is narrow: room moved *into* the identity home and `/rooms/`
-> reads from it; nothing yet *removed* the peering-side room.
+> **Compatibility note.** Peering still accepts its legacy
+> `JASPER_PEER_ROOM` data key, and `identity.read_identity()` keeps that
+> fallback so `/rooms/` stays consistent for older installs. There is no
+> separate peering room editor anymore.
 
 Coverage for the shared primitives is hardware-free:
 `tests/test_avahi_service.py` (render/escape/stray-guard/idempotence/
@@ -2436,20 +2425,18 @@ documented + tested the inter-speaker `channel` vs intra-speaker
 −6.02 dB L+R sum, `master_gain` left identity for the Ducker, no
 positive gain; hardware-free tests incl. a weave into the real
 `outputd-cutover.yml`; live weaving deferred to P1.3.
-Earlier 2026-06-08: combined `/rooms` "Speakers" surface: the
-wake-response (peering) toggle + Primary checkbox folded out of the old
-`/peers/` page into `/rooms`, which is now canonical; `/peers/`
-301-redirects there (`deploy/nginx-jasper.conf`). `rooms_setup` **reuses**
-`peering_setup`'s readers/`PEERING_ENV_FILE`/restart helpers — `POST
-/peering` (CSRF via `X-CSRF-Token`) read-modify-writes `peering.env`
+Earlier 2026-06-08 / updated 2026-06-14: combined `/rooms` "Speakers"
+surface: the wake-response (peering) toggle + Primary checkbox lives on
+`/rooms`, which is canonical and has no legacy `/peers` redirect. `rooms_setup`
+uses `jasper.peering.config`'s readers/`PEERING_ENV_FILE` — `POST /peering`
+(CSRF via `X-CSRF-Token`) read-modify-writes `peering.env`
 preserving `JASPER_PEER_ROOM`, and the self block in `/rooms.json` gains a
 `peering: {enabled, primary}` block read fresh from the SSOT. Room is NOT
 edited on `/rooms` — it stays at `/speaker/` (the self card links there).
 Bond-forming controls remain deferred (§8 P0). Coverage added in
 `tests/test_web_rooms_setup.py` (POST happy path / bad-CSRF reject /
-unknown-path-404-before-CSRF / `peering`-block shape / `/peers/`→`/rooms/`
-301 redirect string-assert). The peering → identity room consolidation is
-still a **flagged follow-up, not done** (below). Earlier 2026-06-07
+unknown-path-404-before-CSRF / `peering`-block shape / no legacy `/peers`
+route string-assert). Earlier 2026-06-07
 (identity/discovery refactor): extracted three
 shared primitives — the one mDNS-SD browse `jasper/mdns.py` (`browse_once`),
 the one Avahi `*.service` renderer `jasper/avahi_service.py`
@@ -2459,9 +2446,9 @@ and the single speaker-identity reader `jasper/identity.py`
 (`jasper/speaker_name.py`, `JASPER_SPEAKER_ROOM`; `/speaker` writes it;
 `install.sh migrate_speaker_room` seeds it from the legacy peering room);
 `/rooms/`'s self block reads name/room/hostname through `read_identity()`.
-The peering → identity room consolidation (peering reads identity; `/peers/`
-room field removed) is a **flagged follow-up, not done** — see §8 "Friendly
-names + identity". Hardware-free coverage: `tests/test_mdns.py`,
+Peering still accepts the legacy `JASPER_PEER_ROOM` fallback for older env
+files; the user-facing room editor now lives only in `/speaker/` — see §8
+"Friendly names + identity". Hardware-free coverage: `tests/test_mdns.py`,
 `tests/test_avahi_service.py`, `tests/test_identity.py`, the room half of
 `tests/test_speaker_name.py`, and `tests/test_web_rooms_setup.py`. Earlier
 2026-06-07: friendly-name advertising (`name=` TXT on `_jasper-control._tcp`).

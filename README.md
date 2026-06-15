@@ -254,9 +254,9 @@ when the configured AEC mic is present with 6-channel firmware — see
   to `JTS`; the URL remains the hostname chosen in Imager
   (`jts.local`, `jts3.local`, etc.).
 - ✅ **USB Audio Input** (`jasper-usbsink`) — fourth music source.
-  Plug a computer into the Pi's USB-C port (via the 8086
-  Consultancy USB-C/PWR Splitter) and the host sees the configured
-  speaker name as a USB audio output device. Off by default; toggle at
+  Plug a computer into the Pi's USB data/OTG port through a compatible
+  power/data splitter or hub and the host sees the configured speaker
+  name as a USB audio output device. Off by default; toggle at
   `http://jts.local/sources/` enables it. The host's volume slider
   drives JTS's canonical `listening_level` (feels like spinning the
   dial). Joins the existing mux arbitration for latest-source-wins
@@ -534,9 +534,9 @@ reference. Currently:
   arbitration. When a household runs multiple JTS speakers on the
   same LAN, peering picks exactly one winner per wake event so they
   don't all answer at once. Off by default; user flips it on at
-  `http://jts.local/peers/`. P2P via mDNS-SD + multicast UDP, no
+  `http://jts.local/rooms/`. P2P via mDNS-SD + multicast UDP, no
   hub, no SPOF. **Start here for `jasper/peering/`, the wake-handler
-  restructure, or anything related to the `/peers/` wizard.**
+  restructure, or anything related to the `/rooms/` wake-response card.**
 - [`HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md) — **In-progress
   grouped playback.** Stereo-pair control/observability, the music
   dataplane, and member-local TTS are built and off by default; the
@@ -971,7 +971,7 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
 | `jasper-usbsink` (USB audio source) | **Disabled by default**, ~22 MB when on | 0 MB off, ~22 MB on | ~3% of one core while host streams |
 | `jasper-usbsink-init` (gadget ConfigFS oneshot) | follows usbsink | one-shot, ~0 | ~0 |
-| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
+| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
@@ -981,9 +981,9 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 
 The five web-wizard daemons are socket-activated — systemd holds
 their ports open and only spawns the daemon when a tab opens any of
-its pages. `jasper-web` alone hosts fifteen URL surfaces (Spotify,
-voice, Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit, Home
-Assistant, Weather, Sound, Wake-Corpus, Speaker, Rooms) on fifteen
+its pages. `jasper-web` alone hosts fourteen URL surfaces (Spotify,
+voice, Google, AirPlay, Sources, Wake, Wi-Fi, Transit, Home
+Assistant, Weather, Sound, Wake-Corpus, Speaker, Rooms) on fourteen
 loopback ports; the
 other four daemons each host one. All five exit after 10 min of no
 requests, so the resident cost is zero between

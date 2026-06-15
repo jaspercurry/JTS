@@ -9,6 +9,15 @@
 
 ## Status
 
+- ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
+  followers do not run local room-correction, balance, or sync
+  measurement flows. `GET /correction/`, `/correction/balance`, and
+  `/correction/sync` render a leader-owned notice, and all mutating
+  correction/balance/sync POST routes return HTTP 409 while the speaker
+  is a follower. These are content-calibration surfaces for the paired
+  playback image; run them from the leader. Driver-DSP/crossover work
+  remains local to the box that owns the DAC path and is documented in
+  the sound/active-speaker handoff.
 - ✅ **Phase 0 — TLS + skeleton wizard.** PR #40 merged 2026-05-09.
   Self-signed cert + iOS trust dance documented; mic-permission
   page with `getSettings()` constraint verify lands at
@@ -1595,7 +1604,10 @@ Internal:
 
 ---
 
-Last verified: 2026-06-13 (pair time-of-arrival calibration now lives
+Last verified: 2026-06-15 (bonded-follower delegation rechecked against
+`jasper/web/correction_setup.py`: follower pages point to the leader and
+mutating correction/balance/sync routes fail with HTTP 409. Earlier
+2026-06-13: pair time-of-arrival calibration now lives
 under the correction umbrella: sync_measure marker/correlation core,
 gainless CamillaDSP Delay emitter, and /sync route sharing the
 measurement_window with /correction and /balance. Earlier 2026-06-12:

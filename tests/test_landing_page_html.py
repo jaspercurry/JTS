@@ -512,14 +512,14 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     assert 'id="pair-manage-link" href="/rooms/" data-requires="pair_management" hidden' in html
     assert "fetch('/grouping')" in html
     assert "'Pair volume'" in html
-    assert "HOST_RE" in html
-    assert "IPV4_RE" in html
-    assert "function localWebHost" in html
-    assert "host + '.local'" in html
+    assert "import('/assets/shared/js/local-web-host.js')" in html
     assert "leaderLink.href = 'http://' + leaderHost + '/';" in html
     assert "leaderLink.href = 'http://' + g.leader_addr" not in html
     # The banner script writes text, never markup.
     pair_js = html.split("Stereo-pair banner", 1)[1].split("Source selector", 1)[0]
+    assert "HOST_RE" not in pair_js
+    assert "IPV4_RE" not in pair_js
+    assert "function localWebHost" not in pair_js
     assert "innerHTML" not in pair_js
     # nginx exposes GET /grouping on the landing origin.
     nginx = _NGINX_PATH.read_text(encoding="utf-8")

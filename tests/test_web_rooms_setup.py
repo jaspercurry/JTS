@@ -1,7 +1,6 @@
-"""Tests for the /rooms/ wizard — the read-only multi-room directory.
+"""Tests for the /rooms/ wizard — the multi-room directory.
 
-Unlike /peers/ (which server-renders its discovered-peer rows and HTML-escapes
-them inline), /rooms/ renders client-side: the GET / body is a static canonical
+/rooms/ renders client-side: the GET / body is a static canonical
 shell (an `#app` mount point + a `type="module"` loader) and ALL discovered,
 untrusted data is delivered separately over GET /rooms.json (an
 `application/json` document, not HTML) for the ES module to build via DOM/text
@@ -14,7 +13,7 @@ APIs. So the escaping contract this file asserts is two-pronged:
    markup.
 
 It also pins the write scope (exactly one POST — /peering, the wake-response
-toggle, reusing peering_setup's env file + readers + restart helpers), the
+toggle, reusing jasper.peering.config's env file + readers), the
 /rooms.json payload shape (incl. the self `peering` block), self-exclusion from
 `peers`, the canonical-page surface, the public module surface, and the wiring
 contract (port 8785 / env var / route / ListenStream / nginx) that other agents
@@ -53,11 +52,7 @@ _OFF_GROUPING = {
 
 
 class _FakeHandler:
-    """Minimal BaseHTTPRequestHandler stand-in for driving do_GET.
-
-    Mirrors the shim in tests/test_web_peering_setup.py so the two wizard
-    suites read alike.
-    """
+    """Minimal BaseHTTPRequestHandler stand-in for driving do_GET."""
 
     def __init__(self, path: str, cookies: str = "") -> None:
         self.path = path
@@ -157,7 +152,7 @@ def test_get_root_renders_canonical_document(monkeypatch):
 
 def test_get_root_has_shared_app_header(monkeypatch):
     # The combined directory + wake-response surface is titled "Speakers"
-    # ("my other speakers" is one household concern) — /peers/ redirects here.
+    # ("my other speakers" is one household concern) — /rooms/ is canonical.
     _patch_discovery(monkeypatch, speakers=[])
     out = _get("/").wfile.getvalue().decode()
     assert 'class="app-header"' in out
@@ -189,8 +184,9 @@ def test_rooms_module_keeps_pair_hosts_local_not_raw_ip():
         encoding="utf-8"
     )
 
-    assert "function localWebHost" in js
-    assert "IPV4_RE" in js
+    assert 'import { localWebHost } from "/assets/shared/js/local-web-host.js";' in js
+    assert "function localWebHost" not in js
+    assert "IPV4_RE" not in js
     assert 'defRow("Leader", leaderHost || "leader")' in js
     assert 'h("code.bond-current__addr", null, leaderHost)' in js
     assert 'h("code.bond-current__addr", null, g.leader_addr)' not in js
@@ -564,7 +560,7 @@ def test_unknown_get_route_404s(monkeypatch):
 # ----------------------------------------------------------------------
 # POST /peering — the wake-response write surface.
 #
-# Reuses peering_setup's env file + readers; this suite pins the wiring
+# Reuses jasper.peering.config's env file + readers; this suite pins the wiring
 # (route-check before CSRF, read-modify-write preserving JASPER_PEER_ROOM,
 # the daemon restarts, the response shape) without touching real
 # /var/lib/jasper files.
@@ -581,8 +577,13 @@ def _post(path: str, body: bytes, *, csrf_ok: bool, monkeypatch):
                         lambda h: h.send_response(403) or h.end_headers())
     monkeypatch.setattr(rooms_setup, "restart_voice_daemon",
                         lambda: restarts.__setitem__("voice", restarts["voice"] + 1))
-    monkeypatch.setattr(rooms_setup.peering_setup, "_restart_jasper_control",
-                        lambda: restarts.__setitem__("control", restarts["control"] + 1))
+    monkeypatch.setattr(
+        rooms_setup, "restart_systemd_units",
+        lambda *units: (
+            restarts.__setitem__("control", restarts["control"] + 1)
+            if units == ("jasper-control",) else None
+        ),
+    )
     h = _FakeHandler(path)
     h.headers["Content-Length"] = str(len(body))
     h.rfile = BytesIO(body)
@@ -593,7 +594,7 @@ def _post(path: str, body: bytes, *, csrf_ok: bool, monkeypatch):
 def _seed_peering_env(tmp_path, monkeypatch, text):
     envp = tmp_path / "peering.env"
     envp.write_text(text)
-    monkeypatch.setattr(rooms_setup.peering_setup, "PEERING_ENV_FILE", str(envp))
+    monkeypatch.setattr(rooms_setup.peering_config, "PEERING_ENV_FILE", str(envp))
     return envp
 
 
@@ -684,18 +685,18 @@ def test_post_peering_rejects_malformed_body(monkeypatch, tmp_path):
     assert envp.read_text() == "JASPER_PEERING=off\n"  # untouched
 
 
-def test_post_peering_reuses_peering_setup_constants():
-    """Wiring contract: rooms_setup imports peering_setup and writes through
-    its PEERING_ENV_FILE constant + restart helper — it does NOT re-derive the
-    env path or restart logic (reuse, not duplication)."""
-    assert rooms_setup.peering_setup.PEERING_ENV_FILE.endswith("peering.env")
-    assert callable(rooms_setup.peering_setup._load_state)
-    assert callable(rooms_setup.peering_setup._restart_jasper_control)
+def test_post_peering_reuses_peering_config_constants():
+    """Wiring contract: rooms_setup imports jasper.peering.config and writes
+    through its PEERING_ENV_FILE constant — it does NOT re-derive the env
+    path or parse logic."""
+    assert rooms_setup.peering_config.PEERING_ENV_FILE.endswith("peering.env")
+    assert callable(rooms_setup.peering_config.read_state)
+    assert callable(rooms_setup.peering_config.state_enabled)
 
 
 def test_rooms_json_peering_block_reflects_env(monkeypatch, tmp_path):
-    """The /rooms.json self.peering block is read FRESH from peering.env via the
-    reused peering_setup readers — an on/primary file shows on/primary."""
+    """The /rooms.json self.peering block is read FRESH from peering.env via
+    jasper.peering.config — an on/primary file shows on/primary."""
     _seed_peering_env(
         tmp_path, monkeypatch,
         "JASPER_PEERING=on\nJASPER_PEER_PRIMARY=1\n",
@@ -711,7 +712,7 @@ def test_rooms_json_peering_block_reflects_env(monkeypatch, tmp_path):
     monkeypatch.setattr(rooms_setup, "read_grouping_state", lambda *a, **k: dict(_OFF_GROUPING))
     monkeypatch.setattr(rooms_setup, "_discover_speakers", lambda *a, **k: [])
     rooms_setup._disc_cache.update(at=0.0, result=[])
-    # Clear any ambient env so peering_setup's os.environ fallthrough can't lie.
+    # Clear any ambient env so peering_config's os.environ fallthrough can't lie.
     for k in ("JASPER_PEERING", "JASPER_PEER_PRIMARY"):
         monkeypatch.delenv(k, raising=False)
 
@@ -783,20 +784,12 @@ def test_nginx_proxies_rooms_to_8785():
     assert "proxy_pass http://127.0.0.1:8785/;" in nginx_text
 
 
-def test_nginx_redirects_peers_to_rooms():
-    """The wake-response toggle folded into the combined /rooms "Speakers"
-    surface, so /peers/ is no longer a page — nginx 301-redirects it to the
-    canonical /rooms/ (the old URL keeps working). String-assert the config
-    the same way test_nginx_proxies_rooms_to_8785 does: the /peers/ block must
-    `return 301 /rooms/;` and must NOT proxy to peering_setup's :8776 anymore
-    (the :8776 backend stays up serving the reused helpers/daemon-status — see
-    docs/HANDOFF-multiroom.md §6 — but users land on /rooms)."""
-    nginx_text = (_REPO / "deploy" / "nginx-jasper.conf").read_text()
-    assert "location /peers/ {" in nginx_text
-    assert "return 301 /rooms/;" in nginx_text
-    # The old proxy target is gone — /peers/ no longer routes users to the
-    # peering page; it redirects.
-    assert "proxy_pass http://127.0.0.1:8776/;" not in nginx_text
+def test_nginx_has_no_peers_route():
+    """No legacy /peers redirect/page remains; /rooms is the only surface."""
+    for conf in ("nginx-jasper.conf", "nginx-jasper-streambox.conf"):
+        nginx_text = (_REPO / "deploy" / conf).read_text()
+        assert "/peers" not in nginx_text
+        assert "8776" not in nginx_text
 
 
 # --- peer label derivation -------------------------------------------------

@@ -2232,8 +2232,8 @@ def main(argv: list[str] | None = None) -> int:
     # Multi-device peering daemon. No-op (no thread, no asyncio loop,
     # no zeroconf import) when /var/lib/jasper/peering.env has
     # JASPER_PEERING=off — the default. The user enables it via the
-    # /peers/ web wizard (added in a follow-up PR), which writes the
-    # env file and restarts jasper-control to pick up the new mode.
+    # /rooms/ Speakers page, which writes the env file and restarts
+    # jasper-control to pick up the new mode.
     start_peering_daemon_if_enabled()
     # Tier 3 resilience: protocol-level liveness probe for shairport-sync
     # so a wedged AP2 control plane recovers without manual intervention.

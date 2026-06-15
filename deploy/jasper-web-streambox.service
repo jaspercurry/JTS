@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper streambox web setup service (Spotify + AirPlay + Sources + Speaker + Wi-Fi + Peers + Sound + Rooms)
+Description=Jasper streambox web setup service (Spotify + AirPlay + Sources + Speaker + Wi-Fi + Sound + Rooms)
 # Socket-activated by the profile-scoped jasper-web.socket installed from
 # deploy/jasper-web-streambox.socket. The service exits after 10 min idle.
 Requires=jasper-web.socket

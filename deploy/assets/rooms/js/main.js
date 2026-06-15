@@ -37,6 +37,7 @@
 
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { localWebHost } from "/assets/shared/js/local-web-host.js";
 
 const POLL_MS = 7000;
 const root = document.getElementById("app");
@@ -159,15 +160,6 @@ function safeHttpUrl(value) {
   } catch {
     return "";
   }
-}
-
-const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/;
-const IPV4_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
-
-function localWebHost(value) {
-  const host = String(value || "").trim().replace(/\.$/, "");
-  if (!host || !HOST_RE.test(host) || IPV4_RE.test(host)) return "";
-  return host.endsWith(".local") ? host : host + ".local";
 }
 
 function defRow(label, value) {

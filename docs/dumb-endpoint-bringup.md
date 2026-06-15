@@ -219,7 +219,7 @@ The install roles:
 | Role | Hardware | Installs | Runs |
 |---|---|---|---|
 | Full speaker | Pi 5 class | everything | role-derived: solo / leader / dumb follower (voice, AEC, renderers, mux parked while bonded) |
-| Streambox | Zero 2 W class, pending validation | renderer/DSP profile: AirPlay / Spotify Connect / Bluetooth / USB Audio Input, mux, fan-in/outputd, CamillaDSP, shared capability-gated web, local `/sound` | local music target; no voice/AI/grouping leader |
+| Streambox | Zero 2 W class, pending validation | renderer/DSP profile: AirPlay / Spotify Connect / Bluetooth / USB Audio Input, mux, fan-in/outputd, CamillaDSP, shared capability-gated web, local `/sound` | local music target; no voice/AI brain; may expose local rooms/pair controls when product policy allows |
 | Satellite endpoint | Zero 2 W class | core profile only: `jasper-control` + the multiroom plumbing + a managed `snapclient` unit + ALSA bits | `jasper-control` + `snapclient`; everything else was never installed |
 
 The output topology:
@@ -533,7 +533,7 @@ a place the work will otherwise drift or wedge:
   shared landing page and the combined `jasper-web` bundle filtered by
   install role:
   `/spotify/`, `/airplay/`, `/sources/`, `/sound/`, `/speaker/`, `/wifi/`,
-  `/rooms/`, and `/peers/` are live; voice/wake/assistant-only cards are
+  and `/rooms/` are live; voice/wake/assistant-only cards are
   hidden by the shared `system_capabilities` payload and their nginx
   routes are absent. Pair-management is also capability-gated: streambox
   keeps `/rooms/`, while satellite-only hides the card and omits the route.
@@ -641,8 +641,10 @@ Build:
 
 Exit criteria:
 
-- A fresh Zero installs the endpoint profile in minutes, with no cargo,
-  no AEC3 compile, and no voice/wake dependencies on disk.
+- A fresh Zero defaults to the streambox profile when it is not already
+  bonded as a satellite; an explicit endpoint/satellite-only install
+  still completes in minutes, with no cargo, no AEC3 compile, and no
+  voice/wake dependencies on disk.
 - All three boundary guards are in CI: import-cost, install-plan, and
   the full-profile byte-identical regression guard.
 - The profile is persisted on the device and a bare re-deploy cannot

@@ -333,8 +333,8 @@ class Config:
 
     # Multi-device peering (multi-Pi wake arbitration). Read once at
     # startup from the JASPER_PEERING env var which systemd merges in
-    # from /var/lib/jasper/peering.env (written by the /peers/ web
-    # wizard). When False (the default), every peer-arbitrate code
+    # from /var/lib/jasper/peering.env (written by /rooms/). When False
+    # (the default), every peer-arbitrate code
     # path is a no-op — single-Pi installs pay zero cost. When True,
     # WakeLoop calls jasper-control's peering UDS on every wake event
     # to ask "should I take this turn?" — see jasper.peering for the

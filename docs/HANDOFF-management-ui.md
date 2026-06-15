@@ -407,7 +407,7 @@ reordering better than the prior flat enumeration):
 | **Sound** | Sound profile → `/sound/` · Room correction → `https://…/correction/` (HTTPS, preflight first) · Advanced DSP → CamillaGUI `:5005/` (external, new tab) |
 | **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Wake detection → `/wake/` |
 | **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
-| **Network** | Wi-Fi → `/wifi/` · Peering → `/peers/` |
+| **Network** | Wi-Fi → `/wifi/` · Speakers / peering → `/rooms/` |
 | **Accessories** | Dial → `/dial/` |
 | **System** | Status → `/system/` · Speaker name → `/speaker/` · Software → `/system/` · Developer tools (operator) → `/wake-corpus/` |
 
@@ -448,13 +448,13 @@ still have their own service/socket wrappers.
 | `/sources/` | `sources_setup.py` | 8773 | AirPlay/BT/Spotify/USB toggles |
 | `/wake/` | `wake_setup.py` | 8774 | Wake-word + sensitivity + detection layers |
 | `/wifi/` | `wifi_setup.py` | 8775 | NetworkManager wrapper |
-| `/peers/` | `peering_setup.py` | 8776 | Multi-JTS peering |
 | `/transit/` | `transit_setup.py` | 8777 | Transit address + providers |
 | `/ha/` | `home_assistant_setup.py` | 8778 | Home Assistant connection |
 | `/weather/` | `weather_setup.py` | 8779 | Weather default |
 | `/wake-corpus/` | `wake_corpus_setup.py` | 8782 | Wake-word corpus recorder |
 | `/speaker/` | `speaker_setup.py` | 8783 | Speaker display name |
 | `/sound/` | `sound_setup.py` | 8784 | Sound curve + preference EQ |
+| `/rooms/` | `rooms_setup.py` | 8785 | Speakers, pairing, wake-response peering |
 
 Static and external companion surfaces:
 
@@ -605,7 +605,7 @@ System
 | Google | Integrations › Google | Calendar/Gmail account capability |
 | Home Assistant | Integrations › Home Assistant | Smart-home service capability |
 | Integrations | Split into Sources + Integrations | Removes one ambiguous layer |
-| Speaker peering | Network › Peering | Honest network concern |
+| Wake response | Speakers › Wake response | Lives with the speaker directory on `/rooms/` |
 | Accessories | Promoted to top-level Accessories | Input devices, not network |
 | Sound | Sound › Sound profile | Preference EQ and curves |
 | CamillaDSP | Sound › Advanced DSP | Configuration, not health |
@@ -738,7 +738,7 @@ For each row on `/`:
 - **No long description.** The destination explains itself.
 
 The long explainers don't disappear — they move to where they're useful.
-"Why peering" lives on `/peers/`; "what AEC does" lives on the AEC toggle
+"Why peering" lives on `/rooms/`; "what AEC does" lives on the AEC toggle
 inside Advanced. The index doesn't need to teach; the destination does.
 
 ### 6.2 Side-by-side
@@ -747,7 +747,7 @@ inside Advanced. The index doesn't need to teach; the destination does.
 |---|---|
 | **JTS speaker** / `Manage your speaker.` | **JTS** *(speaker display name; no redundant subhead)* |
 | **Wake word ›** — Pick which phrase wakes the speaker — "Jarvis", "Hey Jarvis", "Alexa", or "Hey Mycroft". New models can be added by updating `jasper/wake_models.py`. | **Wake detection** · Jarvis · 0.50 |
-| **Speaker peering ›** — Off by default. When you have multiple JTS speakers on the same network, turn this on so only one responds to each wake word instead of all of them at once. | **Peering** · Off |
+| **Wake response ›** — Off by default. When you have multiple JTS speakers on the same network, turn this on so only one responds to each wake word instead of all of them at once. | **Peering** · Off |
 | **Room correction ›** — Measure your room from your iPhone and apply correction filters to CamillaDSP. Browser will warn "Not Private" the first time — see the note below. | **Room correction** · Off |
 | **Voice provider ›** — Choose which real-time voice backend the speaker uses (Gemini, OpenAI, or Grok) and paste API keys. | **Voice** · OpenAI · Marin |
 | **AirPlay sync mode ›** — Synced (default — works for music, video A/V, and multi-room) or free-running (fallback for DAC-specific issues). | *(gone — sub-setting under Sources › AirPlay)* |

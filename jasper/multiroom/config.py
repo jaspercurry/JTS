@@ -93,9 +93,9 @@ TRIM_DB_MAX = 0.0
 # A follower's leader_addr must be hostname/IPv4-shaped: it is consumed by
 # THREE surfaces (snapclient argv, the control-API volume forward's URL
 # build, the landing page's leader link) and a string with '/', '@', or
-# whitespace would reshape a URL rather than name a host. Same alphabet as
-# the landing page's HOST_RE gate — one rule, enforced at validation time
-# so every consumer downstream can trust the shape.
+# whitespace would reshape a URL rather than name a host. This is the same
+# hostname alphabet the browser local-web-host helper accepts before it
+# further rejects raw IPs for user-facing links.
 _LEADER_ADDR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
 
 

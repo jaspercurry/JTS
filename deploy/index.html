@@ -582,7 +582,7 @@
         </div>
       </section>
 
-      <section class="settings-section" aria-labelledby="sound-heading" data-requires="content_dsp" hidden>
+      <section class="settings-section" id="sound-section" aria-labelledby="sound-heading" data-requires="content_dsp" hidden>
         <h2 class="eyebrow group-title" id="sound-heading">Sound</h2>
         <div class="settings-list">
           <a class="setting-row" href="/sound/">
@@ -684,11 +684,11 @@
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
-          <a class="setting-row" href="/peers/">
+          <a class="setting-row" href="/rooms/">
             <span class="row-icon"><svg aria-hidden="true"><use href="#icon-peers"></use></svg></span>
             <span class="setting-copy">
-              <span class="setting-title">Peering</span>
-              <span class="setting-status">Off by default</span>
+              <span class="setting-title">Speakers</span>
+              <span class="setting-status">Speakers and wake response</span>
             </span>
             <svg class="chevron" aria-hidden="true"><use href="#icon-chevron"></use></svg>
           </a>
@@ -1043,34 +1043,39 @@
 
     // Stereo-pair banner. While this speaker is an active bond member
     // the banner explains who owns playback. On a FOLLOWER the source
-    // selector hides (sources play through the leader) and the volume
-    // slider is relabeled — its requests are forwarded server-side by
-    // jasper-control's bonded-follower proxy, so it controls the PAIR
-    // volume. Untrusted grouping fields reach the DOM as text nodes
-    // only; the leader link is built only for a stable .local web host.
+    // selector and content-DSP cards hide (sources and sound shaping play
+    // through the leader) and the volume slider is relabeled — its requests
+    // are forwarded server-side by jasper-control's bonded-follower proxy,
+    // so it controls the PAIR volume. Untrusted grouping fields reach the
+    // DOM as text nodes only; the leader link is built only for a stable
+    // .local web host.
     (function() {
       var banner = document.getElementById('pair-banner');
       var text = document.getElementById('pair-text');
       var channelEl = document.getElementById('pair-channel');
       var leaderLink = document.getElementById('pair-leader-link');
       var sourceSection = document.getElementById('source-section');
+      var soundSection = document.getElementById('sound-section');
       var volumeEyebrow = document.getElementById('volume-eyebrow');
       if (!banner || !sourceSection) return;
       var POLL_MS = 10000;
-      var HOST_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/;
-      var IPV4_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
-
-      function localWebHost(value) {
-        var host = String(value || '').trim().replace(/\.$/, '');
-        if (!host || !HOST_RE.test(host) || IPV4_RE.test(host)) return '';
-        return host.endsWith('.local') ? host : host + '.local';
-      }
+      var localWebHost = function() { return ''; };
+      var helperReady = import('/assets/shared/js/local-web-host.js')
+        .then(function(mod) {
+          if (mod && typeof mod.localWebHost === 'function') {
+            localWebHost = mod.localWebHost;
+          }
+        })
+        .catch(function() {});
 
       function apply(g) {
         var bonded = !!(g && g.enabled && g.bond_id && !g.error);
         var follower = bonded && g.role === 'follower';
         banner.hidden = !bonded;
         sourceSection.style.display = follower ? 'none' : '';
+        if (soundSection) {
+          soundSection.style.display = follower ? 'none' : '';
+        }
         // Dumb-follower profile: voice + mic are parked while paired —
         // the leader owns the assistant. Annotate the mic card so a
         // dead /mic probe reads as intended state, not breakage. Text
@@ -1122,6 +1127,7 @@
         } catch (_) {}
       }
       setInterval(poll, POLL_MS);
+      helperReady.then(poll);
       poll();
     })();
 

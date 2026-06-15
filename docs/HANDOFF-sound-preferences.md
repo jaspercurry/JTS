@@ -20,6 +20,16 @@ It is deliberately separate from `/correction/`:
   stereo-pair time-of-arrival calibration; that is correction/sync
   calibration state, not a preference-EQ control.
 
+While a speaker is an active bonded follower, `/sound/` is a delegated
+surface: the page shows a leader-owned notice and does not load the
+preference-EQ editor. Content-DSP mutation routes reject with HTTP 409
+instead of changing local sound state (`/sound/apply`, `/sound/audition`,
+`/sound/live-draft`, `/sound/settings`, and the profile-library writes).
+This is intentional: the leader renders content EQ, room correction, and
+volume shaping for the paired image. Local active-speaker/driver-DSP
+routes remain separate because crossover and driver protection belong to
+the box that owns the DAC path.
+
 The advanced parametric editor is intentionally touch-first: users
 adjust filter type, frequency, gain, and Q/width with controls while the
 graph keeps the single total-response curve visually dominant. Each
@@ -711,4 +721,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-14
+Last verified: 2026-06-15
