@@ -47,17 +47,22 @@ def test_linux_only_c_extensions_have_platform_markers() -> None:
         assert matches == [requirement]
 
 
-def test_contributing_documents_uv_command_with_test_runtime_extras() -> None:
-    """The `uv` first-PR command in CONTRIBUTING.md must install the runtime
-    extras the hardware-free suite imports (numpy, httpx, scipy, ...).
+def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
+    """Every contributor-facing "build your test venv" instruction must install
+    the runtime extras the hardware-free suite imports (numpy, httpx, scipy, ...).
 
-    A bare `uv sync` installs only the base deps + the `dev` group, so pytest
-    dies with dozens of ModuleNotFoundError on a clean checkout. uv 0.11 has no
-    `[tool.uv] default-extras` knob to fix that from config, so CONTRIBUTING.md
-    documents the explicit `--extra full --extra streambox` flags. Pin the
-    command so the contributor front door can't silently re-break (the 2026-06
-    OSS due-diligence finding that this regressed once already).
+    A bare `uv sync` (or `pip install -e '.[dev]'`) installs only the dev tools,
+    so pytest dies with dozens of ModuleNotFoundError on a clean checkout. uv
+    0.11 has no `[tool.uv] default-extras` knob to fix that from config, so the
+    docs and help spell the extras out explicitly. Pin BOTH surfaces — the
+    CONTRIBUTING.md quick start and the conftest wrong-Python rebuild hint — so
+    the front door can't silently re-break (the 2026-06 OSS due-diligence
+    finding, which regressed once because only one surface was fixed).
     """
 
     contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     assert "uv sync --extra full --extra streambox" in contributing
+
+    conftest = (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+    assert "uv sync --extra full --extra streambox" in conftest
+    assert "'.[full,dev]'" in conftest
