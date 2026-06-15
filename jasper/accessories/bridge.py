@@ -23,6 +23,7 @@ import logging
 from typing import Awaitable, Callable, Optional
 
 from jasper.control.client import AsyncControlClient, ControlError, ControlResponse
+from jasper.log_event import log_event
 
 # pyudev is Linux-only (Pi runtime). Imported lazily inside _supervise
 # so the rest of the module (registry types, _TapCounter, _Coalescer)
@@ -89,14 +90,21 @@ class _Coalescer:
             resp = await self._post(
                 "POST", self._path, {"delta_percent": delta},
             )
-            logger.info(
-                "event=knob.adjust device=%s delta=%+d status=%d",
-                self._device_name, delta, resp.status,
+            log_event(
+                logger,
+                "knob.adjust",
+                device=self._device_name,
+                delta=f"{delta:+d}",
+                status=resp.status,
             )
         except ControlError as e:
-            logger.warning(
-                "event=knob.adjust.failed device=%s delta=%+d err=%s",
-                self._device_name, delta, e,
+            log_event(
+                logger,
+                "knob.adjust.failed",
+                level=logging.WARNING,
+                device=self._device_name,
+                delta=f"{delta:+d}",
+                err=str(e),
             )
 
 
@@ -113,14 +121,22 @@ async def _post_once(
             action.path,
             action.body or None,
         )
-        logger.info(
-            "event=knob.action device=%s key=%s path=%s status=%d",
-            device_name, key_name, action.path, resp.status,
+        log_event(
+            logger,
+            "knob.action",
+            device=device_name,
+            key=key_name,
+            path=action.path,
+            status=resp.status,
         )
     except ControlError as e:
-        logger.warning(
-            "event=knob.action.failed device=%s key=%s err=%s",
-            device_name, key_name, e,
+        log_event(
+            logger,
+            "knob.action.failed",
+            level=logging.WARNING,
+            device=device_name,
+            key=key_name,
+            err=str(e),
         )
 
 
