@@ -3,9 +3,22 @@
 Re-homed verbatim from the original monolithic
 ``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
 for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+preserved. No check logic changed in the split.
+
+The disk-pressure checks (``check_disk_space``,
+``check_correction_storage``, ``check_wake_events_storage``) live
+here rather than in a new module because they share this domain's
+shape exactly: a full root filesystem is the same class of
+slow-burn resource exhaustion as a full zram device, and a full SD
+card on an unclean power-cut is the corruption hazard the whole
+resilience ladder (Tier 5 watchdog, persistent journal, OOM ladder)
+exists to survive — yet nothing warned before the write failed. They
+reuse the endpoint-tier idiom (``read_install_profile``) and the
+percentage-with-floor / skip-on-not-applicable conventions the RAM
+and zram checks already established."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from ...install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
@@ -493,4 +506,266 @@ def check_audio_path_no_swap() -> CheckResult:
     return CheckResult(
         "audio path no-swap", "ok",
         f"all {len(units)} audio-path daemons swap-free",
+    )
+
+
+# --- Disk-pressure checks (the slow-burn resource the resilience ladder
+#     exists to survive) -------------------------------------------------
+#
+# A full SD card is the corruption hazard behind the 2026-05-23 incident
+# class: write fails -> in-flight ext4 metadata -> dirty power-cut leaves
+# the partition needing recovery (worst case, an unbootable Pi). RAM and
+# zram already have live-pressure doctor lines; the root filesystem did
+# not. These add the missing early warning. Thresholds mirror the
+# memory-headroom check's "fail takes precedence over warn" shape so an
+# operator who raises the warn knob can never accidentally suppress the
+# fail.
+
+_DEFAULT_DISK_WARN_PERCENT = 85
+_DISK_FAIL_PERCENT = 95
+_GIB = 1024 ** 3
+
+
+def _disk_warn_percent() -> int:
+    """Operator-tunable WARN threshold (percent used). Falls back to the
+    85% default on unset / unparseable / out-of-range values so a fat-
+    fingered env line can't silently disable the warning. The FAIL
+    threshold (95%) is fixed — it is the "writes are about to fail"
+    line, not a preference."""
+    raw = os.environ.get("JASPER_DISK_WARN_PERCENT", "").strip()
+    if not raw:
+        return _DEFAULT_DISK_WARN_PERCENT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_DISK_WARN_PERCENT
+    # Keep it strictly below the fail line and above 0 so the band is
+    # always meaningful.
+    if value <= 0 or value >= _DISK_FAIL_PERCENT:
+        return _DEFAULT_DISK_WARN_PERCENT
+    return value
+
+
+@doctor_check(order=42.1, group="memory")
+def check_disk_space() -> CheckResult:
+    """WARN/FAIL on root-filesystem fullness before writes start failing.
+
+    A full root partition is the failure that turns a routine power-cut
+    into ext4 corruption (the 2026-05-23 incident class). os.statvfs is
+    POSIX-portable and needs no subprocess. Uses f_bavail (blocks
+    available to a non-root user) for the free figure so the number
+    matches what the daemons — none of which run as root for their data
+    writes — actually have, but computes "% used" from total vs free so
+    the reserved-blocks pool doesn't read as usable headroom.
+
+    Skips cleanly (ok) when os.statvfs is unavailable (non-POSIX dev
+    host) — same skip-on-not-applicable posture as the /proc and /sys
+    checks above. The path and the numbers are the only detail, so it is
+    inherently secret-free."""
+    path = "/"
+    statvfs = getattr(os, "statvfs", None)
+    if statvfs is None:
+        return CheckResult(
+            "disk space", "ok", "os.statvfs unavailable — skipped (not POSIX?)",
+        )
+    try:
+        st = statvfs(path)
+    except OSError as e:
+        return CheckResult(
+            "disk space", "warn",
+            f"couldn't statvfs {path}: {e.__class__.__name__}",
+        )
+    total = st.f_blocks * st.f_frsize
+    if total <= 0:
+        return CheckResult("disk space", "ok", f"{path}: zero-sized (skipped)")
+    free = st.f_bavail * st.f_frsize
+    used = total - free
+    pct_used = (used * 100) // total
+    free_gib = free / _GIB
+    warn_pct = _disk_warn_percent()
+    summary = f"{path}: {pct_used}% used, {free_gib:.1f} GiB free"
+    if pct_used >= _DISK_FAIL_PERCENT:
+        return CheckResult(
+            "disk space", "fail",
+            summary + f" — {_DISK_FAIL_PERCENT}%+ full; writes will start "
+            "failing and an unclean power-cut risks ext4 corruption. Free "
+            "space now (prune /var/lib/jasper/wake-events, old correction "
+            "sessions, journal: `journalctl --vacuum-size=100M`).",
+        )
+    if pct_used >= warn_pct:
+        return CheckResult(
+            "disk space", "warn",
+            summary + f" — over {warn_pct}% warn threshold "
+            "(JASPER_DISK_WARN_PERCENT). Reclaim space before it fills.",
+        )
+    return CheckResult("disk space", "ok", summary)
+
+
+# Bounds for the read-only storage-size walks below. A doctor check must
+# never run away on a 1 GB Pi, so the walk is hard-capped on BOTH entries
+# examined and directory depth — a corrupted dir with millions of entries
+# can't turn a health probe into an I/O storm. When a cap is hit the size
+# is reported as a lower bound ("≥") rather than silently undercounted.
+_STORAGE_WALK_MAX_ENTRIES = 50_000
+_STORAGE_WALK_MAX_DEPTH = 6
+
+
+def _bounded_dir_size(root: Path) -> tuple[int, bool]:
+    """Sum file sizes under ``root`` with a bounded ``os.scandir`` walk.
+
+    Returns ``(total_bytes, truncated)``. ``truncated`` is True when
+    either the entry cap or the depth cap stopped the walk early, so the
+    caller can render the figure as a floor. Deliberately self-contained
+    (does not reuse jasper.correction.bundles' unbounded ``rglob`` helper)
+    because a doctor probe must stay total and cheap regardless of how
+    pathological the directory has become. Symlinks are not followed
+    (``scandir`` is_dir/is_file default) so a stray symlink loop can't
+    inflate the count or escape the tree. Per-entry OSErrors are skipped,
+    never raised."""
+    total = 0
+    entries_seen = 0
+    truncated = False
+    # Iterative DFS with an explicit (path, depth) stack — no recursion,
+    # so depth is a hard numeric bound, not call-stack-limited.
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            it = os.scandir(current)
+        except OSError:
+            continue
+        with it:
+            for entry in it:
+                entries_seen += 1
+                if entries_seen > _STORAGE_WALK_MAX_ENTRIES:
+                    truncated = True
+                    return total, truncated
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth + 1 <= _STORAGE_WALK_MAX_DEPTH:
+                            stack.append((Path(entry.path), depth + 1))
+                        else:
+                            truncated = True
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+    return total, truncated
+
+
+def _storage_check(
+    *,
+    label: str,
+    path: Path,
+    warn_bytes: int,
+    knob: str,
+    note: str,
+) -> CheckResult:
+    """Shared body for the read-only storage-size warnings.
+
+    Read-only by contract: this reports growth, it never prunes or
+    deletes — retention is owned by the wake-event ring and the
+    correction subsystem themselves. Absent dir is ok (the feature just
+    hasn't produced data yet)."""
+    if not path.exists():
+        return CheckResult(label, "ok", f"{path} absent (no data yet)")
+    if not path.is_dir():
+        return CheckResult(label, "ok", f"{path} is not a directory (skipped)")
+    total, truncated = _bounded_dir_size(path)
+    mib = total / (1024 * 1024)
+    floor = "≥" if truncated else ""
+    detail = f"{floor}{mib:.0f} MiB under {path}"
+    if truncated:
+        detail += " (walk capped; lower bound)"
+    if total >= warn_bytes:
+        warn_mib = warn_bytes / (1024 * 1024)
+        return CheckResult(
+            label, "warn",
+            detail + f" — over the {warn_mib:.0f} MiB warn threshold "
+            f"({knob}). {note}",
+        )
+    return CheckResult(label, "ok", detail)
+
+
+_DEFAULT_CORRECTION_STORAGE_WARN_BYTES = 512 * 1024 * 1024  # 512 MiB
+_DEFAULT_WAKE_EVENTS_STORAGE_WARN_BYTES = 1300 * 1024 * 1024  # 1.3 GiB
+
+
+def _storage_warn_bytes(knob: str, default: int) -> int:
+    """Tunable byte threshold for a storage warning, falling back to the
+    default on unset / unparseable / non-positive values."""
+    raw = os.environ.get(knob, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+@doctor_check(order=42.2, group="memory")
+def check_correction_storage() -> CheckResult:
+    """Read-only size warning for the correction-session directory.
+
+    Each room-correction run keeps sweeps, captures, and (optionally)
+    private raw audio under /var/lib/jasper/correction/sessions/. On a
+    1 GB-RAM / modest-SD Pi a few un-pruned sessions can quietly eat real
+    SD headroom. This only *reports* growth — pruning stays owned by the
+    correction subsystem; the doctor must not delete a household's
+    measurement evidence. Threshold via
+    JASPER_CORRECTION_STORAGE_WARN_BYTES (default 512 MiB)."""
+    root = Path(
+        os.environ.get("JASPER_CORRECTION_ROOT", "/var/lib/jasper/correction")
+    )
+    sessions = Path(
+        os.environ.get(
+            "JASPER_CORRECTION_SESSIONS_DIR", str(root / "sessions"),
+        )
+    )
+    return _storage_check(
+        label="correction storage",
+        path=sessions,
+        warn_bytes=_storage_warn_bytes(
+            "JASPER_CORRECTION_STORAGE_WARN_BYTES",
+            _DEFAULT_CORRECTION_STORAGE_WARN_BYTES,
+        ),
+        knob="JASPER_CORRECTION_STORAGE_WARN_BYTES",
+        note=(
+            "Review old sessions at http://jts.local/correction/ and re-run "
+            "only if needed; the newest bundle is what's applied."
+        ),
+    )
+
+
+@doctor_check(order=42.3, group="memory")
+def check_wake_events_storage() -> CheckResult:
+    """Read-only size warning for the wake-event corpus directory.
+
+    The wake-event telemetry ring caps its WAV storage at
+    JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES (1 GiB default) and rolls
+    oldest-first, so steady-state size is bounded — but the SQLite DB and
+    any transient overshoot above the audio cap still live on the same SD
+    card. This surfaces the on-disk total so an operator can catch a ring
+    that has drifted well past its audio cap (a sign the reaper is wedged
+    or the cap was raised and forgotten). Read-only — the ring owns its
+    own oldest-first eviction. Threshold via
+    JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES (default 1.3 GiB, comfortably
+    above the 1 GiB audio cap so a healthy ring never warns)."""
+    wake_dir = Path(
+        os.environ.get("JASPER_WAKE_EVENTS_DIR", "/var/lib/jasper/wake-events")
+    )
+    return _storage_check(
+        label="wake-events storage",
+        path=wake_dir,
+        warn_bytes=_storage_warn_bytes(
+            "JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
+            _DEFAULT_WAKE_EVENTS_STORAGE_WARN_BYTES,
+        ),
+        knob="JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
+        note=(
+            "Well above the JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES audio cap — "
+            "check the ring reaper (journalctl -u jasper-voice | grep "
+            "wake_events) or lower the cap."
+        ),
     )

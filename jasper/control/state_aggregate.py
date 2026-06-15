@@ -69,6 +69,40 @@ def _safe_audio_quality_state() -> dict[str, Any]:
         }
 
 
+def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
+    """Root-filesystem fullness for /state.resilience — fail-soft.
+
+    Returns ``{path, percent_used, free_gib, total_gib}`` or ``None`` on
+    any error (non-POSIX dev host, statvfs failure), mirroring the
+    fail-soft contract every other resilience-block section follows: a
+    broken read leaves this section null and the rest of /state intact.
+    jasper-doctor's ``check_disk_space`` owns the actionable warn/fail
+    thresholds; this is the always-visible dashboard number that makes a
+    filling SD card observable before the doctor is run. Uses f_bavail
+    (non-root-available blocks) for free space so the figure matches what
+    the daemons can actually write, but derives percent-used from
+    total-vs-free so reserved blocks don't read as headroom."""
+    statvfs = getattr(os, "statvfs", None)
+    if statvfs is None:
+        return None
+    try:
+        st = statvfs(path)
+        total = st.f_blocks * st.f_frsize
+        if total <= 0:
+            return None
+        free = st.f_bavail * st.f_frsize
+        gib = 1024 ** 3
+        return {
+            "path": path,
+            "percent_used": ((total - free) * 100) // total,
+            "free_gib": round(free / gib, 1),
+            "total_gib": round(total / gib, 1),
+        }
+    except OSError:
+        logger.debug("disk snapshot read failed", exc_info=True)
+        return None
+
+
 def _same_config_path(left: Any, right: Any) -> bool:
     if not left or not right:
         return False
@@ -652,6 +686,13 @@ async def _get_state(
             # call (reconciler-owned, this daemon is never restarted on
             # identity changes); {"status": "absent"} pre-first-run.
             "identity": identity_state.snapshot(),
+            # Root-filesystem fullness ({path, percent_used, free_gib,
+            # total_gib}). A full SD card is the corruption hazard the
+            # whole resilience ladder exists to survive, yet nothing made
+            # it observable until writes failed. Fail-soft: null on a
+            # non-POSIX host or statvfs error. jasper-doctor's
+            # check_disk_space owns the warn(>85%)/fail(>95%) thresholds.
+            "disk": _disk_snapshot(),
         },
         "home_assistant": ha_status,
         # Multiroom grouping (off by default). null only if the fresh

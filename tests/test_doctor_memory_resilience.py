@@ -14,6 +14,7 @@ exist, (b) skip gracefully on dev hosts where they don't,
 from __future__ import annotations
 
 import io
+import os
 from unittest.mock import MagicMock, patch
 
 
@@ -938,3 +939,285 @@ def test_audio_path_no_swap_dev_host():
         r = doctor.check_audio_path_no_swap()
     assert r.status == "ok"
     assert "not running" in r.detail
+
+
+# --- check_disk_space (disk-pressure observability) ----------------------
+
+
+def _fake_statvfs(*, total_bytes: int, free_bytes: int, frsize: int = 4096):
+    """Build an os.statvfs replacement returning a result with the given
+    total/free byte figures. Mirrors the kernel's statvfs_result shape
+    (f_blocks/f_bavail in f_frsize units) closely enough for the check."""
+    from types import SimpleNamespace
+
+    blocks = total_bytes // frsize
+    avail = free_bytes // frsize
+
+    def fake(path):
+        return SimpleNamespace(f_blocks=blocks, f_bavail=avail, f_frsize=frsize)
+
+    return fake
+
+
+def test_disk_warn_percent_default():
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("JASPER_DISK_WARN_PERCENT", None)
+        assert doctor.memory._disk_warn_percent() == 85
+
+
+def test_disk_warn_percent_custom_value_honored():
+    with patch.dict(os.environ, {"JASPER_DISK_WARN_PERCENT": "70"}):
+        assert doctor.memory._disk_warn_percent() == 70
+
+
+def test_disk_warn_percent_out_of_range_falls_back():
+    """A warn >= the fixed 95% fail line, <= 0, or unparseable must snap
+    back to the 85% default — a fat-fingered env line can't disable the
+    warning or invert the warn/fail band."""
+    for bad in ("0", "-5", "95", "99", "notanumber"):
+        with patch.dict(os.environ, {"JASPER_DISK_WARN_PERCENT": bad}):
+            assert doctor.memory._disk_warn_percent() == 85, bad
+
+
+def test_disk_space_ok_when_plenty_free():
+    fake = _fake_statvfs(
+        total_bytes=64 * 1024**3,   # 64 GiB card
+        free_bytes=40 * 1024**3,    # 40 GiB free → ~37% used
+    )
+    with patch.object(doctor.memory.os, "statvfs", fake):
+        r = doctor.check_disk_space()
+    assert r.status == "ok"
+    assert "37% used" in r.detail
+    assert "40.0 GiB free" in r.detail
+    assert r.detail.startswith("/:")
+
+
+def test_disk_space_warns_over_85_percent():
+    fake = _fake_statvfs(
+        total_bytes=32 * 1024**3,
+        free_bytes=int(0.12 * 32 * 1024**3),  # 12% free → 88% used
+    )
+    with patch.object(doctor.memory.os, "statvfs", fake), \
+         patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("JASPER_DISK_WARN_PERCENT", None)
+        r = doctor.check_disk_space()
+    assert r.status == "warn"
+    assert "88% used" in r.detail
+    assert "85% warn threshold" in r.detail
+
+
+def test_disk_space_fails_over_95_percent():
+    fake = _fake_statvfs(
+        total_bytes=16 * 1024**3,
+        free_bytes=int(0.03 * 16 * 1024**3),  # 3% free → 97% used
+    )
+    with patch.object(doctor.memory.os, "statvfs", fake):
+        r = doctor.check_disk_space()
+    assert r.status == "fail"
+    assert "97% used" in r.detail
+    assert "corruption" in r.detail  # the SD-corruption rationale
+
+
+def test_disk_space_fail_beats_a_high_custom_warn():
+    """Even with the warn knob set above the fail line (which snaps back
+    to 85), a 96%-full disk still FAILs — fail always takes precedence."""
+    fake = _fake_statvfs(
+        total_bytes=16 * 1024**3,
+        free_bytes=int(0.04 * 16 * 1024**3),  # 96% used
+    )
+    with patch.object(doctor.memory.os, "statvfs", fake), \
+         patch.dict(os.environ, {"JASPER_DISK_WARN_PERCENT": "99"}):
+        r = doctor.check_disk_space()
+    assert r.status == "fail"
+
+
+def test_disk_space_skips_when_statvfs_unavailable():
+    """Non-POSIX dev host (no os.statvfs) → skip cleanly as ok, same
+    posture as the /proc and /sys checks."""
+    # getattr(os, "statvfs", None) must return None.
+    with patch.object(doctor.memory.os, "statvfs", None, create=True):
+        # Ensure the attribute lookup yields None even though the real
+        # module has it: patch sets it to None, getattr returns None.
+        r = doctor.check_disk_space()
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+
+
+def test_disk_space_warns_on_statvfs_oserror():
+    def boom(path):
+        raise OSError("nope")
+
+    with patch.object(doctor.memory.os, "statvfs", boom):
+        r = doctor.check_disk_space()
+    assert r.status == "warn"
+    assert "couldn't statvfs" in r.detail
+
+
+def test_disk_space_skips_zero_sized_fs():
+    fake = _fake_statvfs(total_bytes=0, free_bytes=0)
+    with patch.object(doctor.memory.os, "statvfs", fake):
+        r = doctor.check_disk_space()
+    assert r.status == "ok"
+    assert "zero-sized" in r.detail
+
+
+# --- _bounded_dir_size + storage checks ----------------------------------
+
+
+def test_bounded_dir_size_sums_files(tmp_path):
+    (tmp_path / "a.bin").write_bytes(b"x" * 100)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "b.bin").write_bytes(b"y" * 250)
+    total, truncated = doctor.memory._bounded_dir_size(tmp_path)
+    assert total == 350
+    assert truncated is False
+
+
+def test_bounded_dir_size_caps_entries(tmp_path, monkeypatch):
+    """The entry cap must stop a runaway walk and flag truncation rather
+    than examining an unbounded number of dir entries on a 1 GB Pi."""
+    for i in range(10):
+        (tmp_path / f"f{i}.bin").write_bytes(b"z" * 10)
+    monkeypatch.setattr(doctor.memory, "_STORAGE_WALK_MAX_ENTRIES", 3)
+    total, truncated = doctor.memory._bounded_dir_size(tmp_path)
+    assert truncated is True
+    # We stopped early, so the total is a floor — strictly less than the
+    # full 100 bytes had we walked everything.
+    assert total < 100
+
+
+def test_bounded_dir_size_caps_depth(tmp_path, monkeypatch):
+    """Deeply nested dirs beyond the depth cap are not descended into;
+    their contents are excluded and truncation is flagged."""
+    deep = tmp_path
+    for i in range(5):
+        deep = deep / f"d{i}"
+        deep.mkdir()
+    (deep / "buried.bin").write_bytes(b"q" * 999)
+    # Surface file that IS counted.
+    (tmp_path / "top.bin").write_bytes(b"a" * 5)
+    monkeypatch.setattr(doctor.memory, "_STORAGE_WALK_MAX_DEPTH", 2)
+    total, truncated = doctor.memory._bounded_dir_size(tmp_path)
+    assert truncated is True
+    assert total == 5  # only the surface file, the buried one is past the cap
+
+
+def test_bounded_dir_size_missing_dir_is_zero(tmp_path):
+    total, truncated = doctor.memory._bounded_dir_size(tmp_path / "nope")
+    assert total == 0
+    assert truncated is False
+
+
+def test_correction_storage_ok_below_threshold(tmp_path):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "small.wav").write_bytes(b"0" * 1024)
+    with patch.dict(os.environ, {
+        "JASPER_CORRECTION_SESSIONS_DIR": str(sessions),
+    }):
+        r = doctor.check_correction_storage()
+    assert r.status == "ok"
+    assert str(sessions) in r.detail
+
+
+def test_correction_storage_warns_over_threshold(tmp_path):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "big.wav").write_bytes(b"0" * 4096)
+    with patch.dict(os.environ, {
+        "JASPER_CORRECTION_SESSIONS_DIR": str(sessions),
+        "JASPER_CORRECTION_STORAGE_WARN_BYTES": "1024",  # 1 KiB threshold
+    }):
+        r = doctor.check_correction_storage()
+    assert r.status == "warn"
+    assert "warn threshold" in r.detail
+    assert "JASPER_CORRECTION_STORAGE_WARN_BYTES" in r.detail
+
+
+def test_correction_storage_absent_dir_is_ok(tmp_path):
+    with patch.dict(os.environ, {
+        "JASPER_CORRECTION_SESSIONS_DIR": str(tmp_path / "never_created"),
+    }):
+        r = doctor.check_correction_storage()
+    assert r.status == "ok"
+    assert "absent" in r.detail
+
+
+def test_wake_events_storage_warns_over_threshold(tmp_path):
+    wake = tmp_path / "wake-events"
+    wake.mkdir()
+    (wake / "clip.wav").write_bytes(b"0" * 8192)
+    with patch.dict(os.environ, {
+        "JASPER_WAKE_EVENTS_DIR": str(wake),
+        "JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES": "2048",
+    }):
+        r = doctor.check_wake_events_storage()
+    assert r.status == "warn"
+    assert "JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES" in r.detail
+
+
+def test_wake_events_storage_ok_below_default_threshold(tmp_path):
+    """A healthy ring (well under the 1.3 GiB default) never warns."""
+    wake = tmp_path / "wake-events"
+    wake.mkdir()
+    (wake / "clip.wav").write_bytes(b"0" * 1024)
+    with patch.dict(os.environ, {
+        "JASPER_WAKE_EVENTS_DIR": str(wake),
+    }):
+        os.environ.pop("JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES", None)
+        r = doctor.check_wake_events_storage()
+    assert r.status == "ok"
+
+
+def test_storage_warn_bytes_fallback_on_bad_value():
+    assert doctor.memory._storage_warn_bytes("X_UNSET_KNOB_", 4242) == 4242
+    with patch.dict(os.environ, {"X_BAD_KNOB_": "notint"}):
+        assert doctor.memory._storage_warn_bytes("X_BAD_KNOB_", 99) == 99
+    with patch.dict(os.environ, {"X_NEG_KNOB_": "-1"}):
+        assert doctor.memory._storage_warn_bytes("X_NEG_KNOB_", 7) == 7
+
+
+# --- /state.resilience.disk snapshot (state_aggregate) -------------------
+
+
+def test_disk_snapshot_shape():
+    from jasper.control import state_aggregate
+
+    fake = _fake_statvfs(
+        total_bytes=64 * 1024**3,
+        free_bytes=16 * 1024**3,  # 25% free → 75% used
+    )
+    with patch.object(state_aggregate.os, "statvfs", fake):
+        snap = state_aggregate._disk_snapshot("/")
+    assert snap == {
+        "path": "/",
+        "percent_used": 75,
+        "free_gib": 16.0,
+        "total_gib": 64.0,
+    }
+
+
+def test_disk_snapshot_none_on_oserror():
+    from jasper.control import state_aggregate
+
+    def boom(path):
+        raise OSError("denied")
+
+    with patch.object(state_aggregate.os, "statvfs", boom):
+        assert state_aggregate._disk_snapshot("/") is None
+
+
+def test_disk_snapshot_none_when_statvfs_unavailable():
+    from jasper.control import state_aggregate
+
+    with patch.object(state_aggregate.os, "statvfs", None, create=True):
+        assert state_aggregate._disk_snapshot("/") is None
+
+
+def test_disk_snapshot_none_on_zero_total():
+    from jasper.control import state_aggregate
+
+    fake = _fake_statvfs(total_bytes=0, free_bytes=0)
+    with patch.object(state_aggregate.os, "statvfs", fake):
+        assert state_aggregate._disk_snapshot("/") is None
