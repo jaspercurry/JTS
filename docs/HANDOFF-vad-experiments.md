@@ -209,6 +209,10 @@ STT input.** Observed across Cells 0, 1, 1c, and 3. When
 `event=openai.user_transcript transcript=''` returns empty, the model still picks a tool
 and invents arguments — examples seen:
 
+Note: that grep target is the pre-#632 log shape for this historical run; the
+current runtime logs `event=openai.user_transcript chars=N` without transcript
+text.
+
 - `set_volume(percent=60)`
 - `adjust_volume(delta_percent=-10)`
 - `adjust_volume(delta_percent=+25)`

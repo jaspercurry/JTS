@@ -1,6 +1,6 @@
-"""Unit tests for GeminiLiveSession's barge-in / interrupted-flag plumbing.
+"""Unit tests for GeminiLiveConnection / GeminiLiveTurn.
 
-These tests construct a real GeminiLiveSession (no network calls — the
+These tests construct a real GeminiLiveConnection (no network calls — the
 genai.Client constructor is local) and exercise the response-dispatch
 pipeline with hand-built fake response objects matching the SDK's shape.
 """
@@ -16,7 +16,6 @@ try:
     from jasper.voice.gemini_session import (
         GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
         GeminiLiveConnection,
-        GeminiLiveSession,
         GeminiLiveTurn,
     )
     _HAVE_GENAI = True
@@ -265,171 +264,6 @@ async def test_gemini_turn_without_usage_metadata_reports_zero():
         data=b"audio", server_content=_SC(turn_complete=True),
     ))
     assert turn.usage_tokens() == {"input_tokens": 0, "output_tokens": 0}
-
-
-@pytest.mark.asyncio
-async def test_interrupted_drains_queued_audio_and_sets_event():
-    """When the model is interrupted, any audio chunks queued ahead of
-    the interrupt should be dropped (NOT played to the speaker), and
-    the interrupt event should fire so the playback task wakes up to
-    flush its output."""
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    # Pre-populate the audio queue with chunks that arrived BEFORE the
-    # interrupt — these should never reach the speaker.
-    await session._audio_q.put(b"chunk1")
-    await session._audio_q.put(b"chunk2")
-    await session._audio_q.put(b"chunk3")
-    assert session._audio_q.qsize() == 3
-
-    await session._dispatch(_Resp(server_content=_SC(interrupted=True)))
-
-    assert session._audio_q.empty()
-    assert session.interrupted() is True
-    assert session._interrupt_event.is_set()
-
-
-@pytest.mark.asyncio
-async def test_wait_for_interrupt_resolves_immediately_after_event_set():
-    """The playback task awaits wait_for_interrupt() — must wake up as
-    soon as the receive loop sets the event."""
-    import asyncio
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    await session._dispatch(_Resp(server_content=_SC(interrupted=True)))
-    # Should resolve quickly since the event is set.
-    await asyncio.wait_for(session.wait_for_interrupt(), timeout=0.1)
-
-
-@pytest.mark.asyncio
-async def test_clear_interrupted_resets_flag_and_event():
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    await session._dispatch(_Resp(server_content=_SC(interrupted=True)))
-    assert session.interrupted() is True
-    assert session._interrupt_event.is_set()
-
-    session.clear_interrupted()
-    assert session.interrupted() is False
-    assert not session._interrupt_event.is_set()
-
-
-@pytest.mark.asyncio
-async def test_turn_complete_increments_counter():
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    assert session.turn_count() == 0
-    await session._dispatch(_Resp(server_content=_SC(turn_complete=True)))
-    await session._dispatch(_Resp(server_content=_SC(turn_complete=True)))
-    assert session.turn_count() == 2
-
-
-@pytest.mark.asyncio
-async def test_audio_data_queued_for_playback():
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    await session._dispatch(_Resp(data=b"audio_chunk_1"))
-    await session._dispatch(_Resp(data=b"audio_chunk_2"))
-    assert session._audio_q.qsize() == 2
-    assert (await session._audio_q.get()) == b"audio_chunk_1"
-    assert (await session._audio_q.get()) == b"audio_chunk_2"
-
-
-@pytest.mark.asyncio
-async def test_interrupt_drops_audio_received_in_same_response():
-    """If a response somehow contains both new audio AND an interrupt
-    flag, the interrupt drain runs AFTER the audio is queued — net
-    effect should still be no audio surviving the dispatch."""
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    await session._dispatch(_Resp(
-        data=b"some_audio",
-        server_content=_SC(interrupted=True),
-    ))
-    # Audio should have been put then immediately drained.
-    assert session._audio_q.empty()
-    assert session.interrupted() is True
-
-
-# ---- Dispatch seam reads per-tool timeout ----------------------------------
-#
-# Pins the fix: the `asyncio.wait_for` cap around each tool coroutine in
-# `_handle_tool_call` reads `tool.timeout`, not a hardcoded 12.0. A tool
-# with a tiny timeout must time out; a tool with the default budget must
-# not — proving the seam honours the per-tool value (the Home Assistant
-# 90s case rides on the same mechanism).
-
-
-@dataclass
-class _FC:
-    """Stand-in for a Gemini function_call (getattr-accessed)."""
-    name: str
-    id: str = "fc-1"
-    args: dict | None = None
-
-
-@dataclass
-class _ToolCall:
-    """Stand-in for response.tool_call."""
-    function_calls: list
-
-
-class _CaptureSession:
-    """Minimal _session stub: records the function_responses the
-    dispatcher sends so the test can read each call's payload."""
-
-    def __init__(self) -> None:
-        self.sent: list = []
-
-    async def send_tool_response(self, *, function_responses) -> None:
-        self.sent.extend(function_responses)
-
-
-@pytest.mark.asyncio
-async def test_dispatch_honours_short_per_tool_timeout():
-    from jasper.tools import ToolRegistry, tool as tool_decorator
-
-    @tool_decorator(timeout=0.05)
-    async def slow_tool() -> dict:
-        """."""
-        await asyncio.sleep(0.5)  # outlives the tool's 0.05s budget
-        return {"ok": True}
-
-    reg = ToolRegistry()
-    reg.register(slow_tool)
-
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    session._registry = reg
-    cap = _CaptureSession()
-    session._session = cap
-
-    await session._dispatch(_Resp(tool_call=_ToolCall(
-        function_calls=[_FC(name="slow_tool", args={})],
-    )))
-
-    assert len(cap.sent) == 1
-    # FunctionResponse.response carries the per-tool timeout error — proves
-    # wait_for fired at 0.05s, not the 12s default (which wouldn't have).
-    assert cap.sent[0].response == {"error": "slow_tool timed out"}
-
-
-@pytest.mark.asyncio
-async def test_dispatch_completes_fast_tool_under_default_timeout():
-    from jasper.tools import ToolRegistry, tool as tool_decorator
-
-    @tool_decorator()  # default budget
-    async def quick_tool() -> dict:
-        """."""
-        return {"temperature": 62}
-
-    reg = ToolRegistry()
-    reg.register(quick_tool)
-
-    session = GeminiLiveSession(api_key="fake", model="fake")
-    session._registry = reg
-    cap = _CaptureSession()
-    session._session = cap
-
-    await session._dispatch(_Resp(tool_call=_ToolCall(
-        function_calls=[_FC(name="quick_tool", args={})],
-    )))
-
-    assert len(cap.sent) == 1
-    assert cap.sent[0].response == {"temperature": 62}
 
 
 @pytest.mark.asyncio

@@ -45,3 +45,36 @@ def test_linux_only_c_extensions_have_platform_markers() -> None:
     for package, requirement in expected.items():
         matches = [dep for dep in dependencies if dep.startswith(f"{package}>=")]
         assert matches == [requirement]
+
+
+def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
+    """Every contributor-facing "build your test venv" instruction must install
+    the runtime extras the hardware-free suite imports (numpy, httpx, scipy, ...).
+
+    A bare `uv sync` (or `pip install -e '.[dev]'`) installs only the dev tools,
+    so pytest dies with dozens of ModuleNotFoundError on a clean checkout. uv
+    0.11 has no `[tool.uv] default-extras` knob to fix that from config, so the
+    docs and help spell the extras out explicitly. Pin BOTH surfaces — the
+    CONTRIBUTING.md quick start and the conftest wrong-Python rebuild hint — so
+    the front door can't silently re-break (the 2026-06 OSS due-diligence
+    finding, which regressed once because only one surface was fixed).
+    """
+
+    # Token-based, not an exact-substring match, so a future reformat of the
+    # command (line wraps, flag reordering) doesn't false-fail as long as it
+    # still invokes `uv sync` with both extras. The behavioural end-to-end check
+    # (run the documented command and collect) belongs in CI; it's omitted here
+    # only to avoid editing a workflow file from a non-`workflow`-scoped token.
+    surfaces = {
+        "CONTRIBUTING.md": (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8"),
+        "tests/conftest.py": (ROOT / "tests" / "conftest.py").read_text(encoding="utf-8"),
+    }
+    for name, text in surfaces.items():
+        assert "uv sync" in text, f"{name} should document `uv sync`"
+        assert "--extra full" in text, f"{name} `uv sync` must include `--extra full`"
+        assert "--extra streambox" in text, (
+            f"{name} `uv sync` must include `--extra streambox`"
+        )
+
+    # The conftest pip fallback must also pull the extras (`.[full,dev]`, not `.[dev]`).
+    assert "'.[full,dev]'" in surfaces["tests/conftest.py"]

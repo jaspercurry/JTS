@@ -29,11 +29,12 @@ if sys.version_info < (3, 11):
         f"`pip install` time, not at venv creation, so a wrong-version "
         f"venv silently happens (most often on macOS where the default "
         f"`python3` is Apple's 3.9).\n\n"
-        f"Rebuild:\n"
-        f"  rm -rf .venv && uv sync                       # recommended\n"
+        f"Rebuild (the extras carry the runtime packages the suite imports;\n"
+        f"a bare `uv sync` / `.[dev]` installs only the dev tools):\n"
+        f"  rm -rf .venv && uv sync --extra full --extra streambox   # recommended\n"
         f"  # or:\n"
         f"  rm -rf .venv && python3.13 -m venv .venv && \\\n"
-        f"    .venv/bin/pip install -e '.[dev]'\n"
+        f"    .venv/bin/pip install -e '.[full,dev]'\n"
     )
 
 
