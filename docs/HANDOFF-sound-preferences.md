@@ -182,26 +182,24 @@ crossover-settings steps do not play sound, load CamillaDSP, or touch live
 audio; detected hardware is supporting context and the hardware refresh control
 is a small utility inside the layout step.
 
-The **Measure drivers** card owns the read-only preflight and guarded
-driver-measurement controls. Its status refresh fetches
-`/sound/active-speaker/environment` and related endpoints, which run read-only
-probes for the saved setup, current CamillaDSP state, startup-load gate,
-calibration bounds, and test-session state. The primary UI translates those
-probes into one user action at a time: choose the driver to test, let JTS run
-the safe setup path internally, start at the quietest level, and record what
-happened. It does not expose the old backend checklist/grid as the normal user
-path, and it no longer asks the user to "set up quiet test mode" before they
-can choose a driver. Driver-choice buttons appear after outputs are confirmed;
-clicking one records the normal software guard for any missing high-frequency
-outputs in the saved active graph, refreshes a stale no-audio crossover preview
-when the saved crossover settings can produce one, then stages/checks/loads/arms
-the safe path before the selected-driver test controls appear. If that internal setup fails,
-the card explains the product-level issue and confirms no sound played. The card
-still does not play tones, start sweeps, or authorize playback just because a
-setup check passed. The backend still uses the safe-playback session substrate,
-but the UI no longer asks users to understand or click separate arm/stage/path
-controls. Stop remains a normal-sized, idempotent control that records the
-session as stopped. A prepared driver exposes a
+The **Measure drivers** card owns the guarded driver-measurement controls.
+The primary UI no longer refreshes the old backend checklist/grid or asks the
+user to understand environment, path-safety, staging, startup-load, or
+safe-session probes as separate steps. Instead it presents one user action at a
+time: choose the driver to test, let JTS run the safe setup path internally,
+start at the quietest level, and record what happened. Driver-choice buttons
+appear after outputs are confirmed; clicking one records the normal software
+guard for any missing high-frequency outputs in the saved active graph,
+refreshes a stale no-audio crossover preview when the saved crossover settings
+can produce one, then stages/checks/loads/arms the safe path through
+`/sound/active-speaker/prepare-driver-test` before the selected-driver test
+controls appear. If that internal setup fails, the card explains the
+product-level issue and confirms no sound played. The card still does not play
+tones, start sweeps, or authorize playback just because a setup check passed.
+The backend still uses the safe-playback session substrate, but the UI no
+longer asks users to understand or click separate arm/stage/path controls. Stop
+remains a normal-sized, idempotent control that records the session as stopped.
+A prepared driver exposes a
 **Test volume** control backed by
 `jasper.active_speaker.calibration_level`: it defaults to the minimum
 `-80 dBFS`, persists at
@@ -690,4 +688,6 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-06-14
+Last verified: 2026-06-14 (`/sound/` active-speaker UI rechecked after the
+browser stopped polling low-level environment/path/staging diagnostics directly;
+product flow now drives `prepare-driver-test` and `play-tone`.)

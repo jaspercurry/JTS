@@ -101,6 +101,10 @@ _SOUND_MODULE = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
 )
+_ACTIVE_SPEAKER_UI_MODULE = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "assets" / "sound-profile" / "js" / "active-speaker-ui.js"
+)
 _SOUND_CSS = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "assets" / "sound-profile" / "sound.css"
@@ -148,6 +152,18 @@ def test_index_html_embeds_csrf_meta_for_json_posts():
     assert 'meta name="jts-csrf" content="csrf-token"' in html
 
 
+def test_sound_active_speaker_ui_helpers_are_pure_module_boundary():
+    js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
+
+    assert "export function activeSpeakerStepState" in js
+    assert "export function defaultActiveSpeakerStep" in js
+    assert "export function playbackResultMessage" in js
+    assert "querySelector" not in js
+    assert "document." not in js
+    assert "fetch(" not in js
+    assert "explicit lab backend" not in js
+
+
 def test_sound_module_preserves_editor_behaviour():
     """The EQ editor moved from inline _SOUND_JS into a static module. Guard
     the load-bearing pieces so the relocation can't silently drop them: the
@@ -166,7 +182,8 @@ def test_sound_module_preserves_editor_behaviour():
     assert "jsonHeaders()" in js
     assert "meta[name=jts-csrf]" in js  # CSRF read from the tag, not substituted
     assert "Active crossover setup" in js
-    assert "./active-speaker/environment" in js
+    assert "/assets/sound-profile/js/active-speaker-ui.js" in js
+    assert "./active-speaker/prepare-driver-test" in js
     assert "./active-speaker/measurements" in js
     assert "./active-speaker/baseline-profile" in js
     assert "./output-topology" in js
@@ -175,10 +192,12 @@ def test_sound_module_preserves_editor_behaviour():
     assert "Save active profile" in js
     assert "Build the speaker layout, add crossover info, confirm DAC outputs" in js
     assert "function defaultOutputStep()" in js
-    assert "if (!driverResearchStepSatisfied()) return 'research';" in js
-    assert "if (!outputIdentityComplete()) return 'map';" in js
-    assert "if (!driverMeasurementsComplete()) return 'safety';" in js
-    assert "return 'profile';" in js
+    assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
+    helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
+    assert "if (!ctx.driverResearchSatisfied) return 'research';" in helper_js
+    assert "if (!ctx.outputIdentityComplete) return 'map';" in helper_js
+    assert "if (!ctx.driverMeasurementsComplete) return 'safety';" in helper_js
+    assert "return 'profile';" in helper_js
     assert "Finish the current card before opening" in js
     assert "output-step__chevron" in js
     assert "querySelectorAll('.output-step[open]')" in js
@@ -188,14 +207,16 @@ def test_sound_module_preserves_editor_behaviour():
 def test_sound_module_active_speaker_status_is_explicit_read_only():
     js = _SOUND_MODULE.read_text()
 
-    assert "function refreshActiveSpeakerStatus()" in js
-    assert "fetch('./active-speaker/environment'" in js
-    assert "fetch('./active-speaker/safe-playback'" in js
-    assert "fetch('./active-speaker/staged-config'" in js
+    assert 'from "/assets/sound-profile/js/active-speaker-ui.js"' in js
+    assert "function refreshActiveSpeakerStatus()" not in js
+    assert "fetch('./active-speaker/environment'" not in js
+    assert "fetch('./active-speaker/safe-playback'" not in js
+    assert "fetch('./active-speaker/staged-config'" not in js
     assert "fetch('./active-speaker/calibration-level'" in js
-    assert "fetch('./active-speaker/bringup-preflight'" in js
+    assert "fetch('./active-speaker/bringup-preflight'" not in js
     assert "fetch('./active-speaker/startup-load'" in js
-    assert "fetch('./active-speaker/tone-targets'" in js
+    assert "fetch('./active-speaker/tone-targets'" not in js
+    assert "fetch('./active-speaker/commissioning-rehearsal'" not in js
     assert "fetch('./active-speaker/prepare-driver-test'" in js
     assert "fetch('./active-speaker/stage-config'" not in js
     assert "fetch('./active-speaker/check-path-safety'" not in js
@@ -220,7 +241,10 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "savedStatus === 'ready_for_review' && !driverResearch.dirty" in js
     assert "function driverResearchCanPreparePreview()" in js
     assert "function driverResearchStepSatisfied()" in js
-    assert "if (!driverResearchStepSatisfied()) return 'research';" in js
+    assert "driverResearchSatisfied: driverResearchStepSatisfied()" in js
+    assert "if (!ctx.driverResearchSatisfied) return 'research';" in (
+        _ACTIVE_SPEAKER_UI_MODULE.read_text()
+    )
     assert "Driver details are optional for now. Continue with output mapping." in js
     assert "saved driver info" in js
     assert "Wiring and driver-test checks happen before any sound." in js
@@ -321,7 +345,6 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Composite clock" in js
     assert "supported" in js
     assert "needs attention" not in js
-    assert "not enabled" not in js
     assert "Confirm output" in js
     assert "Test ' + escapeHtml(humanRole(channel.role))" in js
     assert "Continue to Measure drivers; JTS will start it very quiet" in js
@@ -353,6 +376,8 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Preconditions passed" not in js
     assert "Preview test signal" in js
     assert "Start very quiet " in js
+    assert "Audible driver tests are not enabled on this install yet." in js
+    assert "playbackResultMessage(playback, undefined, friendlySetupReason)" in js
     assert "JTS could not load the safe test setup" in js
     assert "Save this speaker layout draft before confirming outputs." in js
     assert "Main speakers" in js
@@ -1270,6 +1295,7 @@ def test_active_speaker_prepare_driver_test_owns_internal_setup(
     assert payload["status"] == "ready"
     assert payload["ready"] is True
     assert payload["target"]["role"] == "tweeter"
+    assert payload["tone_backend"]["kind"] == "jts_active_speaker_tone_backend_status"
     assert calls == ["preview", "stage", "path", "load", "arm"]
     topology = load_output_topology()
     tweeter = topology.speaker_groups[0].channels[1]
