@@ -19,7 +19,7 @@ export const AUDIO_OPTIONS = [
   },
   {
     converter: "samplerate_best", label: "Best",
-    body: "Highest ultrasonic-band fidelity; uses more CPU.",
+    body: "Highest ultrasonic-band fidelity; higher CPU and hardware-sensitive.",
   },
 ];
 
