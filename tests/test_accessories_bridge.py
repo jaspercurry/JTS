@@ -16,12 +16,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+import types
 from typing import List, Optional
 
 import pytest
 
-from jasper.accessories.bridge import _post_once, _TapCounter
-from jasper.accessories.registry import KeyAction, TapAction
+from jasper.accessories.bridge import (
+    COALESCE_WINDOW_SEC, _Coalescer, _post_once, _read_device, _TapCounter,
+)
+from jasper.accessories.registry import Device, KeyAction, TapAction
 from jasper.control.client import ControlError, ControlResponse
 
 
@@ -226,4 +230,147 @@ async def test_post_once_failure_emits_canonical_event(caplog):
     assert caplog.records[-1].getMessage() == (
         'event=knob.action.failed device=fake key=KEY_MUTE '
         'err="simulated: jasper-control down"'
+    )
+
+
+# A device label is an untrusted, host-provided string (the kernel's
+# device name, which a BT accessory can advertise with spaces). The
+# `+`-signed coalesced delta is the most plausible byte-diff site if a
+# future refactor changed the render. Both get pinned below.
+_SPACED_DEVICE = "Anti cater VK-01"
+
+
+@pytest.mark.asyncio
+async def test_coalescer_adjust_emits_canonical_event(caplog):
+    """Pin the migrated knob.adjust emit (success path in _Coalescer):
+    the untrusted device label is quoted because it contains spaces,
+    and the signed delta renders unquoted as a bare `+N` token."""
+    calls: List[str] = []
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append(path)
+        return ControlResponse(200, b"")
+
+    action = KeyAction(
+        "POST", "/volume/adjust", {"delta_percent": 2}, coalesce=True,
+    )
+    cz = _Coalescer(post, action, _SPACED_DEVICE)
+    with caplog.at_level(logging.INFO, logger="jasper.accessories.bridge"):
+        cz.hit()
+        cz.hit()
+        # Wait past the coalesce window so the deferred flush fires.
+        await asyncio.sleep(COALESCE_WINDOW_SEC * 2)
+    assert calls == ["/volume/adjust"]
+    assert caplog.records[-1].getMessage() == (
+        'event=knob.adjust device="Anti cater VK-01" delta=+4 status=200'
+    )
+
+
+@pytest.mark.asyncio
+async def test_tap_failure_emits_canonical_event(caplog):
+    """Pin the migrated knob.tap.failed emit: the untrusted device
+    label and free-text error are both quoted (spaces force quoting),
+    proving the dispatch-error path no longer corrupts logfmt."""
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        raise ControlError("simulated: jasper-control down")
+
+    action = TapAction(
+        on_single=KeyAction("POST", "/transport/toggle", {}),
+        window_ms=WINDOW_MS,
+    )
+    tc = _TapCounter(post, action, _SPACED_DEVICE, "KEY_FAKE")
+    with caplog.at_level(logging.WARNING, logger="jasper.accessories.bridge"):
+        tc.hit()
+        await asyncio.sleep(WINDOW_SEC * 2)
+    assert caplog.records[-1].getMessage() == (
+        'event=knob.tap.failed device="Anti cater VK-01" key=KEY_FAKE '
+        'count=1 path=/transport/toggle '
+        'err="simulated: jasper-control down"'
+    )
+
+
+def _install_fake_evdev(monkeypatch, *, input_device) -> None:
+    """Inject a minimal fake `evdev` module so _read_device imports
+    cleanly on dev hosts that lack the Linux-only package.
+
+    `input_device` is the callable bound to `evdev.InputDevice`; the
+    rest of the surface (`ecodes`) is stubbed only as far as
+    _read_device touches it.
+    """
+    fake = types.ModuleType("evdev")
+    fake.InputDevice = input_device
+    ecodes = types.SimpleNamespace(EV_KEY=1, keys={})
+    fake.ecodes = ecodes
+    monkeypatch.setitem(sys.modules, "evdev", fake)
+
+
+@pytest.mark.asyncio
+async def test_read_device_open_failure_emits_canonical_event(caplog, monkeypatch):
+    """Pin the migrated knob.open.failed emit through the real
+    _read_device path: when InputDevice() raises OSError, the device
+    label and error are escaped (both carry spaces)."""
+
+    def _raises(path):
+        raise OSError("simulated: no such device")
+
+    _install_fake_evdev(monkeypatch, input_device=_raises)
+
+    device = Device(
+        name="Anti cater VK-01",
+        vendor_id=0x514C,
+        product_id=0x8850,
+        keymap={},
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        return ControlResponse(200, b"")
+
+    with caplog.at_level(logging.WARNING, logger="jasper.accessories.bridge"):
+        await _read_device("/dev/input/event9", device, post)
+    assert caplog.records[-1].getMessage() == (
+        'event=knob.open.failed device="Anti cater VK-01" '
+        'path=/dev/input/event9 err="simulated: no such device"'
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_device_close_emits_canonical_event(caplog, monkeypatch):
+    """Pin the migrated knob.close emit through the real _read_device
+    path: when the read loop raises OSError (unplug / BT out of range),
+    the device label and free-text reason are escaped (both carry
+    spaces)."""
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=3, vendor=0x514C, product=0x8850,
+            )
+            self.name = "Anti cater VK-01"
+
+        async def async_read_loop(self):
+            raise OSError("simulated: device disconnected")
+            yield  # pragma: no cover - makes this an async generator
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = Device(
+        name="Anti cater VK-01",
+        vendor_id=0x514C,
+        product_id=0x8850,
+        keymap={},
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        return ControlResponse(200, b"")
+
+    with caplog.at_level(logging.INFO, logger="jasper.accessories.bridge"):
+        await _read_device("/dev/input/event9", device, post)
+    # The last line is knob.close; knob.open is emitted first (INFO).
+    assert caplog.records[-1].getMessage() == (
+        'event=knob.close device="Anti cater VK-01" '
+        'reason="simulated: device disconnected"'
     )
