@@ -50,7 +50,7 @@ def test_unit_file_exists():
     )
 
 
-def test_readwritepaths_pins_var_lib_jasper():
+def test_readwritepaths_pins_control_write_contracts():
     """The state-write contract must be explicit, not incidental.
 
     Without this line the /var/lib/jasper writes (including the
@@ -61,10 +61,17 @@ def test_readwritepaths_pins_var_lib_jasper():
     unit = _read_unit()
     val = _value_for(unit, "ReadWritePaths")
     assert val is not None, (
-        "jasper-control.service must declare ReadWritePaths=/var/lib/jasper "
-        "to pin its state-write contract. The T5.2 reboot rate-limit at "
-        "/var/lib/jasper/system_supervisor_reboot.json depends on it."
+        "jasper-control.service must declare ReadWritePaths to pin its "
+        "state and peering advert write contracts."
     )
-    assert "/var/lib/jasper" in val.split(), (
-        f"ReadWritePaths must include /var/lib/jasper; got {val!r}"
+    paths = val.split()
+    assert "/var/lib/jasper" in paths, (
+        "ReadWritePaths must include /var/lib/jasper; the T5.2 reboot "
+        "rate-limit at /var/lib/jasper/system_supervisor_reboot.json depends "
+        f"on it. Got {val!r}"
+    )
+    assert "/etc/avahi/services" in paths, (
+        "ReadWritePaths must include /etc/avahi/services; wake-response "
+        "peering renders /etc/avahi/services/jasper-peer.service from inside "
+        f"jasper-control under ProtectSystem=full. Got {val!r}"
     )

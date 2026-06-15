@@ -7,6 +7,53 @@
 FANIN_BIN="/opt/jasper/bin/jasper-fanin"
 OUTPUTD_BIN="/opt/jasper/bin/jasper-outputd"
 OUTPUTD_SOURCE_MISSING_ERROR="ERROR: jasper-outputd source missing"
+RUST_LOW_MEMORY_BUILD_THRESHOLD_KB=786432
+
+rust_build_memtotal_kb() {
+    local meminfo="${JASPER_RUST_MEMINFO_FILE:-/proc/meminfo}"
+    awk '/^MemTotal:/ { print $2; exit }' "${meminfo}" 2>/dev/null || true
+}
+
+rust_low_memory_build_enabled() {
+    local setting="${JASPER_RUST_LOW_MEMORY_BUILD:-auto}"
+    case "${setting}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        0|false|FALSE|no|NO|off|OFF)
+            return 1
+            ;;
+        ""|auto|AUTO)
+            ;;
+        *)
+            echo "  WARN: invalid JASPER_RUST_LOW_MEMORY_BUILD=${setting}; using auto" >&2
+            ;;
+    esac
+
+    local mem_kb
+    mem_kb="$(rust_build_memtotal_kb)"
+    case "${mem_kb}" in
+        ""|*[!0-9]*)
+            return 1
+            ;;
+    esac
+    [[ "${mem_kb}" -lt "${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB}" ]]
+}
+
+rust_cargo_build_env() {
+    if ! rust_low_memory_build_enabled; then
+        return 0
+    fi
+
+    # Zero-class streamboxes have enough CPU for the runtime daemons, but not
+    # enough RAM to compile the normal release profile with fat LTO. Keep the
+    # full-speaker profile untouched and only relax Cargo on low-memory hosts.
+    printf '%s\n' \
+        "CARGO_BUILD_JOBS=1" \
+        "CARGO_PROFILE_RELEASE_LTO=false" \
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" \
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL=2"
+}
 
 build_install_rust_daemon() {
     local name="$1"
@@ -54,7 +101,13 @@ build_install_rust_daemon() {
     chown -R "${BUILD_USER}:${BUILD_USER}" "$(dirname "${cache_dir}")/jasper-tts-protocol"
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
-    sudo -u "${BUILD_USER}" -H bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
+    local -a cargo_env=()
+    mapfile -t cargo_env < <(rust_cargo_build_env)
+    if [[ "${#cargo_env[@]}" -gt 0 ]]; then
+        echo "  ${name}: low-memory Rust build profile active ($(rust_build_memtotal_kb) kB RAM; lto=false, codegen-units=16, jobs=1)"
+    fi
+
+    sudo -u "${BUILD_USER}" -H env "${cargo_env[@]}" bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
         || { echo "  ${name} build failed; see cargo output above"; return 1; }
 
     local built_bin="${cache_dir}/target/release/${name}"

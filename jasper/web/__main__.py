@@ -15,7 +15,6 @@ voice/wake/assistant-only pages. nginx routes:
   /sources/  →  127.0.0.1:8773  (jasper.web.sources_setup)
   /wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
   /wifi/     →  127.0.0.1:8775  (jasper.web.wifi_setup)
-  /peers/    →  127.0.0.1:8776  (jasper.web.peering_setup)
   /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
   /ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)
   /weather/  →  127.0.0.1:8779  (jasper.web.weather_setup)
@@ -327,24 +326,11 @@ def _make_wifi_server(target: object) -> object:
     return wifi_setup.make_server(target)
 
 
-def _make_peers_server(target: object) -> object:
-    from . import peering_setup
-
-    return peering_setup.make_server(
-        target,
-        state_path=os.environ.get(
-            "JASPER_PEERING_FILE",
-            peering_setup.PEERING_ENV_FILE,
-        ),
-    )
-
-
 def _make_rooms_server(target: object) -> object:
     from . import rooms_setup
 
-    # Read-only speaker directory + grouping status (no env file /
-    # POST this increment), so unlike /peers/ there is no state_path
-    # to thread through. See jasper/web/rooms_setup.py.
+    # Speaker directory + wake-response/grouping controls. See
+    # jasper/web/rooms_setup.py.
     return rooms_setup.make_server(target)
 
 
@@ -442,10 +428,6 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
     WizardSpec("/wake", "JASPER_WAKE_WEB_PORT", 8774, _make_wake_server),
     WizardSpec(
         "/wifi", "JASPER_WIFI_WEB_PORT", 8775, _make_wifi_server,
-        roles=_LOCAL_AUDIO_ROLES,
-    ),
-    WizardSpec(
-        "/peers", "JASPER_PEERS_WEB_PORT", 8776, _make_peers_server,
         roles=_LOCAL_AUDIO_ROLES,
     ),
     WizardSpec(

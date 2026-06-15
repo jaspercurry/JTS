@@ -707,6 +707,16 @@ name = "jasper-speaker"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "sdnotify" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+full = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "camilladsp" },
     { name = "dbus-next" },
@@ -728,17 +738,20 @@ dependencies = [
     { name = "pyusb" },
     { name = "rapidfuzz" },
     { name = "scipy" },
-    { name = "sdnotify" },
     { name = "sounddevice" },
     { name = "spotipy" },
     { name = "zeroconf" },
 ]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
+streambox = [
+    { name = "camilladsp" },
+    { name = "dbus-next" },
+    { name = "httpx" },
+    { name = "numpy" },
+    { name = "rapidfuzz" },
+    { name = "scipy" },
+    { name = "sounddevice" },
+    { name = "spotipy" },
+    { name = "zeroconf" },
 ]
 
 [package.dev-dependencies]
@@ -750,36 +763,45 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "audioop-lts", marker = "python_full_version >= '3.13'", specifier = ">=0.2" },
-    { name = "camilladsp", url = "https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz" },
-    { name = "dbus-next", specifier = ">=0.2.3" },
-    { name = "esptool", specifier = ">=4.7" },
-    { name = "evdev", marker = "sys_platform == 'linux'", specifier = ">=1.7" },
-    { name = "google-api-python-client", specifier = ">=2.150" },
-    { name = "google-auth", specifier = ">=2.36" },
-    { name = "google-auth-oauthlib", specifier = ">=1.2" },
-    { name = "google-genai", specifier = "==2.8.0" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "libusb-package", specifier = ">=1.0" },
-    { name = "numpy", specifier = ">=1.26,<3" },
-    { name = "nyct-gtfs", specifier = "==2.1.0" },
-    { name = "onnxruntime", specifier = ">=1.17" },
-    { name = "openai", specifier = ">=2.36.0" },
-    { name = "pyalsaaudio", marker = "sys_platform == 'linux'", specifier = ">=0.11" },
-    { name = "pyserial", specifier = ">=3.5" },
+    { name = "audioop-lts", marker = "python_full_version >= '3.13' and extra == 'full'", specifier = ">=0.2" },
+    { name = "camilladsp", marker = "extra == 'full'", url = "https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz" },
+    { name = "camilladsp", marker = "extra == 'streambox'", url = "https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz" },
+    { name = "dbus-next", marker = "extra == 'full'", specifier = ">=0.2.3" },
+    { name = "dbus-next", marker = "extra == 'streambox'", specifier = ">=0.2.3" },
+    { name = "esptool", marker = "extra == 'full'", specifier = ">=4.7" },
+    { name = "evdev", marker = "sys_platform == 'linux' and extra == 'full'", specifier = ">=1.7" },
+    { name = "google-api-python-client", marker = "extra == 'full'", specifier = ">=2.150" },
+    { name = "google-auth", marker = "extra == 'full'", specifier = ">=2.36" },
+    { name = "google-auth-oauthlib", marker = "extra == 'full'", specifier = ">=1.2" },
+    { name = "google-genai", marker = "extra == 'full'", specifier = "==2.8.0" },
+    { name = "httpx", marker = "extra == 'full'", specifier = "==0.28.1" },
+    { name = "httpx", marker = "extra == 'streambox'", specifier = "==0.28.1" },
+    { name = "libusb-package", marker = "extra == 'full'", specifier = ">=1.0" },
+    { name = "numpy", marker = "extra == 'full'", specifier = ">=1.26,<3" },
+    { name = "numpy", marker = "extra == 'streambox'", specifier = ">=1.26,<3" },
+    { name = "nyct-gtfs", marker = "extra == 'full'", specifier = "==2.1.0" },
+    { name = "onnxruntime", marker = "extra == 'full'", specifier = ">=1.17" },
+    { name = "openai", marker = "extra == 'full'", specifier = ">=2.36.0" },
+    { name = "pyalsaaudio", marker = "sys_platform == 'linux' and extra == 'full'", specifier = ">=0.11" },
+    { name = "pyserial", marker = "extra == 'full'", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pyudev", specifier = ">=0.24" },
-    { name = "pyusb", specifier = ">=1.2" },
-    { name = "rapidfuzz", specifier = ">=3.6,<4" },
+    { name = "pyudev", marker = "extra == 'full'", specifier = ">=0.24" },
+    { name = "pyusb", marker = "extra == 'full'", specifier = ">=1.2" },
+    { name = "rapidfuzz", marker = "extra == 'full'", specifier = ">=3.6,<4" },
+    { name = "rapidfuzz", marker = "extra == 'streambox'", specifier = ">=3.6,<4" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "scipy", specifier = ">=1.13,<2" },
+    { name = "scipy", marker = "extra == 'full'", specifier = ">=1.13,<2" },
+    { name = "scipy", marker = "extra == 'streambox'", specifier = ">=1.13,<2" },
     { name = "sdnotify", specifier = ">=0.3.2" },
-    { name = "sounddevice", specifier = "==0.5.5" },
-    { name = "spotipy", specifier = "==2.26.0" },
-    { name = "zeroconf", specifier = ">=0.149,<1.0" },
+    { name = "sounddevice", marker = "extra == 'full'", specifier = "==0.5.5" },
+    { name = "sounddevice", marker = "extra == 'streambox'", specifier = "==0.5.5" },
+    { name = "spotipy", marker = "extra == 'full'", specifier = "==2.26.0" },
+    { name = "spotipy", marker = "extra == 'streambox'", specifier = "==2.26.0" },
+    { name = "zeroconf", marker = "extra == 'full'", specifier = ">=0.149,<1.0" },
+    { name = "zeroconf", marker = "extra == 'streambox'", specifier = ">=0.149,<1.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["streambox", "full", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

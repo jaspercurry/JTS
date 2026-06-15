@@ -180,7 +180,7 @@ def test_public_surface_is_stable():
 @pytest.fixture
 def live_server(tmp_path, monkeypatch):
     """Run /weather/ on a random port against tmp state; suppress
-    systemctl. Mirrors tests/test_peering_setup.py's fixture shape."""
+    systemctl. Mirrors the other web fixture shapes."""
     monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: None)
     state_path = str(tmp_path / "weather.env")
     transit_path = str(tmp_path / "transit.env")

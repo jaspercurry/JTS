@@ -65,6 +65,7 @@ import http
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import urllib.parse
@@ -77,6 +78,9 @@ from ..http_security import management_read_allowed, mutating_request_allowed
 from ..voice.provider_state import read_active_provider
 
 logger = logging.getLogger(__name__)
+
+_LOCAL_WEB_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
+_IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 # ---------------------------------------------------------------------------
 # Cookie + header constants.
@@ -499,6 +503,37 @@ def bonded_follower_active() -> bool:
         return False
 
 
+def bonded_follower_leader_addr() -> str:
+    """Return the bonded follower's configured leader address, if readable."""
+    try:
+        from ..multiroom.config import follower_leader_addr, load_config
+
+        return follower_leader_addr(load_config()) or ""
+    except Exception:  # noqa: BLE001 — fail-open
+        return ""
+
+
+def local_web_host(value: str) -> str:
+    """Return a canonical .local host for speaker web links.
+
+    Speaker-to-speaker state may carry raw hostnames or addresses. UI links
+    should prefer mDNS names and must not expose raw IP links from pair state.
+    """
+    host = str(value or "").strip().rstrip(".")
+    if not host or not _LOCAL_WEB_HOST_RE.match(host) or _IPV4_HOST_RE.match(host):
+        return ""
+    return host if host.endswith(".local") else f"{host}.local"
+
+
+def bonded_follower_leader_web_url(path: str = "/") -> str:
+    """Return the pair leader's web URL for UI hints, or empty if unknown."""
+    host = local_web_host(bonded_follower_leader_addr())
+    if not host:
+        return ""
+    clean_path = path if path.startswith("/") else f"/{path}"
+    return f"http://{host}{clean_path}"
+
+
 def pair_banner_html() -> str:
     """A notice for wizard pages whose subject is parked/delegated while
     this speaker is a bonded follower. Empty string when not bonded —
@@ -509,8 +544,7 @@ def pair_banner_html() -> str:
     return (
         '<div class="info-card info-card--accent" role="note">'
         "This speaker is part of a stereo pair. The assistant, sources, "
-        "and sound shaping run on the pair leader while paired — "
-        "settings saved here apply when the pair is dissolved "
+        "and leader-owned sound shaping run on the pair leader while paired "
         '(<a href="/rooms/">manage the pair</a>).</div>'
     )
 

@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Bring up a Raspberry Pi Zero 2 W as a JTS dumb audio endpoint.
+# Bring up a Raspberry Pi Zero 2 W as a JTS streambox/satellite endpoint.
 #
 # This is the paved laptop-side path for a freshly imaged endpoint:
-# reuse onboard.sh for SSH/state, deploy the endpoint install tier, reboot
-# once if boot-time memory/zram changes need it, then print a concise
-# endpoint hardware/software report.
+# reuse onboard.sh for SSH/state, deploy the default Zero install tier
+# (streambox unless it is already an active bonded follower), reboot once
+# if boot-time memory/zram changes need it, then print a concise hardware
+# and software report.
 #
 # Usage:
 #   bash scripts/bringup-endpoint.sh jts4.local --adopt
 #   bash scripts/bringup-endpoint.sh 192.168.1.162 --adopt --speaker-hostname jts4.local
+#   bash scripts/bringup-endpoint.sh jts4.local --satellite-only
 #   bash scripts/bringup-endpoint.sh jts4.local --skip-onboard
 #   bash scripts/bringup-endpoint.sh jts4.local --no-reboot
 #   bash scripts/bringup-endpoint.sh --help
@@ -35,6 +37,7 @@ REBOOT_IF_NEEDED=1
 ACTIVE_HOST=""
 KNOWN_IP=""
 SPEAKER_HOSTNAME=""
+INSTALL_PROFILE_ARG="${JASPER_INSTALL_PROFILE:-}"
 
 usage() {
     sed -E -n '/^# Usage:/,/^$/p' "$0" | sed -E 's/^# ?//'
@@ -60,6 +63,8 @@ while [[ $# -gt 0 ]]; do
         --skip-onboard) RUN_ONBOARD=0; shift ;;
         --skip-deploy) RUN_DEPLOY=0; shift ;;
         --no-reboot) REBOOT_IF_NEEDED=0; shift ;;
+        --satellite-only) INSTALL_PROFILE_ARG="endpoint"; shift ;;
+        --streambox) INSTALL_PROFILE_ARG="streambox"; shift ;;
         --help|-h)
             usage
             exit 0
@@ -89,6 +94,15 @@ fi
 if [[ -n "$USER_ARG" ]]; then
     PI_USER="$USER_ARG"
 fi
+
+case "$INSTALL_PROFILE_ARG" in
+    ""|streambox|endpoint|satellite)
+        ;;
+    *)
+        echo "bringup-endpoint: expected --streambox, --satellite-only, or JASPER_INSTALL_PROFILE=streambox|endpoint|satellite" >&2
+        exit 2
+        ;;
+esac
 
 log_event() {
     local phase="$1" status="$2"
@@ -347,18 +361,22 @@ choose_active_host >/dev/null || {
 if [[ "$RUN_DEPLOY" == "1" ]]; then
     deploy_host="$ACTIVE_HOST"
     echo
-    echo "==> deploy endpoint profile"
-    echo "    PI_HOST=${deploy_host} JASPER_HOSTNAME=${SPEAKER_HOSTNAME}"
+    echo "==> deploy Zero profile"
+    if [[ -n "$INSTALL_PROFILE_ARG" ]]; then
+        echo "    PI_HOST=${deploy_host} JASPER_HOSTNAME=${SPEAKER_HOSTNAME} JASPER_INSTALL_PROFILE=${INSTALL_PROFILE_ARG}"
+    else
+        echo "    PI_HOST=${deploy_host} JASPER_HOSTNAME=${SPEAKER_HOSTNAME} JASPER_INSTALL_PROFILE=auto"
+    fi
     if ! PI_HOST="$deploy_host" \
          PI_USER="$PI_USER" \
          JASPER_HOSTNAME="$SPEAKER_HOSTNAME" \
-         JASPER_INSTALL_PROFILE=endpoint \
+         JASPER_INSTALL_PROFILE="$INSTALL_PROFILE_ARG" \
          bash "${SCRIPT_DIR}/deploy-to-pi.sh"; then
         log_event deploy fail
-        echo "bringup-endpoint: endpoint deploy failed; see output above" >&2
+        echo "bringup-endpoint: deploy failed; see output above" >&2
         exit 1
     fi
-    log_event deploy ok "ssh_host=${deploy_host}"
+    log_event deploy ok "ssh_host=${deploy_host} profile=${INSTALL_PROFILE_ARG:-auto}"
 fi
 
 choose_active_host >/dev/null

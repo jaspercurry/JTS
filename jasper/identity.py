@@ -8,10 +8,8 @@ ad-hoc and drifting from each other.
 Room precedence is the point: the room now lives in the *identity home*
 (`jasper.speaker_name`), so that wins. A legacy fallback to peering's own
 `JASPER_PEER_ROOM` / `peering.config.default_room()` keeps `/rooms/`
-consistent on installs that set a room via the older `/peers/` wizard but
-haven't moved it into the identity home yet. (Full consolidation —
-peering reading identity instead of its own var — is a flagged follow-up,
-not this change.)
+consistent on installs that still carry a pre-identity peering room but
+haven't moved it into the identity home yet.
 
 ``read_identity()`` is TOTAL: every field has a safe fallback and the
 function never raises, so an unreadable file or missing env degrades to a
@@ -46,8 +44,8 @@ PEER_ID_FILE = peering_config.PEER_ID_FILE
 # surface (the wizards, control_advert) so identity agrees with them.
 DEFAULT_HOSTNAME = "jts.local"
 
-# Legacy env var the /peers/ wizard writes its room into. Read here only as
-# a fallback so a pre-identity-home install still surfaces a room.
+# Legacy env var from the pre-identity peering room. Read here only as a
+# fallback so an older install still surfaces a room.
 LEGACY_PEER_ROOM_ENV = "JASPER_PEER_ROOM"
 
 
@@ -80,7 +78,7 @@ def _resolve_room() -> str:
     """Room with identity-home-wins precedence (never raises).
 
       1. identity home — jasper.speaker_name.runtime_room()
-      2. legacy peering env — JASPER_PEER_ROOM (set by older /peers/ wizard)
+      2. legacy peering env — JASPER_PEER_ROOM
       3. peering's hostname-derived default — default_room()
     """
     try:

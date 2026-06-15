@@ -2,8 +2,7 @@
 
 To the household, "my other speakers" is ONE concern, so the read-only
 multi-room directory and the wake-arbitration (peering) toggle live on
-the same page. /peers/ 301-redirects here (see deploy/nginx-jasper.conf);
-this page is canonical. The page title is "Speakers".
+the same page. This page is canonical. The page title is "Speakers".
 
 Two parts:
 
@@ -21,11 +20,8 @@ Two parts:
 2. WAKE-RESPONSE toggle (peering): when several speakers hear "Hey
    Jarvis", only one answers. This is a real, working control. The page
    read-modify-writes /var/lib/jasper/peering.env via POST /peering,
-   REUSING jasper/web/peering_setup.py's readers/constants/restart
-   helpers — it does NOT duplicate the env parse/write/restart. The /peers/
-   peering_setup module + its :8776 socket stay wired (they still serve
-   those helpers and the peering daemon status); the redirect only stops
-   routing users to its page.
+   REUSING jasper.peering.config's readers/constants so it does NOT
+   duplicate the env parse contract.
 
 Room is NOT edited here. Room lives in the speaker-identity home
 (/speaker/); the self card shows it (read via identity.read_identity)
@@ -90,7 +86,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .. import identity
 from ..mdns import browse_once
 from ..multiroom.state import parse_grouping_response, read_grouping_state
-from . import peering_setup
+from ..peering import config as peering_config
 from ._common import (
     begin_request,
     canonical_header,
@@ -99,6 +95,7 @@ from ._common import (
     guard_mutating_request,
     reject_csrf,
     restart_voice_daemon,
+    restart_systemd_units,
     send_html_response,
     write_env_file,
 )
@@ -329,25 +326,24 @@ def _discover_speakers_cached() -> list[dict]:
 def _read_peering_block() -> dict:
     """This speaker's wake-response (peering) state for /rooms.json, read
     FRESH from /var/lib/jasper/peering.env on every call. REUSES
-    peering_setup's readers (_load_state / _is_on / _primary) — the env
-    parse is NOT re-derived here.
+    jasper.peering.config readers — the env parse is NOT re-derived here.
 
     Returns {"enabled": bool, "primary": bool}:
       enabled  — JASPER_PEERING is on (the speaker participates in wake
                  arbitration so only one device answers "Hey Jarvis").
       primary  — JASPER_PEER_PRIMARY is set (small bias to win ties).
 
-    Fail-soft: peering_setup._load_state already returns {} on a
+    Fail-soft: peering_config.read_state already returns {} on a
     missing/unreadable file (→ enabled=False, primary=False), so this
     never raises.
 
     The path is passed explicitly (rather than relying on _load_state's
     def-time default) so it's resolved at call time — fresh on every poll,
-    and overridable in tests by patching peering_setup.PEERING_ENV_FILE."""
-    state = peering_setup._load_state(peering_setup.PEERING_ENV_FILE)
+    and overridable in tests by patching peering_config.PEERING_ENV_FILE."""
+    state = peering_config.read_state(peering_config.PEERING_ENV_FILE)
     return {
-        "enabled": peering_setup._is_on(state),
-        "primary": peering_setup._primary(state),
+        "enabled": peering_config.state_enabled(state),
+        "primary": peering_config.state_primary(state),
     }
 
 
@@ -363,9 +359,9 @@ def _build_rooms_payload() -> dict:
     on "who is this speaker" and the three fields are internally consistent
     within a single render; `address` stays best-effort from this host's own
     NICs (_self_addresses) since that's a /rooms-local concern, not identity.
-    The `peering` block is read FRESH from peering.env each call (via the
-    reused peering_setup readers) so a save through POST /peering reflects on
-    the next 7 s poll.
+    The `peering` block is read FRESH from peering.env each call (via
+    jasper.peering.config) so a save through POST /peering reflects on the
+    next 7 s poll.
 
     Shape (consumed by /assets/rooms/js/main.js):
       {
@@ -509,9 +505,8 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /peering: write the wake-response state into peering.env
     and restart voice + jasper-control so both daemons pick it up.
 
-    REUSES peering_setup throughout — the same PEERING_ENV_FILE, the same
-    JASPER_PEERING / JASPER_PEER_PRIMARY keys, the same restart helpers — so
-    there is ONE owner of the peering env contract.
+    REUSES jasper.peering.config for the PEERING_ENV_FILE and state readers
+    so there is ONE owner of the peering env contract.
 
     Read-modify-write: we load the existing file first and only touch the two
     wake-response keys, PRESERVING everything else (especially
@@ -534,11 +529,11 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     # file and write another (which would clobber the keys we mean to
     # preserve). Resolve it once here rather than relying on _load_state's
     # def-time default.
-    env_path = peering_setup.PEERING_ENV_FILE
+    env_path = peering_config.PEERING_ENV_FILE
 
     # Load-then-merge so JASPER_PEER_ROOM (owned by /speaker/) and any
     # operator tuning knobs survive (write_env_file is a full-file replace).
-    values: dict[str, str] = dict(peering_setup._load_state(env_path))
+    values: dict[str, str] = dict(peering_config.read_state(env_path))
     values["JASPER_PEERING"] = "on" if enabled else "off"
     if primary:
         values["JASPER_PEER_PRIMARY"] = "1"
@@ -546,7 +541,7 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
         del values["JASPER_PEER_PRIMARY"]
 
     try:
-        # mode=0o644 — no secrets, just config. Matches peering_setup._save.
+        # mode=0o644 — no secrets, just config.
         write_env_file(env_path, values, mode=0o644)
     except OSError as e:
         logger.exception("event=rooms.peering.save.error")
@@ -564,9 +559,9 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     # Restart both daemons — jasper-voice reads JASPER_PEERING to know whether
     # to call the peering UDS; jasper-control reads it to know whether to start
     # its peering daemon thread. Both restarts are best-effort / non-blocking
-    # (the reused helpers use systemctl --no-block).
+    # (restart_systemd_units uses systemctl --no-block).
     restart_voice_daemon()
-    peering_setup._restart_jasper_control()
+    restart_systemd_units("jasper-control")
 
     _send_json(
         handler,
@@ -1236,7 +1231,7 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
 def _make_handler():
     """Build the request handler class. No state-path binding — the
     directory pulls everything live (mDNS browse + grouping + peering SSOT),
-    and POST /peering writes through the reused peering_setup file constant."""
+    and POST /peering writes through the reused peering config constant."""
 
     class _Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # noqa: ANN001, A003

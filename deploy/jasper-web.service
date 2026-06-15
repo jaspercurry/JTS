@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google + AirPlay + Sources + Speaker + Wake + Wi-Fi + Peers + Transit + Weather + Sound)
+Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google + AirPlay + Sources + Speaker + Wake + Wi-Fi + Transit + Weather + Sound + Rooms)
 # Socket-activated by jasper-web.socket — daemon exits after 10 min idle.
 Requires=jasper-web.socket
 After=jasper-web.socket network-online.target time-sync.target
@@ -59,11 +59,11 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 #   /speaker/  →  127.0.0.1:8783
 #   /wake/     →  127.0.0.1:8774
 #   /wifi/     →  127.0.0.1:8775
-#   /peers/    →  127.0.0.1:8776
 #   /transit/  →  127.0.0.1:8777
 #   /ha/       →  127.0.0.1:8778
 #   /weather/  →  127.0.0.1:8779
 #   /sound/    →  127.0.0.1:8784
+#   /rooms/    →  127.0.0.1:8785
 # When socket-activated, all fds arrive via LISTEN_FDS and the
 # Python side disambiguates by getsockname()[1] (port). See
 # jasper/web/__main__.py for the wiring.

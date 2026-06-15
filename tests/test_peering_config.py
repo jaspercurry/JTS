@@ -17,6 +17,9 @@ from jasper.peering.config import (
     DEFAULT_BREAK_THRESHOLD,
     PeeringMode,
     load_config,
+    read_state,
+    state_enabled,
+    state_primary,
 )
 
 
@@ -213,6 +216,43 @@ def test_primary_on(tmp_path, monkeypatch):
         peer_id_file=str(tmp_path / "peer_id"),
     )
     assert cfg.primary is True
+
+
+def test_read_state_returns_plain_env_mapping(tmp_path, monkeypatch):
+    """Web surfaces reuse the peering package reader instead of owning a
+    second parser."""
+    _clear_peer_env(monkeypatch)
+    env_file = tmp_path / "peering.env"
+    env_file.write_text(
+        "JASPER_PEERING=on\n"
+        "JASPER_PEER_PRIMARY=1\n"
+        "MALFORMED\n"
+        "JASPER_PEER_ROOM=living-room\n",
+    )
+
+    assert read_state(str(env_file)) == {
+        "JASPER_PEERING": "on",
+        "JASPER_PEER_PRIMARY": "1",
+        "JASPER_PEER_ROOM": "living-room",
+    }
+
+
+def test_read_state_missing_file_is_empty(tmp_path, monkeypatch):
+    """Missing peering.env means default-off, not an exception."""
+    _clear_peer_env(monkeypatch)
+    assert read_state(str(tmp_path / "missing.env")) == {}
+
+
+def test_state_helpers_preserve_web_precedence(monkeypatch):
+    """Persisted state wins, with process env only as a manual fallback."""
+    _clear_peer_env(monkeypatch)
+    monkeypatch.setenv("JASPER_PEERING", "on")
+    monkeypatch.setenv("JASPER_PEER_PRIMARY", "1")
+
+    assert state_enabled({}) is True
+    assert state_primary({}) is True
+    assert state_enabled({"JASPER_PEERING": "off"}) is False
+    assert state_primary({"JASPER_PEER_PRIMARY": "0"}) is False
 
 
 # ---------- peer_id idempotency ----------

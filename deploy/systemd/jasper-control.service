@@ -50,7 +50,7 @@ EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 # flips providers in the wizard.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
 # Peering (multi-device wake arbitration). Off by default; the user
-# enables it in the /peers/ web wizard. When on, jasper-control hosts
+# enables it on /rooms/. When on, jasper-control hosts
 # the peering daemon: mDNS browse, multicast UDP, UDS to voice. When
 # off, no peering code runs and the Pi is invisible to siblings.
 EnvironmentFile=-/var/lib/jasper/peering.env
@@ -59,8 +59,9 @@ Restart=on-failure
 RestartSec=2
 
 # Hardening — daemon reads jasper.env, opens a localhost WebSocket to
-# CamillaDSP, binds an HTTP port, and persists a handful of small state
-# files under /var/lib/jasper (see ReadWritePaths below).
+# CamillaDSP, binds an HTTP port, persists a handful of small state
+# files under /var/lib/jasper, and renders the peering Avahi service
+# file when wake-response peering is enabled (see ReadWritePaths below).
 ProtectSystem=full
 # `read-only` (not `true`) keeps home directories visible to diagnostic
 # subprocesses while still blocking writes. ALSA routing now lives in
@@ -69,15 +70,18 @@ ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
 NoNewPrivileges=true
-# jasper-control writes /var/lib/jasper state: the wizard env files it
-# owns (aec_mode.env, wake_model.env, debug.env), speaker_volume.json, and
-# the T5.2 supervisor's reboot rate-limit at
-# /var/lib/jasper/system_supervisor_reboot.json. Today these writes work
-# only because ProtectSystem=full leaves /var writable; pinning it
-# explicitly keeps the persisted reboot rate-limit (and thus the
-# reboot-loop guard) working if ProtectSystem is ever tightened to
-# `strict`. Mirrors jasper-voice.service / jasper-outputd.service.
-ReadWritePaths=/var/lib/jasper
+# jasper-control writes:
+#   - /var/lib/jasper state: wizard env files it owns (aec_mode.env,
+#     wake_model.env, debug.env), speaker_volume.json, and the T5.2
+#     supervisor's reboot rate-limit at
+#     /var/lib/jasper/system_supervisor_reboot.json.
+#   - /etc/avahi/services/jasper-peer.service when wake-response peering
+#     is enabled so siblings can discover this speaker.
+# Today /var writes work only because ProtectSystem=full leaves /var
+# writable; /etc is read-only under that same hardening. Pin both write
+# contracts explicitly so future hardening and current peering advert
+# rendering cannot silently regress.
+ReadWritePaths=/var/lib/jasper /etc/avahi/services
 
 # OOM protection (Stage 1 of memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Control is the recovery surface — if

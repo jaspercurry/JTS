@@ -531,7 +531,7 @@ title = "Peering, satellites, and accessory devices"
 safety = "hardware-risk"
 code = [
   "jasper/peering/**",
-  "jasper/web/peering_setup.py",
+  "jasper/web/rooms_setup.py",
   "jasper/accessories/**",
   "jasper/cli/dial_onboard.py",
   "jasper/cli/satellite_onboard.py",

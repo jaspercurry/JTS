@@ -6,7 +6,7 @@ CLI/doctor side). ``jasper-voice`` is the only daemon that builds the full typed
 reads but ``jasper-voice.service`` does not source that file, the value is
 silently pinned to its default. That was the peering bug: ``JASPER_PEERING``
 (``peering.env``) never reached jasper-voice, so ``peering_enabled`` was always
-False regardless of what the ``/peers/`` wizard wrote (fixed in #565).
+False regardless of what the peering env file contained (fixed in #565).
 
 This DERIVES the check instead of hand-writing one assertion per file.
 ``test_weather_plumbing.py`` / ``test_sound_plumbing.py`` /

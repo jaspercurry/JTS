@@ -413,9 +413,9 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
             name="USB Audio Input", input_id="t-usbsink",
             note_html=(
                 '<div class="source-note" id="usbsink-note">'
-                "Plug a computer into the Pi's USB-C port (via the 8086 "
-                "splitter). Your computer sees the speaker as a USB audio "
-                "output device.</div>"
+                "Plug a computer into the Pi's USB data/OTG port through a "
+                "compatible power/data splitter or hub. Your computer sees "
+                "the speaker as a USB audio output device.</div>"
             ),
             unavailable_html=(
                 '<div class="source-note warn" id="usbsink-unavailable-note" '
@@ -433,7 +433,8 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
   Spotify Connect persist across reboots; Bluetooth comes back on after a
   reboot (use this for runtime mute, not permanent disable). USB Audio
   Input is off by default — flip it on to use JTS as a USB audio output
-  for a computer plugged into the Pi's USB-C port.</p>
+  for a computer plugged into the Pi's USB data/OTG port through a
+  compatible power/data splitter or hub.</p>
 
   <section class="info-card">
     <h2 class="section__title">Sources</h2>

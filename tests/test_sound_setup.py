@@ -145,6 +145,42 @@ def test_index_html_renders_canonical_sound_page():
     assert "<script>" not in html  # no inline logic left in the page
 
 
+def test_index_html_delegates_content_dsp_when_bonded_follower(monkeypatch):
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(
+        sound_setup,
+        "bonded_follower_leader_web_url",
+        lambda path="/": "http://jts3.local/sound/",
+    )
+
+    html = sound_setup._index_html("csrf-token").decode()
+
+    assert "Sound is controlled by the pair leader" in html
+    assert "http://jts3.local/sound/" in html
+    assert "/assets/sound-profile/js/main.js" not in html
+    assert 'meta name="jts-csrf" content="csrf-token"' in html
+
+
+def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        resp = json_post_with_csrf(
+            base,
+            "/settings",
+            {},
+            expect_status=409,
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert "controlled on the pair leader" in payload["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_index_html_embeds_csrf_meta_for_json_posts():
     html = sound_setup._index_html("csrf-token").decode()
     # The token rides in the meta tag; the static module reads it and sends

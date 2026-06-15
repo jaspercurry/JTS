@@ -1,7 +1,7 @@
 """Peering configuration — env-file loader.
 
 Persisted at /var/lib/jasper/peering.env, mode 0644 (no secrets).
-Written by the /peers/ web wizard, sourced into jasper-control's
+Written by the /rooms/ Speakers page, sourced into jasper-control's
 environment via the systemd unit's `EnvironmentFile=` directive.
 
 Same precedence rule as wake_model.env and voice_provider.env:
@@ -12,7 +12,7 @@ Two modes only:
          no zeroconf browse, no multicast socket, no thread. Cost
          on a single-Pi household: zero.
   on   — Full peering. Advertise via Avahi, browse for siblings,
-         arbitrate wake events. The user opts in via /peers/.
+         arbitrate wake events. The user opts in via /rooms/.
 
 We deliberately don't expose an `auto` mode where peering would
 turn itself on if peers appear; one mode flip per setting, easy
@@ -108,7 +108,7 @@ class PeeringConfig:
 
     mode: PeeringMode
     peer_id: str          # stable UUID, persists across reboots
-    room: str             # human label, surfaced in /peers/ UI and logs
+    room: str             # human label, surfaced in /rooms/ UI and logs
     primary: bool         # small bias in the ranking function (~0.05)
     arb_window_ms: int    # arbitration collection window
     break_threshold: float  # local-wake confidence required to break a foreign session
@@ -139,6 +139,41 @@ def _read_env_file(path: str) -> Mapping[str, str]:
     except OSError as e:
         logger.warning("could not read %s: %s", path, e)
     return out
+
+
+def read_state(path: str = PEERING_ENV_FILE) -> dict[str, str]:
+    """Read the peering EnvironmentFile as a plain dict.
+
+    This is the small public helper for web/doctor surfaces that need to
+    display or update the current peering setting without constructing a full
+    :class:`PeeringConfig` (which may create a missing peer id). Missing or
+    unreadable files resolve to ``{}``, matching ``load_config``'s fail-soft
+    default-off posture.
+    """
+    return dict(_read_env_file(path))
+
+
+def state_enabled(state: Mapping[str, str]) -> bool:
+    """Return whether a peering state mapping resolves to ON.
+
+    The persisted file wins, with process env as a fallback for older/manual
+    deployments. This preserves the old web-helper behavior while keeping the
+    ownership in the peering package instead of a deleted page module.
+    """
+    raw = (
+        state.get("JASPER_PEERING", "")
+        or os.environ.get("JASPER_PEERING", "")
+    )
+    return _parse_mode(raw) is PeeringMode.ON
+
+
+def state_primary(state: Mapping[str, str]) -> bool:
+    """Return whether the state mapping marks this speaker primary."""
+    raw = (
+        state.get("JASPER_PEER_PRIMARY", "")
+        or os.environ.get("JASPER_PEER_PRIMARY", "")
+    )
+    return _parse_bool(raw)
 
 
 def _ensure_peer_id(path: str = PEER_ID_FILE) -> str:
@@ -190,7 +225,7 @@ def default_room(hostname: str | None = None) -> str:
     Non-mDNS-safe chars (spaces, punctuation, etc.) collapse into a
     single dash, so "Living Room" → "living-room".
 
-    Exposed publicly so the /peers/ web wizard can produce the same
+    Exposed publicly so management surfaces can produce the same
     fallback as `load_config()` without dragging the full peering
     package into the wizard's import path.
     """

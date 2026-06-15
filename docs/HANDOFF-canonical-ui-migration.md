@@ -88,7 +88,7 @@ All now render via `canonical_page()`:
 | Page | URL | Notes / risk |
 |---|---|---|
 | speaker | `/speaker/` | reference impl; simplest form |
-| peering | `/peers/` | form |
+| rooms / peering | `/rooms/` | ES module |
 | weather | `/weather/` | form + geocode probe |
 | sources | `/sources/` | toggles (USB dtoverlay gating preserved) |
 | airplay | `/airplay/` | toggle + status |
@@ -174,7 +174,7 @@ code was correct; only the fakes were incomplete.
 
 **D. Stale assertions in pre-existing test files (fixed).** Several
 already-tracked test files asserted the *old* markup the migration
-changed (`tests/test_peering_setup.py`, `tests/test_wifi_setup_ui.py`,
+changed (`tests/test_web_rooms_setup.py`, `tests/test_wifi_setup_ui.py`,
 `tests/test_system_setup.py`, plus `test_doctor.py` for the new
 correction assets). Updated to the canonical equivalents, intent
 preserved. `test_system_setup.py`'s CSRF-in-module check now also scans

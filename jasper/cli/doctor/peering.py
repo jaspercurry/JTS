@@ -15,7 +15,7 @@ from ._shared import CheckResult, _run
 def check_peering_mode() -> CheckResult:
     """Verify /var/lib/jasper/peering.env is parseable.
 
-    Off by default; the user opts in via the /peers/ web wizard. We
+    Off by default; the user opts in via /rooms/. We
     return `ok` for both OFF (deliberate) and ON (configured) — the
     `warn`/`fail` cases catch broken env files only."""
     label = "peering: mode"
@@ -23,7 +23,7 @@ def check_peering_mode() -> CheckResult:
     if not p.exists():
         return CheckResult(
             label, "ok",
-            "off (default) — enable at http://<hostname>/peers/",
+            "off (default) — enable at http://<hostname>/rooms/",
         )
     raw = ""
     try:
@@ -44,7 +44,7 @@ def check_peering_mode() -> CheckResult:
     return CheckResult(
         label, "warn",
         f"unknown JASPER_PEERING={raw!r}; defaults to off. "
-        "Edit /var/lib/jasper/peering.env or use the /peers/ wizard.",
+        "Edit /var/lib/jasper/peering.env or use /rooms/.",
     )
 
 @doctor_check(order=70, group="peering")

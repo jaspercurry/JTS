@@ -652,6 +652,15 @@ def test_pair_banner_html_renders_only_when_bonded(monkeypatch):
     assert "stereo pair" in html and "/rooms/" in html
 
 
+def test_local_web_host_prefers_mdns_and_rejects_raw_ips():
+    import jasper.web._common as common
+
+    assert common.local_web_host("jts3") == "jts3.local"
+    assert common.local_web_host("jts3.local.") == "jts3.local"
+    assert common.local_web_host("192.168.1.23") == ""
+    assert common.local_web_host("bad/host") == ""
+
+
 def test_pair_banner_renders_on_each_wizard_page(monkeypatch):
     """The §7.5 interface contract, pinned for the two f-string pages
     (voice, wake): banner present while a bonded follower, absent when

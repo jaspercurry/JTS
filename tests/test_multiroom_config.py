@@ -507,8 +507,9 @@ def test_validate_grouping_leader_addr_shape_gate():
     """leader_addr feeds THREE consumers (snapclient argv, the control-API
     volume forward's URL build, the landing page's leader link) — a value
     with '/', '@', or whitespace would reshape a URL rather than name a
-    host, so validation enforces hostname/IPv4 shape (same alphabet as the
-    landing page's HOST_RE gate)."""
+    host, so validation enforces hostname/IPv4 shape. The browser helper uses
+    the same hostname alphabet before it rejects raw IPs for user-facing
+    links."""
     from jasper.multiroom.config import validate_grouping
 
     def err(addr):

@@ -372,9 +372,8 @@ migrate_grouping() {
 # Seed the speaker's room label into the speaker-identity home
 # (/var/lib/jasper/speaker_name.env, JASPER_SPEAKER_ROOM) from the
 # legacy peering room (/var/lib/jasper/peering.env, JASPER_PEER_ROOM)
-# so an existing household that already picked a room at /peers/ carries
-# that room into the identity home where /rooms and control_advert now
-# read it. One-time, non-destructive:
+# so an existing household keeps its room label in the identity home where
+# /rooms and control_advert now read it. One-time, non-destructive:
 #
 #   - If speaker_name.env already has a NON-EMPTY JASPER_SPEAKER_ROOM,
 #     leave it untouched (don't overwrite an operator-set room).
@@ -384,9 +383,8 @@ migrate_grouping() {
 #     nothing — the identity reader's legacy peering fallback keeps
 #     /rooms consistent at runtime, so there is nothing to persist.
 #
-# SCOPE: peering keeps reading its own JASPER_PEER_ROOM for wake-arb
-# display; this only mirrors the value into the identity home. The full
-# peering->identity room consolidation is a separate flagged follow-up.
+# SCOPE: JASPER_PEER_ROOM remains a data-compatibility fallback for older
+# peering.env files; this only mirrors the value into the identity home.
 #
 # Fail-soft: any read/write hiccup is a warn-and-continue, never an
 # install failure. Idempotent — a second run finds the room already set

@@ -11,7 +11,7 @@ turn.
 **Off by default.** A single-Pi household pays nothing: with mode
 `off`, no Avahi service is advertised, no zeroconf import happens,
 no multicast socket is opened, no thread is spawned. The user
-explicitly turns peering on via the `/peers/` web wizard, which
+explicitly turns peering on via the `/rooms/` Speakers page, which
 writes `/var/lib/jasper/peering.env` and restarts `jasper-control`.
 
 Architecture (see `docs/satellites.md` "Microphone arbitration"

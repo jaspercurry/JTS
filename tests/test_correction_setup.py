@@ -93,6 +93,22 @@ def test_render_page_embeds_csrf_meta_and_fetch_helpers():
     assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in js
 
 
+def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
+    monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(
+        correction_setup,
+        "bonded_follower_leader_web_url",
+        lambda path="/": "http://jts3.local/correction/",
+    )
+
+    body = correction_setup._render_page("jts4.local", "csrf-token").decode()
+
+    assert "Room correction is controlled by the pair leader" in body
+    assert "http://jts3.local/correction/" in body
+    assert "/assets/correction/js/main.js" not in body
+    assert 'meta name="jts-csrf" content="csrf-token"' in body
+
+
 def test_render_page_includes_ca_download_link():
     """The cert-trust dance is the load-bearing first-time-user step;
     the fallback link to the CA must always be visible. Pin the URL
@@ -539,6 +555,24 @@ def test_e2e_get_index_serves_html():
         )
         body = resp.read().decode()
         assert "Room correction" in body
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_bonded_follower_rejects_correction_mutation(monkeypatch):
+    monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
+    server, base = _start_server()
+    try:
+        resp = request_with_csrf(
+            base,
+            "/apply",
+            json.dumps({}).encode("utf-8"),
+            content_type="application/json",
+            expect_status=409,
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+        assert "controlled on the pair leader" in payload["error"]
     finally:
         server.shutdown()
         server.server_close()

@@ -139,24 +139,56 @@ detect_default_install_profile() {
     esac
 }
 
+install_profile_env_value() {
+    local file="$1"
+    local key="$2"
+    [[ -r "${file}" ]] || return 0
+    awk -F= -v key="${key}" '
+        $1 == key {
+            sub(/^[^=]*=/, "")
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            print
+            exit
+        }
+    ' "${file}" 2>/dev/null || true
+}
+
+install_profile_bonded_follower_active() {
+    local grouping_file="${JASPER_GROUPING_ENV_FILE:-${STATE_DIR}/grouping.env}"
+    local enabled role leader enabled_lc
+    enabled="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING")"
+    role="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING_ROLE")"
+    leader="$(install_profile_env_value "${grouping_file}" "JASPER_GROUPING_LEADER_ADDR")"
+    enabled_lc="$(printf '%s' "${enabled}" | tr '[:upper:]' '[:lower:]')"
+    [[ "${enabled_lc}" == "on" && "${role}" == "follower" && -n "${leader}" ]]
+}
+
 # Test helpers pass an alternate marker path directly; production calls use the
 # canonical marker. Shellcheck only sees the production path.
 # shellcheck disable=SC2120
 resolve_install_profile() {
     local marker="${1:-${INSTALL_PROFILE_MARKER}}"
     local requested="${JASPER_INSTALL_PROFILE:-}"
-    local persisted requested_profile
+    local persisted requested_profile detected_profile auto_streambox_upgrade=0
 
     persisted="$(read_persisted_install_profile "${marker}")" || return $?
     if [[ -n "${requested}" ]]; then
         requested_profile="$(normalize_install_profile "${requested}")" || return $?
     elif [[ -n "${persisted}" ]]; then
-        requested_profile="${persisted}"
+        detected_profile="$(detect_default_install_profile)" || return $?
+        if [[ "${persisted}" == "endpoint" && "${detected_profile}" == "streambox" ]] \
+                && ! install_profile_bonded_follower_active; then
+            requested_profile="streambox"
+            auto_streambox_upgrade=1
+        else
+            requested_profile="${persisted}"
+        fi
     else
         requested_profile="$(detect_default_install_profile)" || return $?
     fi
 
     if [[ -n "${persisted}" && "${persisted}" != "${requested_profile}" ]] \
+            && [[ "${auto_streambox_upgrade}" != "1" ]] \
             && ! _is_truthy "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-0}"; then
         cat >&2 <<EOF
 ERROR: install profile mismatch.
@@ -172,6 +204,22 @@ EOF
     fi
 
     printf '%s\n' "${requested_profile}"
+}
+
+install_profile_auto_streambox_upgrade_active() {
+    local resolved_profile="$1"
+    local marker="${2:-${INSTALL_PROFILE_MARKER}}"
+    local persisted requested detected_profile
+    requested="${JASPER_INSTALL_PROFILE:-}"
+    [[ -z "${requested}" ]] || return 1
+    [[ "${resolved_profile}" == "streambox" ]] || return 1
+
+    persisted="$(read_persisted_install_profile "${marker}")" || return 1
+    [[ "${persisted}" == "endpoint" ]] || return 1
+
+    detected_profile="$(detect_default_install_profile)" || return 1
+    [[ "${detected_profile}" == "streambox" ]] || return 1
+    ! install_profile_bonded_follower_active
 }
 
 persist_install_profile() {
@@ -216,6 +264,9 @@ Run for real from a Pi-local checkout:
    - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
    - Refuse later full/streambox/endpoint tier changes unless
      JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+   - Legacy unpaired Zero endpoints with a persisted endpoint marker
+     auto-upgrade to streambox; active bonded followers and explicit
+     endpoint requests stay satellite-only.
 
 2. System packages
    - apt-get update.
@@ -244,9 +295,11 @@ Run for real from a Pi-local checkout:
      sha256=${SHAIRPORT_SYNC_SHA256}
    - Python runtime dependencies from pyproject.toml [streambox].
    - jasper-fanin Rust daemon from rust/jasper-fanin with
-     cargo build --release --locked.
+     cargo build --release --locked; Zero-class RAM uses the installer
+     low-memory Cargo release overrides.
    - jasper-outputd daemon from rust/jasper-outputd with
-     cargo build --release --locked.
+     cargo build --release --locked; Zero-class RAM uses the installer
+     low-memory Cargo release overrides.
 
 4. Runtime files and state
    - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
@@ -264,7 +317,7 @@ Run for real from a Pi-local checkout:
      renderer services, nginx, Avahi, identity reconciliation, and the
      multi-room grouping reconciler.
    - Enable socket-activated streambox-safe web surfaces:
-     /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/, /peers/,
+     /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/,
      /bluetooth/, /system/, and HTTPS /correction/.
    - Install the streambox nginx route set with the shared JTS landing
      page and capability-gated cards.
@@ -1614,8 +1667,8 @@ install_peering_template() {
     #
     # jasper-control's peering daemon renders this template into
     # /etc/avahi/services/jasper-peer.service when JASPER_PEERING=on
-    # is set in /var/lib/jasper/peering.env (via the /peers/ web
-    # wizard, in PR 2). When peering is off (the default), no
+    # is set in /var/lib/jasper/peering.env (via the /rooms/ Speakers
+    # page). When peering is off (the default), no
     # rendered file exists and this Pi is invisible to siblings —
     # the goal property of "zero cost when alone".
     #
@@ -1643,7 +1696,7 @@ install_peering_template() {
         chmod 0644 /var/lib/jasper/peer_id
         echo "  Generated stable peer_id at /var/lib/jasper/peer_id"
     fi
-    echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/peers/"
+    echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/rooms/"
 }
 
 regenerate_audio_cues() {
@@ -1828,6 +1881,9 @@ main() {
     fi
 
     echo "==> install.sh starting (profile: ${install_profile})"
+    if install_profile_auto_streambox_upgrade_active "${install_profile}"; then
+        echo "event=install_profile.auto_streambox_upgrade previous=endpoint profile=streambox reason=unpaired_zero"
+    fi
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
         persist_install_profile "${install_profile}"
