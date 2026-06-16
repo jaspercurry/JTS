@@ -852,6 +852,24 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
         sess.noise_floor_db = noise_floor_db
 
+        if sess.browser_audio_report.get("failed") is True:
+            issue_codes = [
+                issue.get("code")
+                for issue in sess.browser_audio_report.get("issues", [])
+                if isinstance(issue, dict) and issue.get("severity") == "fail"
+            ]
+            log_event(
+                logger,
+                "correction_start_rejected",
+                reason="browser_audio_path_failed",
+                issue_codes=",".join(str(code) for code in issue_codes if code),
+                level=logging.WARNING,
+            )
+            raise ValueError(
+                sess.browser_audio_report.get("summary")
+                or "browser audio path is not safe for measurement"
+            )
+
         cam = _camilla()
 
         # Snapshot what was loaded BEFORE we reset, so the bundle records

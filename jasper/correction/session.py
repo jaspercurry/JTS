@@ -2,15 +2,11 @@
 
 Phase 2: multi-position MMM averaging + verify pass.
 
-The session owns a long-running async task that holds the
-measurement window open across all 5 sweeps so the renderers don't
-pause/restart between positions (which would cost ~3-5 s per
-position change). The HTTP handler `POST /start` kicks off the
-session; subsequent `POST /next-position` and `POST /upload-capture`
-calls advance the state machine; `POST /apply` closes the window
-and applies the correction; `POST /verify` opens a fresh window for
-a post-correction re-measurement; `POST /reset` rolls back to the
-base config.
+The session owns the measurement state machine. The web handler opens
+a fresh measurement window for each sweep so renderers pause only while
+the speaker is actively measuring. Browser-side calls arm capture,
+upload pre-sweep room noise, trigger sweep playback, upload the captured
+response, and eventually apply or verify the generated correction.
 
 State transitions in the browser flow (with N = total_positions):
 
@@ -40,7 +36,6 @@ import logging
 import math
 import os
 import re
-import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -54,17 +49,15 @@ from . import (
     acoustic_quality,
     analysis,
     browser_audio,
-    bundles,
     calibration,
     confidence,
     deconv,
     quality,
-    replay_artifacts,
     runtime_integrity,
-    spatial,
     strategy,
     sweep,
 )
+from .artifacts import ANALYSIS_NORMALIZE_BAND_HZ, SessionArtifacts
 from .calibration import CalibrationRecord
 from .peq import PEQ
 from ..log_event import log_event
@@ -77,7 +70,6 @@ _CORRECTION_FILENAME_RE = re.compile(
 )
 _SOUND_FILENAME_RE = re.compile(r"^sound_(?:current|audition)\.yml$")
 _PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
-ANALYSIS_NORMALIZE_BAND_HZ = (200.0, 1000.0)
 
 
 def parse_current_correction(
@@ -526,6 +518,7 @@ class MeasurementSession:
         # pointing at a tmp_path don't have to pre-mkdir.
         self.bundle_dir: Path = self.cfg.sessions_dir / self.session_id
         self.save_bundles: bool = _bundles_enabled()
+        self.artifacts = SessionArtifacts(self)
 
         # Events retained for debugging / future progress streams. The
         # shipped browser UI currently polls GET /status.
@@ -635,100 +628,18 @@ class MeasurementSession:
             )
 
     # ------------------------------------------------------------------
-    # Bundle artifacts. Each measurement session optionally writes
-    # a self-contained debug bundle at sessions/<session_id>/ — info,
-    # result curves, per-position captures, applied config copy.
+    # Bundle artifacts. MeasurementSession keeps this public/internal surface
+    # for callers, while SessionArtifacts owns the file-system work.
     # ------------------------------------------------------------------
 
     def _ensure_bundle_dir(self) -> Path | None:
-        if not self.save_bundles:
-            return None
-        try:
-            self.bundle_dir.mkdir(parents=True, exist_ok=True)
-            (self.bundle_dir / "captures").mkdir(exist_ok=True)
-        except OSError as e:
-            logger.warning(
-                "bundle dir create failed for session %s: %s",
-                self.session_id, e,
-            )
-            return None
-        return self.bundle_dir
+        return self.artifacts.ensure_bundle_dir()
 
     def _bundle_relative_path(self, path: Path) -> str | None:
-        try:
-            return path.resolve().relative_to(self.bundle_dir.resolve()).as_posix()
-        except ValueError:
-            return None
+        return self.artifacts.bundle_relative_path(path)
 
     def _existing_bundle_dependencies(self, *paths: str) -> list[str]:
-        return [
-            path
-            for path in sorted(set(paths))
-            if path and (self.bundle_dir / path).exists()
-        ]
-
-    def _capture_artifact_dependencies(self) -> list[str]:
-        dependencies: list[str] = []
-        reports = list(self.capture_quality)
-        reports.extend(self.noise_reports)
-        if self.repeat_quality:
-            reports.append(self.repeat_quality)
-        if self.verify_quality:
-            reports.append(self.verify_quality)
-        for report in reports:
-            artifact_path = report.get("artifact_path")
-            if not isinstance(artifact_path, str):
-                continue
-            if Path(artifact_path).is_absolute():
-                continue
-            if (self.bundle_dir / artifact_path).exists():
-                dependencies.append(artifact_path)
-        return sorted(set(dependencies))
-
-    def _noise_artifact_dependencies(self) -> list[str]:
-        dependencies: list[str] = []
-        for report in self.noise_reports:
-            artifact_path = report.get("artifact_path")
-            if not isinstance(artifact_path, str):
-                continue
-            if Path(artifact_path).is_absolute():
-                continue
-            if (self.bundle_dir / artifact_path).exists():
-                dependencies.append(artifact_path)
-        return sorted(set(dependencies))
-
-    def _runtime_capture_artifact_dependencies(self) -> list[str]:
-        dependencies: list[str] = []
-        for capture in self.runtime_integrity.captures:
-            artifact_path = capture.get("artifact_path")
-            if not isinstance(artifact_path, str):
-                continue
-            if Path(artifact_path).is_absolute():
-                continue
-            if (self.bundle_dir / artifact_path).exists():
-                dependencies.append(artifact_path)
-        return sorted(set(dependencies))
-
-    def _replay_artifact_dependencies(self) -> list[str]:
-        dependencies: list[str] = []
-        reports = list(self.capture_quality)
-        if self.repeat_quality:
-            reports.append(self.repeat_quality)
-        if self.verify_quality:
-            reports.append(self.verify_quality)
-        for report in reports:
-            artifacts = report.get("replay_artifacts")
-            if not isinstance(artifacts, dict):
-                continue
-            for key in ("impulse_response_path", "response_path"):
-                artifact_path = artifacts.get(key)
-                if not isinstance(artifact_path, str):
-                    continue
-                if Path(artifact_path).is_absolute():
-                    continue
-                if (self.bundle_dir / artifact_path).exists():
-                    dependencies.append(artifact_path)
-        return sorted(set(dependencies))
+        return self.artifacts.existing_bundle_dependencies(*paths)
 
     def _write_capture_replay_artifacts(
         self,
@@ -744,107 +655,18 @@ class MeasurementSession:
         log_magnitude_db: np.ndarray,
         direct_arrival: dict[str, Any],
     ) -> dict[str, Any] | None:
-        bundle = self._ensure_bundle_dir()
-        if bundle is None:
-            return None
-        source_rel = self._bundle_relative_path(captured_wav_path)
-        if source_rel is None:
-            log_event(
-                logger,
-                "correction_replay_artifacts_skipped",
-                session=self.session_id,
-                capture_kind=capture_kind,
-                position_index=position_index,
-                reason="source_capture_outside_bundle",
-            )
-            return None
-        try:
-            artifacts = replay_artifacts.write_capture_replay_artifacts(
-                bundle,
-                bundle_schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-                session_id=self.session_id,
-                capture_kind=capture_kind,
-                position_index=position_index,
-                source_capture_path=source_rel,
-                ir=ir,
-                sample_rate=self.cfg.sample_rate,
-                raw_freqs_hz=raw_freqs_hz,
-                raw_magnitude_db=raw_magnitude_db,
-                smoothed_magnitude_db=smoothed_magnitude_db,
-                log_freqs_hz=log_freqs_hz,
-                log_magnitude_db=log_magnitude_db,
-                direct_arrival=direct_arrival,
-                deconvolution={
-                    "method": "fft_tikhonov_regularized_inverse",
-                    "pre_arrival_ms": deconv.DEFAULT_PRE_ARRIVAL_MS,
-                    "post_arrival_ms": deconv.DEFAULT_POST_ARRIVAL_MS,
-                    "epsilon_relative": deconv.DEFAULT_EPSILON_RELATIVE,
-                },
-                calibration_applied=self.mic_calibration is not None,
-                normalized_band_hz=ANALYSIS_NORMALIZE_BAND_HZ,
-            )
-            raw_dependencies = self._existing_bundle_dependencies(
-                "info.json",
-                source_rel,
-            )
-            calibration_dependencies = (
-                self._existing_bundle_dependencies("mic_calibration.json")
-                if self.mic_calibration is not None
-                else []
-            )
-            common_metadata = {
-                "capture_kind": capture_kind,
-                "position_index": position_index,
-            }
-            bundles.record_artifact(
-                bundle,
-                artifacts.impulse_response_path,
-                kind="derived_impulse_response",
-                sensitivity="private_metadata",
-                recomputable=True,
-                generated_by=(
-                    "jasper.correction.session._write_capture_replay_artifacts"
-                ),
-                dependencies=raw_dependencies,
-                metadata=common_metadata,
-                schema_version=replay_artifacts.SCHEMA_VERSION,
-            )
-            bundles.record_artifact(
-                bundle,
-                artifacts.response_path,
-                kind="derived_frequency_response",
-                sensitivity="private_metadata",
-                recomputable=True,
-                generated_by=(
-                    "jasper.correction.session._write_capture_replay_artifacts"
-                ),
-                dependencies=self._existing_bundle_dependencies(
-                    *raw_dependencies,
-                    *calibration_dependencies,
-                    artifacts.impulse_response_path,
-                ),
-                metadata=common_metadata,
-                schema_version=replay_artifacts.SCHEMA_VERSION,
-            )
-            log_event(
-                logger,
-                "correction_replay_artifacts_written",
-                session=self.session_id,
-                capture_kind=capture_kind,
-                position_index=position_index,
-                ir=artifacts.impulse_response_path,
-                response=artifacts.response_path,
-            )
-            return artifacts.to_dict()
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "bundle replay artifact write failed session=%s "
-                "capture_kind=%s position_index=%s",
-                self.session_id,
-                capture_kind,
-                position_index,
-            )
-            return None
+        return self.artifacts.write_capture_replay_artifacts(
+            captured_wav_path,
+            capture_kind=capture_kind,
+            position_index=position_index,
+            ir=ir,
+            raw_freqs_hz=raw_freqs_hz,
+            raw_magnitude_db=raw_magnitude_db,
+            smoothed_magnitude_db=smoothed_magnitude_db,
+            log_freqs_hz=log_freqs_hz,
+            log_magnitude_db=log_magnitude_db,
+            direct_arrival=direct_arrival,
+        )
 
     def _record_raw_capture_artifact(
         self,
@@ -853,39 +675,11 @@ class MeasurementSession:
         capture_kind: str,
         position_index: int | None = None,
     ) -> None:
-        bundle = self._ensure_bundle_dir()
-        if bundle is None:
-            return
-        rel_path = self._bundle_relative_path(captured_wav_path)
-        if rel_path is None:
-            return
-        metadata: dict[str, Any] = {"capture_kind": capture_kind}
-        if position_index is not None:
-            metadata["position_index"] = position_index
-        artifact_kind = {
-            "noise": "noise_capture",
-            "repeat": "repeat_capture",
-        }.get(capture_kind, "raw_capture")
-        try:
-            bundles.record_artifact(
-                bundle,
-                rel_path,
-                kind=artifact_kind,
-                sensitivity="private_raw_audio",
-                recomputable=False,
-                generated_by=(
-                    "jasper.correction.session."
-                    "_record_raw_capture_artifact"
-                ),
-                dependencies=self._existing_bundle_dependencies("info.json"),
-                metadata=metadata,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "bundle raw capture manifest record failed session=%s path=%s",
-                self.session_id,
-                rel_path,
-            )
+        self.artifacts.record_raw_capture_artifact(
+            captured_wav_path,
+            capture_kind=capture_kind,
+            position_index=position_index,
+        )
 
     def _refresh_acoustic_quality(self) -> None:
         self.acoustic_quality = acoustic_quality.build_acoustic_quality_report(
@@ -898,55 +692,15 @@ class MeasurementSession:
         )
 
     def _write_acoustic_quality_json(self) -> None:
-        bundle = self._ensure_bundle_dir()
-        if bundle is None or self.acoustic_quality is None:
-            return
-        bundles.write_json_artifact(
-            bundle,
-            "acoustic_quality.json",
-            self.acoustic_quality,
-            kind="acoustic_quality",
-            sensitivity="private_metadata",
-            recomputable=True,
-            generated_by=(
-                "jasper.correction.session._write_acoustic_quality_json"
-            ),
-            dependencies=self._existing_bundle_dependencies(
-                "info.json",
-                *self._capture_artifact_dependencies(),
-            ),
-            schema_version=acoustic_quality.SCHEMA_VERSION,
-        )
+        self.artifacts.write_acoustic_quality_json()
 
     def _write_runtime_integrity_json(
         self,
         *,
         extra_dependencies: tuple[str, ...] = (),
     ) -> None:
-        bundle = self._ensure_bundle_dir()
-        if bundle is None:
-            return
-        dependencies = self._existing_bundle_dependencies(
-            "info.json",
-            *self._capture_artifact_dependencies(),
-            *self._runtime_capture_artifact_dependencies(),
-            *extra_dependencies,
-        )
-        bundles.write_json_artifact(
-            bundle,
-            "runtime_integrity.json",
-            {
-                "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-                **self.runtime_integrity.to_dict(),
-            },
-            kind="runtime_integrity",
-            sensitivity="private_metadata",
-            recomputable=False,
-            generated_by=(
-                "jasper.correction.session._write_runtime_integrity_json"
-            ),
-            dependencies=dependencies,
-            schema_version=runtime_integrity.SCHEMA_VERSION,
+        self.artifacts.write_runtime_integrity_json(
+            extra_dependencies=extra_dependencies,
         )
 
     def _log_runtime_integrity_issues(
@@ -1031,25 +785,11 @@ class MeasurementSession:
         cfg.capture_dir when bundles are disabled or the per-session
         dir can't be created — keeps the upload path working even
         when /var/lib/jasper is read-only or full."""
-        bundle = self._ensure_bundle_dir()
-        if bundle is not None:
-            return bundle / "captures" / f"p{idx}.wav"
-        self.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
-        return self.cfg.capture_dir / (
-            f"capture_{self.session_id}_p{idx}_{int(time.time())}.wav"
-        )
+        return self.artifacts.capture_path_for_position(idx)
 
     def noise_capture_path_for_position(self, idx: int) -> Path:
         """Where the pre-sweep noise WAV for a position should land."""
-        bundle = self._ensure_bundle_dir()
-        if bundle is not None:
-            path = bundle / "noise" / f"p{idx}_pre.wav"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            return path
-        self.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
-        return self.cfg.capture_dir / (
-            f"noise_{self.session_id}_p{idx}_{int(time.time())}.wav"
-        )
+        return self.artifacts.noise_capture_path_for_position(idx)
 
     def repeat_capture_path_for_position(
         self,
@@ -1058,393 +798,33 @@ class MeasurementSession:
         repeat_index: int = 1,
     ) -> Path:
         """Where optional same-position repeat WAVs should land."""
-        bundle = self._ensure_bundle_dir()
-        if bundle is not None:
-            path = bundle / "repeat_captures" / f"p{idx}_r{repeat_index}.wav"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            return path
-        self.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
-        return self.cfg.capture_dir / (
-            f"repeat_{self.session_id}_p{idx}_r{repeat_index}_{int(time.time())}.wav"
+        return self.artifacts.repeat_capture_path_for_position(
+            idx,
+            repeat_index=repeat_index,
         )
 
     def verify_capture_path(self) -> Path:
         """Where the post-Apply re-measurement WAV should land."""
-        bundle = self._ensure_bundle_dir()
-        if bundle is not None:
-            return bundle / "verify.wav"
-        self.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
-        return self.cfg.capture_dir / (
-            f"verify_{self.session_id}_{int(time.time())}.wav"
-        )
+        return self.artifacts.verify_capture_path()
 
     def _write_info_json(self) -> None:
-        """Atomically rewrite info.json with the current session snapshot.
-
-        Keep this to summary-level metadata: detailed replay artifacts
-        belong in sibling JSON files such as `position_analysis.json`.
-        Called on every state transition so a bundle copied off the Pi
-        mid-session is always self-describing.
-        """
-        bundle = self._ensure_bundle_dir()
-        if bundle is None:
-            return
-        info = {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "session_id": self.session_id,
-            "state": self.state.value,
-            "started_at": self.started_at,
-            "updated_at": self.updated_at,
-            "error": self.error,
-            "total_positions": self.total_positions,
-            "current_position": self.current_position,
-            "repeat_main_position": self.repeat_main_position,
-            "target_choice": self.target_choice,
-            "target_profile": strategy.resolve_target_profile(
-                self.target_choice,
-            ).to_dict(),
-            "strategy_choice": self.strategy_choice,
-            "correction_strategy": strategy.resolve_correction_strategy(
-                self.strategy_choice,
-            ).to_dict(),
-            "noise_floor_db": self.noise_floor_db,
-            "input_device": self.input_device,
-            "mic_calibration": (
-                self.mic_calibration.public_metadata()
-                if self.mic_calibration
-                else None
-            ),
-            "browser_audio_report": self.browser_audio_report,
-            "capture_quality": self.capture_quality,
-            "noise_reports": self.noise_reports,
-            "repeat_quality": self.repeat_quality,
-            "repeatability_report": self.repeatability_report,
-            "verify_quality": self.verify_quality,
-            "confidence_report": self.confidence_report,
-            "acoustic_quality": (
-                (self.acoustic_quality or {}).get("summary")
-                if self.acoustic_quality
-                else None
-            ),
-            "runtime_integrity": self.runtime_integrity.summary(),
-            "position_analysis": self.position_analysis,
-            "current_correction_at_start": self.current_correction_at_start,
-            "autolevel": self.autolevel.snapshot(),
-            "sweep_meta": (
-                self.sweep_meta.to_dict() if self.sweep_meta else None
-            ),
-            "peqs": [p.__dict__ for p in self.peqs],
-            "design_report": self.design_report,
-            "config_path": (
-                str(self.config_path) if self.config_path else None
-            ),
-            "verify_metrics": self.verify_metrics,
-            "config": {
-                "f1_hz": self.cfg.f1_hz,
-                "f2_hz": self.cfg.f2_hz,
-                "duration_s": self.cfg.duration_s,
-                "sample_rate": self.cfg.sample_rate,
-                "amplitude_dbfs": self.cfg.amplitude_dbfs,
-                "peq_f_low": self.cfg.peq_f_low,
-                "peq_f_high": self.cfg.peq_f_high,
-                "peq_max_filters": self.cfg.peq_max_filters,
-                "peq_max_cut_db": self.cfg.peq_max_cut_db,
-                "peq_max_boost_db": self.cfg.peq_max_boost_db,
-                "peq_cuts_only": self.cfg.peq_cuts_only,
-                "peq_flatness_target_db": self.cfg.peq_flatness_target_db,
-                "correction_strategy": self.cfg.correction_strategy,
-            },
-        }
-        bundles.write_json_artifact(
-            bundle,
-            "info.json",
-            info,
-            kind="session_metadata",
-            sensitivity="private_metadata",
-            recomputable=False,
-            generated_by="jasper.correction.session._write_info_json",
-            schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        )
-        self._write_mic_calibration_bundle(bundle)
+        """Atomically rewrite info.json with the current session snapshot."""
+        self.artifacts.write_info_json()
 
     def _write_result_json(self) -> None:
-        """Snapshot the chart curves + verify after design / verify.
-        Result.json is the "what did this measurement actually
-        produce" record — separated from info.json so we don't
-        rewrite curve data on every state transition."""
-        bundle = self._ensure_bundle_dir()
-        if bundle is None:
-            return
-        result = {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "session_id": self.session_id,
-            "input_device": self.input_device,
-            "mic_calibration": (
-                self.mic_calibration.public_metadata()
-                if self.mic_calibration
-                else None
-            ),
-            "browser_audio_report": self.browser_audio_report,
-            "measured": (
-                self.measured_curve.__dict__ if self.measured_curve else None
-            ),
-            "target": (
-                self.target_curve.__dict__ if self.target_curve else None
-            ),
-            "predicted": (
-                self.predicted_curve.__dict__ if self.predicted_curve else None
-            ),
-            "verify": (
-                self.verify_curve.__dict__ if self.verify_curve else None
-            ),
-            "verify_metrics": self.verify_metrics,
-            "capture_quality": self.capture_quality,
-            "noise_reports": self.noise_reports,
-            "repeat": (
-                self.repeat_curve.__dict__ if self.repeat_curve else None
-            ),
-            "repeat_quality": self.repeat_quality,
-            "repeatability_report": self.repeatability_report,
-            "verify_quality": self.verify_quality,
-            "confidence_report": self.confidence_report,
-            "acoustic_quality": (
-                (self.acoustic_quality or {}).get("summary")
-                if self.acoustic_quality
-                else None
-            ),
-            "runtime_integrity": self.runtime_integrity.summary(),
-            "position_analysis": self.position_analysis,
-            "peqs": [p.__dict__ for p in self.peqs],
-            "design_report": self.design_report,
-        }
-        bundles.write_json_artifact(
-            bundle,
-            "result.json",
-            result,
-            kind="analysis_result",
-            sensitivity="private_metadata",
-            recomputable=True,
-            generated_by="jasper.correction.session._write_result_json",
-            dependencies=self._existing_bundle_dependencies(
-                "info.json",
-                "position_analysis.json",
-                "runtime_integrity.json",
-                "acoustic_quality.json",
-                "mic_calibration.json",
-                *self._replay_artifact_dependencies(),
-                *self._capture_artifact_dependencies(),
-            ),
-            schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        )
+        """Snapshot the chart curves + verify after design / verify."""
+        self.artifacts.write_result_json()
 
     def _write_mic_calibration_bundle(self, bundle: Path) -> None:
-        """Persist the selected mic calibration into the session bundle.
-
-        `info.json` carries only public metadata. The bundle also needs
-        the parsed curve and raw vendor/upload file so a future FIR or
-        agent pass can replay the measurement without relying on the
-        global `/var/lib/jasper/correction/calibration_mics` registry.
-        """
-        if self.mic_calibration is None:
-            return
-        record = self.mic_calibration
-        payload = {
-            **record.public_metadata(),
-            "raw_filename": "mic_calibration.txt",
-            "curve": record.curve.to_dict(),
-        }
-        dependencies: list[str] = []
-        raw_path = Path(record.raw_path)
-        if raw_path.exists():
-            try:
-                bundle_raw = bundle / "mic_calibration.txt"
-                shutil.copy2(raw_path, bundle_raw)
-                bundle_raw.chmod(0o600)
-                bundles.record_artifact(
-                    bundle,
-                    "mic_calibration.txt",
-                    kind="mic_calibration_raw",
-                    sensitivity="private_metadata",
-                    recomputable=False,
-                    generated_by=(
-                        "jasper.correction.session."
-                        "_write_mic_calibration_bundle"
-                    ),
-                    dependencies=self._existing_bundle_dependencies("info.json"),
-                )
-                dependencies.append("mic_calibration.txt")
-            except OSError as e:
-                logger.warning(
-                    "mic_calibration.txt copy failed for session %s: %s",
-                    self.session_id, e,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "mic_calibration.txt manifest record failed session=%s",
-                    self.session_id,
-                )
-        bundles.write_json_artifact(
-            bundle,
-            "mic_calibration.json",
-            payload,
-            kind="mic_calibration_metadata",
-            sensitivity="private_metadata",
-            recomputable=True,
-            generated_by=(
-                "jasper.correction.session._write_mic_calibration_bundle"
-            ),
-            dependencies=self._existing_bundle_dependencies(
-                "info.json",
-                *dependencies,
-            ),
-            schema_version=1,
-            file_mode=0o600,
-        )
+        self.artifacts.write_mic_calibration_bundle(bundle)
 
     def _write_position_analysis_json(self) -> None:
-        """Persist replayable per-position curves and variance bands.
-
-        `result.json` keeps the chart-level summary. This artifact is
-        intentionally more detailed so future FIR / agent passes can
-        inspect what each listening position contributed without
-        re-running deconvolution.
-        """
-        bundle = self._ensure_bundle_dir()
-        if (
-            bundle is None
-            or self.position_freqs is None
-            or not self.position_magnitudes
-            or self.measured_curve is None
-        ):
-            self.position_analysis = None
-            return
-
-        freqs = np.asarray(self.position_freqs, dtype=float)
-        spatial_matrix, spatial_error = spatial.build_spatial_matrix(
-            self.position_magnitudes,
-            freqs,
-        )
-        if spatial_matrix is None:
-            logger.warning(
-                "position_analysis unavailable for session %s: %s",
-                self.session_id, spatial_error,
-            )
-            self.position_analysis = None
-            return
-        std_db = spatial_matrix.std_db
-        range_db = spatial_matrix.range_db
-
-        def round_list(values: np.ndarray) -> list[float]:
-            return [round(float(v), 3) for v in values]
-
-        variance_summary = (
-            (self.confidence_report or {})
-            .get("position_variance")
-        )
-        target_db = (
-            np.asarray(self.target_curve.magnitude_db, dtype=float)
-            if self.target_curve is not None
-            else None
-        )
-        position_report = confidence.build_position_report(
-            position_magnitudes=self.position_magnitudes,
-            freqs_hz=freqs,
-            measured_db=np.asarray(self.measured_curve.magnitude_db, dtype=float),
-            target_db=target_db,
-            correction_band_hz=(self.cfg.peq_f_low, self.cfg.peq_f_high),
-        )
-        payload = {
-            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-            "artifact_schema_version": 1,
-            "session_id": self.session_id,
-            "correction_band_hz": [self.cfg.peq_f_low, self.cfg.peq_f_high],
-            "freqs_hz": round_list(freqs),
-            "positions": [
-                {
-                    "position_index": idx,
-                    "magnitude_db": round_list(np.asarray(mag, dtype=float)),
-                }
-                for idx, mag in enumerate(self.position_magnitudes)
-            ],
-            "spatial_average_db": [
-                round(float(v), 3) for v in self.measured_curve.magnitude_db
-            ],
-            "variance": {
-                "std_db": round_list(std_db),
-                "range_db": round_list(range_db),
-                "summary": variance_summary,
-            },
-            "bands": position_report["bands"],
-            "feature_flags": position_report["feature_flags"],
-        }
-        bundles.write_json_artifact(
-            bundle,
-            "position_analysis.json",
-            payload,
-            kind="position_analysis",
-            sensitivity="private_metadata",
-            recomputable=True,
-            generated_by=(
-                "jasper.correction.session._write_position_analysis_json"
-            ),
-            dependencies=self._existing_bundle_dependencies(
-                "info.json",
-                *self._capture_artifact_dependencies(),
-            ),
-            schema_version=1,
-        )
-
-        self.position_analysis = {
-            "artifact_path": "position_analysis.json",
-            "artifact_schema_version": 1,
-            "position_count": len(self.position_magnitudes),
-            "freq_count": int(freqs.shape[0]),
-            "variance": variance_summary,
-            "chart": {
-                "freqs_hz": round_list(freqs),
-                "min_db": round_list(np.min(spatial_matrix.magnitudes_db, axis=0)),
-                "max_db": round_list(np.max(spatial_matrix.magnitudes_db, axis=0)),
-                "std_db": round_list(std_db),
-                "range_db": round_list(range_db),
-            },
-            "bands": position_report["bands"],
-            "feature_flags": position_report["feature_flags"],
-        }
-        if self.design_report is not None:
-            self.design_report["position_report"] = {
-                "artifact_path": "position_analysis.json",
-                "artifact_schema_version": 1,
-                "position_count": len(self.position_magnitudes),
-                "bands": position_report["bands"],
-                "feature_flags": position_report["feature_flags"],
-            }
+        """Persist replayable per-position curves and variance bands."""
+        self.artifacts.write_position_analysis_json()
 
     def _copy_applied_yaml(self) -> None:
-        """Copy the just-emitted correction YAML into the bundle. We
-        copy rather than symlink so the bundle remains self-contained
-        if the user later deletes the file in /var/lib/camilladsp/."""
-        bundle = self._ensure_bundle_dir()
-        if bundle is None or self.config_path is None:
-            return
-        try:
-            shutil.copy2(self.config_path, bundle / "applied.yml")
-            bundles.record_artifact(
-                bundle,
-                "applied.yml",
-                kind="camilladsp_config",
-                sensitivity="debug_safe",
-                recomputable=True,
-                generated_by="jasper.correction.session._copy_applied_yaml",
-                dependencies=self._existing_bundle_dependencies(
-                    "info.json",
-                    "result.json",
-                ),
-            )
-        except OSError as e:
-            logger.warning(
-                "applied.yml copy failed for session %s: %s",
-                self.session_id, e,
-            )
+        """Copy the just-emitted correction YAML into the bundle."""
+        self.artifacts.copy_applied_yaml()
 
     async def state_changed_from(
         self,

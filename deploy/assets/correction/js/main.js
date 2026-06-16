@@ -1849,16 +1849,18 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     verifyBtn.disabled = true;
     inVerifyMode = true;
     setStateBadge('verifying', 'pausing music for re-measurement…');
+    captureMode = 'verify';
+    if (workletNode) workletNode.port.postMessage('startCapture');
     try {
       await postJson('verify', {});
     } catch (e) {
+      captureMode = 'discard';
+      if (workletNode) workletNode.port.postMessage('stopCapture');
       setStateBadge('failed', e.message);
       verifyBtn.disabled = false;
       inVerifyMode = false;
       return;
     }
-    captureMode = 'verify';
-    if (workletNode) workletNode.port.postMessage('startCapture');
     verifyBtn.disabled = false;
     pollState();
   }

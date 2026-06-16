@@ -218,7 +218,7 @@ full picture. The bits that matter for this proposal:
 | `target.py` | Named targets: `flat` / `neutral` / `warm` / `bright` (interpolations over a Harman-shaped base). |
 | `camilla_yaml.py` | YAML emission by string concatenation (no pyyaml dep, keeps output reviewable). Preserves `master_gain` mixer; inserts `peq_1 … peq_N` biquads in front of the existing `flat` filter. |
 | `coordinator.py` | `measurement_window()` async context manager — preconditions (no active voice session), pauses renderers via `systemctl stop`, sends UDS `MEASURE_PAUSE` to `jasper-voice`, restores in `finally`. |
-| `session.py` | `MeasurementSession` + `SessionState` enum + `AutolevelStatus` + bundle writers. The big one. |
+| `session.py` / `artifacts.py` | `MeasurementSession` + state enums own orchestration; `SessionArtifacts` owns per-session bundle writes and manifests. |
 
 ### Critical correctness property: `/start` always resets to flat
 
