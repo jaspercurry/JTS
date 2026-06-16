@@ -83,6 +83,28 @@ def markdown_files(paths: tuple[str, ...], *, include_deleted: bool = False) -> 
     return tuple(sorted(set(files)))
 
 
+# Directories whose Markdown is third-party or generated, not the repo's own
+# docs. Excluded from `--all` so a populated `.venv` (e.g. site-packages docs
+# like the openai SDK's) or node_modules can't inject false link failures. The
+# default (diff) mode is unaffected — it only ever sees git-changed files.
+_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        ".tox",
+        "build",
+        "dist",
+        ".eggs",
+        "__pycache__",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+    }
+)
+
+
 def all_markdown_files() -> tuple[Path, ...]:
     return tuple(
         sorted(
@@ -90,7 +112,7 @@ def all_markdown_files() -> tuple[Path, ...]:
             for path in ROOT.rglob("*")
             if path.is_file()
             and path.suffix.lower() in MARKDOWN_SUFFIXES
-            and ".git" not in path.parts
+            and _EXCLUDED_DIRS.isdisjoint(path.parts)
         )
     )
 

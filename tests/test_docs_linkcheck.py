@@ -30,6 +30,32 @@ def test_local_file_and_anchor_pass(tmp_path):
     assert docs_linkcheck.check_file(doc) == ()
 
 
+def test_all_markdown_files_excludes_vendored_dirs(tmp_path):
+    """`--all` must check the repo's own docs, not third-party Markdown under
+    .venv/site-packages or node_modules — otherwise a populated venv injects
+    false link failures (the openai SDK's docs were the real-world offender)."""
+
+    docs_linkcheck = load_docs_linkcheck()
+    docs_linkcheck.ROOT = tmp_path.resolve()
+
+    (tmp_path / "docs").mkdir()
+    repo_doc = tmp_path / "docs" / "real.md"
+    repo_doc.write_text("# Real\n", encoding="utf-8")
+
+    vendored = tmp_path / ".venv" / "lib" / "site-packages" / "pkg"
+    vendored.mkdir(parents=True)
+    (vendored / "README.md").write_text("[broken](does-not-exist.md)\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "dep.md").write_text("# dep\n", encoding="utf-8")
+
+    found = {p.resolve() for p in docs_linkcheck.all_markdown_files()}
+
+    assert repo_doc.resolve() in found
+    assert not any(
+        ".venv" in p.parts or "node_modules" in p.parts for p in found
+    )
+
+
 def test_missing_local_file_fails(tmp_path):
     docs_linkcheck = load_docs_linkcheck()
     docs_linkcheck.ROOT = tmp_path.resolve()
