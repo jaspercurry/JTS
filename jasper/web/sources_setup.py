@@ -25,9 +25,9 @@ The toggle is the only knob; there's no per-source settings on this page.
 
 State polling: clients GET /state every few seconds to reflect external
 changes (operator ran `systemctl stop shairport-sync` from SSH, etc.).
-On small endpoint installs the page can be present before the renderer
-tier exists; unavailable rows are disabled and explain which unit/profile
-is missing instead of pretending every source can be started.
+When a renderer unit is not installed, the page is still present but the
+unavailable rows are disabled and explain which unit is missing instead
+of pretending every source can be started.
 
 This page renders on the canonical design system (canonical_page); its
 behaviour ships as the static ES module deploy/assets/sources/js/main.js,
@@ -82,20 +82,20 @@ USBSINK_UNIT = "jasper-usbsink.service"
 VALID_SOURCES = ("airplay", "bluetooth", "spotify_connect", "usbsink")
 SOURCE_UNAVAILABLE = {
     "airplay": (
-        "AirPlay is not installed in this satellite-only profile. Install "
-        "the streambox or full speaker profile to enable local sources."
+        "AirPlay is not installed on this speaker. Re-run install.sh to "
+        "set up the local renderer stack."
     ),
     "spotify_connect": (
-        "Spotify Connect is not installed in this satellite-only profile. "
-        "Install the streambox or full speaker profile to enable local sources."
+        "Spotify Connect is not installed on this speaker. Re-run install.sh "
+        "to set up the local renderer stack."
     ),
     "bluetooth": (
-        "Bluetooth audio is not installed in this satellite-only profile. "
-        "Install the streambox or full speaker profile to enable local sources."
+        "Bluetooth audio is not installed on this speaker. Re-run install.sh "
+        "to set up the local renderer stack."
     ),
     "usbsink": (
-        "USB Audio Input is not installed in this satellite-only profile. "
-        "Install the streambox or full speaker profile to enable local sources."
+        "USB Audio Input is not installed on this speaker. Re-run install.sh "
+        "to set up the local renderer stack."
     ),
 }
 IDLE_SHUTDOWN_SEC = 600.0
@@ -389,8 +389,8 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
             name="AirPlay", input_id="t-airplay",
             unavailable_html=(
                 '<div class="source-note warn" id="airplay-unavailable-note" '
-                'style="display:none">AirPlay is not installed in this '
-                "profile. Install streambox or full speaker to enable it.</div>"
+                'style="display:none">AirPlay is not installed on this speaker. '
+                "Re-run install.sh to set up the local renderer stack.</div>"
             ),
         ),
         _source_row(
@@ -405,8 +405,8 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
             unavailable_html=(
                 '<div class="source-note warn" '
                 'id="spotify_connect-unavailable-note" style="display:none">'
-                "Spotify Connect is not installed in this profile. Install "
-                "streambox or full speaker to enable it.</div>"
+                "Spotify Connect is not installed on this speaker. Re-run "
+                "install.sh to set up the local renderer stack.</div>"
             ),
         ),
         _source_row(

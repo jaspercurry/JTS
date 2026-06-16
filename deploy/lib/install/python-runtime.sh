@@ -304,8 +304,8 @@ EOF
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: created ${ENV_DIR}/jasper.env"
     else
-        set_endpoint_env_value JASPER_CONTROL_HOST "0.0.0.0"
-        set_endpoint_env_value JASPER_INSTALL_PROFILE "streambox"
+        set_jasper_env_value JASPER_CONTROL_HOST "0.0.0.0"
+        set_jasper_env_value JASPER_INSTALL_PROFILE "streambox"
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: refreshed streambox defaults"
     fi

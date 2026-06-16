@@ -632,7 +632,7 @@ verification is whether `/sys/fs/cgroup/cgroup.controllers` includes
 ```
 jts-audio.slice          ← jasper-fanin, jasper-camilla, shairport-sync,
                             librespot, bluealsa-aplay
-                         ← endpoint tier: jasper-snapclient /
+                         ← bonded grouping: jasper-snapclient /
                             jasper-snapserver managed units
                           MemorySwapMax=0
                           ManagedOOMPreference=avoid
@@ -671,7 +671,7 @@ cat /sys/fs/cgroup/jts-audio.slice/memory.swap.max  # → 0
 
 # 3. Each audio daemon is actually IN the slice
 systemctl show jasper-camilla -p Slice              # → Slice=jts-audio.slice
-# Endpoint tier example:
+# Bonded grouping member example (snapcast units run on any paired box):
 systemctl show jasper-snapclient -p Slice           # → Slice=jts-audio.slice
 
 # 4. Daemons aren't swapping (this is the load-bearing one)

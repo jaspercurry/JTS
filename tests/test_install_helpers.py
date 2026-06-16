@@ -797,8 +797,9 @@ def test_unpinned_pip_installs_carry_the_constraints_args():
     pip_constraints array; the exact-pinned installs (pip/wheel,
     openwakeword --no-deps) intentionally don't need it."""
     text = "\n".join(_installer_shell_texts().values())
-    assert text.count('pip" install "${pip_constraints[@]}"') == 4
-    assert 'install "${pip_constraints[@]}" -e "${INSTALL_DIR}"' in text
+    # full: requests/scipy/... + -e [full]; streambox: -e [streambox] = 3.
+    assert text.count('pip" install "${pip_constraints[@]}"') == 3
+    assert 'install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"' in text
     assert 'install "${pip_constraints[@]}" \\\n        -e "${INSTALL_DIR}[streambox]"' in text
 
 
@@ -810,6 +811,6 @@ def test_full_install_editable_pip_install_keeps_full_extra():
         text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"')
         == 1
     )
-    # The endpoint install remains base-package only; do not conflate
-    # that path with install_jasper's full-speaker runtime install.
-    assert text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}"') == 1
+    # With the endpoint tier removed there is no bare base-package editable
+    # install any more — every profile pulls an extras-tagged install.
+    assert text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}"') == 0

@@ -8,26 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...install_profile import is_satellite_install_profile, read_install_profile
 from ._registry import doctor_check
 from ._shared import CheckResult, _camilla_block_field, _run
-
-
-def _endpoint_tier() -> bool:
-    return is_satellite_install_profile(read_install_profile())
-
-
-def _endpoint_player() -> str:
-    from ...multiroom.reconcile import (
-        DEFAULT_ENDPOINT_SNAPCLIENT_PLAYER,
-        ENDPOINT_SNAPCLIENT_PLAYER_ENV,
-    )
-    import os
-
-    return os.environ.get(
-        ENDPOINT_SNAPCLIENT_PLAYER_ENV,
-        DEFAULT_ENDPOINT_SNAPCLIENT_PLAYER,
-    )
 
 
 def _devices_rate_adjust_from_text(text: str) -> bool | None:
@@ -72,26 +54,12 @@ def check_grouping() -> CheckResult:
         return CheckResult(label, "ok", "single-speaker (grouping off)")
     if cfg.error is not None:
         return CheckResult(label, "warn", cfg.error)
-    install_profile = read_install_profile()
-    endpoint_tier = is_satellite_install_profile(install_profile)
-    if endpoint_tier and cfg.role == "leader":
-        return CheckResult(
-            label,
-            "warn",
-            "endpoint install tier cannot be grouping leader — "
-            "reconciler stops snapcast; reassign this member as follower "
-            "from /rooms",
-        )
 
     # Enabled + valid: probe the units the plan wants running and derive
     # runtime health through the shared pure function.
-    from ...multiroom.reconcile import plan_for_install_profile
+    from ...multiroom.reconcile import plan
 
-    units = [
-        it.unit for it in plan_for_install_profile(
-            cfg, install_profile=install_profile,
-        ).intents
-    ]
+    units = [it.unit for it in plan(cfg).intents]
     out = _run(["systemctl", "is-active", *units]).stdout.splitlines()
     states = (
         {u: (out[i].strip() or "unknown") for i, u in enumerate(units)}
@@ -155,8 +123,6 @@ def check_grouping_rate_adjust() -> CheckResult:
     from .correction import _active_camilla_config_path
 
     label = "grouping: rate_adjust"
-    if _endpoint_tier():
-        return CheckResult(label, "ok", "endpoint tier has no local CamillaDSP")
     cfg = load_config()
     if not (is_active_member(cfg) and cfg.role == "leader"):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
@@ -196,8 +162,6 @@ def check_grouping_leader_pipe() -> CheckResult:
     from .correction import _active_camilla_config_path
 
     label = "grouping: leader pipe"
-    if _endpoint_tier():
-        return CheckResult(label, "ok", "endpoint tier cannot host snapserver pipe")
     cfg = load_config()
     if not (is_active_member(cfg) and cfg.role == "leader"):
         return CheckResult(label, "ok", "not an active bond leader (n/a)")
@@ -256,22 +220,6 @@ def check_grouping_channel_pick() -> CheckResult:
     cfg = load_config()
     if not is_active_member(cfg):
         return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
-    if _endpoint_tier():
-        player = _endpoint_player()
-        if player == "alsa:device=default" and cfg.channel in {"left", "right", "sub"}:
-            return CheckResult(
-                label,
-                "warn",
-                "endpoint direct ALSA player is default stereo but this member "
-                f"is assigned channel={cfg.channel}; configure "
-                "JASPER_ENDPOINT_SNAPCLIENT_PLAYER to a channel-selecting ALSA "
-                "device before using this endpoint in a phase-sensitive bond",
-            )
-        return CheckResult(
-            label,
-            "ok",
-            f"endpoint direct player={player}; outputd channel-pick n/a",
-        )
 
     path = Path(OUTPUTD_GROUPING_ENV_FILE)
     if not path.exists():
@@ -340,8 +288,6 @@ def check_grouping_tts_lane() -> CheckResult:
 
     label = "grouping: TTS lane"
     cfg = load_config()
-    if _endpoint_tier():
-        return CheckResult(label, "ok", "endpoint tier has no local assistant TTS")
 
     voice_path = Path(VOICE_GROUPING_ENV_FILE)
     voice_env: dict[str, str] = {}

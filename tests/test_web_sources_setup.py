@@ -94,7 +94,7 @@ def test_profile_unavailable_notes_present_but_hidden_at_render():
     html = mod._index_html(csrf_token=CSRF).decode("utf-8")
     assert 'id="airplay-unavailable-note"' in html
     assert 'id="spotify_connect-unavailable-note"' in html
-    assert "not installed in this profile" in html
+    assert "not installed on this speaker" in html
 
 
 def test_status_banner_severity_and_escaping():
@@ -167,7 +167,7 @@ def test_gather_state_renderer_units_unavailable(stub_backends):
 
     assert state["airplay"]["enabled"] is False
     assert state["airplay"]["available"] is False
-    assert "not installed in this satellite-only profile" in str(
+    assert "not installed on this speaker" in str(
         state["airplay"]["unavailableReason"]
     )
     assert state["spotify_connect"]["enabled"] is False
@@ -178,8 +178,7 @@ def test_gather_state_renderer_units_unavailable(stub_backends):
         str(item.get("unavailableReason") or "")
         for item in state.values()
     )
-    assert "streambox" in unavailable
-    assert "full speaker" in unavailable
+    assert "install.sh" in unavailable
 
 
 def test_gather_state_endpoint_profile_disables_stale_renderer_units(
@@ -200,7 +199,7 @@ def test_gather_state_endpoint_profile_disables_stale_renderer_units(
     assert state["spotify_connect"]["available"] is False
     assert state["bluetooth"]["enabled"] is False
     assert state["bluetooth"]["available"] is False
-    assert "not installed in this satellite-only profile" in str(
+    assert "not installed on this speaker" in str(
         state["bluetooth"]["unavailableReason"]
     )
     assert state["usbsink"]["enabled"] is False
@@ -252,7 +251,7 @@ def test_apply_refuses_unavailable_renderer(monkeypatch):
         mod, "_set_unit", lambda *a: pytest.fail("must not call systemctl"),
     )
 
-    with pytest.raises(RuntimeError, match="satellite-only profile"):
+    with pytest.raises(RuntimeError, match="not installed on this speaker"):
         mod._apply("airplay", True)
 
 
@@ -268,18 +267,18 @@ def test_apply_refuses_usbsink_without_dtoverlay(monkeypatch):
         mod._apply("usbsink", True)
 
 
-def test_apply_refuses_renderer_when_endpoint_profile(monkeypatch):
+def test_apply_refuses_renderer_when_local_sources_disallowed(monkeypatch):
     monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
     monkeypatch.setattr(mod, "_unit_available", lambda unit: True)
     monkeypatch.setattr(
         mod, "_set_unit", lambda *a: pytest.fail("must not call systemctl"),
     )
 
-    with pytest.raises(RuntimeError, match="satellite-only profile"):
+    with pytest.raises(RuntimeError, match="not installed on this speaker"):
         mod._apply("spotify_connect", True)
 
 
-def test_apply_refuses_bluetooth_when_endpoint_profile(monkeypatch):
+def test_apply_refuses_bluetooth_when_local_sources_disallowed(monkeypatch):
     monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
 
     async def fail_bt(_enabled):
@@ -287,7 +286,7 @@ def test_apply_refuses_bluetooth_when_endpoint_profile(monkeypatch):
 
     monkeypatch.setattr(mod, "_set_bt", fail_bt)
 
-    with pytest.raises(RuntimeError, match="satellite-only profile"):
+    with pytest.raises(RuntimeError, match="not installed on this speaker"):
         mod._apply("bluetooth", True)
 
 

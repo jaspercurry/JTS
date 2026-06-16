@@ -582,7 +582,7 @@ docs = [
 ]
 requires_docs_when = [
   "Grouping roles, the snapcast sync transport, channel/leader assignment, the grouping env contract, off-by-default behaviour, or the sync/RAM spike methodology change.",
-  "The Zero 2 W endpoint bring-up path, the endpoint install profile/tier boundary, endpoint DAC assumptions, or the lab spike invocation changes.",
+  "The Zero 2 W streambox bring-up path, the full/streambox install profile boundary, streambox DAC assumptions, or the lab spike invocation changes.",
   "The /rooms/ directory, its discovery service, or the friendly-name advert (the name= TXT on _jasper-control._tcp rendered by control_advert from the service template) changes.",
   "The shared mDNS browse (jasper/mdns.py), the Avahi *.service renderer (jasper/avahi_service.py), the speaker-identity reader (jasper/identity.py), or where the room label lives (jasper/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
 ]

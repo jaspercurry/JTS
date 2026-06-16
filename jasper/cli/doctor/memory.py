@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from ...install_profile import ENDPOINT_INSTALL_PROFILE, read_install_profile
+from ...install_profile import is_streambox_install_profile, read_install_profile
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -28,6 +28,18 @@ from ._shared import (
     _pid_of_unit,
     _systemctl_show_property,
 )
+
+def _install_profile_is_streambox() -> bool:
+    """True when this box runs the streambox tier (local audio, no voice brain).
+
+    Fails toward False so a transient marker-read glitch keeps the louder
+    full-speaker RAM warning rather than silently suppressing it.
+    """
+    try:
+        return is_streambox_install_profile(read_install_profile())
+    except (TypeError, ValueError, OSError):
+        return False
+
 
 @doctor_check(order=33, group="memory")
 def check_ram() -> CheckResult:
@@ -37,13 +49,20 @@ def check_ram() -> CheckResult:
                 if line.startswith("MemTotal:"):
                     kb = int(line.split()[1])
                     mb = kb // 1024
-                    if read_install_profile() == ENDPOINT_INSTALL_PROFILE:
-                        return CheckResult(
-                            "RAM", "ok",
-                            f"{mb} MB total (endpoint tier; live pressure "
-                            f"covered by memory headroom)",
-                        )
                     if mb < 1500:
+                        # The "recommend a bigger board" signal is a
+                        # full-speaker sizing check. Streambox is the
+                        # deliberately-light tier a small board resolves to
+                        # (a Zero 2 W -> streambox), so a board-size warn
+                        # there is a false positive — live memory pressure is
+                        # caught SKU-agnostically by check_memory_headroom.
+                        if _install_profile_is_streambox():
+                            return CheckResult(
+                                "RAM", "ok",
+                                f"{mb} MB total (streambox tier; live "
+                                "pressure covered by the memory-headroom "
+                                "check)",
+                            )
                         return CheckResult(
                             "RAM", "warn",
                             f"{mb} MB total — recommend 2GB Pi 5 for v1 stack",
@@ -289,17 +308,9 @@ def check_sysctl_drift() -> CheckResult:
 # OOMScoreAdjust values are the canonical set from jasper._oom_adj —
 # shared with install.sh so a future tweak only touches one file.
 # See jasper/_oom_adj.py for rationale per daemon.
-from ..._oom_adj import (  # noqa: E402
-    ENDPOINT_EXPECTED as _ENDPOINT_EXPECTED_OOM_ADJ,
-    EXPECTED as _EXPECTED_OOM_ADJ,
-)
+from ..._oom_adj import EXPECTED as _EXPECTED_OOM_ADJ  # noqa: E402
 
 def _expected_oom_score_adj() -> dict[str, int]:
-    try:
-        if read_install_profile() == ENDPOINT_INSTALL_PROFILE:
-            return _ENDPOINT_EXPECTED_OOM_ADJ
-    except (TypeError, ValueError):
-        pass
     return _EXPECTED_OOM_ADJ
 
 @doctor_check(order=38, group="memory")
@@ -439,17 +450,7 @@ _AUDIO_PATH_UNITS = (
     "bluealsa-aplay",
 )
 
-_ENDPOINT_AUDIO_PATH_UNITS = (
-    "jasper-snapclient",
-    "jasper-snapserver",
-)
-
 def _audio_path_units() -> tuple[str, ...]:
-    try:
-        if read_install_profile() == ENDPOINT_INSTALL_PROFILE:
-            return _ENDPOINT_AUDIO_PATH_UNITS
-    except (TypeError, ValueError):
-        pass
     return _AUDIO_PATH_UNITS
 
 # Threshold for "this daemon has meaningful pages in zram" — well above

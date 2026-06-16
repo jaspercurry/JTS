@@ -37,16 +37,6 @@ EXPECTED: dict[str, int] = {
 }
 
 
-# Endpoint installs do not ship the brain/audio-DSP daemons above, but they
-# still need the recovery surface and managed Snapcast units protected.
-ENDPOINT_EXPECTED: dict[str, int] = {
-    "jasper-control": EXPECTED["jasper-control"],
-    "jasper-snapclient": -300,
-    "jasper-snapserver": -300,
-    "ssh": EXPECTED["ssh"],
-}
-
-
 # Values install.sh actively live-writes to /proc/PID/oom_score_adj
 # during deploy. This includes ssh now that JTS owns a drop-in for the
 # recovery-path bias: live-writing the sshd listener makes future SSH

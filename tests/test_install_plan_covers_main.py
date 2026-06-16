@@ -38,10 +38,6 @@ _INSTALL_LIB_DIR = _INSTALL_SH.parent / "lib" / "install"
 _STEP_TO_PLAN_MARKER = {
     "install_deps": "apt-get update",
     "persist_install_profile": "Persist the install profile tier",
-    "install_endpoint_deps": "Minimal runtime packages",
-    "install_endpoint_jasper": "Install the base JTS Python package",
-    "install_endpoint_systemd_units": "Enable/start jasper-control",
-    "install_endpoint_nginx_site": "endpoint-scoped nginx",
     "install_streambox_deps": "renderer/DSP stack",
     "install_streambox_jasper": "Python runtime dependencies from pyproject.toml [streambox]",
     "install_streambox_systemd_units": "Enable socket-activated streambox-safe web surfaces",
@@ -162,7 +158,6 @@ def test_every_main_step_is_described_by_the_dry_run_plan():
     plans = (
         _dry_run_plan_normalized(),
         _dry_run_plan_normalized(profile="streambox"),
-        _dry_run_plan_normalized(profile="endpoint"),
     )
     missing_mapping = []
     missing_marker = []
@@ -174,7 +169,7 @@ def test_every_main_step_is_described_by_the_dry_run_plan():
             missing_mapping.append(step)
         elif not any(marker in plan for plan in plans):
             missing_marker.append(
-                f"{step}: marker {marker!r} not in full or endpoint plan output"
+                f"{step}: marker {marker!r} not in full or streambox plan output"
             )
     assert not missing_mapping, (
         "main() steps with no plan marker mapping (describe them in "

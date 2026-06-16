@@ -313,65 +313,6 @@ def test_check_grouping_connected_follower_is_ok(monkeypatch):
     assert "follower connected" in r.detail
 
 
-def test_check_grouping_endpoint_leader_warns_without_full_tier_probes(monkeypatch):
-    cfg = _grouping_cfg(
-        enabled=True, role="leader", channel="left", bond_id="living-room",
-    )
-    _patch_grouping(monkeypatch, cfg, "")
-    monkeypatch.setattr(doctor.grouping, "read_install_profile", lambda: "endpoint")
-
-    r = doctor.check_grouping()
-
-    assert r.status == "warn"
-    assert "endpoint install tier cannot be grouping leader" in r.detail
-
-
-def test_check_grouping_endpoint_default_player_warns_for_channel_pick(monkeypatch):
-    import jasper.multiroom.config as mr_config
-
-    cfg = _grouping_cfg(
-        enabled=True, role="follower", channel="right",
-        bond_id="living-room", leader_addr="jts3.local",
-    )
-    monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
-    monkeypatch.setattr(doctor.grouping, "read_install_profile", lambda: "endpoint")
-    monkeypatch.delenv("JASPER_ENDPOINT_SNAPCLIENT_PLAYER", raising=False)
-
-    r = doctor.check_grouping_channel_pick()
-
-    assert r.status == "warn"
-    assert "default stereo" in r.detail
-    assert "channel=right" in r.detail
-
-
-def test_endpoint_snapclient_binary_reports_missing(monkeypatch):
-    monkeypatch.setattr(doctor.audio.shutil, "which", lambda name: None)
-
-    r = doctor.check_endpoint_snapclient_binary()
-
-    assert r.status == "fail"
-    assert "snapclient not in PATH" in r.detail
-
-
-def test_endpoint_alsa_playback_accepts_default_device(monkeypatch):
-    monkeypatch.delenv("JASPER_ENDPOINT_SNAPCLIENT_PLAYER", raising=False)
-    monkeypatch.setattr(doctor.audio.shutil, "which", lambda name: "/usr/bin/aplay")
-
-    def fake_run(cmd, *args, **kwargs):
-        if cmd == ["aplay", "-L"]:
-            return SimpleNamespace(returncode=0, stdout="null\ndefault\n", stderr="")
-        if cmd == ["aplay", "-l"]:
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        raise AssertionError(cmd)
-
-    monkeypatch.setattr(doctor.audio, "_run", fake_run)
-
-    r = doctor.check_endpoint_alsa_playback()
-
-    assert r.status == "ok"
-    assert "ALSA device default present" in r.detail
-
-
 def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
     def fail_probe(*_args, **_kwargs):
         raise AssertionError("Apple USB probe should not run")
@@ -1228,7 +1169,10 @@ def test_async_doctor_check_exception_becomes_fail_result():
     assert "RuntimeError: synthetic async failure" in result.detail
 
 
-def test_endpoint_profile_doctor_skips_brain_only_groups(monkeypatch):
+def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
+    """A persisted/legacy 'endpoint' token normalizes to streambox, so the
+    doctor applies the streambox skip behaviour (voice/brain groups skipped,
+    local audio kept)."""
     from jasper.cli.doctor._registry import RegisteredCheck
 
     ran: list[str] = []
@@ -1245,10 +1189,6 @@ def test_endpoint_profile_doctor_skips_brain_only_groups(monkeypatch):
         ran.append("web")
         return doctor.CheckResult("management surface", "ok", "ran")
 
-    def endpoint_audio_check():
-        ran.append("endpoint_audio")
-        return doctor.CheckResult("endpoint snapclient", "ok", "ran")
-
     monkeypatch.setattr(doctor, "read_install_profile", lambda: "endpoint")
     monkeypatch.setattr(doctor, "registered_checks", lambda: [
         RegisteredCheck(order=0, group="env", func=env_check),
@@ -1257,17 +1197,15 @@ def test_endpoint_profile_doctor_skips_brain_only_groups(monkeypatch):
             needs_cfg=True, label="provider key",
         ),
         RegisteredCheck(order=1.5, group="web", func=web_check),
-        RegisteredCheck(order=2, group="endpoint_audio", func=endpoint_audio_check),
     ])
 
     results = asyncio.run(doctor.run_async(object()))
 
-    assert ran == ["env", "web", "endpoint_audio"]
+    assert ran == ["env", "web"]
     assert [(r.name, r.status, r.detail) for r in results] == [
         ("env file", "ok", "ran"),
-        ("provider key", "ok", "not installed (satellite-only profile)"),
+        ("provider key", "ok", "not installed (streambox profile)"),
         ("management surface", "ok", "ran"),
-        ("endpoint snapclient", "ok", "ran"),
     ]
 
 
@@ -1334,10 +1272,6 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         ran.append("correction")
         return doctor.CheckResult("room correction service", "ok", "ran")
 
-    def endpoint_audio_check():
-        ran.append("endpoint_audio")
-        return doctor.CheckResult("endpoint snapclient", "fail", "should not run")
-
     monkeypatch.setattr(doctor, "read_install_profile", lambda: "streambox")
     monkeypatch.setattr(doctor, "registered_checks", lambda: [
         RegisteredCheck(
@@ -1353,7 +1287,6 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
             needs_cfg=True, label="librespot.service",
         ),
         RegisteredCheck(order=3, group="correction", func=correction_check),
-        RegisteredCheck(order=4, group="endpoint_audio", func=endpoint_audio_check),
     ])
 
     results = asyncio.run(doctor.run_async(SimpleNamespace()))
@@ -1364,33 +1297,6 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         ("mic capture", "ok", "not installed (streambox profile)"),
         ("librespot.service", "ok", "ran"),
         ("room correction service", "ok", "ran"),
-    ]
-
-
-def test_full_profile_doctor_omits_endpoint_only_groups(monkeypatch):
-    from jasper.cli.doctor._registry import RegisteredCheck
-
-    ran: list[str] = []
-
-    def env_check():
-        ran.append("env")
-        return doctor.CheckResult("env file", "ok", "ran")
-
-    def endpoint_audio_check():
-        ran.append("endpoint_audio")
-        return doctor.CheckResult("endpoint snapclient", "fail", "should not run")
-
-    monkeypatch.setattr(doctor, "read_install_profile", lambda: "full")
-    monkeypatch.setattr(doctor, "registered_checks", lambda: [
-        RegisteredCheck(order=0, group="env", func=env_check),
-        RegisteredCheck(order=1, group="endpoint_audio", func=endpoint_audio_check),
-    ])
-
-    results = asyncio.run(doctor.run_async(object()))
-
-    assert ran == ["env"]
-    assert [(r.name, r.status, r.detail) for r in results] == [
-        ("env file", "ok", "ran"),
     ]
 
 
