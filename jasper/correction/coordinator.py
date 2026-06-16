@@ -67,6 +67,15 @@ DEFAULT_RENDERERS_TO_PAUSE: tuple[str, ...] = (
 
 DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
 
+# Mutual-exclusion flag for measurement_window(). Only one window may be open
+# at a time: a second concurrent window would let whichever exits FIRST send
+# MEASURE_RESUME and restart the renderers while the other is still measuring,
+# corrupting its capture. All callers run on jasper-web's single background
+# event loop, so a plain check-and-set before the first await is atomic — no
+# asyncio.Lock, which would bind to one loop and break the per-test
+# asyncio.run() loops.
+_window_active = False
+
 
 class MeasurementWindowError(RuntimeError):
     """A precondition failed (active voice session, voice daemon
@@ -173,14 +182,28 @@ async def measurement_window(
       MeasurementWindowError: a precondition failed before any
         services were touched. Nothing to restore.
     """
-    # Precondition: no active voice session.
-    if not skip_voice_pause:
-        await _check_no_active_voice_session(voice_socket_path)
+    # Mutual exclusion (see _window_active). Check-and-set BEFORE the first
+    # await so it's atomic on the single background loop. A second concurrent
+    # window fails fast rather than queueing — it means a racing
+    # /start /verify /next-position, not work to serialize.
+    global _window_active
+    if _window_active:
+        raise MeasurementWindowError(
+            "a measurement is already in progress; wait for the current "
+            "sweep to finish or reset before starting another"
+        )
+    _window_active = True
 
     paused_services: list[str] = []
     voice_paused = False
 
     try:
+        # Precondition: no active voice session. Inside the try so the
+        # window flag is cleared even when this raises (nothing is paused
+        # yet, so there is still nothing to restore — contract preserved).
+        if not skip_voice_pause:
+            await _check_no_active_voice_session(voice_socket_path)
+
         if not skip_renderer_pause:
             for svc in renderers_to_pause:
                 await _systemctl("stop", svc)
@@ -214,25 +237,37 @@ async def measurement_window(
         )
         yield
     finally:
-        # Restore voice FIRST so wake events can resume the moment the
-        # user is ready to interact, even before the renderers have
-        # fully come back. Then restart the renderers — they spin up
-        # in parallel.
-        if voice_paused:
-            try:
-                await _voice_uds_command(
-                    voice_socket_path, "MEASURE_RESUME", timeout=3.0,
-                )
-            except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-                logger.error(
-                    "voice_daemon MEASURE_RESUME failed: %s — daemon's "
-                    "auto-clear safety timer will recover in ~2 min",
-                    e,
-                )
-        # Restart renderers in parallel — `systemctl start` is fast,
-        # the actual service startup is async on the systemd side.
-        if paused_services:
-            await asyncio.gather(*[
-                _systemctl("start", svc) for svc in paused_services
-            ])
-        logger.info("measurement window CLOSED")
+        # Release the mutex in an INNER finally — after the restore I/O, but
+        # guaranteed even if it raises. Timing matters on the single
+        # background loop: clearing the flag BEFORE these awaits would let a
+        # queued second window run during the restore, `systemctl stop` the
+        # renderers this one is mid-`systemctl start` of (the corruption the
+        # mutex exists to prevent). Clearing it AFTER but only on the success
+        # path would re-strand the flag True forever if a restore step raised
+        # (e.g. systemctl missing). The inner finally gives both: serialized
+        # against the restore, and never leaked.
+        try:
+            # Restore voice FIRST so wake events can resume the moment the
+            # user is ready to interact, even before the renderers have
+            # fully come back. Then restart the renderers — they spin up
+            # in parallel.
+            if voice_paused:
+                try:
+                    await _voice_uds_command(
+                        voice_socket_path, "MEASURE_RESUME", timeout=3.0,
+                    )
+                except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+                    logger.error(
+                        "voice_daemon MEASURE_RESUME failed: %s — daemon's "
+                        "auto-clear safety timer will recover in ~2 min",
+                        e,
+                    )
+            # Restart renderers in parallel — `systemctl start` is fast,
+            # the actual service startup is async on the systemd side.
+            if paused_services:
+                await asyncio.gather(*[
+                    _systemctl("start", svc) for svc in paused_services
+                ])
+            logger.info("measurement window CLOSED")
+        finally:
+            _window_active = False

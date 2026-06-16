@@ -1933,7 +1933,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_apply(self))
                     return
                 if path == "/reset":
-                    self._send_json(_handle_reset(self))
+                    # Local import keeps session/numpy off the socket-activated
+                    # process's import path (mirrors the other handlers).
+                    from jasper.correction.session import SessionBusyError
+                    try:
+                        self._send_json(_handle_reset(self))
+                    except SessionBusyError as e:
+                        # Rejected because a sweep/analysis is mid-flight — a
+                        # state conflict (409), not a server error (500).
+                        self._send_client_error(str(e), status=409)
                     return
                 if path == "/session/delete":
                     try:

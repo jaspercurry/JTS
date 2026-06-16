@@ -19,7 +19,14 @@ from scipy.signal import fftconvolve
 
 from jasper.correction import bundles, quality, runtime_integrity, sweep
 from jasper.correction.calibration import store_calibration
-from jasper.correction.session import MeasurementSession, SessionConfig, SessionState
+from jasper.correction.session import (
+    AutolevelData,
+    AutolevelStatus,
+    MeasurementSession,
+    SessionBusyError,
+    SessionConfig,
+    SessionState,
+)
 
 
 def _make_session(tmp_path: Path) -> MeasurementSession:
@@ -464,6 +471,129 @@ async def test_capture_upload_cancels_the_timeout(tmp_path: Path):
     # Past the timeout window: the upload must have cancelled the watchdog.
     await asyncio.sleep(0.2)
     assert sess.state != SessionState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_needs_noise_capture_times_out_to_failed(tmp_path: Path):
+    # needs_noise_capture is an automatic browser step (record pre-sweep room
+    # noise, then upload). A denied mic / backgrounded tab strands it, blocking
+    # every future /start — the same wedge class as awaiting_capture. The
+    # watchdog must abandon it too. No measurement window is open here, so the
+    # wedge never mutes the speaker; it just blocks /start.
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+    await sess.begin_noise_capture()
+    assert sess.state == SessionState.NEEDS_NOISE_CAPTURE
+    await asyncio.sleep(0.25)
+    assert sess.state == SessionState.FAILED
+    assert "capture" in (sess.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_needs_noise_capture_times_out_on_later_positions_too(tmp_path: Path):
+    # The watchdog arms via _set_state on BOTH entries to needs_noise_capture:
+    # the first from IDLE (above) and later positions from needs_next_position.
+    # Pin the second path so the guard can't silently regress for positions 2+.
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+    sess.state = SessionState.NEEDS_NEXT_POSITION
+    sess.current_position = 1
+    await sess.begin_noise_capture()
+    assert sess.state == SessionState.NEEDS_NOISE_CAPTURE
+    await asyncio.sleep(0.25)
+    assert sess.state == SessionState.FAILED
+
+
+# --- reset() must not race an in-flight sweep/analysis task -----------------
+@pytest.mark.asyncio
+async def test_reset_rejected_while_a_sweep_or_analysis_is_in_flight(tmp_path: Path):
+    # During preparing/sweeping/analyzing/verifying a fire-and-forget task is
+    # running and will set the next state AFTER reset's IDLE. The server
+    # rejects reset there (the wizard never offers Cancel/Reset from those
+    # states), so it can't touch CamillaDSP mid-task.
+    sess = _make_session(tmp_path)
+
+    async def fake_reset(path: str) -> bool:
+        raise AssertionError("reset must not touch CamillaDSP while busy")
+
+    for busy in (
+        SessionState.PREPARING,
+        SessionState.SWEEPING,
+        SessionState.ANALYZING,
+        SessionState.VERIFYING,
+    ):
+        sess.state = busy
+        # SessionBusyError (a RuntimeError subclass) so the web layer can
+        # map it to 409, not 500.
+        with pytest.raises(SessionBusyError, match="in progress"):
+            await sess.reset(fake_reset)
+
+
+@pytest.mark.asyncio
+async def test_reset_still_recovers_from_a_wedged_state(tmp_path: Path):
+    # The escape hatch must keep working from settled/wedged states — the
+    # whole point of reset is recovery.
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.FAILED
+    reset_calls: list[str] = []
+
+    async def fake_reset(path: str) -> bool:
+        reset_calls.append(path)
+        return True
+
+    await sess.reset(fake_reset)
+    assert sess.state == SessionState.IDLE
+    assert reset_calls == [str(sess.cfg.base_config_path)]
+
+
+# --- Audio-safety: a measurement that ends via FAIL/VERIFY (not apply/reset)
+# must still return main_volume to the listening level. Autolevel ramps it up
+# and leaves it LOCKED for the whole measurement; the web apply/reset handlers
+# own the success-path restore, so the session has to cover the endings they
+# never see — else a failed measurement strands the speaker loud until /reset.
+@pytest.mark.asyncio
+async def test_failed_measurement_restores_autolevel_volume(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    sess.capture_timeout_sec = 0.05
+    restored: list[float] = []
+
+    async def fake_set_vol(db):
+        restored.append(db)
+
+    sess._main_volume_setter = fake_set_vol
+    sess.autolevel = AutolevelData(
+        status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
+    )
+    await sess.begin_noise_capture()  # arms the watchdog
+    await asyncio.sleep(0.25)  # let it fire → _fail → restore
+    assert sess.state == SessionState.FAILED
+    assert restored == [-20.0]
+    assert sess.autolevel.restored is True
+
+
+@pytest.mark.asyncio
+async def test_autolevel_restore_idempotent_and_skips_when_not_ramped(
+    tmp_path: Path,
+):
+    sess = _make_session(tmp_path)
+    restored: list[float] = []
+
+    async def fake_set_vol(db):
+        restored.append(db)
+
+    sess._main_volume_setter = fake_set_vol
+
+    # No autolevel ramp (default IDLE status) → nothing to restore.
+    await sess._restore_listening_volume_if_ramped()
+    assert restored == []
+
+    # Ramped + LOCKED → restore exactly once, even if called again.
+    sess.autolevel = AutolevelData(
+        status=AutolevelStatus.LOCKED, original_main_volume_db=-18.0
+    )
+    await sess._restore_listening_volume_if_ramped()
+    await sess._restore_listening_volume_if_ramped()
+    assert restored == [-18.0]
 
 
 # --- Bug 2 regression: autolevel cap math --------------------------------
