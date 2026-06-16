@@ -123,7 +123,7 @@ def test_save_token_refuses_empty_refresh_token(tmp_path):
         save_token(path, refresh_token="")
 
 
-def test_save_token_writes_mode_0600(tmp_path):
+def test_save_token_writes_mode_0640(tmp_path):
     path = str(tmp_path / "tok.json")
     save_token(
         path,
@@ -131,8 +131,11 @@ def test_save_token_writes_mode_0600(tmp_path):
         scopes=["https://www.googleapis.com/auth/gmail.readonly"],
     )
     st = os.stat(path)
-    # Lower 9 mode bits should be 0o600.
-    assert stat.S_IMODE(st.st_mode) == 0o600
+    # 0o640 (WS1 Phase 3b): group-`jasper` read so the now-non-root jasper-voice
+    # can read its OAuth refresh token after systemd's StateDirectory
+    # recursive-chown re-owns the file to another jasper daemon. NO world read
+    # (the token is still a secret). Per-daemon isolation is Phase 4.
+    assert stat.S_IMODE(st.st_mode) == 0o640
     payload = json.loads(Path(path).read_text())
     # The CLIENT_ID/SECRET fields are intentionally NOT persisted —
     # they live in the env file and are recombined at load time.

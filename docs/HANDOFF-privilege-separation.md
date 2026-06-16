@@ -184,25 +184,81 @@ grant `jasper-control`, so broker authz and the polkit grant can't drift. Pinned
 by [`tests/test_restart_broker.py`](../tests/test_restart_broker.py) (verb
 vocabulary, unit allowlist, peer-cred auth, wire contract, root fallback).
 
-### Phase 3b — Tier-A user drop (DESIGNED; gated on recovery validation)
+### Phase 3b — Tier-A user drop
 
-Drop the 5 Tier-A daemons to dedicated users, add `CapabilityBoundingSet=` +
-`SystemCallFilter=@system-service`, the `jasper` group for cross-daemon file
-ownership, and **one polkit rule** granting the `jasper-control` user the
-`MANAGED_UNITS` allowlist + reboot/poweroff; the broker's own restart stays
-systemd's job (no bootstrap deadlock):
+The 5 Tier-A daemons drop to dedicated non-root users in a shared `jasper`
+group (cross-daemon `/run` socket + `/var/lib/jasper` access), each with
+`CapabilityBoundingSet=` (empty — **no daemon needs a capability**) +
+`SystemCallFilter=@system-service`. The investigation corrected two
+over-specifications in the original table: **jasper-voice needs no RT and no XVF
+udev rule** — it makes zero `sched_setscheduler`/`mlock` calls (the RT process
+is `jasper-aec-bridge`, which stays root) and reaches the XVF mic as the ALSA
+`Array` card via the `audio` group, not a raw USB endpoint (only the root
+`jasper-aec-init` opens raw USB); and **the dropped daemons read secrets via
+systemd `EnvironmentFile=` injection** (root reads them pre-drop), so they need
+no on-disk secret access for their own startup.
 
-| Unit | User | Groups | Special grants |
-|---|---|---|---|
-| jasper-voice | `jasper-voice` | `audio` | RT via `LimitRTPRIO`/`LimitMEMLOCK` (proven on `jasper-aec-bridge`); udev rule for XVF USB `2886:001a`; secrets via `LoadCredential` |
-| jasper-control | `jasper-control` | — | one polkit rule → manage the unit allowlist |
-| jasper-web | `jasper-web` | — | broker client; the `/etc/bluetooth` write moves behind a broker verb |
-| jasper-mux | `jasper-mux` | — | broker client (librespot recovery) |
-| jasper-input | `jasper-input` | `input` | `/dev/input/event*` |
+The daemons split by risk into **three increments**, shipped separately because
+they have sharply different blast radii — bundling them would force shipping a
+wifi-lockout-risk change you could only happy-path test:
+
+| Unit | User | Groups | Increment | Why this increment |
+|---|---|---|---|---|
+| jasper-voice | `jasper-voice` | `audio` | **3b-1 (LANDED)** | clean: no caps/RT/udev/polkit; config via env injection |
+| jasper-mux | `jasper-mux` | — | **3b-1 (LANDED)** | broker client (librespot recovery); only shared file is `speaker_volume.json` |
+| jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
+| jasper-control | `jasper-control` | — | **3b-2 (designed)** | needs a **polkit rule** (broker `systemctl`/reboot) **and** group-readable secret env (the `jasper-doctor` it spawns fresh-reads every env file) — a deliberate secret-exposure change |
+| jasper-web | `jasper-web` | `netdev`?/`bluetooth`? | **3b-3 (designed)** | the big one: NetworkManager polkit, BlueZ, `CAP_NET_ADMIN` scan-repair, `/etc/{bluetooth,avahi}` writes — and **wifi-lockout** is the worst-case brick for a headless speaker |
+
+**3b-1 (landed) — voice/mux/input.** The file model is deliberately minimal:
+`/var/lib/jasper` becomes `root:jasper 0770` (group-aware `ensure_state_dir`,
+owner stays root → rollback-safe) and `speaker_volume.json` becomes group-rw
+(`0660`, the one file all three of voice/mux/control read+write fresh). The one
+secret-exposure 3b-1 needs is the **Google OAuth token tree** (`/var/lib/jasper/
+google/`): jasper-voice reads it *off disk* (not via env injection), so it
+becomes group-`jasper` readable (`0750` dirs, `0640` files). That widens the
+linked-member Gmail addresses + refresh tokens to the other jasper daemons
+(mux/input — low attack surface); per-daemon isolation is Phase 4
+(`LoadCredential`). No polkit. Cross-user `/run` sockets work via the shared
+`jasper` group: a UNIX socket needs **write** permission to `connect()`, so
+`jasper-control` joins the group (stays root) and `jasper-fanin`/`jasper-outputd`
+join it with `UMask=0007` — their TTS/control sockets become `root:jasper 0770`
+(the prior umask-derived `0755` only let root connect). `jasper-mux`'s control
+socket gains a `chmod 0660`.
+
+Measured on hardware (jts.local, `systemd-analyze security`, after a clean
+reboot): **jasper-voice 6.2 → 2.3, jasper-mux 6.2 → 2.2, jasper-input 6.2 → 2.3**
+(MEDIUM → OK); jasper-control stays 6.6 (deferred to 3b-2). Validated: all
+daemons active with `NRestarts=0` under `SystemCallFilter=@system-service` (no
+SIGSYS), a TTS cue rendered end-to-end through the non-root voice→fanin path,
+`control`→`voice.sock` and `mux`→broker (the 3b-1 recovery path) work cross-user,
+`speaker_volume.json` converges across voice/mux/control, voice reads its Google
+tokens, and the Class-2 reconcilers stay root and run clean.
+
+**systemd `StateDirectory=jasper` recursively chowns** `/var/lib/jasper`'s
+contents to whichever of jasper-voice/jasper-mux started (group stays `jasper`,
+modes preserved) — so cross-daemon reads must rely on **group** read (`0640`+),
+never owner. That's why `speaker_volume.json` is `0660` and the Google tree is
+`0640`; files only one daemon reads (its own state, or root-read files like the
+control token) keep owner-only modes. Pinned by `tests/test_systemd_hardening.py`
+(User/Group/caps/syscall-filter per dropped unit; the deferred daemons stay
+root; the install↔unit user contract).
+
+**3b-2 / 3b-3 (designed).** control pulls in the polkit rule (one rule granting
+`jasper-control` the `MANAGED_UNITS` allowlist via `org.freedesktop.systemd1.
+manage-units` + `manage-unit-files`, plus `org.freedesktop.login1.reboot`/
+`power-off`) and the group-readable env-file modes its spawned `jasper-doctor`
+needs. web pulls in NetworkManager access (a polkit rule or `netdev` membership
+— verify on the Pi), BlueZ (`bluetooth` group or polkit), the `/etc/bluetooth`
++ `/etc/avahi/services` writes (chown to `jasper` or move behind a broker verb),
+and a decision on the `CAP_NET_ADMIN` scan-repair (grant the cap, or accept its
+graceful degradation to manual "Join by name"). Both stay hardened-root until
+then.
 
 **The drop is gated on recovery-path validation, not happy-path** (validate
 recovery under the dropped user, or ship hardened-root and don't pretend the
-drop is done):
+drop is done). The 3b-1 increment validates the mux→broker path now; the
+control-as-non-root paths validate with 3b-2:
 
 | Recovery path (changed by the drop) | Now runs as | Induced-failure test |
 |---|---|---|

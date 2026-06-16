@@ -36,6 +36,7 @@ _INSTALL_LIB_DIR = _INSTALL_SH.parent / "lib" / "install"
 # step function called in main() -> phrase that must appear in the
 # --dry-run plan output (after whitespace normalization).
 _STEP_TO_PLAN_MARKER = {
+    "create_jasper_service_users": "non-root service users",
     "install_deps": "apt-get update",
     "persist_install_profile": "Persist the install profile tier",
     "install_streambox_deps": "renderer/DSP stack",

@@ -106,3 +106,101 @@ def test_tmpfs_home_where_no_home_needed(unit):
     assert ("ProtectHome", "tmpfs") in set(_directives(TIER_A[unit])), (
         f"{unit} should hide /root via ProtectHome=tmpfs (it needs no home dir)."
     )
+
+
+# --------------------------------------------------------------------------
+# WS1 Phase 3b (3b-1) — the non-root user drop for the three daemons that drop
+# cleanly. jasper-control + jasper-web stay root in 3b-1 (their drops are the
+# gated 3b-2 / 3b-3 fast-follows); jasper-control still joins the `jasper` group
+# so the broker socket is reachable by the now-non-root mux.
+# --------------------------------------------------------------------------
+
+# unit -> (expected User=, expected SupplementaryGroups set)
+DROPPED_3B1 = {
+    "jasper-voice": ("jasper-voice", {"audio"}),
+    "jasper-mux": ("jasper-mux", set()),
+    "jasper-input": ("jasper-input", {"input"}),
+}
+
+# Still root in 3b-1 (drops deferred). Moving one here to DROPPED_3B1 is exactly
+# what the 3b-2 (control: polkit + secret-read file model) and 3b-3 (web:
+# NetworkManager/BlueZ/wifi) fast-follows do.
+DEFERRED_ROOT_3B1 = {"jasper-control", "jasper-web"}
+
+
+@pytest.mark.parametrize("unit,expected", sorted(DROPPED_3B1.items()))
+def test_3b1_user_drop(unit, expected):
+    expected_user, expected_supp = expected
+    directives = _directives(TIER_A[unit])
+    pairs = set(directives)
+    assert ("User", expected_user) in pairs, (
+        f"{unit}: WS1 Phase 3b-1 requires User={expected_user} (non-root drop)."
+    )
+    assert ("Group", "jasper") in pairs, (
+        f"{unit}: must join the shared `jasper` group for cross-daemon "
+        "/run socket + /var/lib/jasper access."
+    )
+    # CapabilityBoundingSet= (empty value) drops ALL capabilities — none of the
+    # dropped daemons need one (no RT/mlock/raw-USB; audio + input come from
+    # supplementary groups).
+    assert ("CapabilityBoundingSet", "") in pairs, (
+        f"{unit}: must set CapabilityBoundingSet= (empty) to drop all caps."
+    )
+    assert ("SystemCallFilter", "@system-service") in pairs, (
+        f"{unit}: must set SystemCallFilter=@system-service."
+    )
+    supp = set()
+    for k, v in directives:
+        if k == "SupplementaryGroups":
+            supp.update(v.split())
+    assert supp == expected_supp, (
+        f"{unit}: expected SupplementaryGroups {expected_supp or '(none)'}, got "
+        f"{supp or '(none)'}."
+    )
+
+
+def test_3b1_control_joins_jasper_group_but_stays_root():
+    """jasper-control stays root in 3b-1 (User= deferred to 3b-2) but MUST join
+    the `jasper` group so the now-non-root jasper-mux can reach the broker
+    socket (/run/jasper-control/restart.sock, 0660 group jasper)."""
+    pairs = set(_directives(TIER_A["jasper-control"]))
+    assert ("Group", "jasper") in pairs, (
+        "jasper-control must set Group=jasper so mux can reach the broker socket."
+    )
+    assert not any(k == "User" for k, _ in pairs), (
+        "jasper-control is deferred to 3b-2 (polkit + secret-read file model); "
+        "it must NOT carry User= yet. When 3b-2 lands, move it to DROPPED_3B1."
+    )
+
+
+@pytest.mark.parametrize("unit", sorted(DEFERRED_ROOT_3B1))
+def test_3b1_deferred_daemons_not_user_dropped(unit):
+    """Guard against a half-drop: control (3b-2) and web (3b-3) must not gain a
+    User= until their dedicated, validation-gated work lands (polkit; the
+    secret-readable file model; NetworkManager/BlueZ access)."""
+    assert not any(k == "User" for k, _ in _directives(TIER_A[unit])), (
+        f"{unit} is deferred; dropping it needs its own gated PR "
+        "(see docs/HANDOFF-privilege-separation.md Phase 3b)."
+    )
+
+
+SERVICE_USERS_SH = ROOT / "deploy/lib/install/service-users.sh"
+
+
+def test_install_creates_every_dropped_user():
+    """The install↔unit contract: every User= a 3b-1 unit declares must be
+    created by service-users.sh, with matching supplementary groups — a unit
+    referencing a user the installer didn't create fails to start (brick)."""
+    sh = SERVICE_USERS_SH.read_text()
+    assert "groupadd -r jasper" in sh, "must create the shared `jasper` group"
+    lines = sh.splitlines()
+    for unit, (user, supp) in DROPPED_3B1.items():
+        useradd = [ln for ln in lines if "useradd" in ln and f" {user}" in ln]
+        assert useradd, f"service-users.sh must `useradd ... {user}` (for {unit})"
+        line = useradd[0]
+        assert "-g jasper" in line, f"{user} primary group must be jasper"
+        for g in supp:  # audio / input land via `-G <group>`
+            assert f"-G {g}" in line or f"-G {g}," in line or f",{g}" in line, (
+                f"{user} must be in supplementary group {g} (matches the unit's "
+                "SupplementaryGroups=)"
+            )

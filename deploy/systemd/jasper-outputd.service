@@ -39,6 +39,14 @@ ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
 ReadWritePaths=/var/lib/jasper /run/jasper-outputd
+# WS1 Phase 3b: outputd stays root (it owns the DAC write loop), but joins the
+# `jasper` group + sets UMask=0007 so its tts.sock (which the now-non-root
+# jasper-voice connects to for member-local TTS while bonded) is created
+# root:jasper 0770 — connect() needs WRITE permission, so the old umask-derived
+# 0755 only let root connect. RuntimeDirectoryMode=0750 (root:jasper) lets the
+# group traverse.
+Group=jasper
+UMask=0007
 RuntimeDirectory=jasper-outputd
 RuntimeDirectoryMode=0750
 

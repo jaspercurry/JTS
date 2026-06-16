@@ -30,6 +30,7 @@ INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
+source "${REPO_DIR}/deploy/lib/install/service-users.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
 source "${REPO_DIR}/deploy/lib/install/renderers.sh"
 source "${REPO_DIR}/deploy/lib/install/web-assets.sh"
@@ -426,6 +427,9 @@ Profile guard:
      site files) superseded by the GitHub Pages OAuth bounce page.
 
 5. Services and live actions
+   - Create the \`jasper\` group and the non-root service users
+     (jasper-voice / jasper-mux / jasper-input) the Tier-A daemons drop to,
+     and group-share /var/lib/jasper for them (WS1 Phase 3b-1).
    - Reload udev and systemd.
    - Enable socket-activated setup wizards and always-on audio/control
      services.
@@ -1737,6 +1741,7 @@ main() {
         require_root
         persist_install_profile "${install_profile}"
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
+        create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
         install_streambox_deps
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
         install_camilladsp
@@ -1763,6 +1768,7 @@ main() {
     require_root
     persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
+    create_jasper_service_users  # WS1 Phase 3b: before unit install + state-dir creation
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp

@@ -58,12 +58,20 @@ ExecStart=/opt/jasper/.venv/bin/jasper-control
 Restart=on-failure
 RestartSec=2
 
+# WS1 Phase 3b (3b-1): jasper-control stays root for now (its own user drop —
+# polkit for the broker's systemctl/reboot + group-readable secret env for the
+# jasper-doctor it spawns — is the gated 3b-2 fast-follow), but it joins the
+# shared `jasper` group so: (1) /run/jasper-control is root:jasper 0750, letting
+# the now-non-root jasper-mux traverse it to reach the broker socket
+# (restart.sock chmod 0660, group jasper); and (2) the shared state it writes
+# (speaker_volume.json) lands in group `jasper` so jasper-voice/-mux can read it.
+Group=jasper
+
 # WS1 Phase 3 — the privileged restart broker binds a UNIX socket at
 # /run/jasper-control/restart.sock. RuntimeDirectory= makes systemd create
-# (and tear down) /run/jasper-control owned by this unit's user, so the broker
-# can bind without a manual mkdir/chown. Mode 0750 lets the unit's group
-# traverse — the user-drop PR gives the dir the shared `jasper` group so the
-# (then non-root) wizard/mux clients can reach the socket.
+# (and tear down) /run/jasper-control owned by root:jasper, so the broker can
+# bind without a manual mkdir/chown. Mode 0750 lets the `jasper` group traverse
+# so the non-root mux/web clients can reach restart.sock (0660, group jasper).
 RuntimeDirectory=jasper-control
 RuntimeDirectoryMode=0750
 

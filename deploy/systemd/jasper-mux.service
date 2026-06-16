@@ -18,6 +18,16 @@ EnvironmentFile=-/var/lib/jasper/fanin.env
 ExecStart=/opt/jasper/.venv/bin/jasper-mux
 Restart=always
 RestartSec=2
+# WS1 Phase 3b — user drop (3b-1). Non-root service user in the shared `jasper`
+# group: lets mux reach the restart broker socket (/run/jasper-control, group
+# jasper) for its librespot-stall recovery — it is a non-root broker client now
+# with no direct-systemctl fallback — and read/write the group-shared
+# speaker_volume.json. No capability needed.
+# docs/HANDOFF-privilege-separation.md.
+User=jasper-mux
+Group=jasper
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
 # 1 Hz polling of three sources is light; stay under typical
 # python+httpx idle footprint. CPU should be <1%.
 MemoryHigh=80M
@@ -32,7 +42,10 @@ RuntimeDirectoryMode=0750
 # already writable; this codifies the write target and keeps the pin
 # durable if mux ever gains filesystem sandboxing. Mirrors jasper-voice.
 StateDirectory=jasper
-StateDirectoryMode=0750
+# 0770 (was 0750): group-write so the shared `jasper` group can write
+# speaker_volume.json here (atomic tempfile+rename needs dir write). Same
+# rationale as jasper-voice.
+StateDirectoryMode=0770
 
 # OOM protection (Stage 1 of memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Mux is restartable but now sits on the
@@ -48,8 +61,9 @@ OOMScoreAdjust=-300
 # mux scored 9.6 UNSAFE — it lacked even the basic stanza. Add the basics plus
 # the phase-1 directives. Writes are covered by StateDirectory=jasper +
 # RuntimeDirectory=jasper-mux above, so ProtectSystem=strict needs no extra
-# ReadWritePaths. Capability/syscall filters + the user drop (mux becomes a
-# broker client for its librespot-stall restart) land in Phases 2-3.
+# ReadWritePaths. The capability/syscall filters and the non-root user drop
+# (mux is now a broker client for its librespot-stall restart) are in the
+# Phase-3b block above.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=tmpfs

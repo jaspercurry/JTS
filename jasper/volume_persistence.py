@@ -356,11 +356,13 @@ class VolumePersistence:
         body = json.dumps(payload, indent=2)
         try:
             # Atomic write via the canonical helper (same-dir tempfile +
-            # os.replace). mode 0600 preserves the mode the hand-rolled
-            # mkstemp writer published (mkstemp creates 0600 and the old
-            # code never widened it); the daemons that read this file
-            # all run as root.
-            atomic_write_text(self._path, body, mode=0o600)
+            # os.replace). mode 0660 (group rw): WS1 Phase 3b drops jasper-voice
+            # and jasper-mux to non-root service users in the shared `jasper`
+            # group, and all three of voice/mux/control read+write this file
+            # fresh. Group rw + the group-shared /var/lib/jasper dir lets them
+            # converge; the file carries no secret (just the listening level),
+            # so group read is not a disclosure concern.
+            atomic_write_text(self._path, body, mode=0o660)
         except OSError as e:
             logger.warning(
                 "volume persistence: write to %s failed (%s)",

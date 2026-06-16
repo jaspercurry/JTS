@@ -752,6 +752,16 @@ class Mux:
                 self._handle_control_client,
                 path=MUX_CONTROL_SOCKET,
             )
+            # 0660 (was the umask default ~0755): once mux runs as a non-root
+            # service user with primary group `jasper` (WS1 Phase 3b), the
+            # socket is jasper-mux:jasper and only root + the `jasper` group
+            # (jasper-control / jasper-web clients) can connect — tighter than
+            # the prior world-connectable default. Best-effort like the voice /
+            # peering sockets' post-bind chmod.
+            try:
+                os.chmod(MUX_CONTROL_SOCKET, 0o660)
+            except OSError as e:
+                logger.warning("mux control socket chmod failed: %s", e)
             logger.info("mux control socket listening at %s", MUX_CONTROL_SOCKET)
             async with server:
                 await server.serve_forever()

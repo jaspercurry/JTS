@@ -149,25 +149,47 @@ RestartPreventExitStatus=78
 # longer backoff means fewer wasted restart cycles before the device
 # stabilises, and pairs with StartLimitBurst above to cap the spiral.
 RestartSec=5
+# WS1 Phase 3b — user drop (3b-1). jasper-voice runs as a dedicated non-root
+# service user in the shared `jasper` group so it can reach the cross-daemon
+# /run sockets and group-shared /var/lib/jasper files; `audio` (supplementary)
+# covers ALSA — the XVF mic is the "Array" ALSA card, NOT a raw USB endpoint
+# (jasper-aec-init, which stays root, is the only raw-USB user), so no udev
+# rule is needed. jasper-voice makes ZERO realtime-scheduling / mlock syscalls
+# (it's a Nice daemon; jasper-aec-bridge is the RT process and stays root), so
+# it needs no capability — CapabilityBoundingSet= drops them all and
+# SystemCallFilter=@system-service blocks the dangerous syscall classes
+# (NoNewPrivileges + SystemCallArchitectures=native below make the filter
+# enforce). docs/HANDOFF-privilege-separation.md.
+User=jasper-voice
+Group=jasper
+SupplementaryGroups=audio
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
 StateDirectory=jasper
-StateDirectoryMode=0750
+# 0770 (was 0750): the shared `jasper` group must write
+# /var/lib/jasper/speaker_volume.json, which jasper-mux and jasper-control
+# also read/write. atomic_write_text creates a tempfile in this dir + renames,
+# so group write on the dir is required; per-file modes still gate the rest.
+StateDirectoryMode=0770
 # RuntimeDirectory creates /run/jasper at service start (auto-cleaned
 # at stop). voice_daemon binds /run/jasper/voice.sock there for
-# jasper-control to send dial hold-to-talk triggers via.
+# jasper-control to send dial hold-to-talk triggers via. With Group=jasper
+# the dir is jasper-voice:jasper 0750, so jasper-control (also group jasper)
+# can traverse it to reach voice.sock (chmod 0660 in the daemon).
 RuntimeDirectory=jasper
 RuntimeDirectoryMode=0750
 
 # Hardening — defense in depth around the highest-attack-surface
 # process on the speaker (parses microphone audio, third-party LLM
-# responses, Spotify/Google API responses). Runs as root because it
-# needs realtime audio + multiple /dev/snd/*, but these flags limit
-# damage if anything ever triggers an exploitable bug. Mirrors
-# jasper-web.service. WS1 phase-1 hardening (hardened root — see
+# responses, Spotify/Google API responses). WS1 Phase 3b drops it to the
+# non-root jasper-voice user (above); /dev/snd access comes from the `audio`
+# supplementary group, not root. WS1 phase-1 hardening (see
 # docs/HANDOFF-privilege-separation.md): strict read-only FS (writes pinned by
 # ReadWritePaths + StateDirectory/RuntimeDirectory), ProtectHome=tmpfs hides
 # /root so a compromised voice can't read root's SSH key to pivot, no kernel
-# tunables/modules/logs, no extra namespaces. Capability + syscall filters land
-# with the Phase-3 user drop, where they carry full value.
+# tunables/modules/logs, no extra namespaces. The capability + syscall filters
+# (CapabilityBoundingSet= / SystemCallFilter=@system-service, in the Phase-3b
+# block above) carry full value now that the process is non-root.
 ProtectSystem=strict
 ProtectHome=tmpfs
 PrivateTmp=true
