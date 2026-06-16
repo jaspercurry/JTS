@@ -1468,7 +1468,7 @@ def _maybe_restore_main_volume(sess, cam) -> None:
     # can strand the volume at the measurement level, but that is logged
     # loudly and is better than swallowing the real error.
     try:
-        from jasper.correction.session import AutolevelStatus
+        from jasper.correction.session import AutolevelStatus, SessionState
 
         al = sess.autolevel
         if al.original_main_volume_db is None:
@@ -1478,6 +1478,19 @@ def _maybe_restore_main_volume(sess, cam) -> None:
         if al.status not in {
             AutolevelStatus.LOCKED,
             AutolevelStatus.MAXED_OUT,
+        }:
+            return
+        # Don't restore mid-measurement. We run in apply()/reset()'s finally,
+        # so this also fires when one was REJECTED from a transient state — a
+        # stale /reset during a sweep, which the server refuses. The sweep
+        # still needs the ramped level; dropping it underneath an active
+        # measurement would corrupt the capture. Restore only once the
+        # workflow has settled (idle / applied / verified / failed).
+        if sess.state in {
+            SessionState.PREPARING,
+            SessionState.SWEEPING,
+            SessionState.ANALYZING,
+            SessionState.VERIFYING,
         }:
             return
 
