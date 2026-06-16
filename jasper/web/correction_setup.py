@@ -1461,31 +1461,37 @@ def _maybe_restore_main_volume(sess, cam) -> None:
 
     Idempotent — skips silently if no autolevel ran in this session.
     """
-    from jasper.correction.session import AutolevelStatus
-
-    al = sess.autolevel
-    if al.original_main_volume_db is None:
-        return
-    # Only restore when autolevel had a "ran and finished" outcome.
-    # If still RAMPING or IDLE, don't interfere.
-    if al.status not in {
-        AutolevelStatus.LOCKED,
-        AutolevelStatus.MAXED_OUT,
-    }:
-        return
-
-    async def _restore() -> None:
-        await cam.set_volume_db(al.original_main_volume_db, best_effort=True)
-
+    # Runs inside the apply/reset `finally`, so the ENTIRE body is
+    # best-effort — nothing here may raise, or it would mask the original
+    # apply/reset error. The single guard covers the lazy import and the
+    # autolevel-state reads too, not just the restore call. A failed restore
+    # can strand the volume at the measurement level, but that is logged
+    # loudly and is better than swallowing the real error.
     try:
+        from jasper.correction.session import AutolevelStatus
+
+        al = sess.autolevel
+        if al.original_main_volume_db is None:
+            return
+        # Only restore when autolevel had a "ran and finished" outcome.
+        # If still RAMPING or IDLE, don't interfere.
+        if al.status not in {
+            AutolevelStatus.LOCKED,
+            AutolevelStatus.MAXED_OUT,
+        }:
+            return
+
+        async def _restore() -> None:
+            await cam.set_volume_db(
+                al.original_main_volume_db, best_effort=True
+            )
+
         _run_async(_restore(), timeout=5.0)
         logger.info(
             "restored main_volume to %.1f dB after autolevel workflow",
             al.original_main_volume_db,
         )
     except Exception:  # noqa: BLE001
-        # This runs inside the apply/reset finally — a restore failure must
-        # never mask the original error. Best-effort: log loudly and move on.
         logger.exception(
             "main_volume restore after autolevel workflow failed "
             "(volume may be left at the measurement level)",
