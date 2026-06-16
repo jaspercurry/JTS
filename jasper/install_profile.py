@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 from typing import Mapping
 
+from .log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +102,12 @@ def _normalize_with_migration_log(value: str | None, *, source: str) -> str:
     raw = (value or "").strip()
     normalized = normalize_install_profile(raw)
     if raw in _LEGACY_STREAMBOX_ALIASES:
-        logger.info(
-            "event=install_profile.migrate previous=%s profile=%s source=%s",
-            raw, normalized, source,
+        log_event(
+            logger,
+            "install_profile.migrate",
+            previous=raw,
+            profile=normalized,
+            source=source,
         )
     return normalized
 

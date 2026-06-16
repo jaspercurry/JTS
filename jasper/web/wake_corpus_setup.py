@@ -68,6 +68,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from jasper.log_event import log_event
+
 # CONDITIONS / DISTANCES come from the shared single source of truth
 # (jasper.wake_conditions); test_wake_conditions asserts the recorder
 # re-exports the SAME singleton objects (no local redefinition).
@@ -588,8 +590,11 @@ class _Handler(BaseHTTPRequestHandler):
         # begin_session/start_recording (the authoritative gate); this is
         # the wizard-side fast path with the same user-facing message.
         if self.backend.mic_muted():
-            logger.warning(
-                "event=wake_corpus.mute_refused op=post_session",
+            log_event(
+                logger,
+                "wake_corpus.mute_refused",
+                op="post_session",
+                level=logging.WARNING,
             )
             self._send_error_json(409, MIC_MUTED_MESSAGE)
             return

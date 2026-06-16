@@ -67,6 +67,7 @@ from . import (
 )
 from .calibration import CalibrationRecord
 from .peq import PEQ
+from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -591,10 +592,13 @@ class MeasurementSession:
                 self._capture_timeout_task = None
                 if self.state != expected_state:
                     return
-                logger.warning(
-                    "event=correction_capture_timeout session=%s state=%s "
-                    "after_sec=%.0f",
-                    self.session_id, expected_state.value, timeout_sec,
+                log_event(
+                    logger,
+                    "correction_capture_timeout",
+                    session=self.session_id,
+                    state=expected_state.value,
+                    after_sec=f"{timeout_sec:.0f}",
+                    level=logging.WARNING,
                 )
                 await self._fail(
                     "capture never arrived — tap Start to measure again"
@@ -745,13 +749,13 @@ class MeasurementSession:
             return None
         source_rel = self._bundle_relative_path(captured_wav_path)
         if source_rel is None:
-            logger.info(
-                "event=correction_replay_artifacts_skipped "
-                "session=%s capture_kind=%s position_index=%s "
-                "reason=source_capture_outside_bundle",
-                self.session_id,
-                capture_kind,
-                position_index,
+            log_event(
+                logger,
+                "correction_replay_artifacts_skipped",
+                session=self.session_id,
+                capture_kind=capture_kind,
+                position_index=position_index,
+                reason="source_capture_outside_bundle",
             )
             return None
         try:
@@ -822,14 +826,14 @@ class MeasurementSession:
                 metadata=common_metadata,
                 schema_version=replay_artifacts.SCHEMA_VERSION,
             )
-            logger.info(
-                "event=correction_replay_artifacts_written session=%s "
-                "capture_kind=%s position_index=%s ir=%s response=%s",
-                self.session_id,
-                capture_kind,
-                position_index,
-                artifacts.impulse_response_path,
-                artifacts.response_path,
+            log_event(
+                logger,
+                "correction_replay_artifacts_written",
+                session=self.session_id,
+                capture_kind=capture_kind,
+                position_index=position_index,
+                ir=artifacts.impulse_response_path,
+                response=artifacts.response_path,
             )
             return artifacts.to_dict()
         except Exception:  # noqa: BLE001
@@ -950,16 +954,16 @@ class MeasurementSession:
         issues: list[dict[str, Any]],
     ) -> None:
         for issue in issues:
-            logger.warning(
-                "event=correction_runtime_integrity_issue "
-                "session=%s code=%s severity=%s capture_kind=%s "
-                "position_index=%s message=%s",
-                self.session_id,
-                issue.get("code"),
-                issue.get("severity"),
-                issue.get("capture_kind"),
-                issue.get("position_index"),
-                issue.get("message"),
+            log_event(
+                logger,
+                "correction_runtime_integrity_issue",
+                session=self.session_id,
+                code=issue.get("code"),
+                severity=issue.get("severity"),
+                capture_kind=issue.get("capture_kind"),
+                position_index=issue.get("position_index"),
+                message=issue.get("message"),
+                level=logging.WARNING,
             )
 
     async def _record_runtime_snapshot(
@@ -975,12 +979,13 @@ class MeasurementSession:
             try:
                 camilla_status = await runtime_probe_async()
             except Exception as e:  # noqa: BLE001
-                logger.debug(
-                    "event=correction_runtime_probe_failed "
-                    "session=%s label=%s error=%s",
-                    self.session_id,
-                    label,
-                    e,
+                log_event(
+                    logger,
+                    "correction_runtime_probe_failed",
+                    session=self.session_id,
+                    label=label,
+                    error=e,
+                    level=logging.DEBUG,
                 )
         issues = self.runtime_integrity.record_snapshot(
             label,

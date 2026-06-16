@@ -8,6 +8,8 @@ import signal
 import sys
 from collections import deque
 
+from jasper.log_event import log_event
+
 from .. import flight_recorder, transit
 from ..accounts import Registry, maybe_migrate_legacy
 from ..audio_io import TtsPlayout, make_mic_capture, make_tts_playout
@@ -268,10 +270,11 @@ def _build_router(cfg: Config) -> Router | None:
     if not result.clients:
         # Surface the per-account reasons at startup so a "Spotify
         # tools are silent" report has a forensic trail.
-        logger.info(
-            "event=spotify.startup_empty statuses=%s setup_url=%s",
-            [(s.name, s.state) for s in result.statuses],
-            cfg.spotify_setup_url,
+        log_event(
+            logger,
+            "spotify.startup_empty",
+            statuses=[(s.name, s.state) for s in result.statuses],
+            setup_url=cfg.spotify_setup_url,
         )
     return Router(
         clients=result.clients,
@@ -446,20 +449,24 @@ async def run() -> None:
         active_model, overrides=load_pricing_overrides(),
     )
     speech_policy = build_effective_speech_input_policy(cfg)
-    logger.info(
-        "event=voice.input_policy provider=%s profile=%s source=%s "
-        "endpointing=%s openai_noise_reduction=%s "
-        "openai_noise_reduction_source=%s contract=%s",
-        cfg.voice_provider,
-        speech_policy.input_contract.profile,
-        speech_policy.input_contract.source,
-        speech_policy.endpointing,
-        speech_policy.openai_noise_reduction_label,
-        speech_policy.openai_noise_reduction_source,
-        speech_policy.input_contract.provenance,
+    log_event(
+        logger,
+        "voice.input_policy",
+        provider=cfg.voice_provider,
+        profile=speech_policy.input_contract.profile,
+        source=speech_policy.input_contract.source,
+        endpointing=speech_policy.endpointing,
+        openai_noise_reduction=speech_policy.openai_noise_reduction_label,
+        openai_noise_reduction_source=speech_policy.openai_noise_reduction_source,
+        contract=speech_policy.input_contract.provenance,
     )
     for warning in speech_policy.warnings:
-        logger.warning("event=voice.input_policy.warning warning=%s", warning)
+        log_event(
+            logger,
+            "voice.input_policy.warning",
+            warning=warning,
+            level=logging.WARNING,
+        )
     logger.info(
         "spend cap: provider=%s model=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
         cfg.voice_provider, active_model, pricing.label,
@@ -469,11 +476,16 @@ async def run() -> None:
         # No rate for the active model (not in the bundled dated defaults
         # nor the override). We do NOT invent one — cost will read $0 and
         # the spend cap can't bound it until a rate is entered at /voice.
-        logger.warning(
-            "event=pricing.unpriced model=%s — no rate available; cost "
-            "estimates will be $0 and the spend cap cannot bound this "
-            "model until you set a rate at http://%s/voice",
-            active_model, cfg.hostname,
+        log_event(
+            logger,
+            "pricing.unpriced",
+            model=active_model,
+            note=(
+                "no rate available; cost estimates will be $0 and the "
+                "spend cap cannot bound this model until you set a rate "
+                f"at http://{cfg.hostname}/voice"
+            ),
+            level=logging.WARNING,
         )
     usage_store = UsageStore(cfg.usage_db, pricing=pricing)
     spend_cap = SpendCap(
@@ -776,10 +788,14 @@ async def run() -> None:
                 except Exception as exc:  # noqa: BLE001
                     if spec.token == "on":
                         raise
-                    logger.warning(
-                        "event=wake.leg_skipped leg=%s device=%s "
-                        "reason=mic_open_failed err=%s",
-                        spec.token, device, exc,
+                    log_event(
+                        logger,
+                        "wake.leg_skipped",
+                        leg=spec.token,
+                        device=device,
+                        reason="mic_open_failed",
+                        err=str(exc),
+                        level=logging.WARNING,
                     )
                     continue
                 # openWakeWord's Model carries per-instance prediction
@@ -918,7 +934,12 @@ def main() -> None:
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
-        logger.warning("event=voice.unconfigured reason=%s", e)
+        log_event(
+            logger,
+            "voice.unconfigured",
+            reason=str(e),
+            level=logging.WARNING,
+        )
         print(str(e), file=sys.stderr)
         sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)
     except SpeechVADSetupError as e:
@@ -926,7 +947,12 @@ def main() -> None:
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
-        logger.error("event=voice.vad_setup_failed reason=%s", e)
+        log_event(
+            logger,
+            "voice.vad_setup_failed",
+            reason=str(e),
+            level=logging.ERROR,
+        )
         print(str(e), file=sys.stderr)
         sys.exit(VOICE_STARTUP_CONFIG_ERROR_EXIT)
     except KeyboardInterrupt:

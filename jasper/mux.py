@@ -66,6 +66,8 @@ from typing import Any, Optional
 
 import httpx
 
+from jasper.log_event import log_event
+
 from . import librespot_state, mux_mode_persistence
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
@@ -173,9 +175,13 @@ class Mux:
             mode_state_path,
         )
         if self._manual_source is not None:
-            logger.info(
-                "event=source.manual_restored source=%s from=%s",
-                self._manual_source.value, mode_state_path,
+            log_event(
+                logger,
+                "source.manual_restored",
+                **{
+                    "source": self._manual_source.value,
+                    "from": mode_state_path,
+                },
             )
         self._winner_age_ticks = 0
         # Lazy router for Web API pause. Built on first use, kept
@@ -387,13 +393,16 @@ class Mux:
         if not selected:
             current = await self._probe_sources()
             self._state.playing = current
-            logger.warning(
-                "event=source.manual_select_failed source=%s", source.value,
+            log_event(
+                logger,
+                "source.manual_select_failed",
+                source=source.value,
+                level=logging.WARNING,
             )
             return self._status_payload(current)
         current = await self._probe_sources()
         self._state.playing = current
-        logger.info("event=source.manual_select source=%s", source.value)
+        log_event(logger, "source.manual_select", source=source.value)
         return self._status_payload(current)
 
     async def auto_select(self) -> dict[str, Any]:
@@ -425,9 +434,11 @@ class Mux:
                         )
             if not selected:
                 self._state.playing = current
-                logger.warning(
-                    "event=source.auto_select_failed source=%s",
-                    new_winner.value,
+                log_event(
+                    logger,
+                    "source.auto_select_failed",
+                    source=new_winner.value,
+                    level=logging.WARNING,
                 )
                 return self._status_payload(current)
             for source in active_sources:
@@ -454,7 +465,7 @@ class Mux:
                 await self._usbsink_set_preempt(
                     False, reason="manual_auto_others_idle",
                 )
-        logger.info("event=source.auto_select")
+        log_event(logger, "source.auto_select")
         return self._status_payload(current)
 
     def _status_payload(
@@ -561,9 +572,15 @@ class Mux:
     ) -> bool:
         started = time.monotonic()
         handoff_id = self._next_handoff_id()
-        logger.info(
-            "event=source.handoff_start id=%d from=%s to=%s reason=%s",
-            handoff_id, prev_source.value, source.value, reason,
+        log_event(
+            logger,
+            "source.handoff_start",
+            **{
+                "id": handoff_id,
+                "from": prev_source.value,
+                "to": source.value,
+                "reason": reason,
+            },
         )
         coordinator = self._ensure_volume_coordinator()
         handoff = await coordinator.prepare_source_handoff(
@@ -573,11 +590,18 @@ class Mux:
             self._record_handoff(
                 handoff, started, handoff_id=handoff_id, result=handoff.result,
             )
-            logger.warning(
-                "event=source.handoff id=%d from=%s to=%s reason=%s "
-                "result=%s detail=%s",
-                handoff_id, prev_source.value, source.value, reason,
-                handoff.result, handoff.detail,
+            log_event(
+                logger,
+                "source.handoff",
+                **{
+                    "id": handoff_id,
+                    "from": prev_source.value,
+                    "to": source.value,
+                    "reason": reason,
+                    "result": handoff.result,
+                    "detail": handoff.detail,
+                },
+                level=logging.WARNING,
             )
             return False
         try:
@@ -590,43 +614,61 @@ class Mux:
                 handoff_id=handoff_id,
                 result="fanin_select_failed",
             )
-            logger.warning(
-                "event=source.handoff id=%d from=%s to=%s reason=%s "
-                "result=fanin_select_failed detail=%s",
-                handoff_id, prev_source.value, source.value, reason, e,
+            log_event(
+                logger,
+                "source.handoff",
+                **{
+                    "id": handoff_id,
+                    "from": prev_source.value,
+                    "to": source.value,
+                    "reason": reason,
+                    "result": "fanin_select_failed",
+                    "detail": str(e),
+                },
+                level=logging.WARNING,
             )
             return False
         try:
             finalized = await coordinator.finalize_source_handoff(handoff)
         except Exception as e:  # noqa: BLE001
             finalized = False
-            logger.warning(
-                "event=source.handoff_finalize_failed id=%d from=%s to=%s "
-                "reason=%s detail=%s",
-                handoff_id, prev_source.value, source.value, reason, e,
+            log_event(
+                logger,
+                "source.handoff_finalize_failed",
+                **{
+                    "id": handoff_id,
+                    "from": prev_source.value,
+                    "to": source.value,
+                    "reason": reason,
+                    "detail": str(e),
+                },
+                level=logging.WARNING,
             )
         result = handoff.result if finalized else "finalize_failed"
         self._record_handoff(
             handoff, started, handoff_id=handoff_id, result=result,
         )
-        logger.info(
-            "event=source.handoff id=%d from=%s to=%s reason=%s "
-            "level=%d guard_db=%s camilla_before=%s prev_mode=%s "
-            "target_mode=%s push_ok=%s settled_ms=%d result=%s "
-            "elapsed_ms=%d",
-            handoff_id,
-            prev_source.value,
-            source.value,
-            reason,
-            handoff.level,
-            _fmt_db(handoff.guard_db),
-            _fmt_db(handoff.camilla_before_db),
-            handoff.prev_mode.value,
-            handoff.current_mode.value,
-            handoff.push_ok,
-            handoff.settled_ms,
-            result,
-            round((time.monotonic() - started) * 1000),
+        log_event(
+            logger,
+            "source.handoff",
+            # `from` is a Python keyword and `level` (the volume level)
+            # collides with log_event's reserved level= param, so every
+            # field rides the explicit fields= mapping (order preserved).
+            fields={
+                "id": handoff_id,
+                "from": prev_source.value,
+                "to": source.value,
+                "reason": reason,
+                "level": handoff.level,
+                "guard_db": _fmt_db(handoff.guard_db),
+                "camilla_before": _fmt_db(handoff.camilla_before_db),
+                "prev_mode": handoff.prev_mode.value,
+                "target_mode": handoff.current_mode.value,
+                "push_ok": handoff.push_ok,
+                "settled_ms": handoff.settled_ms,
+                "result": result,
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+            },
         )
         return True
 
@@ -827,11 +869,15 @@ class Mux:
             "Stop",
         )
         if ok is not None:
-            logger.info("event=airplay.preempt_stop method=Stop result=ok")
+            log_event(logger, "airplay.preempt_stop", method="Stop", result="ok")
             return
 
-        logger.warning(
-            "event=airplay.preempt_stop_failed method=Stop action=pause_fallback",
+        log_event(
+            logger,
+            "airplay.preempt_stop_failed",
+            method="Stop",
+            action="pause_fallback",
+            level=logging.WARNING,
         )
         pause_ok = await _busctl(
             "call",
@@ -841,8 +887,11 @@ class Mux:
             "Pause",
         )
         if pause_ok is None:
-            logger.warning(
-                "event=airplay.preempt_pause_failed method=Pause",
+            log_event(
+                logger,
+                "airplay.preempt_pause_failed",
+                method="Pause",
+                level=logging.WARNING,
             )
 
     # ------------------------------------------------------------------
@@ -866,10 +915,12 @@ class Mux:
         if _usbsink_preempt_disabled():
             # Escape hatch active. Log once per state change so the
             # operator sees the preempt being skipped without spam.
-            logger.info(
-                "event=usbsink.preempt_skipped silenced=%s reason=%s "
-                "via=JASPER_USBSINK_PREEMPT=disabled",
-                silenced, reason,
+            log_event(
+                logger,
+                "usbsink.preempt_skipped",
+                silenced=silenced,
+                reason=reason,
+                via="JASPER_USBSINK_PREEMPT=disabled",
             )
             self._usbsink_preempted = silenced
             return
@@ -880,9 +931,11 @@ class Mux:
             )
             if resp.status_code == 200:
                 self._usbsink_preempted = silenced
-                logger.info(
-                    "event=usbsink.preempt_set silenced=%s reason=%s",
-                    silenced, reason,
+                log_event(
+                    logger,
+                    "usbsink.preempt_set",
+                    silenced=silenced,
+                    reason=reason,
                 )
                 return
             logger.warning(

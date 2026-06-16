@@ -29,6 +29,8 @@ from dataclasses import dataclass
 import httpx
 from rapidfuzz import fuzz
 
+from .log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
@@ -710,14 +712,14 @@ class WeatherClient:
                     attempt < HTTP_ATTEMPTS
                     and _is_retryable_http_error(e)
                 )
-                logger.warning(
-                    "event=weather_http_error endpoint=%s attempt=%d/%d "
-                    "retrying=%s error=%s",
-                    label,
-                    attempt,
-                    HTTP_ATTEMPTS,
-                    retrying,
-                    _exception_summary(e),
+                log_event(
+                    logger,
+                    "weather_http_error",
+                    endpoint=label,
+                    attempt=f"{attempt}/{HTTP_ATTEMPTS}",
+                    retrying=retrying,
+                    error=_exception_summary(e),
+                    level=logging.WARNING,
                 )
                 if retrying:
                     continue
@@ -748,15 +750,16 @@ class WeatherClient:
             if (score := _candidate_score(parsed, candidate)) is not None
         ]
         if not scored:
-            logger.info(
-                "event=weather_geocode query=%r base=%r admin1=%r country=%r "
-                "soft=%r candidates=%d outcome=no_match",
-                parsed.raw,
-                parsed.base,
-                parsed.admin1,
-                parsed.country_code,
-                parsed.soft_qualifier,
-                len(candidates),
+            log_event(
+                logger,
+                "weather_geocode",
+                query=repr(parsed.raw),
+                base=repr(parsed.base),
+                admin1=repr(parsed.admin1),
+                country=repr(parsed.country_code),
+                soft=repr(parsed.soft_qualifier),
+                candidates=len(candidates),
+                outcome="no_match",
             )
             return None
         scored.sort(key=lambda item: item[0], reverse=True)
@@ -775,16 +778,17 @@ class WeatherClient:
         while len(self._geocode_cache) >= GEOCODE_CACHE_MAX:
             self._geocode_cache.pop(next(iter(self._geocode_cache)))
         self._geocode_cache[key] = loc
-        logger.info(
-            "event=weather_geocode query=%r base=%r admin1=%r country=%r "
-            "soft=%r candidates=%d selected=%r outcome=ok",
-            parsed.raw,
-            parsed.base,
-            parsed.admin1,
-            parsed.country_code,
-            parsed.soft_qualifier,
-            len(candidates),
-            loc.name,
+        log_event(
+            logger,
+            "weather_geocode",
+            query=repr(parsed.raw),
+            base=repr(parsed.base),
+            admin1=repr(parsed.admin1),
+            country=repr(parsed.country_code),
+            soft=repr(parsed.soft_qualifier),
+            candidates=len(candidates),
+            selected=repr(loc.name),
+            outcome="ok",
         )
         return loc
 

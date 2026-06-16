@@ -59,6 +59,8 @@ import threading
 import time
 from typing import Any
 
+from jasper.log_event import log_event
+
 from ..multiroom.config import GroupingConfig, is_active_member, load_config
 from ..multiroom.reconcile import SNAP_STREAM_ID
 from ..multiroom.snapcast_rpc import ensure_groups_on_stream
@@ -133,17 +135,24 @@ class GroupingSupervisor:
     # ---- main loop ----
 
     async def run(self) -> None:
-        logger.info(
-            "event=grouping_supervisor.start "
-            "interval=%.0fs threshold=%d rate_limit=%.0fs",
-            self._interval, self._threshold, self._rate_limit,
+        log_event(
+            logger,
+            "grouping_supervisor.start",
+            interval=f"{self._interval:.0f}s",
+            threshold=self._threshold,
+            rate_limit=f"{self._rate_limit:.0f}s",
         )
         await asyncio.sleep(self._cold_start)
         while True:
             try:
                 await self._tick()
             except Exception:  # noqa: BLE001
-                logger.exception("event=grouping_supervisor.tick_crash")
+                log_event(
+                    logger,
+                    "grouping_supervisor.tick_crash",
+                    level=logging.ERROR,
+                    exc_info=True,
+                )
             await asyncio.sleep(self._interval + random.uniform(
                 -self._jitter, self._jitter,
             ))
@@ -175,7 +184,12 @@ class GroupingSupervisor:
         try:
             report = await self.repair_bindings()
         except Exception:  # noqa: BLE001
-            logger.exception("event=grouping_supervisor.binding_crash")
+            log_event(
+                logger,
+                "grouping_supervisor.binding_crash",
+                level=logging.ERROR,
+                exc_info=True,
+            )
             return
         self.binding_last_reachable = bool(report.get("reachable"))
         fixed = int(report.get("fixed", 0))
@@ -187,10 +201,13 @@ class GroupingSupervisor:
             # Runtime drift is rare and always operator-relevant —
             # someone or something rebound a group out from under the
             # bond since the last reconcile.
-            logger.warning(
-                "event=grouping_supervisor.binding_repaired "
-                "fixed=%d failed=%d stream=%s",
-                fixed, failed, SNAP_STREAM_ID,
+            log_event(
+                logger,
+                "grouping_supervisor.binding_repaired",
+                fixed=fixed,
+                failed=failed,
+                stream=SNAP_STREAM_ID,
+                level=logging.WARNING,
             )
 
     async def _starvation_tick(self) -> None:
@@ -198,7 +215,12 @@ class GroupingSupervisor:
         try:
             status = await self.outputd_status()
         except Exception:  # noqa: BLE001
-            logger.exception("event=grouping_supervisor.status_crash")
+            log_event(
+                logger,
+                "grouping_supervisor.status_crash",
+                level=logging.ERROR,
+                exc_info=True,
+            )
         dac = (status or {}).get("dac_content") or {}
         # A bonded member is healthy only when the lane is armed AND
         # serving. "outputd unreachable" and "lane never armed" both
@@ -216,12 +238,15 @@ class GroupingSupervisor:
             self._rate_limit_warned_window = None
             return
         self.consecutive_starved += 1
-        log = logger.debug if self._streak_warned else logger.warning
-        log(
-            "event=grouping_supervisor.starved consecutive=%d threshold=%d "
-            "outputd_reachable=%s lane_enabled=%s",
-            self.consecutive_starved, self._threshold,
-            status is not None, dac.get("enabled") is True,
+        level = logging.DEBUG if self._streak_warned else logging.WARNING
+        log_event(
+            logger,
+            "grouping_supervisor.starved",
+            consecutive=self.consecutive_starved,
+            threshold=self._threshold,
+            outputd_reachable=status is not None,
+            lane_enabled=dac.get("enabled") is True,
+            level=level,
         )
         if self.consecutive_starved >= self._threshold:
             self._streak_warned = True
@@ -233,16 +258,18 @@ class GroupingSupervisor:
             and mono - self._last_kick_monotonic < self._rate_limit
         ):
             self.rate_limited_count += 1
-            log = (
-                logger.debug
+            level = (
+                logging.DEBUG
                 if self._rate_limit_warned_window == self._last_kick_monotonic
-                else logger.warning
+                else logging.WARNING
             )
             self._rate_limit_warned_window = self._last_kick_monotonic
-            log(
-                "event=grouping_supervisor.kick_rate_limited "
-                "since_last_kick=%.0fs limit=%.0fs",
-                mono - self._last_kick_monotonic, self._rate_limit,
+            log_event(
+                logger,
+                "grouping_supervisor.kick_rate_limited",
+                since_last_kick=f"{mono - self._last_kick_monotonic:.0f}s",
+                limit=f"{self._rate_limit:.0f}s",
+                level=level,
             )
             return
         self._last_kick_monotonic = mono
@@ -252,15 +279,22 @@ class GroupingSupervisor:
         # threshold's worth of polls to take effect before we conclude
         # the kick didn't help.
         self.consecutive_starved = 0
-        logger.error(
-            "event=grouping_supervisor.starved_detected action=kick_reconcile "
-            "count=%d",
-            self.kick_count,
+        log_event(
+            logger,
+            "grouping_supervisor.starved_detected",
+            action="kick_reconcile",
+            count=self.kick_count,
+            level=logging.ERROR,
         )
         try:
             await self.kick_reconciler()
         except Exception:  # noqa: BLE001
-            logger.exception("event=grouping_supervisor.kick_failed")
+            log_event(
+                logger,
+                "grouping_supervisor.kick_failed",
+                level=logging.ERROR,
+                exc_info=True,
+            )
 
     # ---- overridable IO ----
 
@@ -382,7 +416,7 @@ def start_supervisor() -> threading.Thread | None:
         return _supervisor_thread
     mode = os.environ.get("JASPER_GROUPING_SUPERVISOR", "auto").lower()
     if mode == "disabled":
-        logger.info("event=grouping_supervisor.disabled")
+        log_event(logger, "grouping_supervisor.disabled")
         return None
     if mode != "auto":
         logger.warning(
@@ -398,7 +432,12 @@ def start_supervisor() -> threading.Thread | None:
         try:
             loop.run_until_complete(_supervisor.run())
         except Exception:  # noqa: BLE001
-            logger.exception("event=grouping_supervisor.thread_crash")
+            log_event(
+                logger,
+                "grouping_supervisor.thread_crash",
+                level=logging.ERROR,
+                exc_info=True,
+            )
         finally:
             try:
                 loop.close()

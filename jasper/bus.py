@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
 
+from .log_event import log_event
 from .transit.base import TransitError, scrub_secrets
 
 logger = logging.getLogger(__name__)
@@ -232,9 +233,12 @@ class BusClient:
         # — surface it so the tool can speak an error. Mirrors
         # subway's all-sources-down return.
         if served == 0:
-            logger.warning(
-                "event=transit.bus.arrivals.error stops=%d reason=all-stops-failed",
-                len(self._stop_ids),
+            log_event(
+                logger,
+                "transit.bus.arrivals.error",
+                stops=len(self._stop_ids),
+                reason="all-stops-failed",
+                level=logging.WARNING,
             )
             raise TransitError("the MTA bus feed is unreachable")
 
@@ -291,15 +295,21 @@ class BusClient:
         except httpx.HTTPError as e:
             # httpx.HTTPError repr includes the full URL with ?key=… ;
             # scrub before logging so the key never lands in journalctl.
-            logger.warning(
-                "event=transit.bus.fetch.error stop=%s err=%s",
-                stop_id, scrub_secrets(repr(e)),
+            log_event(
+                logger,
+                "transit.bus.fetch.error",
+                stop=stop_id,
+                err=scrub_secrets(repr(e)),
+                level=logging.WARNING,
             )
             return None
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "event=transit.bus.parse.error stop=%s err=%s",
-                stop_id, scrub_secrets(repr(e)),
+            log_event(
+                logger,
+                "transit.bus.parse.error",
+                stop=stop_id,
+                err=scrub_secrets(repr(e)),
+                level=logging.WARNING,
             )
             return None
 
@@ -342,7 +352,10 @@ class BusClient:
         # Sort within the per-stop result so each cache entry is
         # already in ETA order; the outer union resorts after merging.
         out.sort(key=lambda a: a.minutes_from_now)
-        logger.info(
-            "event=transit.bus.fetch.ok stop=%s arrivals=%d", stop_id, len(out),
+        log_event(
+            logger,
+            "transit.bus.fetch.ok",
+            stop=stop_id,
+            arrivals=len(out),
         )
         return out

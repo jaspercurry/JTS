@@ -62,6 +62,7 @@ from pathlib import Path
 
 import numpy as np
 
+from jasper.log_event import log_event
 from jasper.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
     read_mic_muted,
@@ -199,10 +200,13 @@ def _refuse_if_muted(
 ) -> None:
     if not mic_muted(path):
         return
-    logger.warning(
-        "event=wake_enroll.mute_refused op=%s path=%s — household "
-        "mic mute is on; refusing to record",
-        op, path,
+    log_event(
+        logger,
+        "wake_enroll.mute_refused",
+        op=op,
+        path=path,
+        note="household mic mute is on; refusing to record",
+        level=logging.WARNING,
     )
     raise MicMutedError(MIC_MUTED_MESSAGE)
 

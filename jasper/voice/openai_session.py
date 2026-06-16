@@ -59,6 +59,8 @@ from collections import deque
 from enum import Enum
 from typing import Awaitable, AsyncIterator, Callable
 
+from jasper.log_event import log_event
+
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     ESCALATION_CUE_SLUG,
@@ -439,9 +441,11 @@ class OpenAIRealtimeTurn:
             # flight recorder buffers DEBUG records and dumps them to
             # journald around failures, so even DEBUG lines must carry
             # metadata rather than household utterances.
-            logger.debug(
-                "event=openai.assistant_transcript chars=%d",
-                len(assistant_text),
+            log_event(
+                logger,
+                "openai.assistant_transcript",
+                chars=len(assistant_text),
+                level=logging.DEBUG,
             )
         if self._chunks_received > 0:
             avg = self._chunk_bytes_total // self._chunks_received
@@ -530,18 +534,18 @@ class OpenAIRealtimeTurn:
 
     def _on_speech_started(self) -> None:
         self._server_speech_started = True
-        logger.info("event=server_vad.speech_started")
+        log_event(logger, "server_vad.speech_started")
 
     def _on_speech_stopped(self) -> None:
         self._server_speech_stopped = True
-        logger.info("event=server_vad.speech_stopped")
+        log_event(logger, "server_vad.speech_stopped")
         if self._server_committed:
             self._server_eou_event.set()
 
     def _on_server_committed(self) -> None:
         self._server_committed = True
         self._committed = True
-        logger.info("event=server_vad.committed")
+        log_event(logger, "server_vad.committed")
         if self._server_speech_stopped:
             self._server_eou_event.set()
 
@@ -1064,9 +1068,10 @@ class OpenAIRealtimeConnection:
                 },
             },
         })
-        logger.info(
-            "event=server_vad.switch mode=%s",
-            "server_vad" if mode is not None else "manual",
+        log_event(
+            logger,
+            "server_vad.switch",
+            mode="server_vad" if mode is not None else "manual",
         )
 
     async def _cancel_response(self) -> None:
@@ -1266,35 +1271,46 @@ class OpenAIRealtimeConnection:
                 await self._open_session()
                 if attempt > 1:
                     elapsed = self._monotonic() - start
-                    logger.info(
-                        "event=openai.initial_connect.success phase=%s "
-                        "attempt=%d elapsed_sec=%.1f",
-                        phase, attempt, elapsed,
+                    log_event(
+                        logger,
+                        "openai.initial_connect.success",
+                        phase=phase,
+                        attempt=attempt,
+                        elapsed_sec=f"{elapsed:.1f}",
                     )
                 else:
-                    logger.info(
-                        "event=openai.initial_connect.success phase=%s "
-                        "attempt=%d",
-                        phase, attempt,
+                    log_event(
+                        logger,
+                        "openai.initial_connect.success",
+                        phase=phase,
+                        attempt=attempt,
                     )
                 return
             except Exception as e:  # noqa: BLE001
                 if not _is_transient(e):
-                    logger.warning(
-                        "event=openai.initial_connect.fatal phase=%s "
-                        "attempt=%d exc=%s reason=%r",
-                        phase, attempt, type(e).__name__, str(e)[:200],
+                    log_event(
+                        logger,
+                        "openai.initial_connect.fatal",
+                        phase=phase,
+                        attempt=attempt,
+                        exc=type(e).__name__,
+                        reason=repr(str(e)[:200]),
+                        level=logging.WARNING,
                     )
                     raise
                 now = self._monotonic()
                 elapsed = now - start
                 if now >= deadline:
-                    logger.error(
-                        "event=openai.initial_connect.exhausted phase=%s "
-                        "attempts=%d elapsed_sec=%.1f budget_sec=%.1f "
-                        "exc=%s reason=%r",
-                        phase, attempt, elapsed, budget_sec,
-                        type(e).__name__, str(e)[:200],
+                    log_event(
+                        logger,
+                        "openai.initial_connect.exhausted",
+                        phase=phase,
+                        attempts=attempt,
+                        elapsed_sec=f"{elapsed:.1f}",
+                        budget_sec=f"{budget_sec:.1f}",
+                        exc=type(e).__name__,
+                        reason=repr(str(e)[:200]),
+                        level=logging.ERROR,
                     )
                     raise RuntimeError(
                         f"openai connection: {phase} budget of "
@@ -1310,17 +1326,25 @@ class OpenAIRealtimeConnection:
                 remaining = deadline - now
                 if delay > remaining:
                     delay = max(0.0, remaining)
-                logger.warning(
-                    "event=openai.initial_connect.attempt phase=%s "
-                    "attempt=%d elapsed_sec=%.1f budget_sec=%.1f "
-                    "exc=%s reason=%r",
-                    phase, attempt, elapsed, budget_sec,
-                    type(e).__name__, str(e)[:200],
+                log_event(
+                    logger,
+                    "openai.initial_connect.attempt",
+                    phase=phase,
+                    attempt=attempt,
+                    elapsed_sec=f"{elapsed:.1f}",
+                    budget_sec=f"{budget_sec:.1f}",
+                    exc=type(e).__name__,
+                    reason=repr(str(e)[:200]),
+                    level=logging.WARNING,
                 )
-                logger.warning(
-                    "event=openai.initial_connect.backoff phase=%s "
-                    "attempt=%d delay_sec=%.2f remaining_sec=%.1f",
-                    phase, attempt, delay, remaining,
+                log_event(
+                    logger,
+                    "openai.initial_connect.backoff",
+                    phase=phase,
+                    attempt=attempt,
+                    delay_sec=f"{delay:.2f}",
+                    remaining_sec=f"{remaining:.1f}",
+                    level=logging.WARNING,
                 )
                 await self._sleep(delay)
 
@@ -1711,16 +1735,20 @@ class OpenAIRealtimeConnection:
             transcript = _event_field(event, "transcript")
             if isinstance(transcript, str):
                 text = transcript.strip()
-                logger.debug(
-                    "event=openai.user_transcript chars=%d",
-                    len(text),
+                log_event(
+                    logger,
+                    "openai.user_transcript",
+                    chars=len(text),
+                    level=logging.DEBUG,
                 )
             return
         if etype == "conversation.item.input_audio_transcription.failed":
             err = _event_field(event, "error") or {}
-            logger.warning(
-                "event=openai.user_transcription_failed error=%s",
-                err.get("message") if isinstance(err, dict) else err,
+            log_event(
+                logger,
+                "openai.user_transcription_failed",
+                error=str(err.get("message") if isinstance(err, dict) else err),
+                level=logging.WARNING,
             )
             return
 

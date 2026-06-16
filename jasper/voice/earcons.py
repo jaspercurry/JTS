@@ -6,6 +6,7 @@ from ..assistant_loudness import (
     AssistantLoudnessProfile,
     measure_pcm_24k_mono,
 )
+from ..log_event import log_event
 
 logger = logging.getLogger("jasper.voice_daemon")
 
@@ -35,10 +36,15 @@ def _synthetic_audio_profile(
         source_peak_dbfs = measurement.source_peak_dbfs
         confidence = 1.0
     except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "event=audio.synthetic_profile result=fallback model=%s "
-            "voice=%s exc_type=%s err=%s",
-            model, voice, type(e).__name__, e,
+        log_event(
+            logger,
+            "audio.synthetic_profile",
+            result="fallback",
+            model=model,
+            voice=voice,
+            exc_type=type(e).__name__,
+            err=str(e),
+            level=logging.WARNING,
         )
         source_lufs = fallback_source_lufs
         source_peak_dbfs = fallback_peak_dbfs

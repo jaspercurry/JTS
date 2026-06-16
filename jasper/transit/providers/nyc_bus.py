@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
 
+from ...log_event import log_event
 from ..base import BoundingBox, CredentialSpec, Stop, TransitError, haversine_miles, scrub_secrets
 
 logger = logging.getLogger(__name__)
@@ -251,9 +252,11 @@ class _NycBus:
             r.raise_for_status()
             data = r.json()
         except (httpx.HTTPError, ValueError) as e:
-            logger.info(
-                "event=transit.bus.siri_probe.error stop=%s err=%s",
-                bare, scrub_secrets(e),
+            log_event(
+                logger,
+                "transit.bus.siri_probe.error",
+                stop=bare,
+                err=scrub_secrets(e),
             )
             return ()
         finally:
@@ -296,8 +299,11 @@ class _NycBus:
             )
         except httpx.HTTPError as e:
             scrubbed = scrub_secrets(e)
-            logger.warning(
-                "event=transit.bus.validate.error err=%s", scrubbed,
+            log_event(
+                logger,
+                "transit.bus.validate.error",
+                err=scrubbed,
+                level=logging.WARNING,
             )
             return {CREDENTIAL.env_key: f"BusTime unreachable: {scrubbed}"}
         finally:
@@ -307,8 +313,10 @@ class _NycBus:
         # Either way the user can't proceed; we report the same
         # message and let them re-try.
         if r.status_code != 200:
-            logger.info(
-                "event=transit.bus.validate.rejected status=%d", r.status_code,
+            log_event(
+                logger,
+                "transit.bus.validate.rejected",
+                status=r.status_code,
             )
             return {CREDENTIAL.env_key: f"BusTime returned HTTP {r.status_code}"}
         try:

@@ -55,6 +55,7 @@ import os
 
 from . import avahi_service
 from .avahi_service import RenderResult
+from .log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,12 @@ def _resolve_name(name: str | None) -> str:
 
             resolved = read_identity().name
         except Exception as e:  # noqa: BLE001 — never let a read break advertising
-            logger.warning(
-                "event=control_advert.name_read result=failed error=%s", e,
+            log_event(
+                logger,
+                "control_advert.name_read",
+                result="failed",
+                error=e,
+                level=logging.WARNING,
             )
             resolved = ""
     resolved = (resolved or "").strip()
@@ -118,8 +123,12 @@ def _resolve_peer_id() -> str:
 
         return (read_identity().peer_id or "").strip()
     except Exception as e:  # noqa: BLE001 — never let a read break advertising
-        logger.warning(
-            "event=control_advert.peer_id_read result=failed error=%s", e,
+        log_event(
+            logger,
+            "control_advert.peer_id_read",
+            result="failed",
+            error=e,
+            level=logging.WARNING,
         )
         return ""
 
@@ -176,5 +185,10 @@ def render_control_advert(
         reload=reload,
     )
     if r is RenderResult.WROTE:
-        logger.info("event=control_advert.installed path=%s name=%r", out, resolved)
+        log_event(
+            logger,
+            "control_advert.installed",
+            path=out,
+            name=repr(resolved),
+        )
     return r is not RenderResult.FAILED

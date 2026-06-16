@@ -19,6 +19,7 @@ from .assistant_loudness import (
     profile_for_outputd,
     update_profile_from_measurement,
 )
+from .log_event import log_event
 
 # `sounddevice` is a Pi-side audio I/O dep (PortAudio bindings). It's not
 # installed in the local dev venv and isn't needed by the pure-Python
@@ -1065,19 +1066,23 @@ class OutputdTtsPlayout(TtsPlayout):
     async def _current_outputd_stream(self):
         stream = self._stream
         if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
-            logger.info(
-                "event=tts_fanin.reconnect reason=closed_socket socket=%s",
-                self._socket_path,
+            log_event(
+                logger,
+                "tts_fanin.reconnect",
+                reason="closed_socket",
+                socket=self._socket_path,
             )
             try:
                 stream = await self._connect_stream_adapter()
             except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "event=tts_fanin.reconnect_failed "
-                    "reason=closed_socket socket=%s exc_type=%s err=%s",
-                    self._socket_path,
-                    type(e).__name__,
-                    e,
+                log_event(
+                    logger,
+                    "tts_fanin.reconnect_failed",
+                    reason="closed_socket",
+                    socket=self._socket_path,
+                    exc_type=type(e).__name__,
+                    err=str(e),
+                    level=logging.WARNING,
                 )
                 return None
             self._stream = stream  # type: ignore[assignment]
@@ -1127,11 +1132,13 @@ class OutputdTtsPlayout(TtsPlayout):
                     and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
                 ):
-                    logger.info(
-                        "event=tts_fanin.control_retry method=prepare_assistant "
-                        "reason=closed_socket exc_type=%s err=%s",
-                        type(e).__name__,
-                        e,
+                    log_event(
+                        logger,
+                        "tts_fanin.control_retry",
+                        method="prepare_assistant",
+                        reason="closed_socket",
+                        exc_type=type(e).__name__,
+                        err=str(e),
                     )
                     continue
                 logger.warning("fan-in TTS IPC prepare assistant failed: %s", e)
@@ -1160,12 +1167,13 @@ class OutputdTtsPlayout(TtsPlayout):
                     and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
                 ):
-                    logger.info(
-                        "event=tts_fanin.control_retry method=%s "
-                        "reason=closed_socket exc_type=%s err=%s",
-                        method,
-                        type(e).__name__,
-                        e,
+                    log_event(
+                        logger,
+                        "tts_fanin.control_retry",
+                        method=method,
+                        reason="closed_socket",
+                        exc_type=type(e).__name__,
+                        err=str(e),
                     )
                     continue
                 logger.warning("fan-in TTS IPC %s failed: %s", method, e)
@@ -1244,11 +1252,12 @@ class OutputdTtsPlayout(TtsPlayout):
                     and isinstance(stream, _OutputdStreamAdapter)
                     and stream.closed
                 ):
-                    logger.info(
-                        "event=tts_fanin.segment_setup_retry "
-                        "reason=closed_socket exc_type=%s err=%s",
-                        type(e).__name__,
-                        e,
+                    log_event(
+                        logger,
+                        "tts_fanin.segment_setup_retry",
+                        reason="closed_socket",
+                        exc_type=type(e).__name__,
+                        err=str(e),
                     )
                     stream = await self._current_outputd_stream()
                     if stream is None:
@@ -1270,9 +1279,11 @@ class OutputdTtsPlayout(TtsPlayout):
                 await asyncio.to_thread(stream.write, chunk)
             except OSError:
                 if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
-                    logger.warning(
-                        "event=tts_fanin.audio_write_failed "
-                        "reason=closed_socket",
+                    log_event(
+                        logger,
+                        "tts_fanin.audio_write_failed",
+                        reason="closed_socket",
+                        level=logging.WARNING,
                     )
                 raise
             queued_end += len(chunk) / (
@@ -1372,13 +1383,14 @@ class OutputdTtsPlayout(TtsPlayout):
             logger.warning("fan-in TTS IPC flush failed: %s", e)
         self._ring_end_monotonic = None
         if ack is not None:
-            logger.info(
-                "event=tts_flush.ack transport=fanin ok=%s segments=%s "
-                "flushed_frames=%s max_audio_played_ms=%s",
-                ack.get("ok"),
-                ack.get("segments"),
-                ack.get("flushed_frames"),
-                ack.get("max_audio_played_ms"),
+            log_event(
+                logger,
+                "tts_flush.ack",
+                transport="fanin",
+                ok=ack.get("ok"),
+                segments=ack.get("segments"),
+                flushed_frames=ack.get("flushed_frames"),
+                max_audio_played_ms=ack.get("max_audio_played_ms"),
             )
         await self._save_assistant_source_profile()
         return ack

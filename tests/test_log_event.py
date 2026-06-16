@@ -186,6 +186,67 @@ def test_log_event_fields_can_shadow_logger_and_name(caplog):
     assert caplog.records[-1].getMessage() == "event=x.y name=bob logger=other"
 
 
+def test_log_event_default_carries_no_traceback(caplog):
+    # The common path must stay byte-identical to a plain logger.info:
+    # no exc_info attached even when called from inside an except block.
+    logger = logging.getLogger("jasper.test.log_event.no_exc")
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            log_event(logger, "x.y", k="v")
+    assert caplog.records[-1].exc_info is None
+
+
+def test_log_event_exc_info_attaches_traceback(caplog):
+    # exc_info=True from an except block attaches the active exception —
+    # the logger.exception("event=...") equivalent the migration relies on.
+    logger = logging.getLogger("jasper.test.log_event.exc")
+    with caplog.at_level(logging.ERROR, logger=logger.name):
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            log_event(logger, "x.crash", level=logging.ERROR, exc_info=True)
+    record = caplog.records[-1]
+    assert record.levelno == logging.ERROR
+    assert record.getMessage() == "event=x.crash"
+    assert record.exc_info is not None
+    assert record.exc_info[0] is ValueError
+
+
+def test_log_event_fields_dict_carries_reserved_level_key(caplog):
+    # A field literally named "level" can't be a keyword (it binds the
+    # logging level), so it rides the explicit fields= mapping. The
+    # logging level stays separate.
+    logger = logging.getLogger("jasper.test.log_event.level_field")
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        log_event(
+            logger,
+            "volume.reconciled",
+            level=logging.WARNING,
+            fields={"source": "spotify", "level": 42},
+        )
+    assert caplog.records[-1].levelno == logging.WARNING
+    assert caplog.records[-1].getMessage() == "event=volume.reconciled source=spotify level=42"
+
+
+def test_log_event_fields_dict_orders_before_kwfields(caplog):
+    # fields= entries render first (in dict order), then **kwfields.
+    logger = logging.getLogger("jasper.test.log_event.fields_order")
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        log_event(logger, "x.y", fields={"a": 1, "level": 2}, b=3)
+    assert caplog.records[-1].getMessage() == "event=x.y a=1 level=2 b=3"
+
+
+def test_log_event_fields_dict_in_json_mode(monkeypatch, caplog):
+    monkeypatch.setenv("JASPER_LOG_JSON", "1")
+    logger = logging.getLogger("jasper.test.log_event.fields_json")
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        log_event(logger, "volume.set", fields={"level": 7})
+    obj = json.loads(caplog.records[-1].getMessage())
+    assert obj == {"event": "volume.set", "level": 7}
+
+
 # ---------------------------------------------------- cheap shape contract
 
 

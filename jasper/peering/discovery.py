@@ -17,6 +17,8 @@ import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,9 +106,11 @@ class PeerDiscovery:
             [SERVICE_TYPE],
             handlers=[on_change],
         )
-        logger.info(
-            "event=peering.discovery.started service=%s self=%s",
-            SERVICE_TYPE, self._self_peer_id,
+        log_event(
+            logger,
+            "peering.discovery.started",
+            service=SERVICE_TYPE,
+            self=self._self_peer_id,
         )
 
     async def stop(self) -> None:
@@ -123,7 +127,7 @@ class PeerDiscovery:
                 logger.exception("peering: zeroconf close failed")
             self._zc = None
         self._peers.clear()
-        logger.info("event=peering.discovery.stopped")
+        log_event(logger, "peering.discovery.stopped")
 
     def peers(self) -> list[PeerSeen]:
         """Snapshot of currently-seen peers (excluding self)."""
@@ -151,18 +155,24 @@ class PeerDiscovery:
             if peer.peer_id == self._self_peer_id:
                 return  # ignore our own ad
             self._peers[name] = peer
-            logger.info(
-                "event=peering.discovery.peer_seen peer=%s room=%s primary=%d addr=%s",
-                peer.peer_id, peer.room, int(peer.primary), peer.address,
+            log_event(
+                logger,
+                "peering.discovery.peer_seen",
+                peer=peer.peer_id,
+                room=peer.room,
+                primary=int(peer.primary),
+                addr=peer.address,
             )
             await self._fire(peer)
         elif state_change is ServiceStateChange.Removed:
             peer = self._peers.pop(name, None)
             if peer is None:
                 return
-            logger.info(
-                "event=peering.discovery.peer_gone peer=%s addr=%s",
-                peer.peer_id, peer.address,
+            log_event(
+                logger,
+                "peering.discovery.peer_gone",
+                peer=peer.peer_id,
+                addr=peer.address,
             )
             await self._fire(PeerGone(peer_id=peer.peer_id, address=peer.address))
 

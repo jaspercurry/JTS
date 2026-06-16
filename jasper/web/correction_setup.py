@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from ..log_event import log_event
 from ._common import (
     begin_request,
     bonded_follower_active,
@@ -792,9 +793,12 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     body = _read_json_body(handler)
     blocking_state = _reserve_start_slot()
     if blocking_state is not None:
-        logger.warning(
-            "event=correction_start_rejected reason=active_session state=%s",
-            blocking_state,
+        log_event(
+            logger,
+            "correction_start_rejected",
+            reason="active_session",
+            state=blocking_state,
+            level=logging.WARNING,
         )
         raise RequestConflict(
             "measurement already in progress; wait for the current sweep "
@@ -829,10 +833,12 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         mismatch = _calibration_device_mismatch(mic_calibration, input_device)
         if mismatch is not None:
-            logger.warning(
-                "event=correction_start_rejected reason=calibration_device_mismatch "
-                "provider=%s",
-                getattr(mic_calibration, "provider", ""),
+            log_event(
+                logger,
+                "correction_start_rejected",
+                reason="calibration_device_mismatch",
+                provider=getattr(mic_calibration, "provider", ""),
+                level=logging.WARNING,
             )
             raise ValueError(mismatch)
 
@@ -891,9 +897,11 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             _clear_start_slot()
         else:
             _clear_start_slot()
-            logger.warning(
-                "event=correction_start_state_wait_timeout session=%s",
-                sess.session_id,
+            log_event(
+                logger,
+                "correction_start_state_wait_timeout",
+                session=sess.session_id,
+                level=logging.WARNING,
             )
 
         snapshot = sess.snapshot()
@@ -1233,9 +1241,10 @@ def _handle_session_report(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
     except correction_report.InvalidSessionId as e:
         raise BadRequest(str(e)) from e
-    logger.info(
-        "event=correction_session_report session=%s",
-        payload.get("session_id") or session_id,
+    log_event(
+        logger,
+        "correction_session_report",
+        session=payload.get("session_id") or session_id,
     )
     return payload
 
@@ -1265,10 +1274,11 @@ def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             "cannot delete the measurement bundle for an active session"
         )
     shutil.rmtree(bundle_dir)
-    logger.info(
-        "event=correction_session_bundle_deleted session=%s bundle=%s",
-        session_id,
-        bundle_dir,
+    log_event(
+        logger,
+        "correction_session_bundle_deleted",
+        session=session_id,
+        bundle=bundle_dir,
     )
     return {"deleted": True, "session_id": session_id}
 
@@ -1762,9 +1772,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 reject_csrf(self)
                 return
             if bonded_follower_active():
-                logger.info(
-                    "event=correction.follower_content_dsp_blocked path=%s",
-                    path,
+                log_event(
+                    logger,
+                    "correction.follower_content_dsp_blocked",
+                    path=path,
                 )
                 self._send_json(
                     {

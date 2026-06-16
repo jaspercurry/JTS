@@ -29,6 +29,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -649,7 +651,7 @@ def fetch_vendor_calibration(
     vendor_model = spec["vendor_model"]
     # serial_hash, never the raw serial — the serial identifies a user's
     # hardware and is treated as private metadata everywhere else.
-    log_id = f"provider={provider} model={model_key} serial_hash={serial_hash(serial)}"
+    log_serial_hash = serial_hash(serial)
     # Re-use a previously-stored calibration for this serial so a repeat lookup
     # (e.g. the wizard auto-fetching a remembered serial) never depends on the
     # vendor being reachable.
@@ -658,9 +660,14 @@ def fetch_vendor_calibration(
         orientation=orientation, root=root,
     )
     if cached is not None:
-        logger.info(
-            "event=correction_calibration_lookup %s outcome=cache_hit point_count=%d",
-            log_id, cached.point_count,
+        log_event(
+            logger,
+            "correction_calibration_lookup",
+            provider=provider,
+            model=model_key,
+            serial_hash=log_serial_hash,
+            outcome="cache_hit",
+            point_count=cached.point_count,
         )
         return cached
     try:
@@ -691,18 +698,34 @@ def fetch_vendor_calibration(
             root=root,
         )
     except CalibrationNotFoundError:
-        logger.info("event=correction_calibration_lookup %s outcome=not_found", log_id)
-        raise
-    except CalibrationUpstreamError as e:
-        logger.warning(
-            "event=correction_calibration_lookup %s outcome=upstream_error detail=%r",
-            log_id,
-            str(e),
+        log_event(
+            logger,
+            "correction_calibration_lookup",
+            provider=provider,
+            model=model_key,
+            serial_hash=log_serial_hash,
+            outcome="not_found",
         )
         raise
-    logger.info(
-        "event=correction_calibration_lookup %s outcome=ok point_count=%d",
-        log_id,
-        record.point_count,
+    except CalibrationUpstreamError as e:
+        log_event(
+            logger,
+            "correction_calibration_lookup",
+            provider=provider,
+            model=model_key,
+            serial_hash=log_serial_hash,
+            outcome="upstream_error",
+            detail=repr(str(e)),
+            level=logging.WARNING,
+        )
+        raise
+    log_event(
+        logger,
+        "correction_calibration_lookup",
+        provider=provider,
+        model=model_key,
+        serial_hash=log_serial_hash,
+        outcome="ok",
+        point_count=record.point_count,
     )
     return record

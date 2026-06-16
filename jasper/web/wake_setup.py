@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Any
 
 from ..atomic_io import locked_update_env_file
+from ..log_event import log_event
 from .. import wake_models
 from ._common import (
     pair_banner_html,
@@ -789,9 +790,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     status=400,
                 )
                 return
-            logger.info(
-                "event=wake.layer layer=%s enabled=%s client=%s",
-                layer, enabled, self.address_string(),
+            log_event(
+                logger,
+                "wake.layer",
+                layer=layer,
+                enabled=enabled,
+                client=self.address_string(),
             )
             status, resp = _apply_layer(
                 layer, enabled, control_base=cfg["control_base"],
@@ -815,9 +819,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     status=400,
                 )
                 return
-            logger.info(
-                "event=wake.profile profile=%s client=%s",
-                profile, self.address_string(),
+            log_event(
+                logger,
+                "wake.profile",
+                profile=profile,
+                client=self.address_string(),
             )
             status, resp = _apply_profile(
                 profile, control_base=cfg["control_base"],
@@ -850,9 +856,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     status=400,
                 )
                 return
-            logger.info(
-                "event=wake.sensitivity value=%.2f client=%s",
-                value, self.address_string(),
+            log_event(
+                logger,
+                "wake.sensitivity",
+                value=f"{value:.2f}",
+                client=self.address_string(),
             )
             status, resp = _apply_sensitivity(
                 value, control_base=cfg["control_base"],
@@ -886,9 +894,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # Parity with the wake.layer/profile/sensitivity sub-actions above —
             # the primary model change was the one mutation this page didn't log.
             # The model name is not a secret.
-            logger.info(
-                "event=wake.model model=%s client=%s",
-                picked, self.address_string(),
+            log_event(
+                logger,
+                "wake.model",
+                model=picked,
+                client=self.address_string(),
             )
             entry = wake_models.by_model(picked)
             label = entry.label if entry else picked

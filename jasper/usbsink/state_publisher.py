@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -128,8 +130,11 @@ class StatePublisher:
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "event=usbsink.state_tick_error error=%s", e,
+                    log_event(
+                        logger,
+                        "usbsink.state_tick_error",
+                        error=e,
+                        level=logging.WARNING,
                     )
         except asyncio.CancelledError:
             # On shutdown, write a final state with playing=False so
@@ -138,8 +143,11 @@ class StatePublisher:
             try:
                 self._write_state(force_log=False)
             except Exception as e:  # noqa: BLE001
-                logger.debug(
-                    "event=usbsink.final_state_write_failed error=%s", e,
+                log_event(
+                    logger,
+                    "usbsink.final_state_write_failed",
+                    error=e,
+                    level=logging.DEBUG,
                 )
             raise
 
@@ -162,9 +170,11 @@ class StatePublisher:
             and held_for >= self._active_debounce
         ):
             self._debounce.published_playing = True
-            logger.info(
-                "event=usbsink.playing_started rms_dbfs=%.1f held_sec=%.1f",
-                rms, held_for,
+            log_event(
+                logger,
+                "usbsink.playing_started",
+                rms_dbfs=f"{rms:.1f}",
+                held_sec=f"{held_for:.1f}",
             )
         elif (
             not above
@@ -172,9 +182,11 @@ class StatePublisher:
             and held_for >= self._inactive_debounce
         ):
             self._debounce.published_playing = False
-            logger.info(
-                "event=usbsink.playing_stopped rms_dbfs=%.1f held_sec=%.1f",
-                rms, held_for,
+            log_event(
+                logger,
+                "usbsink.playing_stopped",
+                rms_dbfs=f"{rms:.1f}",
+                held_sec=f"{held_for:.1f}",
             )
 
         self._write_state()
@@ -194,18 +206,22 @@ class StatePublisher:
         if self._last_written is not None:
             for key in ("preempted", "host_connected"):
                 if payload[key] != self._last_written.get(key):
-                    logger.info(
-                        "event=usbsink.%s_changed value=%s",
-                        key, payload[key],
+                    log_event(
+                        logger,
+                        f"usbsink.{key}_changed",
+                        value=payload[key],
                     )
 
         try:
             self._atomic_write(payload)
             self._last_written = payload
         except OSError as e:
-            logger.warning(
-                "event=usbsink.state_write_failed path=%s error=%s",
-                self._state_path, e,
+            log_event(
+                logger,
+                "usbsink.state_write_failed",
+                path=self._state_path,
+                error=e,
+                level=logging.WARNING,
             )
 
     def _atomic_write(self, payload: dict) -> None:

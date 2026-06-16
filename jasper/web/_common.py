@@ -75,6 +75,7 @@ from typing import Any
 from ..atomic_io import atomic_write_text
 from ..control import client as control
 from ..http_security import management_read_allowed, mutating_request_allowed
+from ..log_event import log_event
 from ..voice.provider_state import read_active_provider
 
 logger = logging.getLogger(__name__)
@@ -728,12 +729,14 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
     Host/Origin and logs one structured `event=http.reject` line."""
     ok, reason = mutating_request_allowed(handler.headers)
     if not ok:
-        logger.warning(
-            "event=http.reject reason=%s host=%r origin=%r path=%s",
-            reason,
-            handler.headers.get("Host"),
-            handler.headers.get("Origin"),
-            getattr(handler, "path", "?"),
+        log_event(
+            logger,
+            "http.reject",
+            reason=reason,
+            host=repr(handler.headers.get("Host")),
+            origin=repr(handler.headers.get("Origin")),
+            path=getattr(handler, "path", "?"),
+            level=logging.WARNING,
         )
     return ok
 
@@ -777,12 +780,14 @@ def guard_read_request(
         and _is_top_level_navigation(handler)
     ):
         return True
-    logger.warning(
-        "event=http.reject reason=%s host=%r sec_fetch_site=%r path=%s",
-        reason,
-        handler.headers.get("Host"),
-        handler.headers.get("Sec-Fetch-Site"),
-        getattr(handler, "path", "?"),
+    log_event(
+        logger,
+        "http.reject",
+        reason=reason,
+        host=repr(handler.headers.get("Host")),
+        sec_fetch_site=repr(handler.headers.get("Sec-Fetch-Site")),
+        path=getattr(handler, "path", "?"),
+        level=logging.WARNING,
     )
     body = (
         b"<!doctype html><meta charset=utf-8>"

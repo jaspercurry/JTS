@@ -71,6 +71,8 @@ import sys
 import time
 from collections.abc import Sequence
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger("jasper.aec_init")
 
 # AEC_HPFONOFF parameter: 0=off, 1=70 Hz, 2=125 Hz, 3=150 Hz, 4=180 Hz.
@@ -158,23 +160,33 @@ def _write_required(dev, param: str, values: list[int | float]) -> None:
         raise ChipProfileError(
             f"{param} readback mismatch: wrote {values}, read {actual}"
         )
-    logger.info(
-        "event=chip_profile_write param=%s values=%s verified=1",
-        param,
-        values,
+    log_event(
+        logger,
+        "chip_profile_write",
+        param=param,
+        values=values,
+        verified=1,
     )
 
 
 def _write_best_effort(dev, param: str, values: list[int | float]) -> None:
     try:
         dev.write(param, values)
-        logger.info(
-            "event=chip_profile_write param=%s values=%s verified=0",
-            param,
-            values,
+        log_event(
+            logger,
+            "chip_profile_write",
+            param=param,
+            values=values,
+            verified=0,
         )
     except Exception as e:  # noqa: BLE001
-        logger.warning("event=chip_profile_write_failed param=%s error=%s", param, e)
+        log_event(
+            logger,
+            "chip_profile_write_failed",
+            param=param,
+            error=e,
+            level=logging.WARNING,
+        )
 
 
 def _apply_required_profile(
@@ -216,7 +228,12 @@ def main() -> int:
         try:
             dev = xvf_host.find()
         except xvf_host.XvfControlError as e:
-            logger.error("event=xvf_control_unavailable error=%s", e)
+            log_event(
+                logger,
+                "xvf_control_unavailable",
+                error=e,
+                level=logging.ERROR,
+            )
             return 1
         if dev is not None:
             break
@@ -253,12 +270,22 @@ def main() -> int:
             try:
                 _apply_required_profile(dev, _corpus_profile_with_delay(sys_delay))
             except ChipProfileError as e:
-                logger.error("event=chip_profile_failed mode=%s error=%s", mode, e)
+                log_event(
+                    logger,
+                    "chip_profile_failed",
+                    mode=mode,
+                    error=e,
+                    level=logging.ERROR,
+                )
                 return 1
-            logger.info(
-                "event=chip_profile_applied mode=%s "
-                "shf_bypass=0 sys_delay=%d op_l=7,0 op_r=7,1",
-                mode, sys_delay,
+            log_event(
+                logger,
+                "chip_profile_applied",
+                mode=mode,
+                shf_bypass=0,
+                sys_delay=sys_delay,
+                op_l="7,0",
+                op_r="7,1",
             )
         else:
             # Restore the software-AEC fallback profile. SHF_BYPASS=1
@@ -274,11 +301,21 @@ def main() -> int:
             try:
                 _apply_required_profile(dev, _CHIP_PRODUCTION_PROFILE)
             except ChipProfileError as e:
-                logger.error("event=chip_profile_failed mode=production error=%s", e)
+                log_event(
+                    logger,
+                    "chip_profile_failed",
+                    mode="production",
+                    error=e,
+                    level=logging.ERROR,
+                )
                 return 1
-            logger.info(
-                "event=chip_profile_applied mode=production "
-                "shf_bypass=1 op_l=8,0 op_r=8,0"
+            log_event(
+                logger,
+                "chip_profile_applied",
+                mode="production",
+                shf_bypass=1,
+                op_l="8,0",
+                op_r="8,0",
             )
 
         # Apply chip-side HPF on the mic signal. Lives at mic ingress

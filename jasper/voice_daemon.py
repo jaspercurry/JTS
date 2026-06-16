@@ -10,6 +10,8 @@ from collections.abc import Coroutine
 from enum import Enum
 from types import SimpleNamespace
 
+from jasper.log_event import log_event
+
 from .audio_buffer import (
     ACQUIRE_BUFFER_MAX_FRAMES,
     drain_acquire_buffer,
@@ -154,10 +156,13 @@ class FanInDucker:
         if not ok:
             return
         self._ducked = True
-        logger.info(
-            "event=duck on=true transport=fanin socket=%s duck_db=%.1f",
-            self._socket_path,
-            self._duck_db,
+        log_event(
+            logger,
+            "duck",
+            on="true",
+            transport="fanin",
+            socket=self._socket_path,
+            duck_db=f"{self._duck_db:.1f}",
         )
 
     async def restore(self) -> None:
@@ -168,9 +173,12 @@ class FanInDucker:
                 self._send_command, b"PROGRAM_DUCK_OFF\nCLOSE\n"
             )
             if ok:
-                logger.info(
-                    "event=duck on=false transport=fanin socket=%s",
-                    self._socket_path,
+                log_event(
+                    logger,
+                    "duck",
+                    on="false",
+                    transport="fanin",
+                    socket=self._socket_path,
                 )
         finally:
             self._ducked = False
@@ -183,10 +191,13 @@ class FanInDucker:
                 sock.sendall(payload)
             return True
         except OSError as e:
-            logger.warning(
-                "event=duck_failed transport=fanin socket=%s detail=%s",
-                self._socket_path,
-                e,
+            log_event(
+                logger,
+                "duck_failed",
+                transport="fanin",
+                socket=self._socket_path,
+                detail=str(e),
+                level=logging.WARNING,
             )
             return False
 
@@ -489,7 +500,7 @@ async def _server_vad_response_trigger(turn, connection) -> None:
     try:
         await asyncio.wait_for(wait_eou(), timeout=NO_SPEECH_ABORT_SEC + 5.0)
     except asyncio.TimeoutError:
-        logger.warning("event=server_vad.eou_timeout")
+        log_event(logger, "server_vad.eou_timeout", level=logging.WARNING)
         return
     except asyncio.CancelledError:
         raise
@@ -499,11 +510,13 @@ async def _server_vad_response_trigger(turn, connection) -> None:
     if create is not None and callable(create):
         try:
             await create()
-            logger.info("event=server_vad.response_create")
+            log_event(logger, "server_vad.response_create")
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "event=server_vad.response_create_failed error=%s: %s",
-                type(e).__name__, e,
+            log_event(
+                logger,
+                "server_vad.response_create_failed",
+                error=f"{type(e).__name__}: {e}",
+                level=logging.WARNING,
             )
     # Do NOT return. This task lives in WakeLoop._bg_tasks; the
     # session-frame handler treats any completed _bg_tasks task as
@@ -1258,12 +1271,17 @@ class WakeLoop:
             # config, repeating it would be journal spam.
             if not self._warned_cues_unconfigured:
                 self._warned_cues_unconfigured = True
-                logger.warning(
-                    "event=cue.skipped reason=cues_unconfigured slug=%s "
-                    "— no cue manager; failure cues will be SILENT for "
-                    "this daemon run (check cue backend/API keys at "
-                    "startup logs)",
-                    slug,
+                log_event(
+                    logger,
+                    "cue.skipped",
+                    reason="cues_unconfigured",
+                    slug=slug,
+                    note=(
+                        "no cue manager; failure cues will be SILENT for "
+                        "this daemon run (check cue backend/API keys at "
+                        "startup logs)"
+                    ),
+                    level=logging.WARNING,
                 )
             return
         try:
@@ -1550,7 +1568,7 @@ class WakeLoop:
             if _rt.capture_ring is not None:
                 _rt.capture_ring.clear()
         write_mic_muted(self._cfg.mic_mute_state_path, True)
-        logger.info("event=mic.mute")
+        log_event(logger, "mic.mute")
         await self._play_mute_click(going_on=False)
         return "ok"
 
@@ -1560,7 +1578,7 @@ class WakeLoop:
             return "ok"
         self._mic_muted = False
         write_mic_muted(self._cfg.mic_mute_state_path, False)
-        logger.info("event=mic.unmute")
+        log_event(logger, "mic.unmute")
         await self._play_mute_click(going_on=True)
         return "ok"
 
@@ -1714,9 +1732,12 @@ class WakeLoop:
         # WAKE_REFRACTORY_SEC, so a genuine wake immediately after is not
         # blinded.
         if not self._fuser.verify(leg, fired_set, self._current_condition):
-            logger.info(
-                "event=wake.suppressed leg=%s fired=%s threshold=%.2f",
-                leg, fired_legs, firing_threshold,
+            log_event(
+                logger,
+                "wake.suppressed",
+                leg=leg,
+                fired=fired_legs,
+                threshold=f"{firing_threshold:.2f}",
             )
             return
 
@@ -1730,18 +1751,22 @@ class WakeLoop:
         # an ACTIVE leg whose last score is stale (its UDP stream dried up)
         # — distinct from an unconfigured leg, which is simply absent. The
         # firing leg's recent_score == `score` (just set).
-        _parts = []
+        _score_fields: dict[str, str] = {}
         for _n, _lr in self._legs.items():
             if _n != leg and (
                 _lr.recent_score_at == 0.0
                 or (now_loop - _lr.recent_score_at) > WAKE_STALE_SCORE_SEC
             ):
-                _parts.append(f"score_{_n}=none")
+                _score_fields[f"score_{_n}"] = "none"
             else:
-                _parts.append(f"score_{_n}={_lr.recent_score:.2f}")
-        logger.info(
-            "event=wake.detected leg=%s %s threshold=%.2f fired=%s",
-            leg, " ".join(_parts), firing_threshold, fired_legs,
+                _score_fields[f"score_{_n}"] = f"{_lr.recent_score:.2f}"
+        log_event(
+            logger,
+            "wake.detected",
+            leg=leg,
+            **_score_fields,
+            threshold=f"{firing_threshold:.2f}",
+            fired=fired_legs,
         )
 
         # Pre-compute the "can we actually serve this turn?" gates.
@@ -2077,7 +2102,7 @@ class WakeLoop:
             if decision == "LOSE":
                 # Another peer is handling it. Stay silent — losers
                 # don't play chirps or cues; they just back off.
-                logger.info("event=peering.wake.lost score=%.2f", score)
+                log_event(logger, "peering.wake.lost", score=f"{score:.2f}")
                 await self._telemetry_stage("peer_lost")
                 await self._telemetry_outcome("peer_lost")
                 return  # finally clears _acquiring + buffer
@@ -2187,12 +2212,19 @@ class WakeLoop:
         third stop-listening gate here, add it there too (or extract a
         shared helper once there are three)."""
         if self._mic_muted:
-            logger.info("event=wake.late_cancel reason=mic_muted phase=%s", phase)
+            log_event(
+                logger,
+                "wake.late_cancel",
+                reason="mic_muted",
+                phase=phase,
+            )
             return True
         if self._measurement_active.is_set():
-            logger.info(
-                "event=wake.late_cancel reason=measurement_active phase=%s",
-                phase,
+            log_event(
+                logger,
+                "wake.late_cancel",
+                reason="measurement_active",
+                phase=phase,
             )
             return True
         return False
@@ -2340,17 +2372,19 @@ class WakeLoop:
 
             if not server_heard_speech and not self._user_speech_seen \
                     and elapsed >= NO_SPEECH_ABORT_SEC:
-                logger.info(
-                    "event=server_vad.no_speech timeout_sec=%.1f",
-                    NO_SPEECH_ABORT_SEC,
+                log_event(
+                    logger,
+                    "server_vad.no_speech",
+                    timeout_sec=f"{NO_SPEECH_ABORT_SEC:.1f}",
                 )
                 await self._end_turn()
                 return
 
             if elapsed >= HARD_RECORDING_CAP_SEC:
-                logger.info(
-                    "event=server_vad.hard_cap elapsed_sec=%.1f",
-                    HARD_RECORDING_CAP_SEC,
+                log_event(
+                    logger,
+                    "server_vad.hard_cap",
+                    elapsed_sec=f"{HARD_RECORDING_CAP_SEC:.1f}",
                 )
                 self._input_ended = True
                 await self._end_turn()
@@ -2497,13 +2531,17 @@ class WakeLoop:
         # would bypass that. Refuse silently — like the wake path, no
         # cue and no duck (see _handle_wake_acquire Step 0).
         if self._mic_muted:
-            logger.info("event=session.manual_refused reason=mic_muted")
+            log_event(logger, "session.manual_refused", reason="mic_muted")
             return "MUTED"
         if self._measurement_active.is_set():
             # reason matches the wake path's `event=wake.late_cancel
             # reason=measurement_active` so one exact-match query covers
             # both refusal surfaces.
-            logger.info("event=session.manual_refused reason=measurement_active")
+            log_event(
+                logger,
+                "session.manual_refused",
+                reason="measurement_active",
+            )
             return "MEASURING"
         if not self._spend_cap.allowed():
             return "CAP"
@@ -2591,9 +2629,11 @@ class WakeLoop:
                     (asyncio.get_event_loop().time() - self._turn_started_at_loop) * 1000
                 )
                 self._silero_raw_armed_at_ms = elapsed_ms
-                logger.info(
-                    "event=shadow_vad.raw_armed elapsed_ms=%d silero=%.2f",
-                    elapsed_ms, speech_prob,
+                log_event(
+                    logger,
+                    "shadow_vad.raw_armed",
+                    elapsed_ms=elapsed_ms,
+                    silero=f"{speech_prob:.2f}",
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -2668,14 +2708,17 @@ class WakeLoop:
                     mark = getattr(self._turn, "mark_server_vad", None)
                     if callable(mark):
                         mark()
-                    logger.info(
-                        "event=server_vad.enabled music_dbfs=%.1f",
-                        self._content_activity.music_dbfs or float("-inf"),
+                    log_event(
+                        logger,
+                        "server_vad.enabled",
+                        music_dbfs=f"{self._content_activity.music_dbfs or float('-inf'):.1f}",
                     )
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "event=server_vad.enable_failed error=%s: %s",
-                        type(e).__name__, e,
+                    log_event(
+                        logger,
+                        "server_vad.enable_failed",
+                        error=f"{type(e).__name__}: {e}",
+                        level=logging.WARNING,
                     )
 
         logger.info(

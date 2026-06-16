@@ -27,6 +27,8 @@ import os
 import time
 from dataclasses import dataclass
 
+from jasper.log_event import log_event
+
 from .audio_bridge import AudioBridge, BridgeStats
 from .preempt_listener import (
     DEFAULT_PORT as PREEMPT_DEFAULT_PORT,
@@ -215,10 +217,12 @@ class UsbSinkDaemon:
     async def run(self) -> int:
         """Main entry point. Returns the daemon's exit code."""
         self._setup_logging()
-        logger.info(
-            "event=usbsink.daemon_starting capture=%s playback=%s rate=%d",
-            self._config.capture_device, self._config.playback_device,
-            self._config.sample_rate,
+        log_event(
+            logger,
+            "usbsink.daemon_starting",
+            capture=self._config.capture_device,
+            playback=self._config.playback_device,
+            rate=self._config.sample_rate,
         )
 
         # Lazy import — `Heartbeat` pulls in sdnotify which is fine
@@ -261,23 +265,31 @@ class UsbSinkDaemon:
             volume_task = asyncio.create_task(self._volume_bridge.run())
             tasks = [publish_task, diag_task, volume_task]
         except Exception as e:  # noqa: BLE001
-            logger.exception(
-                "event=usbsink.startup_failed error=%s stage=%s",
-                e, cleanups[-1][0] if cleanups else "before_first",
+            log_event(
+                logger,
+                "usbsink.startup_failed",
+                error=e,
+                stage=cleanups[-1][0] if cleanups else "before_first",
+                level=logging.ERROR,
+                exc_info=True,
             )
             for name, stop in reversed(cleanups):
                 try:
                     stop()
                 except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "event=usbsink.cleanup_failed subsystem=%s", name,
+                    log_event(
+                        logger,
+                        "usbsink.cleanup_failed",
+                        subsystem=name,
+                        level=logging.ERROR,
+                        exc_info=True,
                     )
             return 1
 
         try:
             await self._stop.wait()
         finally:
-            logger.info("event=usbsink.daemon_stopping")
+            log_event(logger, "usbsink.daemon_stopping")
             for task in tasks:
                 task.cancel()
             for task in tasks:
@@ -291,11 +303,15 @@ class UsbSinkDaemon:
                 try:
                     stop()
                 except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "event=usbsink.cleanup_failed subsystem=%s "
-                        "phase=shutdown", name,
+                    log_event(
+                        logger,
+                        "usbsink.cleanup_failed",
+                        subsystem=name,
+                        phase="shutdown",
+                        level=logging.ERROR,
+                        exc_info=True,
                     )
-            logger.info("event=usbsink.daemon_stopped")
+            log_event(logger, "usbsink.daemon_stopped")
         return 0
 
     # ------------------------------------------------------------------
@@ -328,36 +344,43 @@ class UsbSinkDaemon:
             # bits: input_underflow (1), input_overflow (2),
             # output_underflow (4), output_overflow (8), priming (16).
             if stats.last_capture_status:
-                logger.warning(
-                    "event=usbsink.capture_status flags=0x%x count=%d",
-                    stats.last_capture_status, stats.capture_errors,
+                log_event(
+                    logger,
+                    "usbsink.capture_status",
+                    flags=f"0x{stats.last_capture_status:x}",
+                    count=stats.capture_errors,
+                    level=logging.WARNING,
                 )
                 stats.last_capture_status = 0
             if stats.last_playback_status:
-                logger.warning(
-                    "event=usbsink.playback_status flags=0x%x count=%d",
-                    stats.last_playback_status, stats.playback_errors,
+                log_event(
+                    logger,
+                    "usbsink.playback_status",
+                    flags=f"0x{stats.last_playback_status:x}",
+                    count=stats.playback_errors,
+                    level=logging.WARNING,
                 )
                 stats.last_playback_status = 0
 
             if now - last_log_mono >= DIAG_INTERVAL_SEC:
                 capture_idle_sec = now - self._last_capture_progress_mono
                 playback_idle_sec = now - self._last_playback_progress_mono
-                logger.info(
-                    "event=usbsink.diag rms_dbfs=%.1f "
-                    "captured=%d played=%d output=%d underrun=%d "
-                    "dropped_full=%d capture_callbacks=%d "
-                    "playback_callbacks=%d capture_idle_sec=%.1f "
-                    "playback_idle_sec=%.1f capture_errs=%d "
-                    "playback_errs=%d preempted=%s",
-                    self._bridge.last_rms_dbfs,
-                    stats.frames_captured, stats.frames_played,
-                    stats.frames_output, stats.frames_underrun,
-                    stats.frames_dropped_full, stats.capture_callbacks,
-                    stats.playback_callbacks, capture_idle_sec,
-                    playback_idle_sec, stats.capture_errors,
-                    stats.playback_errors,
-                    "true" if self._bridge.is_preempted else "false",
+                log_event(
+                    logger,
+                    "usbsink.diag",
+                    rms_dbfs=f"{self._bridge.last_rms_dbfs:.1f}",
+                    captured=stats.frames_captured,
+                    played=stats.frames_played,
+                    output=stats.frames_output,
+                    underrun=stats.frames_underrun,
+                    dropped_full=stats.frames_dropped_full,
+                    capture_callbacks=stats.capture_callbacks,
+                    playback_callbacks=stats.playback_callbacks,
+                    capture_idle_sec=f"{capture_idle_sec:.1f}",
+                    playback_idle_sec=f"{playback_idle_sec:.1f}",
+                    capture_errs=stats.capture_errors,
+                    playback_errs=stats.playback_errors,
+                    preempted="true" if self._bridge.is_preempted else "false",
                 )
                 last_log_mono = now
 
@@ -372,11 +395,12 @@ class UsbSinkDaemon:
         """
         if stats.playback_callbacks > self._last_playback_callbacks_seen:
             if self._playback_stale_logged:
-                logger.info(
-                    "event=usbsink.playback_resumed stale_sec=%.1f "
-                    "playback_callbacks=%d output=%d",
-                    now - self._last_playback_progress_mono,
-                    stats.playback_callbacks, stats.frames_output,
+                log_event(
+                    logger,
+                    "usbsink.playback_resumed",
+                    stale_sec=f"{now - self._last_playback_progress_mono:.1f}",
+                    playback_callbacks=stats.playback_callbacks,
+                    output=stats.frames_output,
                 )
             self._last_playback_callbacks_seen = stats.playback_callbacks
             self._last_playback_progress_mono = now
@@ -387,33 +411,38 @@ class UsbSinkDaemon:
             # callback has truly stopped. Log only once per stale episode;
             # Heartbeat will add its standard suppression breadcrumb.
             if not self._playback_stale_logged:
-                logger.warning(
-                    "event=usbsink.playback_no_progress stale_sec=%.1f "
-                    "playback_callbacks=%d output=%d (watchdog will fire)",
-                    now - self._last_playback_progress_mono,
-                    stats.playback_callbacks, stats.frames_output,
+                log_event(
+                    logger,
+                    "usbsink.playback_no_progress",
+                    stale_sec=f"{now - self._last_playback_progress_mono:.1f}",
+                    playback_callbacks=stats.playback_callbacks,
+                    output=stats.frames_output,
+                    note="watchdog will fire",
+                    level=logging.WARNING,
                 )
                 self._playback_stale_logged = True
 
         if stats.capture_callbacks > self._last_capture_callbacks_seen:
             if self._capture_idle_logged:
-                logger.info(
-                    "event=usbsink.capture_resumed idle_sec=%.1f "
-                    "capture_callbacks=%d captured=%d",
-                    now - self._last_capture_progress_mono,
-                    stats.capture_callbacks, stats.frames_captured,
+                log_event(
+                    logger,
+                    "usbsink.capture_resumed",
+                    idle_sec=f"{now - self._last_capture_progress_mono:.1f}",
+                    capture_callbacks=stats.capture_callbacks,
+                    captured=stats.frames_captured,
                 )
             self._last_capture_callbacks_seen = stats.capture_callbacks
             self._last_capture_progress_mono = now
             self._capture_idle_logged = False
         elif now - self._last_capture_progress_mono > CAPTURE_IDLE_LOG_SEC:
             if not self._capture_idle_logged:
-                logger.info(
-                    "event=usbsink.capture_idle idle_sec=%.1f "
-                    "capture_callbacks=%d captured=%d host_card_present=%s",
-                    now - self._last_capture_progress_mono,
-                    stats.capture_callbacks, stats.frames_captured,
-                    "true" if self._host_card_present() else "false",
+                log_event(
+                    logger,
+                    "usbsink.capture_idle",
+                    idle_sec=f"{now - self._last_capture_progress_mono:.1f}",
+                    capture_callbacks=stats.capture_callbacks,
+                    captured=stats.frames_captured,
+                    host_card_present="true" if self._host_card_present() else "false",
                 )
                 self._capture_idle_logged = True
 

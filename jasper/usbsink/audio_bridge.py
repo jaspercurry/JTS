@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 # Stream parameters. Both ends are stereo @ 48 kHz to match the
@@ -234,11 +236,14 @@ class AudioBridge:
             self._in_stream.start()
             self._started = True
             self.stats.started_at_mono = time.monotonic()
-            logger.info(
-                "event=usbsink.bridge_started capture=%s playback=%s "
-                "rate=%d channels=%d block=%d",
-                self._capture_device, self._playback_device,
-                self._sample_rate, self._channels, self._block_frames,
+            log_event(
+                logger,
+                "usbsink.bridge_started",
+                capture=self._capture_device,
+                playback=self._playback_device,
+                rate=self._sample_rate,
+                channels=self._channels,
+                block=self._block_frames,
             )
 
     def stop(self) -> None:
@@ -258,14 +263,17 @@ class AudioBridge:
                     s.stop()
                     s.close()
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "event=usbsink.bridge_stream_close_failed "
-                        "stream=%s error=%s", label, e,
+                    log_event(
+                        logger,
+                        "usbsink.bridge_stream_close_failed",
+                        stream=label,
+                        error=e,
+                        level=logging.WARNING,
                     )
             self._in_stream = None
             self._out_stream = None
             self._started = False
-            logger.info("event=usbsink.bridge_stopped")
+            log_event(logger, "usbsink.bridge_stopped")
 
     def set_preempted(self, preempted: bool) -> None:
         """Mux preempt protocol. When True, playback callback emits
@@ -275,9 +283,10 @@ class AudioBridge:
         if self._preempted == preempted:
             return
         self._preempted = preempted
-        logger.info(
-            "event=usbsink.preempt_changed preempted=%s",
-            "true" if preempted else "false",
+        log_event(
+            logger,
+            "usbsink.preempt_changed",
+            preempted="true" if preempted else "false",
         )
 
     @property

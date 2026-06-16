@@ -79,6 +79,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from jasper.log_event import log_event
+
 from ..atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -171,28 +173,36 @@ class SystemSupervisor:
             # informational wall-clock diagnostic, while `_now()` is a seam for
             # rate-limit *policy* testing — and it isn't set up yet on a test
             # double at construction time. Same wall-clock source either way.
-            logger.info(
-                "event=system_supervisor.reboot_state_restored "
-                "path=%s last_reboot_at=%.0f age=%.0fs",
-                self._reboot_state_path, self.last_reboot_at,
-                time.time() - self.last_reboot_at,
+            log_event(
+                logger,
+                "system_supervisor.reboot_state_restored",
+                path=self._reboot_state_path,
+                last_reboot_at=f"{self.last_reboot_at:.0f}",
+                age=f"{time.time() - self.last_reboot_at:.0f}s",
             )
 
     # ---- main loop ----
 
     async def run(self) -> None:
-        logger.info(
-            "event=system_supervisor.start "
-            "interval=%.0fs threshold=%d rate_limit=%.0fs cold_start=%.0fs",
-            self._interval, self._threshold, self._rate_limit,
-            self._cold_start,
+        log_event(
+            logger,
+            "system_supervisor.start",
+            interval=f"{self._interval:.0f}s",
+            threshold=self._threshold,
+            rate_limit=f"{self._rate_limit:.0f}s",
+            cold_start=f"{self._cold_start:.0f}s",
         )
         await asyncio.sleep(self._cold_start)
         while True:
             try:
                 await self._tick()
             except Exception:  # noqa: BLE001
-                logger.exception("event=system_supervisor.tick_crash")
+                log_event(
+                    logger,
+                    "system_supervisor.tick_crash",
+                    level=logging.ERROR,
+                    exc_info=True,
+                )
             await asyncio.sleep(self._interval + random.uniform(
                 -self._jitter, self._jitter,
             ))
@@ -204,18 +214,21 @@ class SystemSupervisor:
         self.last_failed_probe = failed_probe
         if ok:
             if self.consecutive_failures > 0:
-                logger.info(
-                    "event=system_supervisor.probe_recovered "
-                    "after_failures=%d",
-                    self.consecutive_failures,
+                log_event(
+                    logger,
+                    "system_supervisor.probe_recovered",
+                    after_failures=self.consecutive_failures,
                 )
             self.consecutive_failures = 0
             return
         self.consecutive_failures += 1
-        logger.warning(
-            "event=system_supervisor.probe_fail "
-            "consecutive=%d threshold=%d failed_probe=%s",
-            self.consecutive_failures, self._threshold, failed_probe,
+        log_event(
+            logger,
+            "system_supervisor.probe_fail",
+            consecutive=self.consecutive_failures,
+            threshold=self._threshold,
+            failed_probe=failed_probe,
+            level=logging.WARNING,
         )
         if self.consecutive_failures < self._threshold:
             return
@@ -232,26 +245,36 @@ class SystemSupervisor:
             and now - self.last_reboot_at < self._rate_limit
         ):
             self.suppressed_count += 1
-            logger.warning(
-                "event=system_supervisor.reboot_rate_limited "
-                "since_last_reboot=%.0fs limit=%.0fs suppressed=%d",
-                now - self.last_reboot_at, self._rate_limit,
-                self.suppressed_count,
+            log_event(
+                logger,
+                "system_supervisor.reboot_rate_limited",
+                since_last_reboot=f"{now - self.last_reboot_at:.0f}s",
+                limit=f"{self._rate_limit:.0f}s",
+                suppressed=self.suppressed_count,
+                level=logging.WARNING,
             )
             return
         self.last_reboot_at = now
         _write_reboot_state(self._reboot_state_path, now)
         self.reboot_count += 1
         self.consecutive_failures = 0
-        logger.error(
-            "event=system_supervisor.userspace_wedge action=reboot "
-            "count=%d failed_probe=%s",
-            self.reboot_count, failed_probe,
+        log_event(
+            logger,
+            "system_supervisor.userspace_wedge",
+            action="reboot",
+            count=self.reboot_count,
+            failed_probe=failed_probe,
+            level=logging.ERROR,
         )
         try:
             await self.reboot_system()
         except Exception:  # noqa: BLE001
-            logger.exception("event=system_supervisor.reboot_failed")
+            log_event(
+                logger,
+                "system_supervisor.reboot_failed",
+                level=logging.ERROR,
+                exc_info=True,
+            )
 
     async def _run_all_probes(self) -> tuple[bool, str | None]:
         """Run all three probes. Returns (all_succeeded, name_of_first_failed).
@@ -262,15 +285,25 @@ class SystemSupervisor:
             try:
                 ok = await self.probe_sshd()
             except Exception:  # noqa: BLE001
-                logger.exception("event=system_supervisor.probe_crash probe=sshd")
+                log_event(
+                    logger,
+                    "system_supervisor.probe_crash",
+                    probe="sshd",
+                    level=logging.ERROR,
+                    exc_info=True,
+                )
                 ok = False
             if not ok:
                 return False, "sshd"
         try:
             ok = await self.probe_jasper_control()
         except Exception:  # noqa: BLE001
-            logger.exception(
-                "event=system_supervisor.probe_crash probe=jasper_control",
+            log_event(
+                logger,
+                "system_supervisor.probe_crash",
+                probe="jasper_control",
+                level=logging.ERROR,
+                exc_info=True,
             )
             ok = False
         if not ok:
@@ -278,8 +311,12 @@ class SystemSupervisor:
         try:
             ok = await self.probe_loadavg()
         except Exception:  # noqa: BLE001
-            logger.exception(
-                "event=system_supervisor.probe_crash probe=loadavg",
+            log_event(
+                logger,
+                "system_supervisor.probe_crash",
+                probe="loadavg",
+                level=logging.ERROR,
+                exc_info=True,
             )
             ok = False
         if not ok:
@@ -362,9 +399,10 @@ class SystemSupervisor:
         if reason in self._sshd_probe_logged_reasons:
             return
         self._sshd_probe_logged_reasons.add(reason)
-        logger.info(
-            "event=system_supervisor.sshd_probe_skipped reason=%s",
-            reason,
+        log_event(
+            logger,
+            "system_supervisor.sshd_probe_skipped",
+            reason=reason,
         )
 
     async def probe_sshd(self) -> bool:
@@ -549,9 +587,12 @@ def _write_reboot_state(path: Path, last_reboot_at: float) -> None:
             json.dumps({"last_reboot_at": last_reboot_at}, sort_keys=True) + "\n",
         )
     except OSError as e:
-        logger.warning(
-            "event=system_supervisor.reboot_state_write_failed path=%s err=%r",
-            path, e,
+        log_event(
+            logger,
+            "system_supervisor.reboot_state_write_failed",
+            path=path,
+            err=repr(e),
+            level=logging.WARNING,
         )
 
 
@@ -581,7 +622,7 @@ def start_supervisor() -> threading.Thread | None:
         return _supervisor_thread
     mode = os.environ.get("JASPER_SYSTEM_SUPERVISOR", "auto").lower()
     if mode == "disabled":
-        logger.info("event=system_supervisor.disabled")
+        log_event(logger, "system_supervisor.disabled")
         return None
     if mode != "auto":
         logger.warning(
@@ -597,7 +638,12 @@ def start_supervisor() -> threading.Thread | None:
         try:
             loop.run_until_complete(_supervisor.run())
         except Exception:  # noqa: BLE001
-            logger.exception("event=system_supervisor.thread_crash")
+            log_event(
+                logger,
+                "system_supervisor.thread_crash",
+                level=logging.ERROR,
+                exc_info=True,
+            )
         finally:
             try:
                 loop.close()

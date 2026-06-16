@@ -63,6 +63,24 @@ changes emit `event=<name> key=val …` lines (`event=shairport.wedge_detected`,
 `scripts/jasper-trace.sh` keys off them. They are the cheap,
 high-signal, always-on observability floor — keep them.
 
+**Emit them through `jasper.log_event.log_event`, not a hand-written
+f-string.** `log_event(logger, "<domain.action>", key=value, …)`
+([`jasper/log_event.py`](../jasper/log_event.py)) is the one renderer
+for the spine. It is byte-identical to the old hand-written line for
+clean values, but it **logfmt-quotes/escapes** any value containing a
+space, `=`, or quote — so an untrusted field (SSID, USB descriptor,
+Bluetooth/​mDNS name, HA error body, free-text reason) can't corrupt
+the `key=val` parse — and it offers an opt-in JSON sink
+(`JASPER_LOG_JSON=1`) for machine consumers. Mechanics:
+`level=logging.WARNING` sets severity; `exc_info=True` attaches a
+traceback (the `logger.exception("event=…")` equivalent); a field whose
+name collides with a reserved param (chiefly `level`, the volume level)
+or isn't a valid identifier (`from`) rides the explicit `fields={…}`
+mapping. A conventions guard
+([`tests/test_log_event_conventions.py`](../tests/test_log_event_conventions.py))
+fails CI on any new hand-written `logger.<level>("event=…")` call;
+its allowlist holds only active-zone files deferred to in-flight work.
+
 **Persistent journald is deliberate, not an oversight.**
 `deploy/journald/50-jts-persistent-storage.conf` sets
 `Storage=persistent` capped at 200 MB so a watchdog reset's

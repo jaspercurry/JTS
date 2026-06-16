@@ -87,6 +87,7 @@ from jasper.usage import (
     pricing_for_model,
     sanitize_pricing_models,
 )
+from jasper.log_event import log_event
 
 from ._common import (
     pair_banner_html,
@@ -1325,9 +1326,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             active = new.get("JASPER_VOICE_PROVIDER", "")
             # The active provider (gemini/openai/grok) is the headline config
             # change — not a secret. The API keys in `new` are never logged.
-            logger.info(
-                "event=voice.save provider=%s client=%s",
-                active, self.address_string(),
+            log_event(
+                logger,
+                "voice.save",
+                provider=active,
+                client=self.address_string(),
             )
             send_see_other(
                 self, "./",
@@ -1353,29 +1356,41 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
             except Exception as e:  # noqa: BLE001
                 seed_error = _redact_provider_error(e, new)
-                logger.warning(
-                    "event=voice_loudness_seed provider=%s result=error error=%s",
-                    active, e.__class__.__name__,
+                log_event(
+                    logger,
+                    "voice_loudness_seed",
+                    provider=active,
+                    result="error",
+                    error=e.__class__.__name__,
+                    level=logging.WARNING,
                 )
             else:
                 if profile is not None:
-                    logger.info(
-                        "event=voice_loudness_seed provider=%s result=ok "
-                        "source_lufs=%.1f confidence=%.2f",
-                        active, profile.source_lufs, profile.confidence,
+                    log_event(
+                        logger,
+                        "voice_loudness_seed",
+                        provider=active,
+                        result="ok",
+                        source_lufs=f"{profile.source_lufs:.1f}",
+                        confidence=f"{profile.confidence:.2f}",
                     )
                 else:
                     seed_error = "provider key, model, or voice is incomplete."
-                    logger.warning(
-                        "event=voice_loudness_seed provider=%s result=skipped",
-                        active,
+                    log_event(
+                        logger,
+                        "voice_loudness_seed",
+                        provider=active,
+                        result="skipped",
+                        level=logging.WARNING,
                     )
             restart_voice_daemon()
             # Same save audit as _handle_save — the "Save & Test" button is the
             # other save path, so "voice provider saved" is logged either way.
-            logger.info(
-                "event=voice.save provider=%s client=%s",
-                active, self.address_string(),
+            log_event(
+                logger,
+                "voice.save",
+                provider=active,
+                client=self.address_string(),
             )
             if seed_error:
                 send_see_other(
@@ -1415,9 +1430,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             restart_voice_daemon()
             pid = (form.get("provider") or "").strip()
-            logger.info(
-                "event=voice.clear provider=%s client=%s",
-                pid, self.address_string(),
+            log_event(
+                logger,
+                "voice.clear",
+                provider=pid,
+                client=self.address_string(),
             )
             label = next(
                 (p.label for p in PROVIDERS if p.id == pid),
@@ -1452,10 +1469,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     http=cfg.get("discovery_http_client"),
                 )
             except (ModelDiscoveryError, OSError) as e:
-                logger.warning(
-                    "event=voice_model_discovery provider=%s result=error error=%r",
-                    provider.id,
-                    str(e),
+                log_event(
+                    logger,
+                    "voice_model_discovery",
+                    provider=provider.id,
+                    result="error",
+                    error=repr(str(e)),
+                    level=logging.WARNING,
                 )
                 send_see_other(
                     self,
@@ -1463,10 +1483,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     flash=f"Could not refresh {provider.label} models: {e}",
                 )
                 return
-            logger.info(
-                "event=voice_model_discovery provider=%s result=ok count=%d",
-                provider.id,
-                len(snapshot.models),
+            log_event(
+                logger,
+                "voice_model_discovery",
+                provider=provider.id,
+                result="ok",
+                count=len(snapshot.models),
             )
             send_see_other(
                 self,
@@ -1490,7 +1512,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=f"Could not save spend cap: {e}")
                 return
             restart_voice_daemon()
-            logger.info("event=voice.spend_cap client=%s", self.address_string())
+            log_event(logger, "voice.spend_cap", client=self.address_string())
             send_see_other(
                 self,
                 "./",
@@ -1527,9 +1549,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self, "./", flash=f"Could not save pricing: {e}",
                 )
                 return
-            logger.info(
-                "event=pricing.edit provider=%s models=%d",
-                provider.id, len(new_models),
+            log_event(
+                logger,
+                "pricing.edit",
+                provider=provider.id,
+                models=len(new_models),
             )
             restart_voice_daemon()
             send_see_other(
@@ -1569,9 +1593,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self, "./", flash=f"Could not save pricing: {e}",
                 )
                 return
-            logger.info(
-                "event=pricing.import imported=%d total=%d",
-                len(models), len(merged),
+            log_event(
+                logger,
+                "pricing.import",
+                imported=len(models),
+                total=len(merged),
             )
             restart_voice_daemon()
             send_see_other(

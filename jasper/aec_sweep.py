@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from jasper.log_event import log_event
 
 
 AEC3_SWEEP_ENV_FLAG = "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"
@@ -408,11 +411,13 @@ def load_aec3_sweep_config(
                 raise
             raise Aec3SweepConfigError(str(e)) from e
         if logger is not None:
-            logger.warning(
-                "event=aec3_sweep_config_invalid path=%s error=%s "
-                "fallback=default",
-                config_path,
-                e,
+            log_event(
+                logger,
+                "aec3_sweep_config_invalid",
+                path=config_path,
+                error=str(e),
+                fallback="default",
+                level=logging.WARNING,
             )
         variants = DEFAULT_AEC3_SWEEP_VARIANTS
         return Aec3SweepConfig(

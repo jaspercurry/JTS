@@ -33,6 +33,7 @@ from ..speaker_name import (
     write_state,
 )
 from ..speaker_name_discovery import NameConflict, find_name_conflicts
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_banner,
@@ -89,9 +90,12 @@ def _unit_active(unit: str) -> bool:
 def _restart_units(units: list[str]) -> None:
     rc, out = _systemctl("restart", "--no-block", *units)
     if rc != 0:
-        logger.warning(
-            "event=speaker_name.restart_failed units=%s detail=%s",
-            ",".join(units), out,
+        log_event(
+            logger,
+            "speaker_name.restart_failed",
+            units=",".join(units),
+            detail=out,
+            level=logging.WARNING,
         )
 
 
@@ -100,7 +104,7 @@ def _write_bluez_main_conf_name(name: str, path: str = BLUEZ_MAIN_CONF) -> None:
     try:
         original = conf.read_text(encoding="utf-8")
     except FileNotFoundError:
-        logger.warning("event=speaker_name.bluez_conf_missing path=%s", path)
+        log_event(logger, "speaker_name.bluez_conf_missing", path=path, level=logging.WARNING)
         return
 
     replacement = f"Name = {name}"
@@ -118,7 +122,7 @@ def _write_bluez_main_conf_name(name: str, path: str = BLUEZ_MAIN_CONF) -> None:
     tmp = conf.with_name(conf.name + ".tmp")
     tmp.write_text(updated, encoding="utf-8")
     os.replace(tmp, conf)
-    logger.info("event=speaker_name.bluez_conf path=%s result=ok", path)
+    log_event(logger, "speaker_name.bluez_conf", path=path, result="ok")
 
 
 def _format_conflicts(conflicts: list[NameConflict]) -> str:
@@ -141,7 +145,7 @@ def _find_conflicts(name: str) -> list[NameConflict]:
     try:
         return asyncio.run(find_name_conflicts(name))
     except Exception as e:  # noqa: BLE001
-        logger.warning("event=speaker_name.duplicate_check_failed error=%s", e)
+        log_event(logger, "speaker_name.duplicate_check_failed", error=e, level=logging.WARNING)
         return []
 
 
@@ -154,18 +158,32 @@ def _apply_name(name: str) -> None:
     try:
         from ..bluetooth.adapter import set_alias as set_bluetooth_alias
         asyncio.run(set_bluetooth_alias(name))
-        logger.info("event=speaker_name.bluetooth_alias name=%r result=ok", name)
+        log_event(logger, "speaker_name.bluetooth_alias", name=repr(name), result="ok")
     except Exception as e:  # noqa: BLE001
-        logger.warning("event=speaker_name.bluetooth_alias name=%r result=failed error=%s", name, e)
+        log_event(
+            logger,
+            "speaker_name.bluetooth_alias",
+            name=repr(name),
+            result="failed",
+            error=e,
+            level=logging.WARNING,
+        )
 
     try:
         from ..control_advert import render_control_advert
         ok = render_control_advert(name)
-        logger.info("event=speaker_name.avahi name=%r result=%s", name, "ok" if ok else "soft_fail")
+        log_event(logger, "speaker_name.avahi", name=repr(name), result="ok" if ok else "soft_fail")
     except Exception as e:  # noqa: BLE001
-        logger.warning("event=speaker_name.avahi name=%r result=failed error=%s", name, e)
+        log_event(
+            logger,
+            "speaker_name.avahi",
+            name=repr(name),
+            result="failed",
+            error=e,
+            level=logging.WARNING,
+        )
 
-    logger.info("event=speaker_name.restart units=%s", ",".join(units))
+    log_event(logger, "speaker_name.restart", units=",".join(units))
     _restart_units(units)
 
 
@@ -274,10 +292,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if requested != current:
                 conflicts = _find_conflicts(requested)
                 if conflicts:
-                    logger.info(
-                        "event=speaker_name.conflict requested=%r conflicts=%s",
-                        requested,
-                        ",".join(f"{c.protocol}:{c.detail}" for c in conflicts),
+                    log_event(
+                        logger,
+                        "speaker_name.conflict",
+                        requested=repr(requested),
+                        conflicts=",".join(f"{c.protocol}:{c.detail}" for c in conflicts),
                     )
                     send_see_other(self, "./", flash=_format_conflicts(conflicts))
                     return
@@ -292,9 +311,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
 
-            logger.info(
-                "event=speaker_name.save previous=%r requested=%r saved=%r room=%r",
-                current, requested, saved, requested_room,
+            log_event(
+                logger,
+                "speaker_name.save",
+                previous=repr(current),
+                requested=repr(requested),
+                saved=repr(saved),
+                room=repr(requested_room),
             )
             _apply_name(saved)
             send_see_other(

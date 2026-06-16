@@ -31,6 +31,8 @@ import time
 import urllib.request
 from typing import Any, Callable
 
+from ..log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 # snapserver's packaged default HTTP JSON-RPC endpoint (snapserver.conf
@@ -259,15 +261,26 @@ def ensure_groups_on_stream(
         )
         if result is not None and result.get("stream_id") == want_stream:
             fixed += 1
-            logger.info(
-                "event=multiroom.stream_binding.fixed group=%s from=%s to=%s",
-                group_id[:8], stream_id or "(none)", want_stream,
+            log_event(
+                logger,
+                "multiroom.stream_binding.fixed",
+                **{
+                    "group": group_id[:8],
+                    "from": stream_id or "(none)",
+                    "to": want_stream,
+                },
             )
         else:
             failed += 1
-            logger.warning(
-                "event=multiroom.stream_binding.fix_failed group=%s from=%s to=%s",
-                group_id[:8], stream_id or "(none)", want_stream,
+            log_event(
+                logger,
+                "multiroom.stream_binding.fix_failed",
+                **{
+                    "group": group_id[:8],
+                    "from": stream_id or "(none)",
+                    "to": want_stream,
+                },
+                level=logging.WARNING,
             )
     return {
         "reachable": True, "groups": len(groups), "fixed": fixed, "failed": failed,

@@ -61,6 +61,8 @@ import subprocess
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
+from jasper.log_event import log_event
+
 # Detector for any unresolved __FOO__ placeholder. Catches template
 # drift (a new token added to a template without a matching key in the
 # caller's ``substitutions`` dict).
@@ -134,16 +136,21 @@ def render_service(
     try:
         text = Path(template_path).read_text()
     except FileNotFoundError:
-        logger.warning(
-            "event=avahi_service.template_missing path=%s — advert disabled; "
-            "re-run deploy/install.sh to install it.",
-            template_path,
+        log_event(
+            logger,
+            "avahi_service.template_missing",
+            path=template_path,
+            note="advert disabled; re-run deploy/install.sh to install it.",
+            level=logging.WARNING,
         )
         return RenderResult.FAILED
     except OSError as e:
-        logger.warning(
-            "event=avahi_service.template_unreadable path=%s error=%s",
-            template_path, e,
+        log_event(
+            logger,
+            "avahi_service.template_unreadable",
+            path=template_path,
+            error=e,
+            level=logging.WARNING,
         )
         return RenderResult.FAILED
 
@@ -157,10 +164,13 @@ def render_service(
     # service-group offline.
     stray = _PLACEHOLDER_RE.search(rendered)
     if stray:
-        logger.error(
-            "event=avahi_service.stray_placeholder path=%s placeholder=%r — "
-            "refusing to install. Add the substitution in the caller.",
-            out_path, stray.group(0),
+        log_event(
+            logger,
+            "avahi_service.stray_placeholder",
+            path=out_path,
+            placeholder=repr(stray.group(0)),
+            note="refusing to install. Add the substitution in the caller.",
+            level=logging.ERROR,
         )
         return RenderResult.FAILED
 
@@ -183,10 +193,16 @@ def render_service(
         os.chmod(tmp, 0o644)
         os.replace(tmp, out_path)
     except OSError as e:
-        logger.error("event=avahi_service.write_failed path=%s error=%s", out_path, e)
+        log_event(
+            logger,
+            "avahi_service.write_failed",
+            path=out_path,
+            error=e,
+            level=logging.ERROR,
+        )
         return RenderResult.FAILED
 
-    logger.info("event=avahi_service.installed path=%s", out_path)
+    log_event(logger, "avahi_service.installed", path=out_path)
     if reload:
         reload_avahi()
     return RenderResult.WROTE
@@ -206,4 +222,9 @@ def reload_avahi() -> None:
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logger.debug("event=avahi_service.reload_failed error=%s", e)
+        log_event(
+            logger,
+            "avahi_service.reload_failed",
+            error=e,
+            level=logging.DEBUG,
+        )

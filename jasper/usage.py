@@ -55,6 +55,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DAILY_SPEND_CAP_USD = 1.0
@@ -706,11 +708,16 @@ class SpendCap:
             # Once per construction (the daemon builds exactly one at
             # startup) — never per-wake. An unbounded-spend posture is
             # deliberate but worth one loud line in the journal.
-            logger.warning(
-                "event=spend_cap.disabled cap_usd=%s — daily spend cap "
-                "is OFF (JASPER_DAILY_SPEND_CAP_USD<=0); sessions are "
-                "not spend-limited",
-                self._cap_usd,
+            log_event(
+                logger,
+                "spend_cap.disabled",
+                cap_usd=self._cap_usd,
+                note=(
+                    "daily spend cap is OFF "
+                    "(JASPER_DAILY_SPEND_CAP_USD<=0); sessions are "
+                    "not spend-limited"
+                ),
+                level=logging.WARNING,
             )
 
     @property

@@ -20,6 +20,8 @@ from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 from dbus_next.service import ServiceInterface, method  # type: ignore
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 REJECTED_DBUS_NAME = "org.bluez.Error.Rejected"
@@ -48,15 +50,18 @@ class NoCodeAgent(ServiceInterface):
 
     @method()
     def Release(self):  # noqa: N802
-        logger.info("event=bluetooth_agent.release")
+        log_event(logger, "bluetooth_agent.release")
         if self._on_release is not None:
             self._on_release()
 
     @method()
     def RequestPinCode(self, device: "o") -> "s":  # type: ignore  # noqa: N802
-        logger.warning(
-            "event=bluetooth_agent.reject device=%s reason=pin_required",
-            device,
+        log_event(
+            logger,
+            "bluetooth_agent.reject",
+            device=device,
+            reason="pin_required",
+            level=logging.WARNING,
         )
         _reject("JTS does not support PIN-code pairing")
 
@@ -64,17 +69,23 @@ class NoCodeAgent(ServiceInterface):
     def DisplayPinCode(  # noqa: N802
         self, device: "o", pincode: "s",  # type: ignore
     ):
-        logger.warning(
-            "event=bluetooth_agent.reject device=%s reason=display_pin_required",
-            device,
+        log_event(
+            logger,
+            "bluetooth_agent.reject",
+            device=device,
+            reason="display_pin_required",
+            level=logging.WARNING,
         )
         _reject("JTS does not display PIN codes")
 
     @method()
     def RequestPasskey(self, device: "o") -> "u":  # type: ignore  # noqa: N802
-        logger.warning(
-            "event=bluetooth_agent.reject device=%s reason=passkey_required",
-            device,
+        log_event(
+            logger,
+            "bluetooth_agent.reject",
+            device=device,
+            reason="passkey_required",
+            level=logging.WARNING,
         )
         _reject("JTS does not support passkey pairing")
 
@@ -82,9 +93,12 @@ class NoCodeAgent(ServiceInterface):
     def DisplayPasskey(  # noqa: N802
         self, device: "o", passkey: "u", entered: "q",  # type: ignore
     ):
-        logger.warning(
-            "event=bluetooth_agent.reject device=%s reason=display_passkey_required",
-            device,
+        log_event(
+            logger,
+            "bluetooth_agent.reject",
+            device=device,
+            reason="display_passkey_required",
+            level=logging.WARNING,
         )
         _reject("JTS does not display passkeys")
 
@@ -92,17 +106,21 @@ class NoCodeAgent(ServiceInterface):
     def RequestConfirmation(  # noqa: N802
         self, device: "o", passkey: "u",  # type: ignore
     ):
-        logger.warning(
-            "event=bluetooth_agent.reject device=%s reason=confirmation_required",
-            device,
+        log_event(
+            logger,
+            "bluetooth_agent.reject",
+            device=device,
+            reason="confirmation_required",
+            level=logging.WARNING,
         )
         _reject("JTS does not support numeric comparison pairing")
 
     @method()
     async def RequestAuthorization(self, device: "o"):  # type: ignore  # noqa: N802
-        logger.info(
-            "event=bluetooth_agent.authorize_pairing device=%s",
-            device,
+        log_event(
+            logger,
+            "bluetooth_agent.authorize_pairing",
+            device=device,
         )
         await self._trust_device(device)
 
@@ -110,16 +128,17 @@ class NoCodeAgent(ServiceInterface):
     async def AuthorizeService(  # noqa: N802
         self, device: "o", uuid: "s",  # type: ignore
     ):
-        logger.info(
-            "event=bluetooth_agent.authorize_service device=%s uuid=%s",
-            device,
-            uuid,
+        log_event(
+            logger,
+            "bluetooth_agent.authorize_service",
+            device=device,
+            uuid=uuid,
         )
         await self._trust_device(device)
 
     @method()
     def Cancel(self):  # noqa: N802
-        logger.info("event=bluetooth_agent.cancel")
+        log_event(logger, "bluetooth_agent.cancel")
 
     async def _trust_device(self, device: str) -> None:
         if self._bus is None:
@@ -133,13 +152,15 @@ class NoCodeAgent(ServiceInterface):
                 "org.bluez.Device1", "Trusted", Variant("b", True),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "event=bluetooth_agent.trust_failed device=%s err=%s",
-                device,
-                exc,
+            log_event(
+                logger,
+                "bluetooth_agent.trust_failed",
+                device=device,
+                err=exc,
+                level=logging.WARNING,
             )
         else:
-            logger.info("event=bluetooth_agent.trusted device=%s", device)
+            log_event(logger, "bluetooth_agent.trusted", device=device)
 
 
 async def register_agent(
@@ -158,13 +179,20 @@ async def register_agent(
             "export" in detail or agent_path.lower() in detail
         )
         if not already_exported:
-            logger.warning(
-                "event=bluetooth_agent.export_failed path=%s err=%s",
-                agent_path,
-                exc,
+            log_event(
+                logger,
+                "bluetooth_agent.export_failed",
+                path=agent_path,
+                err=exc,
+                level=logging.WARNING,
             )
             raise
-        logger.debug("event=bluetooth_agent.export_exists path=%s", agent_path)
+        log_event(
+            logger,
+            "bluetooth_agent.export_exists",
+            path=agent_path,
+            level=logging.DEBUG,
+        )
     intro = await bus.introspect("org.bluez", "/org/bluez")
     mgr = bus.get_proxy_object(
         "org.bluez", "/org/bluez", intro,

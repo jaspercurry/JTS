@@ -53,6 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from ..install_profile import install_profile_allows_local_sources, read_install_profile
+from ..log_event import log_event
 from ._common import (
     bonded_follower_active,
     begin_request,
@@ -528,9 +529,12 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                     logger.exception("toggle %s -> %s failed", source, enabled)
                     self._send_json({"error": str(e)}, status=502)
                     return
-                logger.info(
-                    "event=sources.set source=%s enabled=%s client=%s",
-                    source, enabled, self.address_string(),
+                log_event(
+                    logger,
+                    "sources.set",
+                    source=source,
+                    enabled=enabled,
+                    client=self.address_string(),
                 )
                 # Read-back the state we just applied so the client UI
                 # reconciles against truth (in case systemctl no-op'd

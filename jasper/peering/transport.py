@@ -25,6 +25,8 @@ import struct
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
+from jasper.log_event import log_event
+
 from .config import MULTICAST_GROUP, MULTICAST_PORT, MULTICAST_TTL
 from .rank import WakeReport
 
@@ -326,9 +328,12 @@ class MulticastTransport:
         self._recv_task = self._loop.create_task(
             self._recv_loop(), name="peering-mcast-recv",
         )
-        logger.info(
-            "event=peering.transport.started group=%s port=%d ttl=%d",
-            self._group, self._port, self._ttl,
+        log_event(
+            logger,
+            "peering.transport.started",
+            group=self._group,
+            port=self._port,
+            ttl=self._ttl,
         )
 
     async def stop(self) -> None:
@@ -346,7 +351,7 @@ class MulticastTransport:
             except OSError:
                 pass
             self._sock = None
-        logger.info("event=peering.transport.stopped")
+        log_event(logger, "peering.transport.stopped")
 
     async def send(self, payload: bytes) -> None:
         """Send one datagram to the multicast group. Best-effort —

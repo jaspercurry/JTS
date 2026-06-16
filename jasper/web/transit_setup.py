@@ -64,6 +64,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .. import location_state, transit
 from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_banner,
@@ -1334,7 +1335,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             # No station/stop/dock IDs in the log — those reveal the
             # household's home location. Record only that a save landed.
-            logger.info("event=transit.save client=%s", self.address_string())
+            log_event(logger, "transit.save", client=self.address_string())
             restart_voice_daemon()
             send_see_other(self, "./", flash="Saved. Voice daemon restarting.")
 
@@ -1352,9 +1353,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 logger.exception("could not write transit.env after cities save")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
-            logger.info(
-                "event=transit.cities cities=%s client=%s",
-                new.get(transit.TRANSIT_CITIES_ENV, ""), self.address_string(),
+            log_event(
+                logger,
+                "transit.cities",
+                cities=new.get(transit.TRANSIT_CITIES_ENV, ""),
+                client=self.address_string(),
             )
             restart_voice_daemon()
             send_see_other(
@@ -1374,7 +1377,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 logger.exception("could not write transit.env after clear")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
-            logger.info("event=transit.clear client=%s", self.address_string())
+            log_event(logger, "transit.clear", client=self.address_string())
             restart_voice_daemon()
             send_see_other(
                 self, "./",

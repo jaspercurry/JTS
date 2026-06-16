@@ -11,13 +11,16 @@ closed by hand across the existing wizards, and that this guard itself caught in
 jasper-voice with no audit line).
 
 Detection is AST-based and deliberately COARSE: a `_handle_*` / `_post_*` method
-that calls a known restart helper must also contain a
-`logger.{info,warning,debug}("event=...")` call somewhere in its body. It does
-NOT verify the event name matches the action (not statically knowable) — only
-that the handler audits *something*. The real bug is a restart with NO audit
-line at all. A handler that legitimately restarts but isn't an audit-worthy
-config change (content/preference, not connection identity) goes in
-`DELIBERATELY_UNLOGGED` with a reason.
+that calls a known restart helper must also contain an audit-line call somewhere
+in its body — either a hand-written `logger.{info,warning,debug}("event=...")`
+or a call to the canonical emitter `log_event(logger, "<domain.action>", ...)`
+(the `event=` prefix is added by the emitter, so the audited token is the 2nd
+positional string arg, not a literal starting with "event="). It does NOT verify
+the event name matches the action (not statically knowable) — only that the
+handler audits *something*. The real bug is a restart with NO audit line at all.
+A handler that legitimately restarts but isn't an audit-worthy config change
+(content/preference, not connection identity) goes in `DELIBERATELY_UNLOGGED`
+with a reason.
 
 Intentional caveats (documented so they aren't mistaken for bugs):
   - Scope is `_handle_*`/`_post_*` methods. A wizard that restarts from a do_GET
@@ -74,12 +77,26 @@ def _calls_restart(fn: ast.FunctionDef) -> bool:
 
 def _emits_event_log(fn: ast.FunctionDef) -> bool:
     for n in ast.walk(fn):
-        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-                and n.func.attr in ("info", "warning", "debug")):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        # Hand-written audit line: logger.{info,warning,debug}("event=...").
+        if (isinstance(f, ast.Attribute) and f.attr in ("info", "warning", "debug")):
             for arg in n.args:
                 if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
                         and arg.value.startswith("event=")):
                     return True
+        # Canonical emitter: log_event(logger, "<domain.action>", ...). The
+        # `event=` prefix is added by the emitter, so the audited token here is
+        # the 2nd positional arg (the event name string), not a literal that
+        # starts with "event=". Accept both a bare `log_event(...)` and an
+        # attribute form (e.g. `mod.log_event(...)`).
+        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        if name == "log_event" and len(n.args) >= 2:
+            event_name = n.args[1]
+            if (isinstance(event_name, ast.Constant)
+                    and isinstance(event_name.value, str)):
+                return True
     return False
 
 
@@ -108,7 +125,7 @@ def test_restarting_wizard_handlers_emit_event_log():
         "These wizard handlers restart a daemon but emit no `event=` audit log:\n  "
         + "\n  ".join(violations)
         + "\n\nA handler that restarts a daemon is applying a config change — add\n"
-        '  logger.info("event=<wizard>.<action> client=%s", self.address_string())\n'
+        '  log_event(logger, "<wizard>.<action>", client=self.address_string())\n'
         "after the restart (action + client IP only — never secrets, coordinates, "
         "or account names). If the handler is content/preference rather than "
         "connection config, add it to DELIBERATELY_UNLOGGED with a reason."

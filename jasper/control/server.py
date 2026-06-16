@@ -41,6 +41,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Awaitable, Callable, Optional
 
+from jasper.log_event import log_event
+
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..audio_quality import (
     apply_requested_converter as _apply_audio_quality,
@@ -140,9 +142,12 @@ def _control_install_profile() -> str:
     try:
         return read_install_profile()
     except ValueError as e:
-        logger.warning(
-            "event=install_profile.invalid surface=jasper-control error=%r",
-            str(e),
+        log_event(
+            logger,
+            "install_profile.invalid",
+            surface="jasper-control",
+            error=repr(str(e)),
+            level=logging.WARNING,
         )
         # Fail to the restricted profile so an unparseable marker can't
         # accidentally widen the route surface.
@@ -493,9 +498,11 @@ def _run_peering_loop() -> None:
 
     cfg = load_config()
     if not cfg.enabled:
-        logger.info(
-            "event=peering.thread.exit mode=%s — daemon will not start",
-            cfg.mode.value,
+        log_event(
+            logger,
+            "peering.thread.exit",
+            mode=cfg.mode.value,
+            note="daemon will not start",
         )
         with _peering_lock:
             if _peering_thread is threading.current_thread():
@@ -564,7 +571,12 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
         return
     thread.join(timeout=timeout)
     if thread.is_alive():
-        logger.warning("event=peering.thread.stop_timeout timeout=%.1f", timeout)
+        log_event(
+            logger,
+            "peering.thread.stop_timeout",
+            timeout=f"{timeout:.1f}",
+            level=logging.WARNING,
+        )
 
 
 # Forwarded pair-volume requests carry this header; its presence stops a
@@ -831,11 +843,15 @@ def _make_handler(
                 ok, reason = management_read_allowed(self.headers)
             if ok:
                 return True
-            logger.warning(
-                "event=http.reject reason=%s host=%r sec_fetch_site=%r path=%s client=%s",
-                reason, self.headers.get("Host"),
-                self.headers.get("Sec-Fetch-Site"), self.path,
-                self.address_string(),
+            log_event(
+                logger,
+                "http.reject",
+                reason=reason,
+                host=repr(self.headers.get("Host")),
+                sec_fetch_site=repr(self.headers.get("Sec-Fetch-Site")),
+                path=self.path,
+                client=self.address_string(),
+                level=logging.WARNING,
             )
             self._send_json({"error": reason}, status=403)
             return False
@@ -843,10 +859,15 @@ def _make_handler(
         def _guard_mutating_request(self) -> bool:
             ok, reason = mutating_request_allowed(self.headers)
             if not ok:
-                logger.warning(
-                    "event=http.reject reason=%s host=%r origin=%r path=%s client=%s",
-                    reason, self.headers.get("Host"), self.headers.get("Origin"),
-                    self.path, self.address_string(),
+                log_event(
+                    logger,
+                    "http.reject",
+                    reason=reason,
+                    host=repr(self.headers.get("Host")),
+                    origin=repr(self.headers.get("Origin")),
+                    path=self.path,
+                    client=self.address_string(),
+                    level=logging.WARNING,
                 )
                 self._send_json({"error": reason}, status=403)
                 return False
@@ -860,9 +881,15 @@ def _make_handler(
                 self._send_json({"error": "invalid_content_length"}, status=400)
                 return False
             if length > CONTROL_MAX_POST_BYTES:
-                logger.warning(
-                    "event=http.reject reason=body_too_large bytes=%d limit=%d path=%s client=%s",
-                    length, CONTROL_MAX_POST_BYTES, self.path, self.address_string(),
+                log_event(
+                    logger,
+                    "http.reject",
+                    reason="body_too_large",
+                    bytes=length,
+                    limit=CONTROL_MAX_POST_BYTES,
+                    path=self.path,
+                    client=self.address_string(),
+                    level=logging.WARNING,
                 )
                 self._send_json(
                     {
@@ -882,9 +909,14 @@ def _make_handler(
                 path=self.path,
             ):
                 return True
-            logger.warning(
-                "event=control.route_blocked profile=%s method=%s path=%s client=%s",
-                profile, self.command, self.path, self.address_string(),
+            log_event(
+                logger,
+                "control.route_blocked",
+                profile=profile,
+                method=self.command,
+                path=self.path,
+                client=self.address_string(),
+                level=logging.WARNING,
             )
             self.send_error(HTTPStatus.NOT_FOUND)
             return False
@@ -970,16 +1002,24 @@ def _make_handler(
                     relayed = {"error": f"pair leader error: {e}"}
                 if isinstance(relayed, dict):
                     relayed.setdefault("pair_leader", leader)
-                logger.warning(
-                    "event=volume.pair_forward_rejected leader=%s path=%s "
-                    "status=%d", leader, self.path, e.code,
+                log_event(
+                    logger,
+                    "volume.pair_forward_rejected",
+                    leader=leader,
+                    path=self.path,
+                    status=e.code,
+                    level=logging.WARNING,
                 )
                 self._send_json(relayed, status=e.code)
                 return True
             except Exception as e:  # noqa: BLE001 — transport failure: 502
-                logger.warning(
-                    "event=volume.pair_forward_failed leader=%s path=%s "
-                    "error=%s", leader, self.path, e,
+                log_event(
+                    logger,
+                    "volume.pair_forward_failed",
+                    leader=leader,
+                    path=self.path,
+                    error=str(e),
+                    level=logging.WARNING,
                 )
                 self._send_json(
                     {"error": f"pair leader unreachable: {e}",
@@ -1276,9 +1316,12 @@ def _make_handler(
                 return True
             if control_token.verify(self.headers.get("X-JTS-Token")):
                 return True
-            logger.warning(
-                "event=control_token.denied path=%s client=%s",
-                self.path, self.address_string(),
+            log_event(
+                logger,
+                "control_token.denied",
+                path=self.path,
+                client=self.address_string(),
+                level=logging.WARNING,
             )
             self._send_json(
                 {
@@ -1330,9 +1373,12 @@ def _make_handler(
                 logger.exception("adjust volume failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
-            logger.info(
-                "event=volume.adjust delta_pct=%d new_pct=%d client=%s",
-                delta_pct, new_pct, self.address_string(),
+            log_event(
+                logger,
+                "volume.adjust",
+                delta_pct=delta_pct,
+                new_pct=new_pct,
+                client=self.address_string(),
             )
             self._send_json(self._volume_payload(new_pct))
 
@@ -1383,10 +1429,12 @@ def _make_handler(
                 logger.exception("set volume failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
-            logger.info(
-                "event=volume.set new_pct=%d source=%s client=%s",
-                new_pct, source_name or "authoritative",
-                self.address_string(),
+            log_event(
+                logger,
+                "volume.set",
+                new_pct=new_pct,
+                source=source_name or "authoritative",
+                client=self.address_string(),
             )
             self._send_json(self._volume_payload(new_pct))
 
@@ -1486,11 +1534,14 @@ def _make_handler(
                 logger.exception("grouping set failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
-            logger.info(
-                "event=grouping.set enabled=%s role=%s channel=%s "
-                "bond=%s client=%s",
-                enabled, role or "(none)", channel or "(none)",
-                bond_id or "(none)", self.address_string(),
+            log_event(
+                logger,
+                "grouping.set",
+                enabled=enabled,
+                role=role or "(none)",
+                channel=channel or "(none)",
+                bond=bond_id or "(none)",
+                client=self.address_string(),
             )
             self._send_json({
                 "ok": True, "enabled": enabled, "role": role,
@@ -1524,9 +1575,12 @@ def _make_handler(
                 logger.exception("mute failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
-            logger.info(
-                "event=volume.mute new_pct=%d explicit=%s client=%s",
-                new_pct, explicit, self.address_string(),
+            log_event(
+                logger,
+                "volume.mute",
+                new_pct=new_pct,
+                explicit=str(explicit),
+                client=self.address_string(),
             )
             self._send_json(self._volume_payload(new_pct))
             return
@@ -1546,9 +1600,11 @@ def _make_handler(
                 logger.exception("transport %s failed", action)
                 self._send_json({"error": str(e)}, status=502)
                 return
-            logger.info(
-                "event=transport.dispatch action=%s client=%s",
-                action, self.address_string(),
+            log_event(
+                logger,
+                "transport.dispatch",
+                action=action,
+                client=self.address_string(),
             )
             if "error" in result:
                 self._send_json(result, status=502)
@@ -1596,9 +1652,11 @@ def _make_handler(
                 logger.exception("source select failed")
                 self._send_json({"error": str(e)}, status=502)
                 return
-            logger.info(
-                "event=source.select source=%s client=%s",
-                source, self.address_string(),
+            log_event(
+                logger,
+                "source.select",
+                source=source,
+                client=self.address_string(),
             )
             self._send_json(_augment_source_payload(result))
             return
@@ -1687,9 +1745,11 @@ def _make_handler(
             )
             if result is None:
                 return
-            logger.info(
-                "event=mic.set muted=%s client=%s",
-                bool(body["muted"]), self.address_string(),
+            log_event(
+                logger,
+                "mic.set",
+                muted=bool(body["muted"]),
+                client=self.address_string(),
             )
             # Read back the truth from the daemon. STATUS is cheap
             # and the daemon's flag is authoritative.
@@ -1739,9 +1799,14 @@ def _make_handler(
                     status=502,
                 )
                 return
-            logger.info(
-                "event=aec.toggle from=%s to=%s client=%s",
-                current, new_mode, self.address_string(),
+            log_event(
+                logger,
+                "aec.toggle",
+                **{
+                    "from": current,
+                    "to": new_mode,
+                    "client": self.address_string(),
+                },
             )
             self._send_json({
                 "mode": new_mode,
@@ -1794,9 +1859,12 @@ def _make_handler(
                     status=502,
                 )
                 return
-            logger.info(
-                "event=aec.leg leg=%s enabled=%s client=%s",
-                leg, enabled_val, self.address_string(),
+            log_event(
+                logger,
+                "aec.leg",
+                leg=leg,
+                enabled=enabled_val,
+                client=self.address_string(),
             )
             self._send_json(_aec_full_status())
             return
@@ -1830,10 +1898,11 @@ def _make_handler(
                     status=502,
                 )
                 return
-            logger.info(
-                "event=aec.profile profile=%s client=%s",
-                normalize_audio_input_profile(profile, default=""),
-                self.address_string(),
+            log_event(
+                logger,
+                "aec.profile",
+                profile=normalize_audio_input_profile(profile, default=""),
+                client=self.address_string(),
             )
             self._send_json(_aec_full_status())
             return
@@ -1885,9 +1954,11 @@ def _make_handler(
                     status=502,
                 )
                 return
-            logger.info(
-                "event=wake.threshold value=%.2f client=%s",
-                threshold, self.address_string(),
+            log_event(
+                logger,
+                "wake.threshold",
+                value=f"{threshold:.2f}",
+                client=self.address_string(),
             )
             self._send_json({"threshold": threshold})
             return
@@ -1916,9 +1987,12 @@ def _make_handler(
                     {"error": f"debug toggle failed: {e}"}, status=502,
                 )
                 return
-            logger.info(
-                "event=debug.toggle subsystem=%s enabled=%s client=%s",
-                subsystem, enabled, self.address_string(),
+            log_event(
+                logger,
+                "debug.toggle",
+                subsystem=subsystem,
+                enabled=enabled,
+                client=self.address_string(),
             )
             self._send_json(debug_control.snapshot())
             return
@@ -1968,9 +2042,11 @@ def _make_handler(
                     status=502,
                 )
                 return
-            logger.info(
-                "event=audio_quality.set converter=%s client=%s",
-                converter, self.address_string(),
+            log_event(
+                logger,
+                "audio_quality.set",
+                converter=converter,
+                client=self.address_string(),
             )
             self._send_json({
                 "ok": True,
@@ -2044,9 +2120,12 @@ def _make_handler(
             # distinguishes a dashboard-triggered restart/reboot/poweroff from a
             # watchdog or crash reset when debugging "the speaker restarted on
             # its own" (see AGENTS.md). No secrets — action + units + requester.
-            logger.info(
-                "event=system.action action=%s units=%s client=%s",
-                action, ",".join(units) or "-", self.address_string(),
+            log_event(
+                logger,
+                "system.action",
+                action=action,
+                units=",".join(units) or "-",
+                client=self.address_string(),
             )
             try:
                 if action == "reboot":
@@ -2176,7 +2255,7 @@ def _install_sigterm_shutdown(server: ThreadingHTTPServer) -> Callable[[], None]
             sig_name = signal.Signals(signum).name
         except ValueError:
             sig_name = str(signum)
-        logger.info("event=control.shutdown signal=%s", sig_name)
+        log_event(logger, "control.shutdown", signal=sig_name)
         threading.Thread(
             target=server.shutdown,
             name="control-sigterm-shutdown",

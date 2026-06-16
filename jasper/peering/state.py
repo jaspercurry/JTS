@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from ..log_event import log_event
 from .rank import WakeReport, rank
 
 logger = logging.getLogger(__name__)
@@ -288,9 +289,11 @@ class PeeringStateMachine:
                 )
                 return []
             # Strong wake — break suppression, enter arbitration.
-            logger.info(
-                "event=peering.suppression.broken score=%.2f threshold=%.2f",
-                ev.score, self._p.break_threshold,
+            log_event(
+                logger,
+                "peering.suppression.broken",
+                score=f"{ev.score:.2f}",
+                threshold=f"{self._p.break_threshold:.2f}",
             )
             self._clear_foreign_session()
 
@@ -364,9 +367,11 @@ class PeeringStateMachine:
         # If we were in WINNER for the same epoch, we lost a race —
         # the other peer also concluded it won. Concede.
         if self._state is PeerState.WINNER and self._epoch and self._epoch.epoch == ev.epoch:
-            logger.info(
-                "event=peering.winner.conceding to=%s epoch=%s",
-                ev.peer_id, ev.epoch,
+            log_event(
+                logger,
+                "peering.winner.conceding",
+                to=ev.peer_id,
+                epoch=ev.epoch,
             )
             actions.append(StandDown(epoch=ev.epoch))
             actions.append(CancelTimer(timer_id=TIMER_HEARTBEAT_SEND))
@@ -413,9 +418,11 @@ class PeeringStateMachine:
             self._state is PeerState.SUPPRESSED
             and ev.epoch == self._foreign_epoch
         ):
-            logger.info(
-                "event=peering.foreign.ended peer=%s reason=%s",
-                ev.peer_id, ev.reason,
+            log_event(
+                logger,
+                "peering.foreign.ended",
+                peer=ev.peer_id,
+                reason=ev.reason,
             )
             self._clear_foreign_session()
             self._state = PeerState.IDLE
@@ -497,9 +504,11 @@ class PeeringStateMachine:
         epoch = self._epoch.epoch
         if winner_id == self._p.peer_id:
             self._state = PeerState.WINNER
-            logger.info(
-                "event=peering.wake.won epoch=%s reports=%d",
-                epoch, len(reports),
+            log_event(
+                logger,
+                "peering.wake.won",
+                epoch=epoch,
+                reports=len(reports),
             )
             return [
                 BroadcastClaim(epoch=epoch),
@@ -511,11 +520,13 @@ class PeeringStateMachine:
             my_score = self._epoch.reports.get(
                 self._p.peer_id, None,
             )
-            logger.info(
-                "event=peering.wake.lost epoch=%s winner=%s "
-                "winner_score=%.2f my_score=%s",
-                epoch, winner_id, winner.score,
-                f"{my_score.score:.2f}" if my_score else "n/a",
+            log_event(
+                logger,
+                "peering.wake.lost",
+                epoch=epoch,
+                winner=winner_id,
+                winner_score=f"{winner.score:.2f}",
+                my_score=f"{my_score.score:.2f}" if my_score else "n/a",
             )
             actions: list[Action] = [StandDown(epoch=epoch)]
             # Enter SUPPRESSED tracking the winner.
@@ -546,9 +557,11 @@ class PeeringStateMachine:
             return []
         gap = now - self._foreign_last_heartbeat
         if gap >= self._p.heartbeat_timeout_sec:
-            logger.info(
-                "event=peering.session.heartbeat_missed peer=%s after_ms=%d",
-                self._foreign_peer, int(gap * 1000),
+            log_event(
+                logger,
+                "peering.session.heartbeat_missed",
+                peer=self._foreign_peer,
+                after_ms=int(gap * 1000),
             )
             self._clear_foreign_session()
             self._state = PeerState.IDLE
