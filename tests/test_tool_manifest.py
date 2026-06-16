@@ -61,6 +61,7 @@ def test_manifest_entries_are_no_loss():
         expected_providers = sorted(t.providers) if t.providers else None
         assert entry["compatibility"]["providers"] == expected_providers
         assert entry["timeout"] == t.timeout
+        assert entry["labels"] == list(t.labels)
 
 
 def test_manifest_providers_are_sorted_deterministically():
@@ -91,3 +92,26 @@ def test_manifest_providers_none_for_universal_tool():
     reg.register(universal)
     entry = reg.to_manifest()[0]
     assert entry["compatibility"]["providers"] is None
+
+
+def test_transit_tools_carry_city_and_mode_labels():
+    """The transit city is a label on the tool (not a CityPack toggle) —
+    the catalog will filter/sort on these. Declared order is preserved.
+    See docs/tool-platform-plan.md."""
+    by_name = {e["name"]: e for e in _full_registry().to_manifest()}
+    assert by_name["get_subway_arrivals"]["labels"] == ["transit", "nyc", "subway"]
+    assert by_name["get_bus_arrivals"]["labels"] == ["transit", "nyc", "bus"]
+    assert by_name["get_citibike_status"]["labels"] == ["transit", "nyc", "bikeshare"]
+
+
+def test_unlabeled_tool_emits_empty_labels():
+    from jasper.tools import tool
+
+    @tool()
+    def plain() -> dict:
+        """A tool with no catalog labels."""
+        return {}
+
+    reg = ToolRegistry()
+    reg.register(plain)
+    assert reg.to_manifest()[0]["labels"] == []
