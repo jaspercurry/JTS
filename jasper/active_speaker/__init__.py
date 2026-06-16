@@ -163,7 +163,9 @@ from .baseline_profile import (
 )
 from .driver_acoustics import (
     DRIVER_ACOUSTIC_KIND,
+    DRIVER_VERDICTS,
     SUMMED_ACOUSTIC_KIND,
+    SUMMED_VERDICTS,
     DriverAcousticResult,
     DriverAcousticsError,
     DriverSweep,
@@ -189,7 +191,9 @@ __all__ = [
     "BASELINE_LIMITER_CLIP_LIMIT_DB",
     "BASELINE_PROFILE_KIND",
     "DRIVER_ACOUSTIC_KIND",
+    "DRIVER_VERDICTS",
     "SUMMED_ACOUSTIC_KIND",
+    "SUMMED_VERDICTS",
     "DriverAcousticResult",
     "DriverAcousticsError",
     "DriverSweep",
