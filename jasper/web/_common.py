@@ -74,6 +74,7 @@ from typing import Any
 
 from ..atomic_io import atomic_write_text
 from ..control import client as control
+from ..control import control_token
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..log_event import log_event
 from ..voice.provider_state import read_active_provider
@@ -263,12 +264,15 @@ def canonical_page(
     Returns bytes; send via `send_html_response()`."""
     version = html.escape(_asset_version())
     csrf = csrf_meta_html(csrf_token) if csrf_token else ""
+    ctl_token = control_token_meta_html()
     page_link = (
         f'<link rel="stylesheet" href="{html.escape(page_css_href)}?v={version}">'
         if page_css_href else ""
     )
     style = f"<style>{page_css}</style>" if page_css else ""
-    head_extra = "\n".join(part for part in (csrf, page_link, style) if part)
+    head_extra = "\n".join(
+        part for part in (csrf, ctl_token, page_link, style) if part
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -881,6 +885,24 @@ def csrf_meta_html(token: str) -> str:
     `document.querySelector('meta[name=jts-csrf]').content` and sends
     it as the `X-CSRF-Token` header on every state-changing POST."""
     return f'<meta name="jts-csrf" content="{html.escape(token)}">'
+
+
+def control_token_meta_html() -> str:
+    """<meta> tag carrying the WS1 control token, or "" when none exists yet.
+
+    The invisible-token delivery (Phase 2): the page is only served behind the
+    management-host / Fetch-Metadata read guard, so a same-origin dashboard sees
+    the token in `meta[name=jts-control-token]` and rides it on the destructive
+    POSTs (via http.js) with zero household friction. A cross-site fetch can't
+    read it; a determined LAN device that fetches the page can — by design this
+    is defense-in-depth on the annoyance-class routes, not a hard boundary (see
+    docs/HANDOFF-privilege-separation.md). Emits nothing when the gate is off
+    (no token file), so non-control pages stay byte-identical until the token
+    exists."""
+    token = control_token.current_token()
+    if not token:
+        return ""
+    return f'<meta name="jts-control-token" content="{html.escape(token)}">'
 
 
 def csrf_fetch_helpers_js() -> str:

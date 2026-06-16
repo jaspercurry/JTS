@@ -125,11 +125,15 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
 # exactly as today; with one, each requires a matching X-JTS-Token header.
 # Deliberately NOT including /volume*, /transport*, /source* — the dial's
 # bread-and-butter low-impact controls stay open (the dial never calls
-# these four). poweroff/reboot = power loop; mic/mute = defeats the
-# privacy-mic promise; grouping/set = hijacks output routing.
+# these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
+# promise; grouping/set = hijacks output routing; restart/voice|audio =
+# disrupt playback + the assistant. WS1 Phase 2 added the two restart routes
+# and made the gate mandatory (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
     "/system/poweroff",
     "/system/reboot",
+    "/system/restart/voice",
+    "/system/restart/audio",
     "/mic/mute",
     "/grouping/set",
 })
@@ -2319,6 +2323,17 @@ def main(argv: list[str] | None = None) -> int:
         sampler=sampler,
         airplay_health_sampler=airplay_health_sampler,
     )
+    # WS1 Phase 2: arm the control-token gate before serving. ensure_token()
+    # auto-generates the token (0600) if absent, so the destructive routes are
+    # always gated with no operator action; canonical_page auto-delivers it to
+    # the dashboard (invisible to the household). Idempotent — never rotates an
+    # existing token. Failure is non-fatal (the gate fail-safes to off) so a
+    # transient write error can't keep the recovery surface from starting.
+    try:
+        control_token.ensure_token()
+    except OSError as exc:
+        log_event(logger, "control_token.ensure_failed", error=str(exc),
+                  level=logging.WARNING)
     run_dial_log_listener(args.dial_log_host, args.dial_log_port)
     # Multi-device peering daemon. No-op (no thread, no asyncio loop,
     # no zeroconf import) when /var/lib/jasper/peering.env has

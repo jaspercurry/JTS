@@ -15,18 +15,27 @@ function csrfToken() {
   return meta ? meta.content : "";
 }
 
-// --- control token (opt-in, default-off) ----------------------------------
-// SECURITY.md's opt-in shared token gates jasper-control's high-impact
-// mutations (poweroff / reboot / mic-mute / grouping) behind an X-JTS-Token
-// header. When the operator has enabled it, control answers those routes 403
-// {error:"control_token_required"} until the right token rides along. The
-// token is a household secret the operator pastes once; we keep it in
-// localStorage (per-browser, survives reloads) — never baked into the cached
-// JS, never logged. When the gate is OFF (the default) localStorage is empty
-// and these helpers add no header, so there is zero behaviour change.
+// --- control token (WS1 Phase 2: mandatory, invisible) --------------------
+// The shared token gates jasper-control's high-impact mutations (poweroff /
+// reboot / restart-voice|audio / mic-mute / grouping) behind an X-JTS-Token
+// header; control answers those routes 403 {error:"control_token_required"}
+// without it. Phase 2 makes it invisible to the household: the page is served
+// behind the read guard and embeds the token in `meta[name=jts-control-token]`
+// (canonical_page), so the dashboard reads it automatically and rides it on
+// every destructive POST — no prompt, no paste. We still honour a per-browser
+// localStorage value as a fallback (older paste-once flow / a rotated token).
+// The token is never baked into this cached JS and never logged.
 const CONTROL_TOKEN_KEY = "jts-control-token";
 
 function controlToken() {
+  // Prefer the server-embedded meta tag (invisible auto-delivery); fall back to
+  // a per-browser stored value. document may be absent under the node test
+  // harness — guard for it.
+  try {
+    const meta = (typeof document !== "undefined") &&
+      document.querySelector('meta[name="jts-control-token"]');
+    if (meta && meta.content) return meta.content;
+  } catch (_) { /* no DOM — fall through to storage */ }
   try {
     return localStorage.getItem(CONTROL_TOKEN_KEY) || "";
   } catch (_) {

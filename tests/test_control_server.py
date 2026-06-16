@@ -3065,12 +3065,13 @@ def test_grouping_set_peer_roster_settable_preserved_and_cleared(
 # Ungated routes (/volume*, /healthz, …) are never affected.
 # --------------------------------------------------------------------------
 
-_GATED_ROUTES = (
-    "/system/poweroff",
-    "/system/reboot",
-    "/mic/mute",
-    "/grouping/set",
-)
+# Derived from the server's own frozenset so a newly gated route is exercised
+# automatically and the two can never drift (WS1 Phase 2 added
+# /system/restart/voice + /system/restart/audio). The gate rejects before any
+# route dispatch, so iterating restart routes here triggers no side effect.
+import jasper.control.server as _srv_mod  # noqa: E402
+
+_GATED_ROUTES = tuple(sorted(_srv_mod._TOKEN_GATED_ROUTES))
 
 
 def _enable_control_token(monkeypatch, tmp_path, token="t0ken-value"):
