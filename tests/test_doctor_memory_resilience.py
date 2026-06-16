@@ -543,6 +543,37 @@ def test_oom_score_adj_skips_units_not_installed_on_streambox():
     assert "6 critical daemons protected" in r.detail
 
 
+def test_oom_score_adj_warns_on_present_drift_with_others_absent():
+    """Mixed profile: the installed-unit filter must not swallow REAL drift
+    on a present unit. Streambox (voice/AEC/input absent) + a present,
+    config-drifted jasper-mux → warn naming only the present unit."""
+    absent = {
+        "jasper-voice": "not-found",
+        "jasper-aec-bridge": "not-found",
+        "jasper-input": "not-found",
+    }
+    config = dict(_EXPECTED_CONFIG)
+    pid_map = dict(_PID_MAP)
+    for u in absent:
+        config[u] = "0"
+        pid_map[u] = "0"
+    config["jasper-mux"] = "0"   # present unit drifted (want -300)
+
+    def fake_read(self):
+        pid_str = str(self).split("/")[2]
+        return _LIVE_OK.get(pid_str, "0") + "\n"
+
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_oom_run(pid_map, config, absent)), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_oom_score_adj()
+
+    assert r.status == "warn"
+    assert "jasper-mux unit=0 (want -300)" in r.detail
+    for unit in absent:
+        assert unit not in r.detail
+
+
 _LIVE_OK = {
     "1001": "-950", "1002": "-900", "1003": "-800",
     "1004": "-700", "1005": "-600", "1006": "-500",
@@ -733,22 +764,21 @@ def test_systemctl_show_property_handles_empty_values():
 
 
 def _make_start_limit_action_run(actions: dict[str, str], load_map=None):
-    """Build a _run mock for check_start_limit_action's calls: the
-    BATCHED `systemctl show -p LoadState --value u1 u2 ...` installed-unit
-    filter, then the per-unit `systemctl show -p StartLimitAction
-    --value <unit>.service`. `load_map` overrides LoadState per unit
-    (default: every unit "loaded")."""
+    """Build a `_run` mock for check_start_limit_action's two BATCHED
+    systemctl calls — `-p LoadState` (the installed-unit filter) and
+    `-p StartLimitAction` — each over `u1 u2 ...`. Both go through
+    `_systemctl_show_property` (i.e. `_shared._run`), so tests patch that
+    one namespace. `load_map` overrides LoadState per unit (default:
+    every unit "loaded")."""
     def fake_run(cmd, **kwargs):
         prop = cmd[3]
-        result = MagicMock()
+        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
         if prop == "LoadState":
-            units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
             values = [(load_map or {}).get(u, "loaded") for u in units]
-            result.stdout = "\n\n".join(values) + "\n" if values else "\n"
-        else:
-            # Per-unit StartLimitAction: cmd[5] is a single "X.service".
-            unit = cmd[5].rsplit(".", 1)[0]
-            result.stdout = actions.get(unit, "none") + "\n"
+        else:  # StartLimitAction
+            values = [actions.get(u, "none") for u in units]
+        result = MagicMock()
+        result.stdout = "\n\n".join(values) + "\n" if values else "\n"
         return result
     return fake_run
 
@@ -762,9 +792,8 @@ def test_start_limit_action_all_set_to_reboot():
         "jasper-voice": "reboot",
         "jasper-control": "reboot",
     }
-    mock = _make_start_limit_action_run(actions)
-    with patch.object(doctor.resilience, "_run", side_effect=mock), \
-         patch.object(doctor._shared, "_run", side_effect=mock):
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_start_limit_action_run(actions)):
         r = doctor.check_start_limit_action()
     assert r.status == "ok"
     assert "5 installed critical daemons" in r.detail
@@ -780,9 +809,8 @@ def test_start_limit_action_drift_one_unit_lost_directive():
         "jasper-voice": "reboot",
         "jasper-control": "none",   # drifted to default
     }
-    mock = _make_start_limit_action_run(actions)
-    with patch.object(doctor.resilience, "_run", side_effect=mock), \
-         patch.object(doctor._shared, "_run", side_effect=mock):
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_start_limit_action_run(actions)):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
     assert "T5.1" in r.detail
@@ -800,9 +828,8 @@ def test_start_limit_action_drift_wrong_action():
         "jasper-voice": "reboot-force",   # wrong shape
         "jasper-control": "reboot",
     }
-    mock = _make_start_limit_action_run(actions)
-    with patch.object(doctor.resilience, "_run", side_effect=mock), \
-         patch.object(doctor._shared, "_run", side_effect=mock):
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_start_limit_action_run(actions)):
         r = doctor.check_start_limit_action()
     assert r.status == "warn"
     assert "jasper-voice=reboot-force" in r.detail
@@ -820,9 +847,8 @@ def test_start_limit_action_skips_units_not_installed_on_streambox():
         "jasper-voice": "none",        # absent → must be ignored
     }
     load_map = {"jasper-aec-bridge": "not-found", "jasper-voice": "not-found"}
-    mock = _make_start_limit_action_run(actions, load_map)
-    with patch.object(doctor.resilience, "_run", side_effect=mock), \
-         patch.object(doctor._shared, "_run", side_effect=mock):
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_start_limit_action_run(actions, load_map)):
         r = doctor.check_start_limit_action()
     assert r.status == "ok", r.detail
     assert "jasper-voice" not in r.detail
@@ -830,17 +856,55 @@ def test_start_limit_action_skips_units_not_installed_on_streambox():
     assert "3 installed critical daemons" in r.detail
 
 
+def test_start_limit_action_warns_on_present_drift_with_others_absent():
+    """Mixed profile: the installed-unit filter must not swallow REAL drift
+    on a present unit. Streambox (voice/AEC absent) + a present, drifted
+    jasper-control → warn naming only the present unit."""
+    actions = {
+        "jasper-outputd": "reboot",
+        "jasper-camilla": "reboot",
+        "jasper-control": "none",      # present + drifted → must warn
+        "jasper-aec-bridge": "none",   # absent → ignored
+        "jasper-voice": "none",        # absent → ignored
+    }
+    load_map = {"jasper-aec-bridge": "not-found", "jasper-voice": "not-found"}
+    with patch.object(doctor._shared, "_run",
+                      side_effect=_make_start_limit_action_run(actions, load_map)):
+        r = doctor.check_start_limit_action()
+    assert r.status == "warn"
+    assert "jasper-control=none" in r.detail
+    assert "jasper-voice" not in r.detail
+    assert "jasper-aec-bridge" not in r.detail
+
+
 def test_start_limit_action_skips_on_dev_host():
-    """Dev host without systemctl — should skip cleanly rather than
-    crash or false-warn."""
+    """Dev host without systemctl — should skip cleanly rather than crash
+    or false-warn. The installed-unit LoadState filter is the first
+    systemctl call; its failure short-circuits to a clean skip."""
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError("systemctl not found")
 
-    # Patch both namespaces: the installed-unit LoadState filter runs
-    # through _shared._run, the per-unit StartLimitAction read through
-    # resilience._run. The first (LoadState) raise → clean skip.
-    with patch.object(doctor.resilience, "_run", side_effect=fake_run), \
-         patch.object(doctor._shared, "_run", side_effect=fake_run):
+    with patch.object(doctor._shared, "_run", side_effect=fake_run):
+        r = doctor.check_start_limit_action()
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+
+
+def test_start_limit_action_skips_when_directive_read_degrades():
+    """Safety contract: if the StartLimitAction batch read returns a
+    malformed shape (so _systemctl_show_property → None) AFTER the
+    installed-unit filter already succeeded, degrade to a clean skip —
+    never a false 'ok' that would hide real escalation drift."""
+    def fake_run(cmd, **kwargs):
+        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
+        result = MagicMock()
+        if cmd[3] == "LoadState":
+            result.stdout = "\n\n".join("loaded" for _ in units) + "\n"
+        else:  # StartLimitAction: one fewer value → length mismatch → None
+            result.stdout = "\n\n".join(["reboot"] * (len(units) - 1)) + "\n"
+        return result
+
+    with patch.object(doctor._shared, "_run", side_effect=fake_run):
         r = doctor.check_start_limit_action()
     assert r.status == "ok"
     assert "skipped" in r.detail
